@@ -218,8 +218,17 @@ server can ANR; `both.py` retakes shots until the two agree.
 
 ## Open work
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
-  frames, single core) and GPU wait on heavy shaders. Ideas not yet tried: partial (damage-rect) redraw; zero-copy
-  GPU output (render into Bitmap memory); presenting on the display's vsync (CADisplayLink) rather than commit-on-ready.
+  frames, single core) and GPU wait on heavy shaders. Ideas not yet tried: zero-copy GPU output (render into Bitmap
+  memory); presenting on the display's vsync (CADisplayLink) rather than commit-on-ready.
+- **Partial (damage-rect) redraw: tried 2026-11-03, no gain for Compose apps, not kept.** Robolectric's
+  `SkiaCpuPipeline` draws into one buffer it keeps, but `getFrame()` reports buffer age 0 and `swapBuffers()` is a
+  `return false` stub, so `CanvasContext` never clears `mHaveNewSurface` and redraws everything. Swapping vtable slots
+  3 (getFrame: age 1) and 5 (swapBuffers: set `*requireSwap`, return true) of
+  `__ZTVN7android10uirenderer12skiapipeline15SkiaCpuPipelineE` made HWUI honour damage (checked in lldb on
+  `CanvasContext::computeDirtyRect`: age 1, flag 0), and HwRenderer skipped re-recording its root when the windows
+  had not changed. But the damage HWUI collects was the whole screen on every frame of the test app (taps, typing,
+  caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
+  display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL with `uniform shader` inputs (RenderEffect-style, 7 of the large app's 29 shaders) still runs on the CPU.
 - MediaCodec decodes H.264 only (`ShadowSimMediaCodec`); HEVC and audio codecs are not listed, so ExoPlayer plays such
   tracks' video only if H.264, and never their sound.
