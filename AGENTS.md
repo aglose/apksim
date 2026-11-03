@@ -29,7 +29,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
     translator's only input from other classes). `<package>.classes` lists what the app loaded, so worker threads
     pre-translate the classes of changed DEX files once the app asks for its first class. The runtime hash covers
     every class in `apksim.jar`, so any rebuild starts with a cold cache. `--jvm -Dapksim.classCache=false` turns
-    it off. It saves once translating pauses for 3 s, so `--exit-after-first-frame` runs never write it.
+    it off. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
+    `--exit-after-first-frame`), so `scripts/train.sh` leaves the test app's cache warm.
   - `dex/`: the **DEX→JVM translator** (written from scratch; dex2jar miscompiled code and took 30 s). One Dalvik
     register is one JVM local; union-find type inference over values. Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
@@ -183,8 +184,8 @@ server can ANR; `both.py` retakes shots until the two agree.
 - **After any Java change, run `scripts/train.sh`** or timings silently get worse (no AOT). The cache is tied to the
   folder path (`work/app.aot.root`), and the launcher warns if it was built elsewhere.
 - `scripts/build.sh` fails on compile errors. Check its output before trusting a run.
-- **Launch benchmarks after a build:** the first launch of each APK is cold (no class cache). Run each APK once
-  with `--control` for ~10 s before `bench.py`, or compare against a baseline with the same cache state.
+- **Launch benchmarks after a build:** the first launch of each APK other than the test app is cold (no class
+  cache). Run each APK once before `bench.py`, or compare against a baseline with the same cache state.
 - Keep the young generation small (`-Xmn64m` in the launcher). 256 MB gave 12-50 ms GC pauses mid-scroll; 32-64 MB
   gives about 1 ms. Measured with `--jvm -Xlog:gc:file=...` while flinging and on the Shader tab.
 - The path has no spaces now, but Robolectric breaks on spaces in its dependency dir, so the launcher links
