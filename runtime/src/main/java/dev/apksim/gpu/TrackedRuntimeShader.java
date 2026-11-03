@@ -29,10 +29,11 @@ public class TrackedRuntimeShader extends RuntimeShader {
     StringBuilder b = new StringBuilder();
     PROGRAMS.forEach((src, c) -> {
       String first = src.replaceAll("\\s+", " ");
-      b.append(String.format("%s gpuRuns=%d created=%d effect=%d %s :: %s | ", c.pipeline() != 0 ? "GPU" : "CPU", c.uses()[0], c.uses()[1], c.uses()[2],
+      String where = c.pipeline() == 0 ? "CPU" : c.program().children().isEmpty() ? "GPU" : "GPU(effect only)";
+      b.append(String.format("%s gpuRuns=%d created=%d effect=%d %s :: %s | ", where, c.uses()[0], c.uses()[1], c.uses()[2],
           c.why() == null ? "" : c.why(), first.substring(0, Math.min(70, first.length()))));
     });
-    return b.toString();
+    return b.append(GpuRenderNode.report()).toString();
   }
 
   public static long renders;
@@ -56,6 +57,21 @@ public class TrackedRuntimeShader extends RuntimeShader {
   void countEffect() {
     compiled.uses()[2]++;
   }
+
+  /**
+   * What a RenderEffect made from this shader now would run on the GPU: the program and a copy of the
+   * uniforms (an effect keeps the uniforms it was created with). Null when it must stay on the CPU: no Metal
+   * pipeline, or inputs other than the one layer-content [input].
+   */
+  EffectProgram effectProgram(String input) {
+    if (uniforms == null || compiled.program().children().size() != 1 || !compiled.program().children().get(0).equals(input)) return null;
+    ByteBuffer copy = ByteBuffer.allocateDirect(uniforms.capacity()).order(ByteOrder.nativeOrder());
+    copy.put(uniforms.duplicate().clear()).clear();
+    return new EffectProgram(compiled.pipeline(), compiled.program().uniformBytes(), copy, compiled.uses());
+  }
+
+  /** A runtime-shader effect's GPU program with its uniforms as they were when the effect was made. */
+  record EffectProgram(long pipeline, int uniformBytes, ByteBuffer uniforms, long[] uses) {}
 
   private final Compiled compiled;
   private final ByteBuffer uniforms;
@@ -205,6 +221,8 @@ public class TrackedRuntimeShader extends RuntimeShader {
    */
   Shader gpuOutput(int x, int y, int w, int h) {
     if (uniforms == null || w <= 0 || h <= 0 || (long) w * h * 4 > (1L << 28)) return null;
+    // Inputs (`uniform shader`) are only bound for layer-content effects (GpuRenderNode); drawn as paint, the CPU does it.
+    if (!compiled.program().children().isEmpty()) return null;
     getLocalMatrix(local);
     local.getValues(values);
     boolean sameMatrix = lastLocal != null && Arrays.equals(values, lastLocal);

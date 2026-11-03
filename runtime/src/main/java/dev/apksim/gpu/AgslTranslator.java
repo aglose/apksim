@@ -18,7 +18,11 @@ final class AgslTranslator {
   /** One uniform and where it lives in the Metal struct. */
   record Field(String name, String type, int offset, int size, boolean isInt) {}
 
-  record Program(String msl, Map<String, Field> fields, int uniformBytes) {}
+  /**
+   * children: the `uniform shader` inputs in declaration order, bound to textures 0, 1, ... (a RenderEffect's
+   * layer content is one of these).
+   */
+  record Program(String msl, Map<String, Field> fields, int uniformBytes, List<String> children) {}
 
   /** The shader uses something this translator does not handle; it stays on the CPU. */
   static final class Unsupported extends Exception {
@@ -102,6 +106,15 @@ final class AgslTranslator {
       template<typename T> inline auto equal(T a, T b) { return a == b; }
       template<typename T> inline auto notEqual(T a, T b) { return a != b; }
       inline float4 unpremul(float4 c) { return c.a > 0.0 ? float4(c.rgb / c.a, c.a) : c; }
+      // A `uniform shader` input: an image in its own pixels. Skia samples a RenderEffect's input bilinearly and
+      // transparent outside its bounds (decal), with pixel centres at +0.5, which is what this sampler does.
+      struct AgslChild {
+        texture2d<float> t;
+        float4 eval(float2 p) const thread {
+          constexpr sampler s(coord::pixel, filter::linear, address::clamp_to_zero);
+          return t.sample(s, p);
+        }
+      };
       """;
 
   private static final Pattern TOKEN = Pattern.compile("[A-Za-z_][A-Za-z_0-9]*");
@@ -122,6 +135,9 @@ final class AgslTranslator {
     StringBuilder methods = new StringBuilder();
     StringBuilder uniforms = new StringBuilder();
     StringBuilder copies = new StringBuilder();
+    StringBuilder childMembers = new StringBuilder();
+    StringBuilder textures = new StringBuilder();
+    List<String> children = new ArrayList<>();
     Map<String, Field> fields = new HashMap<>();
     int offset = 0;
     boolean hasMain = false;
@@ -132,7 +148,20 @@ final class AgslTranslator {
       Matcher u = UNIFORM.matcher(st);
       if (u.matches()) {
         String type = mapTokens(u.group(1));
-        if (type.equals("shader") || type.equals("colorFilter") || type.equals("blender")) {
+        if (type.equals("shader")) {
+          for (String n : u.group(2).replace(";", "").split(",")) {
+            String name = n.trim();
+            if (name.contains("[")) throw new Unsupported("shader array");
+            int slot = children.size();
+            if (slot >= 8) throw new Unsupported("too many input shaders");
+            children.add(name);
+            childMembers.append("  AgslChild ").append(rename(name)).append(";\n");
+            textures.append(", texture2d<float> apksim_child").append(slot).append(" [[texture(").append(slot).append(")]]");
+            copies.append("  s.").append(rename(name)).append(".t = apksim_child").append(slot).append(";\n");
+          }
+          continue;
+        }
+        if (type.equals("colorFilter") || type.equals("blender")) {
           throw new Unsupported("input " + type);
         }
         String names = u.group(2).replace(";", "");
@@ -176,21 +205,20 @@ final class AgslTranslator {
     if (!hasMain) throw new Unsupported("no main");
     String msl = PRELUDE + constants + structs
         + "struct Uniforms {\n" + uniforms + (fields.isEmpty() ? "  float unused;\n" : "") + "};\n"
-        + "struct Shader {\n" + uniforms + methods + "};\n"
+        + "struct Shader {\n" + uniforms + childMembers + methods + "};\n"
         + """
         struct ApksimV { float4 position [[position]]; };
         vertex ApksimV apksim_vertex(uint id [[vertex_id]]) {
           float2 p = float2(float((id << 1) & 2), float(id & 2));
           ApksimV o; o.position = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;
         }
-        fragment float4 apksim_fragment(ApksimV in [[stage_in]], constant Uniforms& u [[buffer(0)]], constant float3* m [[buffer(1)]]) {
-          Shader s;
-        """ + copies + """
+        fragment float4 apksim_fragment(ApksimV in [[stage_in]], constant Uniforms& u [[buffer(0)]], constant float3* m [[buffer(1)]]"""
+        + textures + ") {\n  Shader s;\n" + copies + """
           float3 p = float3(in.position.xy, 1.0);
           return float4(s.agsl_main(float2(dot(m[0], p), dot(m[1], p))));
         }
         """;
-    return new Program(msl, fields, offset);
+    return new Program(msl, fields, offset, List.copyOf(children));
   }
 
   private static String translateParams(String fn) {
