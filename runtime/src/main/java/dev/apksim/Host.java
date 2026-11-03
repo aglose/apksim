@@ -56,6 +56,15 @@ public class Host {
   private static final long FRAME_NANOS = 1_000_000_000L / 120;
   private static final long VSYNC_HZ = 120;
   private static final long MAX_CATCH_UP_MS = 50;
+  private static final long VSYNC_SLACK_NANOS = 300_000L;
+  /**
+   * {@code -Dapksim.vsync=display} starts each animation frame just after the display's own vsync (CADisplayLink),
+   * as Choreographer does on a device, instead of on this process's 120 Hz grid. Falls back to the grid whenever the
+   * window gets no vsyncs (hidden, or the display asleep).
+   */
+  private static final boolean FOLLOW_DISPLAY = "display".equals(System.getProperty("apksim.vsync"));
+  /** When display pacing is on: the System.nanoTime() of the vsync the next frame is for, or 0 to use the grid. */
+  private long frameAtNanos;
 
   private final ArrayDeque<ActivityController<? extends Activity>> stack = new ArrayDeque<>();
   private Application app;
@@ -163,11 +172,16 @@ public class Host {
       long nowMs = SystemClock.uptimeMillis();
       long stepMs = availableMs;
       if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
-        // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
-        // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
-        // any others, as a device does under load.
-        long passed = lineAtOrBefore(nowMs + availableMs);
-        stepMs = passed > nowMs ? passed - nowMs : 0;
+        if (frameAtNanos != 0) {
+          // Following the display: the frame waits for its vsync, then the clock catches up to now.
+          if (System.nanoTime() < frameAtNanos) stepMs = 0;
+        } else {
+          // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
+          // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
+          // any others, as a device does under load.
+          long passed = lineAtOrBefore(nowMs + availableMs);
+          stepMs = passed > nowMs ? passed - nowMs : 0;
+        }
       }
       long looperStart = System.nanoTime();
       if (availableMs > MAX_CATCH_UP_MS) {
@@ -208,10 +222,17 @@ public class Host {
     return (ms * VSYNC_HZ / 1000) * 1000 / VSYNC_HZ;
   }
 
-  /** Sleeps until the next grid line if a frame is wanted, or briefly if nothing is animating. */
+  /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced) {
     long wait = IDLE_POLL_NANOS;
-    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+    long untilVsync = FOLLOW_DISPLAY && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
+    if (untilVsync >= 0) {
+      // Just after the vsync, so the frame is ready well before the next one, where the screen shows it.
+      long now = System.nanoTime();
+      if (frameAtNanos == 0 || now >= frameAtNanos) frameAtNanos = now + untilVsync + VSYNC_SLACK_NANOS;
+      wait = frameAtNanos - now;
+    } else if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+      frameAtNanos = 0;
       long nowMs = SystemClock.uptimeMillis();
       long nextLine = (nowMs * VSYNC_HZ / 1000 + 1) * 1000 / VSYNC_HZ + 1;
       wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
@@ -692,7 +713,7 @@ public class Host {
         return b.toString();
       }
       case "frames" -> {
-        return hw.frameIntervals();
+        return hw.frameIntervals() + " | " + SimWindow.vsyncStats();
       }
       case "display" -> {
         return SimWindow.displayInfo();
