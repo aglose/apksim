@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: apksim [--shot FILE] [--exit-after-first-frame] app.apk
+# Usage: apksim [--shot FILE] [--exit-after-first-frame] [--debug PORT] app.apk
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
@@ -22,6 +22,9 @@ while [[ $# -gt 1 ]]; do
     --control-bind) EXTRA+=("-Dapksim.controlBind=$2"); shift 2 ;;
     --adb) EXTRA+=("-Dapksim.adb=$2"); shift 2 ;;
     --jvm) EXTRA+=("$2"); shift 2 ;;
+    # A JDWP port for IntelliJ/Android Studio "Remote JVM Debug" (attach any time; the app does not wait), and app
+    # classes translated with line numbers and local variables (their own class cache).
+    --debug) EXTRA+=("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=$2" "-Dapksim.debugInfo=true"); shift 2 ;;
     --device) EXTRA+=("-Dapksim.device=$2"); shift 2 ;;
     --appearance) EXTRA+=("-Dapksim.appearance=$2"); shift 2 ;;
     --locale) EXTRA+=("-Dapksim.locale=$2"); shift 2 ;;
