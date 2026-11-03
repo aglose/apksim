@@ -38,7 +38,12 @@ final class DeviceControls {
   private int w;
   private int h;
   private int rotation;  // quarter turns clockwise from the device's natural orientation
-  private final java.util.function.BiConsumer<Integer, Integer> resizer;
+  private final Resizer resizer;
+
+  /** Gives the renderer and the window a new display size; actualSize puts the window back at actual size. */
+  interface Resizer {
+    void resize(int w, int h, boolean actualSize);
+  }
   private String hiddenBy;
   private final Permissions permissions;
   private final ActivityResults results = new ActivityResults();
@@ -55,6 +60,13 @@ final class DeviceControls {
   private long clipboardSeen = -1;
   private String clipboardLast;
   private long slowTickNanos;
+  // A window resize by the user waiting to be applied (device pixels), and when the last one was.
+  private int resizeW;
+  private int resizeH;
+  private boolean resizeDone;
+  private long resizedNanos;
+  /** At most this often while the user drags the window's edge: each step is a configuration change. */
+  private static final long RESIZE_INTERVAL_NANOS = 100_000_000L;
 
   // Tags of the Mac menu items (native/simwindow.m), as control commands. "{text}" is what the item asked for.
   private static final String[] MENU = {
@@ -62,8 +74,11 @@ final class DeviceControls {
     "fontscale +", "fontscale -", "fontscale 1", "animscale toggle", "memory", "open {text}", "key VOLUME_UP",
     "key VOLUME_DOWN", "back", "locale {text}", "notifications open last", "location {text}", "location run",
     "location bike", "location drive", "location none", "biometrics toggle", "biometrics match", "biometrics nomatch",
-    "debug layout toggle", "a11y show", "keyboard soft",
+    "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
+    "device desktop", "device tv",
   };
+  private static final int TAG_DEVICE_FIRST = 31;
+  private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
   private static final int TAG_SOFT_KEYBOARD = 30;
   private static final int TAG_LAYOUT_BOUNDS = 28;
   private boolean layoutBounds;
@@ -75,7 +90,7 @@ final class DeviceControls {
   private static final float[] FONT_STEPS = {0.85f, 1f, 1.15f, 1.3f, 1.5f, 1.8f, 2f};
 
   DeviceControls(Application app, ArrayDeque<ActivityController<? extends Activity>> stack, int w, int h,
-      java.util.function.BiConsumer<Integer, Integer> resizer) {
+      Resizer resizer) {
     this.app = app;
     this.resizer = resizer;
     this.stack = stack;
@@ -254,6 +269,7 @@ final class DeviceControls {
 
   /** Called every loop turn: keeps the app's clipboard and the Mac's in step, and the system bars' colours. */
   void tick() {
+    applyWindowResize();
     if (hiddenBy == null && !stack.isEmpty()) permissions.tick(stack.peek().get());
     Biometrics.tick();
     results.tick();
@@ -284,9 +300,9 @@ final class DeviceControls {
     clipboard.setPrimaryClip(ClipData.newPlainText("Mac", text));
   }
 
-  /** Phones and tablets have a status bar and gesture navigation (48 px each, see Host.run); desktop has neither. */
+  /** Phones and tablets have a status bar and gesture navigation (24 dp each); desktop and TV have neither. */
   private void updateSystemBars() {
-    if ("desktop".equals(System.getProperty("apksim.device", "phone"))) return;
+    if (!Device.current().systemBars()) return;
     boolean darkStatus = false;
     boolean darkNav = false;
     ActivityController<? extends Activity> top = stack.peek();
@@ -296,7 +312,8 @@ final class DeviceControls {
       darkStatus = (appearance & android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS) != 0;
       darkNav = (appearance & android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS) != 0;
     }
-    SimWindow.setSystemBars(48, 48, darkStatus, darkNav);
+    int bar = Math.round(24 * Device.current().density());  // Robolectric's SystemUi: 24 dp each
+    SimWindow.setSystemBars(bar, bar, darkStatus, darkNav);
   }
 
   private void appCopied() {
@@ -513,6 +530,26 @@ final class DeviceControls {
         SimWindow.zoom(how);
         return "ok";
       }
+      case "device" -> {
+        // device: what the app runs on; device phone|foldable|tablet|desktop|tv|WxH[@density]: switch to another.
+        if (a.length < 2) return Device.current().describe() + " (" + w + "x" + h + " px); presets: " + Device.names();
+        Device to = Device.named(a[1]);
+        return reshape(to, to.widthPx(), to.heightPx(), true, before);
+      }
+      case "size" -> {
+        // size WxH: the display's size in dp, keeping the device's kind (as dragging the window's edge does).
+        if (a.length < 2) return Device.current().describe() + " (" + w + "x" + h + " px)";
+        String[] wh = a[1].split("x");
+        if (wh.length != 2) return "usage: size WxH (dp)";
+        float d = Device.current().density();
+        return reshape(Device.current(), Math.round(Integer.parseInt(wh[0]) * d), Math.round(Integer.parseInt(wh[1]) * d), false, before);
+      }
+      case "window" -> {
+        // window WxH: sets the Mac window's content size in points as a drag of its corner would (checks that path).
+        String[] wh = a.length > 1 ? a[1].split("x") : new String[0];
+        if (wh.length != 2) return "usage: window WxH (points)";
+        return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1])) ? "ok" : "no window";
+      }
       case "rotate" -> {
         // rotate left|right (a quarter turn), or rotate portrait|landscape
         String to = a.length > 1 ? a[1] : "right";
@@ -630,9 +667,16 @@ final class DeviceControls {
     display.setRotation(rotation);
     w = nw;
     h = nh;
-    resizer.accept(nw, nh);
+    resizer.resize(nw, nh, false);
+    Device.setCurrent(Device.current().withSize(Math.round(nw / d), Math.round(nh / d)));
     String r = configurationChanged(before);
-    // Activities that handle the change themselves keep their window: give it the new size.
+    windowsResized();
+    showTitle();
+    return r + " (" + (nw > nh ? "landscape" : "portrait") + ", rotation " + rotation * 90 + ")";
+  }
+
+  /** Activities that handle a size change themselves keep their window: give it the new size. */
+  private void windowsResized() {
     for (ActivityController<? extends Activity> c : stack) {
       android.view.ViewRootImpl root = c.get().getWindow().getDecorView().getViewRootImpl();
       if (root == null) continue;
@@ -640,7 +684,91 @@ final class DeviceControls {
       org.robolectric.util.ReflectionHelpers.callInstanceMethod(shadow, "callDispatchResized");
       c.get().getWindow().getDecorView().requestLayout();
     }
-    return r + " (" + (nw > nh ? "landscape" : "portrait") + ", rotation " + rotation * 90 + ")";
+  }
+
+  /** The user dragged the window's edge: the display follows, at most every 100 ms while dragging. */
+  void windowResized(int pxW, int pxH, boolean done) {
+    resizeW = pxW;
+    resizeH = pxH;
+    resizeDone |= done;
+    applyWindowResize();
+  }
+
+  private void applyWindowResize() {
+    if (resizeW == 0) return;
+    long now = System.nanoTime();
+    if (!resizeDone && now - resizedNanos < RESIZE_INTERVAL_NANOS) return;
+    int pw = resizeW;
+    int ph = resizeH;
+    boolean done = resizeDone;
+    resizeW = resizeH = 0;
+    resizeDone = false;
+    resizedNanos = now;
+    Configuration before = new Configuration(app.getResources().getConfiguration());
+    String r = reshape(Device.current(), pw, ph, false, before);
+    if (done) System.err.println("[apksim] window resized: " + r);
+  }
+
+  /**
+   * A new display: another device (kind, density, system bars), or the same one at another size. The qualifiers
+   * are rewritten whole (Device.withQualifiers), the renderer and window take the new size, and activities get the
+   * configuration change, as on a resizable emulator or a device in a freeform window.
+   */
+  private String reshape(Device to, int pxW, int pxH, boolean newDevice, Configuration before) {
+    float d = to.density();
+    int wDp = Math.max(160, Math.round(pxW / d));
+    int hDp = Math.max(160, Math.round(pxH / d));
+    Device was = Device.current();
+    Device now = to.withSize(wDp, hDp);
+    if (!newDevice && now.equals(was) && pxW == w && pxH == h) {
+      // The window snaps back to the display's size in whole dp, and the frame is drawn again into the new surfaces.
+      resizer.resize(w, h, false);
+      for (android.view.View root : rootViews()) root.invalidate();
+      return "unchanged";
+    }
+    if (recording != null) run(new String[] {"record", "stop"});  // a movie keeps one frame size
+    float fontScale = app.getResources().getConfiguration().fontScale;
+    RuntimeEnvironment.setQualifiers(now.withQualifiers(RuntimeEnvironment.getQualifiers()));
+    if (fontScale != 1f) RuntimeEnvironment.setFontScale(fontScale);  // not a qualifier: a full string resets it
+    if (newDevice) {
+      rotation = 0;
+      org.robolectric.Shadows.shadowOf(app.getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(0);
+    }
+    Device.setCurrent(now);
+    if (was.systemBars() != now.systemBars()) applySystemUi(now);
+    android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
+    w = m.widthPixels;
+    h = m.heightPixels;
+    resizer.resize(w, h, newDevice);
+    String r = configurationChanged(before);
+    windowsResized();
+    showTitle();
+    if (!now.systemBars()) SimWindow.setSystemBars(0, 0, false, false);
+    return r + " (" + now.describe() + ", " + w + "x" + h + " px)";
+  }
+
+  /** Status bar and gesture navigation for phones, foldables and tablets; none on desktop and TV. */
+  static void applySystemUi(Device d) {
+    try {
+      // Robolectric keeps SystemUi package-private.
+      Class<?> ui = Class.forName("org.robolectric.shadows.SystemUi");
+      Object display = org.robolectric.util.ReflectionHelpers.callStaticMethod(ui, "systemUiForDefaultDisplay");
+      org.robolectric.util.ReflectionHelpers.callInstanceMethod(display, "setBehavior",
+          org.robolectric.util.ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$StatusBarBehavior"),
+              org.robolectric.util.ReflectionHelpers.getStaticField(ui, d.systemBars() ? "STANDARD_STATUS_BAR" : "NO_STATUS_BAR")),
+          org.robolectric.util.ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$NavigationBarBehavior"),
+              org.robolectric.util.ReflectionHelpers.getStaticField(ui, d.systemBars() ? "GESTURAL_NAVIGATION" : "NO_NAVIGATION_BAR")));
+    } catch (ClassNotFoundException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** The window's title: the APK and the device it runs on, with the display's size while it is being resized. */
+  void showTitle() {
+    Device d = Device.current();
+    SimWindow.setTitle(System.getProperty("apksim.windowTitle", "apksim") + " - " + d.name()
+        + " " + d.widthDp() + "\u00d7" + d.heightDp() + " dp");
+    for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
   }
 
   /**

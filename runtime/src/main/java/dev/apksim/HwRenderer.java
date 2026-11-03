@@ -179,8 +179,8 @@ final class HwRenderer {
         n, n / (java.util.Arrays.stream(sorted).sum() / 1e9), p50, p95, p99, sorted[n - 1] / 1e6, within * 100 / n);
   }
 
-  /** A new display size (rotation): swaps the surface and the window's buffers while no frame is in flight. */
-  void resize(int w, int h) {
+  /** A new display size (rotation, resizing): swaps the surface and the window's buffers while no frame is in flight. */
+  void resize(int w, int h, boolean actualSize) {
     idle.acquireUninterruptibly();
     try {
       synchronized (frameLock) {
@@ -194,7 +194,7 @@ final class HwRenderer {
       width = w;
       height = h;
       old.close();
-      SimWindow.resize(w, h);
+      SimWindow.resize(w, h, actualSize);
     } finally {
       idle.release();
     }
