@@ -17,11 +17,12 @@ shortcuts and modifiers, app data commands (`ctl.py apps|container|erase`), `rec
 activity results (in-app setResult, document/photo pickers via the Mac file panel, cancel for the rest), the share
 menu for ACTION_SEND, Show Layout Bounds and an accessibility audit, background work (services, jobs, alarms),
 FCM push (`push`), recording on Linux/headless (Motion-JPEG AVI), the Android Keystore (test keystore), and the
-software keyboard with IME insets.
+software keyboard with IME insets, and an adb device (`--adb PORT`, then `adb connect`: shell, push/pull, logcat,
+screencap).
 Everything except the window-only parts also works in the Linux image.
 
 Not yet: device bezels, external display, other API levels, CREATE_DOCUMENT (save) pickers, sharing files from Linux, audio, camera, binding to app services in general (only FCM's
-is wired), widgets, the adb device, debugger line numbers, a view inspector beyond `nodes`/`a11y`.
+is wired), widgets, `adb install` and `jdwp` on the adb device, debugger line numbers, a view inspector beyond `nodes`/`a11y`.
 
 ## Shared groundwork (do these first)
 
@@ -126,7 +127,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Rendering debug overlays | Color blended layers, offscreen-rendered, misaligned | `fps`, `frames` | Android equivalents: show layout bounds (`debug.layout`), GPU overdraw, profile HWUI rendering bars, show taps / pointer location. Mostly system properties HWUI already reads, plus an overlay for taps | M |
 | Accessibility Inspector / VoiceOver | Works on the simulator | None | Export the `AccessibilityNodeInfo` tree as `NSAccessibility` elements on `SimView`, so Accessibility Inspector and VoiceOver can read and drive the app. An `a11y` audit command (missing labels, small touch targets, contrast) is cheaper and covers most of it | L |
 | UI test automation | XCUITest, `simctl` | `--control` + `drive.py` | Add selectors to the control channel (`tap text "Save"`, `tap tag "fab"`, `wait-for text …`) using the semantics/view dump; optionally run the APK's own Espresso/Compose UI tests from `androidTest` | M |
-| Studio / tool integration | Xcode Run button | None | **A minimal adb device**: implement the adb transport (`adb connect localhost:PORT`) with `shell` (`am start`, `pm list`, `input tap`, `wm size`, `settings put`, `screencap`, `logcat`), `sync` (push/pull into app data) and `jdwp`. Every command above is reused behind it. This is what makes Android Studio, `adb`-based scripts and Layout Inspector see apksim as a device. Highest-leverage single item, and the largest | L |
+| Studio / tool integration | Xcode Run button | **Done (minimal adb device)**: `--adb PORT`, then `adb connect localhost:PORT` | `AdbServer` speaks the device side of the adb transport (insecure: no AUTH/TLS) with `shell:`/`exec:` and `sync:` v1. `AdbShell` maps `getprop`, `input tap|swipe|text|keyevent`, `am start|broadcast|startservice`, `monkey -p`, `pm list|path|grant|revoke`, `wm size|density`, `settings get|put`, `cmd uimode night`, `logcat` (AdbLog: a timestamped ring of `ShadowLog` lines, `-d -c -t -T -s -e`, TAG:LEVEL), `screencap [-p]`, `ls/cat/rm/mkdir`, `run-as`, `dumpsys activity top|window` onto the control commands; `adb shell apksim CMD` sends any control command. push/pull/ls cover `/data/data/PKG`, `/sdcard` and `/data/local/tmp`. Not yet: `adb install` (one APK per instance), `jdwp`/`track-jdwp` (so Studio's debugger and Layout Inspector), shell_v2 (exit codes, separate stderr), `logcat -B` (Studio's binary logcat), `am force-stop` | L |
 | In-app purchases test | StoreKit testing | None | Fake `BillingClient` returning configurable products/purchases. Low priority | M |
 
 ## Already ahead of or equal to the iOS Simulator
@@ -151,8 +152,8 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
    sensors; memory warning; background/foreground and process-death restore; document/photo pickers; Keystore;
    erase/uninstall/container CLI.
 3. **Tooling (3-4 weeks):** line numbers in the DEX translator + JDWP; `views`/semantics dump and element picker;
-   selector-based UI automation; rendering overlays; JFR; then the adb device, which re-exposes all of it to
-   Android Studio.
+   selector-based UI automation; rendering overlays; JFR; the adb device (minimal version done: shell, sync,
+   logcat, screencap) still needs `jdwp` and install for Android Studio's Run and Debug.
 4. **Platform depth (open-ended):** groundwork 4 (services, receivers, jobs, alarms) → notifications and push;
    on-screen keyboard with IME insets; audio in/out; camera; other API levels; widgets; external display;
    accessibility bridge to macOS. GLES and GPU raster stay on the existing "Open work" list in AGENTS.md.
