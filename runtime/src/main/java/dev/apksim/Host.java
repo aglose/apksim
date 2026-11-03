@@ -231,6 +231,7 @@ public class Host {
   }
 
   private static void exit(int code) {
+    ClassCache.flush();
     Storage.deleteScratch();
     Runtime.getRuntime().halt(code);
   }
