@@ -82,6 +82,8 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_render(JNIEnv *env, jcl
     } else {
       [e setFragmentBytes:empty length:sizeof empty atIndex:0];
     }
+    uint32_t noClamp = 0;
+    [e setFragmentBytes:&noClamp length:sizeof noClamp atIndex:2];
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e endEncoding];
     [cb commit];
@@ -92,19 +94,64 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_render(JNIEnv *env, jcl
   }
 }
 
+// A render target in linear memory: a texture over a shared buffer, so reading it back is a row copy rather than
+// the CPU untiling an ordinary (tiled) texture, which cost ~3 ms for a full phone screen. Kept in a small pool
+// rather than made per frame.
+@interface ApksimTarget : NSObject
+@property(nonatomic, strong) id<MTLBuffer> buffer;
+@property(nonatomic, strong) id<MTLTexture> texture;
+@property(nonatomic) int w, h;
+@property(nonatomic) NSUInteger stride;
+@end
+@implementation ApksimTarget
+@end
+
+#define POOL_MAX 6
+static NSMutableArray<ApksimTarget *> *freeTargets;
+
+static ApksimTarget *takeTarget(int w, int h) {
+  @synchronized([ApksimTarget class]) {
+    if (!freeTargets) freeTargets = [NSMutableArray new];
+    for (NSUInteger i = 0; i < freeTargets.count; i++) {
+      ApksimTarget *t = freeTargets[i];
+      if (t.w == w && t.h == h) {
+        [freeTargets removeObjectAtIndex:i];
+        return t;
+      }
+    }
+  }
+  NSUInteger align = [device minimumLinearTextureAlignmentForPixelFormat:MTLPixelFormatBGRA8Unorm];
+  ApksimTarget *t = [ApksimTarget new];
+  t.w = w;
+  t.h = h;
+  t.stride = ((NSUInteger)w * 4 + align - 1) / align * align;
+  t.buffer = [device newBufferWithLength:t.stride * h options:MTLResourceStorageModeShared];
+  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget;
+  d.storageMode = MTLStorageModeShared;
+  t.texture = [t.buffer newTextureWithDescriptor:d offset:0 bytesPerRow:t.stride];
+  return t.texture ? t : nil;
+}
+
+static void giveTarget(ApksimTarget *t) {
+  @synchronized([ApksimTarget class]) {
+    [freeTargets addObject:t];
+    if (freeTargets.count > POOL_MAX) [freeTargets removeObjectAtIndex:0];
+  }
+}
+
 // Pipelined form of render: submit returns at once with a handle; collect waits for that work (normally
 // long finished by then), copies the pixels out and frees the handle.
-typedef struct { id<MTLCommandBuffer> cb; id<MTLTexture> tex; int w, h; } Pending;
+typedef struct { id<MTLCommandBuffer> cb; ApksimTarget *target; } Pending;
 
 // Encodes one full-target pass and commits it; input (may be nil) is bound as texture 0, the shader's
 // `uniform shader` input when it is a RenderEffect over layer content.
 static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformBytes, jfloatArray transform, jint w, jint h,
-                    id<MTLTexture> input) {
+                    const jlong *inputs, int inputCount, uint32_t clampMask) {
   id<MTLRenderPipelineState> p = (__bridge id<MTLRenderPipelineState>)(void *)pipeline;
-  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-  d.usage = MTLTextureUsageRenderTarget;
-  d.storageMode = MTLStorageModeShared;
-  id<MTLTexture> t = [device newTextureWithDescriptor:d];
+  ApksimTarget *target = takeTarget(w, h);
+  if (!target) return 0;
+  id<MTLTexture> t = target.texture;
   MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
   pass.colorAttachments[0].texture = t;
   pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -122,22 +169,24 @@ static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformB
   } else {
     [e setFragmentBytes:empty length:sizeof empty atIndex:0];
   }
-  if (input) [e setFragmentTexture:input atIndex:0];
+  for (int i = 0; i < inputCount; i++) {
+    if (inputs[i]) [e setFragmentTexture:(__bridge id<MTLTexture>)(void *)inputs[i] atIndex:i];
+  }
+  // Which inputs repeat their edges (an image BitmapShader in CLAMP mode) rather than read transparent outside.
+  [e setFragmentBytes:&clampMask length:sizeof clampMask atIndex:2];
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [e endEncoding];
   [cb commit];
   Pending *pending = calloc(1, sizeof(Pending)); // Zeroed: ARC releases a strong field's old value on store.
   pending->cb = cb;
-  pending->tex = t;
-  pending->w = w;
-  pending->h = h;
+  pending->target = target;
   return (jlong)(void *)CFBridgingRetain((__bridge id)(__bridge void *)[NSValue valueWithPointer:pending]);
 }
 
 JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submit(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
                                                              jfloatArray transform, jint w, jint h) {
   @autoreleasepool {
-    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, nil);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, NULL, 0, 0);
   }
 }
 
@@ -172,22 +221,121 @@ JNIEXPORT void JNICALL Java_dev_apksim_gpu_GpuNative_releaseInput(JNIEnv *env, j
 JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submitEffect(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
                                                                    jfloatArray transform, jint w, jint h, jlong input) {
   @autoreleasepool {
-    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, (__bridge id<MTLTexture>)(void *)input);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, &input, 1, 0);
+  }
+}
+
+// As submit, with [inputs] bound to the shader's `uniform shader` inputs in order; bit i of clampMask makes input i
+// repeat its edges.
+JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submitInputs(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms,
+                                                                   jint uniformBytes, jfloatArray transform, jint w, jint h,
+                                                                   jlongArray inputs, jint clampMask) {
+  @autoreleasepool {
+    jsize n = (*env)->GetArrayLength(env, inputs);
+    if (n > 8) return 0;
+    jlong handles[8];
+    (*env)->GetLongArrayRegion(env, inputs, 0, n, handles);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, handles, n, (uint32_t)clampMask);
   }
 }
 
 JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_collect(JNIEnv *env, jclass c, jlong handle, jobject out) {
+  if (!handle) return JNI_FALSE;
   @autoreleasepool {
     NSValue *v = CFBridgingRelease((void *)handle);
     Pending *p = v.pointerValue;
     [p->cb waitUntilCompleted];
     jboolean ok = p->cb.status == MTLCommandBufferStatusCompleted;
+    ApksimTarget *t = p->target;
     if (ok && out) {
-      [p->tex getBytes:(*env)->GetDirectBufferAddress(env, out) bytesPerRow:p->w * 4 fromRegion:MTLRegionMake2D(0, 0, p->w, p->h) mipmapLevel:0];
+      char *dst = (*env)->GetDirectBufferAddress(env, out);
+      const char *src = t.buffer.contents;
+      size_t row = (size_t)t.w * 4;
+      if (t.stride == row) {
+        memcpy(dst, src, row * t.h);
+      } else {
+        for (int y = 0; y < t.h; y++) memcpy(dst + row * y, src + t.stride * y, row);
+      }
     }
+    giveTarget(t);
     p->cb = nil;
-    p->tex = nil;
+    p->target = nil;
     free(p);
+    return ok;
+  }
+}
+
+// Scaled bitmap draws: a source texture resampled to a w x h target with bilinear filtering, as Skia samples a
+// scaled drawImageRect (pixel centres at +0.5, clamped at the image's edges). Target pixel (x, y) reads texel
+// coordinate origin + (x + 0.5, y + 0.5) * step.
+static id<MTLRenderPipelineState> resamplePipeline;
+
+static const char *RESAMPLE_MSL =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct V { float4 position [[position]]; };\n"
+    "vertex V rs_vertex(uint id [[vertex_id]]) {\n"
+    "  float2 p = float2(float((id << 1) & 2), float(id & 2));\n"
+    "  V o; o.position = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;\n"
+    "}\n"
+    // Bilinear by hand in float, as Skia's raster pipeline does: the texture unit's own filtering uses fixed-point
+    // weights and was up to 19 levels off at hard edges.
+    "fragment float4 rs_fragment(V in [[stage_in]], constant float4& map [[buffer(0)]], texture2d<float> t [[texture(0)]]) {\n"
+    "  float2 p = map.xy + in.position.xy * map.zw - 0.5;\n"
+    "  float2 f = floor(p);\n"
+    "  float2 w = p - f;\n"
+    "  int2 hi = int2(t.get_width(), t.get_height()) - 1;\n"
+    "  int2 a = clamp(int2(f), int2(0), hi);\n"
+    "  int2 b = clamp(int2(f) + 1, int2(0), hi);\n"
+    "  float4 top = mix(t.read(uint2(a.x, a.y)), t.read(uint2(b.x, a.y)), w.x);\n"
+    "  float4 bottom = mix(t.read(uint2(a.x, b.y)), t.read(uint2(b.x, b.y)), w.x);\n"
+    "  return mix(top, bottom, w.y);\n"
+    "}\n";
+
+static BOOL ensureResample(void) {
+  if (resamplePipeline) return YES;
+  NSError *error = nil;
+  id<MTLLibrary> lib = [device newLibraryWithSource:@(RESAMPLE_MSL) options:nil error:&error];
+  if (!lib) {
+    NSLog(@"[apksim] resample shader: %@", error);
+    return NO;
+  }
+  MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+  d.vertexFunction = [lib newFunctionWithName:@"rs_vertex"];
+  d.fragmentFunction = [lib newFunctionWithName:@"rs_fragment"];
+  d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  resamplePipeline = [device newRenderPipelineStateWithDescriptor:d error:&error];
+  return resamplePipeline != nil;
+}
+
+JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_resample(JNIEnv *env, jclass c, jlong input, jfloat u0, jfloat v0, jfloat du,
+                                                                 jfloat dv, jint w, jint h, jobject out) {
+  @autoreleasepool {
+    if (!input || !device || !ensureResample()) return JNI_FALSE;
+    ApksimTarget *target = takeTarget(w, h);
+    if (!target) return JNI_FALSE;
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = target.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pass];
+    [e setRenderPipelineState:resamplePipeline];
+    float map[4] = {u0, v0, du, dv};
+    [e setFragmentBytes:map length:sizeof map atIndex:0];
+    [e setFragmentTexture:(__bridge id<MTLTexture>)(void *)input atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [e endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    jboolean ok = cb.status == MTLCommandBufferStatusCompleted;
+    if (ok) {
+      char *dst = (*env)->GetDirectBufferAddress(env, out);
+      const char *src = target.buffer.contents;
+      size_t row = (size_t)w * 4;
+      for (int y = 0; y < h; y++) memcpy(dst + row * y, src + target.stride * y, row);
+    }
+    giveTarget(target);
     return ok;
   }
 }
