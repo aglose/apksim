@@ -96,40 +96,83 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_render(JNIEnv *env, jcl
 // long finished by then), copies the pixels out and frees the handle.
 typedef struct { id<MTLCommandBuffer> cb; id<MTLTexture> tex; int w, h; } Pending;
 
+// Encodes one full-target pass and commits it; input (may be nil) is bound as texture 0, the shader's
+// `uniform shader` input when it is a RenderEffect over layer content.
+static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformBytes, jfloatArray transform, jint w, jint h,
+                    id<MTLTexture> input) {
+  id<MTLRenderPipelineState> p = (__bridge id<MTLRenderPipelineState>)(void *)pipeline;
+  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget;
+  d.storageMode = MTLStorageModeShared;
+  id<MTLTexture> t = [device newTextureWithDescriptor:d];
+  MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = t;
+  pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLCommandBuffer> cb = [queue commandBuffer];
+  id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pass];
+  [e setRenderPipelineState:p];
+  jfloat m[6];
+  (*env)->GetFloatArrayRegion(env, transform, 0, 6, m);
+  float rows[8] = {m[0], m[1], m[2], 0, m[3], m[4], m[5], 0};
+  [e setFragmentBytes:rows length:sizeof rows atIndex:1];
+  char empty[16] = {0};
+  if (uniformBytes > 0) {
+    [e setFragmentBytes:(*env)->GetDirectBufferAddress(env, uniforms) length:uniformBytes atIndex:0];
+  } else {
+    [e setFragmentBytes:empty length:sizeof empty atIndex:0];
+  }
+  if (input) [e setFragmentTexture:input atIndex:0];
+  [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [e endEncoding];
+  [cb commit];
+  Pending *pending = calloc(1, sizeof(Pending)); // Zeroed: ARC releases a strong field's old value on store.
+  pending->cb = cb;
+  pending->tex = t;
+  pending->w = w;
+  pending->h = h;
+  return (jlong)(void *)CFBridgingRetain((__bridge id)(__bridge void *)[NSValue valueWithPointer:pending]);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submit(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
                                                              jfloatArray transform, jint w, jint h) {
   @autoreleasepool {
-    id<MTLRenderPipelineState> p = (__bridge id<MTLRenderPipelineState>)(void *)pipeline;
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, nil);
+  }
+}
+
+// An input image for an effect (a layer's content), kept between frames: BGRA, premultiplied, as Skia
+// rasterizes here.
+JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_newInput(JNIEnv *env, jclass c, jint w, jint h) {
+  @autoreleasepool {
+    if (!device) {
+      device = MTLCreateSystemDefaultDevice();
+      queue = [device newCommandQueue];
+    }
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-    d.usage = MTLTextureUsageRenderTarget;
+    d.usage = MTLTextureUsageShaderRead;
     d.storageMode = MTLStorageModeShared;
     id<MTLTexture> t = [device newTextureWithDescriptor:d];
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = t;
-    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLCommandBuffer> cb = [queue commandBuffer];
-    id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:pass];
-    [e setRenderPipelineState:p];
-    jfloat m[6];
-    (*env)->GetFloatArrayRegion(env, transform, 0, 6, m);
-    float rows[8] = {m[0], m[1], m[2], 0, m[3], m[4], m[5], 0};
-    [e setFragmentBytes:rows length:sizeof rows atIndex:1];
-    char empty[16] = {0};
-    if (uniformBytes > 0) {
-      [e setFragmentBytes:(*env)->GetDirectBufferAddress(env, uniforms) length:uniformBytes atIndex:0];
-    } else {
-      [e setFragmentBytes:empty length:sizeof empty atIndex:0];
-    }
-    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [e endEncoding];
-    [cb commit];
-    Pending *pending = malloc(sizeof(Pending));
-    pending->cb = cb;
-    pending->tex = t;
-    pending->w = w;
-    pending->h = h;
-    return (jlong)(void *)CFBridgingRetain((__bridge id)(__bridge void *)[NSValue valueWithPointer:pending]);
+    return t ? (jlong)CFBridgingRetain(t) : 0;
+  }
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_gpu_GpuNative_upload(JNIEnv *env, jclass c, jlong input, jobject pixels, jint stride) {
+  @autoreleasepool {
+    id<MTLTexture> t = (__bridge id<MTLTexture>)(void *)input;
+    [t replaceRegion:MTLRegionMake2D(0, 0, t.width, t.height) mipmapLevel:0 withBytes:(*env)->GetDirectBufferAddress(env, pixels)
+         bytesPerRow:stride];
+  }
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_gpu_GpuNative_releaseInput(JNIEnv *env, jclass c, jlong input) {
+  if (input) CFBridgingRelease((void *)input);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submitEffect(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
+                                                                   jfloatArray transform, jint w, jint h, jlong input) {
+  @autoreleasepool {
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, (__bridge id<MTLTexture>)(void *)input);
   }
 }
 

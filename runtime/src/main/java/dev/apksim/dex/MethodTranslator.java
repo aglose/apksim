@@ -2129,10 +2129,12 @@ final class MethodTranslator implements Opcodes {
 
   /**
    * Framework and library classes that app code gets an apksim subclass of, wherever it creates one or extends
-   * one: shaders that can run on the GPU, and libwebrtc's video decoding and drawing without GLES.
+   * one: shaders and layer effects that can run on the GPU, and libwebrtc's video decoding and drawing without GLES.
    */
   private static final Map<String, String> SUBSTITUTES = Map.of(
       RUNTIME_SHADER, TRACKED_SHADER,
+      // Compose's graphicsLayer: runtime-shader RenderEffects over layer content run on Metal.
+      "android/graphics/RenderNode", "dev/apksim/gpu/GpuRenderNode",
       "org/webrtc/DefaultVideoDecoderFactory", "dev/apksim/video/SimVideoDecoderFactory",
       "org/webrtc/EglRenderer", "dev/apksim/video/SimEglRenderer");
 
