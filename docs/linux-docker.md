@@ -60,20 +60,18 @@ Checked in the container: test app taps, navigation and SQLite (Trips list); the
 sheet with CPU-rendered AGSL backgrounds. The device controls work headless too (checked in the container): `--appearance dark`,
 `rotate`, `locale`, `fontscale`, `open URL`, `permission allow`, `notifications`, `location`, `clipboard`.
 
-## CI sketch (GitHub Actions)
+## CI (GitHub Actions)
 
-```yaml
-jobs:
-  ui-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: ./gradlew :app:assembleDebug
-      - run: |
-          docker run --rm -v "$PWD:/work" apksim:latest --exit-after-first-frame --shot shot.png \
-            app/build/outputs/apk/debug/app-debug.apk
-      - uses: actions/upload-artifact@v4
-        with: { name: screenshot, path: shot.png }
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests, on `ubuntu-latest`: it fetches the
+libraries (`gradle deps`), compiles the runtime with JDK 24 (`scripts/build.sh` takes `JAVA_HOME` on Linux), builds
+the test app and the image (`scripts/docker-build.sh`), then runs `scripts/ci-smoke.sh`. That checks the first
+frame, then over the control channel switches to Trips, renames a trip (a SQLite write) and checks the list shows
+the new name. Screenshots and logs are uploaded as the `smoke` artifact. Run the same test locally:
+
+```bash
+scripts/docker-build.sh apksim:ci
+scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk work/smoke
 ```
 
-The image is not published anywhere yet; push it to a registry (GHCR) for CI to pull.
+Keep the output folder under your home folder: Colima shares only that with its VM. The workflow covers the Linux
+path only; the Mac window, Metal, VideoToolbox and launch timings are not checked in CI.
