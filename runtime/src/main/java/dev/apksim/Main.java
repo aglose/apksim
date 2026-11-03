@@ -28,6 +28,9 @@ public final class Main {
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");
     if (adb != null) AdbServer.start(adb.equals("auto") ? 0 : Integer.parseInt(adb));
+    String testApk = System.getProperty("apksim.instrument");
+    // A test run draws nothing (tests run on a simulated clock, see Instrument), so it needs no window.
+    if (testApk != null) System.setProperty("apksim.headless", "true");
     Device device = Device.current();
     System.setProperty("apksim.qualifiers", device.qualifiers());
     System.setProperty("apksim.windowTitle", Path.of(args[0]).getFileName().toString());
@@ -39,6 +42,12 @@ public final class Main {
     AppClasses classes = AppClasses.install(apk);
     SimKeyStore.install();  // before the app's code runs: Robolectric has no Android Keystore
     Timing.mark("apk-indexed");
+    if (testApk != null) {
+      int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classes);
+      ClassCache.flush();
+      Storage.deleteScratch();
+      Runtime.getRuntime().halt(code);
+    }
     Result r = new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
       f.getException().printStackTrace();

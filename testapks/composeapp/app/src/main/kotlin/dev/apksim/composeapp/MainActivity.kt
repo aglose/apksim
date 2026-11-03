@@ -81,7 +81,7 @@ fun Root(db: Db, startTab: Int = 0) {
   val tabs = listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star)
   Scaffold(
     topBar = { TopAppBar(title = { Text("ComposeApp") }, actions = { Text("$widthClass $window", Modifier.padding(end = 16.dp)) }) },
-    floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, null) } },
+    floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, "Add") } },
     bottomBar = {
       if (!wide) NavigationBar {
         tabs.forEachIndexed { i, (l, ic) ->
