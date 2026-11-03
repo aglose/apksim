@@ -1,0 +1,105 @@
+# Plan: remaining work (2026-11-03)
+
+Where things stand: launch (1.3-1.7 s first frame with a warm class cache), real APKs (HomeSafe Preview and debug)
+and the 120 fps goal (117-120 fps average, 15-35% of frames at 9-12 ms instead of 8.3 ms) are met or close.
+Today added: the class cache saved on exit, GitHub CI on the Linux image, HEVC/AAC/MP3 and AudioTrack sound,
+layer-content RenderEffects on Metal, and MediaCodec pictures in presentation order. This plan orders what is left by
+value per effort. Each step ends in its own commit, measured A/B against the build before it (AGENTS.md: noisy machine,
+interleave runs).
+
+## Phase 1: check today's work on HomeSafe (small, do first)
+
+**1. Recorded clips in HomeSafe.** Today's frame reordering and audio path were checked only on the test app's 3 s
+clip. HomeSafe's recorded clips (Media3/ExoPlayer from Frigate) now get both.
+- How: launch HomeSafe Preview (sign-in is automatic from the saved autofill), open a camera's recorded clips and
+  play one muted (`--jvm -Dapksim.mute=true`). Read `video` (rendered vs dropped, `pictures`, `audiotrack` counts)
+  and `fps` during playback. Then compare with `--jvm -Dapksim.audio=false` and with the commit before `4d0c92d`.
+- Done when: clips play at their frame rate with ~0 drops, audio and video stay in step (no clock race), and
+  scrubbing/seeking works (flush clears held pictures). Anything broken becomes a fix in this phase.
+- Risk: Frigate may serve HEVC or audio formats not yet listed (Opus): note them for phase 4.
+
+**2. Effect layers on the untested cases.** The subagent could not check nested effect layers, scaled or rotated
+effect layers, or memory release when a node is collected without discarding its display list.
+- How: add cases to `-Dapksim.effectSelfTest=true` (a scaled and a rotated layer; an effect layer inside another),
+  compare against `-Dapksim.cpuLayerEffects=true` pixel for pixel. For memory, open and close HomeSafe's Weather and
+  camera pages 50 times and watch footprint (`footprint PID`) and `shaders` (active layers).
+- Done when: mean difference stays under ~1 level for every case and footprint levels off.
+
+**3. README shader count.** "20 of HomeSafe's 29 shaders translate" predates `uniform shader` support. Recount with
+`shaders` after visiting every HomeSafe screen and fix the sentence. Minutes.
+
+## Phase 2: frame rate (the owner's open goal)
+
+**4. Effect layers cost on busy screens.** Atlas is 30 fps (was 8.6): its two full-screen effect layers are each a
+second HWUI frame (~5 ms raster) plus ~3 ms shader and readback, all before the screen's own frame.
+- Options, in order to try: (a) run effect layers one frame behind, as `TrackedRuntimeShader` already does for
+  plain shaders, so their raster overlaps the screen's; (b) render the shader output straight into the Bitmap's
+  memory (MTLBuffer-backed texture) instead of reading back and copying; (c) one HardwareRenderer for all effect
+  layers of a frame.
+- Measure: `fps` and `shaders` ("layer effects:" timings) on Atlas, Weather and the camera page.
+- Done when: Atlas is above 60 fps with no visible lag on effect content (check with the scrubbing lens).
+
+**5. Display vsync pacing.** Built and off (`--jvm -Dapksim.vsync=display`); only its fallback was tested because the
+display was asleep. Needs the Mac awake with the window visible.
+- How: Shader tab and flings, `frames` with and without the flag, 5 interleaved runs each. The `screen` part
+  counts per real vsync whether a new frame arrived.
+- Done when: decided. Default it on if "new frame on N% of vsyncs" rises and the frame-interval spread narrows;
+  otherwise remove it and record why.
+
+**6. CPU raster of busy frames.** The remaining 9-12 ms frames come from single-core HWUI raster (~6-7 ms on busy
+full-screen frames). Partial redraw was tried and does not help Compose (findings in AGENTS.md). Left to try:
+zero-copy present (HWUI renders into the IOSurface instead of a buffer copied each frame, ~0.5 ms) and moving more
+paints to the GPU path (`GpuCanvas`). Profile first with `sample` + `scripts/prof.py` on the Shader tab and a fling
+to see what the raster thread spends its time on; pick from that.
+
+## Phase 3: remaining CPU effects
+
+**7. Effects still on the CPU.**
+- `View.setRenderEffect` (framework RenderNodes are not substituted): route through the same `GpuRenderNode`
+  logic from a `View` shadow or by substituting in the framework's `View.mRenderNode` at attach.
+- Blur and chain effects (`createBlurEffect`, `createChainEffect`): a Metal blur (MPSImageGaussianBlur) on the same
+  content raster; chains as successive passes.
+- Shaders with `setInputShader` children drawn as a paint (HomeSafe Fitness HEAT_SHADER `body`/`muscle`):
+  upload the child BitmapShader or Picture as a texture, the way layer content is.
+- Done when: `shaders` shows none of HomeSafe's programs on the CPU, each matched against the CPU output.
+
+## Phase 4: media and services (when an app needs them)
+
+**8. End-of-stream frames.** The video decoders lose the 1-3 pictures they hold when the stream ends, because
+Robolectric gives one output per input. Fix by emitting the held pictures on the end-of-stream input's buffer and on
+input buffers the codec still owns, or by returning DECODE_ONLY later inputs and keeping one picture back less.
+Matters for short clips and thumbnails.
+
+**9. More codecs.** VP9 and AV1 (VideoToolbox decodes both on Apple Silicon: VP9 since macOS 11, AV1 on M3 and
+later), Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
+phase 1 says whether HomeSafe does.
+
+**10. Health Connect stand-in.** HomeSafe Fitness hides its Body card and heart rate. A fake Health Connect service
+(the SDK's `HealthConnectClient` talks to a provider app that does not exist here) with sample records would show
+them. Needs the SDK's binder interface; medium effort.
+
+**11. Native GLES and audio.** GLES via ANGLE-on-Metal and OpenSL ES/AAudio on CoreAudio would let games and
+native audio apps run. Large; only if a target app needs it.
+
+## Not planned
+
+- Rust rewrite of the native C-library shim: safety, not speed, and the shim is small. Revisit only if it keeps
+  causing memory bugs.
+
+## Order and size
+
+| Step | Size | Needs |
+|---|---|---|
+| 1 Recorded clips | small | HomeSafe autofill, network |
+| 2 Effect-layer edge cases | small | - |
+| 3 README count | minutes | - |
+| 4 Effect-layer speed | medium | - |
+| 5 Vsync pacing | small | Mac awake, window visible |
+| 6 CPU raster | medium-large | profiling first |
+| 7 Remaining CPU effects | medium | - |
+| 8 End-of-stream frames | small | - |
+| 9 More codecs | small each | an app that needs them |
+| 10 Health Connect | medium | - |
+| 11 GLES/native audio | large | an app that needs them |
+
+Steps 1-3 can run in one session; 4 and 7 both touch `gpu/` and should not run in parallel; 5 waits for the display.
