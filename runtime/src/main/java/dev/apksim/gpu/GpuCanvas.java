@@ -1,11 +1,14 @@
 package dev.apksim.gpu;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.os.Looper;
 
 /**
  * App code's Canvas draws come through here (the DEX translator rewrites the calls). Anything without a
@@ -124,5 +127,65 @@ public final class GpuCanvas {
     }
     c.drawPaint(p);
     restore(p, s);
+  }
+
+  public static void drawBitmap(Canvas c, Bitmap b, Rect src, Rect dst, Paint p) {
+    Bitmap scaled = scaledFor(c, b, src, dst.left, dst.top, dst.right, dst.bottom, p);
+    if (scaled == null) {
+      c.drawBitmap(b, src, dst, p);
+      return;
+    }
+    // Dithering only hides banding in gradients; on a 1:1 image it just forces a slower blit.
+    boolean dither = p.isDither();
+    if (dither) p.setDither(false);
+    c.drawBitmap(scaled, null, dst, p);
+    if (dither) p.setDither(true);
+  }
+
+  public static void drawBitmap(Canvas c, Bitmap b, Rect src, RectF dst, Paint p) {
+    Bitmap scaled = scaledFor(c, b, src, dst.left, dst.top, dst.right, dst.bottom, p);
+    if (scaled == null) {
+      c.drawBitmap(b, src, dst, p);
+      return;
+    }
+    boolean dither = p.isDither();
+    if (dither) p.setDither(false);
+    c.drawBitmap(scaled, null, dst, p);
+    if (dither) p.setDither(true);
+  }
+
+  private static final Matrix MATRIX = new Matrix();
+  private static final float[] M = new float[9];
+
+  /**
+   * A GPU-scaled copy of [b] for a filtered draw that scales it onto whole device pixels of a recording canvas
+   * (scale and translation only), or null to draw it as it is.
+   */
+  @SuppressWarnings("deprecation")
+  private static Bitmap scaledFor(Canvas c, Bitmap b, Rect src, float l, float t, float r, float bottom, Paint p) {
+    if (!GpuBitmaps.ENABLED || p == null || !p.isFilterBitmap() || !c.isHardwareAccelerated()
+        || Looper.myLooper() != Looper.getMainLooper()) {
+      return null;
+    }
+    c.getMatrix(MATRIX);
+    MATRIX.getValues(M);
+    if (M[1] != 0 || M[3] != 0 || M[6] != 0 || M[7] != 0 || M[8] != 1 || M[0] <= 0 || M[4] <= 0) {
+      GpuBitmaps.passed[3]++;
+      return null;
+    }
+    float dl = M[0] * l + M[2];
+    float dt = M[4] * t + M[5];
+    float dr = M[0] * r + M[2];
+    float db = M[4] * bottom + M[5];
+    int il = Math.round(dl);
+    int it = Math.round(dt);
+    int ir = Math.round(dr);
+    int ib = Math.round(db);
+    // Off whole pixels the copy would be sampled again, half a pixel off; leave those to HWUI.
+    if (Math.abs(dl - il) > 1e-3f || Math.abs(dt - it) > 1e-3f || Math.abs(dr - ir) > 1e-3f || Math.abs(db - ib) > 1e-3f) {
+      GpuBitmaps.passed[3]++;
+      return null;
+    }
+    return GpuBitmaps.scaled(b, src, ir - il, ib - it);
   }
 }
