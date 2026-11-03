@@ -69,6 +69,13 @@ zero-copy present (HWUI renders into the IOSurface instead of a buffer copied ea
 paints to the GPU path (`GpuCanvas`). Profile first with `sample` + `scripts/prof.py` on the Shader tab and a fling
 to see what the raster thread spends its time on; pick from that.
 
+- **Result (2026-11-03, no change made):** on the Shader tab raster is now 1.95 ms and main-thread work ~3 ms a
+  frame (the linear readback in step 4 took the copy off), yet "on 120 Hz pace" stays ~70%. That figure is the time
+  between presents, and a present happens when the render thread finishes: frames that rasterize in 2 then 5 ms read
+  as an 11 ms interval although both made their grid line (average exactly 120 fps, none dropped). Whether that
+  jitter ever crosses a real display vsync is what `frames`' `screen` part counts, which needs display vsyncs: decide
+  together with step 5. On Atlas the render thread still carries two content rasters plus the screen (~6 + 6 + 7 ms).
+
 ## Phase 3: remaining CPU effects
 
 **7. Effects still on the CPU.**
@@ -79,6 +86,11 @@ to see what the raster thread spends its time on; pick from that.
 - Shaders with `setInputShader` children drawn as a paint (the large app Fitness HEAT_SHADER `body`/`muscle`):
   upload the child BitmapShader or Picture as a texture, the way layer content is.
 - Done when: `shaders` shows none of the large app's programs on the CPU, each matched against the CPU output.
+
+- **Result (done for the large app):** all 28 of the large app's AGSL programs now have a GPU path. Paint shaders with image
+  inputs (`setInputShader` BitmapShaders: Fitness's HEAT_SHADER) bind the bitmaps as clamped textures; self-test
+  "input shaders" matches HWUI's CPU result (mean 0.009, max 1). the large app uses neither `View.setRenderEffect` nor blur
+  or chain effects, so those were left on the CPU; do them when an app needs them.
 
 ## Phase 4: media and services (when an app needs them)
 
