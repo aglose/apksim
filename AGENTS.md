@@ -236,6 +236,14 @@ R8-minified apps have pc-encoded lines (retrace them with the app's mapping file
 measures a vertical offset between two shots. Under heavy machine load the emulator lags by seconds and its system
 server can ANR; `both.py` retakes shots until the two agree.
 
+## Pull requests
+`main` takes changes only through pull requests, and CI (`.github/workflows/ci.yml`, job `linux-smoke`: builds the
+runtime and the Linux image, then runs the test app headless) must pass before merging. Work on a branch
+(`git switch -c topic`), push it, `gh pr create`, wait for the `linux-smoke` check, then `gh pr merge`. The
+`scripts/hooks/pre-push` hook (set by `scripts/setup.sh`: `git config core.hooksPath scripts/hooks`) refuses direct
+pushes to main. CI does not cover the Mac-only parts (window, Metal, VideoToolbox, AOT timings): say in the PR what
+was checked locally (`bench.py`, `drive.py` runs). Several sessions share this folder, so commit only your own files.
+
 ## Hard-won rules
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
   port leaves the old build running and the new one dead.
