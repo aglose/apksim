@@ -1,0 +1,9 @@
+#!/bin/bash
+# Changes reach main only through pull requests (see "Pull requests" in AGENTS.md): refuse a direct push to it.
+# Installed by scripts/setup.sh (git config core.hooksPath scripts/hooks). Bypass once with --no-verify.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [[ "$remote_ref" == refs/heads/main ]]; then
+    echo "pre-push: main takes changes through pull requests. Push a branch and run: gh pr create" >&2
+    exit 1
+  fi
+done
