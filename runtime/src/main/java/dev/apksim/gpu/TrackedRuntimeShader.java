@@ -29,11 +29,11 @@ public class TrackedRuntimeShader extends RuntimeShader {
     StringBuilder b = new StringBuilder();
     PROGRAMS.forEach((src, c) -> {
       String first = src.replaceAll("\\s+", " ");
-      String where = c.pipeline() == 0 ? "CPU" : c.program().children().isEmpty() ? "GPU" : "GPU(effect only)";
+      String where = c.pipeline() == 0 ? "CPU" : c.program().children().isEmpty() ? "GPU" : "GPU(inputs)";
       b.append(String.format("%s gpuRuns=%d created=%d effect=%d %s :: %s | ", where, c.uses()[0], c.uses()[1], c.uses()[2],
           c.why() == null ? "" : c.why(), first.substring(0, Math.min(70, first.length()))));
     });
-    return b.append(GpuRenderNode.report()).toString();
+    return b.append(GpuRenderNode.report()).append(" | ").append(GpuBitmaps.report()).toString();
   }
 
   public static long renders;
@@ -208,6 +208,62 @@ public class TrackedRuntimeShader extends RuntimeShader {
     put(name, new float[] {a, b, c, d});
   }
 
+  /** Inputs given with setInputShader/setInputBuffer, by name. */
+  private final Map<String, Shader> inputs = new HashMap<>();
+  /** The input images' identities and generations when last drawn: a change means new pixels. */
+  private int inputSignature;
+
+  @Override
+  public void setInputShader(String name, Shader shader) {
+    super.setInputShader(name, shader);
+    inputs.put(name, shader);
+    changed = true;
+  }
+
+  @Override
+  public void setInputBuffer(String name, BitmapShader shader) {
+    super.setInputBuffer(name, shader);
+    inputs.put(name, shader);
+    changed = true;
+  }
+
+  /**
+   * The textures for this shader's `uniform shader` inputs, in order, or null when any is not an image the GPU can
+   * sample as Skia would: a BitmapShader of an ARGB_8888 bitmap, CLAMP both ways, linear filtering, no local matrix.
+   */
+  private long[] inputTextures() {
+    java.util.List<String> names = compiled.program().children();
+    long[] textures = new long[names.size()];
+    int signature = 0;
+    for (int i = 0; i < textures.length; i++) {
+      if (!(inputs.get(names.get(i)) instanceof BitmapShader bs) || bs.getLocalMatrix(local)) return null;
+      Bitmap b = org.robolectric.util.ReflectionHelpers.getField(bs, "mBitmap");
+      if (b == null || !clamps(bs, "mTileX") || !clamps(bs, "mTileY") || bs.getFilterMode() != BitmapShader.FILTER_MODE_LINEAR) {
+        return null;
+      }
+      textures[i] = GpuBitmaps.texture(b);
+      if (textures[i] == 0) return null;
+      signature = signature * 31 + System.identityHashCode(b) * 17 + b.getGenerationId();
+    }
+    if (signature != inputSignature) {
+      inputSignature = signature;
+      changed = true;
+    }
+    return textures;
+  }
+
+  /** Whether a BitmapShader tile mode field is CLAMP: a TileMode, or (as here) its native value, 0. */
+  private static boolean clamps(BitmapShader bs, String field) {
+    Object mode = org.robolectric.util.ReflectionHelpers.getField(bs, field);
+    return mode == Shader.TileMode.CLAMP || Integer.valueOf(0).equals(mode);
+  }
+
+  private long submit(long[] inputTextures, int w, int h) {
+    if (inputTextures == null) return GpuNative.submit(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h);
+    return GpuNative.submitInputs(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h, inputTextures,
+        (1 << inputTextures.length) - 1);
+  }
+
   @Override
   public void setColorUniform(String name, int color) {
     super.setColorUniform(name, color);
@@ -221,8 +277,9 @@ public class TrackedRuntimeShader extends RuntimeShader {
    */
   Shader gpuOutput(int x, int y, int w, int h) {
     if (uniforms == null || w <= 0 || h <= 0 || (long) w * h * 4 > (1L << 28)) return null;
-    // Inputs (`uniform shader`) are only bound for layer-content effects (GpuRenderNode); drawn as paint, the CPU does it.
-    if (!compiled.program().children().isEmpty()) return null;
+    // Inputs (`uniform shader`) drawn as a paint: image BitmapShaders are bound as textures; anything else, the CPU.
+    long[] inputTextures = null;
+    if (!compiled.program().children().isEmpty() && (inputTextures = inputTextures()) == null) return null;
     getLocalMatrix(local);
     local.getValues(values);
     boolean sameMatrix = lastLocal != null && Arrays.equals(values, lastLocal);
@@ -256,13 +313,13 @@ public class TrackedRuntimeShader extends RuntimeShader {
     if (sameArea) {
       // An animation: start this frame's pixels and show last frame's, one frame behind, so the
       // main thread never waits for the GPU.
-      pending = GpuNative.submit(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h);
+      pending = submit(inputTextures, w, h);
       pendingW = w;
       pendingH = h;
       IN_FLIGHT.add(this);
     } else {
       // Something moved or appeared: the pixels must match this frame, so wait for them.
-      long handle = GpuNative.submit(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h);
+      long handle = submit(inputTextures, w, h);
       if (!GpuNative.collect(handle, scratchFor(w, h))) return null;
       publish(x, y, w, h);
     }

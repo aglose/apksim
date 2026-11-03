@@ -45,6 +45,12 @@ second HWUI frame (~5 ms raster) plus ~3 ms shader and readback, all before the 
   layers of a frame.
 - Measure: `fps` and `shaders` ("layer effects:" timings) on Atlas, Weather and the camera page.
 - Done when: Atlas is above 60 fps with no visible lag on effect content (check with the scrubbing lens).
+- **Result (done):** Atlas panning 26 → 64-73 fps (p50 11 ms). The time was not where the plan guessed: 74% of the
+  render thread was Skia's CPU bilinear sampling of the map and heat tiles (`drawImage` scaled), and the 3.8 ms
+  "shader" was the CPU untiling the Metal texture on readback. Fixes: `GpuBitmaps` (scaled bitmap draws resampled
+  once on Metal, then blitted) and linear pooled render targets (shader 3.8 → 0.8 ms per layer, every GPU shader
+  benefits). Weather scrolling 59 → 79 fps; camera page unchanged (~130). Option (a) was not needed: with both effect
+  rasters and the screen raster on HWUI's one render thread, that thread is the limit, not the main thread.
 
 **5. Display vsync pacing.** Built and off (`--jvm -Dapksim.vsync=display`); only its fallback was tested because the
 display was asleep. Needs the Mac awake with the window visible.
@@ -52,12 +58,23 @@ display was asleep. Needs the Mac awake with the window visible.
   counts per real vsync whether a new frame arrived.
 - Done when: decided. Default it on if "new frame on N% of vsyncs" rises and the frame-interval spread narrows;
   otherwise remove it and record why.
+- **Still blocked (2026-11-03):** 5 interleaved A/B runs gave identical numbers (Shader tab 120.0 fps, fling ~160),
+  but every run reported "screen 0 Hz": no display vsyncs reached the window (display asleep or window hidden), so
+  `-Dapksim.vsync=display` was on its grid fallback both times. One earlier the large app run did see 120 Hz vsyncs, so
+  it works when the window is on a lit screen. Needs a run with the owner at the Mac.
 
 **6. CPU raster of busy frames.** The remaining 9-12 ms frames come from single-core HWUI raster (~6-7 ms on busy
 full-screen frames). Partial redraw was tried and does not help Compose (findings in AGENTS.md). Left to try:
 zero-copy present (HWUI renders into the IOSurface instead of a buffer copied each frame, ~0.5 ms) and moving more
 paints to the GPU path (`GpuCanvas`). Profile first with `sample` + `scripts/prof.py` on the Shader tab and a fling
 to see what the raster thread spends its time on; pick from that.
+
+- **Result (2026-11-03, no change made):** on the Shader tab raster is now 1.95 ms and main-thread work ~3 ms a
+  frame (the linear readback in step 4 took the copy off), yet "on 120 Hz pace" stays ~70%. That figure is the time
+  between presents, and a present happens when the render thread finishes: frames that rasterize in 2 then 5 ms read
+  as an 11 ms interval although both made their grid line (average exactly 120 fps, none dropped). Whether that
+  jitter ever crosses a real display vsync is what `frames`' `screen` part counts, which needs display vsyncs: decide
+  together with step 5. On Atlas the render thread still carries two content rasters plus the screen (~6 + 6 + 7 ms).
 
 ## Phase 3: remaining CPU effects
 
@@ -70,12 +87,22 @@ to see what the raster thread spends its time on; pick from that.
   upload the child BitmapShader or Picture as a texture, the way layer content is.
 - Done when: `shaders` shows none of the large app's programs on the CPU, each matched against the CPU output.
 
+- **Result (done for the large app):** all 28 of the large app's AGSL programs now have a GPU path. Paint shaders with image
+  inputs (`setInputShader` BitmapShaders: Fitness's HEAT_SHADER) bind the bitmaps as clamped textures; self-test
+  "input shaders" matches HWUI's CPU result (mean 0.009, max 1). the large app uses neither `View.setRenderEffect` nor blur
+  or chain effects, so those were left on the CPU; do them when an app needs them.
+
 ## Phase 4: media and services (when an app needs them)
 
 **8. End-of-stream frames.** The video decoders lose the 1-3 pictures they hold when the stream ends, because
 Robolectric gives one output per input. Fix by emitting the held pictures on the end-of-stream input's buffer and on
 input buffers the codec still owns, or by returning DECODE_ONLY later inputs and keeping one picture back less.
 Matters for short clips and thumbnails.
+
+- **Result (done):** an input whose picture is held for reordering keeps its buffer; at end of stream those buffers
+  carry the held pictures out in order before the end-of-stream buffer. `selftest clip.h264|.h265` now requires every
+  unit: 60 of 60 (was 59). In async mode (ExoPlayer) Robolectric hands out one input buffer at a time, so a kept one is
+  replaced from its free queue; the test app's clip plays through with 0 drops.
 
 **9. More codecs.** VP9 and AV1 (VideoToolbox decodes both on Apple Silicon: VP9 since macOS 11, AV1 on M3 and
 later), Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
