@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request cancels its older run; runs on main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   linux-smoke:
     runs-on: ubuntu-latest
