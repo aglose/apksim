@@ -24,6 +24,13 @@ effect layers, or memory release when a node is collected without discarding its
   compare against `-Dapksim.cpuLayerEffects=true` pixel for pixel. For memory, open and close the large app's Weather and
   camera pages 50 times and watch footprint (`footprint PID`) and `shaders` (active layers).
 - Done when: mean difference stays under ~1 level for every case and footprint levels off.
+- **Result (done):** scaled, rotated and nested layers match HWUI's CPU effect (mean 0.006-0.012, max 2; 10 at the
+  rotated layer's antialiased edges). Memory: content rasters close on discard, but every Weather visit leaked
+  ~16 MB of Metal textures: a `TrackedRuntimeShader` dropped mid-animation never collected its frame in flight
+  (fixed: `sweep`). Weather visits are now flat (25 visits: 887 → 840 MB). Weather + camera rounds still climb
+  ~50 MB each until a full GC (2.2 GB → 1.5 GB): native malloc behind Java objects (HWUI display lists, Bitmaps),
+  which HotSpot frees only at a full GC (~156 ms pause with the serial collector). Not a leak (a GC returns it).
+  Possible follow-up: an ART-like GC when the app goes idle after native memory grew by a few hundred MB.
 
 **3. README shader count.** "20 of the large app's 29 shaders translate" predates `uniform shader` support. Recount with
 `shaders` after visiting every the large app screen and fix the sentence. Minutes.
