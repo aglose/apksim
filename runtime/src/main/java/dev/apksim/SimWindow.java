@@ -22,6 +22,8 @@ final class SimWindow {
   static final int TOUCH2_DOWN = 10;
   static final int TOUCH2_MOVE = 11;
   static final int TOUCH2_UP = 12;
+  /** The user resized the window: x, y are its new size in device pixels; value 1 once the drag has ended. */
+  static final int RESIZE = 13;
 
   /** Raw input in device pixels. */
   record Event(int type, float x, float y, float value) {}
@@ -143,12 +145,28 @@ final class SimWindow {
 
   private static native void nativeSetSystemBars(int statusPx, int navPx, boolean darkStatusIcons, boolean darkHandle);
 
-  /** The display's new size in device pixels (rotation); call with no frame being presented. */
-  static void resize(int w, int h) {
-    if (!headless) nativeResize(w, h);
+  /** The display's new size in device pixels (rotation, resizing); call with no frame being presented. */
+  /** actualSize: the window goes back to actual size (zoomed out only as far as the Mac's screen needs), for a new device. */
+  static void resize(int w, int h, boolean actualSize) {
+    if (!headless) nativeResize(w, h, actualSize);
   }
 
-  private static native void nativeResize(int w, int h);
+  private static native void nativeResize(int w, int h, boolean actualSize);
+
+  static void setTitle(String title) {
+    if (!headless) nativeSetTitle(title);
+  }
+
+  private static native void nativeSetTitle(String title);
+
+  /** Resizes the window's content to this many points as the user dragging its corner would; false headless. */
+  static boolean dragResize(int wPts, int hPts) {
+    if (headless) return false;
+    nativeDragResize(wPts, hPts);
+    return true;
+  }
+
+  private static native void nativeDragResize(int wPts, int hPts);
 
   /** Draws the software keyboard over the bottom of the screen, heightPx tall; clicks on it type into the app. */
   static void showKeyboard(int heightPx) {

@@ -416,7 +416,7 @@ final class AdbShell {
   /** What `getprop` reports: enough for adb, Android Studio and scripts to recognise a booted, debuggable device. */
   static Map<String, String> props() {
     Map<String, String> p = new TreeMap<>();
-    Device d = Device.named(System.getProperty("apksim.device", "phone"));
+    Device d = Device.current();
     boolean booted = app() != null;
     if (booted) {
       int api = RuntimeEnvironment.getApiLevel();
@@ -438,7 +438,7 @@ final class AdbShell {
     p.put("ro.product.cpu.abi", HostOs.apkAbi());
     p.put("ro.product.cpu.abilist", HostOs.apkAbi());
     p.put("ro.product.cpu.abilist64", HostOs.apkAbi());
-    p.put("ro.build.characteristics", d.name().equals("tablet") ? "tablet" : "default");
+    p.put("ro.build.characteristics", d.characteristics());
     p.put("ro.sf.lcd_density", String.valueOf(Math.round(d.density() * 160)));
     p.put("ro.serialno", "apksim-" + AdbServer.port);
     p.put("ro.boot.serialno", "apksim-" + AdbServer.port);
@@ -836,13 +836,23 @@ final class AdbShell {
     }
   }
 
-  private int wm(List<String> a) throws IOException {
-    Device d = Device.named(System.getProperty("apksim.device", "phone"));
+  private int wm(List<String> a) throws IOException, InterruptedException {
+    Device d = Device.current();
     String op = a.isEmpty() ? "" : a.get(0);
     switch (op) {
       case "size" -> {
-        if (a.size() > 1 && !a.get(1).equals("reset")) return unsupported("wm size WxH (the screen size is --device)");
-        print("Physical size: " + d.widthPx() + "x" + d.heightPx() + "\n");
+        // wm size WxH (pixels) resizes the display as dragging the window does; reset goes back to the preset.
+        if (a.size() > 1) {
+          String[] wh = a.get(1).split("x");
+          if (!a.get(1).equals("reset") && wh.length != 2) return usage("wm size [WxH|reset]");
+          // A device's name is also its preset size (a custom one is "WxH@density"), so reset is `device NAME`.
+          String r = a.get(1).equals("reset") ? control("device", d.name())
+              : control("size", Math.round(Integer.parseInt(wh[0]) / d.density()) + "x" + Math.round(Integer.parseInt(wh[1]) / d.density()));
+          return reply(r, false);
+        }
+        Device preset = Device.named(d.name());
+        print("Physical size: " + preset.widthPx() + "x" + preset.heightPx() + "\n");
+        if (!preset.equals(d)) print("Override size: " + d.widthPx() + "x" + d.heightPx() + "\n");
         return 0;
       }
       case "density" -> {
