@@ -1,0 +1,736 @@
+package dev.apksim;
+
+import static org.robolectric.Shadows.shadowOf;
+
+import android.app.Activity;
+import android.app.Application;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.Gravity;
+import android.view.InputDevice;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewRootImpl;
+import android.view.WindowManager;
+import android.view.WindowManagerGlobal;
+import android.window.OnBackInvokedCallback;
+import dev.apksim.gpu.TrackedRuntimeShader;
+import java.io.FileOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.locks.LockSupport;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.Robolectric;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.annotation.Config;
+import org.robolectric.annotation.ConscryptMode;
+import org.robolectric.annotation.GraphicsMode;
+import org.robolectric.annotation.LooperMode;
+import org.robolectric.annotation.SQLiteMode;
+import org.robolectric.shadows.ShadowChoreographer;
+import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.util.ReflectionHelpers;
+
+/** The Android "main thread": launches the APK's launcher activity and pumps looper, input and frames. */
+@RunWith(SimRunner.class)
+@Config(sdk = 36) // Fixed, whatever the APK targets: it is the framework this runtime ships.
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@LooperMode(LooperMode.Mode.PAUSED)
+@SQLiteMode(SQLiteMode.Mode.NATIVE)
+@ConscryptMode(ConscryptMode.Mode.OFF)
+public class Host {
+  private static final long IDLE_POLL_NANOS = 2_000_000L;
+  private static final long FRAME_NANOS = 1_000_000_000L / 120;
+  private static final long VSYNC_HZ = 120;
+  private static final long MAX_CATCH_UP_MS = 50;
+
+  private final ArrayDeque<ActivityController<? extends Activity>> stack = new ArrayDeque<>();
+  private Application app;
+  private int w;
+  private int h;
+  private Bitmap bitmap;
+  private HwRenderer hw;
+  private DeviceControls controls;
+  private long downTime;
+  private long frames;
+  private long looperNanos;
+  private long windowStart = System.nanoTime();
+  private long windowPresented;
+  private View touchTarget;
+  private int touchDx;
+  private int touchDy;
+
+  @Test
+  public void run() throws Exception {
+    Timing.mark("framework-ready");
+    SimWindow.boostThread();
+    RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
+    DeviceControls.applyLaunchOptions();
+    // By default Robolectric's vsync fires at once and advances the clock itself, which suits tests but
+    // spins forever inside the looper on any endless animation. Paused mode fires only when the clock
+    // passes the next frame, and this loop moves the clock in real time.
+    ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+    ShadowChoreographer.setPaused(true);
+    usePersistentDataDir();
+    if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
+    if (!"desktop".equals(System.getProperty("apksim.device", "phone"))) {
+      // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
+      // Robolectric keeps SystemUi package-private.
+      Class<?> ui = Class.forName("org.robolectric.shadows.SystemUi");
+      Object display = ReflectionHelpers.callStaticMethod(ui, "systemUiForDefaultDisplay");
+      ReflectionHelpers.callInstanceMethod(display, "setBehavior",
+          ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$StatusBarBehavior"),
+              ReflectionHelpers.getStaticField(ui, "STANDARD_STATUS_BAR")),
+          ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$NavigationBarBehavior"),
+              ReflectionHelpers.getStaticField(ui, "GESTURAL_NAVIGATION")));
+    }
+    app = RuntimeEnvironment.getApplication();
+    useDeviceGestureThresholds();
+    HostNetworks.install(app);
+    dev.apksim.video.ShadowSimMediaCodec.install();
+    w = app.getResources().getDisplayMetrics().widthPixels;
+    h = app.getResources().getDisplayMetrics().heightPixels;
+    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    hw = new HwRenderer(app, w, h);
+    controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
+
+    String launcher = System.getProperty("apksim.launcher");
+    Intent intent = new Intent(Intent.ACTION_MAIN)
+        .addCategory(Intent.CATEGORY_LAUNCHER)
+        .setComponent(new ComponentName(System.getProperty("apksim.package"), launcher));
+    start(launcher, intent);
+    Timing.mark("activity-resumed");
+    Autofill autofill = Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
+
+    ShadowLooper looper = shadowOf(Looper.getMainLooper());
+    long lastInput = 0;
+    long last = System.nanoTime();
+    boolean firstFrame = true;
+    boolean closed = false;
+    while (!closed) {
+      long start = System.nanoTime();
+      // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
+      // gesture detectors see no movement. Real mouse input rarely hits this limit.
+      if (start - lastInput >= 8_000_000L) {
+        SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+        if (e != null) {
+          lastInput = start;
+          if (e.type() == SimWindow.COMMAND) {
+            menuCommand((int) e.x());
+          } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
+            // Back put the software keyboard away; the app does not see it.
+          } else if (!controls.hidden()) {
+            closed = dispatch(e);
+          } else if (e.type() == SimWindow.UP) {
+            controls.show();  // a click on the home or lock screen brings the app back
+          } else {
+            closed = e.type() == SimWindow.CLOSE;
+          }
+        }
+      }
+      if (autofill != null) autofill.tick(rootViews());
+      controls.tick();
+      Control.Pending cmd;
+      while ((cmd = Control.QUEUE.poll()) != null) {
+        // Logged so a scripted session can be followed afterwards. Pasted text is not in the command.
+        System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
+        String reply;
+        try {
+          reply = runCommand(cmd.args);
+        } catch (Exception ex) {
+          // A bad command (or one the framework rejects) is an answer, not a crash of the app.
+          ex.printStackTrace();
+          reply = "error: " + ex;
+        }
+        cmd.finish(reply);
+      }
+      // Robolectric's looper clock moves in whole milliseconds and drops any fraction, so advance only
+      // by whole milliseconds and leave the remainder for next time, or simulated time runs slow.
+      long availableMs = (System.nanoTime() - last) / 1_000_000;
+      long nowMs = SystemClock.uptimeMillis();
+      long stepMs = availableMs;
+      if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+        // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
+        // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
+        // any others, as a device does under load.
+        long passed = lineAtOrBefore(nowMs + availableMs);
+        stepMs = passed > nowMs ? passed - nowMs : 0;
+      }
+      long looperStart = System.nanoTime();
+      if (availableMs > MAX_CATCH_UP_MS) {
+        // A long stall: time spent stalled is not replayed.
+        last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
+        stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
+      }
+      if (stepMs > 0) {
+        last += stepMs * 1_000_000;
+        looper.idleFor(Duration.ofMillis(stepMs));
+      } else {
+        looper.idle();
+      }
+      looperNanos += System.nanoTime() - looperStart;
+      updateActivityStack();
+      if (stack.isEmpty()) break;
+      List<View> roots = rootViews();
+      if (!controls.hidden() && (firstFrame ? laidOut(roots) : anyDirty(roots))) {
+        render(roots);
+        if (firstFrame) {
+          firstFrame = false;
+          Timing.mark("first-frame");
+          String shot = System.getProperty("apksim.screenshot");
+          if (shot != null) saveFrame(shot);
+          if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
+            Timing.done();
+            exit(0);
+          }
+        }
+      }
+      pace(last);
+    }
+    exit(0);
+  }
+
+  /** The last line of the 120 Hz grid at or before this time. Lines fall on 8, 16, 25, 33... ms. */
+  private static long lineAtOrBefore(long ms) {
+    return (ms * VSYNC_HZ / 1000) * 1000 / VSYNC_HZ;
+  }
+
+  /** Sleeps until the next grid line if a frame is wanted, or briefly if nothing is animating. */
+  private void pace(long clockSynced) {
+    long wait = IDLE_POLL_NANOS;
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+      long nowMs = SystemClock.uptimeMillis();
+      long nextLine = (nowMs * VSYNC_HZ / 1000 + 1) * 1000 / VSYNC_HZ + 1;
+      wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
+    }
+    if (wait > 50_000L) LockSupport.parkNanos(wait);
+  }
+
+  private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
+
+  /** Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. */
+  private static void usePersistentDataDir() throws Exception {
+    String pkg = System.getProperty("apksim.package");
+    Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
+    Path link = RuntimeEnvironment.getTempDirectory().getBasePath().resolve(pkg + "-dataDir");
+    Storage.deleteTree(link);
+    Files.createSymbolicLink(link, data);
+  }
+
+  private static void exit(int code) {
+    Storage.deleteScratch();
+    Runtime.getRuntime().halt(code);
+  }
+
+  // ---------------------------------------------------------------- activities
+
+  private void start(String className, Intent intent) throws Exception {
+    Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
+    ActivityController<? extends Activity> top = stack.peek();
+    if (top != null) top.pause();
+    ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
+    stack.push(c);
+    c.setup();
+    if (top != null) top.stop();
+  }
+
+  /**
+   * Robolectric's ViewConfiguration uses older fixed slops (16 dp touch slop where Android 16 has 8 dp), so a drag
+   * scrolled 16 px less than the same drag on a device. Use the framework's own values. Instances are cached per
+   * density, so fixing the one for this display covers every context.
+   */
+  private void useDeviceGestureThresholds() throws Exception {
+    android.content.res.Resources res = app.getResources();
+    Class<?> dimen = Class.forName("com.android.internal.R$dimen");
+    int touch = res.getDimensionPixelSize(dimen.getField("config_viewConfigurationTouchSlop").getInt(null));
+    Object shadow = org.robolectric.shadow.api.Shadow.extract(android.view.ViewConfiguration.get(app));
+    ReflectionHelpers.setField(shadow, "touchSlop", touch);
+    ReflectionHelpers.setField(shadow, "pagingTouchSlop", touch * 2);
+  }
+
+  /** Honours startActivity() and finish(), which the framework leaves to the system server. */
+  private void updateActivityStack() throws Exception {
+    Intent next;
+    ActivityResults results = controls.results();
+    while ((next = shadowOf(app).getNextStartedActivity()) != null) {
+      Activity requester = stack.isEmpty() ? null : stack.peek().get();
+      boolean forResult = results.claim(requester, next);
+      ComponentName c = next.getComponent();
+      if (c == null) {
+        android.content.pm.ResolveInfo r = app.getPackageManager().resolveActivity(next, 0);
+        if (r == null || r.activityInfo == null) {
+          if (forResult) {
+            results.outside(requester, next);  // a picker, or cancelled
+          } else if (!"android.content.pm.action.REQUEST_PERMISSIONS".equals(next.getAction()) && !DeviceControls.openOnHost(next)) {
+            // (Permission requests go to a system activity that is not here; Permissions answers them instead.)
+            System.err.println("[apksim] no activity for " + next);
+          }
+          continue;
+        }
+        c = new ComponentName(r.activityInfo.packageName, r.activityInfo.name);
+      }
+      if (!c.getPackageName().equals(System.getProperty("apksim.package"))) {
+        if (forResult) {
+          results.outside(requester, next);
+        } else if (!DeviceControls.openOnHost(next)) {
+          System.err.println("[apksim] intent leaves the app, ignored: " + next);
+        }
+        continue;
+      }
+      start(c.getClassName(), next);
+      if (forResult) results.started(stack.peek(), requester, next);
+    }
+    while (!stack.isEmpty() && stack.peek().get().isFinishing()) {
+      ActivityController<? extends Activity> done = stack.pop();
+      done.pause().stop().destroy();
+      results.finished(done.get());  // its setResult, delivered before the requester resumes
+      ActivityController<? extends Activity> below = stack.peek();
+      if (below != null) below.restart().resume();
+    }
+  }
+
+  // ---------------------------------------------------------------- input
+
+  private static List<View> rootViews() {
+    return new ArrayList<>(ReflectionHelpers.<List<View>>getField(WindowManagerGlobal.getInstance(), "mViews"));
+  }
+
+  private boolean dispatch(SimWindow.Event e) {
+    long now = SystemClock.uptimeMillis();
+    switch (e.type()) {
+      case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP -> dispatchTouch(e, now);
+      case SimWindow.TOUCH2_CENTRE, SimWindow.TOUCH2_DOWN, SimWindow.TOUCH2_MOVE, SimWindow.TOUCH2_UP -> dispatchTouch2(e, now);
+      case SimWindow.WHEEL -> dispatchWheel(e, now);
+      case SimWindow.BACK -> {
+        if (!dispatchPredictiveBack()) sendKey(KeyEvent.KEYCODE_BACK, 0, now);
+      }
+      case SimWindow.KEY -> sendKey((int) e.value(), (int) e.x(), now);
+      case SimWindow.CHAR -> sendChar((char) e.value(), now);
+      case SimWindow.CLOSE -> {
+        return true;
+      }
+      default -> {
+      }
+    }
+    return false;
+  }
+
+  /** Apps with predictive back never see the key: ViewRootImpl hands it to their top callback. */
+  private boolean dispatchPredictiveBack() {
+    List<View> roots = rootViews();
+    if (roots.isEmpty()) return false;
+    ViewRootImpl root = roots.get(roots.size() - 1).getViewRootImpl();
+    if (root == null) return false;
+    Object dispatcher = root.getOnBackInvokedDispatcher();
+    OnBackInvokedCallback top = ReflectionHelpers.callInstanceMethod(dispatcher, "getTopCallback");
+    if (top == null) return false;
+    top.onBackInvoked();
+    return true;
+  }
+
+  private void dispatchTouch(SimWindow.Event e, long now) {
+    if (e.type() == SimWindow.DOWN) {
+      downTime = now;
+      List<View> roots = rootViews();
+      touchTarget = roots.isEmpty() ? null : roots.get(roots.size() - 1);
+      for (int i = roots.size() - 1; i >= 0; i--) {
+        View r = roots.get(i);
+        int[] at = position(r);
+        boolean inside = e.x() >= at[0] && e.x() < at[0] + r.getWidth() && e.y() >= at[1] && e.y() < at[1] + r.getHeight();
+        touchTarget = r;
+        if (inside || !isTouchThrough(r)) break;
+      }
+      int[] at = position(touchTarget);
+      touchDx = at[0];
+      touchDy = at[1];
+    }
+    if (touchTarget == null) return;
+    MotionEvent m = MotionEvent.obtain(downTime, now, e.type(), e.x() - touchDx, e.y() - touchDy, 0);
+    m.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+    touchTarget.dispatchTouchEvent(m);
+    m.recycle();
+    if (e.type() == SimWindow.UP) touchTarget = null;
+  }
+
+  private static boolean isTouchThrough(View root) {
+    ViewGroup.LayoutParams lp = root.getLayoutParams();
+    return lp instanceof WindowManager.LayoutParams wl
+        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
+  }
+
+  // Two fingers (Option-drag, trackpad pinch and rotate, the `pinch` command): the first finger follows the event,
+  // the second mirrors it around a centre, or with value 1 keeps its offset so both move together.
+  private float centreX;
+  private float centreY;
+  private float offsetX;
+  private float offsetY;
+  private boolean parallel;
+
+  private void dispatchTouch2(SimWindow.Event e, long now) {
+    if (e.type() == SimWindow.TOUCH2_CENTRE) {
+      centreX = e.x();
+      centreY = e.y();
+      return;
+    }
+    float x1 = e.x();
+    float y1 = e.y();
+    if (e.type() == SimWindow.TOUCH2_DOWN) {
+      parallel = e.value() == 1;
+      offsetX = 2 * (centreX - x1);
+      offsetY = 2 * (centreY - y1);
+    }
+    float x2 = parallel ? x1 + offsetX : 2 * centreX - x1;
+    float y2 = parallel ? y1 + offsetY : 2 * centreY - y1;
+    if (e.type() == SimWindow.TOUCH2_DOWN) {
+      dispatchTouch(new SimWindow.Event(SimWindow.DOWN, x1, y1, 0), now);
+      if (touchTarget != null) touchTarget.dispatchTouchEvent(twoFingers(MotionEvent.ACTION_POINTER_DOWN, now, x1, y1, x2, y2));
+    } else if (touchTarget != null && e.type() == SimWindow.TOUCH2_MOVE) {
+      touchTarget.dispatchTouchEvent(twoFingers(MotionEvent.ACTION_MOVE, now, x1, y1, x2, y2));
+    } else if (touchTarget != null) {
+      touchTarget.dispatchTouchEvent(twoFingers(MotionEvent.ACTION_POINTER_UP, now, x1, y1, x2, y2));
+      dispatchTouch(new SimWindow.Event(SimWindow.UP, x1, y1, 0), now);
+    }
+  }
+
+  private MotionEvent twoFingers(int action, long now, float x1, float y1, float x2, float y2) {
+    MotionEvent.PointerProperties[] props = new MotionEvent.PointerProperties[2];
+    MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[2];
+    float[][] at = {{x1, y1}, {x2, y2}};
+    for (int i = 0; i < 2; i++) {
+      props[i] = new MotionEvent.PointerProperties();
+      props[i].id = i;
+      props[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
+      coords[i] = new MotionEvent.PointerCoords();
+      coords[i].x = at[i][0] - touchDx;
+      coords[i].y = at[i][1] - touchDy;
+      coords[i].pressure = 1;
+      coords[i].size = 1;
+    }
+    int masked = action == MotionEvent.ACTION_MOVE ? action : action | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+    MotionEvent m = MotionEvent.obtain(downTime, now, masked, 2, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+    return m;
+  }
+
+  private void dispatchWheel(SimWindow.Event e, long now) {
+    MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
+    props.id = 0;
+    props.toolType = MotionEvent.TOOL_TYPE_MOUSE;
+    MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords();
+    coords.x = e.x();
+    coords.y = e.y();
+    coords.setAxisValue(MotionEvent.AXIS_VSCROLL, e.value());
+    MotionEvent m = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1,
+        new MotionEvent.PointerProperties[] {props}, new MotionEvent.PointerCoords[] {coords},
+        0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+    List<View> roots = rootViews();
+    if (!roots.isEmpty()) roots.get(roots.size() - 1).dispatchGenericMotionEvent(m);
+    m.recycle();
+  }
+
+  /** A raw key press; the window sends meta 0, and the `key` command can add modifiers. */
+  private void sendKey(int code, int meta, long now) {
+    List<View> roots = rootViews();
+    if (roots.isEmpty()) return;
+    View root = roots.get(roots.size() - 1);
+    // As a hardware keyboard sends a shortcut: each modifier pressed first and released last, and every event
+    // marked as coming from a keyboard. Compose ignores Ctrl+A and the like without that.
+    int[] modifiers = {KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_META_LEFT};
+    int[] masks = {KeyEvent.META_CTRL_ON, KeyEvent.META_SHIFT_ON, KeyEvent.META_ALT_ON, KeyEvent.META_META_ON};
+    int held = 0;
+    for (int i = 0; i < modifiers.length; i++) {
+      if ((meta & masks[i]) == 0) continue;
+      held |= masks[i] | metaSide(masks[i]);
+      root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_DOWN, modifiers[i], held));
+    }
+    root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_DOWN, code, meta));
+    root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_UP, code, meta));
+    for (int i = modifiers.length - 1; i >= 0; i--) {
+      if ((meta & masks[i]) == 0) continue;
+      held &= ~(masks[i] | metaSide(masks[i]));
+      root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_UP, modifiers[i], held));
+    }
+  }
+
+  private static int metaSide(int mask) {
+    return mask == KeyEvent.META_CTRL_ON ? KeyEvent.META_CTRL_LEFT_ON : mask == KeyEvent.META_SHIFT_ON ? KeyEvent.META_SHIFT_LEFT_ON
+        : mask == KeyEvent.META_ALT_ON ? KeyEvent.META_ALT_LEFT_ON : KeyEvent.META_META_LEFT_ON;
+  }
+
+  private static KeyEvent keyboardEvent(long now, int action, int code, int meta) {
+    return new KeyEvent(now, now, action, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
+  }
+
+  private void sendChar(char ch, long now) {
+    List<View> roots = rootViews();
+    if (roots.isEmpty()) return;
+    View root = roots.get(roots.size() - 1);
+    KeyEvent[] events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(new char[] {ch});
+    if (events != null) {
+      for (KeyEvent k : events) root.dispatchKeyEvent(k);
+    }
+  }
+
+  // ---------------------------------------------------------------- rendering
+
+  private static boolean laidOut(List<View> roots) {
+    return !roots.isEmpty() && roots.get(0).getWidth() > 0 && !roots.get(0).isLayoutRequested();
+  }
+
+  private static boolean anyDirty(List<View> roots) {
+    for (View r : roots) {
+      if (r.isDirty()) return true;
+    }
+    return false;
+  }
+
+  /** Where a window sits on screen, from its layout params (the window manager's job on a device). */
+  private int[] position(View root) {
+    int x = 0;
+    int y = 0;
+    if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
+      int rw = root.getWidth();
+      int rh = root.getHeight();
+      int hg = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;
+      int vg = lp.gravity & Gravity.VERTICAL_GRAVITY_MASK;
+      x = hg == Gravity.CENTER_HORIZONTAL ? (w - rw) / 2 + lp.x : hg == Gravity.RIGHT ? w - rw - lp.x : lp.x;
+      y = vg == Gravity.CENTER_VERTICAL ? (h - rh) / 2 + lp.y : vg == Gravity.BOTTOM ? h - rh - lp.y : lp.y;
+    }
+    return new int[] {x, y};
+  }
+
+  private void render(List<View> roots) {
+    hw.draw(roots, this::position);
+    frames++;
+  }
+
+  /** The display changed size (rotation): the renderer, the window and screenshots follow. */
+  private void resizeDisplay(int newW, int newH) {
+    w = newW;
+    h = newH;
+    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    hw.resize(w, h);
+  }
+
+  private void saveFrame(String path) throws Exception {
+    hw.withLatestFrame(pixels -> {
+      pixels.rewind();
+      bitmap.copyPixelsFromBuffer(pixels);
+      pixels.rewind();
+    });
+    try (FileOutputStream out = new FileOutputStream(path)) {
+      bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+    }
+  }
+
+  // ---------------------------------------------------------------- control channel
+
+  /** A Mac menu item (Device, Features, Debug...): the same as its control command. */
+  private void menuCommand(int tag) {
+    String cmd = DeviceControls.menuCommand(tag);
+    if (cmd == null) return;
+    try {
+      System.err.println("[apksim] menu: " + cmd + " -> " + runCommand(cmd.split(" ")));
+    } catch (Exception ex) {
+      System.err.println("[apksim] menu: " + cmd + " failed: " + ex);
+    }
+  }
+
+  private String runCommand(String[] a) throws Exception {
+    switch (a[0]) {
+      case "tap" -> {
+        float x = Float.parseFloat(a[1]);
+        float y = Float.parseFloat(a[2]);
+        pendingScript.add(new SimWindow.Event(SimWindow.DOWN, x, y, 0));
+        pendingScript.add(new SimWindow.Event(SimWindow.UP, x, y, 0));
+      }
+      case "swipe" -> {
+        float x1 = Float.parseFloat(a[1]);
+        float y1 = Float.parseFloat(a[2]);
+        float x2 = Float.parseFloat(a[3]);
+        float y2 = Float.parseFloat(a[4]);
+        // swipe X1 Y1 X2 Y2 [MS]: with a duration, a slow drag that holds still before lifting, so it does not fling.
+        int steps = a.length > 5 ? Math.max(12, Integer.parseInt(a[5]) / 8) : 12;
+        pendingScript.add(new SimWindow.Event(SimWindow.DOWN, x1, y1, 0));
+        for (int i = 1; i <= steps; i++) {
+          pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps, 0));
+        }
+        for (int i = 0; a.length > 5 && i < 15; i++) pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x2, y2, 0));
+        pendingScript.add(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
+      }
+      case "wheel" -> pendingScript.add(new SimWindow.Event(SimWindow.WHEEL, Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3])));
+      case "type" -> {
+        for (char ch : String.join(" ", java.util.Arrays.copyOfRange(a, 1, a.length)).toCharArray()) {
+          pendingScript.add(new SimWindow.Event(SimWindow.CHAR, 0, 0, ch));
+        }
+      }
+      case "back" -> pendingScript.add(new SimWindow.Event(SimWindow.BACK, 0, 0, 0));
+      case "pinch" -> {
+        // pinch CX CY FROM TO [ms]: two fingers FROM px apart, moving to TO px apart around CX,CY (zoom in: TO > FROM).
+        float cx = Float.parseFloat(a[1]);
+        float cy = Float.parseFloat(a[2]);
+        float from = Float.parseFloat(a[3]);
+        float to = Float.parseFloat(a[4]);
+        int steps = Math.max(2, (a.length > 5 ? Integer.parseInt(a[5]) : 300) / 8);
+        pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_CENTRE, cx, cy, 0));
+        pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_DOWN, cx - from / 2, cy, 0));
+        for (int i = 1; i <= steps; i++) {
+          float d = from + (to - from) * i / steps;
+          pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_MOVE, cx - d / 2, cy, 0));
+        }
+        pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_UP, cx - to / 2, cy, 0));
+      }
+      case "key" -> {
+        // key NAME [COUNT] [ctrl|shift|alt|meta ...]: a raw key, such as DEL, MOVE_END or A with ctrl.
+        int code = KeyEvent.keyCodeFromString("KEYCODE_" + a[1].toUpperCase());
+        if (code == KeyEvent.KEYCODE_UNKNOWN) return "unknown key: " + a[1];
+        int count = 1;
+        int meta = 0;
+        for (int i = 2; i < a.length; i++) {
+          switch (a[i]) {
+            case "ctrl" -> meta |= KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+            case "shift" -> meta |= KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON;
+            case "alt" -> meta |= KeyEvent.META_ALT_ON | KeyEvent.META_ALT_LEFT_ON;
+            case "meta" -> meta |= KeyEvent.META_META_ON | KeyEvent.META_META_LEFT_ON;
+            default -> count = Integer.parseInt(a[i]);
+          }
+        }
+        for (int i = 0; i < count; i++) pendingScript.add(new SimWindow.Event(SimWindow.KEY, meta, 0, code));
+      }
+      case "paste" -> {
+        // Queued with the other scripted input rather than through the window, so a tap sent after a paste
+        // lands after the last pasted character (a sign-in's Connect after its password).
+        String text = SimWindow.clipboardText();
+        int n = 0;
+        for (char ch : text == null ? new char[0] : text.toCharArray()) {
+          if (ch == '\n' || ch == '\r') continue;  // A copied password often carries a trailing newline.
+          pendingScript.add(new SimWindow.Event(SimWindow.CHAR, 0, 0, ch));
+          n++;
+        }
+        return "pasted " + n + " characters";
+      }
+      case "shot" -> saveFrame(a[1]);
+      case "wshot" -> SimWindow.windowSnapshot(a[1]);
+      case "quit" -> exit(0);
+      case "ping" -> {
+        return "pong";
+      }
+      case "activity" -> {
+        return stack.isEmpty() ? "none" : stack.peek().get().getClass().getName();
+      }
+      case "windows" -> {
+        StringBuilder b = new StringBuilder();
+        for (View r : rootViews()) {
+          int[] at = position(r);
+          b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
+              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append("; ");
+        }
+        return b.toString();
+      }
+      case "selftest" -> {
+        // selftest [h264-file]: libwebrtc's native scaler (19 arguments: stack arguments must be translated), and with
+        // a file, H.264 through MediaCodec to a Surface as media players use it.
+        String r = dev.apksim.video.SelfTest.scale() + " | " + dev.apksim.video.SelfTest.colour();
+        if (a.length > 1) r += " | " + dev.apksim.video.SelfTest.codec(app, a[1]);
+        return r;
+      }
+      case "tap-text" -> {
+        // tap-text TEXT: a tap at the centre of the first element showing TEXT (or described by it).
+        String text = String.join(" ", java.util.Arrays.copyOfRange(a, 1, a.length));
+        int[] at = Nodes.centreOf(rootViews(), text);
+        if (at == null) return "not found: " + text;
+        pendingScript.add(new SimWindow.Event(SimWindow.DOWN, at[0], at[1], 0));
+        pendingScript.add(new SimWindow.Event(SimWindow.UP, at[0], at[1], 0));
+        return "tapped " + at[0] + "," + at[1];
+      }
+      case "nodes" -> {
+        return Nodes.dump(rootViews());
+      }
+      case "logcat" -> {
+        // logcat on|off: the app's android.util.Log output to this process's stderr (Robolectric drops it otherwise).
+        org.robolectric.shadows.ShadowLog.stream = a.length > 1 && a[1].equals("off") ? null : System.err;
+        return "ok";
+      }
+      case "video" -> {
+        return dev.apksim.video.VideoSurfaces.report();
+      }
+      case "webrtclog" -> {
+        // libwebrtc's own log (ICE, networks, codecs) to stderr: webrtclog [verbose|info|warning|error].
+        Class<?> logging = Class.forName("org.webrtc.Logging", true, Host.class.getClassLoader());
+        Class<?> severity = Class.forName("org.webrtc.Logging$Severity", true, Host.class.getClassLoader());
+        Object level = severity.getField("LS_" + (a.length > 1 ? a[1] : "info").toUpperCase()).get(null);
+        logging.getMethod("enableLogToDebugOutput", severity).invoke(null, level);
+        return "ok";
+      }
+      case "slop" -> {
+        android.view.ViewConfiguration vc = android.view.ViewConfiguration.get(app);
+        return "touch=" + vc.getScaledTouchSlop() + " paging=" + vc.getScaledPagingTouchSlop() + " doubleTap=" + vc.getScaledDoubleTapSlop()
+            + " minFling=" + vc.getScaledMinimumFlingVelocity() + " maxFling=" + vc.getScaledMaximumFlingVelocity();
+      }
+      case "insets" -> {
+        // What the app sees: system bar insets as delivered to each root view.
+        StringBuilder b = new StringBuilder();
+        for (View r : rootViews()) {
+          android.view.WindowInsets wi = r.getRootWindowInsets();
+          b.append(r.getClass().getSimpleName()).append(' ').append(wi == null ? "null"
+              : wi.getInsets(android.view.WindowInsets.Type.systemBars()) + " ime=" + wi.getInsets(android.view.WindowInsets.Type.ime()))
+              .append("; ");
+        }
+        return b.toString();
+      }
+      case "frames" -> {
+        return hw.frameIntervals();
+      }
+      case "display" -> {
+        return SimWindow.displayInfo();
+      }
+      case "shaders" -> {
+        return TrackedRuntimeShader.report() + " effects: runtime=" + dev.apksim.gpu.GpuEffects.runtimeEffects + " blur=" + dev.apksim.gpu.GpuEffects.otherEffects;
+      }
+      case "fps" -> {
+        // Frames that reached the window since the last `fps`, and what each stage cost on average.
+        long now = System.nanoTime();
+        double secs = (now - windowStart) / 1e9;
+        long shown = hw.presented - windowPresented;
+        double n = Math.max(1, shown) * 1e6;
+        String r = String.format("fps=%.1f frames=%d overBudget=%d | main: looper=%.2f record=%.2f (gpu=%.2f: wait=%.2f copy=%.2f) syncWait=%.2f | raster=%.2f present=%.2f",
+            shown / secs, shown, hw.overBudget, looperNanos / n, hw.recordNanos / n, TrackedRuntimeShader.renderNanos / n,
+            TrackedRuntimeShader.collectNanos / n, TrackedRuntimeShader.publishNanos / n,
+            hw.syncWaitNanos / n, hw.renderNanos / n, hw.presentNanos / n);
+        windowStart = now;
+        windowPresented = hw.presented;
+        hw.overBudget = 0;
+        hw.recordNanos = 0;
+        hw.renderNanos = 0;
+        hw.presentNanos = 0;
+        hw.syncWaitNanos = 0;
+        looperNanos = 0;
+        TrackedRuntimeShader.renderNanos = 0;
+        TrackedRuntimeShader.collectNanos = 0;
+        TrackedRuntimeShader.publishNanos = 0;
+        return r;
+      }
+      case "stats" -> {
+        Runtime rt = Runtime.getRuntime();
+        return String.format("frames=%d heapUsedMb=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20);
+      }
+      default -> {
+        String r = controls.run(a);
+        return r != null ? r : "unknown command: " + a[0];
+      }
+    }
+    return "ok";
+  }
+}

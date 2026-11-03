@@ -1,0 +1,2 @@
+Compile-only signatures of the libwebrtc Java API (org.webrtc, as shipped inside APKs), for apksim classes
+that subclass or implement it. They are not packaged: at runtime the APK's own classes are used.
