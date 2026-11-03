@@ -20,6 +20,7 @@ while [[ $# -gt 1 ]]; do
     --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
     --control) EXTRA+=("-Dapksim.control=$2"); shift 2 ;;
     --control-bind) EXTRA+=("-Dapksim.controlBind=$2"); shift 2 ;;
+    --adb) EXTRA+=("-Dapksim.adb=$2"); shift 2 ;;
     --jvm) EXTRA+=("$2"); shift 2 ;;
     --device) EXTRA+=("-Dapksim.device=$2"); shift 2 ;;
     --appearance) EXTRA+=("-Dapksim.appearance=$2"); shift 2 ;;

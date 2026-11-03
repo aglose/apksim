@@ -51,6 +51,7 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
     `work/cache/data/<pkg>/default` (or `instance-N` when several run).
+  - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
@@ -181,6 +182,30 @@ edit that file, never run `op` for the owner's secrets, and never type their pas
 the owner to run `homesafe-signin --save` (or plain `homesafe-signin` for a one-off sign-in).
 HomeSafe also tries its compiled-in LAN server, so a test sign-in with dummy values still reaches the real Frigate as a
 failed login: test autofill without a `submit` line.
+
+## adb device
+`./apksim --adb PORT ...` (or `--adb auto`; the port is written to `work/tmp/<pid>/adb.port`), then
+`adb connect localhost:PORT`: the instance shows in `adb devices` as `apksim_phone` and standard adb tooling drives
+it. `AdbServer` is the device side of the adb transport (CNXN without AUTH or TLS, OPEN/OKAY/WRTE/CLSE with one
+WRTE in flight per stream) plus `sync:` v1 (STAT/LIST/SEND/RECV). `AdbShell` is a small shell (`;` `&&` `||`,
+quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.QUEUE`, i.e. the same
+`Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
+the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
+`adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
+back/home/lock/unlock), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+`adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
+PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
+PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
+(`animator_duration_scale` = `animscale`, `font_scale` = `fontscale`), `cmd uimode night yes|no`, `getprop`
+(`sys.boot_completed=1` once the app is up), `run-as PKG`, `ls/cat/rm/mkdir`, `dumpsys activity top`, and
+`adb shell apksim CMD...` for any control command. `adb logcat` reads `AdbLog`: ShadowLog.stream is replaced by a
+tee that timestamps lines into a 20k-line ring and still passes them on (`logcat on` keeps working; a watcher puts the
+tee back when the stream is reassigned); supports `-d -c -t N -T N -s -e`, `TAG:LEVEL` and `*:S`.
+`adb push/pull` (and `ls`) see `/data/data/PKG` = `/data/user/0/PKG` (the app's persistent data folder),
+`/sdcard` = `/storage/emulated/0` (Robolectric's external storage, per process) and `/data/local/tmp` (this
+instance's scratch); anything else is refused. Not supported: `adb install` (one APK per instance), `am force-stop`
+(it is this process; `adb shell apksim quit`), `jdwp`, shell_v2 (so no exit codes or separate stderr) and
+`logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
