@@ -95,6 +95,13 @@ final class MethodTranslator implements Opcodes {
 
   private record Try(int start, int end, List<Handler> handlers) {}
 
+  /** A named Dalvik local from the debug info: register, name, JVM descriptor and generic signature, insn range. */
+  private record Local(int reg, String name, String desc, String sig, int start, int end) {}
+
+  private int[] lines; // Source line that starts at each instruction (0: none), or null without debug info.
+  private List<Local> locals = List.of();
+  private LocalRanges tracking; // While emitting a method with locals: told about every register def.
+
   MethodTranslator(DexFile dex, MethodVisitor mv, ClassVisitor splitInto, String methodName, Predicate<String> isInterface,
       int codeOff, String owner, boolean isStatic, String[] params, String ret) {
     this.dex = dex;
@@ -116,6 +123,7 @@ final class MethodTranslator implements Opcodes {
 
   void translate() {
     decode();
+    readDebugInfo();
     readTries();
     buildBlocks();
     computeLiveness();
@@ -366,6 +374,196 @@ final class MethodTranslator implements Opcodes {
     args[n] = r;
     b[n] = idx;
     return 3;
+  }
+
+  // ---------------------------------------------------------------- debug info
+
+  /**
+   * Runs the method's debug_info_item state machine: source lines per instruction, and the instruction ranges
+   * where each named local is in its register. Parameters start at address 0 in the last registers. SET_FILE
+   * (code inlined from another file) is ignored: a JVM method has one source file, and Kotlin's inline functions
+   * are mapped through the class's SourceDebugExtension instead.
+   */
+  private void readDebugInfo() {
+    int off = dex.i32(code + 8);
+    if (off == 0 || !ClassTranslator.DEBUG_INFO) return;
+    lines = new int[count + 1];
+    String[] name = new String[regs];
+    String[] desc = new String[regs];
+    String[] sig = new String[regs];
+    int[] from = new int[regs];
+    boolean[] live = new boolean[regs];
+    List<Local> out = new ArrayList<>();
+    DexFile.Cursor cur = dex.new Cursor(off);
+    int line = cur.uleb();
+    int nParams = cur.uleb();
+    int r = regs - insWords + (isStatic ? 0 : 1);
+    for (int j = 0; j < nParams; j++) {
+      int n = cur.ulebP1();
+      if (j >= params.length || r >= regs) continue;
+      if (n >= 0) {
+        name[r] = dex.string(n);
+        desc[r] = params[j];
+        live[r] = true;
+      }
+      r += wideParam(params[j]) ? 2 : 1;
+    }
+    int address = 0;
+    loop:
+    while (true) {
+      int o = cur.u1();
+      switch (o) {
+        case 0x00 -> {
+          break loop;
+        }
+        case 0x01 -> address += cur.uleb();
+        case 0x02 -> line += cur.sleb();
+        case 0x03, 0x04 -> {
+          int reg = cur.uleb();
+          int n = cur.ulebP1();
+          int t = cur.ulebP1();
+          int g = o == 0x04 ? cur.ulebP1() : -1;
+          if (reg >= regs) continue;
+          endLocal(out, reg, address, name, desc, sig, from, live);
+          name[reg] = n >= 0 ? dex.string(n) : null;
+          desc[reg] = t >= 0 ? dex.type(t) : null;
+          sig[reg] = g >= 0 ? dex.string(g) : null;
+          from[reg] = address;
+          live[reg] = name[reg] != null && desc[reg] != null;
+        }
+        case 0x05 -> {
+          int reg = cur.uleb();
+          if (reg < regs) endLocal(out, reg, address, name, desc, sig, from, live);
+        }
+        case 0x06 -> {
+          int reg = cur.uleb();
+          if (reg >= regs || live[reg] || name[reg] == null || desc[reg] == null) continue;
+          from[reg] = address;
+          live[reg] = true;
+        }
+        case 0x07, 0x08 -> {
+        }
+        case 0x09 -> cur.ulebP1();
+        default -> {
+          int adj = o - 0x0a;
+          line += adj % 15 - 4;
+          address += adj / 15;
+          int i = insnFrom(address);
+          if (i < count && line > 0 && line <= 0xffff) lines[i] = line;
+        }
+      }
+    }
+    for (int reg = 0; reg < regs; reg++) endLocal(out, reg, unitCount, name, desc, sig, from, live);
+    out.sort((x, y) -> Integer.compare(x.start, y.start));
+    locals = out;
+  }
+
+  private void endLocal(List<Local> out, int reg, int address, String[] name, String[] desc, String[] sig, int[] from,
+      boolean[] live) {
+    if (!live[reg]) return;
+    live[reg] = false;
+    int s = insnFrom(from[reg]);
+    int e = insnFrom(address);
+    if (s < e) out.add(new Local(reg, name[reg], desc[reg], sig[reg], s, e));
+  }
+
+  /** The instruction at this address, or the next one (debug addresses may point at a payload), or `count`. */
+  private int insnFrom(int address) {
+    if (address >= unitCount) return count;
+    while (addrToInsn[address] < 0) address++;
+    return addrToInsn[address];
+  }
+
+  /**
+   * Turns the Dalvik locals into LocalVariableTable entries. A register's JVM local holds whatever kind its
+   * current value resolved to, so an entry covers only the instructions where that kind matches the declared
+   * type: a debugger must never read an int slot as a reference. A local is re-checked only where its register
+   * may have changed (a def nearby, or a block entry): checking every live local at every instruction made locals
+   * cost 1.5x as much to translate in Compose code, which keeps dozens live.
+   */
+  private final class LocalRanges {
+    private final Local[] ls = locals.toArray(new Local[0]);
+    private final Label[] labels;
+    private final int[] kind = new int[ls.length];
+    private final int[] open = new int[ls.length];
+    private final int[] onReg = new int[regs]; // The local whose range covers each register now, or -1.
+    private final int[] startHead = new int[count + 1]; // Locals starting / ending at each insn: linked lists.
+    private final int[] endHead = new int[count + 1];
+    private final int[] nextStart = new int[ls.length];
+    private final int[] nextEnd = new int[ls.length];
+    private int[] dirty = new int[8];
+    private int nDirty;
+
+    LocalRanges(Label[] labels) {
+      this.labels = labels;
+      Arrays.fill(open, -1);
+      Arrays.fill(onReg, -1);
+      Arrays.fill(startHead, -1);
+      Arrays.fill(endHead, -1);
+      for (int l = ls.length - 1; l >= 0; l--) {
+        kind[l] = kindOf(ls[l].desc);
+        nextStart[l] = startHead[ls[l].start];
+        startHead[ls[l].start] = l;
+        nextEnd[l] = endHead[ls[l].end];
+        endHead[ls[l].end] = l;
+      }
+    }
+
+    /** A def of register r: it may also have cut a wide pair around it. */
+    void dirty(int r) {
+      if (nDirty == dirty.length) dirty = Arrays.copyOf(dirty, nDirty * 2);
+      dirty[nDirty++] = r;
+    }
+
+    /**
+     * Called after labels[i] is placed, with the register state s before instruction i (null if unreachable:
+     * dead code emits nothing, so it neither starts nor ends a range).
+     */
+    void at(int i, int[] s, boolean blockStart) {
+      for (int l = endHead[i]; l >= 0; l = nextEnd[l]) {
+        close(l, i);
+        if (onReg[ls[l].reg] == l) onReg[ls[l].reg] = -1;
+      }
+      for (int l = startHead[i]; l >= 0; l = nextStart[l]) {
+        onReg[ls[l].reg] = l;
+        if (s != null && !blockStart) check(l, i, s);
+      }
+      if (s != null && blockStart) {
+        for (int r = 0; r < regs; r++) {
+          if (onReg[r] >= 0) check(onReg[r], i, s);
+        }
+      } else if (s != null) {
+        for (int d = 0; d < nDirty; d++) {
+          for (int r = Math.max(0, dirty[d] - 1); r <= dirty[d] + 2 && r < regs; r++) {
+            if (onReg[r] >= 0) check(onReg[r], i, s);
+          }
+        }
+      }
+      nDirty = 0;
+    }
+
+    private void check(int l, int i, int[] s) {
+      int v = s[ls[l].reg];
+      if (v >= 0 && resolved(v) == kind[l]) {
+        if (open[l] < 0) open[l] = i;
+      } else {
+        close(l, i);
+      }
+    }
+
+    /** Writes the open range of local l up to instruction i (ASM reads both labels' offsets at once). */
+    private void close(int l, int i) {
+      int from = open[l];
+      if (from < 0) return;
+      open[l] = -1;
+      Local x = ls[l];
+      if (from < i) mv.visitLocalVariable(x.name, x.desc, x.sig, labels[from], labels[i], slot(x.reg));
+    }
+
+    /** Called once labels[count] is placed. */
+    void finish() {
+      at(count, null, false);
+    }
   }
 
   private void readTries() {
@@ -731,6 +929,7 @@ final class MethodTranslator implements Opcodes {
   }
 
   private void setDef(int[] s, int r, int node, boolean isWide) {
+    if (tracking != null) tracking.dirty(r);
     if (r > 0 && s[r] == WIDE_HI) s[r - 1] = UNSET;
     if (s[r] >= 0 && r + 1 < regs && s[r + 1] == WIDE_HI) s[r + 1] = UNSET;
     s[r] = node;
@@ -1303,6 +1502,10 @@ final class MethodTranslator implements Opcodes {
     for (int i = 0; i <= count; i++) labels[i] = new Label();
     Map<Integer, Label> stubs = new HashMap<>();
     mv.visitCode();
+    Label start = new Label();
+    mv.visitLabel(start);
+    LocalRanges lr = locals.isEmpty() ? null : new LocalRanges(labels);
+    tracking = lr;
     for (Try t : tries) {
       int si = addrToInsn[t.start];
       int ei = t.end <= unitCount ? addrToInsn[t.end] : count;
@@ -1319,10 +1522,15 @@ final class MethodTranslator implements Opcodes {
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         mv.visitLabel(labels[i]);
+        if (lr != null) lr.at(i, reachable ? s : null, i == blockStart[bl]);
+        // After the parameter copies for insn 0: a breakpoint there must already see the parameters.
+        if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
         if (reachable) emitInsn(i, s, labels);
       }
     }
     mv.visitLabel(labels[count]);
+    if (lr != null) lr.finish();
+    tracking = null;
     for (var e : stubs.entrySet()) {
       int target = insnAt(e.getKey());
       mv.visitLabel(e.getValue());
@@ -1332,6 +1540,11 @@ final class MethodTranslator implements Opcodes {
         mv.visitInsn(POP);
       }
       mv.visitJumpInsn(GOTO, labels[op[target] == 0x0d ? target + 1 : target]);
+    }
+    if (!isStatic && (lines != null || lr != null)) {
+      Label end = new Label();
+      mv.visitLabel(end);
+      mv.visitLocalVariable("this", "L" + owner + ";", null, start, end, 0); // Slot 0 is never reassigned.
     }
     mv.visitMaxs(maxStack(), base + regs + 2);
     mv.visitEnd();
@@ -1511,6 +1724,7 @@ final class MethodTranslator implements Opcodes {
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         mv.visitLabel(labels[i]);
+        if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
         if (reachable) emitInsn(i, s, labels);
       }
       // Falling out of a dead block is impossible, but the code after it must still be well formed.

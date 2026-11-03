@@ -211,6 +211,21 @@ instance's scratch); anything else is refused. Not supported: `adb install` (one
 are skipped (headless, CPU shaders). `native/linux/` holds the bionic→glibc shim and a JNI bridge; `elfloader.c` is
 shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
 
+## Debugging app code
+`./apksim --debug 5005 --control 7400 app.apk`, then IntelliJ/Android Studio "Remote JVM Debug" (Attach, localhost,
+port 5005; the app does not wait for it). Breakpoints in app sources (`MainActivity.kt`, Java or Kotlin) stop, step
+and show locals. `--debug` adds the JDWP agent and `-Dapksim.debugInfo=true`, which makes the translator read each
+method's DEX `debug_info_item` (`MethodTranslator.readDebugInfo`) into a `LineNumberTable` and `LocalVariableTable`,
+plus Kotlin's SMAP (`SourceDebugExtension`, for inlined code). A local's entry covers only instructions where its
+register's JVM local holds the declared kind (`LocalRanges`), so a debugger never reads an int slot as a reference.
+`this` is slot 0; parameters are the copies in Dalvik's registers, so JDI lists them as locals, not arguments.
+Split methods (`emitSplit`) get line numbers but no locals (their registers live in arrays). Without `--debug`,
+classes are byte-identical to before: debug info cost ~30 ms of a warm launch (bigger classes to load; R8 builds
+such as the large app carry a line entry per instruction) and ~5% of a cold one. Debug classes have their own class
+cache (`work/cache/classes/<hash>-debug`), so the first `--debug` launch after a build translates everything.
+Checked with a JDI client (what IntelliJ uses): `count++` at MainActivity.kt:63 stops with `$count$delegate`.
+R8-minified apps have pc-encoded lines (retrace them with the app's mapping file) and no locals.
+
 ## Comparing with the emulator
 `ApksimCmp36` is an API 36 AVD (Pixel 2 profile, so no cutout) set with `adb shell wm size 822x1782` and
 `wm density 320` to match the phone device pixel for pixel; dark mode on, gesture navigation overlay enabled.

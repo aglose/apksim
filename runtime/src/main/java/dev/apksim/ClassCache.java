@@ -84,6 +84,8 @@ final class ClassCache {
     if (!Boolean.parseBoolean(System.getProperty("apksim.classCache", "true"))) return null;
     String runtime = runtimeHash();
     if (runtime == null) return null;
+    // Classes translated with debug info (--debug) are kept apart, so neither kind is ever used for the other.
+    if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
     Path root = Path.of(System.getProperty("apksim.cacheRoot"), "classes");
     ClassCache cache = new ClassCache(root.resolve(runtime), keys, System.getProperty("apksim.package"));
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
