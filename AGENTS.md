@@ -168,8 +168,10 @@ each must be its own object: one non-capturing lambda is a single shared instanc
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
 with their own timestamps: Robolectric pairs each input with one output that keeps the input's timestamp, and with
 B-frames (decode order pts 0, 66, 33, ...) ExoPlayer dropped 58 of 90 frames as late. A few pictures are held back
-(2, growing to 4 when one arrives older than one already out); inputs that give no output yet are passed on with
-API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
+(2, growing to 4 when one arrives older than one already out). An input whose picture is held keeps its buffer
+(the codec owns it, as on a device); at end of stream those buffers carry the held pictures out in order, before the
+end-of-stream buffer (`selftest clip.h264` checks every frame arrives). Other inputs that give no output are passed on
+with API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
 reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
@@ -323,9 +325,8 @@ server can ANR; `both.py` retakes shots until the two agree.
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL drawn as a paint with `uniform shader` inputs set by `setInputShader` (the large app's HEAT_SHADER `body`/`muscle`)
   still runs on the CPU; only a RenderEffect's layer content is bound as a texture.
-- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. At end of stream the
-  video decoders lose the 1-3 pictures they still hold for reordering (see "Video"): Robolectric gives one output
-  per input.
+- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed (the large app's clips need
+  none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). the large app, fps with them on the CPU → on
   Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30, and Atlas panning
   26 → 64-73 once scaled bitmaps went to the GPU and readback stopped untiling (2026-11-03). What is left is the
