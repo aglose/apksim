@@ -14,5 +14,8 @@ clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -frame
 clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreFoundation -framework Accelerate \
   -o "$ROOT/work/runtime/libvtdecoder.dylib.new" "$ROOT/native/videotoolbox.m"
+clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
+  -framework AudioToolbox -framework CoreAudio -framework Foundation \
+  -o "$ROOT/work/runtime/libsimaudio.dylib.new" "$ROOT/native/audio.m"
 # Rename into place, so running instances keep the libraries they mapped.
-for l in libsimwindow libelfloader libgpushader libvtdecoder; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
+for l in libsimwindow libelfloader libgpushader libvtdecoder libsimaudio; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done

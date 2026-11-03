@@ -35,6 +35,8 @@ public final class VideoSurfaces {
     for (int i = 0; i < ShadowSimMediaCodec.STAT_NAMES.length; i++) {
       b.append(' ').append(ShadowSimMediaCodec.STAT_NAMES[i]).append('=').append(ShadowSimMediaCodec.STATS.get(i));
     }
+    b.append(" | audiotrack opened=").append(ShadowSimAudioTrack.STATS.get(0)).append(" frames=").append(ShadowSimAudioTrack.STATS.get(1))
+        .append(" underrunsOfClosed=").append(ShadowSimAudioTrack.STATS.get(2)).append(SimAudio.available() ? "" : " (no sound here)");
     b.append(" |");
     for (Entry e : ENTRIES.values()) {
       Bitmap p = e.picture;
