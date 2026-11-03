@@ -128,7 +128,9 @@ app opens outside itself go to the Mac's browser/mail app. The keyboard sends Co
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
-Pick file/Choose trip (in-app result)/Share/Background/Keystore buttons for these; Trips has a "Trip note" field with
+Pick file/Choose trip (in-app result)/Share/Background/Keystore buttons for these, and "Play clip" (ExoPlayer, a 3 s
+HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
+plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links.
 
 ## Video
@@ -244,8 +246,11 @@ server can ANR; `both.py` retakes shots until the two agree.
   caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL with `uniform shader` inputs (RenderEffect-style, 7 of HomeSafe's 29 shaders) still runs on the CPU.
-- MediaCodec has H.264, HEVC, AAC and MP3 (checked with `selftest`, not yet with a player playing a file end to end);
-  VP9/AV1 video and Opus/Vorbis audio are not listed.
+- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. The test app's
+  "Play clip" plays through in real time (3.0 s of media in 3.2-3.4 s, with or without sound), **but ExoPlayer drops
+  58 of the 90 video frames as late** (`video`: rendered=32 dropped=58), the same with `-Dapksim.audio=false`, so it
+  is not the audio clock. Not investigated yet; suspects: ExoPlayer mixes SystemClock (Robolectric's stepped clock)
+  with System.nanoTime() in its frame-release timing, and its vsync sampler's Choreographer runs on a background looper.
 - AGSL RenderEffects that read layer content (HomeSafe's LIQUID_LENS on the camera timeline) run per pixel on the CPU:
   ~55 ms a frame on the camera page while video changes the layer. Moving them to Metal is the biggest perf item left.
 - No Health Connect service, so HomeSafe Fitness hides its Body card and Heart rate chip that the emulator shows.

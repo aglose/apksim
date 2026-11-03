@@ -146,6 +146,40 @@ fun DeviceFeatures() {
     Button({ keystore = runCatching { keystoreCheck() }.getOrElse { "failed: $it" } }) { Text("Keystore") }
     Text("keystore: $keystore", Modifier.padding(start = 12.dp))
   }
+  ClipPlayer()
+}
+
+/** A 3 s HEVC + AAC clip played by ExoPlayer into a TextureView: MediaCodec, AudioTrack and the audio clock together. */
+@Composable
+fun ClipPlayer() {
+  val context = LocalContext.current
+  var playing by remember { mutableStateOf(false) }
+  var status by remember { mutableStateOf("-") }
+  Button({ playing = true }) { Text("Play clip") }
+  Text("clip: $status")
+  if (!playing) return
+  val player = remember { androidx.media3.exoplayer.ExoPlayer.Builder(context).build() }
+  val texture = remember { android.view.TextureView(context) }
+  DisposableEffect(Unit) {
+    val started = System.nanoTime()
+    player.setVideoTextureView(texture)
+    player.addListener(object : androidx.media3.common.Player.Listener {
+      override fun onPlaybackStateChanged(state: Int) {
+        if (state != androidx.media3.common.Player.STATE_ENDED) return
+        status = "ended at %.1f s after %.1f s, video %s, audio %s".format(player.currentPosition / 1000.0,
+          (System.nanoTime() - started) / 1e9, player.videoFormat?.sampleMimeType, player.audioFormat?.sampleMimeType)
+      }
+
+      override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+        status = "error: ${error.errorCodeName}"
+      }
+    })
+    player.setMediaItem(androidx.media3.common.MediaItem.fromUri("android.resource://${context.packageName}/${R.raw.clip}"))
+    player.prepare()
+    player.play()
+    onDispose { player.release() }
+  }
+  androidx.compose.ui.viewinterop.AndroidView({ texture }, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
 }
 
 /** Returns a trip name to whoever started it for a result. */
