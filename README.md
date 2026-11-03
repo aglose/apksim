@@ -7,13 +7,21 @@ from-scratch take on what the Android team demoed as "Android Prototype" at Andr
     ./apksim app.apk                 # run it
     ./apksim --device foldable app.apk
 
+Needs an Apple Silicon Mac with the Xcode command-line tools, Homebrew's `openjdk` (JDK 24) and `gradle`, and the
+Android SDK to build the test app (`testapks/composeapp`), which `setup.sh` also uses to train the startup cache.
+
 After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location.
 
 It also runs headless on Linux x86_64 in a 488 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
 
 Options: `--device phone|foldable|tablet|desktop`, `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
-`--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`.
+`--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
+`--soft-keyboard`, `--adb PORT|auto`, `--debug PORT`, `--jvm ARG`.
+
+For tools: `--adb PORT` makes the instance an adb device (`adb connect localhost:PORT`, then `adb shell`, `push`/`pull`,
+`logcat`, `screencap`), and `--debug PORT` lets Android Studio or IntelliJ's "Remote JVM Debug" stop at breakpoints in
+the app's own Kotlin and Java sources.
 
 The window has the iOS Simulator's menus where Android has the same thing: screenshots and screen recording, Home,
 Lock, volume, rotation, zoom, dark appearance, text size, language, location (fixed or moving), fingerprint, Open URL,
@@ -98,13 +106,15 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
 - **Older native libraries fail to load.** Code and data must not share a 16 KB page, because macOS forbids
   writable + executable memory. Libraries built with 4 KB alignment (Flipper, and its libc++ here) get an
   UnsatisfiedLinkError. Those built 16 KB aligned work. So an app's debug build, which uses Flipper, does not start.
-- **APKs need arm64-v8a** for native code. Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
+- **APKs need arm64-v8a** for native code (x86_64 in the Linux image). Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
   not work: those libraries are stubs. Java's AudioTrack does play. The talk's GLES 1 game and audio demos have no equivalent here.
-- **The native C library shim is partial.** It covers roughly the 300 functions these APKs import. Sockets from
-  native code are not translated (`sockaddr` differs), and an unsupported call prints its name.
-- **It is not a device.** System services are stand-ins (no Play Services, Health Connect, real camera, sensors or
-  notifications shade), other apps do not exist, and intents leaving the app are ignored. Services and exported
-  components are not started. Treat it as a fast UI and logic check, not a compatibility guarantee.
+- **The native C library shim is partial.** It covers the functions these APKs import (sockets included, which
+  libwebrtc needs), and an unsupported call prints its name.
+- **It is not a device.** System services are stand-ins (no Play Services, Health Connect, real camera or sensors),
+  and other apps do not exist. What the simulator does provide: started services, JobScheduler jobs (so WorkManager)
+  and alarms run, FCM pushes can be delivered with `push`, notifications show as a banner, web and mail links open
+  on the Mac, and sharing goes to the Mac's share menu; other intents leaving the app go nowhere (cancelled, if a
+  result was asked for). Treat it as a fast UI and logic check, not a compatibility guarantee.
 - **Security:** an APK runs as code in this process. `sandbox-exec` confines it: writes only under `work/` and
   temp, no reads of `~/.ssh`, `~/Documents`, keychains and similar. It is deprecated by Apple and is a safeguard
   for your own apps, not a boundary for hostile ones.
@@ -122,6 +132,12 @@ clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox.
 (`selftest` checks each with a 2 s clip).
 `scripts/drive.py` scripts a running instance over `--control`. All input tests went through that channel: the
 window's own mouse, trackpad and keyboard handling is written but has not been exercised by a test.
+
+## Contributing
+
+Changes go to `main` through pull requests, which need the `linux-smoke` CI check (the Linux image running the test
+app headless) to pass. CI cannot check the Mac-only parts, the window, Metal and launch timings, so say in the PR what
+you checked locally. [AGENTS.md](AGENTS.md) explains how to build, run and measure.
 
 ## License
 Apache License 2.0: see [LICENSE](LICENSE). Running an APK does not change its own license; Robolectric and the
