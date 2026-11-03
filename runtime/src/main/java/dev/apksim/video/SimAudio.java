@@ -1,0 +1,62 @@
+package dev.apksim.video;
+
+import java.nio.ByteBuffer;
+
+/**
+ * Sound (native/audio.m): AAC and MP3 decoding on AudioToolbox for MediaCodec, and AudioTrack's PCM played on the
+ * Mac's default output. Mac only; elsewhere {@link #available} is false and Robolectric's silent AudioTrack stays.
+ * {@code -Dapksim.audio=false} turns it off, {@code -Dapksim.mute=true} keeps the timing but plays silence.
+ */
+public final class SimAudio {
+  private SimAudio() {}
+
+  static final int AAC = 0, MP3 = 1;
+  private static final boolean AVAILABLE = load();
+  static final boolean MUTED = Boolean.getBoolean("apksim.mute");
+
+  static boolean available() {
+    return AVAILABLE;
+  }
+
+  private static boolean load() {
+    try {
+      if (!dev.apksim.HostOs.MAC || !Boolean.parseBoolean(System.getProperty("apksim.audio", "true"))) return false;
+      System.load(dev.apksim.HostOs.runtimeLib("libsimaudio").toString());
+      return true;
+    } catch (Throwable t) {
+      System.err.println("[apksim] no sound: " + t);
+      return false;
+    }
+  }
+
+  /** A decoder from AAC (config: the AudioSpecificConfig, MediaCodec's csd-0) or MP3 to 16-bit PCM, or 0. */
+  static native long nativeDecoderCreate(int codec, int sampleRate, int channels, byte[] config);
+
+  /** Decodes one access unit; returns the PCM bytes written to out, or -1. Both buffers are direct. */
+  static native int nativeDecode(long decoder, ByteBuffer in, int offset, int length, ByteBuffer out, int capacity);
+
+  static native void nativeDecoderReset(long decoder);
+
+  static native void nativeDecoderRelease(long decoder);
+
+  /** An output stream; encoding is AudioFormat's ENCODING_PCM_16BIT, _8BIT or _FLOAT. 0 if CoreAudio refused. */
+  static native long nativeOutCreate(int sampleRate, int channels, int encoding, int bufferBytes);
+
+  /** Queues PCM from a direct buffer; returns the bytes taken (all of them when blocking, unless paused). */
+  static native int nativeOutWrite(long out, ByteBuffer pcm, int offset, int length, boolean blocking);
+
+  static native void nativeOutPlay(long out, boolean play);
+
+  static native void nativeOutFlush(long out);
+
+  /** Frames played since creation or the last flush. */
+  static native long nativeOutPlayed(long out);
+
+  static native long nativeOutPending(long out);
+
+  static native long nativeOutUnderruns(long out);
+
+  static native void nativeOutVolume(long out, float volume, boolean muted);
+
+  static native void nativeOutRelease(long out);
+}

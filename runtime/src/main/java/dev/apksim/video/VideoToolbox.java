@@ -6,7 +6,7 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * H.264 decoding and picture conversion on VideoToolbox (native/videotoolbox.m). Kept free of any library an APK
+ * H.264 and HEVC decoding and picture conversion on VideoToolbox (native/videotoolbox.m). Kept free of any library an APK
  * brings, so that every app can load it: libwebrtc's adapter is {@link VtH264Decoder}, MediaCodec's is
  * {@link ShadowSimMediaCodec}.
  */
@@ -46,20 +46,25 @@ public final class VideoToolbox {
     return (px.get(0) & 0xff) == 0 && (px.get(2) & 0xff) == 0xff;
   }
 
-  /** A decoder session, or 0 when VideoToolbox is unavailable. */
+  /** An H.264 decoder session, or 0 when VideoToolbox is unavailable. */
   static long create() {
-    return AVAILABLE ? nativeCreate() : 0;
+    return create(false);
+  }
+
+  /** An H.264 or HEVC decoder session, or 0 when VideoToolbox is unavailable. */
+  static long create(boolean hevc) {
+    return AVAILABLE ? nativeCreate(hevc) : 0;
   }
 
   static void destroy(long handle) {
     if (handle != 0) nativeRelease(handle);
   }
 
-  static native long nativeCreate();
+  static native long nativeCreate(boolean hevc);
 
   static native void nativeRelease(long handle);
 
-  /** Decodes one access unit (Annex B) from a direct buffer. Returns 1 with [size] set when a picture came out, 0 when none, -1 on error. */
+  /** Decodes one access unit (Annex B; parameter sets update the session) from a direct buffer. Returns 1 with [size] set when a picture came out, 0 when none, -1 on error. */
   static native int nativeDecode(long handle, ByteBuffer data, int offset, int length, int[] size);
 
   static native void nativeCopyI420(long handle, ByteBuffer y, int strideY, ByteBuffer u, int strideU, ByteBuffer v, int strideV);
