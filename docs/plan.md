@@ -58,6 +58,10 @@ display was asleep. Needs the Mac awake with the window visible.
   counts per real vsync whether a new frame arrived.
 - Done when: decided. Default it on if "new frame on N% of vsyncs" rises and the frame-interval spread narrows;
   otherwise remove it and record why.
+- **Still blocked (2026-11-03):** 5 interleaved A/B runs gave identical numbers (Shader tab 120.0 fps, fling ~160),
+  but every run reported "screen 0 Hz": no display vsyncs reached the window (display asleep or window hidden), so
+  `-Dapksim.vsync=display` was on its grid fallback both times. One earlier HomeSafe run did see 120 Hz vsyncs, so
+  it works when the window is on a lit screen. Needs a run with the owner at the Mac.
 
 **6. CPU raster of busy frames.** The remaining 9-12 ms frames come from single-core HWUI raster (~6-7 ms on busy
 full-screen frames). Partial redraw was tried and does not help Compose (findings in AGENTS.md). Left to try:
@@ -82,6 +86,11 @@ to see what the raster thread spends its time on; pick from that.
 Robolectric gives one output per input. Fix by emitting the held pictures on the end-of-stream input's buffer and on
 input buffers the codec still owns, or by returning DECODE_ONLY later inputs and keeping one picture back less.
 Matters for short clips and thumbnails.
+
+- **Result (done):** an input whose picture is held for reordering keeps its buffer; at end of stream those buffers
+  carry the held pictures out in order before the end-of-stream buffer. `selftest clip.h264|.h265` now requires every
+  unit: 60 of 60 (was 59). In async mode (ExoPlayer) Robolectric hands out one input buffer at a time, so a kept one is
+  replaced from its free queue; the test app's clip plays through with 0 drops.
 
 **9. More codecs.** VP9 and AV1 (VideoToolbox decodes both on Apple Silicon: VP9 since macOS 11, AV1 on M3 and
 later), Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
