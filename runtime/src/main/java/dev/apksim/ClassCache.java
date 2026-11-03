@@ -45,8 +45,8 @@ final class ClassCache {
 
   private record Fresh(byte[] bytes, String[] owners, byte[] answers) {}
 
-  /** The cache this process opened, for {@link #flush} on the way out. */
-  private static volatile ClassCache open;
+  /** The caches this process opened (the app's, and a test APK's), for {@link #flush} on the way out. */
+  private static final List<ClassCache> OPEN = new java.util.concurrent.CopyOnWriteArrayList<>();
 
   private final Path dir;
   private final Object saving = new Object();
@@ -79,20 +79,23 @@ final class ClassCache {
     for (int i = 0; i < keys.length; i++) fresh[i] = new HashMap<>();
   }
 
-  /** The cache for these DEX files (keys from their CRCs), or null when it is off or this runtime is not a jar. */
-  static ClassCache open(String[] keys) {
+  /**
+   * The cache for these DEX files (keys from their CRCs), or null when it is off or this runtime is not a jar. Load
+   * hints are kept under {@code hintName} (the package, or the package plus ".test" for its test APK).
+   */
+  static ClassCache open(String[] keys, String hintName) {
     if (!Boolean.parseBoolean(System.getProperty("apksim.classCache", "true"))) return null;
     String runtime = runtimeHash();
     if (runtime == null) return null;
     // Classes translated with debug info (--debug) are kept apart, so neither kind is ever used for the other.
     if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
     Path root = Path.of(System.getProperty("apksim.cacheRoot"), "classes");
-    ClassCache cache = new ClassCache(root.resolve(runtime), keys, System.getProperty("apksim.package"));
+    ClassCache cache = new ClassCache(root.resolve(runtime), keys, hintName);
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
     saver.setDaemon(true);
     saver.setPriority(Thread.MIN_PRIORITY);
     saver.start();
-    open = cache;
+    OPEN.add(cache);
     return cache;
   }
 
@@ -165,13 +168,13 @@ final class ClassCache {
 
   /** Saves what this process translated since the last save, before it exits (it halts, so no daemon gets to). */
   static void flush() {
-    ClassCache cache = open;
-    if (cache == null) return;
-    synchronized (cache.saving) {
-      synchronized (cache) {
-        if (cache.unsaved == 0) return;
+    for (ClassCache cache : OPEN) {
+      synchronized (cache.saving) {
+        synchronized (cache) {
+          if (cache.unsaved == 0) continue;
+        }
+        cache.save();
       }
-      cache.save();
     }
   }
 

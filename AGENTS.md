@@ -69,12 +69,12 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `gpushader.m`: Metal pipelines for translated AGSL.
-- `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT
-  cache), `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running
-  instances, app data), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison), `prof.py` (summarise macOS
-  `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`, `make-media.sh` (test clips),
-  `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `signin.sh`/`install-signin.sh` (the owner's the large app
-  sign-in), `hooks/pre-push`.
+- `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
+  `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
+  data), `instrument.py` (androidTest suites, JUnit XML), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
+  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `signin.sh`/`install-signin.sh`
+  (the owner's the large app sign-in), `hooks/pre-push`.
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
@@ -249,6 +249,28 @@ tee back when the stream is reassigned); supports `-d -c -t N -T N -s -e`, `TAG:
 instance's scratch); anything else is refused. Not supported: `adb install` (one APK per instance), `am force-stop`
 (it is this process; `adb shell apksim quit`), `jdwp`, shell_v2 (so no exit codes or separate stderr) and
 `logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
+
+## Instrumentation tests (androidTest APKs)
+`./apksim --instrument app-debug-androidTest.apk [-e KEY VALUE]... app-debug.apk` runs a test APK against the app as
+`am instrument -w -r` would and prints its raw output (INSTRUMENTATION_STATUS blocks, exit 1 on any failure). As on a
+device, the test APK's classes join the app's in one process: `AppClasses.installTest` serves them from `apksim:/test/`
+after the app's (their class cache hints are `<package>.test.classes`). `Instrument` reads `<instrumentation>` from the
+test manifest, finds the test classes (library packages are not searched), and runs each under `SimRunner`
+(`@RunWith(AndroidJUnit4)` is pointed there by `android.junit.runner`). Tests run the Robolectric way, not the device
+way: the test body on the main thread, Espresso/ActivityScenario through Robolectric's in-process `LocalUiController`
+and `LocalActivityInvoker`, a simulated clock that jumps over idle time, and no window or Host loop. The
+instrumentation class itself (AndroidJUnitRunner or a subclass such as a custom `newApplication`) is not run.
+`-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work, and every `-e` reaches
+`InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
+Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
+within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--xml FILE] [-- APKSIM_OPTS]` runs a suite
+and writes JUnit XML; `--isolate` gives every test its own process, as the AndroidX Test Orchestrator with
+`clearPackageData` does. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
+sandbox brought a second main thread to a main Looper already bound to the first), and `SimTestEnvironment`, whose
+reset between tests asks the JVM's loader which classes are loaded (Robolectric casts its own loader to
+`ClassTracker`, which `FlatLoader` bypasses). The test app's `src/androidTest` (Compose rule + Espresso) is the check:
+`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`. Not supported yet: `adb shell am instrument`, the test
+APK's own resources/context (`getInstrumentation().context` is the app's), UiAutomation, and test-services shell calls.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
