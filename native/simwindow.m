@@ -12,7 +12,7 @@
 #include <pthread.h>
 
 enum { EV_DOWN = 0, EV_UP = 1, EV_MOVE = 2, EV_WHEEL = 3, EV_BACK = 4, EV_CLOSE = 5, EV_CHAR = 6, EV_KEY = 7, EV_COMMAND = 8,
-       EV_TOUCH2_CENTRE = 9, EV_TOUCH2_DOWN = 10, EV_TOUCH2_MOVE = 11, EV_TOUCH2_UP = 12 };
+       EV_TOUCH2_CENTRE = 9, EV_TOUCH2_DOWN = 10, EV_TOUCH2_MOVE = 11, EV_TOUCH2_UP = 12, EV_RESIZE = 13 };
 typedef struct { int type; float x, y, v; } Event;
 
 #define QUEUE_SIZE 4096
@@ -68,13 +68,16 @@ enum {
   TAG_APPEARANCE, TAG_TEXT_LARGER, TAG_TEXT_SMALLER, TAG_TEXT_DEFAULT, TAG_SLOW_ANIMATIONS, TAG_MEMORY, TAG_OPEN_URL,
   TAG_VOLUME_UP, TAG_VOLUME_DOWN, TAG_BACK, TAG_LOCALE, TAG_NOTIFICATION, TAG_LOCATION_CUSTOM, TAG_LOCATION_RUN,
   TAG_LOCATION_BIKE, TAG_LOCATION_DRIVE, TAG_LOCATION_NONE, TAG_BIOMETRICS_ENROLLED, TAG_BIOMETRICS_MATCH,
-  TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD,
+  TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
+  TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV,
 };
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
 static CALayer *bannerLayer;  // heads-up notification, below
 static NSString *pendingText;
 static NSMutableDictionary<NSNumber *, NSMenuItem *> *menuItems;
+static BOOL selfResizing;  // a resize this file asked for (zoom, nativeResize), not the user's
+static float openScale;  // device pixels per point at actual size: the display's density
 
 @interface MenuTarget : NSObject
 @end
@@ -136,6 +139,18 @@ static void buildMenus(NSMenu *bar) {
   addItem(file, @"Record Screen", TAG_RECORD, @"r", cmd);
   addItem(file, @"Show Screenshots and Recordings", TAG_SCREENSHOTS_FOLDER, nil, 0);
   NSMenu *device = submenu(bar, @"Device");
+  // The display's shape, as Android Studio's device picker; dragging the window's edges resizes it freely.
+  NSMenuItem *typeItem = [[NSMenuItem alloc] initWithTitle:@"Device Type" action:nil keyEquivalent:@""];
+  NSMenu *type = [[NSMenu alloc] initWithTitle:@"Device Type"];
+  type.autoenablesItems = NO;
+  addItem(type, @"Phone", TAG_DEVICE_PHONE, @"1", cmd | shift);
+  addItem(type, @"Foldable", TAG_DEVICE_FOLDABLE, @"2", cmd | shift);
+  addItem(type, @"Tablet", TAG_DEVICE_TABLET, @"3", cmd | shift);
+  addItem(type, @"Desktop", TAG_DEVICE_DESKTOP, @"4", cmd | shift);
+  addItem(type, @"TV", TAG_DEVICE_TV, @"5", cmd | shift);
+  typeItem.submenu = type;
+  [device addItem:typeItem];
+  [device addItem:[NSMenuItem separatorItem]];
   addItem(device, @"Rotate Left", TAG_ROTATE_LEFT, left, cmd);
   addItem(device, @"Rotate Right", TAG_ROTATE_RIGHT, right, cmd);
   [device addItem:[NSMenuItem separatorItem]];
@@ -387,6 +402,24 @@ static int androidMeta(NSEventModifierFlags f) {
   for (NSUInteger i = 0; i < s.length; i++) post(EV_CHAR, 0, 0, (float)[s characterAtIndex:i]);
 }
 - (void)windowWillClose:(NSNotification *)n { post(EV_CLOSE, 0, 0, 0); }
+// Dragging the window's edges (or full screen) resizes the device's display, as a resizable emulator does: the new
+// size goes to the Java side in device pixels, which reconfigures the app and calls nativeResize. While dragging,
+// the last frame stays pinned top left at its own scale rather than stretching.
+- (void)postResize:(BOOL)done {
+  if (selfResizing) return;
+  NSSize s = self.window.contentView.bounds.size;
+  post(EV_RESIZE, (float)(s.width * deviceScale), (float)(s.height * deviceScale), done ? 1 : 0);
+}
+- (void)windowWillStartLiveResize:(NSNotification *)n {
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  frameLayer.contentsScale = deviceScale;
+  // Gravity is in the layer's own coordinates, and this one is top-down (the view is flipped): visually top left.
+  frameLayer.contentsGravity = frameLayer.contentsAreFlipped ? kCAGravityBottomLeft : kCAGravityTopLeft;
+  [CATransaction commit];
+}
+- (void)windowDidResize:(NSNotification *)n { [self postResize:!self.window.inLiveResize]; }
+- (void)windowDidEndLiveResize:(NSNotification *)n { [self postResize:YES]; }
 @end
 
 // Not the GCD main queue: [NSApp run] never returns, and that queue is serial, so anything queued
@@ -412,11 +445,24 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset) 
 
   NSRect frame = NSMakeRect(80 + xOffset, 80, w / scale, h / scale);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame
-                                                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+                                                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                                                           NSWindowStyleMaskResizable
                                                    backing:NSBackingStoreBuffered
                                                      defer:NO];
   window.title = title;
   window.releasedWhenClosed = NO;
+  window.contentMinSize = NSMakeSize(160, 160);
+  // A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit, as Fit Screen would.
+  NSRect visible = (window.screen ?: NSScreen.mainScreen).visibleFrame;
+  CGFloat titleBar = window.frame.size.height - frame.size.height;
+  float fit = MAX(h / (visible.size.height - titleBar), w / visible.size.width);
+  if (visible.size.width > 0 && fit > scale) {
+    deviceScale = scale = fit;
+    selfResizing = YES;
+    [window setContentSize:NSMakeSize(w / scale, h / scale)];
+    selfResizing = NO;
+    frame.size = NSMakeSize(w / scale, h / scale);
+  }
   SimView *view = [[SimView alloc] initWithFrame:NSMakeRect(0, 0, w / scale, h / scale)];
   view.wantsLayer = YES;
   frameLayer = [CALayer layer];
@@ -438,7 +484,7 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset) 
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeOpen(JNIEnv *env, jclass c, jint w, jint h, jfloat scale, jstring title, jint xOffset) {
   devW = w;
   devH = h;
-  deviceScale = scale;
+  deviceScale = openScale = scale;
   for (int i = 0; i < SURFACES; i++) {
     NSDictionary *props = @{
       (id)kIOSurfaceWidth : @(w),
@@ -660,12 +706,10 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env
 
 // Window size only: the app keeps its pixels, the layer scales them, and input divides by the same factor.
 // 0 = actual size (as opened), 1 = fit the screen's height, 2 = zoom in, 3 = zoom out.
-static float openScale;
 static void layoutAfterZoom(void);
 static void setZoom(int how) {
   NSWindow *win = NSApp.windows.firstObject;
   if (!win) return;
-  if (!openScale) openScale = deviceScale;
   float s = deviceScale;
   NSRect visible = win.screen.visibleFrame;
   CGFloat titleBar = win.frame.size.height - [win contentRectForFrameRect:win.frame].size.height;
@@ -685,7 +729,9 @@ static void setZoom(int how) {
   // Keep it on screen.
   if (NSMinY(frame) < NSMinY(visible)) frame.origin.y = NSMinY(visible);
   if (NSMaxY(frame) > NSMaxY(visible)) frame.origin.y = NSMaxY(visible) - frame.size.height;
+  selfResizing = YES;
   [win setFrame:frame display:YES animate:NO];
+  selfResizing = NO;
   layoutAfterZoom();
 }
 
@@ -697,7 +743,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeZoom(JNIEnv *env, jclass 
 
 // New display size: new IOSurfaces (the old ones are released once Core Animation lets go of them), a window of
 // the new shape, and overlays laid out again (the Java side re-sends the system bars).
-JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclass c, jint w, jint h) {
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclass c, jint w, jint h, jboolean actualSize) {
   IOSurfaceRef old[SURFACES];
   for (int i = 0; i < SURFACES; i++) {
     old[i] = surfaces[i];
@@ -715,13 +761,29 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclas
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
     NSWindow *win = NSApp.windows.firstObject;
-    NSRect frame = win.frame;
-    NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
-    NSRect content = [win contentRectForFrameRect:frame];
-    // Keep the window's top left corner where it was.
-    content.origin.y += content.size.height - size.height;
-    content.size = size;
-    [win setFrame:[win frameRectForContentRect:content] display:YES animate:NO];
+    // While the user drags an edge the window is already the size asked for (to a pixel): leave it to them.
+    if (!win.inLiveResize && !(win.styleMask & NSWindowStyleMaskFullScreen)) {
+      NSRect visible = win.screen.visibleFrame;
+      NSRect frame = win.frame;
+      CGFloat titleBar = frame.size.height - [win contentRectForFrameRect:frame].size.height;
+      // Another device opens at actual size, and a display too big for the Mac's screen (a TV, say) zoomed out to fit.
+      if (actualSize) deviceScale = openScale;
+      float fit = MAX(h / (visible.size.height - titleBar), w / visible.size.width);
+      if (visible.size.width > 0 && fit > deviceScale) deviceScale = fit;
+      NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
+      NSRect content = [win contentRectForFrameRect:frame];
+      // Keep the window's top left corner where it was, and on screen.
+      content.origin.y += content.size.height - size.height;
+      content.size = size;
+      frame = [win frameRectForContentRect:content];
+      if (NSMinY(frame) < NSMinY(visible)) frame.origin.y = NSMinY(visible);
+      if (NSMaxX(frame) > NSMaxX(visible)) frame.origin.x = MAX(NSMinX(visible), NSMaxX(visible) - frame.size.width);
+      selfResizing = YES;
+      [win setFrame:frame display:YES animate:NO];
+      selfResizing = NO;
+      frameLayer.contentsGravity = kCAGravityResize;
+    }
+    frameLayer.contentsScale = deviceScale;
     frameLayer.contents = nil;
     layoutAfterZoom();
     dispatch_semaphore_signal(done);
@@ -731,6 +793,25 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclas
   for (int i = 0; i < SURFACES; i++) {
     if (old[i]) CFRelease(old[i]);
   }
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTitle(JNIEnv *env, jclass c, jstring title) {
+  const char *t = (*env)->GetStringUTFChars(env, title, NULL);
+  NSString *ns = [NSString stringWithUTF8String:t];
+  (*env)->ReleaseStringUTFChars(env, title, t);
+  onMain(^{ NSApp.windows.firstObject.title = ns; });
+}
+
+// Sets the window's content size in points as a drag of its corner would end (the `window` control command), so
+// scripts can check the path a user's resize takes.
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, jclass c, jint wPts, jint hPts) {
+  onMain(^{
+    NSWindow *win = NSApp.windows.firstObject;
+    NSRect content = [win contentRectForFrameRect:win.frame];
+    content.origin.y += content.size.height - hPts;
+    content.size = NSMakeSize(wPts, hPts);
+    [win setFrame:[win frameRectForContentRect:content] display:YES animate:NO];
+  });
 }
 
 // The overlays are laid out in points: rebuild them for the new window size (the Java side re-sends the bars).

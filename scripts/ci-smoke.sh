@@ -28,5 +28,16 @@ drive 'tap 300 256' 'wait 1500' 'shot /work/trips.png' >/dev/null
 after="$(trip)"
 echo "Trips: $before -> $after"
 [[ -n "$before" && -n "$after" && "$before" != "$after" ]] || { echo "the trip rename did not show" >&2; exit 1; }
+
+# Adaptive layout: the test app shows its window size class in the top bar. Another device, then a custom size.
+sizeclass() { drive nodes | grep -oE 'text="(compact|medium|expanded) [0-9]+×[0-9]+"' | head -1; }
+drive 'device tablet' 'wait 2000' >/dev/null
+tablet="$(sizeclass)"
+drive 'size 700x900' 'wait 2000' >/dev/null
+medium="$(sizeclass)"
+drive 'device phone' 'wait 2000' >/dev/null
+echo "Size classes: $tablet, $medium, $(sizeclass)"
+[[ "$tablet" == 'text="expanded 1280×800"' && "$medium" == 'text="medium 700×900"' ]] \
+  || { echo "the app did not follow the display's new size" >&2; exit 1; }
 drive quit >/dev/null || true
 echo "smoke test passed"
