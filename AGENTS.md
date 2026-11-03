@@ -49,6 +49,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     alone and inside a parent as scaled, rotated and nested layers. `shaders` reports `rasters` (open content
     rasters) and `discards`. Memory freed only at GC: HotSpot does not count native memory (Bitmap pixels, renderers)
     towards collecting as ART does, so free native-backed objects eagerly where the code knows they are done.
+    `GpuBitmaps`: app `drawBitmap(bitmap, src, dst, paint)` calls (Compose's drawImage) that scale a filtered bitmap
+    onto whole device pixels get a copy already that size, resampled once on Metal (bilinear in float, as Skia), which
+    HWUI then blits 1:1; Skia's CPU bilinear was most of Atlas's frame. Copies are cached (96 MB, LRU) and made only
+    for a size asked for again within 8 frames, so zooms stay on the CPU. `-Dapksim.gpuBitmaps=false` turns it off;
+    `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
+    a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
@@ -320,12 +326,14 @@ server can ANR; `both.py` retakes shots until the two agree.
 - MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. At end of stream the
   video decoders lose the 1-3 pictures they still hold for reordering (see "Video"): Robolectric gives one output
   per input.
-- Layer-content RenderEffects now run on Metal (`GpuRenderNode`). the large app, fps with them on the CPU → on
-  Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30. What is left is the
+- Layer-content RenderEffects run on Metal (`GpuRenderNode`). the large app, fps with them on the CPU → on
+  Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30, and Atlas panning
+  26 → 64-73 once scaled bitmaps went to the GPU and readback stopped untiling (2026-11-03). What is left is the
   content raster: each effect layer is a second HWUI frame on the one render thread, serialized after the screen's
-  frame and waited for on the main thread (Atlas: two full-screen layers, ~5 ms raster + ~3 ms shader and readback
-  each). Not tried: one frame behind (as TrackedRuntimeShader), rendering into Bitmap memory, one renderer for all
-  layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay on the CPU.
+  frame and waited for on the main thread (Atlas: two full-screen layers, ~6 ms raster + 0.8 ms shader each). Not
+  tried: one frame behind (it would not help much: the render thread, not the main thread, is the limit), one
+  renderer for all layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay
+  on the CPU.
 - No Health Connect service, so the large app Fitness hides its Body card and Heart rate chip that the emulator shows.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
 - Real mouse and keyboard in the window were first used by the owner on 2026-11-02 (the large app login). Scripted input

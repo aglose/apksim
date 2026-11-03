@@ -33,7 +33,7 @@ public class TrackedRuntimeShader extends RuntimeShader {
       b.append(String.format("%s gpuRuns=%d created=%d effect=%d %s :: %s | ", where, c.uses()[0], c.uses()[1], c.uses()[2],
           c.why() == null ? "" : c.why(), first.substring(0, Math.min(70, first.length()))));
     });
-    return b.append(GpuRenderNode.report()).toString();
+    return b.append(GpuRenderNode.report()).append(" | ").append(GpuBitmaps.report()).toString();
   }
 
   public static long renders;
