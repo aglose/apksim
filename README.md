@@ -1,0 +1,113 @@
+# apksim
+
+Runs unmodified Android APKs on an Apple Silicon Mac as a single ordinary process, with no VM.
+
+    scripts/setup.sh                 # once
+    ./apksim app.apk                 # run it
+    ./apksim --device foldable app.apk
+
+After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location.
+
+It also runs headless on Linux x86_64 in a 488 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
+
+Options: `--device phone|foldable|tablet|desktop`, `--no-network`, `--no-sandbox`, `--headless`,
+`--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
+`--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`.
+
+The window has the iOS Simulator's menus where Android has the same thing: screenshots and screen recording, Home,
+Lock, volume, rotation, zoom, dark appearance, text size, language, location (fixed or moving), fingerprint, Open URL,
+slow animations and memory warnings, two-finger gestures with Option-drag, a drawn status bar, permission prompts,
+notification banners, and a clipboard shared with the Mac. `scripts/ctl.py` drives running
+instances like `xcrun simctl`. See [docs/ios-simulator-parity.md](docs/ios-simulator-parity.md) for what is left.
+
+## Speed
+
+Measured here (M4 Pro, 24 GB) from launching the process to the app's first frame, median of 7 runs
+(`scripts/bench.py`).
+
+| | Window | App on screen | Memory |
+|---|---|---|---|
+| apksim, small Compose app | 0.15 s | 2.5 s | ~550-780 MB |
+| apksim, the large app (R8, 12 MB DEX, SQLite + WebRTC .so) | 0.15 s | 2.6 s | |
+| apksim, the large app's debug build (179 MB APK) | 0.15 s | 3.3 s | |
+| Stock emulator, Quick Boot snapshot (same small app) | - | 8.3-9.0 s | 3-4 GB |
+| Stock emulator, full boot | - | 18 s | 3.3-4 GB |
+
+## How it works
+
+- **Framework:** real AOSP Android 16 (API 36) code, from Robolectric's `android-all`, with its native
+  Skia/HWUI/SQLite for macOS. Robolectric's shadows stand in for system services.
+- **App code:** `runtime/.../dex/` translates DEX to JVM bytecode lazily, class by class, as classes are
+  first loaded (about 5,400 classes in about 0.6 s). Methods over the JVM's 64 KB limit are split automatically.
+  Translated classes are kept in `work/cache/classes` per DEX file, so later launches skip translation, and a
+  rebuilt APK only retranslates the DEX files that changed, on worker threads using the class list from the
+  previous launch. DEX files are mapped from the APK rather than copied onto the Java heap. With a warm cache,
+  first frame went from 1.79 to 1.43 s (test app), 1.83 to 1.66 s (the large app) and 2.38 to 1.78 s (the large app
+  debug), medians of 5 interleaved runs on a busy machine.
+- **Memory:** a 64 MB young generation (was 256 MB) and the mapped DEX files brought the footprint at first frame
+  from about 580 to 410 MB (test app) and 750 to 450 MB (the large app's debug build). GC pauses while scrolling went from
+  about 12 ms median (50 ms worst) to about 1 ms (9 ms worst), because fewer objects survive each collection.
+- **Native code:** `native/` loads Android arm64 ELF `.so` files directly (same CPU, so no emulation), with a
+  bionic-to-macOS shim for structs, constants, errno and pthreads, and a bridge for the varargs ABI difference.
+- **Pixels:** Android's real render pipeline draws into a buffer that goes straight to an IOSurface on a
+  native Cocoa window, about 0.5 ms per frame to present.
+- **Startup:** the JVM's AOT cache covers the framework, for any APK, so there is no per-APK install step.
+
+## Frame rate
+
+Frames follow a fixed 120 Hz grid, like a display's vsync. Measured with `--control` scripts (`frames`
+command: time between frames reaching the window):
+
+| Workload | Average | On the 120 Hz grid |
+|---|---|---|
+| Compose list fling | 117-120 fps | ~65-75% of frames |
+| Full-screen 6-octave noise shader, every frame (test app's Shader tab) | 118 fps | ~70-80% |
+| Three instances at once (phone, foldable, desktop), shader on each | 120 fps | ~84% |
+| the large app apps sheet opening / closing | 117-118 fps | ~82-85% |
+
+Frames off the grid are typically 9-12 ms rather than dropped. Idle shader screens in the large app update at 30 Hz
+because the app steps its shader clocks at 30 Hz on purpose (`rememberShaderClock(frameSeconds = 1f / 30f)`).
+
+How it gets there:
+- **AGSL shaders run on the GPU.** The library's renderer is CPU-only and interpreted shaders per pixel (about 5 fps
+  on the large app). App calls are rewritten so `RuntimeShader` draws are translated to Metal (`runtime/.../gpu/`),
+  rendered a frame ahead, and drawn as bitmaps. 20 of the large app's 29 shaders translate. Shaders that take
+  layer content (`RenderEffect.createRuntimeShaderEffect`) still run on the CPU.
+- **Rasterizing overlaps recording.** HWUI's synchronous draw runs on its own thread, and the main thread starts on
+  the next frame as soon as HWUI has synced.
+- **Ripples use the plain solid style.** The patterned Material ripple costs ~15 ms a frame on the CPU, and its
+  render-thread animation never finished here. The visible difference is the absence of the sparkle texture.
+- **Smaller fixes:** the simulated clock no longer loses sub-millisecond time, the frame threads get interactive
+  priority, and a startup full GC is avoided.
+
+What is still CPU-bound: HWUI rasterizes on one core, about 6-7 ms for a busy full-screen frame, which is close to
+the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on some frames.
+
+## Limits
+
+- **Rasterizing is CPU-only, on one core.** See Frame rate above.
+- **Older native libraries fail to load.** Code and data must not share a 16 KB page, because macOS forbids
+  writable + executable memory. Libraries built with 4 KB alignment (Flipper, and its libc++ here) get an
+  UnsatisfiedLinkError. Those built 16 KB aligned work. So an app's debug build, which uses Flipper, does not start.
+- **APKs need arm64-v8a** for native code. Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
+  not work: those libraries are stubs.
+- **The native C library shim is partial.** It covers roughly the 300 functions these APKs import. Sockets from
+  native code are not translated (`sockaddr` differs), and an unsupported call prints its name.
+- **It is not a device.** System services are stand-ins (no Play Services, Health Connect, real camera, sensors or
+  notifications shade), other apps do not exist, and intents leaving the app are ignored. Services and exported
+  components are not started. Treat it as a fast UI and logic check, not a compatibility guarantee.
+- **Security:** an APK runs as code in this process. `sandbox-exec` confines it: writes only under `work/` and
+  temp, no reads of `~/.ssh`, `~/Documents`, keychains and similar. It is deprecated by Apple and is a safeguard
+  for your own apps, not a boundary for hostile ones.
+
+## Tested
+
+`testapks/composeapp`: taps, swipes and flings, FAB state, navigation, SQLite write surviving a restart,
+three device sizes at once. the large app: first screen, typing, sheet with back, AGSL backgrounds, live network
+data, and its Android `libsqliteJni.so` writing a database that `sqlite3` validates (55 tables, integrity ok).
+Signed in to the large app, every screen reached (sign-in, apps drawer, Weather tabs, Atlas, Fitness, Finance, Home,
+camera page, Moments, Settings and its pages) matched an API 36 emulator at the same size to within a mean pixel
+difference of about 2/255, apart from Health Connect content and animation timing. Live camera video (WebRTC) and recorded
+clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox.
+`scripts/drive.py` scripts a running instance over `--control`. All input tests went through that channel: the
+window's own mouse, trackpad and keyboard handling is written but has not been exercised by a test.
