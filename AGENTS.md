@@ -154,7 +154,12 @@ Recorded video: `ShadowSimMediaCodec` lists `apksim.avc.decoder` (H.264) and `ap
 both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioToolbox (`native/audio.m`) in
 MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
 codecs by name; a miss falls back to Robolectric's 512-byte fake). Its placeholders are told apart by identity, so
-each must be its own object: one non-capturing lambda is a single shared instance. Video output buffers carry a
+each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
+`native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
+with their own timestamps: Robolectric pairs each input with one output that keeps the input's timestamp, and with
+B-frames (decode order pts 0, 66, 33, ...) ExoPlayer dropped 58 of 90 frames as late. A few pictures are held back
+(2, growing to 4 when one arrives older than one already out); inputs that give no output yet are passed on with
+API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
 reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
@@ -258,11 +263,9 @@ server can ANR; `both.py` retakes shots until the two agree.
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL drawn as a paint with `uniform shader` inputs set by `setInputShader` (the large app's HEAT_SHADER `body`/`muscle`)
   still runs on the CPU; only a RenderEffect's layer content is bound as a texture.
-- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. The test app's
-  "Play clip" plays through in real time (3.0 s of media in 3.2-3.4 s, with or without sound), **but ExoPlayer drops
-  58 of the 90 video frames as late** (`video`: rendered=32 dropped=58), the same with `-Dapksim.audio=false`, so it
-  is not the audio clock. Not investigated yet; suspects: ExoPlayer mixes SystemClock (Robolectric's stepped clock)
-  with System.nanoTime() in its frame-release timing, and its vsync sampler's Choreographer runs on a background looper.
+- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. At end of stream the
+  video decoders lose the 1-3 pictures they still hold for reordering (see "Video"): Robolectric gives one output
+  per input.
 - Layer-content RenderEffects now run on Metal (`GpuRenderNode`). the large app, fps with them on the CPU → on
   Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30. What is left is the
   content raster: each effect layer is a second HWUI frame on the one render thread, serialized after the screen's

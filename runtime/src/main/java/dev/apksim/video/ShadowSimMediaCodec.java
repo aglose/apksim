@@ -162,6 +162,32 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     super.releaseOutputBuffer(index, renderTimestampNs);
   }
 
+  /** MediaCodec's flag for an input that is decoded but gives no output (API 34). Robolectric then recycles it. */
+  private static final int DECODE_ONLY = 32;
+
+  /**
+   * Decodes here rather than in Robolectric's per-buffer process call, so pictures can come out in presentation order.
+   * Robolectric pairs each input with one output that keeps the input's timestamp, but with B-frames pictures decode
+   * out of order (pts 0, 66, 33, ...) and players drop the ones that seem to go back in time as late.
+   */
+  @Implementation
+  @Override
+  protected void native_queueInputBuffer(int index, int offset, int size, long presentationTimeUs, int flags) {
+    if (decoder == null) {
+      super.native_queueInputBuffer(index, offset, size, presentationTimeUs, flags);
+      return;
+    }
+    ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
+    ByteBuffer in = index >= 0 && index < inputs.length ? inputs[index].duplicate() : null;
+    if (in != null) in.limit(offset + size).position(offset);
+    long[] out = decoder.queue(in, presentationTimeUs, flags);
+    if (out == null) {
+      super.native_queueInputBuffer(index, offset, size, presentationTimeUs, flags | DECODE_ONLY);
+    } else {
+      super.native_queueInputBuffer(index, offset, size, out[0], flags & ~DECODE_ONLY);
+    }
+  }
+
   @Implementation
   @Override
   protected void native_flush() {
@@ -215,24 +241,56 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       }
     }
 
+    /** Decoded pictures not yet handed out, as {pts, picture}, earliest first. */
+    private final java.util.PriorityQueue<long[]> held = new java.util.PriorityQueue<>((a, b) -> Long.compare(a[0], b[0]));
+    /** How many pictures are held back before the earliest goes out: grows when one arrives older than one already out. */
+    private int depth = 2;
+    private long lastOut = Long.MIN_VALUE;
+    /** The picture the next process() call puts in its output buffer (0: an empty end-of-stream buffer). */
+    private long nextPicture;
+
+    /**
+     * Decodes one input. Returns {pts} of the picture its output buffer should carry, or null when it gives none yet.
+     * At end of stream the earliest held picture goes out with the flag and the rest are dropped: Robolectric gives
+     * one output per input, so there is no room for more.
+     */
+    long[] queue(ByteBuffer in, long pts, int flags) {
+      if (handle != 0 && in != null && in.remaining() > 0) {
+        STATS.incrementAndGet(0);
+        int r = decode(in);
+        if (r < 0) STATS.incrementAndGet(2);
+        if (r > 0) {
+          STATS.incrementAndGet(1);
+          long picture = VideoToolbox.nativeTakePicture(handle);
+          if ((flags & DECODE_ONLY) != 0 || (flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+            VideoToolbox.nativeReleasePicture(picture);  // decoded for reference only, as the player asked
+          } else {
+            if (pts < lastOut) depth = Math.min(depth + 1, 4);
+            held.add(new long[] {pts, picture});
+          }
+        }
+      }
+      boolean end = (flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+      if (!end && ((flags & (DECODE_ONLY | MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) != 0 || held.size() <= depth)) return null;
+      long[] first = held.poll();
+      if (end) {
+        for (long[] rest : held) VideoToolbox.nativeReleasePicture(rest[1]);
+        held.clear();
+      }
+      nextPicture = first == null ? 0 : first[1];
+      if (first == null) return new long[] {pts};
+      lastOut = Math.max(lastOut, first[0]);
+      synchronized (pictures) {
+        pictures.add(first[1]);
+      }
+      return new long[] {first[0]};
+    }
+
     @Override
     public void process(ByteBuffer in, ByteBuffer out) {
       out.clear();
-      long picture = 0;
-      int r = 0;
-      if (handle != 0 && in.remaining() > 0) {
-        STATS.incrementAndGet(0);
-        r = decode(in);
-        if (r < 0) STATS.incrementAndGet(2);
-      }
-      if (r > 0) {
-        STATS.incrementAndGet(1);
-        picture = VideoToolbox.nativeTakePicture(handle);
-        synchronized (pictures) {
-          pictures.add(picture);
-        }
-      }
-      out.putLong(picture);
+      if (nextPicture != 0) out.putLong(nextPicture);
+      nextPicture = 0;
     }
 
     private int decode(ByteBuffer data) {
@@ -293,6 +351,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     }
 
     void dropPictures() {
+      for (long[] h : held) VideoToolbox.nativeReleasePicture(h[1]);
+      held.clear();
+      nextPicture = 0;
+      lastOut = Long.MIN_VALUE;
       synchronized (pictures) {
         for (long p : pictures) VideoToolbox.nativeReleasePicture(p);
         pictures.clear();
