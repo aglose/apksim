@@ -120,3 +120,7 @@ clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox.
 (`selftest` checks each with a 2 s clip).
 `scripts/drive.py` scripts a running instance over `--control`. All input tests went through that channel: the
 window's own mouse, trackpad and keyboard handling is written but has not been exercised by a test.
+
+## License
+Apache License 2.0: see [LICENSE](LICENSE). Running an APK does not change its own license; Robolectric and the
+Android framework jars that `scripts/setup.sh` downloads keep theirs.
