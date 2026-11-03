@@ -2,7 +2,11 @@
 # Compiles the runtime into work/apksim.jar.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JDK=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+if [[ "$(uname -s)" == Darwin ]]; then
+  JDK="${APKSIM_JDK:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home}"
+else
+  JDK="${APKSIM_JDK:-${JAVA_HOME:?set JAVA_HOME (or APKSIM_JDK) to a JDK 24}}"
+fi
 CP="$(ls "$ROOT"/work/lib/*.jar | tr '\n' ':')"
 rm -rf "$ROOT/work/classes"
 mkdir -p "$ROOT/work/classes"
