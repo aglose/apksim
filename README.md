@@ -14,7 +14,7 @@ After moving the folder, run `scripts/train.sh` once: the startup cache is tied 
 
 It also runs headless on Linux x86_64 in a 488 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
 
-Options: `--device phone|foldable|tablet|desktop`, `--no-network`, `--no-sandbox`, `--headless`,
+Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
 `--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
 `--soft-keyboard`, `--adb PORT|auto`, `--debug PORT`, `--jvm ARG`.
@@ -22,6 +22,10 @@ Options: `--device phone|foldable|tablet|desktop`, `--no-network`, `--no-sandbox
 For tools: `--adb PORT` makes the instance an adb device (`adb connect localhost:PORT`, then `adb shell`, `push`/`pull`,
 `logcat`, `screencap`), and `--debug PORT` lets Android Studio or IntelliJ's "Remote JVM Debug" stop at breakpoints in
 the app's own Kotlin and Java sources.
+
+The window is resizable: dragging its edges resizes the app's display in dp, as a resizable emulator or a
+freeform window does, so adaptive Compose layouts (window size classes, `BoxWithConstraints`) follow live. Device >
+Device Type (Cmd+Shift+1-5) switches between phone, foldable, tablet, desktop and TV while the app runs.
 
 The window has the iOS Simulator's menus where Android has the same thing: screenshots and screen recording, Home,
 Lock, volume, rotation, zoom, dark appearance, text size, language, location (fixed or moving), fingerprint, Open URL,
