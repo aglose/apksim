@@ -45,7 +45,11 @@ final class ClassCache {
 
   private record Fresh(byte[] bytes, String[] owners, byte[] answers) {}
 
+  /** The cache this process opened, for {@link #flush} on the way out. */
+  private static volatile ClassCache open;
+
   private final Path dir;
+  private final Object saving = new Object();
   private final String[] keys;
   private final Map<String, Entry>[] loaded;
   private final Map<String, Fresh>[] fresh;
@@ -86,6 +90,7 @@ final class ClassCache {
     saver.setDaemon(true);
     saver.setPriority(Thread.MIN_PRIORITY);
     saver.start();
+    open = cache;
     return cache;
   }
 
@@ -143,7 +148,9 @@ final class ClassCache {
           now = unsaved;
         }
         if (now > 0 && now == seen) {
-          save();
+          synchronized (saving) {
+            save();
+          }
           seen = 0;
         } else {
           seen = now;
@@ -151,6 +158,18 @@ final class ClassCache {
       }
     } catch (InterruptedException ignored) {
       // Daemon thread: the process is going away.
+    }
+  }
+
+  /** Saves what this process translated since the last save, before it exits (it halts, so no daemon gets to). */
+  static void flush() {
+    ClassCache cache = open;
+    if (cache == null) return;
+    synchronized (cache.saving) {
+      synchronized (cache) {
+        if (cache.unsaved == 0) return;
+      }
+      cache.save();
     }
   }
 

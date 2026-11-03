@@ -75,6 +75,8 @@ static void setZoom(int how);
 @implementation MenuTarget
 - (void)fire:(NSMenuItem *)item { post(EV_COMMAND, (float)item.tag, 0, 0); }
 - (void)zoom:(NSMenuItem *)item { setZoom((int)item.tag); }
+// Quit as closing the window does, so the app's main thread exits on its own path (it saves caches first).
+- (void)quit:(id)sender { post(EV_CLOSE, 0, 0, 0); }
 - (void)ask:(NSMenuItem *)item {
   NSAlert *a = [NSAlert new];
   BOOL url = item.tag == TAG_OPEN_URL, loc = item.tag == TAG_LOCATION_CUSTOM;
@@ -375,9 +377,10 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset) 
   NSMenuItem *appItem = [[NSMenuItem alloc] init];
   [menu addItem:appItem];
   NSMenu *appMenu = [[NSMenu alloc] init];
-  [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+  NSMenuItem *quit = [appMenu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
   appItem.submenu = appMenu;
   buildMenus(menu);
+  quit.target = menuTarget;
   NSApp.mainMenu = menu;
 
   NSRect frame = NSMakeRect(80 + xOffset, 80, w / scale, h / scale);
