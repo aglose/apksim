@@ -26,6 +26,8 @@ public final class Main {
     }
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
+    String adb = System.getProperty("apksim.adb");
+    if (adb != null) AdbServer.start(adb.equals("auto") ? 0 : Integer.parseInt(adb));
     Device device = Device.named(System.getProperty("apksim.device", "phone"));
     System.setProperty("apksim.qualifiers", device.qualifiers());
     SimWindow.open(device.widthPx(), device.heightPx(), device.density(), Path.of(args[0]).getFileName() + " - " + device.name());
