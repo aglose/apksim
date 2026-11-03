@@ -80,7 +80,8 @@ How it gets there:
   on Metal; the one that takes child shaders as a paint (Fitness's heat map) still runs on the CPU. Shaders over a
   layer's content (`RenderEffect.createRuntimeShaderEffect`, set through Compose's graphicsLayer) run on Metal too: the
   layer's content is rasterized on its own, uploaded as a texture, shaded, and drawn as a bitmap (HomeSafe's camera
-  page 49 → 130 fps, Weather 23 → 86, Atlas 8.6 → 30).
+  page 49 → 130 fps, Weather 23 → 86, Atlas 8.6 → 30). Scaled bitmaps (map and photo tiles) are resampled on Metal
+  once and then blitted 1:1, which took Atlas panning from 26 to 64-73 fps.
 - **Rasterizing overlaps recording.** HWUI's synchronous draw runs on its own thread, and the main thread starts on
   the next frame as soon as HWUI has synced.
 - **Ripples use the plain solid style.** The patterned Material ripple costs ~15 ms a frame on the CPU, and its
