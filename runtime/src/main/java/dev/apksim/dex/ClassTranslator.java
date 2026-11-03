@@ -17,6 +17,11 @@ import org.objectweb.asm.Type;
 
 /** Translates one class_def of a dex file to a JVM class file. */
 public final class ClassTranslator implements Opcodes {
+  /**
+   * Emit line numbers, local variables and Kotlin's SMAP, for a JVM debugger (`apksim --debug PORT`). Off otherwise:
+   * the bigger classes cost ~30 ms of a warm launch to load, and ~5% more translation time.
+   */
+  static final boolean DEBUG_INFO = Boolean.getBoolean("apksim.debugInfo");
   private static final int VIS_RUNTIME = 1;
   private static final int VIS_SYSTEM = 2;
 
@@ -33,6 +38,7 @@ public final class ClassTranslator implements Opcodes {
   private int classAnnots;
 
   private String signature;
+  private String sourceDebug;
   private String outerClass;
   private String[] outerMethod;
   private String innerName;
@@ -63,6 +69,7 @@ public final class ClassTranslator implements Opcodes {
     annotationDefaults = Map.of();
     memberClasses = null;
     signature = null;
+    sourceDebug = null;
     outerClass = null;
     outerMethod = null;
     innerName = null;
@@ -98,7 +105,7 @@ public final class ClassTranslator implements Opcodes {
     cw.visit(V1_8, classAccess, name, signature, sup, interfaces);
 
     int src = dex.i32(def + 16);
-    if (src != -1) cw.visitSource(dex.string(src), null);
+    if (src != -1 || sourceDebug != null) cw.visitSource(src == -1 ? null : dex.string(src), sourceDebug);
     if (outerMethod != null) {
       cw.visitOuterClass(outerMethod[0], outerMethod[1], outerMethod[2]);
     } else if (outerClass != null && innerName == null && innerAccess != -1) {
@@ -255,6 +262,8 @@ public final class ClassTranslator implements Opcodes {
       Map<String, Object> vals = readElements(cur);
       switch (type) {
         case "Ldalvik/annotation/Signature;" -> signature = joinSignature(vals.get("value"));
+        // Kotlin's SMAP: lets a debugger map inlined functions' lines back to their own files.
+        case "Ldalvik/annotation/SourceDebugExtension;" -> sourceDebug = DEBUG_INFO ? smap((String) vals.get("value")) : null;
         case "Ldalvik/annotation/EnclosingClass;" -> outerClass = internal(((Type) vals.get("value")).getDescriptor());
         case "Ldalvik/annotation/EnclosingMethod;" -> {
           if (vals.get("value") instanceof DexFile.MethodRef m) {
@@ -278,6 +287,14 @@ public final class ClassTranslator implements Opcodes {
         }
       }
     }
+  }
+
+  /**
+   * Kotlin sometimes maps lines from input line -1 (androidx.collection has 22 such classes), and JDI's SMAP
+   * parser then throws for the whole class, so a debugger could not set breakpoints in it. Those lines map nothing.
+   */
+  private static String smap(String s) {
+    return s != null && s.contains("\n-") ? s.replaceAll("(?m)^-\\d+[^\n]*\n", "") : s;
   }
 
   private String signatureFrom(int set) {
