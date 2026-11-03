@@ -279,6 +279,25 @@ int impl_sscanf(const char *s, const char *f, AVaList *v) {
 }
 THUNK(sscanf_thunk, 2, impl_sscanf)
 int s_vsscanf(const char *s, const char *f, AVaList *v) { AVaList c = *v; return impl_sscanf(s, f, &c); }
+int impl_fscanf(FILE *in, const char *f, AVaList *v) {
+  void *p[MAX_SCAN];
+  for (int i = 0; i < MAX_SCAN; i++) p[i] = (void *)va_gr(v);
+  return fscanf(map_file(in), f, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11]);
+}
+THUNK(fscanf_thunk, 2, impl_fscanf)
+// Android's syslog goes to the log; here to stderr, like __android_log_print. libSystem's would read the arguments
+// the Apple way and crash (libwebrtc logs through it).
+void impl_syslog(int prio, const char *f, AVaList *v) {
+  char buf[4096];
+  a_vsnprintf(buf, sizeof buf, f, v);
+  static const char android_prio[8] = {7, 7, 7, 6, 5, 4, 4, 3};  // LOG_EMERG..LOG_DEBUG -> F F F E W I I D
+  fprintf(stderr, "%s/syslog: %s\n", log_level(android_prio[prio & 7]), buf);
+}
+THUNK(syslog_thunk, 2, impl_syslog)
+static void s_vsyslog(int prio, const char *f, AVaList *v) {
+  AVaList c = *v;
+  impl_syslog(prio, f, &c);
+}
 
 // ---------------------------------------------------------------- errno
 
@@ -835,6 +854,7 @@ static const Entry table[] = {
     E("__snprintf_chk", snprintf_chk_thunk), E("__sprintf_chk", sprintf_chk_thunk),
     E("vsnprintf", s_vsnprintf), E("vsprintf", s_vsprintf), E("vfprintf", s_vfprintf), E("vasprintf", s_vasprintf),
     E("__vsnprintf_chk", s_vsnprintf_chk), E("sscanf", sscanf_thunk), E("vsscanf", s_vsscanf),
+    E("fscanf", fscanf_thunk), E("syslog", syslog_thunk), E("vsyslog", s_vsyslog),
     E("__android_log_print", log_print_thunk), E("__android_log_vprint", s_log_vprint), E("__android_log_write", s_log_write),
     E("__android_log_assert", log_assert_thunk), E("__android_log_is_loggable", s_api_level),
     E("android_set_abort_message", s_set_abort_message), E("android_get_device_api_level", s_api_level),
