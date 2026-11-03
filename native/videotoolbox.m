@@ -1,5 +1,6 @@
-// H.264 decoding for Android apps' video (dev.apksim.video.VideoToolbox), on VideoToolbox. Input is what
-// libwebrtc hands an Android decoder: one access unit of Annex B NAL units. Output is copied out as I420.
+// H.264 and HEVC (H.265) decoding for Android apps' video (dev.apksim.video.VideoToolbox), on VideoToolbox. Input is
+// what libwebrtc or a media player hands an Android decoder: one access unit of Annex B NAL units. Output is copied out
+// as I420, or kept as a picture for MediaCodec.
 #import <Accelerate/Accelerate.h>
 #import <CoreMedia/CoreMedia.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -11,8 +12,9 @@
 typedef struct {
   CMVideoFormatDescriptionRef format;
   VTDecompressionSessionRef session;
-  uint8_t sps[512], pps[512];
-  size_t spsLen, ppsLen;
+  int hevc;
+  uint8_t vps[512], sps[512], pps[512];  // vps: HEVC only
+  size_t vpsLen, spsLen, ppsLen;
   CVPixelBufferRef picture;  // The latest decoded picture, NV12.
   OSStatus lastError;
 } Decoder;
@@ -41,9 +43,15 @@ static void dropSession(Decoder *d) {
 
 static int makeSession(Decoder *d) {
   dropSession(d);
-  const uint8_t *sets[2] = {d->sps, d->pps};
-  const size_t sizes[2] = {d->spsLen, d->ppsLen};
-  if (CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &d->format) != noErr) return -1;
+  if (d->hevc) {
+    const uint8_t *sets[3] = {d->vps, d->sps, d->pps};
+    const size_t sizes[3] = {d->vpsLen, d->spsLen, d->ppsLen};
+    if (CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, 3, sets, sizes, 4, NULL, &d->format) != noErr) return -1;
+  } else {
+    const uint8_t *sets[2] = {d->sps, d->pps};
+    const size_t sizes[2] = {d->spsLen, d->ppsLen};
+    if (CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &d->format) != noErr) return -1;
+  }
   int fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
   CFNumberRef fmtNum = CFNumberCreate(NULL, kCFNumberIntType, &fmt);
   const void *keys[] = {kCVPixelBufferPixelFormatTypeKey};
@@ -71,8 +79,10 @@ static long nextNal(const uint8_t *p, long n, long at, const uint8_t **nal, long
   return j;
 }
 
-JNIEXPORT jlong JNICALL Java_dev_apksim_video_VideoToolbox_nativeCreate(JNIEnv *env, jclass c) {
-  return (jlong)(intptr_t)calloc(1, sizeof(Decoder));
+JNIEXPORT jlong JNICALL Java_dev_apksim_video_VideoToolbox_nativeCreate(JNIEnv *env, jclass c, jboolean hevc) {
+  Decoder *d = calloc(1, sizeof(Decoder));
+  d->hevc = hevc;
+  return (jlong)(intptr_t)d;
 }
 
 JNIEXPORT void JNICALL Java_dev_apksim_video_VideoToolbox_nativeRelease(JNIEnv *env, jclass c, jlong h) {
@@ -94,10 +104,12 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_VideoToolbox_nativeDecode(JNIEnv *e
   long len;
   for (long at = 0; (at = nextNal(p, length, at, &nal, &len)) >= 0;) {
     if (len <= 0) continue;
-    int type = nal[0] & 0x1f;
-    if (type == 7 || type == 8) {
-      uint8_t *dst = type == 7 ? d->sps : d->pps;
-      size_t *dstLen = type == 7 ? &d->spsLen : &d->ppsLen;
+    // H.264: SPS 7, PPS 8, delimiter 9, slices 1-5. HEVC: VPS 32, SPS 33, PPS 34, delimiter 35, slices 0-31.
+    int type = d->hevc ? (nal[0] >> 1) & 0x3f : nal[0] & 0x1f;
+    int set = d->hevc ? (type == 32 ? 0 : type == 33 ? 1 : type == 34 ? 2 : -1) : (type == 7 ? 1 : type == 8 ? 2 : -1);
+    if (set >= 0) {
+      uint8_t *dst = set == 0 ? d->vps : set == 1 ? d->sps : d->pps;
+      size_t *dstLen = set == 0 ? &d->vpsLen : set == 1 ? &d->spsLen : &d->ppsLen;
       if (len <= 512 && (*dstLen != (size_t)len || memcmp(dst, nal, (size_t)len))) {
         memcpy(dst, nal, (size_t)len);
         *dstLen = (size_t)len;
@@ -105,14 +117,14 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_VideoToolbox_nativeDecode(JNIEnv *e
       }
       continue;
     }
-    if (type == 9) continue;  // Access unit delimiter.
-    if (type >= 1 && type <= 5) vcl = 1;
+    if (type == (d->hevc ? 35 : 9)) continue;  // Access unit delimiter.
+    if (d->hevc ? type <= 31 : type >= 1 && type <= 5) vcl = 1;
     uint32_t be = CFSwapInt32HostToBig((uint32_t)len);
     memcpy(avcc + avccLen, &be, 4);
     memcpy(avcc + avccLen + 4, nal, (size_t)len);
     avccLen += 4 + (size_t)len;
   }
-  if ((changed || !d->session) && d->spsLen && d->ppsLen && makeSession(d) < 0) {
+  if ((changed || !d->session) && d->spsLen && d->ppsLen && (d->vpsLen || !d->hevc) && makeSession(d) < 0) {
     free(avcc);
     return -1;
   }
