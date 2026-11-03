@@ -68,9 +68,14 @@ final class HwRenderer {
     renderer.setContentRoot(rootNode);
     DisplayMetrics m = context.getResources().getDisplayMetrics();
     TypedArray a = context.obtainStyledAttributes(null, R.styleable.Lighting, 0, 0);
-    renderer.setLightSourceGeometry(m.widthPixels / 2f, a.getDimension(R.styleable.Lighting_lightY, 0f),
-        a.getDimension(R.styleable.Lighting_lightZ, 600f * m.density), a.getDimension(R.styleable.Lighting_lightRadius, 800f * m.density));
-    renderer.setLightSourceAlpha(a.getFloat(R.styleable.Lighting_ambientShadowAlpha, 0.039f), a.getFloat(R.styleable.Lighting_spotShadowAlpha, 0.19f));
+    float lightY = a.getDimension(R.styleable.Lighting_lightY, 0f);
+    float lightZ = a.getDimension(R.styleable.Lighting_lightZ, 600f * m.density);
+    float lightRadius = a.getDimension(R.styleable.Lighting_lightRadius, 800f * m.density);
+    float ambient = a.getFloat(R.styleable.Lighting_ambientShadowAlpha, 0.039f);
+    float spot = a.getFloat(R.styleable.Lighting_spotShadowAlpha, 0.19f);
+    renderer.setLightSourceGeometry(m.widthPixels / 2f, lightY, lightZ, lightRadius);
+    renderer.setLightSourceAlpha(ambient, spot);
+    dev.apksim.gpu.GpuRenderNode.setLight(m.widthPixels / 2f, lightY, lightZ, lightRadius, ambient, spot);
     a.recycle();
     Thread worker = new Thread(this::rasterLoop, "apksim-raster");
     worker.setDaemon(true);
@@ -132,6 +137,9 @@ final class HwRenderer {
       c.restoreToCount(save);
     }
     rootNode.endRecording();
+    // Layers with a runtime-shader RenderEffect over their content: rasterize that content and run the shader
+    // on Metal now, so HWUI only draws the result (see GpuRenderNode).
+    dev.apksim.gpu.GpuRenderNode.beforeSync();
     long t1 = System.nanoTime();
     // Recording may overlap the previous frame's raster, but HWUI takes one frame at a time.
     idle.acquireUninterruptibly();

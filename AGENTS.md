@@ -32,11 +32,18 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `dex/`: the **DEX→JVM translator** (written from scratch; dex2jar miscompiled code and took 30 s). One Dalvik
     register is one JVM local; union-find type inference over values. Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
-    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`.
+    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
+    `new RenderNode` → `GpuRenderNode`.
   - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
-    renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader.
+    renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader. `uniform shader` inputs
+    become textures (`AgslChild`: bilinear, transparent outside, as Skia samples an effect's input).
+    `GpuRenderNode` (Compose's graphicsLayer nodes) runs `createRuntimeShaderEffect(shader, "content")` on Metal:
+    the app's drawing goes into a separate content node, which `HwRenderer.draw` (`beforeSync`, before HWUI syncs)
+    rasterizes every frame with its own HardwareRenderer, uploads, shades, and records into the layer as a bitmap.
+    Anything it cannot do goes to HWUI's CPU effect as before. `-Dapksim.cpuLayerEffects=true` turns it off for A/B
+    runs; `-Dapksim.effectSelfTest=true` compares it with HWUI's CPU result at startup (log: mean diff under 0.12).
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
@@ -213,6 +220,10 @@ server can ANR; `both.py` retakes shots until the two agree.
   `Host.run`), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
 - `scripts/build.sh` writes the jar beside the old one and renames it, so running instances keep their classes.
+- A RenderNode whose last parent goes away (removed from every renderer's tree, or its renderer destroyed) loses its
+  display list in HWUI and draws nothing until recorded again. `GpuRenderNode` closes a content raster only a frame
+  after the content is drawn in the screen's tree again; destroying a HardwareRenderer also deletes the display lists
+  of everything it draws, so it empties its root first.
 - zsh is the shell: `==` and unquoted globs (`--include=*.kt`) break one-liners. Quote them, or use bash/python.
 
 ## Test APKs
@@ -243,14 +254,19 @@ server can ANR; `both.py` retakes shots until the two agree.
   had not changed. But the damage HWUI collects was the whole screen on every frame of the test app (taps, typing,
   caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
-- AGSL with `uniform shader` inputs (RenderEffect-style, 7 of the large app's 29 shaders) still runs on the CPU.
+- AGSL drawn as a paint with `uniform shader` inputs set by `setInputShader` (the large app's HEAT_SHADER `body`/`muscle`)
+  still runs on the CPU; only a RenderEffect's layer content is bound as a texture.
 - MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed. The test app's
   "Play clip" plays through in real time (3.0 s of media in 3.2-3.4 s, with or without sound), **but ExoPlayer drops
   58 of the 90 video frames as late** (`video`: rendered=32 dropped=58), the same with `-Dapksim.audio=false`, so it
   is not the audio clock. Not investigated yet; suspects: ExoPlayer mixes SystemClock (Robolectric's stepped clock)
   with System.nanoTime() in its frame-release timing, and its vsync sampler's Choreographer runs on a background looper.
-- AGSL RenderEffects that read layer content (the large app's LIQUID_LENS on the camera timeline) run per pixel on the CPU:
-  ~55 ms a frame on the camera page while video changes the layer. Moving them to Metal is the biggest perf item left.
+- Layer-content RenderEffects now run on Metal (`GpuRenderNode`). the large app, fps with them on the CPU → on
+  Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30. What is left is the
+  content raster: each effect layer is a second HWUI frame on the one render thread, serialized after the screen's
+  frame and waited for on the main thread (Atlas: two full-screen layers, ~5 ms raster + ~3 ms shader and readback
+  each). Not tried: one frame behind (as TrackedRuntimeShader), rendering into Bitmap memory, one renderer for all
+  layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay on the CPU.
 - No Health Connect service, so the large app Fitness hides its Body card and Heart rate chip that the emulator shows.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
 - Real mouse and keyboard in the window were first used by the owner on 2026-11-02 (the large app login). Scripted input

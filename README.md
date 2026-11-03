@@ -71,8 +71,10 @@ because the app steps its shader clocks at 30 Hz on purpose (`rememberShaderCloc
 How it gets there:
 - **AGSL shaders run on the GPU.** The library's renderer is CPU-only and interpreted shaders per pixel (about 5 fps
   on the large app). App calls are rewritten so `RuntimeShader` draws are translated to Metal (`runtime/.../gpu/`),
-  rendered a frame ahead, and drawn as bitmaps. 20 of the large app's 29 shaders translate. Shaders that take
-  layer content (`RenderEffect.createRuntimeShaderEffect`) still run on the CPU.
+  rendered a frame ahead, and drawn as bitmaps. 20 of the large app's 29 shaders translate. Shaders over a layer's
+  content (`RenderEffect.createRuntimeShaderEffect`, set through Compose's graphicsLayer) run on Metal too: the
+  layer's content is rasterized on its own, uploaded as a texture, shaded, and drawn as a bitmap (the large app's camera
+  page 49 → 130 fps, Weather 23 → 86, Atlas 8.6 → 30).
 - **Rasterizing overlaps recording.** HWUI's synchronous draw runs on its own thread, and the main thread starts on
   the next frame as soon as HWUI has synced.
 - **Ripples use the plain solid style.** The patterned Material ripple costs ~15 ms a frame on the CPU, and its
