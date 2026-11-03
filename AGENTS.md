@@ -190,8 +190,11 @@ fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stde
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
 arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed. Variadic libc
 functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fall through to libSystem, which reads
-the arguments the Apple way: `syslog` from libwebrtc crashed in `strlen` now and then. `scripts/so-imports.py APK`
-lists the imports; check new variadic ones against `bionic.c`.
+the arguments the Apple way (`syslog` then crashed in `strlen`). `scripts/so-imports.py APK` lists the imports;
+check new variadic ones against `bionic.c`. `syscall()` (`s_syscall`) handles Linux arm64 gettid, getpid, getrandom
+and futex WAIT/WAKE (on `os_sync_wait_on_address`); everything else is ENOSYS. libc++abi's guard for function-local
+statics needs the first two: with gettid -1 on every thread, two threads meeting at one static aborted HomeSafe now
+and then at WebRTC start ("__cxa_guard_acquire detected recursive initialization", which it logged via syslog).
 HomeSafe recorded clips (checked 2026-11-03): 4K H.264 at 20-25 fps plus 8 kHz AAC over HLS play at their frame rate,
 in step with the audio clock, and seek. Drops with sound on (0-7%) come from the stream: its audio timestamps jump
 ~240 ms at segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match;
@@ -325,8 +328,10 @@ server can ANR; `both.py` retakes shots until the two agree.
   had not changed. But the damage HWUI collects was the whole screen on every frame of the test app (taps, typing,
   caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
-- AGSL drawn as a paint with `uniform shader` inputs set by `setInputShader` (HomeSafe's HEAT_SHADER `body`/`muscle`)
-  still runs on the CPU; only a RenderEffect's layer content is bound as a texture.
+- AGSL drawn as a paint with `uniform shader` inputs runs on Metal when every input is an image BitmapShader (CLAMP,
+  linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (HomeSafe's
+  HEAT_SHADER `body`/`muscle`; self-test "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
+  the CPU. HomeSafe never draws HEAT_SHADER here: it is on the Fitness Body card, hidden without Health Connect.
 - MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed (HomeSafe's clips need
   none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). HomeSafe Preview, fps with them on the CPU → on

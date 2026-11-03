@@ -134,6 +134,13 @@ final class GpuBitmaps {
     e.scaled.recycle();
   }
 
+  /** [b] as a Metal texture, uploaded again when its pixels change; 0 if it cannot be. Main thread. */
+  static long texture(Bitmap b) {
+    if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888) return 0;
+    Source s = source(b, b.getGenerationId());
+    return s == null ? 0 : s.texture;
+  }
+
   private static Source source(Bitmap b, int generation) {
     Source s = SOURCES.get(b);
     if (s != null && s.generation == generation) {

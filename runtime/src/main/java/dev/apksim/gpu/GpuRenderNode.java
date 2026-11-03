@@ -337,7 +337,8 @@ public class GpuRenderNode extends RenderNode {
         System.err.printf("[apksim] effect self-test %s off=(%.2f,%.2f): %s%n", k[0], off[0], off[1], result);
       }
     }
-    scaledBitmapSelfTest(content, w, h);
+    Bitmap image = scaledBitmapSelfTest(content, w, h);
+    inputShaderSelfTest(image);
     // Layers as the screen draws them: inside a parent, transformed, and one effect layer inside another.
     for (String arrangement : new String[] {"scaled", "rotated", "nested"}) {
       ByteBuffer expected = arrangedFrame(arrangement, false, cases, content, w, h);
@@ -352,7 +353,7 @@ public class GpuRenderNode extends RenderNode {
    * mean under ~0.3 but a max of 10-20 at hard edges: Skia's CPU bitmap sampler places samples to 1/16 of a pixel,
    * Metal (like a phone's GPU) exactly.
    */
-  private static void scaledBitmapSelfTest(RenderNode content, int w, int h) {
+  private static Bitmap scaledBitmapSelfTest(RenderNode content, int w, int h) {
     Bitmap source = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     RenderNode draw = new RenderNode("selftest-bitmap-source");
     draw.setPosition(0, 0, w, h);
@@ -404,6 +405,44 @@ public class GpuRenderNode extends RenderNode {
       System.err.printf("[apksim] effect self-test scaled bitmap %s -> %dx%d: %s%n", src == null ? "whole" : src.toShortString(),
           dst.width(), dst.height(), got == null ? "not on the GPU" : difference(expected, got));
     }
+    return source;
+  }
+
+  /**
+   * A shader drawn as a paint with two image inputs (setInputShader, CLAMP, linear), read partly outside the images:
+   * HWUI's CPU shader against TrackedRuntimeShader's GPU output.
+   */
+  private static void inputShaderSelfTest(Bitmap image) {
+    String source = "uniform shader a; uniform shader b; uniform float2 off;"
+        + " half4 main(float2 p) { return mix(a.eval(p * 0.7 + off), b.eval(float2(120.0 - p.x, p.y * 1.3) - off), 0.4); }";
+    Bitmap flipped = Bitmap.createBitmap(image.getWidth(), image.getHeight(), Bitmap.Config.ARGB_8888);
+    android.graphics.Canvas fc = new android.graphics.Canvas(flipped);
+    fc.scale(1, -1, 0, image.getHeight() / 2f);
+    fc.drawBitmap(image, 0, 0, null);
+    ByteBuffer[] out = new ByteBuffer[2];
+    for (int gpu = 0; gpu < 2; gpu++) {
+      TrackedRuntimeShader shader = new TrackedRuntimeShader(source);
+      shader.setFloatUniform("off", -6.5f, 3.25f);
+      for (String name : new String[] {"a", "b"}) {
+        android.graphics.BitmapShader input = new android.graphics.BitmapShader(name.equals("a") ? image : flipped,
+            android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP);
+        input.setFilterMode(android.graphics.BitmapShader.FILTER_MODE_LINEAR);
+        shader.setInputShader(name, input);
+      }
+      Paint paint = new Paint();
+      paint.setShader(shader);
+      RenderNode n = new RenderNode("selftest-inputs");
+      n.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
+      RecordingCanvas c = n.beginRecording(ARRANGED_W, ARRANGED_H);
+      if (gpu == 1) GpuCanvas.drawRect(c, 0, 0, ARRANGED_W, ARRANGED_H, paint);
+      else c.drawRect(0, 0, ARRANGED_W, ARRANGED_H, paint);
+      n.endRecording();
+      Raster r = new Raster(ARRANGED_W, ARRANGED_H, n);
+      out[gpu] = r.capture();
+      r.close();
+      if (gpu == 1 && paint.getShader() != shader) out[1] = null;
+    }
+    System.err.printf("[apksim] effect self-test input shaders: %s%n", difference(out[0], out[1]));
   }
 
   private static final int ARRANGED_W = 180;
