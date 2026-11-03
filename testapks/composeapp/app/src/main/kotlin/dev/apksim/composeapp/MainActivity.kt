@@ -60,7 +60,7 @@ fun Root(db: Db, startTab: Int = 0) {
   var count by remember { mutableIntStateOf(0) }
   Scaffold(
     topBar = { TopAppBar(title = { Text("ComposeApp") }) },
-    floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, null) } },
+    floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, "Add") } },
     bottomBar = {
       NavigationBar {
         listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star).forEachIndexed { i, (l, ic) ->
