@@ -28,6 +28,10 @@ final class GpuNative {
 
   static native void releaseInput(long input);
 
+  /** As submit, with [inputs] bound to the shader's `uniform shader` inputs in order; bit i of clampMask: input i clamps. */
+  static native long submitInputs(long pipeline, ByteBuffer uniforms, int uniformBytes, float[] transform, int w, int h,
+      long[] inputs, int clampMask);
+
   /** As submit, with [input] bound to the shader's first `uniform shader`. */
   static native long submitEffect(long pipeline, ByteBuffer uniforms, int uniformBytes, float[] transform, int w, int h, long input);
 
