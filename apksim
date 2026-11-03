@@ -1,0 +1,91 @@
+#!/bin/bash
+# Usage: apksim [--shot FILE] [--exit-after-first-frame] app.apk
+# Runs an unmodified APK in a single host process.
+set -euo pipefail
+# On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
+# container is its sandbox.
+OS="$(uname -s)"
+if [[ "$OS" == Darwin ]]; then
+  export APKSIM_T0=${APKSIM_T0:-$(python3 -c 'import time;print(int(time.time()*1000))')}
+  JAVA="${APKSIM_JAVA:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java}"
+else
+  export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
+  JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXTRA=()
+while [[ $# -gt 1 ]]; do
+  case "$1" in
+    --shot) EXTRA+=("-Dapksim.screenshot=$2"); shift 2 ;;
+    --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
+    --control) EXTRA+=("-Dapksim.control=$2"); shift 2 ;;
+    --control-bind) EXTRA+=("-Dapksim.controlBind=$2"); shift 2 ;;
+    --jvm) EXTRA+=("$2"); shift 2 ;;
+    --device) EXTRA+=("-Dapksim.device=$2"); shift 2 ;;
+    --appearance) EXTRA+=("-Dapksim.appearance=$2"); shift 2 ;;
+    --locale) EXTRA+=("-Dapksim.locale=$2"); shift 2 ;;
+    --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
+    --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
+    --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
+    --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
+    --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
+    --headless) EXTRA+=("-Dapksim.headless=true"); shift ;;
+    --no-network) NO_NET=1; shift ;;
+    --no-sandbox) NO_SANDBOX=1; shift ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac
+done
+# APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
+[[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")
+APK="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+# Robolectric mishandles spaces in its dependency path, so always go through a link without any.
+TMP="${TMPDIR:-/tmp}"
+LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
+[[ -e "$LIBS" ]] || ln -sfn "$ROOT/work/lib" "$LIBS"
+CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
+# `exec` keeps this PID, which is how a later launch knows whether this scratch dir is still in use.
+mkdir -p "$ROOT/work/tmp/$$"
+# An APK runs as ordinary code in this process, with no VM around it, so confine it: it can only
+# write under work/ and temp, and cannot read credentials. Network stays on unless --no-network.
+SANDBOX=()
+if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" ]]; then
+  PROFILE="(version 1)(allow default)
+(deny file-write* (subpath \"$HOME\"))
+(allow file-write* (subpath \"$ROOT/work\"))
+(deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
+  (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
+  (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"
+  if [[ -n "${NO_NET:-}" ]]; then
+    PROFILE="$PROFILE
+(deny network-outbound (remote ip))
+(allow network-outbound (remote ip \"localhost:*\"))"
+  fi
+  SANDBOX=(sandbox-exec -p "$PROFILE")
+fi
+if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
+  echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
+fi
+if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
+AOT=()
+if [[ -z "${APKSIM_NOCACHE:-}" && -f "$ROOT/work/app.aot" ]]; then
+  # The cache records file paths, so it only fits the folder it was built in.
+  if [[ "$(cat "$ROOT/work/app.aot.root" 2>/dev/null)" == "$ROOT" ]]; then
+    AOT=("-XX:AOTCache=$ROOT/work/app.aot")
+  else
+    echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
+  fi
+fi
+# A small young generation keeps GC pauses inside a frame: fewer objects live long enough to be copied
+# (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
+exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "$JAVA" \
+  -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
+  --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+  --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \
+  --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED \
+  --add-exports=java.base/jdk.internal.access=ALL-UNNAMED --add-opens=java.base/jdk.internal.access=ALL-UNNAMED \
+  --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+  --enable-native-access=ALL-UNNAMED \
+  -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
+  -Djava.io.tmpdir="$ROOT/work/tmp/$$" -Dapksim.cacheRoot="$ROOT/work/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
+  "${EXTRA[@]+"${EXTRA[@]}"}" \
+  -cp "$CP" dev.apksim.Main "$APK"
