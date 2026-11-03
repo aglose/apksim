@@ -48,12 +48,18 @@ final class AppClasses {
   private final ClassLoader loader = ClassLoader.getSystemClassLoader();
   private final ZipFile zip;
   private final ClassCache cache;
+  /** Where this APK's files appear on the class path: "/app/", or "/test/" for a test APK. */
+  private final String root;
+  /** Classes of the APK this one is tested against (a test APK calls the app's classes), or null. */
+  private final AppClasses target;
   public int translated;
   public long translateNanos;
   private volatile int translatedAhead;
   private boolean aheadStarted;
 
-  private AppClasses(Path apk) throws IOException {
+  private AppClasses(Path apk, String root, AppClasses target, String hintName) throws IOException {
+    this.root = root;
+    this.target = target;
     zip = new ZipFile(apk.toFile());
     List<ZipEntry> entries = new ArrayList<>();
     Enumeration<? extends ZipEntry> e = zip.entries();
@@ -90,7 +96,7 @@ final class AppClasses {
         }
       }
     }
-    cache = ClassCache.open(keys);
+    cache = ClassCache.open(keys, hintName);
   }
 
   /** Where each stored (uncompressed) entry's data starts in the file, from the zip central directory. */
@@ -140,6 +146,7 @@ final class AppClasses {
   private boolean isInterface(String owner) {
     int[] at = index.get(owner);
     if (at != null) return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0;
+    if (target != null && target.index.containsKey(owner)) return target.isInterface(owner);
     Boolean known = otherInterfaces.get(owner);
     if (known != null) return known;
     // Not computeIfAbsent: loading a class while holding the map's lock could deadlock with another thread.
@@ -156,7 +163,7 @@ final class AppClasses {
   /** What a translation learned about a class it calls; see {@link ClassCache}. */
   private int answer(String owner) {
     int[] at = index.get(owner);
-    if (at == null) return ClassCache.NOT_APP;
+    if (at == null) return target != null ? target.answer(owner) : ClassCache.NOT_APP;
     return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0 ? ClassCache.INTERFACE : ClassCache.CLASS;
   }
 
@@ -253,7 +260,7 @@ final class AppClasses {
   }
 
   private InputStream open(String path) throws IOException {
-    if (path.startsWith("/app/")) path = path.substring(5);
+    if (path.startsWith(root)) path = path.substring(root.length());
     if (path.endsWith(".class")) {
       // Classes the app does not have are refused before translate()'s lock: translateAhead's threads look them up
       // while holding the class loader's lock for that name, and the main thread may be waiting for that lock.
@@ -275,7 +282,26 @@ final class AppClasses {
   };
 
   static AppClasses install(Path apk) throws Exception {
-    AppClasses classes = new AppClasses(apk);
+    return install(apk, "/app/", null, System.getProperty("apksim.package"));
+  }
+
+  /**
+   * Adds a test APK's classes after the app's, as Android does for an instrumentation that targets the app: both run
+   * in one process and the test calls the app's classes directly. AGP leaves out of the test APK what the app has.
+   */
+  static AppClasses installTest(Path apk, AppClasses app) throws Exception {
+    return install(apk, "/test/", app, System.getProperty("apksim.package") + ".test");
+  }
+
+  /** The test APK's classes, in DEX order, as "a.b.C". */
+  List<String> classNames() {
+    List<String> out = new ArrayList<>(index.size());
+    for (String n : index.keySet()) out.add(n.replace('/', '.'));
+    return out;
+  }
+
+  private static AppClasses install(Path apk, String rootPath, AppClasses target, String hintName) throws Exception {
+    AppClasses classes = new AppClasses(apk, rootPath, target, hintName);
     URLStreamHandler handler = new URLStreamHandler() {
       @Override
       protected URLConnection openConnection(URL u) {
@@ -295,7 +321,7 @@ final class AppClasses {
         };
       }
     };
-    URL root = new URL(null, "apksim:/app/", handler);
+    URL root = new URL(null, "apksim:" + rootPath, handler);
     Field ucp = classes.loader.getClass().getSuperclass().getDeclaredField("ucp");
     ucp.setAccessible(true);
     Object path = ucp.get(classes.loader);
