@@ -48,6 +48,8 @@ public class GpuRenderNode extends RenderNode {
   static long rasterNanos;
   static long shaderNanos;
   static long publishNanos;
+  static long discards;
+  static long rastersOpen;
 
   /** The app's drawing, once moved out of this node; null while the app draws straight into it. */
   private RenderNode content;
@@ -132,6 +134,7 @@ public class GpuRenderNode extends RenderNode {
 
   @Override
   public void discardDisplayList() {
+    if (gpu != null) discards++;
     super.discardDisplayList();
     if (content != null) content.discardDisplayList();
     closeRaster();
@@ -178,6 +181,7 @@ public class GpuRenderNode extends RenderNode {
    * brings every GPU effect layer's output up to date with its content and uniforms.
    */
   public static void beforeSync() {
+    TrackedRuntimeShader.sweep();
     if (SELF_TEST) {
       SELF_TEST = false;
       selfTest();
@@ -325,29 +329,113 @@ public class GpuRenderNode extends RenderNode {
           gpu.frame();
           ByteBuffer got = ByteBuffer.allocateDirect(w * h * 4);
           gpu.raster.out.copyPixelsToBuffer(got);
-          long sum = 0;
-          int max = 0;
-          long se = 0;
-          long sg = 0;
-          for (int i = 0; i < w * h * 4; i++) {
-            se += expected.get(i) & 0xff;
-            sg += got.get(i) & 0xff;
-          }
-          for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w * 4; x++) {
-              int d = Math.abs((expected.get(y * w * 4 + x) & 0xff) - (got.get(y * w * 4 + x) & 0xff));
-              sum += d;
-              max = Math.max(max, d);
-            }
-          }
-          result = String.format("mean=%.3f max=%d (average value: cpu %.1f, gpu %.1f)", sum / (double) (w * h * 4), max,
-              se / (double) (w * h * 4), sg / (double) (w * h * 4));
+          result = difference(expected, got);
           gpu.closeRaster();
         }
         ACTIVE.removeIf(r -> r.get() == gpu);
         System.err.printf("[apksim] effect self-test %s off=(%.2f,%.2f): %s%n", k[0], off[0], off[1], result);
       }
     }
+    // Layers as the screen draws them: inside a parent, transformed, and one effect layer inside another.
+    for (String arrangement : new String[] {"scaled", "rotated", "nested"}) {
+      ByteBuffer expected = arrangedFrame(arrangement, false, cases, content, w, h);
+      ByteBuffer got = arrangedFrame(arrangement, true, cases, content, w, h);
+      System.err.printf("[apksim] effect self-test %s layer: %s%n", arrangement,
+          got == null ? "not on the GPU" : difference(expected, got));
+    }
+  }
+
+  private static final int ARRANGED_W = 180;
+  private static final int ARRANGED_H = 150;
+
+  /**
+   * Draws effect layers into a parent the way a screen does (CPU: HWUI applies the effects; GPU: this class) and
+   * returns the parent's pixels, or null if a GPU layer did not take its effect.
+   */
+  private static ByteBuffer arrangedFrame(String arrangement, boolean onGpu, String[][] cases, RenderNode content, int w, int h) {
+    recordSelfTestContent(content, w, h);
+    List<RenderNode> layers = new ArrayList<>();
+    RenderNode layer = selfTestLayer(onGpu, cases[1][1], 2.5f, -1.75f, layers);
+    layer.setPosition(40, 35, 40 + w, 35 + h);
+    RecordingCanvas lc = layer.beginRecording(w, h);
+    lc.drawRenderNode(content);
+    layer.endRecording();
+    RenderNode top = layer;
+    switch (arrangement) {
+      case "scaled" -> {
+        layer.setScaleX(1.4f);
+        layer.setScaleY(0.8f);
+      }
+      case "rotated" -> layer.setRotationZ(17);
+      default -> {
+        // The zoom layer sits inside a shift layer that also draws a frame of its own around it.
+        layer.setPosition(10, 12, 10 + w, 12 + h);
+        RenderNode outer = selfTestLayer(onGpu, cases[0][1], -4.25f, 3.5f, layers);
+        outer.setPosition(20, 15, 20 + w + 20, 15 + h + 24);
+        RecordingCanvas oc = outer.beginRecording(w + 20, h + 24);
+        Paint frame = new Paint();
+        frame.setColor(0xff3060c0);
+        oc.drawRect(0, 0, w + 20, h + 24, frame);
+        oc.drawRenderNode(layer);
+        outer.endRecording();
+        top = outer;
+      }
+    }
+    try {
+      if (onGpu) {
+        // Inner first, as beforeSync orders them.
+        for (RenderNode n : layers) {
+          GpuRenderNode g = (GpuRenderNode) n;
+          if (g.gpu == null) return null;
+          g.frame();
+        }
+      }
+      RenderNode parent = new RenderNode("selftest-parent");
+      parent.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
+      RecordingCanvas pc = parent.beginRecording(ARRANGED_W, ARRANGED_H);
+      pc.drawColor(0xff202020);
+      pc.drawRenderNode(top);
+      parent.endRecording();
+      Raster r = new Raster(ARRANGED_W, ARRANGED_H, parent);
+      ByteBuffer pixels = r.capture();
+      r.close();
+      return pixels;
+    } finally {
+      for (RenderNode n : layers) {
+        if (n instanceof GpuRenderNode g) {
+          g.closeRaster();
+          ACTIVE.removeIf(ref -> ref.get() == g);
+        }
+      }
+    }
+  }
+
+  private static RenderNode selfTestLayer(boolean onGpu, String source, float dx, float dy, List<RenderNode> layers) {
+    TrackedRuntimeShader shader = new TrackedRuntimeShader(source);
+    shader.setFloatUniform("off", dx, dy);
+    RenderNode n = onGpu ? new GpuRenderNode("selftest-gpu") : new RenderNode("selftest-cpu");
+    n.setRenderEffect(GpuEffects.createRuntimeShaderEffect(shader, "content"));
+    layers.add(n);
+    return n;
+  }
+
+  /** How far two packed RGBA buffers of the same size are apart, per byte. */
+  private static String difference(ByteBuffer expected, ByteBuffer got) {
+    int n = expected.capacity();
+    long sum = 0;
+    int max = 0;
+    long se = 0;
+    long sg = 0;
+    for (int i = 0; i < n; i++) {
+      int e = expected.get(i) & 0xff;
+      int g = got.get(i) & 0xff;
+      se += e;
+      sg += g;
+      sum += Math.abs(e - g);
+      max = Math.max(max, Math.abs(e - g));
+    }
+    return String.format("mean=%.3f max=%d (average value: cpu %.1f, gpu %.1f)", sum / (double) n, max, se / (double) n,
+        sg / (double) n);
   }
 
   private static long sum(ByteBuffer b) {
@@ -375,8 +463,8 @@ public class GpuRenderNode extends RenderNode {
   /** Debug summary for the `shaders` command. */
   static String report() {
     double n = Math.max(1, frames) * 1e6;
-    return String.format("layer effects: active=%d gpuFrames=%d unchanged=%d cpuFallbacks=%d, per GPU frame: raster=%.2fms shader=%.2fms publish=%.2fms",
-        ACTIVE.size(), frames, reused, fallbacks, rasterNanos / n, shaderNanos / n, publishNanos / n);
+    return String.format("layer effects: active=%d rasters=%d discards=%d gpuFrames=%d unchanged=%d cpuFallbacks=%d, per GPU frame: raster=%.2fms shader=%.2fms publish=%.2fms",
+        ACTIVE.size(), rastersOpen, discards, frames, reused, fallbacks, rasterNanos / n, shaderNanos / n, publishNanos / n);
   }
 
   /** One effect layer's content raster: its own HardwareRenderer into an ImageReader, then a Metal texture. */
@@ -398,6 +486,7 @@ public class GpuRenderNode extends RenderNode {
     Raster(int w, int h, RenderNode content) {
       this.w = w;
       this.h = h;
+      rastersOpen++;
       GpuNative.ensureLoaded();
       input = GpuNative.newInput(w, h);
       if (input == 0) throw new IllegalStateException("no Metal texture " + w + "x" + h);
@@ -449,6 +538,7 @@ public class GpuRenderNode extends RenderNode {
     }
 
     void close() {
+      rastersOpen--;
       // Let go of the content first: destroying a renderer deletes the display lists of everything it draws.
       root.beginRecording(w, h);
       root.endRecording();
@@ -457,6 +547,9 @@ public class GpuRenderNode extends RenderNode {
       reader.close();
       if (cleanable != null) cleanable.clean();
       else GpuNative.releaseInput(input);
+      // Its pixels now, not at the next full GC: HotSpot does not count native memory towards collecting. A display
+      // list still drawing it keeps its own reference.
+      if (out != null) out.recycle();
     }
   }
 }

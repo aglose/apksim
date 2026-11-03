@@ -252,12 +252,14 @@ public class TrackedRuntimeShader extends RuntimeShader {
       if (ok && done != 0 && pendingFits(w, h)) publish(x, y, w, h);
       publishNanos += System.nanoTime() - p0;
     }
+    lastDrawn = System.nanoTime();
     if (sameArea) {
       // An animation: start this frame's pixels and show last frame's, one frame behind, so the
       // main thread never waits for the GPU.
       pending = GpuNative.submit(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h);
       pendingW = w;
       pendingH = h;
+      IN_FLIGHT.add(this);
     } else {
       // Something moved or appeared: the pixels must match this frame, so wait for them.
       long handle = GpuNative.submit(compiled.pipeline(), uniforms, compiled.program().uniformBytes(), transform, w, h);
@@ -281,6 +283,32 @@ public class TrackedRuntimeShader extends RuntimeShader {
   private long pending;
   private int pendingW;
   private int pendingH;
+  private long lastDrawn;
+
+  /** Shaders with a frame on the GPU that no later draw has collected yet. */
+  private static final java.util.Set<TrackedRuntimeShader> IN_FLIGHT =
+      java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+  /**
+   * Once a frame, on the main thread: collects the GPU frame of every shader not drawn for a second. A shader the app
+   * stops drawing mid-animation (a page closing) would otherwise hold its full-size target texture for good, since
+   * only its next draw collects it; the large app grew by its sky shaders on every visit to Weather. The pixels are kept,
+   * so a shader drawn again later still shows its latest frame.
+   */
+  public static void sweep() {
+    if (IN_FLIGHT.isEmpty()) return;
+    long stale = System.nanoTime() - 1_000_000_000L;
+    for (java.util.Iterator<TrackedRuntimeShader> i = IN_FLIGHT.iterator(); i.hasNext(); ) {
+      TrackedRuntimeShader s = i.next();
+      if (s.pending != 0 && s.lastDrawn - stale > 0) continue;
+      i.remove();
+      if (s.pending != 0) {
+        boolean ok = GpuNative.collect(s.pending, scratchFor(s.pendingW, s.pendingH));
+        s.pending = 0;
+        if (ok && s.pendingFits(s.lastW, s.lastH)) s.publish(s.lastX, s.lastY, s.lastW, s.lastH);
+      }
+    }
+  }
 
   private boolean pendingFits(int w, int h) {
     return pendingW == w && pendingH == h;
