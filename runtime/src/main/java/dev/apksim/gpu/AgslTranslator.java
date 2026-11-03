@@ -106,13 +106,16 @@ final class AgslTranslator {
       template<typename T> inline auto equal(T a, T b) { return a == b; }
       template<typename T> inline auto notEqual(T a, T b) { return a != b; }
       inline float4 unpremul(float4 c) { return c.a > 0.0 ? float4(c.rgb / c.a, c.a) : c; }
-      // A `uniform shader` input: an image in its own pixels. Skia samples a RenderEffect's input bilinearly and
-      // transparent outside its bounds (decal), with pixel centres at +0.5, which is what this sampler does.
+      // A `uniform shader` input: an image in its own pixels, sampled bilinearly with pixel centres at +0.5. Skia
+      // reads a RenderEffect's input transparent outside its bounds (decal); an image BitmapShader set with
+      // setInputShader in CLAMP mode repeats its edges (clamp).
       struct AgslChild {
         texture2d<float> t;
+        bool clampEdges;
         float4 eval(float2 p) const thread {
-          constexpr sampler s(coord::pixel, filter::linear, address::clamp_to_zero);
-          return t.sample(s, p);
+          constexpr sampler decal(coord::pixel, filter::linear, address::clamp_to_zero);
+          constexpr sampler edges(coord::pixel, filter::linear, address::clamp_to_edge);
+          return clampEdges ? t.sample(edges, p) : t.sample(decal, p);
         }
       };
       """;
@@ -158,6 +161,7 @@ final class AgslTranslator {
             childMembers.append("  AgslChild ").append(rename(name)).append(";\n");
             textures.append(", texture2d<float> apksim_child").append(slot).append(" [[texture(").append(slot).append(")]]");
             copies.append("  s.").append(rename(name)).append(".t = apksim_child").append(slot).append(";\n");
+            copies.append("  s.").append(rename(name)).append(".clampEdges = (childClamp >> ").append(slot).append(") & 1;\n");
           }
           continue;
         }
@@ -212,7 +216,8 @@ final class AgslTranslator {
           float2 p = float2(float((id << 1) & 2), float(id & 2));
           ApksimV o; o.position = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;
         }
-        fragment float4 apksim_fragment(ApksimV in [[stage_in]], constant Uniforms& u [[buffer(0)]], constant float3* m [[buffer(1)]]"""
+        fragment float4 apksim_fragment(ApksimV in [[stage_in]], constant Uniforms& u [[buffer(0)]], constant float3* m [[buffer(1)]],
+            constant uint& childClamp [[buffer(2)]]"""
         + textures + ") {\n  Shader s;\n" + copies + """
           float3 p = float3(in.position.xy, 1.0);
           return float4(s.agsl_main(float2(dot(m[0], p), dot(m[1], p))));

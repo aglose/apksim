@@ -82,6 +82,8 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_render(JNIEnv *env, jcl
     } else {
       [e setFragmentBytes:empty length:sizeof empty atIndex:0];
     }
+    uint32_t noClamp = 0;
+    [e setFragmentBytes:&noClamp length:sizeof noClamp atIndex:2];
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e endEncoding];
     [cb commit];
@@ -145,7 +147,7 @@ typedef struct { id<MTLCommandBuffer> cb; ApksimTarget *target; } Pending;
 // Encodes one full-target pass and commits it; input (may be nil) is bound as texture 0, the shader's
 // `uniform shader` input when it is a RenderEffect over layer content.
 static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformBytes, jfloatArray transform, jint w, jint h,
-                    id<MTLTexture> input) {
+                    const jlong *inputs, int inputCount, uint32_t clampMask) {
   id<MTLRenderPipelineState> p = (__bridge id<MTLRenderPipelineState>)(void *)pipeline;
   ApksimTarget *target = takeTarget(w, h);
   if (!target) return 0;
@@ -167,7 +169,11 @@ static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformB
   } else {
     [e setFragmentBytes:empty length:sizeof empty atIndex:0];
   }
-  if (input) [e setFragmentTexture:input atIndex:0];
+  for (int i = 0; i < inputCount; i++) {
+    if (inputs[i]) [e setFragmentTexture:(__bridge id<MTLTexture>)(void *)inputs[i] atIndex:i];
+  }
+  // Which inputs repeat their edges (an image BitmapShader in CLAMP mode) rather than read transparent outside.
+  [e setFragmentBytes:&clampMask length:sizeof clampMask atIndex:2];
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [e endEncoding];
   [cb commit];
@@ -180,7 +186,7 @@ static jlong encode(JNIEnv *env, jlong pipeline, jobject uniforms, jint uniformB
 JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submit(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
                                                              jfloatArray transform, jint w, jint h) {
   @autoreleasepool {
-    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, nil);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, NULL, 0, 0);
   }
 }
 
@@ -215,7 +221,21 @@ JNIEXPORT void JNICALL Java_dev_apksim_gpu_GpuNative_releaseInput(JNIEnv *env, j
 JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submitEffect(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms, jint uniformBytes,
                                                                    jfloatArray transform, jint w, jint h, jlong input) {
   @autoreleasepool {
-    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, (__bridge id<MTLTexture>)(void *)input);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, &input, 1, 0);
+  }
+}
+
+// As submit, with [inputs] bound to the shader's `uniform shader` inputs in order; bit i of clampMask makes input i
+// repeat its edges.
+JNIEXPORT jlong JNICALL Java_dev_apksim_gpu_GpuNative_submitInputs(JNIEnv *env, jclass c, jlong pipeline, jobject uniforms,
+                                                                   jint uniformBytes, jfloatArray transform, jint w, jint h,
+                                                                   jlongArray inputs, jint clampMask) {
+  @autoreleasepool {
+    jsize n = (*env)->GetArrayLength(env, inputs);
+    if (n > 8) return 0;
+    jlong handles[8];
+    (*env)->GetLongArrayRegion(env, inputs, 0, n, handles);
+    return encode(env, pipeline, uniforms, uniformBytes, transform, w, h, handles, n, (uint32_t)clampMask);
   }
 }
 
