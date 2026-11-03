@@ -76,8 +76,9 @@ because the app steps its shader clocks at 30 Hz on purpose (`rememberShaderCloc
 How it gets there:
 - **AGSL shaders run on the GPU.** The library's renderer is CPU-only and interpreted shaders per pixel (about 5 fps
   on the large app). App calls are rewritten so `RuntimeShader` draws are translated to Metal (`runtime/.../gpu/`),
-  rendered a frame ahead, and drawn as bitmaps. 20 of the large app's 29 shaders translate. Shaders over a layer's
-  content (`RenderEffect.createRuntimeShaderEffect`, set through Compose's graphicsLayer) run on Metal too: the
+  rendered a frame ahead, and drawn as bitmaps. All 28 AGSL programs in the large app's DEX translate and compile
+  on Metal; the one that takes child shaders as a paint (Fitness's heat map) still runs on the CPU. Shaders over a
+  layer's content (`RenderEffect.createRuntimeShaderEffect`, set through Compose's graphicsLayer) run on Metal too: the
   layer's content is rasterized on its own, uploaded as a texture, shaded, and drawn as a bitmap (the large app's camera
   page 49 → 130 fps, Weather 23 → 86, Atlas 8.6 → 30).
 - **Rasterizing overlaps recording.** HWUI's synchronous draw runs on its own thread, and the main thread starts on
