@@ -39,13 +39,18 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
-    renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader. `uniform shader` inputs
+    renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader; a shader not drawn for a
+    second has its frame collected by `sweep` (each one left behind mid-animation held a full-size Metal texture for
+    good: the large app grew ~16 MB per Weather visit). `uniform shader` inputs
     become textures (`AgslChild`: bilinear, transparent outside, as Skia samples an effect's input).
     `GpuRenderNode` (Compose's graphicsLayer nodes) runs `createRuntimeShaderEffect(shader, "content")` on Metal:
     the app's drawing goes into a separate content node, which `HwRenderer.draw` (`beforeSync`, before HWUI syncs)
     rasterizes every frame with its own HardwareRenderer, uploads, shades, and records into the layer as a bitmap.
     Anything it cannot do goes to HWUI's CPU effect as before. `-Dapksim.cpuLayerEffects=true` turns it off for A/B
-    runs; `-Dapksim.effectSelfTest=true` compares it with HWUI's CPU result at startup (log: mean diff under 0.12).
+    runs; `-Dapksim.effectSelfTest=true` compares it with HWUI's CPU result at startup (log: mean diff under 0.12),
+    alone and inside a parent as scaled, rotated and nested layers. `shaders` reports `rasters` (open content
+    rasters) and `discards`. Memory freed only at GC: HotSpot does not count native memory (Bitmap pixels, renderers)
+    towards collecting as ART does, so free native-backed objects eagerly where the code knows they are done.
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
