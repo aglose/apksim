@@ -42,6 +42,7 @@ public final class Main {
     System.err.printf("[apksim] translated %d classes in %d ms, %d from cache, %d ahead%n", classes.translated,
         classes.translateNanos / 1_000_000, classes.cached(), classes.translatedAhead());
     if (r.getRunCount() == 0) System.err.println("[apksim] the app did not start: runner found nothing to run");
+    ClassCache.flush();
     Storage.deleteScratch();
     Runtime.getRuntime().halt(r.wasSuccessful() ? 0 : 1);
   }
