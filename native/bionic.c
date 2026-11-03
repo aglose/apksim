@@ -27,6 +27,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <xlocale.h>
+#include <os/os_sync_wait_on_address.h>
 
 #include "elfloader.h"
 
@@ -693,7 +694,51 @@ static int s_clock_gettime(int id, struct timespec *t) {
   }
   return clock_gettime(c, t);
 }
-static long s_syscall(long n, long a, long b, long c) {
+// Linux arm64 system call numbers the APK's native code makes through syscall() rather than libc.
+enum { SYS_FUTEX = 98, SYS_GETPID = 172, SYS_GETTID = 178, SYS_GETRANDOM = 278 };
+enum { FUTEX_WAIT = 0, FUTEX_WAKE = 1, FUTEX_CMD_MASK = 0x7f };
+
+// syscall() with AAPCS arguments: variadic ones travel in registers like named ones, so fixed parameters read them.
+// libc++abi's guard for function-local statics records the initializing thread with SYS_gettid and sleeps with
+// SYS_futex: when every thread got -1 from here, a second thread reaching a static another was initializing took it
+// for recursion and aborted ("__cxa_guard_acquire detected recursive initialization"), now and then at WebRTC start.
+static long s_syscall(long n, long a, long b, long c, long d, long e, long f) {
+  switch (n) {
+    case SYS_GETTID:
+      return s_gettid();
+    case SYS_GETPID:
+      return getpid();
+    case SYS_GETRANDOM:
+      arc4random_buf((void *)a, (size_t)b);
+      return b;
+    case SYS_FUTEX: {
+      uint32_t *addr = (uint32_t *)a;
+      int op = (int)b & FUTEX_CMD_MASK;
+      if (op == FUTEX_WAKE) {
+        int woken = 0;
+        if ((int)c == 1) {
+          woken = os_sync_wake_by_address_any(addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE) == 0;
+        } else if ((int)c > 1) {
+          woken = os_sync_wake_by_address_all(addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE) == 0;
+        }
+        return woken;
+      }
+      if (op == FUTEX_WAIT) {
+        if (atomic_load((_Atomic uint32_t *)addr) != (uint32_t)c) {
+          errno = EAGAIN;
+          return -1;
+        }
+        const struct timespec *timeout = (const struct timespec *)d;  // relative; same layout as Linux arm64
+        int r = timeout ? os_sync_wait_on_address_with_timeout(addr, (uint32_t)c, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE,
+                                                               OS_CLOCK_MACH_ABSOLUTE_TIME,
+                                                               (uint64_t)timeout->tv_sec * 1000000000ull + timeout->tv_nsec)
+                        : os_sync_wait_on_address(addr, (uint32_t)c, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+        // A spurious return is allowed: callers check the word again.
+        return r < 0 ? -1 : 0;
+      }
+      break;
+    }
+  }
   errno = ENOSYS;
   return -1;
 }

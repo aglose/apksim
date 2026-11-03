@@ -66,6 +66,8 @@ public final class SelfTest {
     MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     int rendered = 0;
     long pts = 0;
+    long lastOut = Long.MIN_VALUE;
+    boolean ordered = true;
     for (int[] u : units) {
       int in = codec.dequeueInputBuffer(10_000);
       if (in < 0) continue;
@@ -76,17 +78,27 @@ public final class SelfTest {
       pts += 66_666;
       int out = codec.dequeueOutputBuffer(info, 10_000);
       if (out >= 0) {
+        ordered &= info.presentationTimeUs >= lastOut;
+        lastOut = info.presentationTimeUs;
         codec.releaseOutputBuffer(out, true);
         if (VideoSurfaces.picture(texture) != null) rendered++;
       }
     }
-    // End of stream: the decoder holds a few pictures back to put them in presentation order.
+    // End of stream: the pictures the decoder held back to put them in presentation order come out now, the
+    // end-of-stream buffer last.
     int in = codec.dequeueInputBuffer(10_000);
     if (in >= 0) codec.queueInputBuffer(in, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-    int last = codec.dequeueOutputBuffer(info, 10_000);
-    if (last >= 0) {
-      if (info.size > 0) rendered++;
+    for (int tries = 0; tries < 10; tries++) {
+      int last = codec.dequeueOutputBuffer(info, 10_000);
+      if (last < 0) break;
+      boolean end = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+      if (info.size > 0) {
+        rendered++;
+        ordered &= info.presentationTimeUs >= lastOut;
+        lastOut = info.presentationTimeUs;
+      }
       codec.releaseOutputBuffer(last, info.size > 0);
+      if (end) break;
     }
     String name = codec.getName();
     codec.stop();
@@ -96,8 +108,9 @@ public final class SelfTest {
     if (p == null) return "codec " + name + ": nothing drawn from " + units.size() + " units";
     int c = p.getPixel(p.getWidth() / 16, p.getHeight() / 2);  // testsrc2's leftmost bar, red.
     boolean red = (c >> 16 & 255) > 200 && (c & 255) < 60;
-    return String.format("codec %s: %d of %d units drawn, %dx%d, left bar #%06x%s", name, rendered, units.size(),
-        p.getWidth(), p.getHeight(), c & 0xffffff, units.size() > 0 && rendered >= units.size() - 4 && red ? " ok" : " WRONG");
+    return String.format("codec %s: %d of %d units drawn%s, %dx%d, left bar #%06x%s", name, rendered, units.size(),
+        ordered ? "" : " OUT OF ORDER", p.getWidth(), p.getHeight(), c & 0xffffff,
+        units.size() > 0 && rendered == units.size() && ordered && red ? " ok" : " WRONG");
   }
 
   /**

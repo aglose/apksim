@@ -2339,7 +2339,9 @@ final class MethodTranslator implements Opcodes {
       "drawRoundRect(FFFFFF" + P, "drawRoundRect(Landroid/graphics/RectF;FF" + P,
       "drawOval(FFFF" + P, "drawOval(Landroid/graphics/RectF;" + P, "drawCircle(FFF" + P,
       "drawArc(FFFFFFZ" + P, "drawArc(Landroid/graphics/RectF;FFZ" + P,
-      "drawPath(Landroid/graphics/Path;" + P, "drawPaint(" + P);
+      "drawPath(Landroid/graphics/Path;" + P, "drawPaint(" + P,
+      "drawBitmap(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/Rect;" + P,
+      "drawBitmap(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/RectF;" + P);
 
   /**
    * Framework and library classes that app code gets an apksim subclass of, wherever it creates one or extends
