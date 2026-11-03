@@ -45,6 +45,12 @@ second HWUI frame (~5 ms raster) plus ~3 ms shader and readback, all before the 
   layers of a frame.
 - Measure: `fps` and `shaders` ("layer effects:" timings) on Atlas, Weather and the camera page.
 - Done when: Atlas is above 60 fps with no visible lag on effect content (check with the scrubbing lens).
+- **Result (done):** Atlas panning 26 → 64-73 fps (p50 11 ms). The time was not where the plan guessed: 74% of the
+  render thread was Skia's CPU bilinear sampling of the map and heat tiles (`drawImage` scaled), and the 3.8 ms
+  "shader" was the CPU untiling the Metal texture on readback. Fixes: `GpuBitmaps` (scaled bitmap draws resampled
+  once on Metal, then blitted) and linear pooled render targets (shader 3.8 → 0.8 ms per layer, every GPU shader
+  benefits). Weather scrolling 59 → 79 fps; camera page unchanged (~130). Option (a) was not needed: with both effect
+  rasters and the screen raster on HWUI's one render thread, that thread is the limit, not the main thread.
 
 **5. Display vsync pacing.** Built and off (`--jvm -Dapksim.vsync=display`); only its fallback was tested because the
 display was asleep. Needs the Mac awake with the window visible.
