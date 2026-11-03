@@ -75,7 +75,7 @@ Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
-last call), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`, `ping`, `quit`.
+last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`, `ping`, `quit`.
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `config` (configuration the app sees),
@@ -218,8 +218,14 @@ server can ANR; `both.py` retakes shots until the two agree.
 
 ## Open work
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
-  frames, single core) and GPU wait on heavy shaders. Ideas not yet tried: zero-copy GPU output (render into Bitmap
-  memory); presenting on the display's vsync (CADisplayLink) rather than commit-on-ready.
+  frames, single core) and GPU wait on heavy shaders. Not yet tried: zero-copy GPU output (render into Bitmap memory).
+- **Display vsync pacing is written but unmeasured** (`--jvm -Dapksim.vsync=display`, off by default): Host then starts
+  each animation frame 0.3 ms after the display's vsync (CADisplayLink on the window, `SimWindow.untilVsync`) instead
+  of on its own 120 Hz grid, and falls back to the grid whenever no vsyncs arrive. It was built while the Mac's display
+  was asleep (no vsyncs), so only the fallback was checked (same frame rates as the grid). To decide: on a lit 120 Hz
+  display, A/B the Shader tab and flings with `frames`, whose `screen` part counts per real vsync whether a new frame
+  arrived (repeated = the screen showed a frame twice; replaced = a frame never shown). Make it the default if it
+  raises "new frame on N% of vsyncs".
 - **Partial (damage-rect) redraw: tried 2026-11-03, no gain for Compose apps, not kept.** Robolectric's
   `SkiaCpuPipeline` draws into one buffer it keeps, but `getFrame()` reports buffer age 0 and `swapBuffers()` is a
   `return false` stub, so `CanvasContext` never clears `mHaveNewSurface` and redraws everything. Swapping vtable slots

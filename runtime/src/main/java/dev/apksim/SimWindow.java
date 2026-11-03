@@ -78,6 +78,20 @@ final class SimWindow {
     if (!headless && !Boolean.getBoolean("apksim.noBoost")) nativeBoostThread();
   }
 
+  /** Nanoseconds until the display's next vsync, or -1 without a window or while macOS is not showing it. */
+  static long untilVsync() {
+    return headless ? -1 : nativeUntilVsync();
+  }
+
+  /** What reached the screen since the last call, counted per display vsync. */
+  static String vsyncStats() {
+    return headless ? "screen: headless" : nativeVsyncStats();
+  }
+
+  private static native long nativeUntilVsync();
+
+  private static native String nativeVsyncStats();
+
   static String displayInfo() {
     return headless ? "headless" : nativeDisplayInfo();
   }
