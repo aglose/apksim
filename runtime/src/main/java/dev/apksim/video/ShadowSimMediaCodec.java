@@ -8,7 +8,10 @@ import android.media.MediaCrypto;
 import android.media.MediaFormat;
 import android.view.Surface;
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
@@ -198,17 +201,80 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
     ByteBuffer in = index >= 0 && index < inputs.length ? inputs[index].duplicate() : null;
     if (in != null) in.limit(offset + size).position(offset);
+    int heldBefore = decoder.held();
     long[] out = decoder.queue(in, presentationTimeUs, flags);
-    if (out == null) {
-      super.native_queueInputBuffer(index, offset, size, presentationTimeUs, flags | DECODE_ONLY);
-    } else {
+    if ((flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+      endOfStream(index, offset, size, presentationTimeUs, flags);
+    } else if (out != null) {
       super.native_queueInputBuffer(index, offset, size, out[0], flags & ~DECODE_ONLY);
+    } else if (decoder.held() > heldBefore && reserved.size() < Decoder.MAX_DEPTH && reserve(index)) {
+      // Its picture is held back: so is the buffer, to carry a picture out at the end of the stream.
+    } else {
+      super.native_queueInputBuffer(index, offset, size, presentationTimeUs, flags | DECODE_ONLY);
     }
+  }
+
+  /**
+   * Input buffers kept by the codec while the pictures they brought wait in the decoder to be put in presentation
+   * order. Robolectric gives each input one output in its own buffer, so without them the pictures still held when
+   * the stream ends (1-4) had no buffer to leave in and were lost.
+   */
+  private final ArrayDeque<Integer> reserved = new ArrayDeque<>();
+
+  /**
+   * Keeps [index] for the codec, if the app can have another buffer instead. In async mode Robolectric hands out one
+   * input buffer at a time (the next when an output is released), so a kept one is replaced from its free queue.
+   */
+  private boolean reserve(int index) {
+    java.util.concurrent.BlockingQueue<Integer> free = ReflectionHelpers.getField(this, "inputBuffersPendingDequeue");
+    boolean async = ReflectionHelpers.getField(this, "isAsync");
+    Integer instead = null;
+    if (async && (instead = free.poll()) == null) return false;
+    List<Integer> queuing = ReflectionHelpers.getField(this, "inputBuffersPendingQueuing");
+    queuing.remove(Integer.valueOf(index));
+    reserved.add(index);
+    if (instead != null) {
+      ReflectionHelpers.callInstanceMethod(ShadowMediaCodec.class, this, "makeInputBufferAvailable",
+          ReflectionHelpers.ClassParameter.from(int.class, instead));
+    }
+    return true;
+  }
+
+  /** The held pictures leave in the reserved buffers, earliest first, and the end-of-stream buffer goes last. */
+  private void endOfStream(int index, int offset, int size, long presentationTimeUs, int flags) {
+    List<long[]> left = decoder.drain();
+    int i = 0;
+    for (; i < left.size() - 1 && !reserved.isEmpty(); i++) {
+      long[] picture = left.get(i);
+      decoder.nextPicture(picture[1]);
+      MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+      info.set(0, 0, picture[0], 0);
+      ReflectionHelpers.callInstanceMethod(ShadowMediaCodec.class, this, "makeOutputBufferAvailable",
+          ReflectionHelpers.ClassParameter.from(int.class, reserved.poll()),
+          ReflectionHelpers.ClassParameter.from(MediaCodec.BufferInfo.class, info));
+    }
+    // Any the reserved buffers could not take are lost, as before; the latest rides on the end-of-stream buffer.
+    for (; i < left.size() - 1; i++) decoder.dropPicture(left.get(i)[1]);
+    long[] last = left.isEmpty() ? null : left.get(left.size() - 1);
+    decoder.nextPicture(last == null ? 0 : last[1]);
+    super.native_queueInputBuffer(index, offset, size, last == null ? presentationTimeUs : last[0], flags & ~DECODE_ONLY);
+    // Any left over go back to Robolectric's free queue (sync: for dequeueInputBuffer; async: to be handed out).
+    java.util.concurrent.BlockingQueue<Integer> free = ReflectionHelpers.getField(this, "inputBuffersPendingDequeue");
+    while (!reserved.isEmpty()) free.add(reserved.poll());
+  }
+
+  @Implementation
+  @Override
+  protected void native_start() {
+    reserved.clear();
+    super.native_start();
   }
 
   @Implementation
   @Override
   protected void native_flush() {
+    // Robolectric hands every buffer back to the app on flush (sync) or the start that follows it (async).
+    reserved.clear();
     if (decoder != null) decoder.dropPictures();
     if (audio != null) audio.reset();
     super.native_flush();
@@ -264,6 +330,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
     /** Decoded pictures not yet handed out, as {pts, picture}, earliest first. */
     private final java.util.PriorityQueue<long[]> held = new java.util.PriorityQueue<>((a, b) -> Long.compare(a[0], b[0]));
+    static final int MAX_DEPTH = 4;
     /** How many pictures are held back before the earliest goes out: grows when one arrives older than one already out. */
     private int depth = 2;
     private long lastOut = Long.MIN_VALUE;
@@ -271,9 +338,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private long nextPicture;
 
     /**
-     * Decodes one input. Returns {pts} of the picture its output buffer should carry, or null when it gives none yet.
-     * At end of stream the earliest held picture goes out with the flag and the rest are dropped: Robolectric gives
-     * one output per input, so there is no room for more.
+     * Decodes one input. Returns {pts} of the picture its output buffer should carry, or null when it gives none yet
+     * (and at end of stream, where {@link #drain} hands out what is held).
      */
     long[] queue(ByteBuffer in, long pts, int flags) {
       if (handle != 0 && in != null && in.remaining() > 0) {
@@ -291,25 +357,46 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           if ((flags & DECODE_ONLY) != 0 || (flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
             VideoToolbox.nativeReleasePicture(picture);  // decoded for reference only, as the player asked
           } else {
-            if (pts < lastOut) depth = Math.min(depth + 1, 4);
+            if (pts < lastOut) depth = Math.min(depth + 1, MAX_DEPTH);
             held.add(new long[] {pts, picture});
           }
         }
       }
       boolean end = (flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-      if (!end && ((flags & (DECODE_ONLY | MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) != 0 || held.size() <= depth)) return null;
+      if (end || (flags & (DECODE_ONLY | MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) != 0 || held.size() <= depth) return null;
       long[] first = held.poll();
-      if (end) {
-        for (long[] rest : held) VideoToolbox.nativeReleasePicture(rest[1]);
-        held.clear();
-      }
-      nextPicture = first == null ? 0 : first[1];
-      if (first == null) return new long[] {pts};
+      nextPicture = first[1];
       lastOut = Math.max(lastOut, first[0]);
       synchronized (pictures) {
         pictures.add(first[1]);
       }
       return new long[] {first[0]};
+    }
+
+    int held() {
+      return held.size();
+    }
+
+    /** Everything held, as {pts, picture} earliest first, each now owned by the output buffer it is given to. */
+    List<long[]> drain() {
+      List<long[]> all = new ArrayList<>();
+      while (!held.isEmpty()) all.add(held.poll());
+      synchronized (pictures) {
+        for (long[] p : all) pictures.add(p[1]);
+      }
+      return all;
+    }
+
+    /** The picture the next process() call puts in its output buffer (0: an empty buffer). */
+    void nextPicture(long picture) {
+      nextPicture = picture;
+    }
+
+    void dropPicture(long picture) {
+      synchronized (pictures) {
+        pictures.remove(picture);
+      }
+      VideoToolbox.nativeReleasePicture(picture);
     }
 
     @Override
