@@ -68,8 +68,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `gpushader.m`: Metal pipelines for translated AGSL.
 - `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT
-  cache), `bench.py` (launch times), `drive.py` (control channel client), `prof.py` (summarise macOS `sample`
-  output), `so-imports.py` (native import audit), `prepare-runtime.sh`.
+  cache), `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running
+  instances, app data), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison), `prof.py` (summarise macOS
+  `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`, `make-media.sh` (test clips),
+  `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `signin.sh`/`install-signin.sh` (the owner's the large app
+  sign-in), `hooks/pre-push`.
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `plan.md` (remaining work, in order).
+- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. Build with
   `./gradlew :app:assembleDebug` inside it.
@@ -261,13 +266,23 @@ R8-minified apps have pc-encoded lines (retrace them with the app's mapping file
 measures a vertical offset between two shots. Under heavy machine load the emulator lags by seconds and its system
 server can ANR; `both.py` retakes shots until the two agree.
 
-## Pull requests
-`main` takes changes only through pull requests, and CI (`.github/workflows/ci.yml`, job `linux-smoke`: builds the
-runtime and the Linux image, then runs the test app headless) must pass before merging. Work on a branch
-(`git switch -c topic`), push it, `gh pr create`, wait for the `linux-smoke` check, then `gh pr merge`. The
-`scripts/hooks/pre-push` hook (set by `scripts/setup.sh`: `git config core.hooksPath scripts/hooks`) refuses direct
-pushes to main. CI does not cover the Mac-only parts (window, Metal, VideoToolbox, AOT timings): say in the PR what
-was checked locally (`bench.py`, `drive.py` runs). Several sessions share this folder, so commit only your own files.
+## Git and pull requests
+The repo is public (https://github.com/aglose/apksim, Apache 2.0). `main` takes changes only through pull requests: a
+GitHub ruleset requires a PR whose `linux-smoke` check passes (`.github/workflows/ci.yml`: builds the runtime and the
+Linux image, then runs the test app headless), and blocks force-pushes and deleting `main`. No approving review is
+needed. Work on a branch, push it, `gh pr create`, wait for the check, then `gh pr merge --merge`: merge commits, so a
+branch cut from another PR's branch stays a clean descendant of `main`. Merged branches are deleted on GitHub.
+`scripts/hooks/pre-push` (set by `scripts/setup.sh`: `git config core.hooksPath scripts/hooks`) refuses direct pushes
+to `main` before they leave the machine. CI does not cover the Mac-only parts (window, Metal, VideoToolbox, AOT
+timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
+- **Several sessions share this folder.** Commit only your own files, and never switch branches, reset, stash, rebase
+  or rewrite history here while another session may have uncommitted edits: a `git filter-repo` run here once threw
+  away a peer's work in progress. Do git-side work in a worktree (`git worktree add DIR -b topic origin/main`), or
+  ask the session working in the folder to commit first.
+- **Nothing personal goes in a commit.** No hostnames of the owner's machines or VPN, IP addresses, email
+  addresses, 1Password item names or saved sign-in values. The owner's real server is in
+  `~/.config/apksim/signin.conf`, which `scripts/install-signin.sh` creates with a placeholder. This checkout commits
+  as `7216340+aglose@users.noreply.github.com` (its local `git config user.email`); keep it that way.
 
 ## Hard-won rules
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
