@@ -22,7 +22,7 @@ screencap).
 Everything except the window-only parts also works in the Linux image.
 
 Not yet: device bezels, external display, other API levels, CREATE_DOCUMENT (save) pickers, sharing files from Linux, audio, camera, binding to app services in general (only FCM's
-is wired), widgets, `adb install` and `jdwp` on the adb device, debugger line numbers, a view inspector beyond `nodes`/`a11y`.
+is wired), widgets, `adb install` and `jdwp` on the adb device, a view inspector beyond `nodes`/`a11y`.
 
 ## Shared groundwork (do these first)
 
@@ -121,7 +121,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Screenshot | Cmd+S, `simctl io screenshot` | `shot`, `wshot` commands | Menu item + Cmd+S saving a PNG to the Desktop, with and without bezel | S |
 | Screen recording | `simctl io recordVideo` | None | Frames already land in an IOSurface: feed them to `AVAssetWriter` (H.264/HEVC via VideoToolbox, already linked) at present time; `record start/stop` command and menu | M |
 | Logs | `simctl spawn log stream`, Console | stdout/stderr | `logcat` command and CLI: stream `ShadowLog`/`android.util.Log` with tag/level filters; also forward to `os_log` so Console.app shows them | S |
-| Debugger | Xcode LLDB | None | It is a JVM, so `-agentlib:jdwp` lets Android Studio's "Remote JVM Debug" attach. For breakpoints in app source, the DEX translator must emit `LineNumberTable`/`LocalVariableTable` from DEX debug info (it emits none today) and keep source file names | M |
+| Debugger | Xcode LLDB | **Done**: `--debug PORT`, then Android Studio/IntelliJ "Remote JVM Debug" | `--debug` adds `-agentlib:jdwp` and translates app classes with `LineNumberTable`/`LocalVariableTable` from DEX debug info and Kotlin's SMAP (own class cache; off otherwise, so normal launches are unchanged). Breakpoints in app source stop, step and show locals. Not yet: locals in split (>64 KB) methods; attaching through the adb device's `jdwp` | M |
 | View hierarchy debugger | Xcode view debugger | `windows` command | `views` command dumping the View tree and Compose semantics tree as JSON (bounds, ids, text, test tags); a "pick element" mode in the window that highlights and prints the node under the cursor | M |
 | Profiling (Instruments) | Time Profiler, Allocations, Leaks | `Sampler`, `prof.py` | Expose JFR (`--profile`) and async-profiler; `heapdump` command (`HotSpotDiagnosticMXBean`). JFR output opens in IntelliJ/JMC | S |
 | Rendering debug overlays | Color blended layers, offscreen-rendered, misaligned | `fps`, `frames` | Android equivalents: show layout bounds (`debug.layout`), GPU overdraw, profile HWUI rendering bars, show taps / pointer location. Mostly system properties HWUI already reads, plus an overlay for taps | M |
