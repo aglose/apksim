@@ -63,6 +63,8 @@ dependencies {
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.compose.material3)
   implementation("androidx.compose.material:material-icons-core")
+  // Window size classes: a navigation rail and a grid once the window is 600 dp wide (apksim: `device tablet`, `size`)
+  implementation(libs.androidx.compose.material3.adaptive)
   // Video: the Settings tab's "Play clip" (HEVC + AAC through MediaCodec and AudioTrack)
   implementation(libs.androidx.media3.exoplayer)
   // Tooling

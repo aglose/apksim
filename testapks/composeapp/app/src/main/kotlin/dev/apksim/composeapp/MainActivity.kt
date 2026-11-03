@@ -13,6 +13,15 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.window.core.layout.WindowSizeClass
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -56,30 +65,58 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Root(db: Db, startTab: Int = 0) {
-  var tab by remember { mutableIntStateOf(startTab) }
-  var count by remember { mutableIntStateOf(0) }
+  // Saved, so resizing the window (an activity recreated for the new size) keeps the tab and the count.
+  var tab by rememberSaveable { mutableIntStateOf(startTab) }
+  var count by rememberSaveable { mutableIntStateOf(0) }
+  // Adaptive: a bottom bar and a list below 600 dp of width (phones), a navigation rail and a grid from there on
+  // (foldables, tablets, desktop, TV), as Material's window size classes suggest.
+  val sizeClass = currentWindowAdaptiveInfo().windowSizeClass
+  val wide = sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
+  val widthClass = when {
+    sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND) -> "expanded"
+    wide -> "medium"
+    else -> "compact"
+  }
+  val window = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.let { "${it.width.toDp().value.toInt()}×${it.height.toDp().value.toInt()}" } }
+  val tabs = listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star)
   Scaffold(
-    topBar = { TopAppBar(title = { Text("ComposeApp") }) },
+    topBar = { TopAppBar(title = { Text("ComposeApp") }, actions = { Text("$widthClass $window", Modifier.padding(end = 16.dp)) }) },
     floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, "Add") } },
     bottomBar = {
-      NavigationBar {
-        listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star).forEachIndexed { i, (l, ic) ->
+      if (!wide) NavigationBar {
+        tabs.forEachIndexed { i, (l, ic) ->
           NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, l) }, label = { Text(l) })
         }
       }
     },
   ) { pad ->
-    Box(Modifier.padding(pad)) {
-      when (tab) {
-        0 -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-          item { Text("FAB clicks: $count", Modifier.padding(8.dp)) }
-          items((1..100).toList()) { i ->
-            Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Text("Item $i", Modifier.padding(16.dp)) }
-          }
+    Row(Modifier.padding(pad)) {
+      if (wide) NavigationRail {
+        tabs.forEachIndexed { i, (l, ic) ->
+          NavigationRailItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, l) }, label = { Text(l) })
         }
-        1 -> Trips(db)
-        3 -> ShaderScreen()
-        else -> SettingsScreen()
+      }
+      Box(Modifier.weight(1f)) {
+        when (tab) {
+          0 -> if (wide) {
+            LazyVerticalGrid(GridCells.Adaptive(240.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+              item(span = { GridItemSpan(maxLineSpan) }) { Text("FAB clicks: $count", Modifier.padding(8.dp)) }
+              gridItems((1..100).toList()) { i ->
+                Card(Modifier.fillMaxWidth().padding(4.dp)) { Text("Item $i", Modifier.padding(16.dp)) }
+              }
+            }
+          } else {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+              item { Text("FAB clicks: $count", Modifier.padding(8.dp)) }
+              items((1..100).toList()) { i ->
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Text("Item $i", Modifier.padding(16.dp)) }
+              }
+            }
+          }
+          1 -> Trips(db)
+          3 -> ShaderScreen()
+          else -> SettingsScreen()
+        }
       }
     }
   }

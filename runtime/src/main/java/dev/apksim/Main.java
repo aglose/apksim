@@ -31,9 +31,11 @@ public final class Main {
     String testApk = System.getProperty("apksim.instrument");
     // A test run draws nothing (tests run on a simulated clock, see Instrument), so it needs no window.
     if (testApk != null) System.setProperty("apksim.headless", "true");
-    Device device = Device.named(System.getProperty("apksim.device", "phone"));
+    Device device = Device.current();
     System.setProperty("apksim.qualifiers", device.qualifiers());
-    SimWindow.open(device.widthPx(), device.heightPx(), device.density(), Path.of(args[0]).getFileName() + " - " + device.name());
+    System.setProperty("apksim.windowTitle", Path.of(args[0]).getFileName().toString());
+    SimWindow.open(device.widthPx(), device.heightPx(), device.density(),
+        Path.of(args[0]).getFileName() + " - " + device.name() + " " + device.widthDp() + "\u00d7" + device.heightDp() + " dp");
     Storage.initScratch();
     Path apk = Path.of(args[0]).toAbsolutePath();
     AppInfo.load(apk, Path.of(System.getProperty("apksim.cacheRoot"), apk.getFileName() + "-" + apk.toFile().lastModified()));
