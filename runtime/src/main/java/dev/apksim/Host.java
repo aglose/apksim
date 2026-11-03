@@ -662,10 +662,17 @@ public class Host {
         return b.toString();
       }
       case "selftest" -> {
-        // selftest [h264-file]: libwebrtc's native scaler (19 arguments: stack arguments must be translated), and with
-        // a file, H.264 through MediaCodec to a Surface as media players use it.
-        String r = dev.apksim.video.SelfTest.scale() + " | " + dev.apksim.video.SelfTest.colour();
-        if (a.length > 1) r += " | " + dev.apksim.video.SelfTest.codec(app, a[1]);
+        // selftest [file]: libwebrtc's native scaler (19 arguments: stack arguments must be translated; needs an APK with
+        // libwebrtc), and with a file, MediaCodec as media players use it: H.264 (.h264) or HEVC (.h265) to a Surface,
+        // AAC (.aac, ADTS) or MP3 (.mp3) through AudioTrack to the speakers.
+        String r;
+        try {
+          r = dev.apksim.video.SelfTest.scale();
+        } catch (ReflectiveOperationException | LinkageError e) {
+          r = "scale: no libwebrtc in this app";
+        }
+        r += " | " + dev.apksim.video.SelfTest.colour();
+        if (a.length > 1) r += " | " + dev.apksim.video.SelfTest.file(app, a[1]);
         return r;
       }
       case "tap-text" -> {

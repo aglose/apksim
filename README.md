@@ -95,7 +95,7 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
   writable + executable memory. Libraries built with 4 KB alignment (Flipper, and its libc++ here) get an
   UnsatisfiedLinkError. Those built 16 KB aligned work. So an app's debug build, which uses Flipper, does not start.
 - **APKs need arm64-v8a** for native code. Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
-  not work: those libraries are stubs. The talk's GLES 1 game and audio demos have no equivalent here.
+  not work: those libraries are stubs. Java's AudioTrack does play. The talk's GLES 1 game and audio demos have no equivalent here.
 - **The native C library shim is partial.** It covers roughly the 300 functions these APKs import. Sockets from
   native code are not translated (`sockaddr` differs), and an unsupported call prints its name.
 - **It is not a device.** System services are stand-ins (no Play Services, Health Connect, real camera, sensors or
@@ -113,6 +113,8 @@ data, and its Android `libsqliteJni.so` writing a database that `sqlite3` valida
 Signed in to the large app, every screen reached (sign-in, apps drawer, Weather tabs, Atlas, Fitness, Finance, Home,
 camera page, Moments, Settings and its pages) matched an API 36 emulator at the same size to within a mean pixel
 difference of about 2/255, apart from Health Connect content and animation timing. Live camera video (WebRTC) and recorded
-clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox.
+clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox. MediaCodec also decodes HEVC
+(VideoToolbox) and AAC and MP3 (AudioToolbox), and AudioTrack plays through the Mac's speakers at real speed
+(`selftest` checks each with a 2 s clip).
 `scripts/drive.py` scripts a running instance over `--control`. All input tests went through that channel: the
 window's own mouse, trackpad and keyboard handling is written but has not been exercised by a test.

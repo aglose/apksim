@@ -141,13 +141,21 @@ compile-only org.webrtc signatures: never give a stub field an initializer, java
 for every app (startup, shadows) must not touch a class that references org.webrtc: APKs without libwebrtc then fail
 to start (NoClassDefFoundError). `VideoToolbox` holds the natives for both paths and references no APK library.
 `scripts/train.sh` trains on the test app, so a regression like that shows up there as a failed stage.
-Recorded video: `ShadowSimMediaCodec` lists an `apksim.avc.decoder` (H.264, VideoToolbox) in MediaCodecList and
-registers it with Robolectric's MediaCodec under both its type and its name (players create codecs by name; a
-miss falls back to Robolectric's 512-byte fake). Output buffers carry a reference to the decoded picture, drawn into
-the Surface's TextureView on releaseOutputBuffer(render=true). Bitmaps here are BGRA in memory (Skia's macOS order),
+Recorded video: `ShadowSimMediaCodec` lists `apksim.avc.decoder` (H.264) and `apksim.hevc.decoder` (HEVC Main/Main10),
+both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioToolbox (`native/audio.m`) in
+MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
+codecs by name; a miss falls back to Robolectric's 512-byte fake). Its placeholders are told apart by identity, so
+each must be its own object: one non-capturing lambda is a single shared instance. Video output buffers carry a
+reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true); audio ones
+carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
+through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
+written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
+and plays silence; `--jvm -Dapksim.audio=false` turns sound and the audio decoders off. Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
 Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters), `webrtclog [info|verbose]`,
-`selftest [h264-file]` (native scaler, colour order, MediaCodec end to end), `nodes` (accessibility tree: text, hints,
+`selftest [file]` (native scaler, colour order; with a `.h264`/`.h265` file MediaCodec onto a Surface, with an ADTS
+`.aac` or `.mp3` file MediaCodec into AudioTrack, checking the sound took real time; `scripts/make-media.sh` writes 2 s
+clips to `work/media`), `nodes` (accessibility tree: text, hints,
 fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
 arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed.
@@ -236,11 +244,11 @@ server can ANR; `both.py` retakes shots until the two agree.
   caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL with `uniform shader` inputs (RenderEffect-style, 7 of the large app's 29 shaders) still runs on the CPU.
-- MediaCodec decodes H.264 only (`ShadowSimMediaCodec`); HEVC and audio codecs are not listed, so ExoPlayer plays such
-  tracks' video only if H.264, and never their sound.
+- MediaCodec has H.264, HEVC, AAC and MP3 (checked with `selftest`, not yet with a player playing a file end to end);
+  VP9/AV1 video and Opus/Vorbis audio are not listed.
 - AGSL RenderEffects that read layer content (the large app's LIQUID_LENS on the camera timeline) run per pixel on the CPU:
   ~55 ms a frame on the camera page while video changes the layer. Moving them to Metal is the biggest perf item left.
 - No Health Connect service, so the large app Fitness hides its Body card and Heart rate chip that the emulator shows.
-- GLES/audio native libraries are stubs.
+- GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
 - Real mouse and keyboard in the window were first used by the owner on 2026-11-02 (the large app login). Scripted input
   goes through `--control` instead.
