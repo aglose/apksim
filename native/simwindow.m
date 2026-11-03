@@ -37,6 +37,13 @@ static int devW, devH;
 static float deviceScale;
 static CALayer *frameLayer;
 static long commits;
+// The display's vsync, from a CADisplayLink on the window's view. Host starts each frame just after one, as Android's
+// Choreographer does, and it counts what reached the screen: a vsync without a new frame while frames are flowing is
+// a frame the screen showed twice, and two frames before one vsync means the first was never seen.
+static CADisplayLink *vsyncLink;
+static double vsyncTarget, vsyncPeriod, vsyncSeen, lastFrameVsync;  // seconds, CACurrentMediaTime's clock
+static long vsyncCommits;
+static long vsShown, vsRepeated, vsReplaced, vsPendingRepeats;
 static AVAssetWriter *recWriter;  // screen recording, below
 static void recordFrame(IOSurfaceRef s);
 
@@ -187,6 +194,26 @@ static void buildMenus(NSMenu *bar) {
 @end
 
 @implementation SimView
+- (void)vsync:(CADisplayLink *)link {
+  long n = commits - vsyncCommits;
+  vsyncCommits = commits;
+  @synchronized([SimView class]) {
+    vsyncSeen = link.timestamp;
+    vsyncTarget = link.targetTimestamp;
+    vsyncPeriod = link.targetTimestamp - link.timestamp;
+    if (n > 0) {
+      vsShown++;
+      vsReplaced += n - 1;
+      vsRepeated += vsPendingRepeats;  // the gap was inside an animation, not the end of one
+      vsPendingRepeats = 0;
+      lastFrameVsync = link.timestamp;
+    } else if (link.timestamp - lastFrameVsync < 0.05) {
+      vsPendingRepeats++;
+    } else {
+      vsPendingRepeats = 0;
+    }
+  }
+}
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 - (BOOL)isFlipped { return YES; }
@@ -401,6 +428,8 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset) 
   view.layer = frameLayer;
   window.contentView = view;
   window.delegate = view;
+  vsyncLink = [view displayLinkWithTarget:view selector:@selector(vsync:)];
+  [vsyncLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
   [window makeFirstResponder:view];
   [window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
@@ -1106,6 +1135,32 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeDisplayInfo(JNIEnv *en
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
   char out[128];
   snprintf(out, sizeof out, "screen maximumFramesPerSecond=%ld, frames committed to Core Animation=%ld", maxFps, committed);
+  return (*env)->NewStringUTF(env, out);
+}
+
+// Nanoseconds until the display's next vsync, or -1 when the display link is not running (window hidden, minimised
+// or fully covered: macOS then stops it), so the caller falls back to its own clock.
+JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeUntilVsync(JNIEnv *env, jclass c) {
+  double target, period, seen, now = CACurrentMediaTime();
+  @synchronized([SimView class]) {
+    target = vsyncTarget;
+    period = vsyncPeriod;
+    seen = vsyncSeen;
+  }
+  if (period <= 0 || now - seen > 4 * period + 0.004) return -1;
+  while (target < now) target += period;
+  return (jlong)((target - now) * 1e9);
+}
+
+// What reached the screen since the last call, counted per display vsync.
+JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeVsyncStats(JNIEnv *env, jclass c) {
+  char out[200];
+  @synchronized([SimView class]) {
+    long all = vsShown + vsRepeated;
+    snprintf(out, sizeof out, "screen %.0f Hz: new frame on %ld%% of vsyncs while animating (shown=%ld repeated=%ld), replaced before shown=%ld",
+        vsyncPeriod > 0 ? 1 / vsyncPeriod : 0, all ? vsShown * 100 / all : 0, vsShown, vsRepeated, vsReplaced);
+    vsShown = vsRepeated = vsReplaced = 0;
+  }
   return (*env)->NewStringUTF(env, out);
 }
 
