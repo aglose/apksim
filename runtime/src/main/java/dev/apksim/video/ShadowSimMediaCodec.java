@@ -114,10 +114,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   }
 
   /** Totals across codecs, for the `video` control command. */
-  static final java.util.concurrent.atomic.AtomicLongArray STATS = new java.util.concurrent.atomic.AtomicLongArray(9);
+  static final java.util.concurrent.atomic.AtomicLongArray STATS = new java.util.concurrent.atomic.AtomicLongArray(13);
 
   static final String[] STAT_NAMES = {"inputs", "pictures", "decodeErrors", "rendered", "dropped", "noSurface", "audioInputs",
-      "audioErrors", "pcmBytes"};
+      "audioErrors", "pcmBytes", "decodeMs", "slowDecodes", "drawMs", "maxDecodeMs"};
 
   private static MediaCodecInfo.CodecProfileLevel level(int profile, int level) {
     MediaCodecInfo.CodecProfileLevel l = new MediaCodecInfo.CodecProfileLevel();
@@ -129,6 +129,23 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   private Decoder decoder;
   private AudioDecoder audio;
 
+  /** Video codecs not yet released, for the `video` control command. */
+  private static final Set<Decoder> LIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  /** Each live video codec's output: the view size it draws at, or the Surface name when no TextureView owns it. */
+  static String liveReport() {
+    StringBuilder b = new StringBuilder();
+    for (Decoder d : LIVE) {
+      Surface s = d.surface;
+      SurfaceTexture t = VideoSurfaces.textureOf(s);
+      int[] view = VideoSurfaces.viewSize(t);
+      b.append(" [").append(d.hevc ? "hevc" : "avc").append(" -> ")
+          .append(s == null ? "no surface" : t == null ? "untracked " + ReflectionHelpers.getField(s, "mName")
+              : view == null ? "view not laid out" : view[0] + "x" + view[1]).append(']');
+    }
+    return b.toString();
+  }
+
   @Implementation
   @Override
   protected void __constructor__(String name, boolean nameIsType, boolean encoder) {
@@ -136,6 +153,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     Object codec = ReflectionHelpers.getField(this, "fakeCodec");
     if (codec == AVC || codec == HEVC) {
       decoder = new Decoder(codec == HEVC);
+      LIVE.add(decoder);
       ReflectionHelpers.setField(this, "fakeCodec", decoder);
     } else if (codec == AAC || codec == MP3) {
       audio = new AudioDecoder(codec == MP3);
@@ -198,7 +216,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
   @Implementation
   protected void native_release() {
-    if (decoder != null) decoder.close();
+    if (decoder != null) {
+      decoder.close();
+      LIVE.remove(decoder);
+    }
     if (audio != null) audio.close();
   }
 
@@ -257,7 +278,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     long[] queue(ByteBuffer in, long pts, int flags) {
       if (handle != 0 && in != null && in.remaining() > 0) {
         STATS.incrementAndGet(0);
+        long t0 = System.nanoTime();
         int r = decode(in);
+        long took = System.nanoTime() - t0;
+        STATS.addAndGet(9, took / 1_000_000);
+        if (took > 20_000_000) STATS.incrementAndGet(10);
+        STATS.accumulateAndGet(12, took / 1_000_000, Math::max);
         if (r < 0) STATS.incrementAndGet(2);
         if (r > 0) {
           STATS.incrementAndGet(1);
@@ -311,7 +337,9 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       }
       STATS.incrementAndGet(render ? 3 : 4);
       try {
+        long t0 = System.nanoTime();
         if (render) draw(picture);
+        STATS.addAndGet(11, (System.nanoTime() - t0) / 1_000_000);
       } finally {
         VideoToolbox.nativeReleasePicture(picture);
       }

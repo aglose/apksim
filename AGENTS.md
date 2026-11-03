@@ -167,13 +167,24 @@ through a CoreAudio AudioUnit, and its playback head moves only as frames are pl
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
 and plays silence; `--jvm -Dapksim.audio=false` turns sound and the audio decoders off. Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
-Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters), `webrtclog [info|verbose]`,
+Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, and each live
+codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
+view to draw to), `webrtclog [info|verbose]`,
 `selftest [file]` (native scaler, colour order; with a `.h264`/`.h265` file MediaCodec onto a Surface, with an ADTS
 `.aac` or `.mp3` file MediaCodec into AudioTrack, checking the sound took real time; `scripts/make-media.sh` writes 2 s
 clips to `work/media`), `nodes` (accessibility tree: text, hints,
 fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
-arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed.
+arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed. Variadic libc
+functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fall through to libSystem, which reads
+the arguments the Apple way: `syslog` from libwebrtc crashed in `strlen` now and then. `scripts/so-imports.py APK`
+lists the imports; check new variadic ones against `bionic.c`.
+HomeSafe recorded clips (checked 2026-11-03): 4K H.264 at 20-25 fps plus 8 kHz AAC over HLS play at their frame rate,
+in step with the audio clock, and seek. Drops with sound on (0-7%) come from the stream: its audio timestamps jump
+~240 ms at segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match;
+with `-Dapksim.audio=false` there are none. When a visit plays on into its next clip the picture freezes: an app bug
+(MomentsScreen keeps `CameraStreamPlayer` composed across the `playerKey` change, and `AndroidView(factory =
+{ textureView })` keeps the old view, so the new player's TextureView is never attached). Compose behaves the same on a phone, but this was not checked on the emulator (needs a sign-in).
 HomeSafe needs a sign-in on every cold start. The owner ran `homesafe-signin --save` once, which writes
 `work/autofill/<package>.properties` (mode 600) from 1Password; from then on every apksim launch signs the app in by
 itself (`Autofill.java`: finds fields by their label/placeholder in the accessibility tree, fills them, checks they
