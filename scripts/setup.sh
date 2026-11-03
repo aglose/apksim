@@ -10,3 +10,4 @@ scripts/prepare-runtime.sh >/dev/null
 scripts/build.sh
 (cd testapks/composeapp && ./gradlew -q :app:assembleDebug)
 scripts/train.sh
+git config core.hooksPath scripts/hooks   # refuses direct pushes to main (pull requests only)
