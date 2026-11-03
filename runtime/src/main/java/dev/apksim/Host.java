@@ -95,17 +95,8 @@ public class Host {
     ShadowChoreographer.setPaused(true);
     usePersistentDataDir();
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
-    if (!"desktop".equals(System.getProperty("apksim.device", "phone"))) {
-      // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
-      // Robolectric keeps SystemUi package-private.
-      Class<?> ui = Class.forName("org.robolectric.shadows.SystemUi");
-      Object display = ReflectionHelpers.callStaticMethod(ui, "systemUiForDefaultDisplay");
-      ReflectionHelpers.callInstanceMethod(display, "setBehavior",
-          ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$StatusBarBehavior"),
-              ReflectionHelpers.getStaticField(ui, "STANDARD_STATUS_BAR")),
-          ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$NavigationBarBehavior"),
-              ReflectionHelpers.getStaticField(ui, "GESTURAL_NAVIGATION")));
-    }
+    // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
+    if (Device.current().systemBars()) DeviceControls.applySystemUi(Device.current());
     app = RuntimeEnvironment.getApplication();
     useDeviceGestureThresholds();
     HostNetworks.install(app);
@@ -115,6 +106,7 @@ public class Host {
     bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
+    controls.showTitle();
 
     String launcher = System.getProperty("apksim.launcher");
     Intent intent = new Intent(Intent.ACTION_MAIN)
@@ -139,6 +131,8 @@ public class Host {
           lastInput = start;
           if (e.type() == SimWindow.COMMAND) {
             menuCommand((int) e.x());
+          } else if (e.type() == SimWindow.RESIZE) {
+            controls.windowResized((int) e.x(), (int) e.y(), e.value() != 0);
           } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
             // Back put the software keyboard away; the app does not see it.
           } else if (!controls.hidden()) {
@@ -538,12 +532,12 @@ public class Host {
     frames++;
   }
 
-  /** The display changed size (rotation): the renderer, the window and screenshots follow. */
-  private void resizeDisplay(int newW, int newH) {
+  /** The display changed size (rotation, resizing, another device): the renderer, the window and screenshots follow. */
+  private void resizeDisplay(int newW, int newH, boolean actualSize) {
     w = newW;
     h = newH;
     bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-    hw.resize(w, h);
+    hw.resize(w, h, actualSize);
   }
 
   private void saveFrame(String path) throws Exception {

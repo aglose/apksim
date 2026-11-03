@@ -78,8 +78,10 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
-  Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. Build with
-  `./gradlew :app:assembleDebug` inside it.
+  Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
+  adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
+  navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
+  reads. Build with `./gradlew :app:assembleDebug` inside it.
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
   manifest, extracted `.so` files, app data).
 
@@ -103,6 +105,9 @@ last call, then what reached the screen per display vsync), `fps` (per-stage cos
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `config` (configuration the app sees),
+`device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
+bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
+`window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
 also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
@@ -137,7 +142,13 @@ encoder); with a window `.mov` H.264, or `.avi` if the file name says so. Config
 (each writes `work/tmp/<pid>/control.port`); `--control auto` takes a free port.
 
 ## Simulator features (Mac window)
-Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R), Device (Back, Home Cmd+Shift+H, Lock
+The window is resizable: dragging an edge resizes the display (`Device` rewrites the whole qualifier string:
+smallest width, size bucket and orientation follow), applied at most every 100 ms while dragging and once at the end;
+meanwhile the last frame stays pinned top left. Activities get the configuration change as on a device in a freeform
+window: recreated, or resized in place when they declare `screenSize` in configChanges (HomeSafe does). Zoom only
+scales the window. A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit.
+Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R), Device (Device Type > Phone/Foldable/
+Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
 Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
@@ -313,8 +324,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
   one-offs.
 - macOS forbids W+X pages, so 4 KB-aligned `.so` files (HappyApp's Flipper/libc++) cannot load. 16 KB-aligned ones work.
-- Phone, foldable and tablet report a 48 px status bar and 48 px gesture-nav inset (Robolectric's `SystemUi`, set in
-  `Host.run`), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
+- Phone, foldable and tablet report a 24 dp (48 px) status bar and gesture-nav inset (Robolectric's `SystemUi`, set
+  in `DeviceControls.applySystemUi`; desktop and TV have none), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
 - `scripts/build.sh` writes the jar beside the old one and renames it, so running instances keep their classes.
 - A RenderNode whose last parent goes away (removed from every renderer's tree, or its renderer destroyed) loses its

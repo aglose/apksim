@@ -50,14 +50,14 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 
 | Feature | iOS Simulator | apksim today | Plan | Size |
 |---|---|---|---|---|
-| Choice of device models | Dozens, plus `simctl create` | 4 presets (`--device`), fixed at launch | Load profiles from a JSON file (size, density, cutout, corner radius, insets); `apksim devices` lists them; menu to switch (relaunch is fine) | S |
+| Choice of device models | Dozens, plus `simctl create` | Done: 5 presets (phone, foldable, tablet, desktop, TV) and custom `WxH[@density]`, at launch (`--device`) or live (`device`, Device > Device Type) | Profiles with cutout and corner radius | S |
 | Device bezel / frame | Show Device Bezels | Bare window | Draw a bezel layer (rounded corners, cutout/camera hole) around `frameLayer` in `simwindow.m`; report the cutout to the app via `DisplayCutout` in the qualifiers/`SystemUi` shadow | M |
 | Status bar contents | Real status bar; `simctl status_bar override` | 48 px inset reported, nothing drawn | Draw a status bar overlay (time, battery, Wi-Fi) as a Cocoa layer above the app, honouring the app's light/dark status-bar appearance flags (`WindowInsetsController.setAppearanceLightStatusBars`); `statusbar` command overrides time/battery, like Android's demo mode | M |
 | Navigation bar / home indicator | Home indicator | Gesture inset only | Draw the gesture handle; bottom-edge swipe up = Home, side-edge swipe = Back (predictive back already exists in `dispatchPredictiveBack`) | S |
 | Rotation | Cmd+← / Cmd+→ | None | Swap width/height through groundwork 1; resize window; `Surface.ROTATION_*` in the display shadow | M |
 | Light/dark appearance | Cmd+Shift+A | None (always the system default, light) | `night`/`notnight` qualifier + configuration change; `--appearance dark` flag | S |
 | Window zoom | Physical / point / pixel accurate, fit | Fixed scale | Window menu that changes the scale passed to `openWindow`; the IOSurface stays device-sized | S |
-| Free resizing | iPad windows | Fixed | Resizable window → new `w..dp-h..dp` qualifiers on live resize (debounced). Android apps already handle this for freeform/desktop windowing | M |
+| Free resizing | iPad windows | Done: dragging the window's edge resizes the display (new qualifiers every 100 ms while dragging, and at the end); `size WxH` does it by command | | M |
 | Several devices at once | Yes | Yes (several processes) | Done; add `instance` names to the CLI | - |
 | External display | Yes | No | `DisplayManager` second display + `Presentation` support, rendered into a second window. Low priority | L |
 | OS versions | Install runtimes | API 36 only | Robolectric ships `android-all` for API 21-36; add `--api N`, an AOT cache per API, and fix shadows that differ | L |
