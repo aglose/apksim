@@ -313,8 +313,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   issues or release notes. That means no names of the owner's own apps, employer or servers, package names, hostnames,
   IP addresses, email addresses other than the GitHub noreply one, 1Password item names or sign-in values. Say "the
   owner's app" or describe it ("a large R8 app"). Private notes go in `~/.config/apksim/NOTES.md`.
-  `scripts/hooks/check-private` enforces it: `pre-commit` checks the staged changes, `pre-push` every new commit's
-  diff, message and author/committer email, against the terms in `~/.config/apksim/denylist` (private, one regex per
+  `scripts/hooks/check-private` enforces it: `pre-commit` checks the staged changes, `pre-push` the branch name and
+  every commit the remote lacks (diff, message, author/committer email), against the terms in `~/.config/apksim/denylist` (private, one regex per
   line). CI runs the same check with the `PRIVATE_DENYLIST` repository secret. Commits use the GitHub noreply
   address (this checkout's local `git config user.email`), and so must merge commits: merge with
   `gh pr merge --merge --author-email 7216340+aglose@users.noreply.github.com`.
