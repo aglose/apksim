@@ -27,6 +27,9 @@ import org.robolectric.internal.bytecode.ClassInstrumentor;
 import org.robolectric.internal.bytecode.InstrumentationConfiguration;
 import org.robolectric.internal.bytecode.ShadowProviders;
 import org.robolectric.pluginapi.Sdk;
+import org.robolectric.pluginapi.SdkPicker;
+import org.robolectric.pluginapi.UsesSdk;
+import org.robolectric.plugins.SdkCollection;
 import org.robolectric.manifest.AndroidManifest;
 import org.robolectric.pluginapi.TestEnvironmentLifecyclePlugin;
 import org.robolectric.pluginapi.config.ConfigurationStrategy;
@@ -40,7 +43,27 @@ public final class SimRunner extends RobolectricTestRunner {
    * process ({@link FlatLoader}), so a second sandbox would bring a second "main thread" to a main Looper already
    * bound to the first.
    */
-  private static final Injector INJECTOR = defaultInjector().bind(SandboxManager.SandboxBuilder.class, FlatSandboxBuilder.class).build();
+  private static final Injector INJECTOR = defaultInjector().bind(SandboxManager.SandboxBuilder.class, FlatSandboxBuilder.class)
+      .bind(SdkPicker.class, OneSdk.class).build();
+
+  /**
+   * Every test runs on the one framework this runtime ships (API 36), whatever the APK targets. Robolectric's picker
+   * takes the manifest's targetSdk when a class has no @Config(sdk): an app targeting 37, which is not enabled, had its
+   * test classes left with no tests to run (Host itself carries @Config(sdk = 36)).
+   */
+  public static final class OneSdk implements SdkPicker {
+    private final SdkCollection sdks;
+
+    @Inject
+    public OneSdk(SdkCollection sdks) {
+      this.sdks = sdks;
+    }
+
+    @Override
+    public List<Sdk> selectSdks(ConfigurationStrategy.Configuration configuration, UsesSdk usesSdk) {
+      return List.of(sdks.getSdk(36));
+    }
+  }
 
   public SimRunner(Class<?> c) throws InitializationError {
     super(c, INJECTOR);
@@ -122,11 +145,41 @@ public final class SimRunner extends RobolectricTestRunner {
         if (k.startsWith(prefix)) args.putString(k.substring(prefix.length()), System.getProperty(k));
       }
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
+      initJniConstants();
+      try {
+        Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
+      } catch (Exception e) {
+        System.err.println("[apksim] gesture thresholds: " + e);
+      }
+    }
+
+    private static boolean jniConstantsReady;
+
+    /**
+     * The framework's natives cache java.io/java.nio classes (JniConstants) on first use, in a pthread_once. Run from
+     * a coroutine worker (ImageDecoder.nCreateFd under Coil, the first use in one app's test run), the lookup failed
+     * and the process aborted ("Class not found: java/nio/ShortBuffer"); from the main thread it works. Host meets
+     * it on the main thread first; a test run does it here, before any test starts threads.
+     */
+    private static void initJniConstants() {
+      if (jniConstantsReady) return;
+      jniConstantsReady = true;
+      try {
+        java.io.File f = java.io.File.createTempFile("jniconstants", ".bin");
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+          android.graphics.BitmapFactory.decodeFileDescriptor(in.getFD());  // empty file: null, after the cache is filled
+        } finally {
+          f.delete();
+        }
+      } catch (java.io.IOException e) {
+        System.err.println("[apksim] JniConstants warm-up failed: " + e);
+      }
     }
 
     /** As AndroidTestEnvironment.resetState, but with a tracker this process can answer. */
     @Override
     public void resetState() {
+      if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));
       FakeMediaProvider media = ReflectionHelpers.getField(this, "fakeMediaProvider");
       if (media != null) {
@@ -155,7 +208,7 @@ public final class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected Class<?>[] getExtraShadows(FrameworkMethod method) {
-    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class};
+    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class};
   }
 
   @Override

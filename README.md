@@ -17,7 +17,7 @@ It also runs headless on Linux x86_64 in a 488 MB Docker image, for CI: see [doc
 Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
 `--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
-`--soft-keyboard`, `--adb PORT|auto`, `--debug PORT`, `--jvm ARG`.
+`--soft-keyboard`, `--adb PORT|auto`, `--debug PORT`, `--instrument TEST.apk [-e KEY VALUE]...`, `--jvm ARG`.
 
 For tools: `--adb PORT` makes the instance an adb device (`adb connect localhost:PORT`, then `adb shell`, `push`/`pull`,
 `logcat`, `screencap`), and `--debug PORT` lets Android Studio or IntelliJ's "Remote JVM Debug" stop at breakpoints in
@@ -32,6 +32,19 @@ Lock, volume, rotation, zoom, dark appearance, text size, language, location (fi
 slow animations and memory warnings, two-finger gestures with Option-drag, a drawn status bar, permission prompts,
 notification banners, and a clipboard shared with the Mac. `scripts/ctl.py` drives running
 instances like `xcrun simctl`. See [docs/ios-simulator-parity.md](docs/ios-simulator-parity.md) for what is left.
+
+## Instrumented tests
+
+`./apksim --instrument app-debug-androidTest.apk app-debug.apk` runs an app's androidTest suite in one process, as
+`am instrument -w -r` would on a device, and prints the same output; `scripts/instrument.py` runs a suite with one
+process per test (as the AndroidX Test Orchestrator does) and writes JUnit XML. Compose UI tests, Espresso,
+ActivityScenario and UiAutomator work; a library's device-test APK (KMP `androidDeviceTest`) is passed as both. Code
+that renders offscreen through Android's GLES20/30 and EGL14 gets a real GLES 3 (ANGLE on Metal).
+
+A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,106 tests, 4,102 pass, in about
+4 minutes of test time against about 19 on the emulators. The four that fail are the app's: one fails on an API 36
+emulator too, three reach a server on the developer's own network. Details, costs and commands:
+[docs/ci-testbed.md](docs/ci-testbed.md).
 
 ## Speed
 
@@ -111,7 +124,12 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
   writable + executable memory. Libraries built with 4 KB alignment (Flipper, and its libc++ here) get an
   UnsatisfiedLinkError. Those built 16 KB aligned work. So debug builds that bundle Flipper do not start.
 - **APKs need arm64-v8a** for native code (x86_64 in the Linux image). Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
-  not work: those libraries are stubs. Java's AudioTrack does play. The talk's GLES 1 game and audio demos have no equivalent here.
+  not work: those libraries are stubs. Java's AudioTrack does play, and in test runs Java's GLES20/30 and EGL14
+  render offscreen on ANGLE, but nothing presents GLES in the window. The talk's GLES 1 game and audio demos have no
+  equivalent here.
+- **Test runs are Robolectric-style:** the test body runs on the main thread with a simulated clock, so tests that
+  wait for real time or another process (UiAutomator's shell commands, accessibility events) are not covered; see
+  AGENTS.md, "Instrumentation tests".
 - **The native C library shim is partial.** It covers the functions these APKs import (sockets included, which
   libwebrtc needs), and an unsupported call prints its name.
 - **It is not a device.** System services are stand-ins (no Play Services, Health Connect, real camera or sensors),

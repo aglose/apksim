@@ -7,6 +7,57 @@ layer-content RenderEffects on Metal, and MediaCodec pictures in presentation or
 value per effort. Each step ends in its own commit, measured A/B against the build before it (AGENTS.md: noisy machine,
 interleave runs).
 
+## Phase 0: the owner's app's device tests in CI (started 2026-11-03)
+
+Goal: run the owner's app's instrumented suites on apksim in its CI instead of its two emulator jobs (~19 min a pull
+request, 35 runner-minutes). Findings, numbers and commands: [ci-testbed.md](ci-testbed.md).
+
+**Done:**
+- UiAutomator in `--instrument` runs (`ShadowSimUiAutomation`), with tests in the test app.
+- All of the app's suites run: 4,106 tests, 4,102 pass, in about 4 min of test time on the Mac. The 4 left are the
+  app's: one fails on an API 36 emulator too, three reach a server on the owner's network from a Mac on it.
+- Fixed on the way: two DEX translator miscompilations (exception-handler liveness: ints and floats typed as
+  references), the test SDK level (an app targeting 37), test discovery breaking framework classes, library test
+  APKs, and the device behaviour a test run lacked (`TestActivities`: back, finish, onNewIntent, Compose's UI-thread
+  order, requested window sizes, touch slop, two native aborts).
+- Offscreen GLES 3 on ANGLE (`dev.apksim.gl`, generated GLES20/30 shadows), for a 3D module's device test.
+- Debugging tools: `scripts/jdi/Trace.java`, `scripts/jdi/Ret.java`, `scripts/translate-class.java`.
+
+**Remaining, in order:**
+
+**0a. Measure on a real CI runner.** Add a job to the app's CI beside its emulator jobs (not replacing them) that
+builds the same test APKs, runs apksim's Linux image with `--instrument` on each, and uploads JUnit XML
+(`scripts/instrument.py --xml`). Done when its wall time and failures are known on ubuntu-24.04; the projection in
+ci-testbed.md (about 10 min, 10 runner-minutes) is only the Mac's test times plus CI's build time. Needs a pull
+request to the app's repository and an image of this version (`scripts/docker-build.sh`).
+
+**0b. GLES on Linux.** `Gl` looks for `libEGL.so.1`/`libGLESv2.so.2`, but the image has neither, so the 3D test would
+fail there. Add Mesa (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) to `docker/Dockerfile`, try EGL's surfaceless
+platform (`EGL_PLATFORM=surfaceless`) with a pbuffer, and run that test in the image. Watch the image size (488 MB).
+
+**0c. The app's 4 failures, upstream.** Not apksim's, but they block "all green": a feed test's title tap on API 36,
+which a real API 36 emulator reproduces, and the journeys that reach the server address compiled into the app (let
+tests replace it, so they are hermetic on a developer's Mac too). The app's code, so for its own sessions; apksim's
+`--no-network` is not a substitute (it breaks the journeys that expect the remote route).
+
+**0d. A translator regression test with R8's register reuse.** The two miscompilations needed R8-shaped code (a
+register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
+not produce it, so `TranslatorTest` only checks behaviour. Commit a small R8-built DEX fixture and a check that
+translates it and runs it (or `selftest translator`), so a regression in `computeLiveness` fails CI.
+
+**0e. Check normal runs after the translator fixes.** They change how every app translates. Launch, the test app's
+drive and the Shader tab are unchanged (1.45 s first frame, 118 fps). Still to look at: the owner's app's animations
+in a normal run, which may have been snapping in places (the same pattern), and play-services' `GoogleApiHandler`,
+which no longer dies: what it starts (availability checks, geofencing) now runs.
+
+**0f. What a test run still lacks, when a suite needs it:** accessibility events for UiAutomator
+(`executeAndWaitForEvent` reports a window change only), its `executeShellCommand` (empty output) and global actions
+other than Back; starting an activity that is not running (only recorded, as Robolectric does) and CLEAR_TOP;
+`adb shell am instrument`; the test APK's own resources and context.
+
+**0g. CI cache.** Cache `work/cache/classes` between runs keyed on the runtime hash and the APKs' CRCs. Low value by
+the measurement above (cold and warm the same); revisit if the Linux numbers say otherwise.
+
 ## Phase 1: check today's work on the owner's app (small, do first)
 
 **1. Recorded clips in the owner's app.** Today's frame reordering and audio path were checked only on the test app's 3 s
@@ -113,7 +164,8 @@ phase 1 says whether the owner's app does.
 them. Needs the SDK's binder interface; medium effort.
 
 **11. Native GLES and audio.** GLES via ANGLE-on-Metal and OpenSL ES/AAudio on CoreAudio would let games and
-native audio apps run. Large; only if a target app needs it.
+native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EGL14 already reach ANGLE in test runs
+(phase 0); native `libGLESv*.so` imports and presenting GLES in the window are what is left.
 
 ## Not planned
 
@@ -124,6 +176,13 @@ native audio apps run. Large; only if a target app needs it.
 
 | Step | Size | Needs |
 |---|---|---|
+| 0a Measure on a CI runner | small | a pull request to the app, this version's image |
+| 0b GLES on Linux | small-medium | Docker |
+| 0c The app's 4 failures | small | the app's own sessions |
+| 0d Translator fixture test | small | an R8 build |
+| 0e Normal runs after the fixes | small | the owner's app, a look at its animations |
+| 0f Test-run gaps | medium each | a suite that needs them |
+| 0g CI class cache | small | 0a's numbers |
 | 1 Recorded clips | small | the owner's app (autofill), network |
 | 2 Effect-layer edge cases | small | - |
 | 3 README count | minutes | - |
