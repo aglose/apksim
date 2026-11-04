@@ -59,4 +59,7 @@ public final class SimAudio {
   static native void nativeOutVolume(long out, float volume, boolean muted);
 
   static native void nativeOutRelease(long out);
+
+  /** Streams released while a writer was still inside nativeOutWrite (a bug: that writer then reads freed memory). */
+  static native long nativeReleasedUnderWrite();
 }

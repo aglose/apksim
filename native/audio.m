@@ -6,6 +6,7 @@
 #include <jni.h>
 #include <os/os_sync_wait_on_address.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,12 +127,17 @@ typedef struct {
   _Atomic uint64_t underruns;
   _Atomic int muted;
   uint32_t frameBytes;
-  int running;
+  _Atomic int running;  // read by a writer waiting for room while play/pause (or release) changes it
   // Wakes a writer waiting for room. The render callback runs on CoreAudio's real-time thread, so it takes no lock:
   // it bumps [wakes] and wakes the address only when a writer said it waits.
   _Atomic uint32_t wakes;
   _Atomic int waiting;
+  _Atomic int writers;  // threads inside nativeOutWrite: release must find none
 } AudioOut;
+
+// Streams released while a writer was still inside nativeOutWrite (a use after free for that writer): the audio
+// selftest checks this stays 0.
+static _Atomic long releasedUnderWrite;
 
 static void wake_writer(AudioOut *o) {
   atomic_fetch_add(&o->wakes, 1);
@@ -204,6 +210,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeOutWrite(JNIEnv *env
                                                                      jboolean blocking) {
   AudioOut *o = (AudioOut *)(intptr_t)h;
   const uint8_t *src = (const uint8_t *)(*env)->GetDirectBufferAddress(env, buf) + offset;
+  atomic_fetch_add(&o->writers, 1);
   uint64_t done = 0;
   while (done < (uint64_t)length) {
     uint64_t w = atomic_load(&o->written), room = o->capacity - (w - atomic_load(&o->read));
@@ -227,6 +234,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeOutWrite(JNIEnv *env
     atomic_store(&o->written, w + n);
     done += n;
   }
+  atomic_fetch_sub(&o->writers, 1);
   return (jint)done;
 }
 
@@ -269,8 +277,16 @@ JNIEXPORT void JNICALL Java_dev_apksim_video_SimAudio_nativeOutVolume(JNIEnv *en
   AudioUnitSetParameter(o->unit, kHALOutputParam_Volume, kAudioUnitScope_Global, 0, volume, 0);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_apksim_video_SimAudio_nativeReleasedUnderWrite(JNIEnv *env, jclass c) {
+  return (jlong)atomic_load(&releasedUnderWrite);
+}
+
 JNIEXPORT void JNICALL Java_dev_apksim_video_SimAudio_nativeOutRelease(JNIEnv *env, jclass c, jlong h) {
   AudioOut *o = (AudioOut *)(intptr_t)h;
+  if (atomic_load(&o->writers) > 0) {
+    atomic_fetch_add(&releasedUnderWrite, 1);
+    fprintf(stderr, "[apksim] AudioTrack released with a write still in progress\n");
+  }
   AudioOutputUnitStop(o->unit);
   AudioUnitUninitialize(o->unit);
   AudioComponentInstanceDispose(o->unit);
