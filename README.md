@@ -42,8 +42,8 @@ Measured here (M4 Pro, 24 GB) from launching the process to the app's first fram
 |---|---|---|---|
 | Android Prototype, as demoed (Linux x86, small app) | ~2 s | ~3-4 s | not shown |
 | apksim, small Compose app | 0.15 s | 2.5 s | ~550-780 MB |
-| apksim, the large app (R8, 12 MB DEX, SQLite + WebRTC .so) | 0.15 s | 2.6 s | |
-| apksim, the large app's debug build (179 MB APK) | 0.15 s | 3.3 s | |
+| apksim, a large app (R8 release build, 12 MB DEX, SQLite + WebRTC .so) | 0.15 s | 2.6 s | |
+| apksim, the same app's debug build (179 MB APK) | 0.15 s | 3.3 s | |
 | Stock emulator, Quick Boot snapshot (same small app) | - | 8.3-9.0 s | 3-4 GB |
 | Stock emulator, full boot | - | 18 s | 3.3-4 GB |
 
@@ -59,8 +59,8 @@ hardware and app differ too, so this shows the same order of speed, not a contro
   Translated classes are kept in `work/cache/classes` per DEX file, so later launches skip translation, and a
   rebuilt APK only retranslates the DEX files that changed, on worker threads using the class list from the
   previous launch. DEX files are mapped from the APK rather than copied onto the Java heap. With a warm cache,
-  first frame went from 1.79 to 1.43 s (test app), 1.83 to 1.66 s (the large app) and 2.38 to 1.78 s (the large app
-  debug), medians of 5 interleaved runs on a busy machine.
+  first frame went from 1.79 to 1.43 s (test app), 1.83 to 1.66 s (the large app) and 2.38 to 1.78 s (its
+  debug build), medians of 5 interleaved runs on a busy machine.
 - **Memory:** a 64 MB young generation (was 256 MB) and the mapped DEX files brought the footprint at first frame
   from about 580 to 410 MB (test app) and 750 to 450 MB (the large app's debug build). GC pauses while scrolling went from
   about 12 ms median (50 ms worst) to about 1 ms (9 ms worst), because fewer objects survive each collection.
@@ -80,20 +80,20 @@ command: time between frames reaching the window):
 | Compose list fling | 117-120 fps | ~65-75% of frames |
 | Full-screen 6-octave noise shader, every frame (test app's Shader tab) | 118 fps | ~70-80% |
 | Three instances at once (phone, foldable, desktop), shader on each | 120 fps | ~84% |
-| the large app apps sheet opening / closing | 117-118 fps | ~82-85% |
+| The large app's bottom sheet opening / closing | 117-118 fps | ~82-85% |
 
 Frames off the grid are typically 9-12 ms rather than dropped. Idle shader screens in the large app update at 30 Hz
-because the app steps its shader clocks at 30 Hz on purpose (`rememberShaderClock(frameSeconds = 1f / 30f)`).
+because the app steps its shader clocks at 30 Hz on purpose.
 
 How it gets there:
 - **AGSL shaders run on the GPU.** The library's renderer is CPU-only and interpreted shaders per pixel (about 5 fps
   on the large app). App calls are rewritten so `RuntimeShader` draws are translated to Metal (`runtime/.../gpu/`),
   rendered a frame ahead, and drawn as bitmaps. All 28 AGSL programs in the large app's DEX translate and compile
-  on Metal; the one that takes child shaders as a paint (Fitness's heat map) still runs on the CPU. Shaders over a
+  on Metal; the one that takes child shaders as a paint (a heat map) still runs on the CPU. Shaders over a
   layer's content (`RenderEffect.createRuntimeShaderEffect`, set through Compose's graphicsLayer) run on Metal too: the
   layer's content is rasterized on its own, uploaded as a texture, shaded, and drawn as a bitmap (the large app's camera
-  page 49 → 130 fps, Weather 23 → 86, Atlas 8.6 → 30). Scaled bitmaps (map and photo tiles) are resampled on Metal
-  once and then blitted 1:1, which took Atlas panning from 26 to 64-73 fps.
+  page 49 → 130 fps, a weather screen 23 → 86, a map screen 8.6 → 30). Scaled bitmaps (map and photo tiles) are resampled on Metal
+  once and then blitted 1:1, which took panning the map from 26 to 64-73 fps.
 - **Rasterizing overlaps recording.** HWUI's synchronous draw runs on its own thread, and the main thread starts on
   the next frame as soon as HWUI has synced.
 - **Ripples use the plain solid style.** The patterned Material ripple costs ~15 ms a frame on the CPU, and its
@@ -109,7 +109,7 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
 - **Rasterizing is CPU-only, on one core.** See Frame rate above.
 - **Older native libraries fail to load.** Code and data must not share a 16 KB page, because macOS forbids
   writable + executable memory. Libraries built with 4 KB alignment (Flipper, and its libc++ here) get an
-  UnsatisfiedLinkError. Those built 16 KB aligned work. So an app's debug build, which uses Flipper, does not start.
+  UnsatisfiedLinkError. Those built 16 KB aligned work. So debug builds that bundle Flipper do not start.
 - **APKs need arm64-v8a** for native code (x86_64 in the Linux image). Native libraries that use GLES, audio (OpenSL/AAudio) or the camera will
   not work: those libraries are stubs. Java's AudioTrack does play. The talk's GLES 1 game and audio demos have no equivalent here.
 - **The native C library shim is partial.** It covers the functions these APKs import (sockets included, which
@@ -126,10 +126,10 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
 ## Tested
 
 `testapks/composeapp`: taps, swipes and flings, FAB state, navigation, SQLite write surviving a restart,
-three device sizes at once. the large app: first screen, typing, sheet with back, AGSL backgrounds, live network
+three device sizes at once. The large app: first screen, typing, sheet with back, AGSL backgrounds, live network
 data, and its Android `libsqliteJni.so` writing a database that `sqlite3` validates (55 tables, integrity ok).
-Signed in to the large app, every screen reached (sign-in, apps drawer, Weather tabs, Atlas, Fitness, Finance, Home,
-camera page, Moments, Settings and its pages) matched an API 36 emulator at the same size to within a mean pixel
+Signed in to the large app, every screen reached (about a dozen, from sign-in and a map to a live camera page and
+settings) matched an API 36 emulator at the same size to within a mean pixel
 difference of about 2/255, apart from Health Connect content and animation timing. Live camera video (WebRTC) and recorded
 clips (Media3/ExoPlayer through MediaCodec) play, H.264 decoded on VideoToolbox. MediaCodec also decodes HEVC
 (VideoToolbox) and AAC and MP3 (AudioToolbox), and AudioTrack plays through the Mac's speakers at real speed
@@ -142,6 +142,8 @@ window's own mouse, trackpad and keyboard handling is written but has not been e
 Changes go to `main` through pull requests, which need the `linux-smoke` CI check (the Linux image running the test
 app headless) to pass. CI cannot check the Mac-only parts, the window, Metal and launch timings, so say in the PR what
 you checked locally. [AGENTS.md](AGENTS.md) explains how to build, run and measure.
+The `linux-smoke` check and the git hooks (`scripts/hooks/check-private`) also refuse personal information: names of
+private apps, servers and emails.
 
 ## License
 Apache License 2.0: see [LICENSE](LICENSE). Running an APK does not change its own license; Robolectric and the

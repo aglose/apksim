@@ -13,9 +13,9 @@ import java.util.Map;
 import java.util.Properties;
 
 /**
- * Signs an app in on launch from values its owner saved, like a password manager's autofill or the large app's own
- * debug-build "fill test credentials" button, so that restarting an instance does not need a person at the
- * keyboard. The owner writes work/autofill/PACKAGE.properties (scripts/signin.sh --save does it from 1Password):
+ * Signs an app in on launch from values its owner saved, like a password manager's autofill or a debug build's
+ * "fill test credentials" button, so that restarting an instance does not need a person at the keyboard. The owner
+ * writes work/autofill/PACKAGE.properties (mode 600; for example from a password manager's CLI):
  *
  * <pre>
  * Server\ URL=https://example:8971
