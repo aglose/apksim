@@ -256,7 +256,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       System.err.println("[apksim] UiAutomation.performGlobalAction(" + action + ") is not supported");
       return false;
     }
-    if (!TestActivities.testRun()) return live("back");
+    if (!TestActivities.testRun()) return live(true, "back");
     long now = SystemClock.uptimeMillis();
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
@@ -290,22 +290,33 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       int masked = m.getActionMasked();
       String action = masked == android.view.MotionEvent.ACTION_DOWN ? "down"
           : masked == android.view.MotionEvent.ACTION_MOVE ? "move"
-          : masked == android.view.MotionEvent.ACTION_UP || masked == android.view.MotionEvent.ACTION_CANCEL ? "up" : null;
+          : masked == android.view.MotionEvent.ACTION_UP ? "up"
+          : masked == android.view.MotionEvent.ACTION_CANCEL ? "cancel" : null;
       if (action == null) return false;
-      return live("touch", action, String.valueOf(m.getRawX()), String.valueOf(m.getRawY()));
+      return live(sync, "touch", action, String.valueOf(m.getRawX()), String.valueOf(m.getRawY()));
     }
     if (event instanceof KeyEvent k) {
+      // The Host's key command makes a whole press and release, so the down carries it and the up is done.
       if (k.getAction() != KeyEvent.ACTION_DOWN) return true;
-      if (k.getKeyCode() == KeyEvent.KEYCODE_BACK) return live("back");
-      return live("key", KeyEvent.keyCodeToString(k.getKeyCode()).substring("KEYCODE_".length()));
+      if (k.getKeyCode() == KeyEvent.KEYCODE_BACK && k.getMetaState() == 0) return live(sync, "back");
+      List<String> c = new ArrayList<>(List.of("key", KeyEvent.keyCodeToString(k.getKeyCode()).substring("KEYCODE_".length())));
+      if (k.isCtrlPressed()) c.add("ctrl");
+      if (k.isShiftPressed()) c.add("shift");
+      if (k.isAltPressed()) c.add("alt");
+      if (k.isMetaPressed()) c.add("meta");
+      return live(sync, c.toArray(new String[0]));
     }
     return false;
   }
 
-  private static boolean live(String... command) {
+  /** Queues input with the Host and, when SYNC, waits until the Host has dispatched it, as a device's injection does. */
+  private static boolean live(boolean sync, String... command) {
     try {
       String r = AdbShell.control(command);
-      return r == null || !r.startsWith("error") && !r.startsWith("unknown");
+      if (r != null && (r.startsWith("error") || r.startsWith("unknown"))) return false;
+      long end = System.nanoTime() + 5_000_000_000L;
+      while (sync && System.nanoTime() < end && Boolean.TRUE.equals(onMain(Host::inputQueued))) Thread.sleep(4);
+      return true;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;

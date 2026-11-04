@@ -148,21 +148,53 @@ final class AdbServer {
       if (TRACE && !service.equals("track-jdwp")) System.err.println("[apksim] adb open " + service.replace("\0", "\\0"));
       boolean known = service.startsWith("shell") || service.startsWith("exec:") || service.equals("sync:")
           || service.equals("root:") || service.equals("unroot:");
-      Socket forward = null;
       if (!known && isForward(service)) {
         // `adb forward tcp:N localabstract:NAME` (or tcp:PORT): the adb server opens this for each connection to N.
-        try {
-          forward = forwardTarget(service);
-          known = true;
-        } catch (IOException e) {
-          System.err.println("[apksim] adb " + service + ": " + e.getMessage());
-        }
+        // Connected on a thread of its own, so a slow or unreachable target does not hold up this connection's reader;
+        // OKAY once connected, CLSE if not, as adbd answers.
+        Thread t = new Thread(() -> {
+          Socket target;
+          try {
+            target = forwardTarget(service);
+          } catch (IOException e) {
+            System.err.println("[apksim] adb " + service + ": " + e.getMessage());
+            try {
+              send(A_CLSE, 0, remote);
+            } catch (IOException ignored) {
+              // The adb server went away.
+            }
+            return;
+          }
+          Stream s;
+          try {
+            s = accept(remote);
+          } catch (IOException e) {
+            try {
+              target.close();
+            } catch (IOException ignored) {
+              // Closing anyway.
+            }
+            return;
+          }
+          pump(s, target);
+        }, "adb-forward");
+        t.setDaemon(true);
+        t.start();
+        return;
       }
       if (!known) {
         System.err.println("[apksim] adb: unsupported service " + service);
         send(A_CLSE, 0, remote);
         return;
       }
+      Stream s = accept(remote);
+      Thread t = new Thread(() -> serve(s, service), "adb-" + service.split("[: ]", 2)[0]);
+      t.setDaemon(true);
+      t.start();
+    }
+
+    /** A new stream for the client's REMOTE id, registered before its OKAY so that the client's writes find it. */
+    private Stream accept(int remote) throws IOException {
       int local;
       synchronized (this) {
         local = nextId++;
@@ -170,13 +202,7 @@ final class AdbServer {
       Stream s = new Stream(this, local, remote);
       streams.put(local, s);
       send(A_OKAY, local, remote);
-      Socket target = forward;
-      Thread t = new Thread(() -> {
-        if (target != null) pump(s, target);
-        else serve(s, service);
-      }, "adb-" + service.split("[: ]", 2)[0]);
-      t.setDaemon(true);
-      t.start();
+      return s;
     }
 
     private static boolean isForward(String service) {

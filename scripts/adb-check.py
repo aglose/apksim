@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 PKG = "dev.apksim.uiserver"
@@ -67,15 +68,18 @@ def main():
     # Started as the Android CLI starts its server: in the background, read until it reports it is listening.
     proc = subprocess.Popen([ADB, "-s", serial, "shell", f"am instrument -w {PKG}/.UiServer &"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    started = time.time()
+    # readline() blocks, so a server that never reports (or never prints a whole line) is ended by a timer.
+    timer = threading.Timer(60, proc.kill)
+    timer.start()
     seen = ""
-    while time.time() - started < 60:
+    while True:
         line = proc.stdout.readline()
         if not line:
             break
         seen += line
         if "INSTRUMENTATION_STATUS_CODE: 200" in line:
             break
+    timer.cancel()
     if "INSTRUMENTATION_STATUS_CODE: 200" not in seen:
         fail(f"am instrument never reported status 200: {seen.strip()}")
     proc.stdout.close()
