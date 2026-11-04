@@ -1,0 +1,4 @@
+#!/bin/bash
+# Refuses a commit whose staged changes contain personal information (scripts/hooks/check-private).
+# Installed by scripts/setup.sh (git config core.hooksPath scripts/hooks).
+exec "$(dirname "$0")/check-private" --staged
