@@ -38,6 +38,8 @@ permissions:
 jobs:
   package:
     if: github.event_name != 'release'
+    # The draft is made only once the image of its version is pushed: publishing it moves :latest to that image.
+    needs: image
     runs-on: macos-15  # Apple Silicon
     timeout-minutes: 60
     steps:
