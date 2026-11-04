@@ -166,7 +166,7 @@ final class AdbShell {
     boolean append;
   }
 
-  /** Splits a line into commands at unquoted ; && ||, with '' "" and \ quoting, and > / >> redirections. */
+  /** Splits a line into commands at unquoted ; & && ||, with '' "" and \ quoting, and > / >> redirections. */
   static List<Command> parse(String line) {
     List<Command> cmds = new ArrayList<>();
     Command c = new Command();
@@ -175,7 +175,9 @@ final class AdbShell {
     boolean discardNext = false;  // the target of 2>
     for (int i = 0; i <= line.length(); i++) {
       char ch = i < line.length() ? line.charAt(i) : '\n';
-      boolean end = ch == '\n' || ch == ';' || ch == '&' && i + 1 < line.length() && line.charAt(i + 1) == '&'
+      // An unquoted lone `&` (`am instrument -w ... &`) ends a command as `;` does: it runs here, and its output
+      // still reaches this stream while the stream is open.
+      boolean end = ch == '\n' || ch == ';' || ch == '&'
           || ch == '|' && i + 1 < line.length() && line.charAt(i + 1) == '|';
       if (Character.isWhitespace(ch) || end || ch == '>' || ch == '<') {
         String fd = null;
@@ -208,7 +210,8 @@ final class AdbShell {
         if (end) {
           cmds.add(c);
           c = new Command();
-          if (ch == '&' || ch == '|') {
+          boolean doubled = i + 1 < line.length() && line.charAt(i + 1) == ch;
+          if ((ch == '&' || ch == '|') && doubled) {
             c.after = ch == '&' ? "&&" : "||";
             i++;
           }
@@ -244,8 +247,6 @@ final class AdbShell {
   private int exec(List<String> a) throws Exception {
     // Leading NAME=VALUE assignments and `exec` change nothing here.
     while (!a.isEmpty() && (a.get(0).matches("[A-Za-z_][A-Za-z0-9_]*=.*") || a.get(0).equals("exec"))) a = a.subList(1, a.size());
-    // A trailing `&` (`am instrument -w ... &`): run it here; its output still reaches this stream while it is open.
-    if (!a.isEmpty() && a.get(a.size() - 1).equals("&")) a = a.subList(0, a.size() - 1);
     if (a.isEmpty()) return 0;
     String cmd = a.get(0);
     List<String> args = a.subList(1, a.size());
