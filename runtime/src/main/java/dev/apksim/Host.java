@@ -58,11 +58,14 @@ public class Host {
   private static final long MAX_CATCH_UP_MS = 50;
   private static final long VSYNC_SLACK_NANOS = 300_000L;
   /**
-   * {@code -Dapksim.vsync=display} starts each animation frame just after the display's own vsync (CADisplayLink),
-   * as Choreographer does on a device, instead of on this process's 120 Hz grid. Falls back to the grid whenever the
-   * window gets no vsyncs (hidden, or the display asleep).
+   * Each animation frame starts just after the display's own vsync (CADisplayLink), as Choreographer does on a device,
+   * rather than on this process's 120 Hz grid. Falls back to the grid whenever the window gets no vsyncs (hidden, the
+   * display asleep, headless). {@code -Dapksim.vsync=grid} keeps the grid. On a 120 Hz display (2026-11-03, 5
+   * interleaved runs each) the grid drifted against the display's vsync: on the Shader tab a new frame reached 99-100%
+   * of vsyncs in some runs and 69% in others (frames shown twice, others never shown); flings drew ~140 fps of which
+   * 100-180 frames were replaced before being shown, 84-97% new. Following the display gave 98-99% and 97% in every run.
    */
-  private static final boolean FOLLOW_DISPLAY = "display".equals(System.getProperty("apksim.vsync"));
+  private static final boolean FOLLOW_DISPLAY = !"grid".equals(System.getProperty("apksim.vsync"));
   /** When display pacing is on: the System.nanoTime() of the vsync the next frame is for, or 0 to use the grid. */
   private long frameAtNanos;
 

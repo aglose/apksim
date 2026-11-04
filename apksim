@@ -87,7 +87,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.headless=*|-Dapksim.logcat=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
-      -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*) ;;
+      -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       *) WARM_OK="" ;;
     esac
   done

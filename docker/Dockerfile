@@ -21,6 +21,11 @@ RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar)" && DIS
     rm "$DIST" && zip -q -d "$ALL" 'native/*' 'fonts/*' 'icu/*' 'hyphen-data/*'
 
 FROM eclipse-temurin:24-jre
+# GLES for test runs that render offscreen (dev.apksim.gl): Mesa's software EGL and GLES, on EGL's surfaceless platform
+# (no display server), where pbuffers work.
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri && \
+    rm -rf /var/lib/apt/lists/*
+ENV EGL_PLATFORM=surfaceless
 COPY --from=build /opt/apksim /opt/apksim
 COPY apksim /opt/apksim/apksim
 COPY train.sh /opt/apksim/scripts/train.sh

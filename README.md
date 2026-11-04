@@ -12,7 +12,7 @@ Android SDK to build the test app (`testapks/composeapp`), which `setup.sh` also
 
 After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location.
 
-It also runs headless on Linux x86_64 in a 488 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
+It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
 
 Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
@@ -39,12 +39,13 @@ instances like `xcrun simctl`. See [docs/ios-simulator-parity.md](docs/ios-simul
 `am instrument -w -r` would on a device, and prints the same output; `scripts/instrument.py` runs a suite with one
 process per test (as the AndroidX Test Orchestrator does) and writes JUnit XML. Compose UI tests, Espresso,
 ActivityScenario and UiAutomator work; a library's device-test APK (KMP `androidDeviceTest`) is passed as both. Code
-that renders offscreen through Android's GLES20/30 and EGL14 gets a real GLES 3 (ANGLE on Metal).
+that renders offscreen through Android's GLES20/30 and EGL14 gets a real GLES 3 (ANGLE on Metal; Mesa in the Linux
+image).
 
-A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,106 tests, 4,102 pass, in about
-4 minutes of test time against about 19 on the emulators. The four that fail are the app's: one fails on an API 36
-emulator too, three reach a server on the developer's own network. Details, costs and commands:
-[docs/ci-testbed.md](docs/ci-testbed.md).
+A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,107 tests in about 4.7 minutes on a
+Mac and 8.3 in the Linux image under Rosetta, against about 19 on the emulators. All pass once two of the app's tests
+are fixed (one clicked the wrong node; some journeys reached a real server on the developer's own network). Details,
+costs and commands: [docs/ci-testbed.md](docs/ci-testbed.md).
 
 ## Speed
 
@@ -171,7 +172,7 @@ window's own mouse, trackpad and keyboard handling is written but has not been e
 ## Contributing
 
 Changes go to `main` through pull requests, which need the `linux-smoke` CI check (the Linux image running the test
-app headless) to pass. CI cannot check the Mac-only parts, the window, Metal and launch timings, so say in the PR what
+app headless and its androidTest suite, plus a DEX translator check) to pass. CI cannot check the Mac-only parts, the window, Metal and launch timings, so say in the PR what
 you checked locally. [AGENTS.md](AGENTS.md) explains how to build, run and measure.
 The `linux-smoke` check and the git hooks (`scripts/hooks/check-private`) also refuse personal information: names of
 private apps, servers and emails.

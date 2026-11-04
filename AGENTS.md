@@ -15,8 +15,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
    "Open work".
 4. **The owner's app's device tests as a CI testbed** (asked 2026-11-03: run its emulator tests here, compare CI cost
-   and time, fix until nothing fails): 4,102 of 4,106 pass, ~4 min against ~19; the 4 left are the app's own. See
-   docs/ci-testbed.md, and docs/plan.md phase 0 for what is left.
+   and time, fix until nothing fails): all 4,107 pass with two fixes to the app's own tests (patches in the private notes),
+   4.7 min on the Mac, 8.3 min in the Linux image under Rosetta, against ~19 on the emulators. See docs/ci-testbed.md,
+   and docs/plan.md phase 0 for what is left (the job in the app's own CI).
 
 ## Layout
 - `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
@@ -25,7 +26,7 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
-  - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (120 Hz grid), and the `--control`
+  - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
@@ -94,7 +95,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
 - `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
-  data), `instrument.py` (androidTest suites, JUnit XML), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead),
+  `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap),
@@ -326,7 +328,13 @@ are found from their class bytes (ASM), not reflection: that runs before the san
 whose default is a framework enum initialized that class without it, breaking it for the run. A library's test APK
 (KMP `androidDeviceTest`, which instruments itself) is passed as both: `--instrument X-androidTest.apk X-androidTest.apk`
 (no launcher activity needed in a test run). The test app's `src/androidTest` (Compose rule, Espresso, UiAutomator, an
-animation clock check and a translator check) is the check: `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`.
+animation clock check, a translator check and offscreen GLES) is the check:
+`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`; CI runs it in the Linux image. The translator's own
+regression check is `scripts/check-translator.sh` (CI too): `testapks/translator-fixture` is plain Java built with R8
+(`fixture.dex`) and with D8 in debug mode (`fixture-d8-debug.dex`), whose register reuse produced the two liveness
+miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
+a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
+`.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
 UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
@@ -345,6 +353,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   draw passes that never come).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
+- Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
+  `ElfLoader` extracts each `.so` to a per-process temporary file and renames it into place (and skips it by the
+  entry's CRC, kept in `<name>.so.crc`), and `AppInfo` writes the manifest the same way. Copying in place let one of
+  four `--isolate` processes load a library another was rewriting (`NoClassDefFoundError` for a bundled SQLite
+  driver's native library, on the first test after a rebuild).
 - The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
@@ -356,18 +369,24 @@ server compiled into the app reaches it from here when the Mac is on that networ
 ## GLES (offscreen)
 `dev.apksim.gl`: android.opengl.GLES20/GLES30/EGL14 on a real GLES 3 in test runs (or `-Dapksim.gles=true`), for
 code that renders into a pbuffer and reads it back. ANGLE on Metal from `work/runtime/gles` or the Android SDK's
-`emulator/lib64/gles_angle` (`-Dapksim.gles.dir` to choose), the system's libEGL/libGLESv2 on Linux (Mesa; not tried
-yet), called through the JDK's foreign function API (hence `--release 22`). `ShadowSimGLES20/30` are generated by
+`emulator/lib64/gles_angle` (`-Dapksim.gles.dir` to choose), the system's libEGL/libGLESv2 on Linux (the image has
+Mesa's llvmpipe with `EGL_PLATFORM=surfaceless`: pbuffers, no display server), called through the JDK's foreign function API (hence `--release 22`). `ShadowSimGLES20/30` are generated by
 `scripts/gen-gles-shadows.py` from the framework jar's signatures, mapping Java to C as Android's bindings do
 (array+offset and Buffer arguments are pointers, an int where another overload has a Buffer is a buffer-object
 offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a window surface is a pbuffer of its size
-(nothing presents GLES to the Mac window). Without a library the shadows fall back to Robolectric's stand-ins.
+(nothing presents GLES to the Mac window). So `eglChooseConfig` asks the real EGL for pbuffer configs where the app asked
+for window ones or named no surface type (EGL's default is windows), and drops `EGL_RECORDABLE_ANDROID`: Mesa's
+surfaceless platform has no window configs, and WebRTC's `EglBase.create()` threw "Unable to find any matching EGL
+config" in every journey that showed a live camera. Without a library the shadows fall back to Robolectric's stand-ins.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
 `HostOs` picks `.so` vs `.dylib` and the APK ABI (`x86_64` on Linux); on Linux the window, Metal and VideoToolbox
 are skipped (headless, CPU shaders). `native/linux/` holds the bionic→glibc shim and a JNI bridge; `elfloader.c` is
 shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
+Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
+/private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
+(`apksim:ci` and `apksim:latest` are shared).
 
 ## Debugging app code
 `./apksim --debug 5005 --control 7400 app.apk`, then IntelliJ/Android Studio "Remote JVM Debug" (Attach, localhost,
@@ -470,17 +489,18 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
 
 ## Open work
-- **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, GLES on Linux, a translator
-  fixture test, the four failures that are the app's).
+- **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, the four failures that are the
+  app's).
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
   frames, single core) and GPU wait on heavy shaders. Not yet tried: zero-copy GPU output (render into Bitmap memory).
-- **Display vsync pacing is written but unmeasured** (`--jvm -Dapksim.vsync=display`, off by default): Host then starts
-  each animation frame 0.3 ms after the display's vsync (CADisplayLink on the window, `SimWindow.untilVsync`) instead
-  of on its own 120 Hz grid, and falls back to the grid whenever no vsyncs arrive. It was built while the Mac's display
-  was asleep (no vsyncs), so only the fallback was checked (same frame rates as the grid). To decide: on a lit 120 Hz
-  display, A/B the Shader tab and flings with `frames`, whose `screen` part counts per real vsync whether a new frame
-  arrived (repeated = the screen showed a frame twice; replaced = a frame never shown). Make it the default if it
-  raises "new frame on N% of vsyncs".
+- **Display vsync pacing is the default (2026-11-03):** Host starts each animation frame 0.3 ms after the display's
+  vsync (CADisplayLink on the window, `SimWindow.untilVsync`), falling back to its 120 Hz grid whenever no vsyncs
+  arrive (window hidden, display asleep, headless, test runs); `--jvm -Dapksim.vsync=grid` keeps the grid. A/B on a
+  lit 120 Hz display, 5 interleaved runs, `frames`' `screen` part (new frame on N% of real vsyncs): Shader tab grid
+  99-100% in three runs and 69% in two (its phase drifts against the display: ~146 frames shown twice, ~146 never
+  shown), display 98-99% in all five, p95 interval 10.1 against 11.3 ms; flings grid ~140 fps of which 96-178 frames
+  were replaced before being shown (84-97% new), display ~118 fps, 3-5 replaced, 97% new in every run. The grid's
+  "on 120 Hz pace" figure is not comparable: it measures intervals against the grid, not the screen.
 - **Partial (damage-rect) redraw: tried 2026-11-03, no gain for Compose apps, not kept.** Robolectric's
   `SkiaCpuPipeline` draws into one buffer it keeps, but `getFrame()` reports buffer age 0 and `swapBuffers()` is a
   `return false` stub, so `CanvasContext` never clears `mHaveNewSurface` and redraws everything. Swapping vtable slots

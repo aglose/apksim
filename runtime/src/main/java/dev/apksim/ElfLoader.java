@@ -28,10 +28,21 @@ final class ElfLoader {
         ZipEntry e = entries.nextElement();
         if (!e.getName().startsWith(ABI_DIR) || !e.getName().endsWith(".so")) continue;
         Path out = dir.resolve(e.getName().substring(ABI_DIR.length()));
-        if (Files.exists(out) && Files.size(out) == e.getSize()) continue;
+        Path crc = dir.resolve(out.getFileName() + ".crc");
+        String want = Long.toHexString(e.getCrc());
+        if (Files.exists(out) && Files.exists(crc) && Files.readString(crc).equals(want)) continue;
+        // Several processes can extract at once (instrument.py --isolate starts four after an APK changes): each writes its
+        // own temporary file and renames it into place, so none loads a library another is still writing or replacing.
+        // The CRC, not the size, says whether the file is this APK's (a rebuilt library can keep its size).
+        String tag = "." + ProcessHandle.current().pid() + ".tmp";
+        Path tmp = dir.resolve(out.getFileName() + tag);
         try (InputStream in = zip.getInputStream(e)) {
-          Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+          Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
         }
+        Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        Path crcTmp = dir.resolve(crc.getFileName() + tag);
+        Files.writeString(crcTmp, want);
+        Files.move(crcTmp, crc, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       }
     }
     System.load(HostOs.runtimeLib("libelfloader").toString());
