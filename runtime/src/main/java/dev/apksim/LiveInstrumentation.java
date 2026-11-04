@@ -84,6 +84,11 @@ final class LiveInstrumentation {
       live.launch(args);
     } catch (Throwable t) {
       BY_PACKAGE.remove(pkg.pkg(), live);
+      BY_INSTANCE.values().remove(live);
+      if (live.context != null) {
+        PackageContext c = live.context;
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(c::unregisterAll);
+      }
       System.err.println("[apksim] am instrument " + target + ": " + t);
       t.printStackTrace();
       Throwable cause = t instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : t;

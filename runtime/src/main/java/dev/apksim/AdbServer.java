@@ -216,8 +216,14 @@ final class AdbServer {
         // tcp:PORT or tcp:HOST:PORT, as adbd connects from the device: here the device's localhost is the Mac's.
         int colon = name.lastIndexOf(':');
         String host = colon < 0 ? null : name.substring(0, colon);
-        Socket s = new Socket(host == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(host),
-            Integer.parseInt(name.substring(colon + 1)));
+        Socket s = new Socket();
+        try {
+          s.connect(new java.net.InetSocketAddress(host == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(host),
+              Integer.parseInt(name.substring(colon + 1))), 10_000);
+        } catch (IOException | RuntimeException e) {
+          s.close();
+          throw e;
+        }
         s.setTcpNoDelay(true);
         return s;
       }

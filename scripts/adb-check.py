@@ -80,10 +80,12 @@ def main():
         if "INSTRUMENTATION_STATUS_CODE: 200" in line:
             break
     timer.cancel()
+    # The client goes away, as the CLI's does (the server keeps running); reaped either way.
+    proc.kill()
+    proc.wait(timeout=10)
+    proc.stdout.close()
     if "INSTRUMENTATION_STATUS_CODE: 200" not in seen:
         fail(f"am instrument never reported status 200: {seen.strip()}")
-    proc.stdout.close()
-    proc.kill()  # the client goes away, as the CLI's does; the server keeps running
 
     info = adb(serial, "shell", "am", "broadcast", "-a", f"{PKG}.GET_INFO")
     if f'data="version=uiserver-1 socket={SOCKET}"' not in info:
