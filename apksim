@@ -93,7 +93,18 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   done
 fi
 if [[ "$OS" == Darwin ]]; then
-  JAVA="${APKSIM_JAVA:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java}"
+  # The JDK scripts/build.sh compiled with (scripts/jdk.sh finds it), read with a builtin. A path relative to this
+  # folder is setup's own work/jdk-24. If the recorded JDK is gone (moved or removed), fall back to work/jdk-24,
+  # then Homebrew's openjdk.
+  JAVA="${APKSIM_JAVA:-}"
+  if [[ -z "$JAVA" ]]; then
+    JDK_HOME=""; [[ -f "$ROOT/work/jdk.path" ]] && read -r JDK_HOME < "$ROOT/work/jdk.path" || true
+    [[ -n "$JDK_HOME" && "$JDK_HOME" != /* ]] && JDK_HOME="$ROOT/$JDK_HOME"
+    for JDK_HOME in "$JDK_HOME" "$ROOT/work/jdk-24/Contents/Home" /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home; do
+      [[ -n "$JDK_HOME" && -x "$JDK_HOME/bin/java" ]] && break
+    done
+    JAVA="$JDK_HOME/bin/java"
+  fi
 else
   JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
 fi
