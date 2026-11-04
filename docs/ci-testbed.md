@@ -53,6 +53,8 @@ measures a real device's startup.
 ./apksim --instrument app-androidTest.apk -e package com.example.journeys app-androidTest.apk
 # an app's androidTest, one process per test as the Orchestrator does, with JUnit XML
 scripts/instrument.py app-debug.apk app-debug-androidTest.apk --isolate -j 4 --xml e2e.xml
+# the same in the Linux image (APKs in ./out, named relative to it)
+scripts/instrument.py --apksim "docker run --rm -v $PWD/out:/work apksim:ci" app-debug.apk app-debug-androidTest.apk --xml out/e2e.xml
 ```
 
 A cold build of a project this size can need more than a 4 GB Gradle heap when nothing is cached (it thrashed for an
@@ -75,7 +77,8 @@ hour): `-Dorg.gradle.jvmargs=-Xmx10g` finished in a minute.
   singleTask activity reaches `onNewIntent`; Compose's UI-thread work after what the main queue holds; a window gets
   its requested size (Compose dialogs never settled); the framework's 8 dp touch slop; JniConstants initialised on the
   main thread; receivers registered before a test's reset can be unregistered.
-- **GLES** (`dev.apksim.gl`): GLES20/30 and EGL14 on ANGLE (Metal) for offscreen rendering.
+- **GLES** (`dev.apksim.gl`): GLES20/30 and EGL14 on ANGLE (Metal) for offscreen rendering; in the Linux image on
+  Mesa's llvmpipe (surfaceless EGL), checked by the test app's `GlesTest` (it passes on the emulator too).
 
 Found with `scripts/jdi/Trace.java` and `Ret.java` (breakpoints and return values over JDWP) and
 `scripts/translate-class.java` (one class's translation, for javap). Remaining work: [plan.md](plan.md), phase 0.

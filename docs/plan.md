@@ -34,6 +34,14 @@ request to the app's repository and an image of this version (`scripts/docker-bu
 **0b. GLES on Linux.** `Gl` looks for `libEGL.so.1`/`libGLESv2.so.2`, but the image has neither, so the 3D test would
 fail there. Add Mesa (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) to `docker/Dockerfile`, try EGL's surfaceless
 platform (`EGL_PLATFORM=surfaceless`) with a pbuffer, and run that test in the image. Watch the image size (488 MB).
+- **Result (done 2026-11-03):** Mesa in the image with `EGL_PLATFORM=surfaceless`: EGL 1.5 on llvmpipe (LLVM 20),
+  pbuffers work. The image is 565 MB (+77 MB, mostly LLVM in the DRI driver). The test app gained `GlesTest` (a
+  pbuffer, a shader program, a triangle read back with glReadPixels), which passes on the Mac (ANGLE), in the image
+  (Mesa) and on the API 36 emulator, and fails with GLES off. CI now builds the test APK and runs the test app's whole
+  suite in the image (`scripts/instrument.py --apksim "docker run ..."`, JUnit XML in the artifact): 14 of 14, 17 s
+  under Rosetta. On the way: the committed `AnimationClockTest` used ui-test's v2 API, which the test app's Compose BOM
+  does not have (it needs AGP 9.1 and compileSdk 37), so the androidTest APK did not compile; that test now uses v1.
+  The owner's 3D module's test in the image is part of 0a.
 
 **0c. The app's 4 failures, upstream.** Not apksim's, but they block "all green": a feed test's title tap on API 36,
 which a real API 36 emulator reproduces, and the journeys that reach the server address compiled into the app (let
@@ -44,6 +52,16 @@ tests replace it, so they are hermetic on a developer's Mac too). The app's code
 register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
 not produce it, so `TranslatorTest` only checks behaviour. Commit a small R8-built DEX fixture and a check that
 translates it and runs it (or `selftest translator`), so a regression in `computeLiveness` fails CI.
+- **Result (done 2026-11-03):** `testapks/translator-fixture`: plain Java (`build.sh`) built with R8 and with D8 in
+  debug mode, both `.dex` files committed; `scripts/check-translator.sh` (`dev.apksim.dex.TranslatorCheck`) translates
+  them, loads them in a plain JVM and runs `fixture.Checks` (well under a second; a CI step). Checked against
+  translators with each old bug put back: a return counted as throwing fails the R8 and D8 builds (`putIfAbsent`: R8
+  returns a constant in the lock's register, `const/4 v1, 1; return v1`, inside the catch-all whose handler does
+  `monitor-exit v1`); a handler's registers live at every block of its range fails the D8 build (`unregister`, a
+  return shared by an SDK-level path and a synchronized one, as D8 dexes AndroidX's LocationManagerCompat). R8 and D8's
+  release mode do not show the second: they give each throwing call its own handler stub and duplicate returns. The
+  Compose `animate` shape itself did not reproduce from Java. Of the test app's 20,882 classes, only
+  LocationManagerCompat translates differently with that bug, and there `SDK_INT >= 30` became `null != null`.
 
 **0e. Check normal runs after the translator fixes.** They change how every app translates. Launch, the test app's
 drive and the Shader tab are unchanged (1.45 s first frame, 118 fps). Still to look at: the owner's app's animations
@@ -177,9 +195,9 @@ native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EG
 | Step | Size | Needs |
 |---|---|---|
 | 0a Measure on a CI runner | small | a pull request to the app, this version's image |
-| 0b GLES on Linux | small-medium | Docker |
+| 0b GLES on Linux | done | - |
 | 0c The app's 4 failures | small | the app's own sessions |
-| 0d Translator fixture test | small | an R8 build |
+| 0d Translator fixture test | done | - |
 | 0e Normal runs after the fixes | small | the owner's app, a look at its animations |
 | 0f Test-run gaps | medium each | a suite that needs them |
 | 0g CI class cache | small | 0a's numbers |
