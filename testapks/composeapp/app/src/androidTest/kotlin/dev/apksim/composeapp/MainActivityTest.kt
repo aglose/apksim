@@ -126,9 +126,12 @@ class AnimationClockTest {
     assertEquals(0f, runOnIdle { value })
   }
 
-  /** The same spring launched from a callback, in the composition's own scope (a back gesture's cancel does this). */
+  /**
+   * The same spring launched from a callback, in the composition's own scope (a back gesture's cancel does this).
+   * The owner's app hit this with ui-test's v2 runComposeUiTest, which needs a newer Compose than this app's BOM.
+   */
   @Test
-  fun aSpringLaunchedFromACallbackTakesItsTime() = androidx.compose.ui.test.v2.runComposeUiTest {
+  fun aSpringLaunchedFromACallbackTakesItsTime() = androidx.compose.ui.test.runComposeUiTest {
     var value = 1f
     lateinit var scope: kotlinx.coroutines.CoroutineScope
     mainClock.autoAdvance = false
