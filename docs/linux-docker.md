@@ -1,6 +1,6 @@
 # apksim on Linux (Docker, CI)
 
-apksim also runs on Linux x86_64, headless, in a 488 MB image (`docker/Dockerfile`). The same image runs
+apksim also runs on Linux x86_64, headless, in a 565 MB image (`docker/Dockerfile`; 488 MB before Mesa). The same image runs
 natively on x86_64 CI runners and on Apple Silicon under Rosetta.
 
 ## Build
@@ -28,6 +28,14 @@ sleep 10   # docker's port proxy accepts before the app listens: wait for the ap
 python3 scripts/drive.py 7400 'tap 733 1533' 'shot /work/after.png' 'quit'
 ```
 
+Test runs work as on the Mac. `scripts/instrument.py --apksim` runs the image for each process, with the APKs in the
+mounted folder (named relative to it) and the JUnit XML written on the host:
+
+```bash
+python3 scripts/instrument.py --apksim "docker run --rm --platform linux/amd64 -v $PWD/out:/work apksim:latest" \
+  app.apk test.apk --xml out/junit.xml
+```
+
 Mount a volume at `/opt/apksim/work/cache` to keep app data and per-APK caches between runs. For no network,
 use `docker run --network none` (`--no-network` is macOS-only).
 
@@ -38,6 +46,7 @@ use `docker run --network none` (`--no-network` is macOS-only).
 | Window | Cocoa window | Headless only (`shot`, control channel) |
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet |
+| GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` (most APKs ship it); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
 | JDK | 24 (Homebrew) | Temurin 24. JDK 25's AOT record mode verifies translated app classes and rejects them (missing stack maps), so training fails there |

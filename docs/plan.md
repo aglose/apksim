@@ -14,8 +14,8 @@ request, 35 runner-minutes). Findings, numbers and commands: [ci-testbed.md](ci-
 
 **Done:**
 - UiAutomator in `--instrument` runs (`ShadowSimUiAutomation`), with tests in the test app.
-- All of the app's suites run: 4,106 tests, 4,102 pass, in about 4 min of test time on the Mac. The 4 left are the
-  app's: one fails on an API 36 emulator too, three reach a server on the owner's network from a Mac on it.
+- All of the app's suites run: 4,107 tests, all passing with two fixes to the app's tests (0c), 4.7 min on the Mac
+  and 8.3 min in the Linux image (0a).
 - Fixed on the way: two DEX translator miscompilations (exception-handler liveness: ints and floats typed as
   references), the test SDK level (an app targeting 37), test discovery breaking framework classes, library test
   APKs, and the device behaviour a test run lacked (`TestActivities`: back, finish, onNewIntent, Compose's UI-thread
@@ -30,25 +30,70 @@ builds the same test APKs, runs apksim's Linux image with `--instrument` on each
 (`scripts/instrument.py --xml`). Done when its wall time and failures are known on ubuntu-24.04; the projection in
 ci-testbed.md (about 10 min, 10 runner-minutes) is only the Mac's test times plus CI's build time. Needs a pull
 request to the app's repository and an image of this version (`scripts/docker-build.sh`).
+- **Measured on the Mac's Linux VM instead (2026-11-03):** every suite in this version's image through
+  `scripts/instrument.py --apksim "docker run ..."` on Colima (4 CPUs, 8 GB, x86 under Rosetta), from a clean clone's
+  build: 8 min 17 s of tests with the journeys in one process (4.7 min natively on the Mac); with the journeys one
+  process per test, 16.7 min, because each JVM start under Rosetta costs ~30 s. Projection: ~14 min and ~14
+  runner-minutes a pull request at most, against 18.8 min and 34.9 (ci-testbed.md). It found two apksim bugs, both
+  fixed: Mesa's EGL has no window configs and WebRTC asks for one (every journey with a live camera failed), and
+  processes started together raced on extracting native libraries.
+- **Left:** the job in the app's own CI, which is a pull request to the app's repository (it merges itself once green,
+  so it waits for the owner's go-ahead); it would also time a native x86 runner rather than Rosetta.
 
 **0b. GLES on Linux.** `Gl` looks for `libEGL.so.1`/`libGLESv2.so.2`, but the image has neither, so the 3D test would
 fail there. Add Mesa (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) to `docker/Dockerfile`, try EGL's surfaceless
 platform (`EGL_PLATFORM=surfaceless`) with a pbuffer, and run that test in the image. Watch the image size (488 MB).
+- **Result (done 2026-11-03):** Mesa in the image with `EGL_PLATFORM=surfaceless`: EGL 1.5 on llvmpipe (LLVM 20),
+  pbuffers work. The image is 565 MB (+77 MB, mostly LLVM in the DRI driver). The test app gained `GlesTest` (a
+  pbuffer, a shader program, a triangle read back with glReadPixels), which passes on the Mac (ANGLE), in the image
+  (Mesa) and on the API 36 emulator, and fails with GLES off. CI now builds the test APK and runs the test app's whole
+  suite in the image (`scripts/instrument.py --apksim "docker run ..."`, JUnit XML in the artifact): 14 of 14, 17 s
+  under Rosetta. On the way: the committed `AnimationClockTest` used ui-test's v2 API, which the test app's Compose BOM
+  does not have (it needs AGP 9.1 and compileSdk 37), so the androidTest APK did not compile; that test now uses v1.
+  The owner's 3D module's test in the image is part of 0a.
 
 **0c. The app's 4 failures, upstream.** Not apksim's, but they block "all green": a feed test's title tap on API 36,
 which a real API 36 emulator reproduces, and the journeys that reach the server address compiled into the app (let
 tests replace it, so they are hermetic on a developer's Mac too). The app's code, so for its own sessions; apksim's
 `--no-network` is not a substitute (it breaks the journeys that expect the remote route).
+- **Result (2026-11-03): both fixed as patches to the app, tested, not applied to its repository** (the owner's notes
+  say where they are). The feed test clicked the card's merged node, whose centre is the clip count's button, not
+  the title: clicking the unmerged title passes here and on the API 36 emulator. The journeys now switch the
+  compiled-in LAN address off for their run (one overridable value read where the constant was): without it a "no
+  cameras" journey found the real server's cameras from this Mac; with both patches all 4,107 tests pass, on the Mac
+  and in the Linux image. Applying them is a pull request to the app (owner's call).
+
+**0h. Single-process journey runs on the Mac.** In one long run of all 76 journeys in one process, one to four
+different journeys time out at 20 s each run, some with the app unable to connect to the journey's fake
+server on 127.0.0.1. Never with one process per test (`--isolate`: 76/76 three times), never for a class run alone,
+once in the Linux image. No descriptor leak (~460, flat). Next: `Trace.java` on the fake server's accept loop
+(Ktor CIO) in a failing run, and whether the app's OkHttp pool or a static carries a closed server's connection.
 
 **0d. A translator regression test with R8's register reuse.** The two miscompilations needed R8-shaped code (a
 register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
 not produce it, so `TranslatorTest` only checks behaviour. Commit a small R8-built DEX fixture and a check that
 translates it and runs it (or `selftest translator`), so a regression in `computeLiveness` fails CI.
+- **Result (done 2026-11-03):** `testapks/translator-fixture`: plain Java (`build.sh`) built with R8 and with D8 in
+  debug mode, both `.dex` files committed; `scripts/check-translator.sh` (`dev.apksim.dex.TranslatorCheck`) translates
+  them, loads them in a plain JVM and runs `fixture.Checks` (well under a second; a CI step). Checked against
+  translators with each old bug put back: a return counted as throwing fails the R8 and D8 builds (`putIfAbsent`: R8
+  returns a constant in the lock's register, `const/4 v1, 1; return v1`, inside the catch-all whose handler does
+  `monitor-exit v1`); a handler's registers live at every block of its range fails the D8 build (`unregister`, a
+  return shared by an SDK-level path and a synchronized one, as D8 dexes AndroidX's LocationManagerCompat). R8 and D8's
+  release mode do not show the second: they give each throwing call its own handler stub and duplicate returns. The
+  Compose `animate` shape itself did not reproduce from Java. Of the test app's 20,882 classes, only
+  LocationManagerCompat translates differently with that bug, and there `SDK_INT >= 30` became `null != null`.
 
 **0e. Check normal runs after the translator fixes.** They change how every app translates. Launch, the test app's
 drive and the Shader tab are unchanged (1.45 s first frame, 118 fps). Still to look at: the owner's app's animations
 in a normal run, which may have been snapping in places (the same pattern), and play-services' `GoogleApiHandler`,
 which no longer dies: what it starts (availability checks, geofencing) now runs.
+- **Result (done 2026-11-03):** of the owner's release build's 11,199 classes, 17 translate differently than before
+  the fixes, 20 methods in all, and in every one the old translation dropped primitives (`aconst_null`/`pop` where the
+  DEX had an int or float): Typeface fallback building, play-services' availability cache, an I/O buffer's
+  readByte/readShort/readInt/readLong, an executor, float-heavy animation code and others. All now translate as
+  values. In a normal run the app signs in, its apps sheet animates open and closed (178 and 157 frames over 1.5 s,
+  not a snap), and the log's only exception is the missing Health Connect service.
 
 **0f. What a test run still lacks, when a suite needs it:** accessibility events for UiAutomator
 (`executeAndWaitForEvent` reports a window change only), its `executeShellCommand` (empty output) and global actions
@@ -68,6 +113,9 @@ clip. The owner's app's recorded clips (Media3/ExoPlayer from its server) now ge
 - Done when: clips play at their frame rate with ~0 drops, audio and video stay in step (no clock race), and
   scrubbing/seeking works (flush clears held pictures). Anything broken becomes a fix in this phase.
 - Risk: the server may serve HEVC or audio formats not yet listed (Opus): note them for phase 4.
+- **Result (done 2026-11-03, recorded in AGENTS.md "Video"):** 4K H.264 at 20-25 fps plus 8 kHz AAC over HLS play at
+  their frame rate, in step with the audio clock, and seek. Drops with sound on (0-7%) come from the stream's audio
+  timestamp jumps at segment joins. No HEVC or Opus in its clips, so nothing for phase 4.
 
 **2. Effect layers on the untested cases.** The subagent could not check nested effect layers, scaled or rotated
 effect layers, or memory release when a node is collected without discarding its display list.
@@ -85,6 +133,7 @@ effect layers, or memory release when a node is collected without discarding its
 
 **3. README shader count.** "20 of the app's 29 shaders translate" predates `uniform shader` support. Recount with
 `shaders` after visiting every screen of the owner's app and fix the sentence. Minutes.
+- **Result (done):** README says all 28 AGSL programs translate and compile (step 7 gave every one a GPU path).
 
 ## Phase 2: frame rate (the owner's open goal)
 
@@ -109,10 +158,14 @@ display was asleep. Needs the Mac awake with the window visible.
   counts per real vsync whether a new frame arrived.
 - Done when: decided. Default it on if "new frame on N% of vsyncs" rises and the frame-interval spread narrows;
   otherwise remove it and record why.
-- **Still blocked (2026-11-03):** 5 interleaved A/B runs gave identical numbers (Shader tab 120.0 fps, fling ~160),
-  but every run reported "screen 0 Hz": no display vsyncs reached the window (display asleep or window hidden), so
-  `-Dapksim.vsync=display` was on its grid fallback both times. One earlier run on the owner's app did see 120 Hz vsyncs, so
-  it works when the window is on a lit screen. Needs a run with the owner at the Mac.
+- An earlier attempt saw "screen 0 Hz" in every run (display asleep), so both modes were on the grid.
+- **Result (done 2026-11-03, now the default):** with the display lit, 5 interleaved runs each. Shader tab: the grid
+  drifted against the display's vsync, a new frame on 99-100% of vsyncs in three runs and 69% in two (~146 frames
+  shown twice, ~146 never shown); following the display, 98-99% in all five, p95 interval 10.1 against 11.3 ms.
+  Flings: the grid drew ~140 fps of which 96-178 frames were replaced before being shown (84-97% new); the display
+  ~118 fps, 3-5 replaced, 97% new in every run. `-Dapksim.vsync=grid` keeps the grid; it is also the fallback with
+  no vsyncs (hidden, asleep, headless). Test app launch unchanged (1,479 ms median first frame). With it the Shader tab
+  reads p95 9.6 ms and 99% new frames.
 
 **6. CPU raster of busy frames.** The remaining 9-12 ms frames come from single-core HWUI raster (~6-7 ms on busy
 full-screen frames). Partial redraw was tried and does not help Compose (findings in AGENTS.md). Left to try:
@@ -126,6 +179,10 @@ to see what the raster thread spends its time on; pick from that.
   as an 11 ms interval although both made their grid line (average exactly 120 fps, none dropped). Whether that
   jitter ever crosses a real display vsync is what `frames`' `screen` part counts, which needs display vsyncs: decide
   together with step 5. On the map screen the render thread still carries two content rasters plus the screen (~6 + 6 + 7 ms).
+- **Decided with step 5:** following the display's vsync, the Shader tab puts a new frame on 99% of vsyncs, so that
+  jitter no longer reaches the screen. What is left is busy screens whose raster takes longer than a frame (the map:
+  two content rasters plus the screen on one render thread). Not worth zero-copy present (~0.5 ms) for those; one
+  renderer for all effect layers, or rasterizing them on a second thread, is the lead if an app needs it.
 
 ## Phase 3: remaining CPU effects
 
@@ -176,23 +233,25 @@ native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EG
 
 | Step | Size | Needs |
 |---|---|---|
-| 0a Measure on a CI runner | small | a pull request to the app, this version's image |
-| 0b GLES on Linux | small-medium | Docker |
-| 0c The app's 4 failures | small | the app's own sessions |
-| 0d Translator fixture test | small | an R8 build |
-| 0e Normal runs after the fixes | small | the owner's app, a look at its animations |
+| 0a Measure on a CI runner | measured on the Mac's Linux VM | a pull request to the app (owner's go-ahead) |
+| 0b GLES on Linux | done | - |
+| 0c The app's 4 failures | patches tested | applying them in the app (owner's go-ahead) |
+| 0d Translator fixture test | done | - |
+| 0e Normal runs after the fixes | done | - |
 | 0f Test-run gaps | medium each | a suite that needs them |
 | 0g CI class cache | small | 0a's numbers |
-| 1 Recorded clips | small | the owner's app (autofill), network |
+| 0h Single-process journey timeouts | small-medium | - |
+| 1 Recorded clips | done | - |
 | 2 Effect-layer edge cases | small | - |
-| 3 README count | minutes | - |
+| 3 README count | done | - |
 | 4 Effect-layer speed | medium | - |
-| 5 Vsync pacing | small | Mac awake, window visible |
-| 6 CPU raster | medium-large | profiling first |
+| 5 Vsync pacing | done (default on) | - |
+| 6 CPU raster | decided (with 5) | an app whose busy screens need it |
 | 7 Remaining CPU effects | medium | - |
 | 8 End-of-stream frames | small | - |
 | 9 More codecs | small each | an app that needs them |
 | 10 Health Connect | medium | - |
 | 11 GLES/native audio | large | an app that needs them |
 
-Steps 1-3 can run in one session; 4 and 7 both touch `gpu/` and should not run in parallel; 5 waits for the display.
+4 and 7 both touch `gpu/` and should not run in parallel. What is left without the owner: 0h, and 0f/0g/9-11 when
+an app needs them. 0a's CI job and 0c's patches are changes to the owner's app.
