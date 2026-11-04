@@ -1,5 +1,5 @@
-# Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh) and its
-# androidTest suite with --instrument (JUnit XML in the artifact), and checks the DEX translator on an R8 fixture.
+# Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh, with the adb
+# device check of scripts/adb-check.py) and its androidTest suite with --instrument (JUnit XML in the artifact), and checks the DEX translator on an R8 fixture.
 # The Mac-only parts (window, Metal, VideoToolbox, AOT timings) are not covered here.
 name: ci
 on:
@@ -47,7 +47,11 @@ jobs:
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Smoke test
-        run: scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+        run: |
+          # The runner's Android SDK has adb, for the adb device check (adb-check.py).
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke \
+            testapks/composeapp/uiserver/build/outputs/apk/debug/uiserver-debug.apk
       - name: Test run (androidTest suite, GLES on Mesa)
         run: |
           mkdir -p tests

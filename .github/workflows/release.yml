@@ -111,7 +111,9 @@ jobs:
       - name: Check the image
         run: |
           docker run --rm "$IMAGE:$VERSION" --version | grep -qx "apksim $VERSION"
-          scripts/ci-smoke.sh "$IMAGE:$VERSION" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          scripts/ci-smoke.sh "$IMAGE:$VERSION" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke \
+            testapks/composeapp/uiserver/build/outputs/apk/debug/uiserver-debug.apk
           # A whole suite in one container, as another repository's CI would run it: the image's own instrument.py.
           mkdir -p tests
           cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
