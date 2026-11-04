@@ -15,6 +15,7 @@ import android.os.Looper;
 import android.view.View;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Implementation;
@@ -77,6 +78,62 @@ public final class TestActivities {
     if (!testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
     org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
     main.idle();
+  }
+
+  /**
+   * Thread.sleep in app and test code (the translator calls this instead). On a device a test sleeping in a polling
+   * loop (waiting for a request to reach a fake server, say) runs on its own thread, and the app's main thread goes on
+   * meanwhile: a coroutine on Dispatchers.Main resumes, a Handler post runs. Here the test is on the main thread and a
+   * plain sleep would hold all of that back until the test next idles the looper, so work that needs one more turn
+   * of the main thread never got there and the poll timed out. So, in a test run, on the main thread and outside any
+   * message being dispatched (where a device's main thread would be the one sleeping), the sleep runs the queue's due
+   * messages as it goes (the clock does not move, as in beforeUiThreadAction).
+   */
+  public static void sleep(long millis) throws InterruptedException {
+    if (millis <= 0 || !pumpsWhileSleeping()) {
+      Thread.sleep(millis);  // also its checks: a negative value throws, an interrupt throws
+      return;
+    }
+    pumpFor(TimeUnit.MILLISECONDS.toNanos(millis));
+  }
+
+  public static void sleep(long millis, int nanos) throws InterruptedException {
+    if (millis < 0) throw new IllegalArgumentException("timeout value is negative");
+    if (nanos < 0 || nanos > 999_999) throw new IllegalArgumentException("nanosecond timeout value out of range");
+    if ((millis == 0 && nanos == 0) || !pumpsWhileSleeping()) {
+      Thread.sleep(millis, nanos);
+      return;
+    }
+    long total = TimeUnit.MILLISECONDS.toNanos(millis);
+    pumpFor(total > Long.MAX_VALUE - nanos ? Long.MAX_VALUE : total + nanos);
+  }
+
+  private static boolean pumpsWhileSleeping() {
+    return testRun() && Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
+  }
+
+  /** Sleeps {@code nanos} (> 0), running the main queue's due messages meanwhile; throws on interrupt, as a sleep would. */
+  private static void pumpFor(long nanos) throws InterruptedException {
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    long start = System.nanoTime();
+    while (true) {
+      if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
+      main.idle();
+      long left = nanos - (System.nanoTime() - start);  // no deadline sum to overflow for a long sleep
+      if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
+      if (left <= 0) return;
+      long step = Math.min(left, 2_000_000L);  // a short step, then the queue again
+      Thread.sleep(step / 1_000_000L, (int) (step % 1_000_000L));  // throws if interrupted meanwhile, clearing the flag
+    }
+  }
+
+  /** Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself. */
+  private static boolean inDispatch() {
+    return StackWalker.getInstance().walk(s -> s.anyMatch(f -> {
+      String c = f.getClassName();
+      return (c.equals("android.os.Handler") && f.getMethodName().equals("dispatchMessage")) || c.equals("android.os.Looper")
+          || c.equals("android.view.Choreographer$FrameDisplayEventReceiver");
+    }));
   }
 
   static ActivityController<?> controller(Activity a) {

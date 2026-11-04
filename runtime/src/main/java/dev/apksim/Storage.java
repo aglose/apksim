@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
@@ -66,6 +67,24 @@ final class Storage {
    */
   static Path absolute(String path) {
     return Path.of(System.getProperty("user.dir")).resolve(path);
+  }
+
+  /**
+   * A suffix for a file written beside its final name and renamed into place. Not the PID alone: processes in separate
+   * containers sharing one cache volume (docker run per test) often have the same PID.
+   */
+  static String tmpTag() {
+    return "." + ProcessHandle.current().pid() + "-" + Long.toHexString(java.util.concurrent.ThreadLocalRandom.current().nextLong()) + ".tmp";
+  }
+
+  /** Empties a data directory this instance holds (Storage.dataDir), keeping its lock. */
+  static void clearDataDir(Path dir) throws IOException {
+    // Not deleteTree's best effort: a launch that asked for fresh data must not go on with some of the old.
+    List<Path> paths;
+    try (Stream<Path> all = Files.walk(dir)) {
+      paths = all.filter(p -> !p.equals(dir) && !p.equals(dir.resolve(".lock"))).sorted(Comparator.reverseOrder()).toList();
+    }
+    for (Path p : paths) Files.delete(p);  // walking does not follow links, so a link is removed, not its target
   }
 
   /** The persistent data directory for this instance. */

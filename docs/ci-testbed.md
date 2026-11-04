@@ -24,8 +24,12 @@ needed, and how it compares. App-specific detail (names, commands) is in the own
 
 Measured 2026-11-03 evening with `scripts/instrument.py` (wall time, each suite started fresh); the Linux runs used
 `--apksim "docker run ..."` on this Mac's Colima VM (4 CPUs, 8 GB), so every instruction went through Rosetta: a
-GitHub ubuntu-24.04 runner (4 vCPU, 16 GB, native x86) should be faster, not slower. One process per test costs a
-JVM start each, which under Rosetta is what makes the isolated journeys slow there (~36 s a test, 4 at a time).
+GitHub ubuntu-24.04 runner (4 vCPU, 16 GB, native x86) was expected to be faster; it was not (755 s for the isolated
+journeys at `-j 4`, against 684 s here). One process per test costs a JVM start and a cold JIT each, and without a
+cache volume a fresh translation of the app's classes: alone, one journey took 15.6 s in a fresh container and
+10.4-10.6 s with `/opt/apksim/work/cache` on a volume (2026-11-04). Four at a time on 4 vCPUs, each JVM's own JIT
+threads compete, which makes it ~36 s a test. Mount the cache volume, and prefer one process for the journeys
+(the single-process timeouts below are the app's, now explained).
 The emulator times leave out its boot (~1.5 min per job) and installing each ~170 MB test APK. A cold class cache made
 no difference (166 s cold, 164 s warm for the shared module): the tests' own work dominates.
 
@@ -37,9 +41,16 @@ The failures without the app's fixes are the app's, not apksim's:
   owner's network, so the app takes that route and shows the real server's data (a journey expecting "no cameras"
   found some). Letting the journeys turn that address off fixes it. `--no-network` is no substitute (it breaks the
   journeys that expect the remote route).
-- In one long single-process journeys run on the Mac, one to four different journeys a run time out at 20 s, some
-  with the app unable to connect to the journey's fake server on localhost. Never with one process per test, never
-  for a class run alone, and once in the Linux image. Not explained yet (no descriptor leak).
+- In one long single-process journeys run, one to six different journeys a run time out at 20 s signing in, with
+  "Failed to connect to /127.0.0.1:PORT". Explained 2026-11-04 (the app's, a race): PORT is an earlier journey's fake
+  server, already closed. The sign-in screen re-seeds its server field from the stored most recent connection each
+  time that record loads (`remember(mostRecentConnection) { mutableStateOf(it?.serverUrl) }`), and the app's database
+  is a process-wide static, so in one process the previous journey's record is still there. When it loads after the
+  journey has typed its own server's URL, the field reverts and the app connects to the old address; the journey's
+  own server never sees a request (an `lsof` trace showed it listening throughout). It cannot happen with one process
+  per test, where there is no earlier record. A device run in one process has the same race; it shows here more often
+  because the first query is slower. Fixes on the app's side: seed the field once, not over what was typed, or have
+  the journeys wait for the stored connection (or clear it) before typing.
 
 Found on the way, in apksim: Mesa's EGL has no window configs and WebRTC's `EglBase` asks for one (every journey with a
 live camera failed in the image until `eglChooseConfig` asked for pbuffer configs), and processes started together

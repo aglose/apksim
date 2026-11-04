@@ -117,7 +117,7 @@ final class AppClasses {
     if (file != null) {
       try {
         java.nio.file.Files.createDirectories(file.getParent());
-        Path tmp = file.resolveSibling(file.getFileName() + "." + ProcessHandle.current().pid());
+        Path tmp = file.resolveSibling(file.getFileName() + Storage.tmpTag());
         java.nio.file.Files.write(tmp, bytes);
         java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
       } catch (IOException e) {

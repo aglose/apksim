@@ -767,7 +767,7 @@ final class AdbShell {
   }
 
   private int pm(List<String> a) throws Exception {
-    if (a.isEmpty()) return usage("pm list packages | path PKG | grant PKG PERM | revoke PKG PERM");
+    if (a.isEmpty()) return usage("pm list packages | path PKG | grant PKG PERM | revoke PKG PERM | clear PKG");
     String pkg = pkg();
     String apk = System.getProperty("apksim.apk");
     switch (a.get(0)) {
@@ -824,6 +824,13 @@ final class AdbShell {
         if (brief) print("priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n" + pkg + "/" + launcher + "\n");
         else print("Activity Resolver Table:\n  " + pkg + "/" + launcher + "\n");
         return 0;
+      }
+      case "clear" -> {
+        // A device kills the app's process and deletes its data, and the device stays up. Here the instance is both
+        // the process and the device, and the app's open files (databases) would outlive a delete underneath it.
+        print("Failed: APKSIM_RUNNING: the app's data is in use by this instance; relaunch it with --fresh, or quit it and"
+            + " run scripts/ctl.py erase " + pkg + "\n");
+        return 1;
       }
       case "install", "install-create", "install-write", "install-commit", "install-multiple", "uninstall" -> {
         print("Failure [APKSIM_ONE_APP: an apksim instance runs the one APK it was launched with; launch another with ./apksim APK]\n");
