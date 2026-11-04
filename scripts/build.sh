@@ -17,4 +17,5 @@ cp -R "$ROOT/runtime/src/main/resources/." "$ROOT/work/classes/"
 "$JDK/bin/jar" cf0 "$ROOT/work/apksim.jar.new" -C "$ROOT/work/classes" .
 mv -f "$ROOT/work/apksim.jar.new" "$ROOT/work/apksim.jar"
 # The launcher runs the JDK it was built with (it reads this with a builtin: no fork per launch).
-if [[ "$(uname -s)" == Darwin ]]; then printf '%s\n' "$JDK" > "$ROOT/work/jdk.path"; fi
+# A JDK inside this folder (setup's work/jdk-24) is recorded relative to it, so moving the folder keeps it.
+if [[ "$(uname -s)" == Darwin ]]; then printf '%s\n' "${JDK#"$ROOT/"}" > "$ROOT/work/jdk.path"; fi

@@ -22,9 +22,10 @@ find_jdk() {
            "${JAVA_HOME:-}"; do
     [[ -n "$c" && -x "$c/bin/javac" && "$(jdk_major "$c")" == 24 ]] && { printf '%s' "$c"; return; }
   done
+  return 0  # none found: the check below says what to do (a failing status would end set -e scripts silently)
 }
 
-JDK="$(find_jdk "$ROOT")"
+JDK="$(find_jdk "$ROOT")" || JDK=""
 if [[ -z "$JDK" || ! -x "$JDK/bin/javac" ]]; then
   echo "No JDK 24 found. Run scripts/setup.sh (it fetches one into work/jdk-24), or set APKSIM_JDK to a JDK 24 home." >&2
   exit 1
