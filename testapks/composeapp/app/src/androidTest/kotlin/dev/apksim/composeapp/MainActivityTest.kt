@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.lifecycle.Lifecycle
 import org.junit.Assert.assertEquals
+import kotlinx.coroutines.launch
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -77,5 +78,74 @@ class EspressoTest {
   fun targetContextIsTheApp() {
     val ctx = InstrumentationRegistry.getInstrumentation().targetContext
     assertEquals("dev.apksim.composeapp", ctx.packageName)
+  }
+}
+
+/** Code shapes apksim's DEX translator has got wrong before (see [SyncCache]). */
+@RunWith(AndroidJUnit4::class)
+class TranslatorTest {
+  @Test
+  fun anIntReturnedBesideASynchronizedBlockStaysAnInt() {
+    val c = SyncCache()
+    assertEquals(0, c.lookup(4)) // empty cache: the loop must not run
+    assertEquals(1, c.lookup(5))
+    assertEquals(0, c.lookup(4)) // cached
+    assertEquals(0, c.lookup(3)) // a newer entry that is 0 answers for it
+    assertEquals(2, c.computed())
+  }
+}
+
+/**
+ * Compose animations under the test clock run at their own pace, as on a device: with autoAdvance off, a state
+ * change made in runOnIdle reaches the composition (the main looper runs beside the test, Robolectric's
+ * INSTRUMENTATION_TEST mode) and the spring it starts is part of the way after 48 ms.
+ */
+@OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+@RunWith(AndroidJUnit4::class)
+class AnimationClockTest {
+  @Test
+  fun aSpringStartedInAnEffectTakesItsTime() = androidx.compose.ui.test.runComposeUiTest {
+    var value = 1f
+    val go = androidx.compose.runtime.mutableStateOf(false)
+    mainClock.autoAdvance = false
+    setContent {
+      androidx.compose.runtime.LaunchedEffect(go.value) {
+        if (go.value) {
+          androidx.compose.animation.core.animate(1f, 0f, animationSpec = androidx.compose.animation.core.spring(
+            dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow)) { v, _ -> value = v }
+        }
+      }
+    }
+    mainClock.advanceTimeByFrame()
+    runOnIdle { go.value = true }
+    mainClock.advanceTimeByFrame()
+    mainClock.advanceTimeBy(48)
+    val part = runOnIdle { value }
+    assert(part > 0f && part < 1f) { "after 48 ms the spring was at $part" }
+    mainClock.advanceTimeBy(2_000)
+    assertEquals(0f, runOnIdle { value })
+  }
+
+  /** The same spring launched from a callback, in the composition's own scope (a back gesture's cancel does this). */
+  @Test
+  fun aSpringLaunchedFromACallbackTakesItsTime() = androidx.compose.ui.test.v2.runComposeUiTest {
+    var value = 1f
+    lateinit var scope: kotlinx.coroutines.CoroutineScope
+    mainClock.autoAdvance = false
+    setContent { scope = androidx.compose.runtime.rememberCoroutineScope() }
+    mainClock.advanceTimeByFrame()
+    runOnIdle {
+      scope.launch {
+        androidx.compose.animation.core.animate(1f, 0f, animationSpec = androidx.compose.animation.core.spring(
+          dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow)) { v, _ -> value = v }
+      }
+    }
+    assertEquals(1f, runOnIdle { value })
+    mainClock.advanceTimeBy(48)
+    val part = runOnIdle { value }
+    android.util.Log.i("AnimationClockTest", "callback spring after 48 ms: $part")
+    assert(part > 0f && part < 1f) { "after 48 ms the spring was at $part" }
+    mainClock.advanceTimeBy(2_000)
+    assertEquals(0f, runOnIdle { value })
   }
 }

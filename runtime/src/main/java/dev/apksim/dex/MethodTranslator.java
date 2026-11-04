@@ -78,6 +78,7 @@ final class MethodTranslator implements Opcodes {
   private int[] blockStart;
   private int blockCount;
   private int[][] blockSucc;
+  private int[][] normalSucc; // blockSucc without the exception handlers
   private BitSet[] liveIn;
   private int[][] blockState;
   private List<Try> tries = List.of();
@@ -119,6 +120,7 @@ final class MethodTranslator implements Opcodes {
     base = insWords;
     unitCount = dex.i32(codeOff + 12);
     insnsStart = codeOff + 16;
+    debugTypes = DEBUG_TYPES != null && DEBUG_TYPES.equals(owner + "." + methodName);
   }
 
   void translate() {
@@ -664,6 +666,7 @@ final class MethodTranslator implements Opcodes {
     blockStart = starts;
     blockCount = bc;
     blockSucc = new int[bc][];
+    normalSucc = new int[bc][];
     for (int bl = 0; bl < bc; bl++) {
       int last = blockStart[bl + 1] - 1;
       int o = op[last];
@@ -679,6 +682,7 @@ final class MethodTranslator implements Opcodes {
       } else if (!isReturnOrThrow(o) && last + 1 < count) {
         s.add(blockOf[last + 1]);
       }
+      normalSucc[bl] = s.stream().mapToInt(Integer::intValue).toArray();
       for (Try t : tries) {
         if (addr[blockStart[bl]] >= t.start && addr[blockStart[bl]] < t.end) {
           for (Handler h : t.handlers) s.add(blockOf[insnAt(h.addr)]);
@@ -797,58 +801,57 @@ final class MethodTranslator implements Opcodes {
     return k >= 0x13 && k <= 0x15;
   }
 
+  /**
+   * Registers live on entry to each block. A handler sees the registers as they were before an instruction that
+   * can throw, so its live registers are live there, and only there: not throughout every block its try range
+   * covers. (Adding them at the block's entry made a register look live in a handler that redefines it first, and
+   * merged unrelated values: in Compose's SuspendAnimationKt.animate a float duration scale with an ObjectRef, which
+   * typed the float as a reference and dropped it, so every animation in a v2 Compose test snapped to its end.)
+   */
   private void computeLiveness() {
-    BitSet[] use = new BitSet[blockCount];
-    BitSet[] def = new BitSet[blockCount];
     liveIn = new BitSet[blockCount];
-    BitSet tmp = new BitSet(regs);
-    for (int bl = 0; bl < blockCount; bl++) {
-      BitSet u = new BitSet(regs);
-      BitSet d = new BitSet(regs);
-      for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
-        tmp.clear();
-        addUses(i, tmp);
-        tmp.andNot(d);
-        u.or(tmp);
-        int r = defReg(i);
-        if (r >= 0) {
-          d.set(r);
-          if (defWide(i)) d.set(r + 1);
+    for (int bl = 0; bl < blockCount; bl++) liveIn[bl] = new BitSet(regs);
+    int[][] handlersAt = new int[count][];
+    if (!tries.isEmpty()) {
+      for (int i = 0; i < count; i++) {
+        if (!canThrow(op[i])) continue;
+        List<Integer> hs = new ArrayList<>(1);
+        for (Try t : tries) {
+          if (addr[i] >= t.start && addr[i] < t.end) {
+            for (Handler h : t.handlers) hs.add(blockOf[insnAt(h.addr)]);
+          }
         }
+        if (!hs.isEmpty()) handlersAt[i] = hs.stream().mapToInt(Integer::intValue).toArray();
       }
-      use[bl] = u;
-      def[bl] = d;
-      liveIn[bl] = (BitSet) u.clone();
     }
+    BitSet live = new BitSet(regs);
+    BitSet tmp = new BitSet(regs);
     boolean changed = true;
     while (changed) {
       changed = false;
       for (int bl = blockCount - 1; bl >= 0; bl--) {
-        tmp.clear();
-        for (int s : blockSucc[bl]) tmp.or(liveIn[s]);
-        // Handlers observe registers before the block's defs, so uses there stay live throughout.
-        tmp.andNot(def[bl]);
-        tmp.or(use[bl]);
-        for (int s : blockSucc[bl]) {
-          if (isHandlerEdge(bl, s)) tmp.or(liveIn[s]);
+        live.clear();
+        for (int s : normalSucc[bl]) live.or(liveIn[s]);
+        for (int i = blockStart[bl + 1] - 1; i >= blockStart[bl]; i--) {
+          int r = defReg(i);
+          if (r >= 0) {
+            live.clear(r);
+            if (defWide(i)) live.clear(r + 1);
+          }
+          tmp.clear();
+          addUses(i, tmp);
+          live.or(tmp);
+          if (handlersAt[i] != null) for (int h : handlersAt[i]) live.or(liveIn[h]);
         }
-        if (!tmp.equals(liveIn[bl])) {
-          liveIn[bl].or(tmp);
+        tmp.clear();
+        tmp.or(live);
+        tmp.andNot(liveIn[bl]);
+        if (!tmp.isEmpty()) {
+          liveIn[bl].or(live);
           changed = true;
         }
       }
     }
-  }
-
-  private boolean isHandlerEdge(int bl, int succ) {
-    for (Try t : tries) {
-      if (addr[blockStart[bl]] >= t.start && addr[blockStart[bl]] < t.end) {
-        for (Handler h : t.handlers) {
-          if (blockOf[insnAt(h.addr)] == succ) return true;
-        }
-      }
-    }
-    return false;
   }
 
   // ---------------------------------------------------------------- value typing
@@ -876,10 +879,31 @@ final class MethodTranslator implements Opcodes {
     return n;
   }
 
+  // -Dapksim.debugTypes=owner/Class.method: report where a value of that method is typed both a reference and a
+  // primitive (which ends with the primitive dropped), with the instruction and merge that did it.
+  private static final String DEBUG_TYPES = System.getProperty("apksim.debugTypes");
+  private boolean debugTypes;
+  private int curInsn = -1;
+  private String curWhat = "";
+
+  private boolean debugging() {
+    return debugTypes;
+  }
+
+  private void noteMix(int ka, int kb) {
+    boolean oa = (ka & K_OBJ) != 0, ob = (kb & K_OBJ) != 0;
+    boolean pa = (ka & ~K_OBJ) != 0, pb = (kb & ~K_OBJ) != 0;
+    if ((oa && pb) || (ob && pa) || (oa && pa) || (ob && pb)) {
+      System.err.printf("[apksim] DEBUG types %s: mix %d+%d at insn %d (addr 0x%x op 0x%x) %s%n", methodName, ka, kb, curInsn,
+          curInsn >= 0 ? addr[curInsn] : -1, curInsn >= 0 ? op[curInsn] : -1, curWhat);
+    }
+  }
+
   private void union(int x, int y) {
     int rx = find(x);
     int ry = find(y);
     if (rx == ry) return;
+    if (debugging()) noteMix(kinds[rx], kinds[ry]);
     parent[ry] = rx;
     kinds[rx] |= kinds[ry];
     wide[rx] |= wide[ry];
@@ -957,9 +981,14 @@ final class MethodTranslator implements Opcodes {
         queued[bl] = false;
         int[] s = blockState[bl].clone();
         for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
+          curInsn = i;
+          curWhat = "to handler";
           mergeToHandlers(i, s, work, queued);
+          curWhat = "transfer";
           transfer(i, s);
         }
+        curInsn = blockStart[bl + 1] - 1;
+        curWhat = "flow out of block " + bl;
         int last = blockStart[bl + 1] - 1;
         int o = op[last];
         if (isGoto(o)) {
@@ -989,7 +1018,12 @@ final class MethodTranslator implements Opcodes {
   }
 
   private static boolean canThrow(int o) {
-    if (o <= 0x0d || (o >= 0x12 && o <= 0x19) || (o >= 0x28 && o <= 0x3d)) return false;
+    // Returns (0x0e-0x11) cannot throw either, as ART's verifier has it. A return inside a try range must not hand its
+    // registers to the handler: D8 ends a synchronized block's catch-all after a `return v0` reached from outside the
+    // lock with an int in v0, while the handler's monitor-exit v0 reads the lock object. Merging the two made every
+    // int that flowed into v0 a reference (play-services' GoogleApiAvailabilityCache then always called keyAt(0) on
+    // an empty SparseIntArray, and its GoogleApiHandler thread died).
+    if (o <= 0x11 || (o >= 0x12 && o <= 0x19) || (o >= 0x28 && o <= 0x3d)) return false;
     if (o >= 0x7b && o <= 0xe2) {
       // Only integer division can throw among arithmetic.
       return o == 0x93 || o == 0x94 || o == 0x9e || o == 0x9f || o == 0xb3 || o == 0xb4 || o == 0xbe || o == 0xbf
@@ -1016,6 +1050,7 @@ final class MethodTranslator implements Opcodes {
         changed = true;
       } else if (v >= 0 && in[r] >= 0) {
         if (find(v) != find(in[r])) {
+          if (debugging()) curWhat = curWhat.replaceAll(" reg v\\d+.*", "") + " reg v" + r + " into block at 0x" + Integer.toHexString(addr[blockStart[target]]);
           union(v, in[r]);
           changed = true;
         }
@@ -1045,6 +1080,10 @@ final class MethodTranslator implements Opcodes {
 
   private void use(int[] s, int r, int kind) {
     int v = s[r];
+    if (v >= 0 && debugging()) {
+      curWhat = "use v" + r;
+      noteMix(kinds[find(v)], kind);
+    }
     if (v >= 0) kinds[find(v)] |= kind;
   }
 
@@ -2372,6 +2411,12 @@ final class MethodTranslator implements Opcodes {
     if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && SUBSTITUTES.containsKey(ownerName)) {
       mv.visitMethodInsn(opcode, instantiated(ownerName), m.name(), m.descriptor(), false);
       return;
+    }
+    if (opcode == INVOKESTATIC && "androidx/compose/ui/test/AndroidSynchronization_androidKt".equals(ownerName)
+        && "runOnUiThread".equals(m.name())) {
+      // On a device this posts behind what the main thread already has queued (Compose's snapshot apply among it);
+      // a Robolectric test on the main thread would run it at once. Let the queue go first (dev.apksim.TestActivities).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "beforeUiThreadAction", "()V", false);
     }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);

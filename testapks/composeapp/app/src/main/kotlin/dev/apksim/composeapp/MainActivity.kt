@@ -20,6 +20,9 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.window.core.layout.WindowSizeClass
 import androidx.compose.material.icons.Icons
@@ -80,8 +83,10 @@ fun Root(db: Db, startTab: Int = 0) {
   val window = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.let { "${it.width.toDp().value.toInt()}×${it.height.toDp().value.toInt()}" } }
   val tabs = listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star)
   Scaffold(
+    // Test tags as resource ids, so UiAutomator finds the FAB by By.res("fab").
+    modifier = Modifier.semantics { testTagsAsResourceId = true },
     topBar = { TopAppBar(title = { Text("ComposeApp") }, actions = { Text("$widthClass $window", Modifier.padding(end = 16.dp)) }) },
-    floatingActionButton = { FloatingActionButton(onClick = { count++ }) { Icon(Icons.Default.Add, "Add") } },
+    floatingActionButton = { FloatingActionButton(onClick = { count++ }, Modifier.testTag("fab")) { Icon(Icons.Default.Add, "Add") } },
     bottomBar = {
       if (!wide) NavigationBar {
         tabs.forEachIndexed { i, (l, ic) ->
