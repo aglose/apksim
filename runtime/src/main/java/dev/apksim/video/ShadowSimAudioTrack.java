@@ -24,6 +24,10 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @RealObject private AudioTrack real;
   private long out;
   private boolean tried;
+  // Native calls on [out] in progress, so release frees the stream only once none is: an app may release a track
+  // from one thread while another is blocked in write() waiting for room (allowed on a device).
+  private final Object lock = new Object();
+  private int using;
   private ByteBuffer scratch;
   private int frameBytes;
 
@@ -49,15 +53,30 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     return out;
   }
 
+  /** The stream for one native call, counted until {@link #done}; 0 when there is none (not PCM, or released). */
+  private long use() {
+    synchronized (lock) {
+      long o = out();
+      if (o != 0) using++;
+      return o;
+    }
+  }
+
+  private void done() {
+    synchronized (lock) {
+      if (--using == 0) lock.notifyAll();
+    }
+  }
+
   private ByteBuffer scratch(int bytes) {
     if (scratch == null || scratch.capacity() < bytes) scratch = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16)).order(ByteOrder.nativeOrder());
     scratch.clear();
     return scratch;
   }
 
-  /** Writes bytes already in a direct buffer; returns the bytes taken. */
-  private int write(ByteBuffer direct, int offset, int bytes, boolean blocking) {
-    int n = SimAudio.nativeOutWrite(out, direct, offset, bytes - bytes % frameBytes, blocking);
+  /** Writes bytes already in a direct buffer to stream [o] (taken with use()); returns the bytes taken. */
+  private int write(long o, ByteBuffer direct, int offset, int bytes, boolean blocking) {
+    int n = SimAudio.nativeOutWrite(o, direct, offset, bytes - bytes % frameBytes, blocking);
     STATS.addAndGet(1, n / frameBytes);
     return n;
   }
@@ -65,41 +84,67 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @Implementation
   @Override
   protected int native_write_byte(byte[] data, int offset, int size, int format, boolean blocking) {
-    if (out() == 0) return super.native_write_byte(data, offset, size, format, blocking);
-    ByteBuffer b = scratch(size);
-    b.put(data, offset, size);
-    return write(b, 0, size, blocking);
+    long o = use();
+    if (o == 0) return super.native_write_byte(data, offset, size, format, blocking);
+    try {
+      ByteBuffer b = scratch(size);
+      b.put(data, offset, size);
+      return write(o, b, 0, size, blocking);
+    } finally {
+      done();
+    }
   }
 
   @Implementation
   @Override
   protected int native_write_native_bytes(ByteBuffer data, int position, int size, int format, boolean blocking) {
-    if (out() == 0) return super.native_write_native_bytes(data, position, size, format, blocking);
-    if (data.isDirect()) return write(data, position, size, blocking);
-    ByteBuffer b = scratch(size);
-    b.put(data.duplicate().position(position).limit(position + size));
-    return write(b, 0, size, blocking);
+    long o = use();
+    if (o == 0) return super.native_write_native_bytes(data, position, size, format, blocking);
+    try {
+      if (data.isDirect()) return write(o, data, position, size, blocking);
+      ByteBuffer b = scratch(size);
+      b.put(data.duplicate().position(position).limit(position + size));
+      return write(o, b, 0, size, blocking);
+    } finally {
+      done();
+    }
   }
 
   @Implementation
   protected int native_write_short(short[] data, int offset, int size, int format, boolean blocking) {
-    if (out() == 0) return size;
-    ByteBuffer b = scratch(size * 2);
-    b.asShortBuffer().put(data, offset, size);
-    return write(b, 0, size * 2, blocking) / 2;
+    long o = use();
+    if (o == 0) return size;
+    try {
+      ByteBuffer b = scratch(size * 2);
+      b.asShortBuffer().put(data, offset, size);
+      return write(o, b, 0, size * 2, blocking) / 2;
+    } finally {
+      done();
+    }
   }
 
   @Implementation
   protected int native_write_float(float[] data, int offset, int size, int format, boolean blocking) {
-    if (out() == 0) return size;
-    ByteBuffer b = scratch(size * 4);
-    b.asFloatBuffer().put(data, offset, size);
-    return write(b, 0, size * 4, blocking) / 4;
+    long o = use();
+    if (o == 0) return size;
+    try {
+      ByteBuffer b = scratch(size * 4);
+      b.asFloatBuffer().put(data, offset, size);
+      return write(o, b, 0, size * 4, blocking) / 4;
+    } finally {
+      done();
+    }
   }
 
   @Implementation
   protected void native_start() {
-    if (out() != 0) SimAudio.nativeOutPlay(out, true);
+    long o = use();
+    if (o == 0) return;
+    try {
+      SimAudio.nativeOutPlay(o, true);
+    } finally {
+      done();
+    }
   }
 
   @Implementation
@@ -111,7 +156,13 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   @Implementation
   protected void native_pause() {
-    if (out() != 0) SimAudio.nativeOutPlay(out, false);
+    long o = use();
+    if (o == 0) return;
+    try {
+      SimAudio.nativeOutPlay(o, false);
+    } finally {
+      done();
+    }
   }
 
   /** Streaming tracks keep playing what was written, as on a device: the head stops once it is all played. */
@@ -120,7 +171,13 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   @Implementation
   protected void native_flush() {
-    if (out() != 0) SimAudio.nativeOutFlush(out);
+    long o = use();
+    if (o == 0) return;
+    try {
+      SimAudio.nativeOutFlush(o);
+    } finally {
+      done();
+    }
   }
 
   @Implementation
@@ -133,15 +190,26 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @Implementation
   @Override
   protected int getPlaybackHeadPosition() {
-    if (out() == 0) return super.getPlaybackHeadPosition();
-    return (int) SimAudio.nativeOutPlayed(out);
+    long o = use();
+    if (o == 0) return super.getPlaybackHeadPosition();
+    try {
+      return (int) SimAudio.nativeOutPlayed(o);
+    } finally {
+      done();
+    }
   }
 
   /** The head position now, which is what a device's timestamp says once its output latency is taken out. */
   @Implementation
   protected int native_get_timestamp(long[] longArray) {
-    if (out() == 0) return AudioTrack.ERROR;
-    long played = SimAudio.nativeOutPlayed(out);
+    long o = use();
+    if (o == 0) return AudioTrack.ERROR;
+    long played;
+    try {
+      played = SimAudio.nativeOutPlayed(o);
+    } finally {
+      done();
+    }
     if (played == 0) return AudioTrack.ERROR;
     longArray[0] = played;
     longArray[1] = System.nanoTime();
@@ -150,16 +218,41 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   @Implementation
   protected void native_setVolume(float left, float right) {
-    if (out() != 0) SimAudio.nativeOutVolume(out, Math.max(left, right), SimAudio.MUTED);
+    long o = use();
+    if (o == 0) return;
+    try {
+      SimAudio.nativeOutVolume(o, Math.max(left, right), SimAudio.MUTED);
+    } finally {
+      done();
+    }
   }
 
+  /**
+   * Frees the stream once no other thread is in a native call on it. Clearing [out] first keeps new calls away;
+   * stopping it wakes a writer blocked for room, which then returns what it took, as on a device.
+   */
   @Implementation
   protected void native_release() {
-    if (out != 0) {
-      STATS.addAndGet(2, SimAudio.nativeOutUnderruns(out));
-      SimAudio.nativeOutRelease(out);
+    long o;
+    synchronized (lock) {
+      o = out;
+      if (o == 0) return;
       out = 0;
     }
+    SimAudio.nativeOutPlay(o, false);
+    synchronized (lock) {
+      boolean interrupted = false;
+      while (using > 0) {
+        try {
+          lock.wait();
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+      }
+      if (interrupted) Thread.currentThread().interrupt();
+    }
+    STATS.addAndGet(2, SimAudio.nativeOutUnderruns(o));
+    SimAudio.nativeOutRelease(o);
   }
 
   @Implementation
