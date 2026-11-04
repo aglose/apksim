@@ -179,10 +179,36 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
    */
   @Implementation
   protected void waitForIdle(long idleTimeoutMillis, long globalTimeoutMillis) {
+    if (!TestActivities.testRun()) {
+      liveSettle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
+      return;
+    }
     onMain(() -> {
       settle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
       return null;
     });
+  }
+
+  /**
+   * In a running instance (an instrumentation started over adb) the Host loop owns the clock, which follows real time:
+   * waits, in real time, until the main thread has nothing due, or QUIET ms at most (an endless animation).
+   */
+  private static void liveSettle(long quietMillis) {
+    long end = System.nanoTime() + quietMillis * 1_000_000;
+    do {
+      try {
+        Thread.sleep(16);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+      boolean idle = onMain(() -> {
+        ShadowLooper main = shadowOf(Looper.getMainLooper());
+        long next = main.getNextScheduledTaskTime().toMillis();
+        return next == 0 || next > SystemClock.uptimeMillis() + 32;
+      });
+      if (idle) return;
+    } while (System.nanoTime() < end);
   }
 
   private static void settle(long quietMillis) {
@@ -207,10 +233,14 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected AccessibilityEvent executeAndWaitForEvent(Runnable command, UiAutomation.AccessibilityEventFilter filter,
       long timeoutMillis) throws TimeoutException {
     command.run();
-    onMain(() -> {
-      settle(500);
-      return null;
-    });
+    if (TestActivities.testRun()) {
+      onMain(() -> {
+        settle(500);
+        return null;
+      });
+    } else {
+      liveSettle(500);
+    }
     for (int type : new int[] {AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
         AccessibilityEvent.TYPE_WINDOWS_CHANGED}) {
       AccessibilityEvent e = new AccessibilityEvent(type);
@@ -226,6 +256,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       System.err.println("[apksim] UiAutomation.performGlobalAction(" + action + ") is not supported");
       return false;
     }
+    if (!TestActivities.testRun()) return live("back");
     long now = SystemClock.uptimeMillis();
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
@@ -242,6 +273,42 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       return ParcelFileDescriptor.open(empty, ParcelFileDescriptor.MODE_READ_ONLY);
     } catch (Exception e) {
       throw new IllegalStateException(e);
+    }
+  }
+
+  // --- Input in a running instance -------------------------------------------------------------------------------
+
+  /**
+   * In a running instance, injected events go through the Host's input queue, as the window's and `adb shell input`'s
+   * do, so they reach the window the Host would pick and pass its gesture tracking. One finger; keys on their down.
+   */
+  @Implementation
+  @Override
+  protected boolean injectInputEvent(android.view.InputEvent event, boolean sync) {
+    if (TestActivities.testRun()) return super.injectInputEvent(event, sync);
+    if (event instanceof android.view.MotionEvent m) {
+      int masked = m.getActionMasked();
+      String action = masked == android.view.MotionEvent.ACTION_DOWN ? "down"
+          : masked == android.view.MotionEvent.ACTION_MOVE ? "move"
+          : masked == android.view.MotionEvent.ACTION_UP || masked == android.view.MotionEvent.ACTION_CANCEL ? "up" : null;
+      if (action == null) return false;
+      return live("touch", action, String.valueOf(m.getRawX()), String.valueOf(m.getRawY()));
+    }
+    if (event instanceof KeyEvent k) {
+      if (k.getAction() != KeyEvent.ACTION_DOWN) return true;
+      if (k.getKeyCode() == KeyEvent.KEYCODE_BACK) return live("back");
+      return live("key", KeyEvent.keyCodeToString(k.getKeyCode()).substring("KEYCODE_".length()));
+    }
+    return false;
+  }
+
+  private static boolean live(String... command) {
+    try {
+      String r = AdbShell.control(command);
+      return r == null || !r.startsWith("error") && !r.startsWith("unknown");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 
@@ -306,6 +373,16 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     if (Looper.myLooper() == Looper.getMainLooper()) {
       try {
         return work.call();
+      } catch (RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    }
+    if (!TestActivities.testRun()) {
+      // A running instance: the Host loop runs the main looper's messages.
+      try {
+        return AdbShell.onMain(work);
       } catch (RuntimeException e) {
         throw e;
       } catch (Exception e) {

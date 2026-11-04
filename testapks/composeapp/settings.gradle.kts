@@ -33,3 +33,4 @@ plugins {
 rootProject.name = "ComposeApp"
 
 include(":app")
+include(":uiserver")

@@ -371,6 +371,15 @@ final class AppClasses {
     return install(apk, "/test/", app, System.getProperty("apksim.package") + ".test");
   }
 
+  /**
+   * An APK whose classes stay apart from the app's: an instrumentation installed over adb, which brings its own copies
+   * of libraries the app also has (Kotlin, AndroidX Test, often minified into each other). Its loader asks
+   * {@link #translate} itself (LiveInstrumentation.Loader); nothing is added to the class path.
+   */
+  static AppClasses isolated(Path apk, String hintName) throws IOException {
+    return new AppClasses(apk, "/isolated/", null, hintName);
+  }
+
   /** The test APK's classes, in DEX order, as "a.b.C". */
   List<String> classNames() {
     java.util.Set<String> out = new java.util.LinkedHashSet<>();

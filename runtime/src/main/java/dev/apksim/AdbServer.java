@@ -40,6 +40,8 @@ final class AdbServer {
   private static final int SYNC_DATA_MAX = 64 * 1024;
 
   static volatile int port;
+  /** -Dapksim.adbTrace=true: log every service a client opens, to see what a tool asks the device for. */
+  static final boolean TRACE = Boolean.getBoolean("apksim.adbTrace");
 
   private AdbServer() {}
 
@@ -143,8 +145,19 @@ final class AdbServer {
     }
 
     private void open(int remote, String service) throws IOException {
+      if (TRACE && !service.equals("track-jdwp")) System.err.println("[apksim] adb open " + service.replace("\0", "\\0"));
       boolean known = service.startsWith("shell") || service.startsWith("exec:") || service.equals("sync:")
           || service.equals("root:") || service.equals("unroot:");
+      Socket forward = null;
+      if (!known && isForward(service)) {
+        // `adb forward tcp:N localabstract:NAME` (or tcp:PORT): the adb server opens this for each connection to N.
+        try {
+          forward = forwardTarget(service);
+          known = true;
+        } catch (IOException e) {
+          System.err.println("[apksim] adb " + service + ": " + e.getMessage());
+        }
+      }
       if (!known) {
         System.err.println("[apksim] adb: unsupported service " + service);
         send(A_CLSE, 0, remote);
@@ -157,9 +170,64 @@ final class AdbServer {
       Stream s = new Stream(this, local, remote);
       streams.put(local, s);
       send(A_OKAY, local, remote);
-      Thread t = new Thread(() -> serve(s, service), "adb-" + service.split("[: ]", 2)[0]);
+      Socket target = forward;
+      Thread t = new Thread(() -> {
+        if (target != null) pump(s, target);
+        else serve(s, service);
+      }, "adb-" + service.split("[: ]", 2)[0]);
       t.setDaemon(true);
       t.start();
+    }
+
+    private static boolean isForward(String service) {
+      return service.startsWith("localabstract:") || service.startsWith("localreserved:")
+          || service.startsWith("localfilesystem:") || service.startsWith("tcp:");
+    }
+
+    private static Socket forwardTarget(String service) throws IOException {
+      String name = service.substring(service.indexOf(':') + 1);
+      if (service.startsWith("tcp:")) {
+        // tcp:PORT or tcp:HOST:PORT, as adbd connects from the device: here the device's localhost is the Mac's.
+        int colon = name.lastIndexOf(':');
+        String host = colon < 0 ? null : name.substring(0, colon);
+        Socket s = new Socket(host == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(host),
+            Integer.parseInt(name.substring(colon + 1)));
+        s.setTcpNoDelay(true);
+        return s;
+      }
+      return LocalSockets.connect(name, true);
+    }
+
+    /** Copies bytes both ways between an adb stream and a socket until either side closes. */
+    private void pump(Stream s, Socket socket) {
+      Thread up = new Thread(() -> {
+        try {
+          s.in.transferTo(socket.getOutputStream());
+        } catch (IOException e) {
+          // Either side went away.
+        } finally {
+          try {
+            socket.shutdownOutput();
+          } catch (IOException e) {
+            // Already closed.
+          }
+        }
+      }, "adb-forward-in");
+      up.setDaemon(true);
+      up.start();
+      try (socket) {
+        InputStream in = socket.getInputStream();
+        byte[] buf = new byte[maxPayload];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+          s.out.write(buf, 0, n);
+          s.out.flush();
+        }
+      } catch (IOException e) {
+        // Either side went away.
+      } finally {
+        s.close();
+      }
     }
 
     private void serve(Stream s, String service) {
@@ -174,7 +242,7 @@ final class AdbServer {
           String cmd = service.substring(service.indexOf(':') + 1);
           boolean exec = service.startsWith("exec:");
           if (cmd.isBlank() && !exec) new AdbShell(s.out).interactive(s.in);
-          else new AdbShell(s.out).run(cmd);
+          else new AdbShell(s.out, s.in, s::isClosed).run(cmd);
         }
         s.out.flush();
       } catch (IOException e) {
@@ -238,6 +306,8 @@ final class AdbServer {
       if (closed) return;
       closed = true;
       c.streams.remove(local);
+      incoming.clear();
+      incoming.offer(EOF);  // a reader of this stream's input (a forward's other half) stops too
       try {
         c.send(A_CLSE, local, remote);
       } catch (IOException e) {

@@ -114,7 +114,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead),
-  `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
@@ -130,7 +131,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
-  reads. Build with `./gradlew :app:assembleDebug` inside it.
+  reads. Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
+  tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
   manifest, extracted `.so` files, app data).
 
@@ -333,7 +335,21 @@ tee back when the stream is reassigned); supports `-d -c -t N -T N -s -e`, `TAG:
 `/sdcard` = `/storage/emulated/0` (Robolectric's external storage, per process) and `/data/local/tmp` (this
 instance's scratch); anything else is refused. `pm clear PKG` fails with a pointer to `--fresh` / `ctl.py erase`
 (here the instance is both the app's process and the device, and the app's open databases would outlive a delete).
-Not supported: `adb install` (one APK per instance), `am force-stop`
+Tools with an on-device server work (checked with the Android CLI: `android layout`, `input tap|text|scroll|key`,
+`screen capture`): `adb install` (push + `pm install`, or `pm install-create/-write/-commit` as adblib streams it)
+takes an APK that only brings an instrumentation (`Packages`; the running app's own APK again is a no-op, any other
+app is refused with the reason), `am instrument [-w] [-r] [-e K V] PKG/CLASS [&]` runs an instrumentation that
+targets its own package live in this process (`LiveInstrumentation`: its classes in a loader of their own, since such
+servers bring their own Kotlin and AndroidX Test; its own package name and assets; sendStatus/finish print as `am
+instrument` does; it outlives the adb stream that started it, and its receivers go when it finishes), `am broadcast`
+is ordered and prints the result code and data, `adb forward tcp:N localabstract:NAME` (or `tcp:PORT`) reaches an
+`android.net.LocalServerSocket` (`LocalSockets`: names on loopback ports, `Os.poll` on the server's descriptor, adb's
+connections from the shell uid 2000), and UiAutomation in a running instance reads the windows as in test runs and
+injects through the Host's input queue (`touch down|move|up X Y`) without moving the clock. `scripts/adb-check.py`
+checks all of it with the test app project's `uiserver` module (CI: `ci-smoke.sh`); `-Dapksim.adbTrace=true` logs
+every service a client opens. Test APKs that target the app still run with `--instrument`, not over adb: they need
+Robolectric's test environment. The server runs in the app's process, so a crash in it ends the app too.
+Not supported: other apps beside the running one, split APKs (`install-multiple`), `am force-stop`
 (it is this process; `adb shell apksim quit`), `jdwp`, shell_v2 (so no exit codes or separate stderr) and
 `logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
 
@@ -398,7 +414,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
-Not supported yet: `adb shell am instrument`, the test APK's own resources/context (`getInstrumentation().context`
+Not supported yet: `adb shell am instrument` of a test APK (only of a self-targeting instrumentation, see "adb device"), the test APK's own resources/context (`getInstrumentation().context`
 is the app's), UiAutomation shell commands (empty output), and test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
 `--no-network` keeps only localhost (127.0.0.1 and ::1).
