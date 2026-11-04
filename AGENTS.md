@@ -101,8 +101,12 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `loopback.c`: under `--no-network` only (`DYLD_INSERT_LIBRARIES`, set through `/usr/bin/env` after
     `sandbox-exec`, since dyld drops DYLD_* variables for system binaries). The sandbox can allow only
     `localhost` (127.0.0.1 over IPv4, ::1 over IPv6), and the JDK reaches 127.0.0.1 on a dual-stack socket as
-    ::ffff:127.0.0.1, which it refused; `connect()` to a mapped 127.x address swaps the socket for an IPv4 one on
-    the same descriptor (`dup2`). The rest of 127/8 cannot be allowed (the profile language takes only `localhost`).
+    ::ffff:127.0.0.1, which it refused; a TCP `connect()` to a mapped 127.x address swaps the socket for an IPv4
+    one on the same descriptor (`dup2`, keeping a bound port), and an already swapped one connects in place.
+    `dup2` drops the old socket's kqueue filters (a Selector registered before connect would hang), so it also
+    interposes `kevent`/`close` to record each descriptor's filters and adds them to the new socket. Not UDP: the JDK
+    later uses IPv6-level options on a DatagramChannel (disconnect fails on an IPv4 socket), so Java UDP to
+    127.0.0.1 stays refused. The rest of 127/8 cannot be allowed (the profile language takes only `localhost`).
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
