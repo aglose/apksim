@@ -9,3 +9,4 @@ local.properties
 # Private notes: keep them outside the repo (~/.config/apksim/NOTES.md), or in these, never committed.
 CLAUDE.local.md
 AGENTS.local.md
+dist/

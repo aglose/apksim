@@ -166,17 +166,15 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   }
 
   /**
-   * Gives the input buffers the size a device's codec would: the format's max-input-size (media players set it), or a
-   * compressed picture's bound from its size (ExoPlayer's own for H.264), or 8 MB, enough for a 4K key frame. A fixed
-   * 8 MB made every video codec hold 80 MB of zero-filled native memory, freed only when a GC happened to run.
+   * Gives the input buffers the format's max-input-size when it has one (media players set it), else 8 MB, enough for
+   * a 4K key frame: a bound from the picture size alone can be too small (an H.264 picture of uncompressed I_PCM
+   * macroblocks is bigger than its YUV samples). A fixed 8 MB made every video codec hold 80 MB of zero-filled native
+   * memory, freed only when a GC happened to run.
    */
   private void sizeInputs(MediaFormat format) {
     int size = 8 << 20;
     if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) && format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) > 0) {
       size = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
-    } else if (format.containsKey(MediaFormat.KEY_WIDTH) && format.containsKey(MediaFormat.KEY_HEIGHT)) {
-      long pixels = (long) format.getInteger(MediaFormat.KEY_WIDTH) * format.getInteger(MediaFormat.KEY_HEIGHT);
-      size = (int) Math.min(Math.max(pixels * 3 / 4, 64 << 10), 32 << 20);
     }
     ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
     for (int i = 0; i < inputs.length; i++) {
