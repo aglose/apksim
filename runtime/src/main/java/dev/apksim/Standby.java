@@ -201,7 +201,8 @@ final class Standby {
   private static long jarStamp() {
     // A rebuilt runtime, or a retrained startup cache (a standby booted without it is slow).
     java.io.File jar = new java.io.File(System.getProperty("apksim.root"), "work/apksim.jar");
-    java.io.File aot = new java.io.File(System.getProperty("apksim.root"), "work/app.aot");
+    // The cache lives in the state folder (work/ in a checkout, ~/.apksim for an installed release), cacheRoot's parent.
+    java.io.File aot = new java.io.File(new java.io.File(System.getProperty("apksim.cacheRoot")).getParentFile(), "app.aot");
     return (jar.lastModified() * 31 + jar.length()) * 31 + aot.lastModified();
   }
 

@@ -15,12 +15,15 @@ Instances need --control PORT or --control auto. Commands are those of the contr
 """
 import fcntl, glob, os, shutil, socket, subprocess, sys, time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+# The launcher's state folder: work/ in a source checkout, ~/.apksim for an installed release, or $APKSIM_HOME.
+STATE = os.environ.get("APKSIM_HOME") or (
+    os.path.expanduser("~/.apksim") if os.path.exists(os.path.join(ROOT, "work", "release")) else os.path.join(ROOT, "work"))
 
 
 def instances():
     found = []
-    for f in glob.glob(os.path.join(ROOT, "work", "tmp", "*", "control.port")):
+    for f in glob.glob(os.path.join(STATE, "tmp", "*", "control.port")):
         pid = int(os.path.basename(os.path.dirname(f)))
         try:
             os.kill(pid, 0)
@@ -40,7 +43,7 @@ def instances():
     return sorted(found)
 
 
-DATA = os.path.join(ROOT, "work", "cache", "data")
+DATA = os.path.join(STATE, "cache", "data")
 
 
 def in_use(slot):

@@ -100,7 +100,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap),
-  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI),
+  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `package-release.sh` (see
+  "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
@@ -378,6 +379,24 @@ offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a windo
 for window ones or named no surface type (EGL's default is windows), and drops `EGL_RECORDABLE_ANDROID`: Mesa's
 surfaceless platform has no window configs, and WebRTC's `EglBase.create()` threw "Unable to find any matching EGL
 config" in every journey that showed a live camera. Without a library the shadows fall back to Robolectric's stand-ins.
+
+## Releases (Homebrew, install.sh)
+`scripts/package-release.sh VERSION` turns a built checkout (`scripts/setup.sh --no-train`) into
+`dist/apksim-VERSION-macos-arm64.tar.gz`: the launcher, `apksim.jar`, `work/lib` (without `nativeruntime-dist`, whose
+fonts and natives are already in `work/runtime`), `work/runtime`, a jlink'ed JDK 24 in `work/jre` (`work/jdk.path`),
+the test app, and `work/release` (the version). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
+`cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
+`train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
+`STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
+JDK): the first launch without one starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
+and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
+follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
+`.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a
+*draft* release; publishing it pushes `packaging/homebrew/apksim.rb` (filled in) to the `aglose/homebrew-apksim` tap
+as `Casks/apksim.rb` (it pushes with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap only); users run `brew tap aglose/apksim`, then `brew install apksim`
+(a third-party tap has no shorter form: Homebrew takes `user/tap/name` or a bare name from its own repos). A cask, not a formula: Homebrew installs a bottle-less formula
+only with current Command Line Tools ("CLT does not support macOS 26" stopped it here). The cask clears the quarantine
+flag, since the release is not notarized. Homebrew 7 deprecates cask `postflight` blocks for `postflight_steps`.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
