@@ -16,8 +16,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
    "Open work".
 4. **The owner's app's device tests as a CI testbed** (asked 2026-11-03: run its emulator tests here, compare CI cost
    and time, fix until nothing fails): all 4,107 pass with two fixes to the app's own tests (patches in the private notes),
-   4.7 min on the Mac, 8.3 min in the Linux image under Rosetta, against ~19 on the emulators. See docs/ci-testbed.md,
-   and docs/plan.md phase 0 for what is left (the job in the app's own CI).
+   4.7 min on the Mac, 8.3 min in the Linux image under Rosetta, against ~19 on the emulators. In the app's own CI
+   (2026-11-04, apksim 0.5.0) all 4,111 pass, none flaky and the emulators agreeing, in a 15.6 min job. See
+   docs/ci-testbed.md, and docs/plan.md phase 0 for what is left.
 
 ## Layout
 - `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
