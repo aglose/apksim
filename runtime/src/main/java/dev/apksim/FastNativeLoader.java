@@ -19,6 +19,7 @@ public final class FastNativeLoader extends DefaultNativeRuntimeLoader {
   public synchronized void ensureLoaded() {
     if (done) return;
     done = true;
+    Timing.detail("native-load");
     try {
       Field loaded = DefaultNativeRuntimeLoader.class.getDeclaredField("loaded");
       loaded.setAccessible(true);
@@ -40,5 +41,6 @@ public final class FastNativeLoader extends DefaultNativeRuntimeLoader {
     setNativeSystemProperty("ro.hyphen.data.dir", dir.resolve("hyphen-data").toString());
     android.graphics.Typeface.loadPreinstalledSystemFontMap();
     android.text.Hyphenator.init();
+    Timing.detail("native-loaded");
   }
 }

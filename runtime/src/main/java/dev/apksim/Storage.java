@@ -22,6 +22,7 @@ final class Storage {
 
   /** The launcher points java.io.tmpdir at work/tmp/PID, since the JDK reads it only at startup. */
   static void initScratch() throws IOException {
+    if (scratch != null) return;  // a standby did it before it waited
     scratch = Path.of(System.getProperty("java.io.tmpdir"));
     sweepDeadInstances(scratch.getParent());
   }
@@ -57,6 +58,14 @@ final class Storage {
     } catch (IOException e) {
       // Same.
     }
+  }
+
+  /**
+   * A path from a command, against the launch's working directory. Not Path.toAbsolutePath: the JDK fixes that at
+   * JVM start, and an instance from a standby (Standby) started elsewhere and moved to the launch's directory.
+   */
+  static Path absolute(String path) {
+    return Path.of(System.getProperty("user.dir")).resolve(path);
   }
 
   /** The persistent data directory for this instance. */

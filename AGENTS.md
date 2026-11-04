@@ -6,7 +6,10 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
 3-4 s after Enter. Read README.md for results and limits; this file covers how to work on the code.
 
 ## Owner's goals (in order asked)
-1. Launch as fast as the demo: done, 2.5 s first frame (window at 0.15 s), measured with `scripts/bench.py`.
+1. Launch as fast as the demo: done. Then "improve start up time by 10x, as fast as possible to load a new
+   simulator": a launch is handed to a pre-booted standby JVM (see "Warm launches"): window ~0.1 s → 12 ms, first
+   frame 1.49 s → ~0.22 s (test app), ~1.9 s → ~0.36 s (the owner's R8 app). What is left is mostly the app's own
+   startup code, interpreted (cold JIT). Measured with `scripts/bench.py` (cold and warm).
 2. Run real APKs, including the owner's own app: done (its R8 release and debug builds both run).
 3. **120 fps**: the owner said "don't stop until it's that fast". Average is now ~117-120 fps on normal UI, the GPU
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
@@ -17,17 +20,24 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
    and docs/plan.md phase 0 for what is left (the job in the app's own CI).
 
 ## Layout
-- `apksim`: launcher (bash). Builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs
-  `dev.apksim.Main`.
+- `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
+  builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs `dev.apksim.Main`. Builtins only up
+  to that hand-off: each fork there cost a few ms.
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
+  - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
-    DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap.
+    DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
+    (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
+    (inflating the test app's 36 MB took ~60 ms a launch). Classes are found by binary search of the DEX's sorted
+    type_ids (`DexFile.findClassType`), not a map of every class name (~80 ms for 21k classes). `loadAhead` defines
+    the classes the app loaded last time (no static initializers, so no app code) on 2 threads while the main thread
+    starts the framework: ~100 ms off a launch.
   - `ClassCache`: translated classes kept between launches in `work/cache/classes/<runtime hash>/<dex crc>.pack`.
     An entry is used only while the "is X an interface?" answers it was translated with still hold (the
     translator's only input from other classes). `<package>.classes` lists what the app loaded, so worker threads
@@ -42,7 +52,10 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
     (`-Dapksim.debugTypes=owner/Class.method` reports such a merge). Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
     `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
-    `new RenderNode` → `GpuRenderNode`.
+    `new RenderNode` → `GpuRenderNode`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
+    is read from the parameter, and an adjacent `xstore n; xload n` with n dead after (liveness, handlers included)
+    goes, so a getter is `aload_0 getfield ireturn` rather than 7 bytecodes. ~15% fewer bytecodes, ~4% off a warm
+    launch; `-Dapksim.peephole=false` for A/B (its own class cache).
   - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
@@ -79,8 +92,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `gpushader.m`: Metal pipelines for translated AGSL.
+  - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
 - `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
+  `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -106,7 +120,8 @@ scripts/build.sh && scripts/train.sh          # after any Java change: the AOT c
 scripts/build-native.sh                        # after any native/ change (no retrain needed)
 ./apksim --control 7400 testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk
 python3 scripts/drive.py 7400 'wait 3000' 'tap 720 1690' 'wait 3000' 'frames' 'fps' 'quit'
-python3 scripts/bench.py 5 <apk> [<apk>...]   # launch times
+python3 scripts/bench.py 5 <apk> [<apk>...]   # launch times, cold and warm (--cold / --warm for one)
+./apksim --stop-standbys                       # this folder's warm-launch standbys
 ```
 Coordinates are device pixels (phone: 822x1782, density 2). Test-app bottom nav: Home 130, Trips 300-410,
 Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
@@ -234,6 +249,36 @@ Apps that sign in on every cold start can be signed in by apksim itself (`Autofi
 `work/autofill/<package>.properties` (mode 600, written by the owner), finds fields by their label/placeholder in
 the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only. Never read,
 print or edit that file, and never type the owner's password: if it is missing, ask the owner.
+
+## Warm launches
+A launch is handed to a **standby**: a JVM started in the background that has booted everything that does not depend
+on the APK, as Android's zygote does, and waits on a Unix socket (`$TMPDIR/apksim-standby-<hash>.sock`, log beside
+it). The launcher's client (`native/apksim-client.c`) sends the APK, the launch's options and working directory, and
+its own stdin/stdout/stderr (SCM_RIGHTS); the standby (`Standby.java`, `native/standby.c`) puts those on fds 0-2,
+moves to that directory, and becomes the instance, so its output reaches the terminal and its exit code becomes the
+client's. If the client is killed (Ctrl-C, closed terminal, `kill`), the instance quits. Before waiting, a standby runs
+`StandbyWarmup` as a Robolectric test with no APK: the sandbox `Host` reuses, the native runtime, an application,
+then three rounds of a framework-only activity (views, text, a RenderNode drawn through `GpuCanvas`, HWUI frames
+through `HwRenderer`, touches), so call sites Robolectric links through invokedynamic and framework classes are
+done, plus the codec list, networks, XML parser and runtime hash; Robolectric then resets as between tests. No app
+code runs before the launch. It then waits for the JIT queue to drain (~2.2 s from start to ready, ~410 MB idle).
+- One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`), not per working directory.
+  Instances start the next one 1 s after their first frame (`--spawn-standby`, inside their own sandbox) or on exit.
+  A launch waits for a booting standby only past its first second (a cold launch is ~1.3 s), else launches cold.
+- A standby quits after an hour unused (`-Dapksim.standbyIdle` seconds) and when `work/apksim.jar` or `work/app.aot`
+  change, so after `build.sh` + `train.sh` the next launch is cold and starts a fresh one. `./apksim --stop-standbys`
+  stops them; `APKSIM_STANDBY=0` launches cold and starts none. `--jvm` options other than the `-D` switches listed in
+  the launcher (read after the hand-off), `--debug`, `--instrument` and training launch cold: a property read while
+  the standby booted would be ignored. Linux has no standby.
+- An instance from a standby has the standby's environment and PID, not the launcher's: `scripts/ctl.py` reads the
+  APK from `work/tmp/<pid>/launch.info`. Resolve paths from commands with `Storage.absolute`, not
+  `Path.toAbsolutePath` (the JDK fixes that at JVM start).
+- `-Dapksim.timing=verbose` prints finer startup marks (app info, classes, sandbox, application state, host setup).
+- Tried without gain: one merged uncompressed class-path jar (the JDK's 40-jar search per app class was not the
+  cost), lower JIT thresholds (`CompileThresholdScaling` flooded the compile queue), more compiler threads.
+- Not tried: a standby prepared for the last APK (classes defined, resources parsed: ~40 ms more, but a second
+  standby's memory for rebuilt APKs), per-APK AOT caches for app classes, WhiteBox-queued JIT of last launch's hot
+  methods.
 
 ## adb device
 `./apksim --adb PORT ...` (or `--adb auto`; the port is written to `work/tmp/<pid>/adb.port`), then
@@ -393,7 +438,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
   port leaves the old build running and the new one dead.
 - **Never `pkill -f dev.apksim.Main`.** The owner may have their own instance open (for example, logged in to
-  the owner's app). Quit your instances with `drive.py PORT quit`.
+  the owner's app), and standbys match it too. Quit your instances with `drive.py PORT quit`, standbys with
+  `./apksim --stop-standbys`.
 - **Credentials:** never type or paste the owner's real passwords. 1Password autofill only works in Chrome, not this
   window. The owner signs in themselves: Cmd+V in the window pastes the clipboard.
 - **After any Java change, run `scripts/train.sh`** or timings silently get worse (no AOT). The cache is tied to the
@@ -410,7 +456,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   methods run, with arguments) or `Ret.java` (what they return). Suspect the translator when a value is impossible:
   `scripts/translate-class.java` and javap show `aconst_null`/`if_acmpne` where Dalvik had ints.
 - **Launch benchmarks after a build:** the first launch of each APK other than the test app is cold (no class
-  cache). Run each APK once before `bench.py`, or compare against a baseline with the same cache state.
+  cache). Run each APK once before `bench.py`, or compare against a baseline with the same cache state. Warm-launch
+  timings swing with machine load (another VM, an emulator): compare interleaved A/B runs.
 - Keep the young generation small (`-Xmn64m` in the launcher). 256 MB gave 12-50 ms GC pauses mid-scroll; 32-64 MB
   gives about 1 ms. Measured with `--jvm -Xlog:gc:file=...` while flinging and on the Shader tab.
 - The path has no spaces now, but Robolectric breaks on spaces in its dependency dir, so the launcher links

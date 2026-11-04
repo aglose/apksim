@@ -4,16 +4,48 @@
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
 # container is its sandbox.
-OS="$(uname -s)"
-if [[ "$OS" == Darwin ]]; then
-  export APKSIM_T0=${APKSIM_T0:-$(python3 -c 'import time;print(int(time.time()*1000))')}
-  JAVA="${APKSIM_JAVA:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java}"
+# Builtins only up to the warm-launch hand-off below: every fork costs a few ms there.
+case "${OSTYPE:-}" in darwin*) OS=Darwin ;; linux*) OS=Linux ;; *) OS="$(uname -s)" ;; esac
+SRC="${BASH_SOURCE[0]}"
+if [[ "$SRC" == */* ]]; then
+  CDPATH= cd -- "${SRC%/*}" >/dev/null; ROOT="$PWD"; CDPATH= cd -- "$OLDPWD" >/dev/null
 else
-  export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
-  JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+  ROOT="$PWD"
 fi
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLIENT="$ROOT/work/runtime/apksim-client"
+# Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
+# is per apksim folder and sandbox flags. Instances start one in the background after their first
+# frame (--spawn-standby); a launch hands its APK and terminal to it (apksim-client), or launches cold if there is
+# none. APKSIM_STANDBY=0 turns this off.
+if [[ "${1:-}" == --spawn-standby ]]; then
+  FLAGS="${2:-}"
+  SOCK="$("$CLIENT" sock "$ROOT" "$FLAGS")"
+  [[ -S "$SOCK" ]] && exit 0
+  if [[ -f "$SOCK.pid" ]] && kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
+  rm -f "$SOCK.pid"
+  ARGS=(--standby "$SOCK")
+  [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
+  [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)
+  exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
+fi
+if [[ "${1:-}" == --stop-standbys ]]; then
+  # This folder's standbys (they also quit after an hour unused, or when work/apksim.jar or work/app.aot change).
+  for FLAGS in "" n s ns; do
+    SOCK="$("$CLIENT" sock "$ROOT" "$FLAGS")"
+    [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
+    rm -f "$SOCK" "$SOCK.pid"
+  done
+  exit 0
+fi
+ORIG=("$@")
 EXTRA=()
+STANDBY_SOCK=""
+if [[ "${1:-}" == --standby ]]; then
+  STANDBY_SOCK="$2"; shift 2
+  set -- "$@" /dev/null  # no APK yet
+  # Claim the slot: exec below keeps this PID for the JVM.
+  if ! (set -C; echo $$ > "$STANDBY_SOCK.pid") 2>/dev/null; then exit 0; fi
+fi
 while [[ $# -gt 1 ]]; do
   case "$1" in
     --shot) EXTRA+=("-Dapksim.screenshot=$2"); shift 2 ;;
@@ -42,9 +74,47 @@ while [[ $# -gt 1 ]]; do
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}"
+# A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
+# a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
+WARM_OK=""
+if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" \
+      && "${APKSIM_STANDBY:-1}" != 0 && -z "$STANDBY_SOCK" ]]; then
+  WARM_OK=1
+  for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
+    case "$e" in
+      -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
+      -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.headless=*|-Dapksim.logcat=*) ;;
+      -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
+      -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
+      *) WARM_OK="" ;;
+    esac
+  done
+fi
+if [[ "$OS" == Darwin ]]; then
+  JAVA="${APKSIM_JAVA:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java}"
+else
+  JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+fi
 # APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
 [[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")
-APK="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+if [[ "$1" == /* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
+for i in "${!EXTRA[@]}"; do
+  # Relative to this launch's directory, whatever the working directory of the JVM that takes it.
+  [[ "${EXTRA[$i]}" == -Dapksim.screenshot=* && "${EXTRA[$i]#*=}" != /* ]] && EXTRA[$i]="-Dapksim.screenshot=$PWD/${EXTRA[$i]#*=}"
+done
+if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
+  exec "$CLIENT" launch "$ROOT/apksim" "$ROOT" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
+fi
+if [[ "$OS" == Darwin ]]; then
+  export APKSIM_T0=${APKSIM_T0:-$(python3 -c 'import time;print(int(time.time()*1000))')}
+else
+  export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
+fi
+# This launch may start the next standby (Standby.spawnNext), which inherits its sandbox.
+[[ -n "$WARM_OK" ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
+[[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK" "-Dapksim.spawnStandby=$FLAGS")
 # Robolectric mishandles spaces in its dependency path, so always go through a link without any.
 TMP="${TMPDIR:-/tmp}"
 LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
@@ -55,7 +125,9 @@ mkdir -p "$ROOT/work/tmp/$$"
 # An APK runs as ordinary code in this process, with no VM around it, so confine it: it can only
 # write under work/ and temp, and cannot read credentials. Network stays on unless --no-network.
 SANDBOX=()
-if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" ]]; then
+# A standby started by a sandboxed instance is already inside the same sandbox (FLAGS are part of its name).
+if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ]]; then
+  export APKSIM_SANDBOXED=1
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$ROOT/work\"))
@@ -93,6 +165,6 @@ exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "$JAVA" \
   --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --enable-native-access=ALL-UNNAMED \
   -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
-  -Djava.io.tmpdir="$ROOT/work/tmp/$$" -Dapksim.cacheRoot="$ROOT/work/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
+  -Djava.io.tmpdir="$ROOT/work/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$ROOT/work/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
   "${EXTRA[@]+"${EXTRA[@]}"}" \
   -cp "$CP" dev.apksim.Main "$APK"

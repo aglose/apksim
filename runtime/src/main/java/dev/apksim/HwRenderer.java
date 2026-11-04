@@ -200,6 +200,17 @@ final class HwRenderer {
     }
   }
 
+  /** Frees the renderer and its surface (a standby's warm-up renderer). Its raster thread stays parked. */
+  void close() {
+    finish();
+    renderer.destroy();
+    synchronized (frameLock) {
+      if (current != null) current.close();
+      current = null;
+    }
+    reader.close();
+  }
+
   /** Waits for the frame in flight, for when the exact pixels matter. */
   void finish() {
     idle.acquireUninterruptibly();
