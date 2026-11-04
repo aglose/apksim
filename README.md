@@ -43,7 +43,8 @@ After moving the folder, run `scripts/train.sh` once: the startup cache is tied 
 everything it writes in its own `work/`. `scripts/package-release.sh VERSION` packages a built checkout as a release;
 `.github/workflows/release.yml` does that for each `v*` tag, and publishing the release updates the Homebrew tap.
 
-It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
+It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI, published with each release as
+`ghcr.io/aglose/apksim`: see [docs/linux-docker.md](docs/linux-docker.md).
 
 Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
