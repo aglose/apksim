@@ -126,7 +126,7 @@ typedef struct {
   _Atomic uint64_t underruns;
   _Atomic int muted;
   uint32_t frameBytes;
-  int running;
+  _Atomic int running;  // read by a writer waiting for room while play/pause (or release) changes it
   // Wakes a writer waiting for room. The render callback runs on CoreAudio's real-time thread, so it takes no lock:
   // it bumps [wakes] and wakes the address only when a writer said it waits.
   _Atomic uint32_t wakes;

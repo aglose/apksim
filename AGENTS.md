@@ -236,7 +236,9 @@ Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters w
 codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
 view to draw to), `webrtclog [info|verbose]`,
 `selftest [file]` (native scaler, colour order; with a `.h264`/`.h265` file MediaCodec onto a Surface, with an ADTS
-`.aac` or `.mp3` file MediaCodec into AudioTrack, checking the sound took real time; `scripts/make-media.sh` writes 2 s
+`.aac` or `.mp3` file MediaCodec into AudioTrack, checking the sound took real time and that releasing a track while
+another thread is blocked writing to it returns the write (`ShadowSimAudioTrack` frees the stream only once no native
+call on it is in progress: before, the writer read the freed stream); `scripts/make-media.sh` writes 2 s
 clips to `work/media`), `nodes` (accessibility tree: text, hints,
 fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
