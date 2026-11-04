@@ -1,4 +1,5 @@
-# Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh).
+# Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh) and its
+# androidTest suite with --instrument (JUnit XML in the artifact), and checks the DEX translator on an R8 fixture.
 # The Mac-only parts (window, Metal, VideoToolbox, AOT timings) are not covered here.
 name: ci
 on:
@@ -57,15 +58,24 @@ jobs:
           for a in work/lib/*.aar; do unzip -p "$a" classes.jar > "${a%.aar}.jar"; done
       - name: Compile the runtime
         run: scripts/build.sh
+      - name: Translator check (R8 and D8 fixtures)
+        run: scripts/check-translator.sh
       - name: Build the test app
         working-directory: testapks/composeapp
         env:
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-        run: ./gradlew -q :app:assembleDebug
+        run: ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Smoke test
         run: scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+      - name: Test run (androidTest suite, GLES on Mesa)
+        run: |
+          mkdir -p tests
+          cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
+          cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -73,3 +83,4 @@ jobs:
           path: |
             smoke/*.png
             smoke/*.log
+            tests/junit.xml

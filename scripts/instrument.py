@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--xml FILE] [-e KEY VALUE]... [-- APKSIM_OPTION...]
+Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
+                     [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). With --isolate each test runs in a process of its own, N at a time, as the
 Orchestrator with clearPackageData does. -e passes am instrument arguments (class, notClass, package, notPackage).
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed.
+--apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
+with APP and TEST given relative to the mounted folder (the image's working directory).
 """
-import argparse, concurrent.futures, os, re, subprocess, sys, time
+import argparse, concurrent.futures, os, re, shlex, subprocess, sys, time
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 CODES = {0: "passed", -2: "failed", -3: "ignored", -4: "skipped"}
 
 
+LAUNCHER = [ROOT + "/apksim"]
+
+
 def apksim(app, test, extra_args, apksim_opts):
-    cmd = [ROOT + "/apksim", "--instrument", test]
+    cmd = LAUNCHER + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
     return subprocess.run(cmd + apksim_opts + [app], capture_output=True, text=True)
@@ -54,8 +60,11 @@ def main():
     p.add_argument("--isolate", action="store_true")
     p.add_argument("-j", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 3)))
     p.add_argument("--xml")
+    p.add_argument("--apksim")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
     a = p.parse_args(argv)
+    if a.apksim:
+        LAUNCHER[:] = shlex.split(a.apksim)
 
     t0 = time.time()
     results = []  # (class, method, status, stack, seconds)
