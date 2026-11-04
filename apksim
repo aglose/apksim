@@ -7,19 +7,38 @@ set -euo pipefail
 # Builtins only up to the warm-launch hand-off below: every fork costs a few ms there.
 case "${OSTYPE:-}" in darwin*) OS=Darwin ;; linux*) OS=Linux ;; *) OS="$(uname -s)" ;; esac
 SRC="${BASH_SOURCE[0]}"
+# A link to the launcher (an installer's bin/apksim) leads to the folder it is in.
+while [[ -L "$SRC" ]]; do
+  LINK="$(readlink "$SRC")"
+  if [[ "$LINK" == /* ]]; then SRC="$LINK"; else SRC="${SRC%/*}/$LINK"; fi
+done
 if [[ "$SRC" == */* ]]; then
   CDPATH= cd -- "${SRC%/*}" >/dev/null; ROOT="$PWD"; CDPATH= cd -- "$OLDPWD" >/dev/null
 else
   ROOT="$PWD"
 fi
+# What apksim writes (the startup cache, translated classes, app data, scratch, screenshots): a source checkout keeps
+# it in its own work/, an installed release (work/release, from scripts/package-release.sh) in ~/.apksim, as its own
+# folder may be read-only (Homebrew). APKSIM_HOME chooses another folder.
+if [[ -n "${APKSIM_HOME:-}" ]]; then STATE="$APKSIM_HOME"
+elif [[ -f "$ROOT/work/release" ]]; then STATE="$HOME/.apksim"
+else STATE="$ROOT/work"; fi
+# Standbys are per install and state folder.
+KEY="$ROOT"; [[ "$STATE" != "$ROOT/work" ]] && KEY="$ROOT:$STATE"
 CLIENT="$ROOT/work/runtime/apksim-client"
+case "${1:-}" in
+  --version) if [[ -f "$ROOT/work/release" ]]; then echo "apksim $(< "$ROOT/work/release")"; else echo "apksim (source checkout $ROOT)"; fi; exit 0 ;;
+  # Builds the startup cache now, in the foreground (an installed release otherwise builds it in the background on
+  # its first launch).
+  --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
+esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first
 # frame (--spawn-standby); a launch hands its APK and terminal to it (apksim-client), or launches cold if there is
 # none. APKSIM_STANDBY=0 turns this off.
 if [[ "${1:-}" == --spawn-standby ]]; then
   FLAGS="${2:-}"
-  SOCK="$("$CLIENT" sock "$ROOT" "$FLAGS")"
+  SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
   [[ -S "$SOCK" ]] && exit 0
   if [[ -f "$SOCK.pid" ]] && kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
   rm -f "$SOCK.pid"
@@ -31,7 +50,7 @@ fi
 if [[ "${1:-}" == --stop-standbys ]]; then
   # This folder's standbys (they also quit after an hour unused, or when work/apksim.jar or work/app.aot change).
   for FLAGS in "" n s ns; do
-    SOCK="$("$CLIENT" sock "$ROOT" "$FLAGS")"
+    SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
     [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
     rm -f "$SOCK" "$SOCK.pid"
   done
@@ -115,8 +134,23 @@ for i in "${!EXTRA[@]}"; do
   # Relative to this launch's directory, whatever the working directory of the JVM that takes it.
   [[ "${EXTRA[$i]}" == -Dapksim.screenshot=* && "${EXTRA[$i]#*=}" != /* ]] && EXTRA[$i]="-Dapksim.screenshot=$PWD/${EXTRA[$i]#*=}"
 done
+# The startup cache records file paths, so it fits only the install it was built for (app.aot.root). An installed
+# release builds it in the background on its first launch, and after an upgrade (a new folder); this launch goes ahead
+# without it. A source checkout builds it with scripts/train.sh.
+AOT_ROOT=""
+if [[ -z "${APKSIM_NOCACHE:-}" && -f "$STATE/app.aot" ]]; then { read -r AOT_ROOT < "$STATE/app.aot.root"; } 2>/dev/null || true; fi
+# (Not again when the client hands a launch back for a cold start: APKSIM_STANDBY=cold.)
+if [[ "$AOT_ROOT" != "$ROOT" && -f "$ROOT/work/release" && "$OS" == Darwin && -z "${APKSIM_NOCACHE:-}" && -z "$STANDBY_SOCK" \
+      && "${APKSIM_STANDBY:-}" != cold ]]; then
+  TRAIN_PID=""; { read -r TRAIN_PID < "$STATE/train.pid"; } 2>/dev/null || true
+  if [[ -z "$TRAIN_PID" ]] || ! kill -0 "$TRAIN_PID" 2>/dev/null; then
+    mkdir -p "$STATE"
+    echo "[apksim] building the startup cache in the background (once, 1-2 minutes); launches are faster after that" >&2
+    "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless
+  fi
+fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
-  exec "$CLIENT" launch "$ROOT/apksim" "$ROOT" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
+  exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
 fi
 if [[ "$OS" == Darwin ]]; then
   export APKSIM_T0=${APKSIM_T0:-$(python3 -c 'import time;print(int(time.time()*1000))')}
@@ -132,16 +166,16 @@ LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; }
 [[ -e "$LIBS" ]] || ln -sfn "$ROOT/work/lib" "$LIBS"
 CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
 # `exec` keeps this PID, which is how a later launch knows whether this scratch dir is still in use.
-mkdir -p "$ROOT/work/tmp/$$"
+mkdir -p "$STATE/tmp/$$"
 # An APK runs as ordinary code in this process, with no VM around it, so confine it: it can only
-# write under work/ and temp, and cannot read credentials. Network stays on unless --no-network.
+# write under its state folder (work/ or ~/.apksim) and temp, and cannot read credentials. Network stays on unless --no-network.
 SANDBOX=()
 # A standby started by a sandboxed instance is already inside the same sandbox (FLAGS are part of its name).
 if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ]]; then
   export APKSIM_SANDBOXED=1
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
-(allow file-write* (subpath \"$ROOT/work\"))
+(allow file-write* (subpath \"$STATE\"))
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"
@@ -157,13 +191,10 @@ if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
 fi
 if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
 AOT=()
-if [[ -z "${APKSIM_NOCACHE:-}" && -f "$ROOT/work/app.aot" ]]; then
-  # The cache records file paths, so it only fits the folder it was built in.
-  if [[ "$(cat "$ROOT/work/app.aot.root" 2>/dev/null)" == "$ROOT" ]]; then
-    AOT=("-XX:AOTCache=$ROOT/work/app.aot")
-  else
-    echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
-  fi
+if [[ "$AOT_ROOT" == "$ROOT" ]]; then
+  AOT=("-XX:AOTCache=$STATE/app.aot")
+elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
+  echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
 fi
 # A small young generation keeps GC pauses inside a frame: fewer objects live long enough to be copied
 # (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
@@ -176,6 +207,6 @@ exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "$JAVA" \
   --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --enable-native-access=ALL-UNNAMED \
   -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
-  -Djava.io.tmpdir="$ROOT/work/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$ROOT/work/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
+  -Djava.io.tmpdir="$STATE/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$STATE/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
   "${EXTRA[@]+"${EXTRA[@]}"}" \
   -cp "$CP" dev.apksim.Main "$APK"
