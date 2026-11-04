@@ -72,6 +72,10 @@ scripts/instrument.py app-debug.apk app-debug-androidTest.apk --isolate -j 4 --x
 scripts/instrument.py --apksim "docker run --rm -v $PWD/out:/work apksim:ci" app-debug.apk app-debug-androidTest.apk --xml out/e2e.xml
 ```
 
+In another repository's CI, the released image runs a suite with its own `instrument.py`, with no apksim checkout
+(`docker run --rm -v $PWD/out:/work --entrypoint instrument.py ghcr.io/aglose/apksim:VERSION app.apk test.apk ...`;
+a job to copy: [linux-docker.md](linux-docker.md#prebuilt-image)).
+
 A cold build of a project this size can need more than a 4 GB Gradle heap when nothing is cached (it thrashed for an
 hour): `-Dorg.gradle.jvmargs=-Xmx10g` finished in a minute.
 

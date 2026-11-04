@@ -40,31 +40,10 @@ jobs:
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | scripts/hooks/check-private --text "pull request title or body" || status=1
           printf '%s\n' "$HEAD_REF" | scripts/hooks/check-private --text "branch name" || status=1
           exit $status
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          # 17 runs Gradle; 24 (the last, so JAVA_HOME) compiles the runtime, as on the Mac.
-          java-version: |
-            17
-            24
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.14.2
-      - name: Fetch the runtime's libraries
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-        run: |
-          gradle -q deps --console=plain
-          for a in work/lib/*.aar; do unzip -p "$a" classes.jar > "${a%.aar}.jar"; done
-      - name: Compile the runtime
-        run: scripts/build.sh
+      - name: Build the runtime and the test app
+        uses: ./.github/actions/linux-build
       - name: Translator check (R8 and D8 fixtures)
         run: scripts/check-translator.sh
-      - name: Build the test app
-        working-directory: testapks/composeapp
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-        run: ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Smoke test
