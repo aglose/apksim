@@ -1,6 +1,10 @@
 package dev.apksim.composeapp
 
 import android.animation.ValueAnimator
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -109,6 +113,29 @@ class ShellCommandTest {
       assertTrue(shell("ls -a /sdcard").lines().any { it.trim() == name })
     } finally {
       shell("rm /sdcard/$name")
+    }
+  }
+
+  /** An ordered broadcast's result comes back to the shell, as `am broadcast` prints it. */
+  @Test
+  fun amBroadcastReportsTheReceiversResult() {
+    val action = "dev.apksim.composeapp.TEST_BROADCAST"
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        setResult(7, "pong", null)
+      }
+    }
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    if (Build.VERSION.SDK_INT >= 33) {
+      context.registerReceiver(receiver, IntentFilter(action), Context.RECEIVER_EXPORTED)
+    } else {
+      context.registerReceiver(receiver, IntentFilter(action))
+    }
+    try {
+      val out = shell("am broadcast -a $action")
+      assertTrue("am broadcast printed: $out", out.contains("Broadcast completed: result=7, data=\"pong\""))
+    } finally {
+      context.unregisterReceiver(receiver)
     }
   }
 

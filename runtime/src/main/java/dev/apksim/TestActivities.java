@@ -127,6 +127,26 @@ public final class TestActivities {
     }
   }
 
+  /** Whether this is the main thread outside any message's dispatch, where its queue can be run (runMainQueueUntil). */
+  static boolean canRunMainQueue() {
+    return Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
+  }
+
+  /**
+   * On the main thread outside a dispatch ({@link #canRunMainQueue}): runs the main queue's due messages until
+   * {@code done} or {@code nanos} have passed, for work that waits on its own thread's queue (an ordered broadcast's
+   * result from a shell command). The clock does not move, as in sleep.
+   */
+  static void runMainQueueUntil(java.util.function.BooleanSupplier done, long nanos) throws InterruptedException {
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    long start = System.nanoTime();
+    while (true) {
+      main.idle();
+      if (done.getAsBoolean() || System.nanoTime() - start >= nanos) return;
+      Thread.sleep(2);
+    }
+  }
+
   /** Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself. */
   private static boolean inDispatch() {
     return StackWalker.getInstance().walk(s -> s.anyMatch(f -> {

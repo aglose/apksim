@@ -689,6 +689,14 @@ final class AdbShell {
         Parsed p = intent(a.subList(1, a.size()));
         if (p == null) return 1;
         Intent in = p.intent;
+        // From the main thread (UiAutomation.executeShellCommand in a test), the receivers and the result come on this
+        // thread's own queue, so it is run while waiting; inside a message's dispatch it cannot be, and nothing is sent.
+        boolean main = Looper.getMainLooper().isCurrentThread();
+        if (main && !TestActivities.canRunMainQueue()) {
+          print("Error: am broadcast from the main thread inside a message cannot wait for its result: send it from"
+              + " the test body or another thread\n");
+          return 1;
+        }
         print("Broadcasting: " + describe(in) + "\n");
         // Ordered, with a result receiver, as `am broadcast` sends it: a receiver's setResultCode/setResultData come back
         // (the Android CLI asks its instrumentation server for its version and socket this way).
@@ -697,9 +705,10 @@ final class AdbShell {
           app().sendOrderedBroadcast(in, null, new ResultReceiver(result), null, 0, null, null);
           return null;
         });
+        if (main) TestActivities.runMainQueueUntil(result::isDone, TimeUnit.SECONDS.toNanos(10));
         String r;
         try {
-          r = result.get(10, TimeUnit.SECONDS);
+          r = result.get(main ? 0 : 10, TimeUnit.SECONDS);
         } catch (java.util.concurrent.TimeoutException e) {
           r = "result=0";
         }
