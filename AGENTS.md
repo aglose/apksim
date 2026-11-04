@@ -55,7 +55,12 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
     `new RenderNode` → `GpuRenderNode`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
     is read from the parameter, and an adjacent `xstore n; xload n` with n dead after (liveness, handlers included)
     goes, so a getter is `aload_0 getfield ireturn` rather than 7 bytecodes. ~15% fewer bytecodes, ~4% off a warm
-    launch; `-Dapksim.peephole=false` for A/B (its own class cache).
+    launch; `-Dapksim.peephole=false` for A/B (its own class cache). The translator runs on every class a launch
+    after a rebuild asks for, so its data is flat (2026-11-03, from a JFR profile of `scripts/translate-all.java`):
+    Peephole and liveness work per basic block over `long` words, labels exist only at block starts (every
+    instruction only with debug info), DEX references sit in arrays by index shared across threads' views. That
+    halved translation time and allocation; a translator change must leave `translate-all.java`'s output identical
+    unless it means to change the bytecode.
   - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
@@ -101,7 +106,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
-  values over JDWP), `translate-class.java` (one class's translation, for javap),
+  values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
+  an APK: time per pass and a hash per class, to profile the translator and check a change leaves output identical),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `package-release.sh` (see
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
@@ -283,6 +289,11 @@ code runs before the launch. It then waits for the JIT queue to drain (~2.2 s fr
 - `-Dapksim.timing=verbose` prints finer startup marks (app info, classes, sandbox, application state, host setup).
 - Tried without gain: one merged uncompressed class-path jar (the JDK's 40-jar search per app class was not the
   cost), lower JIT thresholds (`CompileThresholdScaling` flooded the compile queue), more compiler threads.
+- Measured 2026-11-03 (JFR, `-Dapksim.timing=verbose`): of a ~310 ms warm launch of the test app, the APK index and
+  class cache take ~10 ms (index load mostly off the main thread) and the main thread waits 1-2 ms on locks in all,
+  none on AppClasses'; the rest is the app's own startup (Application ~45 ms, activity ~65 ms, resume to first frame
+  ~160 ms). So the class cache's index and locking are not worth redesigning for launch time. Translation is: a warm
+  launch that translates everything (`-Dapksim.classCache=false`, as after a rebuild) took ~1.55 s, ~1.15 s since.
 - Not tried: a standby prepared for the last APK (classes defined, resources parsed: ~40 ms more, but a second
   standby's memory for rebuilt APKs), per-APK AOT caches for app classes, WhiteBox-queued JIT of last launch's hot
   methods.
