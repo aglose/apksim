@@ -40,11 +40,13 @@ final class AppInfo {
         launcher = name.startsWith(".") ? pkg + name : name;
       }
     }
-    if (launcher == null) throw new IOException("no launcher activity in " + apk);
+    // A test run needs none: a library's test APK (KMP androidDeviceTest, a library's androidTest) is its own app.
+    boolean testRun = System.getProperty("apksim.instrument") != null;
+    if (launcher == null && !testRun) throw new IOException("no launcher activity in " + apk);
     System.setProperty("apksim.apk", apk.toString());
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
-    System.setProperty("apksim.launcher", launcher);
+    if (launcher != null) System.setProperty("apksim.launcher", launcher);
   }
 
   private static boolean isLauncher(Element activity) {

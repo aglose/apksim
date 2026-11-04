@@ -1,0 +1,330 @@
+package dev.apksim;
+
+import static org.robolectric.Shadows.shadowOf;
+
+import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
+import android.app.Activity;
+import android.app.UiAutomation;
+import android.content.Context;
+import android.content.res.Configuration;
+import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
+import android.util.SparseArray;
+import android.view.Display;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewRootImpl;
+import android.view.WindowManager;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeoutException;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowDisplay;
+import org.robolectric.shadows.ShadowInstrumentation;
+import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.shadows.ShadowUiAutomation;
+import org.robolectric.util.ReflectionHelpers;
+
+/**
+ * UiAutomation for UiAutomator (androidx.test.uiautomator) in an instrumented test run (Instrument). On a device it is
+ * an accessibility service connection to the system; here there is no system, so the window tree comes from the
+ * process's own windows. Each window's root node is linked to its view hierarchy with
+ * {@link AccessibilityNodeInfo#setQueryFromAppProcessEnabled} (API 34), so getChild, getParent, refresh and
+ * performAction go through the framework's own AccessibilityInteractionController to the views and virtual nodes
+ * (Compose semantics, with testTagsAsResourceId as resource ids), exactly what a service would read. Robolectric's
+ * ShadowUiAutomation keeps input injection (taps and gestures reach the windows) and takeScreenshot; rotation
+ * delivers a configuration change to the activities as a device does, kept or recreated by their configChanges.
+ *
+ * <p>Not here: accessibility events (executeAndWaitForEvent runs the action, lets the UI settle and reports a window
+ * change, else times out), shell commands (empty output), and global actions other than Back.
+ */
+@Implements(UiAutomation.class)
+public class ShadowSimUiAutomation extends ShadowUiAutomation {
+  private AccessibilityServiceInfo serviceInfo = new AccessibilityServiceInfo();
+  /** Window ids for the roots, stable for as long as the root lives (UiAutomator compares them). */
+  private static final java.util.Map<ViewRootImpl, Integer> WINDOW_IDS = new java.util.WeakHashMap<>();
+  private static int nextWindowId = 1;
+
+  // --- Windows and nodes -------------------------------------------------------------------------------------------
+
+  /** One window of this process, bottom to top. */
+  private record Win(ViewRootImpl root, View view, WindowManager.LayoutParams params) {
+    boolean focusable() {
+      return (params.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) == 0;
+    }
+  }
+
+  private static List<Win> windows() {
+    Object global = ReflectionHelpers.callStaticMethod(android.view.WindowManagerGlobal.class, "getInstance");
+    List<ViewRootImpl> roots = ReflectionHelpers.getField(global, "mRoots");
+    List<WindowManager.LayoutParams> params = ReflectionHelpers.getField(global, "mParams");
+    List<Win> out = new ArrayList<>();
+    for (int i = 0; i < roots.size() && i < params.size(); i++) {
+      ViewRootImpl r = roots.get(i);
+      View v = r.getView();
+      if (v == null || v.getVisibility() != View.VISIBLE || !v.isAttachedToWindow()) continue;
+      out.add(new Win(r, v, params.get(i)));
+    }
+    // Higher window types are drawn above lower ones; within a type, later windows are above earlier ones.
+    out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
+    return out;
+  }
+
+  private static int windowId(ViewRootImpl root) {
+    synchronized (WINDOW_IDS) {
+      return WINDOW_IDS.computeIfAbsent(root, r -> nextWindowId++);
+    }
+  }
+
+  /** The root node of a window, linked to its views so that the whole tree can be walked from it. */
+  private static AccessibilityNodeInfo rootNode(Win w) {
+    AccessibilityNodeInfo info = w.view.createAccessibilityNodeInfo();
+    if (info == null) return null;
+    info.setQueryFromAppProcessEnabled(w.view, true);
+    return info;
+  }
+
+  @Implementation
+  protected AccessibilityNodeInfo getRootInActiveWindow() {
+    return onMain(() -> {
+      List<Win> all = windows();
+      for (int i = all.size() - 1; i >= 0; i--) {
+        if (all.get(i).focusable()) return rootNode(all.get(i));
+      }
+      return all.isEmpty() ? null : rootNode(all.get(all.size() - 1));
+    });
+  }
+
+  @Implementation
+  protected AccessibilityNodeInfo getRootInActiveWindow(int prefetchingStrategy) {
+    return getRootInActiveWindow();
+  }
+
+  @Implementation
+  protected List<AccessibilityWindowInfo> getWindows() {
+    return onMain(() -> {
+      List<Win> all = windows();
+      List<AccessibilityWindowInfo> out = new ArrayList<>();
+      int active = -1;
+      for (int i = all.size() - 1; i >= 0 && active < 0; i--) if (all.get(i).focusable()) active = i;
+      // Topmost first, as the system lists them.
+      for (int i = all.size() - 1; i >= 0; i--) {
+        Win w = all.get(i);
+        // The framework's own (hidden) setters: once nodes query the app process, Robolectric's shadow defers to
+        // the real object. Its connection is the root's direct one, so getRoot() reads the window's views.
+        AccessibilityWindowInfo info = AccessibilityWindowInfo.obtain();
+        info.setId(windowId(w.root));
+        info.setLayer(i);
+        info.setDisplayId(Display.DEFAULT_DISPLAY);
+        info.setType(w.params.type >= WindowManager.LayoutParams.FIRST_SYSTEM_WINDOW
+            ? AccessibilityWindowInfo.TYPE_SYSTEM : AccessibilityWindowInfo.TYPE_APPLICATION);
+        info.setActive(i == active);
+        info.setFocused(i == active);
+        int[] at = new int[2];
+        w.view.getLocationOnScreen(at);
+        info.setRegionInScreen(new android.graphics.Region(at[0], at[1], at[0] + w.view.getWidth(), at[1] + w.view.getHeight()));
+        info.setTitle(w.params.getTitle());
+        rootNode(w);  // links the root's direct connection
+        info.setConnectionId(w.root.getDirectAccessibilityConnectionId());
+        out.add(info);
+      }
+      return out;
+    });
+  }
+
+  @Implementation
+  protected SparseArray<List<AccessibilityWindowInfo>> getWindowsOnAllDisplays() {
+    SparseArray<List<AccessibilityWindowInfo>> out = new SparseArray<>();
+    out.put(Display.DEFAULT_DISPLAY, getWindows());
+    return out;
+  }
+
+  @Implementation
+  protected AccessibilityServiceInfo getServiceInfo() {
+    return serviceInfo;
+  }
+
+  @Implementation
+  protected void setServiceInfo(AccessibilityServiceInfo info) {
+    serviceInfo = info;
+  }
+
+  @Implementation
+  protected boolean clearCache() {
+    return true;
+  }
+
+  @Implementation
+  protected boolean clearCachedSubtree(AccessibilityNodeInfo node) {
+    return true;
+  }
+
+  // --- Idle and events ---------------------------------------------------------------------------------------------
+
+  /**
+   * Lets the UI settle: runs what the main thread has due, then moves the simulated clock on frame by frame while
+   * work is due within the quiet time (a frame, an animation step), so a test sees the screen a device would show
+   * once it stopped changing. An endless animation stops it at the quiet time, as it would a device's wait.
+   */
+  @Implementation
+  protected void waitForIdle(long idleTimeoutMillis, long globalTimeoutMillis) {
+    onMain(() -> {
+      settle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
+      return null;
+    });
+  }
+
+  private static void settle(long quietMillis) {
+    ShadowLooper main = shadowOf(Looper.getMainLooper());
+    main.idle();
+    long end = SystemClock.uptimeMillis() + quietMillis;
+    while (SystemClock.uptimeMillis() < end) {
+      long next = main.getNextScheduledTaskTime().toMillis();
+      if (next == 0) break;  // nothing scheduled
+      long wait = Math.max(1, next - SystemClock.uptimeMillis());
+      if (SystemClock.uptimeMillis() + wait > end) break;
+      main.idleFor(java.time.Duration.ofMillis(wait));
+    }
+  }
+
+  /**
+   * Without accessibility events: runs the action, lets the UI settle, and offers the filter the events a window
+   * change would bring. UiAutomator's clickAndWait(newWindow / windowChanged) then return once the action is done;
+   * a filter that wants something else (scroll positions) times out, which its callers treat as "nothing happened".
+   */
+  @Implementation
+  protected AccessibilityEvent executeAndWaitForEvent(Runnable command, UiAutomation.AccessibilityEventFilter filter,
+      long timeoutMillis) throws TimeoutException {
+    command.run();
+    onMain(() -> {
+      settle(500);
+      return null;
+    });
+    for (int type : new int[] {AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+        AccessibilityEvent.TYPE_WINDOWS_CHANGED}) {
+      AccessibilityEvent e = new AccessibilityEvent(type);
+      e.setEventTime(SystemClock.uptimeMillis());
+      if (filter.accept(e)) return e;
+    }
+    throw new TimeoutException("apksim: no accessibility events; nothing matched after the action");
+  }
+
+  @Implementation
+  protected boolean performGlobalAction(int action) {
+    if (action != AccessibilityService.GLOBAL_ACTION_BACK) {
+      System.err.println("[apksim] UiAutomation.performGlobalAction(" + action + ") is not supported");
+      return false;
+    }
+    long now = SystemClock.uptimeMillis();
+    injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
+    injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
+    return true;
+  }
+
+  /** No shell in this process: the command is logged and its output is empty. */
+  @Implementation
+  protected ParcelFileDescriptor executeShellCommand(String command) {
+    System.err.println("[apksim] UiAutomation.executeShellCommand is not supported: " + command);
+    try {
+      File empty = File.createTempFile("uiautomation", ".out");
+      empty.deleteOnExit();
+      return ParcelFileDescriptor.open(empty, ParcelFileDescriptor.MODE_READ_ONLY);
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  // --- Rotation ----------------------------------------------------------------------------------------------------
+
+  /**
+   * UiDevice.setOrientation*: turns the display (width and height swap, the qualifiers say land or port) and delivers
+   * the configuration change to every activity, which handles it or is recreated, as on a device.
+   */
+  @Implementation
+  @Override
+  protected boolean setRotation(int rotation) {
+    if (rotation == UiAutomation.ROTATION_FREEZE_CURRENT || rotation == UiAutomation.ROTATION_UNFREEZE) return true;
+    if (rotation < 0 || rotation > 3) return false;
+    return onMain(() -> {
+      Context app = RuntimeEnvironment.getApplication();
+      Display display = ShadowDisplay.getDefaultDisplay();
+      int from = display.getRotation();
+      if (from == rotation) return true;
+      Configuration before = new Configuration(app.getResources().getConfiguration());
+      android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
+      int w = m.widthPixels;
+      int h = m.heightPixels;
+      if ((from + rotation) % 2 == 1) {
+        int t = w;
+        w = h;
+        h = t;
+      }
+      float d = m.density;
+      RuntimeEnvironment.setQualifiers("+w" + Math.round(w / d) + "dp-h" + Math.round(h / d) + "dp-" + (w > h ? "land" : "port"));
+      shadowOf(display).setRotation(rotation);
+      Configuration config = new Configuration(app.getResources().getConfiguration());
+      int changed = before.diff(config);
+      if (changed != 0) {
+        for (Activity a : activities()) {
+          ActivityController<?> c = ReflectionHelpers.getField(Shadow.extract(a), "controller");
+          if (c == null) continue;
+          c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
+          // A recreated activity's window is left detached by Robolectric (setup() would call visible()).
+          if (c.get().getWindow().getDecorView().getViewRootImpl() == null) c.visible();
+        }
+      }
+      settle(100);
+      return true;
+    });
+  }
+
+  /** The activities that have a window, bottom to top. */
+  private static List<Activity> activities() {
+    List<Activity> out = new ArrayList<>();
+    for (Win w : windows()) {
+      Activity a = TestActivities.activityOf(w.view);
+      if (a != null && !out.contains(a)) out.add(a);
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------
+
+  /** Runs on the main thread: the test's own thread here (Instrument), or posted there from another one. */
+  private static <T> T onMain(Callable<T> work) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      try {
+        return work.call();
+      } catch (RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    }
+    Object[] result = new Object[1];
+    RuntimeException[] failed = new RuntimeException[1];
+    ShadowInstrumentation.runOnMainSyncNoIdle(() -> {
+      try {
+        result[0] = work.call();
+      } catch (RuntimeException e) {
+        failed[0] = e;
+      } catch (Exception e) {
+        failed[0] = new IllegalStateException(e);
+      }
+    });
+    if (failed[0] != null) throw failed[0];
+    @SuppressWarnings("unchecked") T t = (T) result[0];
+    return t;
+  }
+}
