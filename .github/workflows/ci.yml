@@ -18,6 +18,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the privacy check reads every new commit
+      # Personal information (the owner's apps, employer, servers, emails) must never reach the repo. The terms are
+      # the PRIVATE_DENYLIST secret, never printed: reports name the file and line or the commit, not the text.
+      - name: No personal information
+        env:
+          PRIVATE_DENYLIST: ${{ secrets.PRIVATE_DENYLIST }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          status=0
+          scripts/hooks/check-private --tree || status=1
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            scripts/hooks/check-private --commits "$BASE..$HEAD_SHA" || status=1
+          fi
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | scripts/hooks/check-private --text "pull request title or body" || status=1
+          exit $status
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
