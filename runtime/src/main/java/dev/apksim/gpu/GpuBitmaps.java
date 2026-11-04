@@ -11,7 +11,7 @@ import java.util.Map;
 
 /**
  * Scaled bitmap draws resampled on Metal. HWUI here samples a scaled bitmap with Skia's CPU pipeline, about 10 ns a
- * pixel: map and photo tiles drawn scaled took most of a frame (the large app's Atlas, ~9 ms per full-screen layer). Here
+ * pixel: map and photo tiles drawn scaled took most of a frame (a map screen, ~9 ms per full-screen layer). Here
  * a draw of a bitmap scaled to w x h device pixels gets a copy already that size, made once on the GPU with the same
  * bilinear sampling, which HWUI then draws 1:1 as a plain blit. Copies are kept while they are drawn, and made only
  * for a size asked for again within a few frames, so a zoom (a new size every frame) stays on the CPU. (Tiles placed
