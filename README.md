@@ -42,10 +42,10 @@ ActivityScenario and UiAutomator work; a library's device-test APK (KMP `android
 that renders offscreen through Android's GLES20/30 and EGL14 gets a real GLES 3 (ANGLE on Metal; Mesa in the Linux
 image).
 
-A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,106 tests, 4,102 pass, in about
-4 minutes of test time against about 19 on the emulators. The four that fail are the app's: one fails on an API 36
-emulator too, three reach a server on the developer's own network. Details, costs and commands:
-[docs/ci-testbed.md](docs/ci-testbed.md).
+A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,107 tests in about 4.7 minutes on a
+Mac and 8.3 in the Linux image under Rosetta, against about 19 on the emulators. All pass once two of the app's tests
+are fixed (one clicked the wrong node; some journeys reached a real server on the developer's own network). Details,
+costs and commands: [docs/ci-testbed.md](docs/ci-testbed.md).
 
 ## Speed
 

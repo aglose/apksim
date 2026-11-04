@@ -46,7 +46,7 @@ use `docker run --network none` (`--no-network` is macOS-only).
 | Window | Cocoa window | Headless only (`shot`, control channel) |
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet |
-| GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers only |
+| GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` (most APKs ship it); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
 | JDK | 24 (Homebrew) | Temurin 24. JDK 25's AOT record mode verifies translated app classes and rejects them (missing stack maps), so training fails there |

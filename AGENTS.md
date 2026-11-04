@@ -12,8 +12,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
    "Open work".
 4. **The owner's app's device tests as a CI testbed** (asked 2026-11-03: run its emulator tests here, compare CI cost
-   and time, fix until nothing fails): 4,102 of 4,106 pass, ~4 min against ~19; the 4 left are the app's own. See
-   docs/ci-testbed.md, and docs/plan.md phase 0 for what is left.
+   and time, fix until nothing fails): all 4,107 pass with two fixes to the app's own tests (patches in the private notes),
+   4.7 min on the Mac, 8.3 min in the Linux image under Rosetta, against ~19 on the emulators. See docs/ci-testbed.md,
+   and docs/plan.md phase 0 for what is left (the job in the app's own CI).
 
 ## Layout
 - `apksim`: launcher (bash). Builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs
@@ -307,6 +308,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   draw passes that never come).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
+- Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
+  `ElfLoader` extracts each `.so` to a per-process temporary file and renames it into place (and skips it by the
+  entry's CRC, kept in `<name>.so.crc`), and `AppInfo` writes the manifest the same way. Copying in place let one of
+  four `--isolate` processes load a library another was rewriting (`NoClassDefFoundError` for a bundled SQLite
+  driver's native library, on the first test after a rebuild).
 - The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
@@ -323,7 +329,10 @@ Mesa's llvmpipe with `EGL_PLATFORM=surfaceless`: pbuffers, no display server), c
 `scripts/gen-gles-shadows.py` from the framework jar's signatures, mapping Java to C as Android's bindings do
 (array+offset and Buffer arguments are pointers, an int where another overload has a Buffer is a buffer-object
 offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a window surface is a pbuffer of its size
-(nothing presents GLES to the Mac window). Without a library the shadows fall back to Robolectric's stand-ins.
+(nothing presents GLES to the Mac window). So `eglChooseConfig` asks the real EGL for pbuffer configs where the app asked
+for window ones or named no surface type (EGL's default is windows), and drops `EGL_RECORDABLE_ANDROID`: Mesa's
+surfaceless platform has no window configs, and WebRTC's `EglBase.create()` threw "Unable to find any matching EGL
+config" in every journey that showed a live camera. Without a library the shadows fall back to Robolectric's stand-ins.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
