@@ -25,7 +25,10 @@ final class AppInfo {
       xml = Axml.decode(in.readAllBytes());
     }
     Path manifest = cache.resolve("AndroidManifest.xml");
-    Files.writeString(manifest, xml);
+    // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
+    Path tmp = cache.resolve("AndroidManifest.xml." + ProcessHandle.current().pid() + ".tmp");
+    Files.writeString(tmp, xml);
+    Files.move(tmp, manifest, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
         .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
     String pkg = doc.getDocumentElement().getAttribute("package");
