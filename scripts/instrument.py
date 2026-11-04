@@ -7,7 +7,9 @@ Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--xml FILE] [-e KEY VA
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). With --isolate each test runs in a process of its own, N at a time, as the
 Orchestrator with clearPackageData does. -e passes am instrument arguments (class, notClass, package, notPackage).
-Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed.
+Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a run did not account
+for its tests (apksim crashed or was killed: no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit
+with no failed test), which the report lists as a failed "incomplete" entry.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
 """
@@ -26,6 +28,20 @@ def apksim(app, test, extra_args, apksim_opts):
     for k, v in extra_args:
         cmd += ["-e", k, v]
     return subprocess.run(cmd + apksim_opts + [app], capture_output=True, text=True)
+
+
+def incomplete(r, results, test=None):
+    """Why a run's output does not account for its tests, or None: a run must end with INSTRUMENTATION_CODE and report
+    every test it announced (numtests), or the process crashed or was killed partway and the missing tests would
+    otherwise vanish from the report. [test] is the one test an isolated run was started for."""
+    announced = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+    if "INSTRUMENTATION_CODE: " not in r.stdout:
+        return f"apksim exited ({r.returncode}) before the run finished"
+    if announced and len(results) < max(announced):
+        return f"apksim reported {len(results)} of the {max(announced)} tests it started"
+    if r.returncode != 0 and not any(res[2] == "failed" for res in results):
+        return f"apksim exited with {r.returncode} although no test failed"
+    return None
 
 
 def parse(raw):
@@ -71,13 +87,17 @@ def main():
     if not a.isolate:
         r = apksim(a.app, a.test, a.e, passthrough)
         results = [(c, m, s, st, None) for c, m, s, st in parse(r.stdout)]
-        if not results:
+        why = incomplete(r, results)
+        if why:
             sys.stderr.write(r.stderr[-4000:])
+            results.append(("(run)", "incomplete", "failed", why + ":\n" + r.stderr[-4000:], None))
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
         tests = [(c, m) for c, m, _, _ in parse(listed.stdout)]
-        if not tests:
+        why = incomplete(listed, parse(listed.stdout))
+        if why:
             sys.stderr.write(listed.stderr[-4000:])
+            results.append(("(listing)", "incomplete", "failed", why + ":\n" + listed.stderr[-4000:], None))
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
         def one(t):
@@ -85,8 +105,10 @@ def main():
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
             r = apksim(a.app, a.test, others + [("class", f"{t[0]}#{t[1]}")], passthrough)
             got = parse(r.stdout)
-            if not got:
-                return (t[0], t[1], "failed", "apksim exited without a result:\n" + r.stderr[-4000:], time.time() - start)
+            why = incomplete(r, got)
+            if not got or why:
+                return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + r.stderr[-4000:],
+                        time.time() - start)
             c, m, s, st = got[0]
             return (c, m, s, st, time.time() - start)
 
