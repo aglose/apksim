@@ -91,7 +91,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `gpushader.m`: Metal pipelines for translated AGSL.
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
-- `scripts/`: `setup.sh` (one-time), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
+- `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
+  `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
+  uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),

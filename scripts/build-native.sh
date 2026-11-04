@@ -2,7 +2,7 @@
 # Builds the native window. The app's own dylib must be arm64 like the JVM.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JDK=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+source "$ROOT/scripts/jdk.sh"   # JNI headers
 mkdir -p "$ROOT/work/runtime"
 clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
   -framework Cocoa -framework QuartzCore -framework IOSurface -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework UniformTypeIdentifiers \

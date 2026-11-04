@@ -4,11 +4,7 @@
 #   scripts/check-translator.sh [FILE.dex...]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ "$(uname -s)" == Darwin ]]; then
-  JDK="${APKSIM_JDK:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home}"
-else
-  JDK="${APKSIM_JDK:-${JAVA_HOME:?set JAVA_HOME (or APKSIM_JDK) to a JDK 24}}"
-fi
+source "$ROOT/scripts/jdk.sh"
 CP="${APKSIM_CHECK_CP:-}$ROOT/work/apksim.jar:$(ls "$ROOT"/work/lib/*.jar | tr '\n' ':')"
 [[ $# -gt 0 ]] || set -- "$ROOT"/testapks/translator-fixture/*.dex
 # Translated classes carry no stack map frames: apksim loads them unverified, as here.

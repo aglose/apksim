@@ -49,7 +49,7 @@ use `docker run --network none` (`--no-network` is macOS-only).
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` (most APKs ship it); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
-| JDK | 24 (Homebrew) | Temurin 24. JDK 25's AOT record mode verifies translated app classes and rejects them (missing stack maps), so training fails there |
+| JDK | 24 (`scripts/jdk.sh`: a JDK 24 found on the Mac, else Temurin 24 in `work/jdk-24`) | Temurin 24. JDK 25's AOT record mode verifies translated app classes and rejects them (missing stack maps), so training fails there |
 
 Native libraries go through `native/elfloader.c` (shared with macOS, `#ifdef`s for x86_64 relocations and
 TLS), `native/linux/bionic_linux.c` (bionic→glibc: only what differs, since both use the Linux kernel ABI and
