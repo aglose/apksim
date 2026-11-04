@@ -6,7 +6,6 @@ import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -65,7 +64,11 @@ final class Instrument {
     System.setProperty("robolectric.graphicsMode", "NATIVE");
     System.setProperty("robolectric.sqliteMode", "NATIVE");
     System.setProperty("robolectric.conscryptMode", "OFF");
-    System.setProperty("robolectric.looperMode", "PAUSED");
+    System.setProperty("robolectric.looperMode", System.getProperty("apksim.looperMode", "PAUSED"));
+    // A window gets the size it asks for, as from a device's window manager, not the whole display: a Compose Dialog
+    // (WRAP_CONTENT) was measured at its own width and then again at the display's on every traversal, so Compose
+    // never settled its layout and its tests never got idle.
+    System.setProperty("robolectric.windowManager.useRequestedSize", "true");
 
     long t0 = System.nanoTime();
     List<Class<?>> classes = testClasses(tests, args);
@@ -148,13 +151,12 @@ final class Instrument {
       if (!onlyClasses.isEmpty() ? !onlyClasses.contains(name) : (isLibrary(name) || name.contains("$"))) continue;
       if (!packages.isEmpty() && packages.stream().noneMatch(p -> name.startsWith(p + "."))) continue;
       if (notPackages.stream().anyMatch(p -> name.startsWith(p + "."))) continue;
-      Class<?> c;
+      if (!isTestClass(tests, name.replace('.', '/'), true)) continue;
       try {
-        c = Class.forName(name, false, loader);
+        out.add(Class.forName(name, false, loader));
       } catch (ClassNotFoundException | LinkageError e) {
-        continue;
+        // not loadable: as AndroidJUnitRunner, skip it
       }
-      if (isTestClass(c)) out.add(c);
     }
     return out;
   }
@@ -176,18 +178,45 @@ final class Instrument {
     return name.endsWith(".R") || name.endsWith(".BuildConfig");
   }
 
-  private static boolean isTestClass(Class<?> c) {
-    int m = c.getModifiers();
-    if (!Modifier.isPublic(m) || Modifier.isAbstract(m) || c.isInterface()) return false;
-    if (c.isAnnotationPresent(RunWith.class)) return true;
-    try {
-      for (Method method : c.getMethods()) {
-        if (method.isAnnotationPresent(Test.class)) return true;
-      }
-    } catch (LinkageError e) {
+  /**
+   * Public, concrete, and annotated @RunWith or with a public @Test method (its own or inherited). Read from the class
+   * bytes, not by reflection: this runs before Robolectric's sandbox is set up, and reflection parses every
+   * annotation on a method, so an annotation whose default is a framework enum (android.annotation.SystemApi's
+   * Client, in a KMP app's shared-module suite) initialized that framework class without the sandbox, which broke it for the
+   * whole run (every test then failed with NoClassDefFoundError).
+   */
+  private static boolean isTestClass(AppClasses tests, String internalName, boolean top) {
+    byte[] bytes = tests.translate(internalName);
+    if (bytes == null) return false;  // a library or framework superclass: no tests of the suite's own there
+    org.objectweb.asm.ClassReader r = new org.objectweb.asm.ClassReader(bytes);
+    int access = r.getAccess();
+    if (top && ((access & org.objectweb.asm.Opcodes.ACC_PUBLIC) == 0
+        || (access & (org.objectweb.asm.Opcodes.ACC_ABSTRACT | org.objectweb.asm.Opcodes.ACC_INTERFACE)) != 0)) {
       return false;
     }
-    return false;
+    boolean[] found = {false};
+    r.accept(new org.objectweb.asm.ClassVisitor(org.objectweb.asm.Opcodes.ASM9) {
+      @Override
+      public org.objectweb.asm.AnnotationVisitor visitAnnotation(String desc, boolean visible) {
+        if (desc.equals("Lorg/junit/runner/RunWith;")) found[0] = true;
+        return null;
+      }
+
+      @Override
+      public org.objectweb.asm.MethodVisitor visitMethod(int acc, String name, String desc, String sig, String[] ex) {
+        if ((acc & org.objectweb.asm.Opcodes.ACC_PUBLIC) == 0 || found[0]) return null;
+        return new org.objectweb.asm.MethodVisitor(org.objectweb.asm.Opcodes.ASM9) {
+          @Override
+          public org.objectweb.asm.AnnotationVisitor visitAnnotation(String d, boolean visible) {
+            if (d.equals("Lorg/junit/Test;")) found[0] = true;
+            return null;
+          }
+        };
+      }
+    }, org.objectweb.asm.ClassReader.SKIP_CODE | org.objectweb.asm.ClassReader.SKIP_DEBUG | org.objectweb.asm.ClassReader.SKIP_FRAMES);
+    if (found[0]) return true;
+    String sup = r.getSuperName();
+    return sup != null && !sup.equals("java/lang/Object") && isTestClass(tests, sup, false);
   }
 
   /** -e class a.B,a.C#m and -e notClass, as tests to keep. */

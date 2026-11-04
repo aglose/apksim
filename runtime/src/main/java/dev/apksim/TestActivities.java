@@ -1,0 +1,291 @@
+package dev.apksim;
+
+import android.app.Activity;
+import android.app.ActivityClient;
+import android.app.IRequestFinishCallback;
+import android.app.Instrumentation;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.view.View;
+import java.util.ArrayList;
+import java.util.List;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowInstrumentation;
+import org.robolectric.util.ReflectionHelpers;
+
+/**
+ * In an instrumented test run (Instrument) there is no Host activity stack, so what the system server does for an
+ * activity is otherwise left undone. Two things that end-to-end suites check (those of a large app), done as
+ * Android 12+ does them:
+ *
+ * <ul>
+ *   <li>Back on a task's root activity (predictive back's default callback, Activity.navigateBack): an activity
+ *       launched from the launcher (MAIN/LAUNCHER, as ActivityScenario launches) has its task moved to the
+ *       background, paused and stopped; any other root is finished.
+ *   <li>startActivity for an activity that is already running as singleTask/singleInstance (or singleTop, or
+ *       FLAG_ACTIVITY_SINGLE_TOP, while it is on top): the running instance gets onNewIntent and comes to the front.
+ *       Robolectric only records such a start; it still does for anything else, which a test reads with
+ *       ShadowApplication.getNextStartedActivity as before.
+ * </ul>
+ *
+ * Host runs its own stack and does neither: these act only when apksim.instrument is set.
+ */
+public final class TestActivities {
+  private TestActivities() {}
+
+  static boolean testRun() {
+    return System.getProperty("apksim.instrument") != null;
+  }
+
+  /** The activities that have a window, bottom to top. */
+  static List<Activity> withWindows() {
+    List<View> views = ReflectionHelpers.getField(android.view.WindowManagerGlobal.getInstance(), "mViews");
+    List<Activity> out = new ArrayList<>();
+    for (View v : new ArrayList<>(views)) {
+      Activity a = activityOf(v);
+      if (a != null && !a.isFinishing() && !a.isDestroyed() && !out.contains(a)) out.add(a);
+    }
+    return out;
+  }
+
+  /** The activity whose window a root view is: a DecorView's own context is a DecorContext, not the activity. */
+  static Activity activityOf(View root) {
+    Context c = root instanceof com.android.internal.policy.DecorView d ? ReflectionHelpers.<android.view.Window>getField(d, "mWindow").getContext() : root.getContext();
+    while (c instanceof ContextWrapper && !(c instanceof Activity)) c = ((ContextWrapper) c).getBaseContext();
+    return c instanceof Activity a ? a : null;
+  }
+
+  /**
+   * Compose's test clock and runOnIdle hand their work to runOnUiThread. From a test thread on a device that is a
+   * post to the main thread, which first runs what was queued before it: GlobalSnapshotManager's apply of a state
+   * just written, so the recomposer hears of it before the clock steps. Here the test is on the main thread (Robolectric's
+   * PAUSED looper) and the work would run at once, ahead of the queue: with autoAdvance off a state set in runOnIdle
+   * never reached the composition, and an animation it started never moved. So the queue runs first (due messages
+   * only; the clock does not move). The translator calls this before each runOnUiThread call in Compose's test library.
+   */
+  public static void beforeUiThreadAction() {
+    if (!testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    main.idle();
+  }
+
+  static ActivityController<?> controller(Activity a) {
+    return ReflectionHelpers.getField(Shadow.extract(a), "controller");
+  }
+
+  private static void post(Runnable r) {
+    new Handler(Looper.getMainLooper()).post(r);
+  }
+
+  /**
+   * Robolectric injects keys (Espresso's pressBack, UiAutomation) straight into the root view, past ViewRootImpl. With
+   * back callbacks enabled (API 33+ opt-in, the default from 36) ViewRootImpl gives BACK to the window's top
+   * OnBackInvokedCallback before the views see it, and Activity.onKeyUp then leaves BACK alone, so the key did
+   * nothing. As ViewRootImpl: the up goes to the top callback (an app's, else the activity's own, which ends in
+   * ActivityClient.onBackPressed below); the down is consumed.
+   */
+  @Implements(className = "com.android.internal.policy.DecorView", isInAndroidSdk = false)
+  public static class ShadowSimDecorView extends org.robolectric.shadows.ShadowViewGroup {
+    @org.robolectric.annotation.RealObject private View realDecor;
+
+    @Implementation
+    protected boolean dispatchKeyEvent(android.view.KeyEvent e) {
+      if (testRun() && e.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
+        Activity a = activityOf(realDecor);
+        if (a != null && android.window.WindowOnBackInvokedDispatcher.isOnBackInvokedCallbackEnabled(a)) {
+          if (e.getAction() == android.view.KeyEvent.ACTION_UP && !e.isCanceled()) {
+            android.view.ViewRootImpl root = realDecor.getViewRootImpl();
+            Object d = root == null ? null : root.getOnBackInvokedDispatcher();
+            android.window.OnBackInvokedCallback top =
+                d instanceof android.window.WindowOnBackInvokedDispatcher w ? w.getTopCallback() : null;
+            // ViewRootImpl's own compat callback only re-sends the key; under Robolectric the window's dispatcher
+            // can take the app for one without callbacks while the activity has them (Activity.onKeyUp then
+            // ignores BACK), so that one stands for "no app callback": the activity's back, which runs androidx's
+            // OnBackPressedDispatcher and ends in Activity.onBackInvoked (ActivityClient.onBackPressed below).
+            if (top != null && !top.getClass().getName().startsWith("android.view.ViewRootImpl")) top.onBackInvoked();
+            else a.onBackPressed();
+          }
+          return true;
+        }
+      }
+      return org.robolectric.util.reflector.Reflector.reflector(DecorViewReflector.class, realDecor).dispatchKeyEvent(e);
+    }
+
+    @org.robolectric.util.reflector.ForType(className = "com.android.internal.policy.DecorView")
+    interface DecorViewReflector {
+      @org.robolectric.util.reflector.Direct
+      boolean dispatchKeyEvent(android.view.KeyEvent e);
+    }
+  }
+
+  /**
+   * The activity's side of back and finish. Robolectric's onBackPressed only calls finish(), where Android 16 runs
+   * Activity.onBackInvoked: ActivityClient.onBackPressed, which moves a launcher task's root to the background (see
+   * below). And its finish() only marks the activity finishing; the system would then pause, stop and destroy it and
+   * resume the one below, which Host does in its own stack and is done here for a test run. (ActivityScenario's
+   * close finishes and destroys at once, so it finds it destroyed already.)
+   */
+  @Implements(Activity.class)
+  public static class ShadowSimActivity extends org.robolectric.shadows.ShadowActivity {
+    @Implementation
+    @Override
+    protected void onBackPressed() {
+      if (!testRun()) {
+        super.onBackPressed();
+        return;
+      }
+      org.robolectric.util.reflector.Reflector.reflector(ActivityReflector.class, realActivity).onBackPressed();
+    }
+
+    @Implementation
+    @Override
+    protected void finish() {
+      super.finish();
+      if (testRun()) {
+        Activity a = realActivity;
+        post(() -> finished(a));
+      }
+    }
+
+    @org.robolectric.util.reflector.ForType(Activity.class)
+    interface ActivityReflector {
+      @org.robolectric.util.reflector.Direct
+      void onBackPressed();
+    }
+  }
+
+  private static void finished(Activity a) {
+    ActivityController<?> c = controller(a);
+    if (c == null || a.isDestroyed()) return;
+    if (a.isResumed()) c.pause();
+    if (!(boolean) ReflectionHelpers.getField(a, "mStopped")) c.stop();
+    c.destroy();
+    List<Activity> left = withWindows();
+    if (left.isEmpty()) return;
+    Activity top = left.get(left.size() - 1);
+    ActivityController<?> below = controller(top);
+    if (below == null || top.isResumed()) return;
+    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) below.restart();
+    below.resume();
+  }
+
+  /** Receivers still registered when a test ended, which Robolectric's reset dropped (see ShadowSimContextImpl). */
+  static final java.util.Set<android.content.BroadcastReceiver> REGISTERED_BEFORE_RESET =
+      java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+  /** Called by SimTestEnvironment before Robolectric resets the framework between two tests. */
+  static void beforeReset() {
+    try {
+      Object si = Shadow.extract(ShadowInstrumentation.getInstrumentation());
+      List<?> wrappers = ReflectionHelpers.callInstanceMethod(si, "getRegisteredReceivers");
+      for (Object w : wrappers) {
+        REGISTERED_BEFORE_RESET.add(((org.robolectric.shadows.ShadowApplication.Wrapper) w).broadcastReceiver);
+      }
+    } catch (RuntimeException e) {
+      // nothing registered, or no instrumentation yet
+    }
+  }
+
+  /**
+   * Each test gets a fresh Application, but app statics live on, so a singleton can unregister a receiver it
+   * registered during an earlier test. Robolectric's reset forgot that registration and throws "Receiver not
+   * registered"; on a device (one process, one Application) the registration would still be there. WebRTC's
+   * NetworkMonitorAutoDetect does this at teardown, from native code, which then aborts the process.
+   */
+  @Implements(className = "android.app.ContextImpl", isInAndroidSdk = false)
+  public static class ShadowSimContextImpl extends org.robolectric.shadows.ShadowContextImpl {
+    @Implementation
+    @Override
+    protected void unregisterReceiver(android.content.BroadcastReceiver receiver) {
+      try {
+        super.unregisterReceiver(receiver);
+      } catch (IllegalArgumentException e) {
+        if (!REGISTERED_BEFORE_RESET.remove(receiver)) throw e;
+      }
+    }
+  }
+
+  @Implements(ActivityClient.class)
+  public static class ShadowSimActivityClient {
+    @Implementation
+    protected void onBackPressed(IBinder token, IRequestFinishCallback callback) {
+      if (!testRun()) return;
+      Activity target = null;
+      for (Activity a : withWindows()) if (a.getActivityToken() == token) target = a;
+      if (target == null) return;
+      Intent in = target.getIntent();
+      boolean fromLauncher = in != null && Intent.ACTION_MAIN.equals(in.getAction()) && in.hasCategory(Intent.CATEGORY_LAUNCHER);
+      Activity a = target;
+      if (fromLauncher) {
+        post(() -> {
+          ActivityController<?> c = controller(a);
+          if (c == null || a.isFinishing()) return;
+          a.moveTaskToBack(true);
+          if (a.isResumed()) c.pause();
+          c.stop();
+        });
+      } else {
+        try {
+          callback.requestFinish();
+        } catch (android.os.RemoteException e) {
+          throw new IllegalStateException(e);
+        }
+      }
+    }
+  }
+
+  @Implements(Instrumentation.class)
+  public static class ShadowSimInstrumentation extends ShadowInstrumentation {
+    @Implementation
+    @Override
+    protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,
+        Activity target, Intent intent, int requestCode, Bundle options) {
+      Instrumentation.ActivityResult r = super.execStartActivity(who, contextThread, token, target, intent, requestCode, options);
+      if (testRun() && requestCode < 0) {
+        Intent copy = new Intent(intent);
+        post(() -> deliverToRunning(copy));
+      }
+      return r;
+    }
+
+    /** An activity that is already running and whose launch mode takes the intent itself. */
+    private static void deliverToRunning(Intent intent) {
+      Context app = RuntimeEnvironment.getApplication();
+      android.content.pm.ResolveInfo ri = app.getPackageManager().resolveActivity(intent, 0);
+      ActivityInfo info = ri == null ? null : ri.activityInfo;
+      if (info == null || !info.packageName.equals(app.getPackageName())) return;
+      List<Activity> running = withWindows();
+      Activity existing = null;
+      for (Activity a : running) if (a.getClass().getName().equals(info.name)) existing = a;
+      if (existing == null) return;
+      boolean onTop = running.get(running.size() - 1) == existing;
+      boolean reuse = info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
+          || ((info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0) && onTop);
+      if (!reuse) return;
+      ActivityController<?> c = controller(existing);
+      if (c == null) return;
+      // As ActivityThread: a resumed activity is paused around onNewIntent; a stopped one restarts first. The start
+      // stays in Robolectric's list of started activities, as every start does.
+      if (existing.isResumed()) {
+        c.pause();
+        c.newIntent(intent);
+        c.resume();
+      } else {
+        if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) c.restart();
+        c.newIntent(intent);
+        c.resume();
+      }
+      // Activities that were above it in a singleTask's task are finished on a device (CLEAR_TOP): not done here.
+    }
+  }
+}
