@@ -401,6 +401,18 @@ final class AppClasses {
             connect();
             return in;
           }
+
+          // Without a length the JDK reads a class into a buffer it grows (1K, 3K, 7K, ...) and then trims; with it,
+          // into one array of the class's size: ~15 MB less allocated before the test app's first frame.
+          @Override
+          public long getContentLengthLong() {
+            try {
+              connect();
+            } catch (IOException e) {
+              return -1;
+            }
+            return in instanceof ByteArrayInputStream b ? b.available() : -1;
+          }
         };
       }
     };

@@ -317,13 +317,17 @@ static const short errno_a2d[134] = {
 
 static int a2d_errno(int a) { return a > 0 && a < 134 && errno_a2d[a] ? errno_a2d[a] : a; }
 
-static int d2a_errno(int d) {
-  if (d == 0) return 0;
-  for (int a = 1; a < 134; a++) {
-    if (errno_a2d[a] == d) return a;
+// The reverse of errno_a2d, by host errno (lowest Android value wins, as a scan from 1 would): every errno read by
+// native code goes through it.
+static unsigned char errno_d2a[ELAST + 1];
+
+__attribute__((constructor)) static void init_errno_d2a(void) {
+  for (int a = 133; a > 0; a--) {
+    if (errno_a2d[a] > 0 && errno_a2d[a] <= ELAST) errno_d2a[errno_a2d[a]] = (unsigned char)a;
   }
-  return d;
 }
+
+static int d2a_errno(int d) { return d > 0 && d <= ELAST && errno_d2a[d] ? errno_d2a[d] : d; }
 
 static __thread int t_errno, t_last;
 
@@ -748,6 +752,9 @@ static int s_system_property_get(const char *n, char *v) {
   return 0;
 }
 static int s_api_level(void) { return 36; }
+// As liblog with no log.tag property set: the caller's default priority decides. Answering yes to everything made
+// native code format (and print) every verbose and debug line.
+static int s_log_is_loggable(int prio, const char *tag, int default_prio) { return prio >= default_prio; }
 static void s_stack_chk_fail(void) {
   fprintf(stderr, "[apksim] stack corruption detected in native code\n");
   abort();
@@ -901,7 +908,7 @@ static const Entry table[] = {
     E("__vsnprintf_chk", s_vsnprintf_chk), E("sscanf", sscanf_thunk), E("vsscanf", s_vsscanf),
     E("fscanf", fscanf_thunk), E("syslog", syslog_thunk), E("vsyslog", s_vsyslog),
     E("__android_log_print", log_print_thunk), E("__android_log_vprint", s_log_vprint), E("__android_log_write", s_log_write),
-    E("__android_log_assert", log_assert_thunk), E("__android_log_is_loggable", s_api_level),
+    E("__android_log_assert", log_assert_thunk), E("__android_log_is_loggable", s_log_is_loggable),
     E("android_set_abort_message", s_set_abort_message), E("android_get_device_api_level", s_api_level),
     E("__system_property_get", s_system_property_get),
     E("pthread_mutexattr_init", s_mutexattr_init), E("pthread_mutexattr_destroy", s_mutexattr_destroy),
