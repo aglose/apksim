@@ -1,4 +1,4 @@
-# A large app's device tests on apksim (CI testbed, 2026-11-03)
+# A large app's device tests on apksim (CI testbed, 2026-11-03 to 11-04)
 
 The owner's app (Kotlin Multiplatform: Compose, R8, SQLite, WebRTC, about a dozen modules) runs its instrumented
 tests on two API 34 emulators in GitHub Actions: every module's `androidDeviceTest` (KMP `commonTest` on a device,
@@ -8,8 +8,25 @@ needed, and how it compares. App-specific detail (names, commands) is in the own
 
 ## Result
 
-4,107 tests. Unchanged, the app passes 4,103-4,105 of them here; with two small fixes to its tests (below) all
-4,107 pass, on the Mac and in the Linux image.
+**In the app's own CI (2026-11-04, apksim 0.5.0):** all 4,111 tests pass, none flaky. The API 34 emulators in the
+same run also passed all 4,111, so the two agree on every test. The job runs each suite in its own container of the
+released image (`ghcr.io/aglose/apksim:0.5.0`) on a GitHub ubuntu-24.04 runner, with the app's fixes below applied:
+
+| Suite | Tests | ubuntu-24.04, one container per suite |
+|---|---|---|
+| shared module | 1,314 | 59 s |
+| six feature modules | 2,549 | 7-19 s each, 77 s together |
+| 3D model module (offscreen GLES 3 on Mesa) | 6 | 7 s |
+| app module, UI tests | 156 | 29 s |
+| whole-app journeys, one process | 76 | 96 s |
+| end-to-end (UiAutomator), one process per test, `-j 4` | 10 | 82 s |
+| total | 4,111 | 350 s of tests; the job took 15.6 min with the Gradle build and the image pull |
+
+On apksim 0.4.0, before the app fixed its sign-in race (the last item below), the journeys took 225-286 s with 5-8
+flaky tests a run, and the suites 438-459 s together.
+
+**First pass (2026-11-03), on the Mac and in a local Linux VM:** 4,107 tests. Unchanged, the app passed 4,103-4,105
+of them here; with two small fixes to its tests (below) all 4,107 passed, on the Mac and in the Linux image.
 
 | Suite | Tests | Mac (M4 Pro) | Linux image (4 vCPU VM, x86 under Rosetta) | Emulator in CI, tests only |
 |---|---|---|---|---|
@@ -49,8 +66,8 @@ The failures without the app's fixes are the app's, not apksim's:
   journey has typed its own server's URL, the field reverts and the app connects to the old address; the journey's
   own server never sees a request (an `lsof` trace showed it listening throughout). It cannot happen with one process
   per test, where there is no earlier record. A device run in one process has the same race; it shows here more often
-  because the first query is slower. Fixes on the app's side: seed the field once, not over what was typed, or have
-  the journeys wait for the stored connection (or clear it) before typing.
+  because the first query is slower. The app fixed it on 2026-11-04: the field takes the stored connection only
+  until something is typed or filled in. Since then, a whole run has had no flaky journeys.
 
 Found on the way, in apksim: Mesa's EGL has no window configs and WebRTC's `EglBase` asks for one (every journey with a
 live camera failed in the image until `eglChooseConfig` asked for pbuffer configs), and processes started together
@@ -62,13 +79,13 @@ From the 27 green runs before 2026-11-03: the two emulator jobs take a median 16
 waits 18.8 min (p90 23.6) and uses 34.9 runner-minutes. Over the week before, they used 6,514 runner-minutes (508
 jobs, cancelled ones included), about 28,200 a month.
 
-One apksim job: setup and the same Gradle build of the test APKs (~5.5 min), the image (pulled, or built in ~1 min
-plus AOT training), tests 8.3 min measured under Rosetta (4.7 min natively on the Mac): about 14 min and 14
-runner-minutes a pull request as an upper bound, against 18.8 min and 34.9. Roughly 60% fewer runner-minutes, a little
-more if the x86 runner beats Rosetta. At list price for a 4-core Linux runner ($0.012/min) that is ~$135 a month
-against ~$338; for a public repository standard runners cost nothing either way, and the gain is the wait and the free
-runner slots. Still to do: the job in the app's CI itself (a pull request to it). An emulator stays for anything that
-measures a real device's startup.
+One apksim job, measured in the app's CI on 2026-11-04: 15.6 min and 15.6 runner-minutes a pull request, including
+the Gradle build of the test APKs and pulling the image, against 18.8 min and 34.9 for the emulator jobs: about 55%
+fewer runner-minutes. Its tests take 350 s; the rest is the build. (The projection from the Mac's Linux VM was ~14
+min.) At list price for a 4-core Linux runner ($0.012/min) that is ~$150 a month against ~$338; for a public
+repository standard runners cost nothing either way, and the gain is the wait and the free runner slots. An emulator
+stays for anything that measures a real device's startup, and for the app's Android CLI journeys until they move to
+apksim's adb device (0.5.0 runs the CLI's on-device server: `adb install`, `am instrument`).
 
 ## Running a suite
 
