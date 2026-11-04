@@ -31,4 +31,4 @@ runs:
       working-directory: testapks/composeapp
       env:
         JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-      run: ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest
+      run: ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest :uiserver:assembleDebug

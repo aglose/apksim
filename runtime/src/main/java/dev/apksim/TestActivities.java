@@ -303,6 +303,36 @@ public final class TestActivities {
 
   @Implements(Instrumentation.class)
   public static class ShadowSimInstrumentation extends ShadowInstrumentation {
+    @org.robolectric.annotation.RealObject private Instrumentation self;
+
+    /** An instrumentation started over adb (LiveInstrumentation) reports to that `am instrument`, not a watcher. */
+    @Implementation
+    protected void sendStatus(int resultCode, Bundle results) {
+      LiveInstrumentation live = LiveInstrumentation.of(self);
+      if (live != null) live.status(resultCode, results);
+      else original("sendStatus", resultCode, results);
+    }
+
+    @Implementation
+    protected void finish(int resultCode, Bundle results) {
+      LiveInstrumentation live = LiveInstrumentation.of(self);
+      if (live != null) live.finished(resultCode, results);
+      else original("finish", resultCode, results);
+    }
+
+    private void original(String name, int code, Bundle results) {
+      try {
+        java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod("$$robo$$android_app_Instrumentation$" + name, int.class, Bundle.class);
+        m.setAccessible(true);
+        m.invoke(self, code, results);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        if (e.getCause() instanceof RuntimeException r) throw r;
+        throw new IllegalStateException(e.getCause());
+      } catch (ReflectiveOperationException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
     @Implementation
     @Override
     protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,

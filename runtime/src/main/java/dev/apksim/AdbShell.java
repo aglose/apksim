@@ -49,9 +49,19 @@ final class AdbShell {
   private OutputStream out;
   private String cwd = "/";
   private boolean interactive;
+  /** The command's standard input (the adb stream's), for `pm install-write ... -`; empty when there is none. */
+  private final InputStream in;
+  /** Whether the client closed the stream, for commands that wait (`am instrument -w`). */
+  private final java.util.function.BooleanSupplier gone;
 
   AdbShell(OutputStream out) {
+    this(out, InputStream.nullInputStream(), () -> false);
+  }
+
+  AdbShell(OutputStream out, InputStream in, java.util.function.BooleanSupplier gone) {
     this.out = out;
+    this.in = in;
+    this.gone = gone;
   }
 
   // ---------------------------------------------------------------- entry points
@@ -167,7 +177,7 @@ final class AdbShell {
       char ch = i < line.length() ? line.charAt(i) : '\n';
       boolean end = ch == '\n' || ch == ';' || ch == '&' && i + 1 < line.length() && line.charAt(i + 1) == '&'
           || ch == '|' && i + 1 < line.length() && line.charAt(i + 1) == '|';
-      if (Character.isWhitespace(ch) || end || ch == '>') {
+      if (Character.isWhitespace(ch) || end || ch == '>' || ch == '<') {
         String fd = null;
         if (ch == '>' && word != null && word.toString().matches("[0-9]")) {
           fd = word.toString();
@@ -181,6 +191,8 @@ final class AdbShell {
           redirectNext = false;
           word = null;
         }
+        // `< FILE`: standard input from a file; adb's own commands only ever give </dev/null.
+        if (ch == '<') discardNext = true;
         if (ch == '>') {
           boolean twice = i + 1 < line.length() && line.charAt(i + 1) == '>';
           if (twice) i++;
@@ -232,6 +244,8 @@ final class AdbShell {
   private int exec(List<String> a) throws Exception {
     // Leading NAME=VALUE assignments and `exec` change nothing here.
     while (!a.isEmpty() && (a.get(0).matches("[A-Za-z_][A-Za-z0-9_]*=.*") || a.get(0).equals("exec"))) a = a.subList(1, a.size());
+    // A trailing `&` (`am instrument -w ... &`): run it here; its output still reaches this stream while it is open.
+    if (!a.isEmpty() && a.get(a.size() - 1).equals("&")) a = a.subList(0, a.size() - 1);
     if (a.isEmpty()) return 0;
     String cmd = a.get(0);
     List<String> args = a.subList(1, a.size());
@@ -531,6 +545,78 @@ final class AdbShell {
     return reply.startsWith("already") || reply.equals("not hidden") ? "ok" : reply;
   }
 
+  /** The last receiver of an ordered broadcast: what `am broadcast` prints once the receivers are done. */
+  private static final class ResultReceiver extends android.content.BroadcastReceiver {
+    private final CompletableFuture<String> result;
+
+    ResultReceiver(CompletableFuture<String> result) {
+      this.result = result;
+    }
+
+    @Override
+    public void onReceive(android.content.Context context, Intent intent) {
+      String data = getResultData();
+      android.os.Bundle extras = getResultExtras(false);
+      result.complete("result=" + getResultCode() + (data != null ? ", data=\"" + data + "\"" : "")
+          + (extras != null && !extras.isEmpty() ? ", extras: " + extras : ""));
+    }
+
+    // Robolectric's instrumented BroadcastReceiver has this, but javac does not see it (synthetic) and asks an abstract
+    // class's subclass for it; what it returns is the field Robolectric added.
+    public Object $$robo$getData() {
+      try {
+        return android.content.BroadcastReceiver.class.getField("__robo_data__").get(this);
+      } catch (ReflectiveOperationException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
+  /** pm install sessions: id -> the folder their APK is written into. */
+  private static final Map<Integer, Path> SESSIONS = new ConcurrentHashMap<>();
+  private static final AtomicInteger SESSION_IDS = new AtomicInteger(1000);
+
+  /** Copies SIZE bytes of standard input (all of it when SIZE is -1) into FILE: an APK streamed by `adb install`. */
+  private void receive(Path file, long size) throws IOException {
+    try (OutputStream o = Files.newOutputStream(file)) {
+      byte[] buf = new byte[64 * 1024];
+      long left = size < 0 ? Long.MAX_VALUE : size;
+      while (left > 0) {
+        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+        if (n < 0) break;
+        o.write(buf, 0, n);
+        left -= n;
+      }
+    }
+  }
+
+  /** am instrument [-w] [-r] [-e KEY VALUE]... PKG/CLASS: see LiveInstrumentation. */
+  private int instrument(List<String> a) throws Exception {
+    boolean await = false;
+    boolean raw = false;
+    android.os.Bundle args = new android.os.Bundle();
+    String target = null;
+    for (int i = 0; i < a.size(); i++) {
+      String o = a.get(i);
+      switch (o) {
+        case "-w" -> await = true;
+        case "-r" -> raw = true;
+        case "-e" -> {
+          if (i + 2 >= a.size()) return usage("am instrument [-w] [-r] [-e KEY VALUE] PKG/CLASS");
+          args.putString(a.get(i + 1), a.get(i + 2));
+          i += 2;
+        }
+        case "-p", "--user", "--abi" -> i++;
+        default -> {
+          if (o.startsWith("-")) continue;  // --no-window-animation, --no-hidden-api-checks and the like
+          target = o;
+        }
+      }
+    }
+    if (target == null) return usage("am instrument [-w] [-r] [-e KEY VALUE] PKG/CLASS");
+    return LiveInstrumentation.start(target, args, raw, await, out, gone);
+  }
+
   // am start|broadcast|startservice|force-stop
   private int am(List<String> a) throws Exception {
     if (a.isEmpty()) return usage("am start|broadcast|startservice|force-stop ...");
@@ -578,12 +664,24 @@ final class AdbShell {
         if (p == null) return 1;
         Intent in = p.intent;
         print("Broadcasting: " + describe(in) + "\n");
+        // Ordered, with a result receiver, as `am broadcast` sends it: a receiver's setResultCode/setResultData come back
+        // (the Android CLI asks its instrumentation server for its version and socket this way).
+        CompletableFuture<String> result = new CompletableFuture<>();
         onMain(() -> {
-          app().sendBroadcast(in);
+          app().sendOrderedBroadcast(in, null, new ResultReceiver(result), null, 0, null, null);
           return null;
         });
-        print("Broadcast completed: result=0\n");
+        String r;
+        try {
+          r = result.get(10, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+          r = "result=0";
+        }
+        print("Broadcast completed: " + r + "\n");
         return 0;
+      }
+      case "instrument" -> {
+        return instrument(a.subList(1, a.size()));
       }
       case "force-stop", "kill", "kill-all", "stop-app" -> {
         // The app is this process, so stopping it would end the device too.
@@ -785,6 +883,15 @@ final class AdbShell {
             else if (!o.startsWith("-")) filter = o;
           }
           if (!systemOnly && (filter == null || pkg.contains(filter))) print("package:" + (files ? apk + "=" : "") + pkg + "\n");
+          for (Packages.Installed p : Packages.all()) {
+            if (!systemOnly && (filter == null || p.pkg().contains(filter))) print("package:" + (files ? p.apk() + "=" : "") + p.pkg() + "\n");
+          }
+          return 0;
+        }
+        if (what.equals("instrumentation")) {
+          for (Packages.Installed p : Packages.all()) {
+            print("instrumentation:" + p.pkg() + "/" + p.instrumentation() + " (target=" + p.target() + ")\n");
+          }
           return 0;
         }
         if (what.equals("users")) {
@@ -800,7 +907,115 @@ final class AdbShell {
           print("package:" + apk + "\n");
           return 0;
         }
+        Packages.Installed p = a.size() > 1 ? Packages.get(a.get(a.size() - 1)) : null;
+        if (p != null) {
+          print("package:" + p.apk() + "\n");
+          return 0;
+        }
         return 1;
+      }
+      case "install" -> {
+        // pm install [-r -t -g -d ...] PATH, or pm install -S SIZE (the APK on standard input).
+        long size = -1;
+        String path = null;
+        for (int i = 1; i < a.size(); i++) {
+          String o = a.get(i);
+          if (o.equals("-S")) size = Long.parseLong(a.get(++i));
+          else if (o.equals("-i") || o.equals("--user") || o.equals("--install-location") || o.equals("--abi") || o.equals("-p")) i++;
+          else if (!o.startsWith("-")) path = o;
+        }
+        Path file;
+        boolean temp = false;
+        if (size >= 0) {
+          file = Files.createTempFile("adb-install", ".apk");
+          temp = true;
+          receive(file, size);
+        } else {
+          file = path == null ? null : Paths.host(path, cwd);
+          if (file == null || !Files.isRegularFile(file)) {
+            print("Failure [INSTALL_FAILED_INVALID_URI: " + path + "]\n");
+            return 1;
+          }
+        }
+        try {
+          String r = Packages.install(file);
+          print(r + "\n");
+          return r.equals("Success") ? 0 : 1;
+        } finally {
+          if (temp) Files.deleteIfExists(file);
+        }
+      }
+      case "install-create" -> {
+        int id = SESSION_IDS.incrementAndGet();
+        Path dir = Files.createTempDirectory("adb-session");
+        SESSIONS.put(id, dir);
+        print("Success: created install session [" + id + "]\n");
+        return 0;
+      }
+      case "install-write" -> {
+        // pm install-write [-S SIZE] SESSION NAME PATH|-
+        long size = -1;
+        List<String> rest = new ArrayList<>();
+        for (int i = 1; i < a.size(); i++) {
+          if (a.get(i).equals("-S")) size = Long.parseLong(a.get(++i));
+          else rest.add(a.get(i));
+        }
+        Path dir = rest.isEmpty() ? null : SESSIONS.get(Integer.parseInt(rest.get(0)));
+        if (dir == null || rest.size() < 2) {
+          print("Error: invalid session\n");
+          return 1;
+        }
+        String name = rest.get(1).replace('/', '_');
+        if (!name.endsWith(".apk")) name += ".apk";
+        Path to = dir.resolve(name);
+        if (rest.size() < 3 || rest.get(2).equals("-")) {
+          receive(to, size);
+        } else {
+          Path from = Paths.host(rest.get(2), cwd);
+          if (from == null || !Files.isRegularFile(from)) {
+            print("Error: Unable to open file: " + rest.get(2) + "\n");
+            return 1;
+          }
+          Files.copy(from, to, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        print("Success: streamed " + Files.size(to) + " bytes\n");
+        return 0;
+      }
+      case "install-commit" -> {
+        Path dir = a.size() > 1 ? SESSIONS.remove(Integer.parseInt(a.get(1))) : null;
+        if (dir == null) {
+          print("Error: invalid session\n");
+          return 1;
+        }
+        try (Stream<Path> files = Files.list(dir)) {
+          List<Path> apks = files.toList();
+          String r = apks.size() == 1 ? Packages.install(apks.get(0))
+              : "Failure [INSTALL_FAILED_INTERNAL_ERROR: apksim installs one APK per session, not " + apks.size() + " (no split APKs)]";
+          print(r + "\n");
+          return r.equals("Success") ? 0 : 1;
+        } finally {
+          Storage.deleteTree(dir);
+        }
+      }
+      case "install-abandon", "install-destroy" -> {
+        Path dir = a.size() > 1 ? SESSIONS.remove(Integer.parseInt(a.get(1))) : null;
+        if (dir != null) Storage.deleteTree(dir);
+        print("Success\n");
+        return 0;
+      }
+      case "uninstall" -> {
+        String which = a.get(a.size() - 1);
+        if (which.equals(pkg)) {
+          print("Failure [DELETE_FAILED_INTERNAL_ERROR: " + pkg + " is the app this instance runs]\n");
+          return 1;
+        }
+        if (LiveInstrumentation.running(which) != null) {
+          print("Failure [DELETE_FAILED_INTERNAL_ERROR: " + which + " is running its instrumentation]\n");
+          return 1;
+        }
+        boolean removed = Packages.uninstall(which);
+        print(removed ? "Success\n" : "Failure [DELETE_FAILED_INTERNAL_ERROR]\n");
+        return removed ? 0 : 1;
       }
       case "grant", "revoke" -> {
         if (a.size() < 3) return usage("pm " + a.get(0) + " PACKAGE PERMISSION");
@@ -832,8 +1047,9 @@ final class AdbShell {
             + " run scripts/ctl.py erase " + pkg + "\n");
         return 1;
       }
-      case "install", "install-create", "install-write", "install-commit", "install-multiple", "uninstall" -> {
-        print("Failure [APKSIM_ONE_APP: an apksim instance runs the one APK it was launched with; launch another with ./apksim APK]\n");
+      case "install-multiple" -> {
+        print("Failure [APKSIM_ONE_APP: an apksim instance runs the one APK it was launched with; beside it, it installs"
+            + " only a single APK that brings an instrumentation]\n");
         return 1;
       }
       default -> {

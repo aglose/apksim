@@ -98,7 +98,8 @@ which no longer dies: what it starts (availability checks, geofencing) now runs.
 **0f. What a test run still lacks, when a suite needs it:** accessibility events for UiAutomator
 (`executeAndWaitForEvent` reports a window change only), its `executeShellCommand` (empty output) and global actions
 other than Back; starting an activity that is not running (only recorded, as Robolectric does) and CLEAR_TOP;
-`adb shell am instrument`; the test APK's own resources and context.
+`adb shell am instrument` of a test APK (a self-targeting one runs live, see AGENTS.md "adb device"); the test APK's
+own resources and context.
 
 **0g. CI cache.** Cache `work/cache/classes` between runs keyed on the runtime hash and the APKs' CRCs. Low value by
 the measurement above (cold and warm the same); revisit if the Linux numbers say otherwise.

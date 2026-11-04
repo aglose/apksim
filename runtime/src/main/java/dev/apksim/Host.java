@@ -617,6 +617,17 @@ public class Host {
         for (int i = 0; a.length > 5 && i < 15; i++) pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x2, y2, 0));
         pendingScript.add(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
       }
+      case "touch" -> {
+        // touch down|move|up X Y: one finger's event, for input that arrives as separate events (UiAutomation's
+        // injectInputEvent from an instrumentation started over adb).
+        int type = switch (a[1]) {
+          case "down" -> SimWindow.DOWN;
+          case "move" -> SimWindow.MOVE;
+          case "up" -> SimWindow.UP;
+          default -> throw new IllegalArgumentException("touch down|move|up X Y");
+        };
+        pendingScript.add(new SimWindow.Event(type, Float.parseFloat(a[2]), Float.parseFloat(a[3]), 0));
+      }
       case "wheel" -> pendingScript.add(new SimWindow.Event(SimWindow.WHEEL, Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3])));
       case "type" -> {
         for (char ch : String.join(" ", java.util.Arrays.copyOfRange(a, 1, a.length)).toCharArray()) {
