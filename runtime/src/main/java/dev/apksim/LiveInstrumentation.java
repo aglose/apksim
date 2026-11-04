@@ -116,7 +116,7 @@ final class LiveInstrumentation {
   }
 
   private void launch(Bundle args) throws Exception {
-    AppClasses classes = AppClasses.isolated(pkg.apk(), pkg.pkg());
+    AppClasses classes = AppClasses.isolated(pkg.apk());
     Loader loader = new Loader(classes);
     Context base = RuntimeEnvironment.getApplication();
     PackageContext context = new PackageContext(base, pkg.pkg(), loader, assets(pkg.apk()));
@@ -178,6 +178,8 @@ final class LiveInstrumentation {
     System.err.println("[apksim] am instrument: " + component.flattenToShortString() + " finished (" + code + ")");
     if (AdbServer.TRACE) new Throwable("finish(" + code + ", " + results + ") called from").printStackTrace();
     BY_PACKAGE.remove(pkg.pkg(), this);
+    // Nothing here keeps the finished instrumentation, so its loader and classes can go once its threads end.
+    BY_INSTANCE.values().remove(this);
     if (context != null) {
       PackageContext c = context;
       new android.os.Handler(android.os.Looper.getMainLooper()).post(c::unregisterAll);

@@ -85,8 +85,18 @@ public class Host {
   private int touchDx;
   private int touchDy;
 
+  /** The running Host, for UiAutomation's synchronous injection (see {@link #inputQueued}). */
+  private static volatile Host current;
+
+  /** Whether scripted input is still waiting to be dispatched. Main thread only. */
+  static boolean inputQueued() {
+    Host h = current;
+    return h != null && !h.pendingScript.isEmpty();
+  }
+
   @Test
   public void run() throws Exception {
+    current = this;
     Timing.mark("framework-ready");
     SimWindow.boostThread();
     RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
@@ -358,7 +368,7 @@ public class Host {
   private boolean dispatch(SimWindow.Event e) {
     long now = SystemClock.uptimeMillis();
     switch (e.type()) {
-      case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP -> dispatchTouch(e, now);
+      case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP, SimWindow.CANCEL -> dispatchTouch(e, now);
       case SimWindow.TOUCH2_CENTRE, SimWindow.TOUCH2_DOWN, SimWindow.TOUCH2_MOVE, SimWindow.TOUCH2_UP -> dispatchTouch2(e, now);
       case SimWindow.WHEEL -> dispatchWheel(e, now);
       case SimWindow.BACK -> {
@@ -405,11 +415,12 @@ public class Host {
       touchDy = at[1];
     }
     if (touchTarget == null) return;
-    MotionEvent m = MotionEvent.obtain(downTime, now, e.type(), e.x() - touchDx, e.y() - touchDy, 0);
+    int action = e.type() == SimWindow.CANCEL ? MotionEvent.ACTION_CANCEL : e.type();
+    MotionEvent m = MotionEvent.obtain(downTime, now, action, e.x() - touchDx, e.y() - touchDy, 0);
     m.setSource(InputDevice.SOURCE_TOUCHSCREEN);
     touchTarget.dispatchTouchEvent(m);
     m.recycle();
-    if (e.type() == SimWindow.UP) touchTarget = null;
+    if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
   }
 
   private static boolean isTouchThrough(View root) {
@@ -618,13 +629,14 @@ public class Host {
         pendingScript.add(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
       }
       case "touch" -> {
-        // touch down|move|up X Y: one finger's event, for input that arrives as separate events (UiAutomation's
-        // injectInputEvent from an instrumentation started over adb).
+        // touch down|move|up|cancel X Y: one finger's event, for input that arrives as separate events
+        // (UiAutomation's injectInputEvent from an instrumentation started over adb).
         int type = switch (a[1]) {
           case "down" -> SimWindow.DOWN;
           case "move" -> SimWindow.MOVE;
           case "up" -> SimWindow.UP;
-          default -> throw new IllegalArgumentException("touch down|move|up X Y");
+          case "cancel" -> SimWindow.CANCEL;
+          default -> throw new IllegalArgumentException("touch down|move|up|cancel X Y");
         };
         pendingScript.add(new SimWindow.Event(type, Float.parseFloat(a[2]), Float.parseFloat(a[3]), 0));
       }

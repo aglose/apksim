@@ -106,9 +106,19 @@ public final class LocalSockets {
   static Socket connect(String name, boolean fromAdb) throws IOException {
     Server s = BOUND.get(name);
     if (s == null || !s.channel.isOpen()) throw new IOException("Connection refused: no local socket named " + name);
-    Socket c = new Socket(InetAddress.getLoopbackAddress(), s.port());
+    // Bound first, so the port is marked before the server can accept the connection and ask who it is from.
+    Socket c = new Socket();
+    c.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+    int port = c.getLocalPort();
+    if (fromAdb) FROM_ADB.add(port);
+    try {
+      c.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), s.port()));
+    } catch (IOException e) {
+      FROM_ADB.remove(port);
+      c.close();
+      throw e;
+    }
     c.setTcpNoDelay(true);
-    if (fromAdb) FROM_ADB.add(c.getLocalPort());
     return c;
   }
 

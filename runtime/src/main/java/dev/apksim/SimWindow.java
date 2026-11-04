@@ -24,6 +24,8 @@ final class SimWindow {
   static final int TOUCH2_UP = 12;
   /** The user resized the window: x, y are its new size in device pixels; value 1 once the drag has ended. */
   static final int RESIZE = 13;
+  /** A one-finger gesture cancelled (UiAutomation's ACTION_CANCEL): the target gets ACTION_CANCEL, not a release. */
+  static final int CANCEL = 14;
 
   /** Raw input in device pixels. */
   record Event(int type, float x, float y, float value) {}
