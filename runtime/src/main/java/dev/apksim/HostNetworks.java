@@ -21,7 +21,7 @@ import org.robolectric.shadows.ShadowNetworkInfo;
  * Shows the app the host's real network interfaces as Android networks. Robolectric's stand-ins have no
  * interface names or addresses, and libwebrtc ignores every interface that ConnectivityManager does not
  * name, so without this a WebRTC call only ever offered loopback candidates. The interface with the
- * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (a VPN's) become VPNs.
+ * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (WireGuard-style VPNs) become VPNs.
  */
 final class HostNetworks {
   private HostNetworks() {}
