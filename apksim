@@ -152,11 +152,9 @@ fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
   exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
 fi
-if [[ "$OS" == Darwin ]]; then
-  export APKSIM_T0=${APKSIM_T0:-$(python3 -c 'import time;print(int(time.time()*1000))')}
-else
-  export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
-fi
+# macOS's date has no milliseconds; there Timing takes this process's start time instead (exec keeps the PID), which
+# spares starting python3 just to read the clock.
+[[ "$OS" == Darwin ]] || export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
 # This launch may start the next standby (Standby.spawnNext), which inherits its sandbox.
 [[ -n "$WARM_OK" ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
 [[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK" "-Dapksim.spawnStandby=$FLAGS")

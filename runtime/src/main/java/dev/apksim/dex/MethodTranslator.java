@@ -988,7 +988,7 @@ final class MethodTranslator implements Opcodes {
           transfer(i, s);
         }
         curInsn = blockStart[bl + 1] - 1;
-        curWhat = "flow out of block " + bl;
+        if (debugTypes) curWhat = "flow out of block " + bl;
         int last = blockStart[bl + 1] - 1;
         int o = op[last];
         if (isGoto(o)) {
@@ -2113,11 +2113,11 @@ final class MethodTranslator implements Opcodes {
       return;
     }
     if (o >= 0xd0 && o <= 0xd7) {
-      emitLit(i, o - 0xd0, new int[] {IADD, -1, IMUL, IDIV, IREM, IAND, IOR, IXOR}, s, ra, rb);
+      emitLit(i, o - 0xd0, LIT16_OPS, s, ra, rb);
       return;
     }
     if (o >= 0xd8 && o <= 0xe2) {
-      emitLit(i, o - 0xd8, new int[] {IADD, -1, IMUL, IDIV, IREM, IAND, IOR, IXOR, ISHL, ISHR, IUSHR}, s, ra, rb);
+      emitLit(i, o - 0xd8, LIT8_OPS, s, ra, rb);
       return;
     }
     throw new IllegalStateException("unhandled opcode 0x" + Integer.toHexString(o));
@@ -2587,6 +2587,10 @@ final class MethodTranslator implements Opcodes {
       default -> DREM;
     };
   }
+
+  // JVM operations of the lit16 (add-int/lit16..xor-int/lit16) and lit8 (..ushr-int/lit8) forms; -1 is rsub.
+  private static final int[] LIT16_OPS = {IADD, -1, IMUL, IDIV, IREM, IAND, IOR, IXOR};
+  private static final int[] LIT8_OPS = {IADD, -1, IMUL, IDIV, IREM, IAND, IOR, IXOR, ISHL, ISHR, IUSHR};
 
   private void emitLit(int i, int k, int[] ops, int[] s, int ra, int rb) {
     int v = (int) lit[i];

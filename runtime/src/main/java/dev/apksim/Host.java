@@ -150,7 +150,7 @@ public class Host {
           }
         }
       }
-      if (autofill != null) autofill.tick(rootViews());
+      if (autofill != null) autofill.tick(Host::rootViews);
       controls.tick();
       Control.Pending cmd;
       while ((cmd = Control.QUEUE.poll()) != null) {
@@ -330,8 +330,27 @@ public class Host {
 
   // ---------------------------------------------------------------- input
 
-  private static List<View> rootViews() {
-    return new ArrayList<>(ReflectionHelpers.<List<View>>getField(WindowManagerGlobal.getInstance(), "mViews"));
+  @SuppressWarnings("unchecked")
+  static List<View> rootViews() {
+    try {
+      return new ArrayList<>((List<View>) Views.FIELD.get(WindowManagerGlobal.getInstance()));
+    } catch (IllegalAccessException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** WindowManagerGlobal.mViews, looked up once: rootViews() runs on every loop turn. */
+  private static final class Views {
+    static final java.lang.reflect.Field FIELD;
+
+    static {
+      try {
+        FIELD = WindowManagerGlobal.class.getDeclaredField("mViews");
+        FIELD.setAccessible(true);
+      } catch (NoSuchFieldException e) {
+        throw new IllegalStateException(e);
+      }
+    }
   }
 
   private boolean dispatch(SimWindow.Event e) {

@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.robolectric.util.ReflectionHelpers;
 
 /**
  * Draws through Android's real render pipeline (HWUI display lists on its render thread), which is what
@@ -132,7 +131,7 @@ final class HwRenderer {
       }
       int[] at = placer.position(root);
       c.translate(at[0], at[1]);
-      RenderNode node = ReflectionHelpers.callInstanceMethod(root, "updateDisplayListIfDirty");
+      RenderNode node = root.updateDisplayListIfDirty();
       c.drawRenderNode(node);
       c.restoreToCount(save);
     }
