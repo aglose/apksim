@@ -31,36 +31,71 @@ static Filter *filters;
 static size_t nfilters, capfilters;
 static atomic_size_t filters_in_use;  // lets close() skip the lock while nothing is recorded
 
-static void note_change(int kq, const struct kevent *c) {
-  if (c->filter != EVFILT_READ && c->filter != EVFILT_WRITE) return;  // what selectors put on sockets
-  for (size_t i = 0; i < nfilters; i++) {
-    Filter *f = &filters[i];
-    if (f->kq != kq || f->kev.ident != c->ident || f->kev.filter != c->filter) continue;
-    if (c->flags & EV_DELETE) {
-      filters[i] = filters[--nfilters];
-    } else {
-      uint16_t keep = f->kev.flags;
-      f->kev = *c;
-      f->kev.flags = (c->flags & ~(EV_ADD | EV_ENABLE | EV_DISABLE | EV_RECEIPT)) | (keep & EV_DISABLE);
-      if (c->flags & EV_DISABLE) f->kev.flags |= EV_DISABLE;
-      if (c->flags & EV_ENABLE) f->kev.flags &= ~EV_DISABLE;
-    }
-    atomic_store(&filters_in_use, nfilters);
-    return;
-  }
-  if (!(c->flags & EV_ADD)) return;
-  if (nfilters == capfilters) {
-    size_t cap = capfilters ? capfilters * 2 : 64;
-    Filter *grown = realloc(filters, cap * sizeof *filters);
-    if (!grown) return;
-    filters = grown;
-    capfilters = cap;
-  }
-  Filter *f = &filters[nfilters++];
+// What a filter becomes after EV_ADD: the change's configuration (EV_CLEAR, EV_ONESHOT, EV_DISPATCH, udata...),
+// enabled unless the change says EV_DISABLE, as the kernel does.
+static void configure(Filter *f, int kq, const struct kevent *c) {
   f->kq = kq;
   f->kev = *c;
   f->kev.flags = c->flags & ~(EV_ADD | EV_ENABLE | EV_RECEIPT);
+}
+
+static Filter *find(int kq, uintptr_t ident, int16_t filter) {
+  for (size_t i = 0; i < nfilters; i++) {
+    Filter *f = &filters[i];
+    if (f->kq == kq && f->kev.ident == ident && f->kev.filter == filter) return f;
+  }
+  return NULL;
+}
+
+static void drop(Filter *f) {
+  *f = filters[--nfilters];
   atomic_store(&filters_in_use, nfilters);
+}
+
+static void note_change(int kq, const struct kevent *c) {
+  if (c->filter != EVFILT_READ && c->filter != EVFILT_WRITE) return;  // what selectors put on sockets
+  Filter *f = find(kq, c->ident, c->filter);
+  if (c->flags & EV_DELETE) {
+    if (f) drop(f);
+    return;
+  }
+  if (c->flags & EV_ADD) {
+    if (!f) {
+      if (nfilters == capfilters) {
+        size_t cap = capfilters ? capfilters * 2 : 64;
+        Filter *grown = realloc(filters, cap * sizeof *filters);
+        if (!grown) return;
+        filters = grown;
+        capfilters = cap;
+      }
+      f = &filters[nfilters++];
+      atomic_store(&filters_in_use, nfilters);
+    }
+    configure(f, kq, c);
+    return;
+  }
+  // EV_ENABLE / EV_DISABLE alone: the kernel keeps the rest of the registration, and so does the record.
+  if (!f) return;
+  if (c->flags & EV_DISABLE) f->kev.flags |= EV_DISABLE;
+  if (c->flags & EV_ENABLE) f->kev.flags &= ~EV_DISABLE;
+}
+
+// What the kernel did on delivery: an EV_ONESHOT filter is gone once it fires, an EV_DISPATCH one disabled until
+// EV_ENABLE; a change that failed (EV_ERROR with an errno, as EV_RECEIPT reports it too) registered nothing.
+static void note_events(int kq, const struct kevent *events, int n) {
+  for (int i = 0; i < n; i++) {
+    const struct kevent *e = &events[i];
+    if (e->filter != EVFILT_READ && e->filter != EVFILT_WRITE) continue;
+    Filter *f = find(kq, e->ident, e->filter);
+    if (!f) continue;
+    if (e->flags & EV_ERROR) {
+      if (e->data != 0) drop(f);
+    } else if (f->kev.flags & EV_ONESHOT) {
+      drop(f);
+    } else if (f->kev.flags & EV_DISPATCH) {
+      f->kev.flags |= EV_DISABLE;
+    }
+  }
 }
 
 static int loopback_kevent(int kq, const struct kevent *changes, int nchanges, struct kevent *events, int nevents,
@@ -70,7 +105,15 @@ static int loopback_kevent(int kq, const struct kevent *changes, int nchanges, s
     for (int i = 0; i < nchanges; i++) note_change(kq, &changes[i]);
     pthread_mutex_unlock(&filters_lock);
   }
-  return kevent(kq, changes, nchanges, events, nevents, timeout);
+  int n = kevent(kq, changes, nchanges, events, nevents, timeout);
+  // Between the kernel's delivery and this, a swap could replay a filter that just fired. A swap happens only on a
+  // socket being connected for the first time, which has had nothing to report yet, so that window stays open.
+  if (n > 0 && events && atomic_load(&filters_in_use) > 0) {
+    pthread_mutex_lock(&filters_lock);
+    note_events(kq, events, n);
+    pthread_mutex_unlock(&filters_lock);
+  }
+  return n;
 }
 
 // A closed descriptor takes its filters with it, and a closed kqueue all of its own.
