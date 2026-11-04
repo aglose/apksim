@@ -3,12 +3,22 @@
 Runs unmodified Android APKs on an Apple Silicon Mac as a single ordinary process, with no VM. A
 from-scratch take on what the Android team demoed as "Android Prototype" at Android Dev Summit 2026.
 
-    scripts/setup.sh                 # once
+    git clone https://github.com/aglose/apksim && cd apksim
+    scripts/setup.sh                 # once, a few minutes
     ./apksim app.apk                 # run it
     ./apksim --device foldable app.apk
 
-Needs an Apple Silicon Mac with the Xcode command-line tools, Homebrew's `openjdk` (JDK 24) and `gradle`, and the
-Android SDK to build the test app (`testapks/composeapp`), which `setup.sh` also uses to train the startup cache.
+Needs an Apple Silicon Mac with the Xcode command-line tools (`xcode-select --install`). `setup.sh` finds or fetches
+the rest:
+
+- **JDK 24.** It uses one it finds (`APKSIM_JDK`, Homebrew's `openjdk` if that is 24, `/usr/libexec/java_home -v 24`,
+  or `JAVA_HOME`), else downloads Eclipse Temurin 24 into `work/jdk-24` (136 MB, checksum verified). Later JDKs run
+  apksim but cannot build its startup cache yet: their AOT training verifies the translated app classes, which carry
+  no stack map frames. Homebrew's `openjdk` is past 24 now, so a fresh `brew install openjdk` does not do.
+- **Gradle:** the test app's wrapper (`testapks/composeapp/gradlew`), so no Gradle install.
+- **The Android SDK** is only needed to build the test app (`testapks/composeapp`), which trains the startup cache.
+  With `ANDROID_HOME` set or the SDK in `~/Library/Android/sdk`, setup builds it; without, it downloads the released
+  test app instead (checksum verified).
 
 After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location.
 

@@ -93,7 +93,12 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   done
 fi
 if [[ "$OS" == Darwin ]]; then
-  JAVA="${APKSIM_JAVA:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java}"
+  # The JDK scripts/build.sh compiled with (scripts/jdk.sh finds it), read with a builtin.
+  JAVA="${APKSIM_JAVA:-}"
+  if [[ -z "$JAVA" ]]; then
+    JDK_HOME=""; [[ -f "$ROOT/work/jdk.path" ]] && read -r JDK_HOME < "$ROOT/work/jdk.path"
+    JAVA="${JDK_HOME:-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home}/bin/java"
+  fi
 else
   JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
 fi
