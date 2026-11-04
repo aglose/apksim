@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
@@ -78,11 +79,12 @@ final class Storage {
 
   /** Empties a data directory this instance holds (Storage.dataDir), keeping its lock. */
   static void clearDataDir(Path dir) throws IOException {
-    try (Stream<Path> children = Files.list(dir)) {
-      for (Path p : (Iterable<Path>) children::iterator) {
-        if (!p.getFileName().toString().equals(".lock")) deleteTree(p);
-      }
+    // Not deleteTree's best effort: a launch that asked for fresh data must not go on with some of the old.
+    List<Path> paths;
+    try (Stream<Path> all = Files.walk(dir)) {
+      paths = all.filter(p -> !p.equals(dir) && !p.equals(dir.resolve(".lock"))).sorted(Comparator.reverseOrder()).toList();
     }
+    for (Path p : paths) Files.delete(p);  // walking does not follow links, so a link is removed, not its target
   }
 
   /** The persistent data directory for this instance. */
