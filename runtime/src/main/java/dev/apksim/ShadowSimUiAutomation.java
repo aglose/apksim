@@ -46,8 +46,10 @@ import org.robolectric.util.ReflectionHelpers;
  * ShadowUiAutomation keeps input injection (taps and gestures reach the windows) and takeScreenshot; rotation
  * delivers a configuration change to the activities as a device does, kept or recreated by their configChanges.
  *
+ * Shell commands run apksim's adb shell in this process ({@link #executeShellCommand}).
+ *
  * <p>Not here: accessibility events (executeAndWaitForEvent runs the action, lets the UI settle and reports a window
- * change, else times out), shell commands (empty output), and global actions other than Back.
+ * change, else times out) and global actions other than Back.
  */
 @Implements(UiAutomation.class)
 public class ShadowSimUiAutomation extends ShadowUiAutomation {
@@ -263,14 +265,44 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return true;
   }
 
-  /** No shell in this process: the command is logged and its output is empty. */
+  /**
+   * A shell command, as the shell user would run it on a device: apksim's adb shell ({@link AdbShell}: getprop,
+   * settings, logcat -c/-d, touch, ls, am, pm, ...) run in this process. It runs to the end before this returns, and
+   * the descriptor reads what it printed: on a device the shell is another process and the test reads its output as
+   * it comes, but here the test is usually on the main thread, which most commands need.
+   */
   @Implementation
   protected ParcelFileDescriptor executeShellCommand(String command) {
-    System.err.println("[apksim] UiAutomation.executeShellCommand is not supported: " + command);
+    return output(AdbShell.runInProcess(command));
+  }
+
+  /** {@link #executeShellCommand} with a standard input, which nothing here reads: [output, input]. */
+  @Implementation(minSdk = 31)
+  protected ParcelFileDescriptor[] executeShellCommandRw(String command) {
+    return new ParcelFileDescriptor[] {executeShellCommand(command), sink()};
+  }
+
+  /** {@link #executeShellCommandRw} with standard error, which the shell writes into its output: [out, in, err]. */
+  @Implementation(minSdk = 31)
+  protected ParcelFileDescriptor[] executeShellCommandRwe(String command) {
+    return new ParcelFileDescriptor[] {executeShellCommand(command), sink(), output(new byte[0])};
+  }
+
+  private static ParcelFileDescriptor output(byte[] bytes) {
     try {
-      File empty = File.createTempFile("uiautomation", ".out");
-      empty.deleteOnExit();
-      return ParcelFileDescriptor.open(empty, ParcelFileDescriptor.MODE_READ_ONLY);
+      File f = File.createTempFile("uiautomation", ".out");  // java.io.tmpdir: this instance's scratch
+      java.nio.file.Files.write(f.toPath(), bytes);
+      ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
+      f.delete();  // the descriptor keeps it readable
+      return pfd;
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private static ParcelFileDescriptor sink() {
+    try {
+      return ParcelFileDescriptor.open(new File("/dev/null"), ParcelFileDescriptor.MODE_WRITE_ONLY);
     } catch (Exception e) {
       throw new IllegalStateException(e);
     }

@@ -156,7 +156,8 @@ Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`, `ping`, `quit`.
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
-`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `config` (configuration the app sees),
+`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone` (the zone the app sees; set at launch with
+`--timezone America/New_York`), `config` (configuration the app sees),
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
@@ -213,7 +214,7 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
-`--appearance dark`, `--locale de-DE`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
+`--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
 Pick file/Choose trip (in-app result)/Share/Background/Keystore buttons for these, and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
@@ -403,6 +404,21 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
   Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
+  `runBlocking { delay() }` is not covered: kotlinx parks the thread itself, and the main queue waits.
+- JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
+  Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
+  PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
+  stays on the main thread and a watchdog interrupts it when the time is up (`TimeoutRuleTest`).
+- `UiAutomation.executeShellCommand` (UiDevice's too) runs apksim's adb shell (`AdbShell`) in the process, to the end,
+  and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
+  Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
+  test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
+  the control commands it reaches are animscale and fontscale (`ShellCommandTest`).
+- The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
+  in framework code at its uptime clock, so the framework thought it was 1970 while the app's own code and the JDK
+  knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
+  when it skips idle time. `--timezone ZONE` sets the JDK's and android.icu's zone, at each test's setup (ICU caches
+  its default, and a standby may have worked it out before the launch) (`WallClockTest` with `-e timezone ZONE`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
@@ -414,7 +430,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
 Not supported yet: `adb shell am instrument` of a test APK (only of a self-targeting instrumentation, see "adb device"), the test APK's own resources/context (`getInstrumentation().context`
-is the app's), UiAutomation shell commands (empty output), and test-services shell calls. A test that reaches a
+is the app's), shell commands that need another process or the Host loop (input, screencap, `am instrument`), and
+test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
 `--no-network` keeps only localhost (127.0.0.1 and ::1).
 
