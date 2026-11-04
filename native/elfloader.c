@@ -300,6 +300,41 @@ static void patch_thread_pointer(uint8_t *start, size_t size) {
 }
 #endif
 
+// Copies a range's current contents into fresh anonymous memory at the same address (a file-backed range the
+// system will not make executable).
+static int make_anonymous(uintptr_t from, size_t len) {
+  void *copy = malloc(len);
+  if (!copy) return -1;
+  memcpy(copy, (void *)from, len);
+  int failed = mmap((void *)from, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED;
+  if (!failed) memcpy((void *)from, copy, len);
+  free(copy);
+  return failed ? -1 : 0;
+}
+
+// Puts a PT_LOAD segment's file bytes at base + vaddr (the arena there is already read-write anonymous memory). On
+// macOS the whole pages of a code segment are mapped from the file instead of copied: pages nothing writes to stay
+// clean file pages the system can drop and read again, rather than dirty memory for the life of the process (most of
+// a large library's code; the rest are the pages whose thread-pointer reads get patched). The file must not be
+// rewritten in place while loaded: ElfLoader replaces libraries by renaming a new file over them.
+static void load_segment(uintptr_t base, const Phdr *p, const uint8_t *file, int fd, size_t page) {
+  uintptr_t seg = base + p->vaddr, end = seg + p->filesz;
+#ifdef __APPLE__
+  uintptr_t from = (seg + page - 1) & ~(page - 1), to = end & ~(page - 1);
+  if ((p->flags & 1) && !(p->flags & 2) && p->offset % page == p->vaddr % page && to > from) {
+    off_t at = (off_t)(p->offset + (from - seg));
+    if (mmap((void *)from, to - from, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, at) != MAP_FAILED) {
+      memcpy((void *)seg, file + p->offset, from - seg);
+      memcpy((void *)to, file + p->offset + (to - seg), end - to);
+      return;
+    }
+    // A failed MAP_FIXED may have taken the range's old mapping with it.
+    mmap((void *)from, to - from, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+  }
+#endif
+  memcpy((void *)seg, file + p->offset, p->filesz);
+}
+
 static int is_system_lib(const char *n) {
   static const char *sys[] = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv1_CM.so",
                               "libGLESv2.so", "libGLESv3.so", "libOpenSLES.so", "libjnigraphics.so", "libz.so", "libstdc++.so",
@@ -339,8 +374,8 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   struct stat st;
   fstat(fd, &st);
   uint8_t *file = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
   if (file == MAP_FAILED || memcmp(file, "\177ELF", 4) || file[4] != 2 || *(uint16_t *)(file + 18) != ELF_MACHINE) {
+    close(fd);
     snprintf(err, errlen, "%s is not an " ELF_ARCH " ELF", path);
     goto done;
   }
@@ -360,17 +395,20 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   size_t span = (max_va + page - 1) & ~(page - 1);
   uintptr_t base = arena_next;
   if (base + span > elf_arena_hi) {
+    close(fd);
     snprintf(err, errlen, "arena exhausted");
     goto done;
   }
   arena_next = base + span + page;
   if (mprotect((void *)base, span, PROT_READ | PROT_WRITE)) {
+    close(fd);
     snprintf(err, errlen, "mprotect failed");
     goto done;
   }
   for (int i = 0; i < phnum; i++) {
-    if (ph[i].type == PT_LOAD) memcpy((void *)(base + ph[i].vaddr), file + ph[i].offset, ph[i].filesz);
+    if (ph[i].type == PT_LOAD) load_segment(base, &ph[i], file, fd, page);
   }
+  close(fd);
   Module *m = calloc(1, sizeof(Module));
   strlcpy(m->name, base_name, sizeof m->name);
   m->base = base;
@@ -453,7 +491,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
         if (ws < to && we > from) prot |= PROT_WRITE;
       }
 #endif
-      if (mprotect((void *)from, to - from, prot)) {
+      if (mprotect((void *)from, to - from, prot) && (make_anonymous(from, to - from) || mprotect((void *)from, to - from, prot))) {
         snprintf(err, errlen, "cannot make %s executable", base_name);
         goto done;
       }
