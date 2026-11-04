@@ -426,7 +426,9 @@ are skipped (headless, CPU shaders). `native/linux/` holds the bionic→glibc sh
 shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
 /private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
-(`apksim:ci` and `apksim:latest` are shared).
+(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION` (`release.yml`'s `image`
+job; `:latest` moves on publishing), with `instrument.py` and `drive.py` on its `PATH` for other repositories' CI
+(`--entrypoint instrument.py`). `.github/actions/linux-build` is the Linux build both workflows share.
 
 ## Debugging app code
 `./apksim --debug 5005 --control 7400 app.apk`, then IntelliJ/Android Studio "Remote JVM Debug" (Attach, localhost,

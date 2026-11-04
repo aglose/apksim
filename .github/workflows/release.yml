@@ -6,7 +6,11 @@
 #   aglose/homebrew-apksim tap, so `brew tap aglose/apksim`, `brew trust aglose/apksim` and `brew install apksim` get it. It pushes with the
 #   TAP_DEPLOY_KEY secret, the private half of a deploy key with write access to that repository only, and is skipped
 #   without one.
-# - Pull requests that change the packaging build and check the tarball without releasing it.
+# - The `image` job builds the Linux image (docker/Dockerfile) for CI on Linux runners, checks it (smoke test, the test
+#   app's androidTest suite through the image's own instrument.py) and on a tag pushes ghcr.io/aglose/apksim:VERSION.
+#   Publishing the release moves :latest to it (`image-latest`). The package must be public once (its settings on
+#   GitHub) for other repositories' CI to pull it without a token.
+# - Pull requests that change the packaging or the image build and check them without releasing.
 name: release
 on:
   push:
@@ -22,6 +26,10 @@ on:
       - apksim
       - install.sh
       - packaging/**
+      - docker/**
+      - scripts/docker-build.sh
+      - scripts/instrument.py
+      - .github/actions/linux-build/**
   workflow_dispatch:
 
 permissions:
@@ -30,6 +38,8 @@ permissions:
 jobs:
   package:
     if: github.event_name != 'release'
+    # The draft is made only once the image of its version is pushed: publishing it moves :latest to that image.
+    needs: image
     runs-on: macos-15  # Apple Silicon
     timeout-minutes: 60
     steps:
@@ -78,6 +88,64 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "apksim $VERSION" --generate-notes \
             "dist/apksim-$VERSION-macos-arm64.tar.gz" "dist/apksim-testapp-$VERSION.apk" dist/SHA256SUMS
+
+  image:
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.0-ci.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - name: Build the runtime and the test app
+        uses: ./.github/actions/linux-build
+      - name: Build the image
+        run: scripts/docker-build.sh "$IMAGE:$VERSION" --build-arg VERSION="$VERSION"
+      - name: Check the image
+        run: |
+          docker run --rm "$IMAGE:$VERSION" --version | grep -qx "apksim $VERSION"
+          scripts/ci-smoke.sh "$IMAGE:$VERSION" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+          # A whole suite in one container, as another repository's CI would run it: the image's own instrument.py.
+          mkdir -p tests
+          cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
+          cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
+          docker run --rm -v "$PWD/tests:/work" --entrypoint instrument.py "$IMAGE:$VERSION" app.apk test.apk \
+            --isolate -j 2 --xml junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-check
+          path: |
+            smoke/*.png
+            smoke/*.log
+            tests/junit.xml
+      - name: Push
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:$VERSION"
+
+  image-latest:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Point :latest at the published version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:${TAG#v}"
 
   tap:
     if: github.event_name == 'release'
