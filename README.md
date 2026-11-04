@@ -77,8 +77,9 @@ image).
 
 A large app's device tests, the same APKs its CI runs on two API 34 emulators: 4,107 tests in about 4.7 minutes on a
 Mac and 8.3 in the Linux image under Rosetta, against about 19 on the emulators. All pass once two of the app's tests
-are fixed (one clicked the wrong node; some journeys reached a real server on the developer's own network). Details,
-costs and commands: [docs/ci-testbed.md](docs/ci-testbed.md).
+are fixed (one clicked the wrong node; some journeys reached a real server on the developer's own network). In the
+app's own CI, the released image runs all 4,111 of its tests in about 6 minutes (a 15.6-minute job with the build), none flaky and the emulators
+agreeing on every one. Details, costs and commands: [docs/ci-testbed.md](docs/ci-testbed.md).
 
 ## Speed
 
