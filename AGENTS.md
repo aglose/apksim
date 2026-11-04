@@ -431,6 +431,9 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   line). CI runs the same check with the `PRIVATE_DENYLIST` repository secret. Commits use the GitHub noreply
   address (this checkout's local `git config user.email`), and so must merge commits: merge with
   `gh pr merge --merge --author-email 7216340+aglose@users.noreply.github.com`.
+- **No AI attribution:** no `Co-Authored-By` trailer for Claude (or any other assistant) in commit messages, and no
+  "Generated with" line in PR bodies; GitHub lists co-authors as contributors. `.claude/settings.json` turns Claude
+  Code's own trailers off. Every pull request gets a Copilot review automatically (a repository ruleset).
 
 ## Hard-won rules
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
