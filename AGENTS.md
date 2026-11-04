@@ -9,6 +9,9 @@ Read README.md for results and limits; this file covers how to work on the code.
 3. **120 fps**: the owner said "don't stop until it's that fast". Average is now ~117-120 fps on normal UI, the GPU
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
    "Open work".
+4. **The owner's app's device tests as a CI testbed** (asked 2026-11-03: run its emulator tests here, compare CI cost
+   and time, fix until nothing fails): 4,102 of 4,106 pass, ~4 min against ~19; the 4 left are the app's own. See
+   docs/ci-testbed.md, and docs/plan.md phase 0 for what is left.
 
 ## Layout
 - `apksim`: launcher (bash). Builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs
@@ -30,7 +33,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     it off. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
     `--exit-after-first-frame`), so `scripts/train.sh` leaves the test app's cache warm.
   - `dex/`: the **DEX→JVM translator** (written from scratch; dex2jar miscompiled code and took 30 s). One Dalvik
-    register is one JVM local; union-find type inference over values. Methods over 64 KB are split automatically
+    register is one JVM local; union-find type inference over values. A handler sees the registers before an
+    instruction that can throw (returns cannot), and only there: merging more (a handler's live registers at every
+    block of its range, or at a return) typed ints and floats as references and dropped them
+    (`-Dapksim.debugTypes=owner/Class.method` reports such a merge). Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
     `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
     `new RenderNode` → `GpuRenderNode`.
@@ -55,6 +61,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     for a size asked for again within 8 frames, so zooms stay on the CPU. `-Dapksim.gpuBitmaps=false` turns it off;
     `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
     a tiled texture made the CPU untile it, ~3 ms per full screen.
+  - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
+    them, and UiAutomator (see "Instrumentation tests").
+  - `gl/`: GLES20/30 and EGL14 on a real GLES (ANGLE) for offscreen rendering in test runs (see "GLES").
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
@@ -71,10 +80,13 @@ Read README.md for results and limits; this file covers how to work on the code.
   `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `instrument.py` (androidTest suites, JUnit XML), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
+  `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
+  values over JDWP), `translate-class.java` (one class's translation, for javap),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `plan.md` (remaining work, in order).
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
+  device tests here: results, CI cost, commands), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
@@ -261,9 +273,48 @@ and writes JUnit XML; `--isolate` gives every test its own process, as the Andro
 `clearPackageData` does. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
 sandbox brought a second main thread to a main Looper already bound to the first), and `SimTestEnvironment`, whose
 reset between tests asks the JVM's loader which classes are loaded (Robolectric casts its own loader to
-`ClassTracker`, which `FlatLoader` bypasses). The test app's `src/androidTest` (Compose rule + Espresso) is the check:
-`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`. Not supported yet: `adb shell am instrument`, the test
-APK's own resources/context (`getInstrumentation().context` is the app's), UiAutomation, and test-services shell calls.
+`ClassTracker`, which `FlatLoader` bypasses). Every test runs on API 36 whatever the APK targets (`SimRunner.OneSdk`:
+Robolectric otherwise picks the manifest's targetSdk, and an app targeting 37 had no tests left to run). Test classes
+are found from their class bytes (ASM), not reflection: that runs before the sandbox exists, and parsing an annotation
+whose default is a framework enum initialized that class without it, breaking it for the run. A library's test APK
+(KMP `androidDeviceTest`, which instruments itself) is passed as both: `--instrument X-androidTest.apk X-androidTest.apk`
+(no launcher activity needed in a test run). The test app's `src/androidTest` (Compose rule, Espresso, UiAutomator, an
+animation clock check and a translator check) is the check: `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`.
+UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
+`setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
+AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
+setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
+UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
+the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
+to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
+singleTask/singleTop activity is delivered to its onNewIntent. More of a device's behaviour that a test run needs
+(each found by a suite that passed on the emulator and failed here):
+- Compose's test clock posts to the UI thread behind what is queued there on a device; here the test is on the main
+  thread, so the translator calls `TestActivities.beforeUiThreadAction` before Compose's `runOnUiThread`, which runs
+  the main queue first (GlobalSnapshotManager's apply). Without it, with autoAdvance off, a state set in runOnIdle
+  never reached the composition. The looper stays PAUSED: Compose's Robolectric idling needs it
+  (INSTRUMENTATION_TEST mode made it call Espresso.onIdle on the main thread; a device fingerprint made it wait for
+  draw passes that never come).
+- `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
+  (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
+- The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
+  ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
+  (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
+Not supported yet: `adb shell am instrument`, the test APK's own resources/context (`getInstrumentation().context`
+is the app's), UiAutomation shell commands (empty output), and test-services shell calls. A test that reaches a
+server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
+`--no-network` keeps only localhost.
+
+## GLES (offscreen)
+`dev.apksim.gl`: android.opengl.GLES20/GLES30/EGL14 on a real GLES 3 in test runs (or `-Dapksim.gles=true`), for
+code that renders into a pbuffer and reads it back. ANGLE on Metal from `work/runtime/gles` or the Android SDK's
+`emulator/lib64/gles_angle` (`-Dapksim.gles.dir` to choose), the system's libEGL/libGLESv2 on Linux (Mesa; not tried
+yet), called through the JDK's foreign function API (hence `--release 22`). `ShadowSimGLES20/30` are generated by
+`scripts/gen-gles-shadows.py` from the framework jar's signatures, mapping Java to C as Android's bindings do
+(array+offset and Buffer arguments are pointers, an int where another overload has a Buffer is a buffer-object
+offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a window surface is a pbuffer of its size
+(nothing presents GLES to the Mac window). Without a library the shadows fall back to Robolectric's stand-ins.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
@@ -326,7 +377,17 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   window. The owner signs in themselves: Cmd+V in the window pastes the clipboard.
 - **After any Java change, run `scripts/train.sh`** or timings silently get worse (no AOT). The cache is tied to the
   folder path (`work/app.aot.root`), and the launcher warns if it was built elsewhere.
-- `scripts/build.sh` fails on compile errors. Check its output before trusting a run.
+- `scripts/build.sh` fails on compile errors. Check its output before trusting a run. It compiles for Java 22
+  (`--release 22`: `gl/` uses the foreign function API).
+- **A worktree needs `work/` of its own:** link `work/lib` and `work/media` from the main checkout, but copy
+  `work/runtime` (`cp -Rc`, a clone) and run `scripts/build-native.sh` when its `native/` differs: a linked runtime
+  built from another branch fails `train.sh` with UnsatisfiedLinkError, and building into it would change every
+  other checkout's. Check `git log origin/main` before branching: a worktree cut before a history rewrite shares no
+  history with main (rebuild the change on main rather than pushing it).
+- **Debugging a test run or app code without sources:** start with `--jvm
+  "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=PORT"` and attach `scripts/jdi/Trace.java` (which
+  methods run, with arguments) or `Ret.java` (what they return). Suspect the translator when a value is impossible:
+  `scripts/translate-class.java` and javap show `aconst_null`/`if_acmpne` where Dalvik had ints.
 - **Launch benchmarks after a build:** the first launch of each APK other than the test app is cold (no class
   cache). Run each APK once before `bench.py`, or compare against a baseline with the same cache state.
 - Keep the young generation small (`-Xmn64m` in the launcher). 256 MB gave 12-50 ms GC pauses mid-scroll; 32-64 MB
@@ -360,6 +421,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
 
 ## Open work
+- **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, GLES on Linux, a translator
+  fixture test, the four failures that are the app's).
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
   frames, single core) and GPU wait on heavy shaders. Not yet tried: zero-copy GPU output (render into Bitmap memory).
 - **Display vsync pacing is written but unmeasured** (`--jvm -Dapksim.vsync=display`, off by default): Host then starts
