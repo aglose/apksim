@@ -98,7 +98,7 @@ public class Host {
     // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
     if (Device.current().systemBars()) DeviceControls.applySystemUi(Device.current());
     app = RuntimeEnvironment.getApplication();
-    useDeviceGestureThresholds();
+    useDeviceGestureThresholds(app);
     HostNetworks.install(app);
     dev.apksim.video.ShadowSimMediaCodec.install();
     w = app.getResources().getDisplayMetrics().widthPixels;
@@ -266,9 +266,9 @@ public class Host {
   /**
    * Robolectric's ViewConfiguration uses older fixed slops (16 dp touch slop where Android 16 has 8 dp), so a drag
    * scrolled 16 px less than the same drag on a device. Use the framework's own values. Instances are cached per
-   * density, so fixing the one for this display covers every context.
+   * density, so fixing the one for this display covers every context. Test runs (SimRunner) do the same.
    */
-  private void useDeviceGestureThresholds() throws Exception {
+  static void useDeviceGestureThresholds(android.content.Context app) throws Exception {
     android.content.res.Resources res = app.getResources();
     Class<?> dimen = Class.forName("com.android.internal.R$dimen");
     int touch = res.getDimensionPixelSize(dimen.getField("config_viewConfigurationTouchSlop").getInt(null));
