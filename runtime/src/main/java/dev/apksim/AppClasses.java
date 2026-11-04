@@ -95,7 +95,8 @@ final class AppClasses {
         defsByType.add(dex.classDefsByType());
       }
     }
-    cache = ClassCache.open(keys, hintName);
+    // An isolated APK (hintName null) keeps no cache: its classes are few, and a cache's saver thread would outlive it.
+    cache = hintName == null ? null : ClassCache.open(keys, hintName);
   }
 
   /**
@@ -369,6 +370,15 @@ final class AppClasses {
    */
   static AppClasses installTest(Path apk, AppClasses app) throws Exception {
     return install(apk, "/test/", app, System.getProperty("apksim.package") + ".test");
+  }
+
+  /**
+   * An APK whose classes stay apart from the app's: an instrumentation installed over adb, which brings its own copies
+   * of libraries the app also has (Kotlin, AndroidX Test, often minified into each other). Its loader asks
+   * {@link #translate} itself (LiveInstrumentation.Loader); nothing is added to the class path.
+   */
+  static AppClasses isolated(Path apk) throws IOException {
+    return new AppClasses(apk, "/isolated/", null, null);
   }
 
   /** The test APK's classes, in DEX order, as "a.b.C". */

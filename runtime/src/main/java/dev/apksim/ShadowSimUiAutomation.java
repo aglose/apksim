@@ -179,10 +179,36 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
    */
   @Implementation
   protected void waitForIdle(long idleTimeoutMillis, long globalTimeoutMillis) {
+    if (!TestActivities.testRun()) {
+      liveSettle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
+      return;
+    }
     onMain(() -> {
       settle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
       return null;
     });
+  }
+
+  /**
+   * In a running instance (an instrumentation started over adb) the Host loop owns the clock, which follows real time:
+   * waits, in real time, until the main thread has nothing due, or QUIET ms at most (an endless animation).
+   */
+  private static void liveSettle(long quietMillis) {
+    long end = System.nanoTime() + quietMillis * 1_000_000;
+    do {
+      try {
+        Thread.sleep(16);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+      boolean idle = onMain(() -> {
+        ShadowLooper main = shadowOf(Looper.getMainLooper());
+        long next = main.getNextScheduledTaskTime().toMillis();
+        return next == 0 || next > SystemClock.uptimeMillis() + 32;
+      });
+      if (idle) return;
+    } while (System.nanoTime() < end);
   }
 
   private static void settle(long quietMillis) {
@@ -207,10 +233,14 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected AccessibilityEvent executeAndWaitForEvent(Runnable command, UiAutomation.AccessibilityEventFilter filter,
       long timeoutMillis) throws TimeoutException {
     command.run();
-    onMain(() -> {
-      settle(500);
-      return null;
-    });
+    if (TestActivities.testRun()) {
+      onMain(() -> {
+        settle(500);
+        return null;
+      });
+    } else {
+      liveSettle(500);
+    }
     for (int type : new int[] {AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
         AccessibilityEvent.TYPE_WINDOWS_CHANGED}) {
       AccessibilityEvent e = new AccessibilityEvent(type);
@@ -226,6 +256,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       System.err.println("[apksim] UiAutomation.performGlobalAction(" + action + ") is not supported");
       return false;
     }
+    if (!TestActivities.testRun()) return live(true, "back");
     long now = SystemClock.uptimeMillis();
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
     injectInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
@@ -245,6 +276,57 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     }
   }
 
+  // --- Input in a running instance -------------------------------------------------------------------------------
+
+  /**
+   * In a running instance, injected events go through the Host's input queue, as the window's and `adb shell input`'s
+   * do, so they reach the window the Host would pick and pass its gesture tracking. One finger; keys on their down.
+   */
+  @Implementation
+  @Override
+  protected boolean injectInputEvent(android.view.InputEvent event, boolean sync) {
+    // On the main thread (an instrumentation's onCreate, runOnMainSync) the Host loop that would take the event is
+    // this thread, so the queue would never be served: dispatch directly, as in test runs.
+    if (TestActivities.testRun() || Looper.myLooper() == Looper.getMainLooper()) return super.injectInputEvent(event, sync);
+    if (event instanceof android.view.MotionEvent m) {
+      int masked = m.getActionMasked();
+      String action = masked == android.view.MotionEvent.ACTION_DOWN ? "down"
+          : masked == android.view.MotionEvent.ACTION_MOVE ? "move"
+          : masked == android.view.MotionEvent.ACTION_UP ? "up"
+          : masked == android.view.MotionEvent.ACTION_CANCEL ? "cancel" : null;
+      if (action == null) return false;
+      return live(sync, "touch", action, String.valueOf(m.getRawX()), String.valueOf(m.getRawY()));
+    }
+    if (event instanceof KeyEvent k) {
+      // The Host's key command makes a whole press and release, so the down carries it and the up is done.
+      if (k.getAction() != KeyEvent.ACTION_DOWN) return true;
+      if (k.getKeyCode() == KeyEvent.KEYCODE_BACK && k.getMetaState() == 0) return live(sync, "back");
+      // HOME leaves the app (as `adb shell input keyevent HOME` does); the app never sees the key on a device.
+      if (k.getKeyCode() == KeyEvent.KEYCODE_HOME) return live(sync, "home");
+      List<String> c = new ArrayList<>(List.of("key", KeyEvent.keyCodeToString(k.getKeyCode()).substring("KEYCODE_".length())));
+      if (k.isCtrlPressed()) c.add("ctrl");
+      if (k.isShiftPressed()) c.add("shift");
+      if (k.isAltPressed()) c.add("alt");
+      if (k.isMetaPressed()) c.add("meta");
+      return live(sync, c.toArray(new String[0]));
+    }
+    return false;
+  }
+
+  /** Queues input with the Host and, when SYNC, waits until the Host has dispatched it, as a device's injection does. */
+  private static boolean live(boolean sync, String... command) {
+    try {
+      String r = AdbShell.control(command);
+      if (r != null && (r.startsWith("error") || r.startsWith("unknown"))) return false;
+      long end = System.nanoTime() + 5_000_000_000L;
+      while (sync && System.nanoTime() < end && Boolean.TRUE.equals(onMain(Host::inputQueued))) Thread.sleep(4);
+      return true;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
   // --- Rotation ----------------------------------------------------------------------------------------------------
 
   /**
@@ -256,6 +338,11 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected boolean setRotation(int rotation) {
     if (rotation == UiAutomation.ROTATION_FREEZE_CURRENT || rotation == UiAutomation.ROTATION_UNFREEZE) return true;
     if (rotation < 0 || rotation > 3) return false;
+    if (!TestActivities.testRun()) {
+      // A running instance: the Host's device controls turn the display, so the window and renderer follow.
+      if (Looper.myLooper() == Looper.getMainLooper()) return false;  // would wait on this thread's own loop
+      return live(true, "rotate", rotation % 2 == 0 ? "portrait" : "landscape");
+    }
     return onMain(() -> {
       Context app = RuntimeEnvironment.getApplication();
       Display display = ShadowDisplay.getDefaultDisplay();
@@ -306,6 +393,16 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     if (Looper.myLooper() == Looper.getMainLooper()) {
       try {
         return work.call();
+      } catch (RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    }
+    if (!TestActivities.testRun()) {
+      // A running instance: the Host loop runs the main looper's messages.
+      try {
+        return AdbShell.onMain(work);
       } catch (RuntimeException e) {
         throw e;
       } catch (Exception e) {
