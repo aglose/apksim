@@ -37,8 +37,9 @@ request to the app's repository and an image of this version (`scripts/docker-bu
   runner-minutes a pull request at most, against 18.8 min and 34.9 (ci-testbed.md). It found two apksim bugs, both
   fixed: Mesa's EGL has no window configs and WebRTC asks for one (every journey with a live camera failed), and
   processes started together raced on extracting native libraries.
-- **Left:** the job in the app's own CI, which is a pull request to the app's repository (it merges itself once green,
-  so it waits for the owner's go-ahead); it would also time a native x86 runner rather than Rosetta.
+- **Done in the app's own CI (2026-11-04, apksim 0.5.0):** a job beside the emulator jobs pulls the released image
+  and runs every suite: 4,111/4,111, none flaky, the same as the emulators in that run; 350 s of tests, 15.6 min for
+  the job with its build (ci-testbed.md).
 
 **0b. GLES on Linux.** `Gl` looks for `libEGL.so.1`/`libGLESv2.so.2`, but the image has neither, so the 3D test would
 fail there. Add Mesa (`libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri`) to `docker/Dockerfile`, try EGL's surfaceless
@@ -66,8 +67,10 @@ tests replace it, so they are hermetic on a developer's Mac too). The app's code
 **0h. Single-process journey runs on the Mac.** In one long run of all 76 journeys in one process, one to four
 different journeys time out at 20 s each run, some with the app unable to connect to the journey's fake
 server on 127.0.0.1. Never with one process per test (`--isolate`: 76/76 three times), never for a class run alone,
-once in the Linux image. No descriptor leak (~460, flat). Next: `Trace.java` on the fake server's accept loop
-(Ktor CIO) in a failing run, and whether the app's OkHttp pool or a static carries a closed server's connection.
+once in the Linux image. No descriptor leak (~460, flat).
+- **Explained and fixed in the app (2026-11-04):** the sign-in screen re-seeded its server field with an earlier
+  journey's stored connection, already closed (ci-testbed.md). With the app's fix, a whole run in its CI had no flaky
+  journeys, and the suite took 96 s instead of 225-286 s.
 
 **0d. A translator regression test with R8's register reuse.** The two miscompilations needed R8-shaped code (a
 register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
