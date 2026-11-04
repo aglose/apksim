@@ -238,8 +238,10 @@ final class AdbServer {
         } catch (IOException e) {
           // Either side went away.
         } finally {
+          // An adb stream has no half-close: the client's CLSE ends both directions, and closing the socket also
+          // ends the read below, so neither thread nor socket outlives the stream.
           try {
-            socket.shutdownOutput();
+            socket.close();
           } catch (IOException e) {
             // Already closed.
           }
