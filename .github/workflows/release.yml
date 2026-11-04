@@ -3,7 +3,7 @@
 # - A pushed tag vX.Y.Z makes a draft GitHub release with the tarball, SHA256SUMS and the test app. Publishing the
 #   draft (by hand, after reading its notes) runs the `tap` job.
 # - The `tap` job writes packaging/homebrew/apksim.rb with the release's version and checksum into the
-#   aglose/homebrew-apksim tap, so `brew tap aglose/apksim && brew install apksim` gets it. It pushes with the
+#   aglose/homebrew-apksim tap, so `brew tap aglose/apksim`, `brew trust aglose/apksim` and `brew install apksim` get it. It pushes with the
 #   TAP_DEPLOY_KEY secret, the private half of a deploy key with write access to that repository only, and is skipped
 #   without one.
 # - Pull requests that change the packaging build and check the tarball without releasing it.

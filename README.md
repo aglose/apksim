@@ -7,6 +7,7 @@ Runs unmodified Android APKs on an Apple Silicon Mac as a single ordinary proces
 On an Apple Silicon Mac, with Homebrew:
 
     brew tap aglose/apksim           # once
+    brew trust aglose/apksim         # once: Homebrew 7 loads casks only from taps you trust
     brew install apksim
     apksim app.apk
     apksim --device foldable app.apk
