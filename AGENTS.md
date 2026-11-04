@@ -87,7 +87,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
-    `work/cache/data/<pkg>/default` (or `instance-N` when several run).
+    `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
+    Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
+    containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
@@ -96,6 +98,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `gpushader.m`: Metal pipelines for translated AGSL.
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
+  - `loopback.c`: under `--no-network` only (`DYLD_INSERT_LIBRARIES`, set through `/usr/bin/env` after
+    `sandbox-exec`, since dyld drops DYLD_* variables for system binaries). The sandbox can allow only
+    `localhost` (127.0.0.1 over IPv4, ::1 over IPv6), and the JDK reaches 127.0.0.1 on a dual-stack socket as
+    ::ffff:127.0.0.1, which it refused; `connect()` to a mapped 127.x address swaps the socket for an IPv4 one on
+    the same descriptor (`dup2`). The rest of 127/8 cannot be allowed (the profile language takes only `localhost`).
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
@@ -318,7 +325,9 @@ tee that timestamps lines into a 20k-line ring and still passes them on (`logcat
 tee back when the stream is reassigned); supports `-d -c -t N -T N -s -e`, `TAG:LEVEL` and `*:S`.
 `adb push/pull` (and `ls`) see `/data/data/PKG` = `/data/user/0/PKG` (the app's persistent data folder),
 `/sdcard` = `/storage/emulated/0` (Robolectric's external storage, per process) and `/data/local/tmp` (this
-instance's scratch); anything else is refused. Not supported: `adb install` (one APK per instance), `am force-stop`
+instance's scratch); anything else is refused. `pm clear PKG` fails with a pointer to `--fresh` / `ctl.py erase`
+(here the instance is both the app's process and the device, and the app's open databases would outlive a delete).
+Not supported: `adb install` (one APK per instance), `am force-stop`
 (it is this process; `adb shell apksim quit`), `jdwp`, shell_v2 (so no exit codes or separate stderr) and
 `logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
 
@@ -369,6 +378,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   never reached the composition. The looper stays PAUSED: Compose's Robolectric idling needs it
   (INSTRUMENTATION_TEST mode made it call Espresso.onIdle on the main thread; a device fingerprint made it wait for
   draw passes that never come).
+- `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
+  outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
+  device's main thread would run beside the test thread. A journey polling its fake server for a request that a
+  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
@@ -382,7 +395,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 Not supported yet: `adb shell am instrument`, the test APK's own resources/context (`getInstrumentation().context`
 is the app's), UiAutomation shell commands (empty output), and test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
-`--no-network` keeps only localhost.
+`--no-network` keeps only localhost (127.0.0.1 and ::1).
 
 ## GLES (offscreen)
 `dev.apksim.gl`: android.opengl.GLES20/GLES30/EGL14 on a real GLES 3 in test runs (or `-Dapksim.gles=true`), for

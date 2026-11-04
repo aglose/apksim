@@ -34,7 +34,7 @@ final class ElfLoader {
         // Several processes can extract at once (instrument.py --isolate starts four after an APK changes): each writes its
         // own temporary file and renames it into place, so none loads a library another is still writing or replacing.
         // The CRC, not the size, says whether the file is this APK's (a rebuilt library can keep its size).
-        String tag = "." + ProcessHandle.current().pid() + ".tmp";
+        String tag = Storage.tmpTag();
         Path tmp = dir.resolve(out.getFileName() + tag);
         try (InputStream in = zip.getInputStream(e)) {
           Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);

@@ -79,6 +79,44 @@ public final class TestActivities {
     main.idle();
   }
 
+  /**
+   * Thread.sleep in app and test code (the translator calls this instead). On a device a test sleeping in a polling
+   * loop (waiting for a request to reach a fake server, say) runs on its own thread, and the app's main thread goes on
+   * meanwhile: a coroutine on Dispatchers.Main resumes, a Handler post runs. Here the test is on the main thread and a
+   * plain sleep would hold all of that back until the test next idles the looper, so work that needs one more turn
+   * of the main thread never got there and the poll timed out. So, in a test run, on the main thread and outside any
+   * message being dispatched (where a device's main thread would be the one sleeping), the sleep runs the queue's due
+   * messages as it goes (the clock does not move, as in beforeUiThreadAction).
+   */
+  public static void sleep(long millis) throws InterruptedException {
+    if (millis <= 0 || !testRun() || Looper.myLooper() != Looper.getMainLooper() || inDispatch()) {
+      Thread.sleep(millis);
+      return;
+    }
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    long end = System.nanoTime() + millis * 1_000_000L;
+    while (true) {
+      main.idle();
+      long left = end - System.nanoTime();
+      if (left <= 0) return;
+      Thread.sleep(Math.min(Math.max(left / 1_000_000L, 1), 2));
+    }
+  }
+
+  public static void sleep(long millis, int nanos) throws InterruptedException {
+    if (nanos < 0 || nanos > 999_999) throw new IllegalArgumentException("nanosecond timeout value out of range");
+    sleep(millis + (nanos >= 500_000 ? 1 : 0));
+  }
+
+  /** Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself. */
+  private static boolean inDispatch() {
+    return StackWalker.getInstance().walk(s -> s.anyMatch(f -> {
+      String c = f.getClassName();
+      return (c.equals("android.os.Handler") && f.getMethodName().equals("dispatchMessage")) || c.equals("android.os.Looper")
+          || c.equals("android.view.Choreographer$FrameDisplayEventReceiver");
+    }));
+  }
+
   static ActivityController<?> controller(Activity a) {
     return ReflectionHelpers.getField(Shadow.extract(a), "controller");
   }
