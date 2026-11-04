@@ -804,10 +804,8 @@ final class DeviceControls {
     return "ok, " + old.size() + " activit" + (old.size() == 1 ? "y" : "ies") + " rebuilt from saved state";
   }
 
-  @SuppressWarnings("unchecked")
   private static List<android.view.View> rootViews() {
-    return new java.util.ArrayList<>((List<android.view.View>) org.robolectric.util.ReflectionHelpers.getField(
-        android.view.WindowManagerGlobal.getInstance(), "mViews"));
+    return Host.rootViews();
   }
 
   private static float step(float current, int direction) {

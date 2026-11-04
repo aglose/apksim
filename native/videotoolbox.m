@@ -241,6 +241,23 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_video_VideoToolbox_nativePictureToRgb
                                                                                   jint w, jint h, jobject out, jboolean bgra) {
   if (!picture) return JNI_FALSE;
   CVPixelBufferRef dst = NULL;
+  void *outAddr = (*env)->GetDirectBufferAddress(env, out);
+  if (bgra) {
+    // The Bitmap's order already: transfer straight into [out], with no buffer of its own and no copy after.
+    if (CVPixelBufferCreateWithBytes(NULL, (size_t)w, (size_t)h, kCVPixelFormatType_32BGRA, outAddr, (size_t)w * 4, NULL, NULL,
+                                     NULL, &dst) != kCVReturnSuccess) {
+      return JNI_FALSE;
+    }
+    pthread_mutex_lock(&transferLock);
+    if (!transfer) {
+      VTPixelTransferSessionCreate(NULL, &transfer);
+      VTSessionSetProperty(transfer, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Normal);
+    }
+    OSStatus s = VTPixelTransferSessionTransferImage(transfer, (CVPixelBufferRef)(intptr_t)picture, dst);
+    pthread_mutex_unlock(&transferLock);
+    CVPixelBufferRelease(dst);
+    return s == noErr ? JNI_TRUE : JNI_FALSE;
+  }
   if (CVPixelBufferCreate(NULL, (size_t)w, (size_t)h, kCVPixelFormatType_32BGRA, NULL, &dst) != kCVReturnSuccess) return JNI_FALSE;
   pthread_mutex_lock(&transferLock);
   if (!transfer) {
@@ -255,9 +272,9 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_video_VideoToolbox_nativePictureToRgb
   }
   CVPixelBufferLockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
   vImage_Buffer src = {CVPixelBufferGetBaseAddress(dst), (vImagePixelCount)h, (vImagePixelCount)w, CVPixelBufferGetBytesPerRow(dst)};
-  vImage_Buffer to = {(*env)->GetDirectBufferAddress(env, out), (vImagePixelCount)h, (vImagePixelCount)w, (size_t)w * 4};
-  const uint8_t bgraToRgba[4] = {2, 1, 0, 3}, same[4] = {0, 1, 2, 3};
-  vImagePermuteChannels_ARGB8888(&src, &to, bgra ? same : bgraToRgba, kvImageNoFlags);
+  vImage_Buffer to = {outAddr, (vImagePixelCount)h, (vImagePixelCount)w, (size_t)w * 4};
+  const uint8_t bgraToRgba[4] = {2, 1, 0, 3};
+  vImagePermuteChannels_ARGB8888(&src, &to, bgraToRgba, kvImageNoFlags);
   CVPixelBufferUnlockBaseAddress(dst, kCVPixelBufferLock_ReadOnly);
   CVPixelBufferRelease(dst);
   return JNI_TRUE;

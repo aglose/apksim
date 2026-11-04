@@ -72,7 +72,7 @@ static void s_log_assert(const char *cond, const char *tag, const char *f, ...) 
   fputc('\n', stderr);
   abort();
 }
-static int s_log_is_loggable(int prio, const char *tag, int def) { return 1; }
+static int s_log_is_loggable(int prio, const char *tag, int def) { return prio >= def; }
 
 // ---------------------------------------------------------------- differing constants and layouts
 
