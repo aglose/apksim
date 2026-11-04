@@ -209,7 +209,43 @@ public final class SelfTest {
     track.release();
     boolean ok = rms > 0.05 && head >= total && Math.abs(took - expected) < 0.15 * expected + 0.1;
     return String.format("audio %s: %d frames in, %.2f s of PCM (%d Hz, %d ch, rms %.2f), played in %.2f s%s", name, frames.size(),
-        expected, rate, channels, rms, took, ok ? " ok" : " WRONG");
+        expected, rate, channels, rms, took, ok ? " ok" : " WRONG") + " | " + releaseWhileWriting(rate, channels);
+  }
+
+  /**
+   * Releases a playing track while another thread is blocked in a write waiting for room, which a device allows: the
+   * write must return what it took, and the release must not free the stream under it.
+   */
+  private static String releaseWhileWriting(int rate, int channels) throws Exception {
+    if (!SimAudio.available()) return "release during a blocked write: no CoreAudio here";
+    long underWrite = SimAudio.nativeReleasedUnderWrite();
+    int frameBytes = 2 * channels;
+    android.media.AudioTrack track = new android.media.AudioTrack.Builder()
+        .setAudioFormat(new android.media.AudioFormat.Builder().setSampleRate(rate)
+            .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+            .setChannelMask(channels == 1 ? android.media.AudioFormat.CHANNEL_OUT_MONO : android.media.AudioFormat.CHANNEL_OUT_STEREO).build())
+        .setBufferSizeInBytes(rate / 10 * frameBytes)
+        .build();
+    track.play();
+    byte[] silence = new byte[rate * 2 * frameBytes]; // 2 s: the write blocks for room long before taking it all
+    int[] wrote = {-1};
+    long[] returned = {0};
+    Thread writer = new Thread(() -> {
+      wrote[0] = track.write(silence, 0, silence.length, android.media.AudioTrack.WRITE_BLOCKING);
+      returned[0] = System.nanoTime();
+    }, "selftest-audio-writer");
+    writer.start();
+    Thread.sleep(300);
+    long released = System.nanoTime();
+    track.release();
+    writer.join(2000);
+    double after = returned[0] == 0 ? -1 : (returned[0] - released) / 1e6;
+    // The native stream counts writers inside it: one still there when the stream is freed is the bug this checks for.
+    boolean freedUnderWrite = SimAudio.nativeReleasedUnderWrite() != underWrite;
+    boolean ok = !writer.isAlive() && wrote[0] > 0 && wrote[0] < silence.length && after >= 0 && after < 500 && !freedUnderWrite;
+    return String.format("release during a blocked write: wrote %d of %d bytes, returned %.0f ms after release, %s%s",
+        wrote[0], silence.length, after, freedUnderWrite ? "stream freed while the write was in it" : "write left before the free",
+        ok ? " ok" : " WRONG");
   }
 
   /** The live-video path's colour conversion: a solid red I420 picture must be red in a Bitmap. */
