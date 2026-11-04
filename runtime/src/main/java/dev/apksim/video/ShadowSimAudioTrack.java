@@ -136,14 +136,13 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     }
   }
 
+  // Start, pause and flush switch the output on and off, so they run under the lock: release stops it under the same
+  // lock, and a start already admitted can then not switch a released stream back on (a writer blocked for room
+  // would wait for render callbacks that never come, and release for that writer).
   @Implementation
   protected void native_start() {
-    long o = use();
-    if (o == 0) return;
-    try {
-      SimAudio.nativeOutPlay(o, true);
-    } finally {
-      done();
+    synchronized (lock) {
+      if (out() != 0) SimAudio.nativeOutPlay(out, true);
     }
   }
 
@@ -156,12 +155,8 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   @Implementation
   protected void native_pause() {
-    long o = use();
-    if (o == 0) return;
-    try {
-      SimAudio.nativeOutPlay(o, false);
-    } finally {
-      done();
+    synchronized (lock) {
+      if (out() != 0) SimAudio.nativeOutPlay(out, false);
     }
   }
 
@@ -171,12 +166,8 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   @Implementation
   protected void native_flush() {
-    long o = use();
-    if (o == 0) return;
-    try {
-      SimAudio.nativeOutFlush(o);
-    } finally {
-      done();
+    synchronized (lock) {
+      if (out() != 0) SimAudio.nativeOutFlush(out);
     }
   }
 
@@ -228,8 +219,9 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   }
 
   /**
-   * Frees the stream once no other thread is in a native call on it. Clearing [out] first keeps new calls away;
-   * stopping it wakes a writer blocked for room, which then returns what it took, as on a device.
+   * Frees the stream once no other thread is in a native call on it. Clearing [out] keeps new calls away, and
+   * stopping it (under the lock, so no start can follow) wakes a writer blocked for room, which then returns what it
+   * took, as on a device.
    */
   @Implementation
   protected void native_release() {
@@ -238,8 +230,8 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       o = out;
       if (o == 0) return;
       out = 0;
+      SimAudio.nativeOutPlay(o, false);
     }
-    SimAudio.nativeOutPlay(o, false);
     synchronized (lock) {
       boolean interrupted = false;
       while (using > 0) {
