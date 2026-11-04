@@ -216,7 +216,8 @@ both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioTo
 MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
 codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric allocates a codec's 10 input buffers,
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
-(else width×height×3/4, else 8 MB): a fixed 8 MB held 80 MB per video codec (playing the test clip: +100 → +16-33 MB).
+(else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
+(playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).
 Its placeholders are told apart by identity, so
 each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
