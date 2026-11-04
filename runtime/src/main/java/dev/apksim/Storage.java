@@ -68,6 +68,23 @@ final class Storage {
     return Path.of(System.getProperty("user.dir")).resolve(path);
   }
 
+  /**
+   * A suffix for a file written beside its final name and renamed into place. Not the PID alone: processes in separate
+   * containers sharing one cache volume (docker run per test) often have the same PID.
+   */
+  static String tmpTag() {
+    return "." + ProcessHandle.current().pid() + "-" + Long.toHexString(java.util.concurrent.ThreadLocalRandom.current().nextLong()) + ".tmp";
+  }
+
+  /** Empties a data directory this instance holds (Storage.dataDir), keeping its lock. */
+  static void clearDataDir(Path dir) throws IOException {
+    try (Stream<Path> children = Files.list(dir)) {
+      for (Path p : (Iterable<Path>) children::iterator) {
+        if (!p.getFileName().toString().equals(".lock")) deleteTree(p);
+      }
+    }
+  }
+
   /** The persistent data directory for this instance. */
   static Path dataDir(Path root, String pkg) throws IOException {
     for (int slot = 0; ; slot++) {

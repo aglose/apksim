@@ -250,6 +250,8 @@ public class Host {
   private static void usePersistentDataDir() throws Exception {
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
+    // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
+    if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
     Path link = RuntimeEnvironment.getTempDirectory().getBasePath().resolve(pkg + "-dataDir");
     Storage.deleteTree(link);
     Files.createSymbolicLink(link, data);
