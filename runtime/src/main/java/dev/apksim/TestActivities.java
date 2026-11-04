@@ -15,6 +15,7 @@ import android.os.Looper;
 import android.view.View;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Implementation;
@@ -89,23 +90,41 @@ public final class TestActivities {
    * messages as it goes (the clock does not move, as in beforeUiThreadAction).
    */
   public static void sleep(long millis) throws InterruptedException {
-    if (millis <= 0 || !testRun() || Looper.myLooper() != Looper.getMainLooper() || inDispatch()) {
-      Thread.sleep(millis);
+    if (millis <= 0 || !pumpsWhileSleeping()) {
+      Thread.sleep(millis);  // also its checks: a negative value throws, an interrupt throws
       return;
     }
-    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
-    long end = System.nanoTime() + millis * 1_000_000L;
-    while (true) {
-      main.idle();
-      long left = end - System.nanoTime();
-      if (left <= 0) return;
-      Thread.sleep(Math.min(Math.max(left / 1_000_000L, 1), 2));
-    }
+    pumpFor(TimeUnit.MILLISECONDS.toNanos(millis));
   }
 
   public static void sleep(long millis, int nanos) throws InterruptedException {
+    if (millis < 0) throw new IllegalArgumentException("timeout value is negative");
     if (nanos < 0 || nanos > 999_999) throw new IllegalArgumentException("nanosecond timeout value out of range");
-    sleep(millis + (nanos >= 500_000 ? 1 : 0));
+    if ((millis == 0 && nanos == 0) || !pumpsWhileSleeping()) {
+      Thread.sleep(millis, nanos);
+      return;
+    }
+    long total = TimeUnit.MILLISECONDS.toNanos(millis);
+    pumpFor(total > Long.MAX_VALUE - nanos ? Long.MAX_VALUE : total + nanos);
+  }
+
+  private static boolean pumpsWhileSleeping() {
+    return testRun() && Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
+  }
+
+  /** Sleeps {@code nanos} (> 0), running the main queue's due messages meanwhile; throws on interrupt, as a sleep would. */
+  private static void pumpFor(long nanos) throws InterruptedException {
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    long start = System.nanoTime();
+    while (true) {
+      if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
+      main.idle();
+      long left = nanos - (System.nanoTime() - start);  // no deadline sum to overflow for a long sleep
+      if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
+      if (left <= 0) return;
+      long step = Math.min(left, 2_000_000L);  // a short step, then the queue again
+      Thread.sleep(step / 1_000_000L, (int) (step % 1_000_000L));  // throws if interrupted meanwhile, clearing the flag
+    }
   }
 
   /** Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself. */

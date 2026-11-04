@@ -3,7 +3,8 @@
 // ::ffff:127.0.0.1, which the sandbox refuses ("Operation not permitted"), and its profile language has no way to
 // name that address. So this library (DYLD_INSERT_LIBRARIES, only under --no-network) interposes connect(): an IPv6
 // socket connecting to a v4-mapped loopback address is swapped for an IPv4 socket on the same descriptor, which
-// then connects to the plain IPv4 address. Everything else goes to connect() unchanged.
+// then connects to the plain IPv4 address, from the same local port and address if the socket was bound. Everything
+// else goes to connect() unchanged.
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -28,6 +29,24 @@ static int loopback_connect(int fd, const struct sockaddr *a, socklen_t alen) {
   socklen_t tl = sizeof type;
   if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) != 0) return connect(fd, a, alen);
   if (type == SOCK_STREAM) proto = IPPROTO_TCP; else if (type == SOCK_DGRAM) proto = IPPROTO_UDP;
+  // A socket already bound (a DatagramSocket's port, an explicit bind) keeps its port and address on the new socket.
+  // An IPv6 address IPv4 cannot express (::1, a real IPv6 one) leaves the socket alone: connect as it was.
+  struct sockaddr_in6 local;
+  socklen_t llen = sizeof local;
+  struct sockaddr_in bind4;
+  memset(&bind4, 0, sizeof bind4);
+  bind4.sin_len = sizeof bind4;
+  bind4.sin_family = AF_INET;
+  int rebind = 0;
+  if (getsockname(fd, (struct sockaddr *)&local, &llen) == 0 && local.sin6_family == AF_INET6) {
+    int any = IN6_IS_ADDR_UNSPECIFIED(&local.sin6_addr);
+    if (local.sin6_port != 0 || !any) {
+      if (IN6_IS_ADDR_V4MAPPED(&local.sin6_addr)) memcpy(&bind4.sin_addr, local.sin6_addr.s6_addr + 12, 4);
+      else if (!any) return connect(fd, a, alen);
+      bind4.sin_port = local.sin6_port;
+      rebind = 1;
+    }
+  }
   int s4 = socket(AF_INET, type, proto);
   if (s4 < 0) return connect(fd, a, alen);
   // What the JDK and native code set before connecting: blocking mode, close-on-exec and the usual options.
@@ -52,6 +71,8 @@ static int loopback_connect(int fd, const struct sockaddr *a, socklen_t alen) {
   }
   close(s4);
   if (fdfl >= 0) fcntl(fd, F_SETFD, fdfl);
+  // Only now: until dup2 closed the old socket it held the port.
+  if (rebind && bind(fd, (const struct sockaddr *)&bind4, sizeof bind4) != 0) return -1;
   struct sockaddr_in a4;
   memset(&a4, 0, sizeof a4);
   a4.sin_len = sizeof a4;
