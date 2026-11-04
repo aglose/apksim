@@ -1,4 +1,5 @@
-# Homebrew cask for the aglose/homebrew-apksim tap: brew tap aglose/apksim, then brew install apksim
+# Homebrew cask for the aglose/homebrew-apksim tap: brew tap aglose/apksim, brew trust
+# aglose/apksim (Homebrew 7 loads casks only from trusted taps), then brew install apksim
 # .github/workflows/release.yml fills in the version and checksum of each published release and pushes the result to
 # the tap as Casks/apksim.rb; this copy is the template.
 # A cask rather than a formula: the release is prebuilt and self-contained (its own JDK 24 runtime, libraries and
