@@ -59,7 +59,8 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          cp ../testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk "apksim-testapp-$VERSION.apk"
+          # From the bundle just checked: setup.sh builds the test app, or downloads it without an Android SDK.
+          cp "$RUNNER_TEMP/inst/apksim-$VERSION-macos-arm64/work/testapp.apk" "apksim-testapp-$VERSION.apk"
           shasum -a 256 "apksim-$VERSION-macos-arm64.tar.gz" "apksim-testapp-$VERSION.apk" > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@v4

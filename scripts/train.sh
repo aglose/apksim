@@ -23,20 +23,24 @@ if ! (set -C; echo $$ > "$STATE/train.pid") 2>/dev/null; then
   fi
   echo $$ > "$STATE/train.pid"
 fi
-trap 'rm -f "$STATE/train.pid" "$STATE/app.aot.new" "$STATE/app.aotconf"' EXIT
-rm -f "$STATE/app.aotconf" "$STATE/app.aot.new"
+# This trainer's own files, so that two trainers (a stale train.pid taken over by two launches at once) cannot
+# clobber or delete each other's output: each builds a whole cache and renames it into place. The pid file is
+# removed only by its owner.
+CONF="$STATE/app.aotconf.$$"
+NEW="$STATE/app.aot.new.$$"
+trap 'rm -f "$CONF" "$NEW"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
 # Each stage keeps its output, and a failure says which stage and where to look, rather than ending silently.
 stage() {
   local name="$1"; shift
-  if ! APKSIM_NOCACHE=1 "$ROOT/apksim" "$@" > "$STATE/train-$name.log" 2>&1 || [[ "$name" == create && ! -s "$STATE/app.aot.new" ]]; then
+  if ! APKSIM_NOCACHE=1 "$ROOT/apksim" "$@" > "$STATE/train-$name.log" 2>&1 || [[ "$name" == create && ! -s "$NEW" ]]; then
     echo "train.sh: the $name stage failed; see $STATE/train-$name.log" >&2
     tail -5 "$STATE/train-$name.log" >&2
     exit 1
   fi
 }
-stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$STATE/app.aotconf" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
-stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$STATE/app.aotconf" --jvm "-XX:AOTCache=$STATE/app.aot.new" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
+stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
+stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
-mv -f "$STATE/app.aot.new" "$STATE/app.aot"
+mv -f "$NEW" "$STATE/app.aot"
 printf '%s' "$ROOT" > "$STATE/app.aot.root"
 ls -la "$STATE/app.aot"
