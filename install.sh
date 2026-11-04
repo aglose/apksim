@@ -29,14 +29,22 @@ curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"
 (cd "$TMP" && grep " \*\{0,1\}$NAME.tar.gz\$" SHA256SUMS | shasum -a 256 -c -) >/dev/null \
   || fail "checksum mismatch for $NAME.tar.gz"
 tar -xzf "$TMP/$NAME.tar.gz" -C "$TMP"
+# Only folders that are apksim installs (work/release marks one) are replaced or removed: APKSIM_PREFIX may be shared.
+is_install() { [[ -f "$1/work/release" && -x "$1/apksim" ]]; }
+if [[ -e "$PREFIX/$VERSION" ]] && ! is_install "$PREFIX/$VERSION"; then
+  fail "$PREFIX/$VERSION exists and is not an apksim install; set APKSIM_PREFIX to another folder"
+fi
 OLD=()
-for d in "$PREFIX"/*/; do [[ -d "$d" && "$(basename "$d")" != "$VERSION" ]] && OLD+=("${d%/}"); done
+for d in "$PREFIX"/*/; do
+  d="${d%/}"
+  [[ "$(basename "$d")" != "$VERSION" ]] && is_install "$d" && OLD+=("$d")
+done
 rm -rf "${PREFIX:?}/$VERSION"
 mv "$TMP/$NAME" "$PREFIX/$VERSION"
 ln -sfn "$PREFIX/$VERSION/apksim" "$BIN/apksim"
 # Earlier versions: stop their standbys (background JVMs that make launches warm), then remove them.
 for d in "${OLD[@]+"${OLD[@]}"}"; do
-  [[ -x "$d/apksim" ]] && "$d/apksim" --stop-standbys >/dev/null 2>&1 || true
+  "$d/apksim" --stop-standbys >/dev/null 2>&1 || true
   rm -rf "$d"
 done
 
