@@ -41,9 +41,11 @@ done
 cp -RL "$ROOT/work/runtime" "$D/work/runtime"
 cp "$TESTAPK" "$D/work/testapp.apk"
 
-# The JDK: every module, so --debug (JDWP), the foreign function API and anything an app's libraries reach for work.
+# The JDK: every module, so --debug (JDWP), the foreign function API and anything an app's libraries reach for work,
+# except jlink and jpackage (which needs it). Temurin 24 has no jmods: jlink then links from the JDK's own run-time
+# image (JEP 493), which cannot include jdk.jlink.
 # Not compressed (a compressed image loads classes more slowly; the tarball is compressed anyway).
-MODULES="$("$JDK/bin/java" --list-modules | sed 's/@.*//' | paste -sd, -)"
+MODULES="$("$JDK/bin/java" --list-modules | sed 's/@.*//' | grep -vx 'jdk.jlink\|jdk.jpackage' | paste -sd, -)"
 MP=(); [[ -d "$JDK/jmods" ]] && MP=(--module-path "$JDK/jmods")
 "$JDK/bin/jlink" "${MP[@]+"${MP[@]}"}" --add-modules "$MODULES" --strip-debug --no-man-pages --no-header-files \
   --output "$D/work/jre"
