@@ -8,28 +8,42 @@ needed, and how it compares. App-specific detail (names, commands) is in the own
 
 ## Result
 
-4,106 tests; 4,102 pass.
+4,107 tests. Unchanged, the app passes 4,103-4,105 of them here; with two small fixes to its tests (below) all
+4,107 pass, on the Mac and in the Linux image.
 
-| Suite | Tests | apksim | Emulator in CI, tests only |
-|---|---|---|---|
-| shared module (common tests on a device, Compose UI tests) | 1,310 | 41 s, 1 fails (below) | 301 s |
-| six feature modules | 2,549 | 32 s | 50 s |
-| 3D model module (offscreen GLES 3) | 6 | 2 s | 2 s |
-| app module, UI tests | 156 | 12 s | 137 s |
-| end-to-end (UiAutomator) | 10 | 9 s in one process, 13 s one process per test (`-j 4`) | 110 s |
-| whole-app journeys | 75 | 147 s, 3 fail (below) | 533 s |
-| total | 4,106 | about 4 min | about 19 min, over two jobs |
+| Suite | Tests | Mac (M4 Pro) | Linux image (4 vCPU VM, x86 under Rosetta) | Emulator in CI, tests only |
+|---|---|---|---|---|
+| shared module (common tests on a device, Compose UI tests) | 1,310 | 40 s | 82-89 s | 301 s |
+| six feature modules | 2,549 | 32 s | 96-104 s | 50 s |
+| 3D model module (offscreen GLES 3) | 6 | 2 s | 9-11 s (Mesa) | 2 s |
+| app module, UI tests | 156 | 14 s | 40-43 s | 137 s |
+| end-to-end (UiAutomator), one process per test, `-j 4` | 10 | 28 s | 87-105 s | 110 s |
+| whole-app journeys, one process | 76 | 158-167 s | 158 s | 533 s |
+| whole-app journeys, one process per test, `-j 4` | 76 | 127-151 s | 684 s | |
+| total (journeys in one process) | 4,107 | 4 min 44 s | 8 min 17 s | about 19 min, over two jobs |
 
-apksim times are from an M4 Pro Mac under load, each suite in one process. The emulator times leave out its boot
-(~1.5 min per job) and installing each ~170 MB test APK. A cold class cache made no difference (166 s cold, 164 s
-warm for the shared module, before the fixes below): the tests' own work dominates.
+Measured 2026-11-03 evening with `scripts/instrument.py` (wall time, each suite started fresh); the Linux runs used
+`--apksim "docker run ..."` on this Mac's Colima VM (4 CPUs, 8 GB), so every instruction went through Rosetta: a
+GitHub ubuntu-24.04 runner (4 vCPU, 16 GB, native x86) should be faster, not slower. One process per test costs a
+JVM start each, which under Rosetta is what makes the isolated journeys slow there (~36 s a test, 4 at a time).
+The emulator times leave out its boot (~1.5 min per job) and installing each ~170 MB test APK. A cold class cache made
+no difference (166 s cold, 164 s warm for the shared module): the tests' own work dominates.
 
-The four failures are the app's, not apksim's:
-- One feed UI test fails the same way on an API 36 emulator (a tap on a card's title does not reach its click
-  handler); CI's API 34 emulator passes it. apksim is API 36.
-- Three journeys depend on whether a server address compiled into the app answers. From a Mac on the owner's
-  network it does, so the app shows the real server's data and picks its local route; an emulator or a CI runner
-  cannot reach it. `--no-network` (localhost only) makes other journeys fail instead. The fix belongs in the tests.
+The failures without the app's fixes are the app's, not apksim's:
+- One feed UI test clicks the card's merged semantics node, i.e. the whole card, and `performClick` taps its centre,
+  which is the clip count's own button, not the title. It fails the same way on an API 36 emulator; CI's API 34
+  emulator passes it (why was not looked into). Clicking the unmerged title node fixes it (passes here and on the emulator).
+- Journeys whose fake server must be the only one: a server address compiled into the app answers from a Mac on the
+  owner's network, so the app takes that route and shows the real server's data (a journey expecting "no cameras"
+  found some). Letting the journeys turn that address off fixes it. `--no-network` is no substitute (it breaks the
+  journeys that expect the remote route).
+- In one long single-process journeys run on the Mac, one to four different journeys a run time out at 20 s, some
+  with the app unable to connect to the journey's fake server on localhost. Never with one process per test, never
+  for a class run alone, and once in the Linux image. Not explained yet (no descriptor leak).
+
+Found on the way, in apksim: Mesa's EGL has no window configs and WebRTC's `EglBase` asks for one (every journey with a
+live camera failed in the image until `eglChooseConfig` asked for pbuffer configs), and processes started together
+raced on extracting the APK's native libraries (fixed: rename into place).
 
 ## CI time and cost
 
@@ -37,11 +51,12 @@ From the 27 green runs before 2026-11-03: the two emulator jobs take a median 16
 waits 18.8 min (p90 23.6) and uses 34.9 runner-minutes. Over the week before, they used 6,514 runner-minutes (508
 jobs, cancelled ones included), about 28,200 a month.
 
-One apksim job, projected: setup and the same Gradle build of the test APKs (~5.5 min), apksim's runtime (~20 s,
-as in apksim's own `linux-smoke`), tests ~4 min: about 10 min and 10 runner-minutes a pull request, about 70% fewer.
-At list price for a 4-core Linux runner ($0.012/min) that is ~$97 a month against ~$338; for a public repository
-standard runners cost nothing either way, and the gain is the wait and the free runner slots. Not measured yet: the
-same suites on a Linux x86 runner (the projection uses the Mac's test times). An emulator stays for anything that
+One apksim job: setup and the same Gradle build of the test APKs (~5.5 min), the image (pulled, or built in ~1 min
+plus AOT training), tests 8.3 min measured under Rosetta (4.7 min natively on the Mac): about 14 min and 14
+runner-minutes a pull request as an upper bound, against 18.8 min and 34.9. Roughly 60% fewer runner-minutes, a little
+more if the x86 runner beats Rosetta. At list price for a 4-core Linux runner ($0.012/min) that is ~$135 a month
+against ~$338; for a public repository standard runners cost nothing either way, and the gain is the wait and the free
+runner slots. Still to do: the job in the app's CI itself (a pull request to it). An emulator stays for anything that
 measures a real device's startup.
 
 ## Running a suite
