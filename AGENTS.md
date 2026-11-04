@@ -102,7 +102,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap),
-  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI),
+  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `package-release.sh` (see
+  "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
@@ -216,7 +217,8 @@ both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioTo
 MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
 codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric allocates a codec's 10 input buffers,
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
-(else width×height×3/4, else 8 MB): a fixed 8 MB held 80 MB per video codec (playing the test clip: +100 → +16-33 MB).
+(else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
+(playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).
 Its placeholders are told apart by identity, so
 each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
@@ -383,6 +385,26 @@ offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a windo
 for window ones or named no surface type (EGL's default is windows), and drops `EGL_RECORDABLE_ANDROID`: Mesa's
 surfaceless platform has no window configs, and WebRTC's `EglBase.create()` threw "Unable to find any matching EGL
 config" in every journey that showed a live camera. Without a library the shadows fall back to Robolectric's stand-ins.
+
+## Releases (Homebrew, install.sh)
+`scripts/package-release.sh VERSION` turns a built checkout (`scripts/setup.sh --no-train`) into
+`dist/apksim-VERSION-macos-arm64.tar.gz`: the launcher, `apksim.jar`, `work/lib` (without `nativeruntime-dist`, whose
+fonts and natives are already in `work/runtime`), `work/runtime`, a jlink'ed JDK 24 in `work/jre` (`work/jdk.path`),
+the test app, and `work/release` (the version). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
+`cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
+`train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
+`STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
+JDK): the first launch without one starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
+and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
+follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
+`.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a
+*draft* release; publishing it pushes `packaging/homebrew/apksim.rb` (filled in) to the `aglose/homebrew-apksim` tap
+as `Casks/apksim.rb` (it pushes with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap only); users run `brew tap aglose/apksim`, `brew trust aglose/apksim` (Homebrew 7 refuses casks from untrusted taps:
+"Refusing to load cask ... from untrusted tap"; a local `brew tap-new` tap is trusted, so a local test does not show it), then
+`brew install apksim`
+(a third-party tap has no shorter form: Homebrew takes `user/tap/name` or a bare name from its own repos). A cask, not a formula: Homebrew installs a bottle-less formula
+only with current Command Line Tools ("CLT does not support macOS 26" stopped it here). The cask clears the quarantine
+flag, since the release is not notarized. Homebrew 7 deprecates cask `postflight` blocks for `postflight_steps`.
 
 ## Linux / Docker
 `docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).

@@ -5,7 +5,9 @@
 # - Gradle: the test app's wrapper, so no Gradle install is needed
 # - the Android SDK, only to build the test app; without it, setup downloads the released test app instead
 #   (ANDROID_HOME, ANDROID_SDK_ROOT or ~/Library/Android/sdk)
+# --no-train skips the startup cache (scripts/package-release.sh does not ship one: it is trained on the first launch).
 set -euo pipefail
+TRAIN=1; [[ "${1:-}" == --no-train ]] && TRAIN=""
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 fail() { echo "setup.sh: $*" >&2; exit 1; }
@@ -45,8 +47,10 @@ else
   TESTAPK="$ROOT/work/testapp.apk"
 fi
 
-step "Startup cache (scripts/train.sh)"
-scripts/train.sh "$TESTAPK"
+if [[ -n "$TRAIN" ]]; then
+  step "Startup cache (scripts/train.sh)"
+  scripts/train.sh "$TESTAPK"
+fi
 
 if git rev-parse --git-dir >/dev/null 2>&1; then
   git config core.hooksPath scripts/hooks   # refuses direct pushes to main (pull requests only)

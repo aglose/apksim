@@ -3,13 +3,34 @@
 Runs unmodified Android APKs on an Apple Silicon Mac as a single ordinary process, with no VM. A
 from-scratch take on what the Android team demoed as "Android Prototype" at Android Dev Summit 2026.
 
+## Install
+
+On an Apple Silicon Mac, with Homebrew:
+
+    brew tap aglose/apksim           # once
+    brew trust aglose/apksim         # once: Homebrew 7 loads casks only from taps you trust
+    brew install apksim
+    apksim app.apk
+    apksim --device foldable app.apk
+
+or without it:
+
+    curl -fsSL https://raw.githubusercontent.com/aglose/apksim/main/install.sh | bash
+
+Nothing else is needed: a release carries its own JDK 24 runtime, libraries and native code (449 MB download). The
+first launch builds a startup cache in the background (1-2 minutes, once per version), and launches are faster after
+that; `apksim --train` builds it right away. An installed apksim keeps what it writes (that cache, translated classes,
+app data, screenshots) in `~/.apksim`, or `$APKSIM_HOME`. `install.sh` puts the release in `~/.local/share/apksim` and
+links `~/.local/bin/apksim`. `brew upgrade apksim` updates it. To uninstall, run `brew uninstall --zap apksim`, or delete those folders and
+`~/.apksim`.
+
+### From source
+
     git clone https://github.com/aglose/apksim && cd apksim
     scripts/setup.sh                 # once, a few minutes
     ./apksim app.apk                 # run it
-    ./apksim --device foldable app.apk
 
-Needs an Apple Silicon Mac with the Xcode command-line tools (`xcode-select --install`). `setup.sh` finds or fetches
-the rest:
+Needs the Xcode command-line tools (`xcode-select --install`). `setup.sh` finds or fetches the rest:
 
 - **JDK 24.** It uses one it finds (`APKSIM_JDK`, Homebrew's `openjdk` if that is 24, `/usr/libexec/java_home -v 24`,
   or `JAVA_HOME`), else downloads Eclipse Temurin 24 into `work/jdk-24` (136 MB, checksum verified). Later JDKs run
@@ -20,7 +41,9 @@ the rest:
   With `ANDROID_HOME` set or the SDK in `~/Library/Android/sdk`, setup builds it; without, it downloads the released
   test app instead (checksum verified).
 
-After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location.
+After moving the folder, run `scripts/train.sh` once: the startup cache is tied to its location. A checkout keeps
+everything it writes in its own `work/`. `scripts/package-release.sh VERSION` packages a built checkout as a release;
+`.github/workflows/release.yml` does that for each `v*` tag, and publishing the release updates the Homebrew tap.
 
 It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI: see [docs/linux-docker.md](docs/linux-docker.md).
 
