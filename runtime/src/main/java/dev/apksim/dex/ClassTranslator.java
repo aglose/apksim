@@ -22,6 +22,8 @@ public final class ClassTranslator implements Opcodes {
    * the bigger classes cost ~30 ms of a warm launch to load, and ~5% more translation time.
    */
   static final boolean DEBUG_INFO = Boolean.getBoolean("apksim.debugInfo");
+  /** -Dapksim.peephole=false writes methods as translated, for A/B runs (it changes the class cache's key too). */
+  public static final boolean PEEPHOLE = !DEBUG_INFO && Boolean.parseBoolean(System.getProperty("apksim.peephole", "true"));
   private static final int VIS_RUNTIME = 1;
   private static final int VIS_SYSTEM = 2;
 
@@ -206,7 +208,11 @@ public final class ClassTranslator implements Opcodes {
         sig = signatureFrom(annots);
         exceptions = throwsFrom(annots);
       }
-      MethodVisitor mv = cw.visitMethod(access, m.name(), m.descriptor(), sig, exceptions);
+      // Buffered, so Peephole can shrink the code before it is written (not with debug info, which names the slots).
+      org.objectweb.asm.tree.MethodNode node = PEEPHOLE
+          ? new org.objectweb.asm.tree.MethodNode(org.objectweb.asm.Opcodes.ASM9, access, m.name(), m.descriptor(), sig, exceptions)
+          : null;
+      MethodVisitor mv = node != null ? node : cw.visitMethod(access, m.name(), m.descriptor(), sig, exceptions);
       if (annots != null) {
         writeAnnotations(annots, mv::visitAnnotation);
       }
@@ -227,6 +233,10 @@ public final class ClassTranslator implements Opcodes {
         }
       } else {
         mv.visitEnd();
+      }
+      if (node != null) {
+        Peephole.optimize(node);
+        node.accept(cw);
       }
     }
   }

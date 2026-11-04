@@ -116,6 +116,63 @@ public final class DexFile {
     return classDefs + idx * 32;
   }
 
+  /**
+   * For each type, its class definition here, or -1. Building it reads one int per class, where indexing every class
+   * by name read and decoded each name (~80 ms for 20k classes).
+   */
+  public int[] classDefsByType() {
+    int[] out = new int[i32(0x40)];
+    java.util.Arrays.fill(out, -1);
+    for (int i = 0; i < classDefsSize; i++) {
+      int t = i32(classDefOffset(i));
+      if (out[t] < 0) out[t] = i;
+    }
+    return out;
+  }
+
+  /**
+   * The type index of class {@code internalName} ("a/b/C"), or -1. DEX keeps type_ids sorted by their descriptor
+   * (string_ids are sorted by UTF-16 value), so this is a binary search that decodes no strings. Only absolute reads:
+   * safe on any thread.
+   */
+  public int findClassType(String internalName) {
+    int lo = 0;
+    int hi = i32(0x40) - 1;
+    while (lo <= hi) {
+      int mid = (lo + hi) >>> 1;
+      int c = compareClassDescriptor(i32(typeIds + mid * 4), internalName);
+      if (c < 0) lo = mid + 1; else if (c > 0) hi = mid - 1; else return mid;
+    }
+    return -1;
+  }
+
+  /** Compares string {@code idx} with "L" + name + ";" by UTF-16 values, as DEX sorts strings. */
+  private int compareClassDescriptor(int idx, String name) {
+    int p = i32(stringIds + idx * 4);
+    while (d.get(p++) < 0) {
+      // Skip the ULEB128 length.
+    }
+    int n = name.length() + 2;
+    for (int i = 0; ; i++) {
+      int a = d.get(p) & 0xff;
+      if (a == 0) return i < n ? -1 : 0;
+      if (i >= n) return 1;
+      char c;
+      if (a < 0x80) {
+        c = (char) a;
+        p++;
+      } else if ((a & 0xe0) == 0xc0) {
+        c = (char) ((a & 0x1f) << 6 | (d.get(p + 1) & 0x3f));
+        p += 2;
+      } else {
+        c = (char) ((a & 0x0f) << 12 | (d.get(p + 1) & 0x3f) << 6 | (d.get(p + 2) & 0x3f));
+        p += 3;
+      }
+      char q = i == 0 ? 'L' : i == n - 1 ? ';' : name.charAt(i - 1);
+      if (c != q) return c < q ? -1 : 1;
+    }
+  }
+
   public String className(int classDefIdx) {
     return type(i32(classDefOffset(classDefIdx)));
   }

@@ -29,9 +29,15 @@ final class SimWindow {
   record Event(int type, float x, float y, float value) {}
 
   private static final float[] SLOT = new float[4];
-  private static boolean headless;
+  /** Until {@link #open}, as headless: a standby renders its warm-up with no window (Standby). */
+  private static boolean headless = true;
 
   private SimWindow() {}
+
+  /** Loads the window's library ahead of {@link #open} (a standby, before it waits). */
+  static void preload() {
+    if (HostOs.MAC) System.load(HostOs.runtimeLib("libsimwindow").toString());
+  }
 
   static void open(int w, int h, float scale, String title) {
     headless = Boolean.getBoolean("apksim.headless") || !HostOs.MAC;

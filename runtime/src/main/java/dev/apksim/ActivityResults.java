@@ -89,7 +89,7 @@ final class ActivityResults {
   String pick(String[] a) {
     if (picking == null) return "no picker is waiting";
     List<String> files = new ArrayList<>();
-    for (int i = 1; i < a.length; i++) if (!a[i].equals("cancel")) files.add(Path.of(a[i]).toAbsolutePath().toString());
+    for (int i = 1; i < a.length; i++) if (!a[i].equals("cancel")) files.add(Storage.absolute(a[i]).toString());
     if (pickTicket >= 0) SimWindow.dismissPick();
     pickTicket = -1;
     return answerPick(files);

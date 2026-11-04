@@ -27,9 +27,15 @@ def instances():
         except OSError:
             continue
         port = int(open(f).read().strip())
-        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
-        apk = os.path.basename(cmd[-1]) if cmd else "?"
-        device = next((a.split("=", 1)[1] for a in cmd if a.startswith("-Dapksim.device=")), "phone")
+        info = os.path.join(os.path.dirname(f), "launch.info")
+        if os.path.exists(info):
+            # Written by the instance: one from a standby has no APK on its command line.
+            kv = dict(l.split("=", 1) for l in open(info).read().splitlines() if "=" in l)
+            apk, device = os.path.basename(kv.get("apk", "?")), kv.get("device", "phone")
+        else:
+            cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
+            apk = os.path.basename(cmd[-1]) if cmd else "?"
+            device = next((a.split("=", 1)[1] for a in cmd if a.startswith("-Dapksim.device=")), "phone")
         found.append((pid, port, apk, device))
     return sorted(found)
 
