@@ -11,7 +11,7 @@ public final class Main {
   private Main() {}
 
   public static void main(String[] args) throws Exception {
-    Timing.mark("jvm-main");
+    if (Standby.requested()) args = Standby.await(); else Timing.mark("jvm-main");
     if (Boolean.getBoolean("apksim.profile")) Sampler.start();
     if (Boolean.getBoolean("apksim.traceExit")) {
       Runtime.getRuntime().addShutdownHook(new Thread(() -> Thread.getAllStackTraces().forEach((t, st) -> {
@@ -38,15 +38,21 @@ public final class Main {
         Path.of(args[0]).getFileName() + " - " + device.name() + " " + device.widthDp() + "\u00d7" + device.heightDp() + " dp");
     Storage.initScratch();
     Path apk = Path.of(args[0]).toAbsolutePath();
+    // For scripts/ctl.py: an instance from a standby has no APK on its command line.
+    java.nio.file.Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "launch.info"),
+        "apk=" + apk + "\ndevice=" + System.getProperty("apksim.device", "phone") + "\n");
     AppInfo.load(apk, Path.of(System.getProperty("apksim.cacheRoot"), apk.getFileName() + "-" + apk.toFile().lastModified()));
+    Timing.detail("appinfo");
     AppClasses classes = AppClasses.install(apk);
+    Timing.detail("appclasses");
     SimKeyStore.install();  // before the app's code runs: Robolectric has no Android Keystore
+    classes.loadAhead();
     Timing.mark("apk-indexed");
     if (testApk != null) {
       int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classes);
       ClassCache.flush();
       Storage.deleteScratch();
-      Runtime.getRuntime().halt(code);
+      Standby.halt(code);
     }
     Result r = new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
@@ -57,6 +63,6 @@ public final class Main {
     if (r.getRunCount() == 0) System.err.println("[apksim] the app did not start: runner found nothing to run");
     ClassCache.flush();
     Storage.deleteScratch();
-    Runtime.getRuntime().halt(r.wasSuccessful() ? 0 : 1);
+    Standby.halt(r.wasSuccessful() ? 0 : 1);
   }
 }

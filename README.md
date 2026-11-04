@@ -48,17 +48,22 @@ emulator too, three reach a server on the developer's own network. Details, cost
 
 ## Speed
 
-Measured here (M4 Pro, 24 GB) from launching the process to the app's first frame, median of 7 runs
-(`scripts/bench.py`). The target is the talk's demos, stepped through frame by frame.
+Measured here (M4 Pro, 24 GB) from pressing Enter to the app's first frame, medians of 5 runs (`scripts/bench.py`).
+A launch is normally *warm*: handed to a standby process that has already booted the framework (below). A *cold*
+launch, the first one from a folder or with `APKSIM_STANDBY=0`, starts a JVM. The target is the talk's demos,
+stepped through frame by frame.
 
-| | Window | App on screen | Memory |
-|---|---|---|---|
-| Android Prototype, as demoed (Linux x86, small app) | ~2 s | ~3-4 s | not shown |
-| apksim, small Compose app | 0.15 s | 2.5 s | ~550-780 MB |
-| apksim, a large app (R8 release build, 12 MB DEX, SQLite + WebRTC .so) | 0.15 s | 2.6 s | |
-| apksim, the same app's debug build (179 MB APK) | 0.15 s | 3.3 s | |
-| Stock emulator, Quick Boot snapshot (same small app) | - | 8.3-9.0 s | 3-4 GB |
-| Stock emulator, full boot | - | 18 s | 3.3-4 GB |
+| | Window | App on screen, warm | Cold | Memory |
+|---|---|---|---|---|
+| Android Prototype, as demoed (Linux x86, small app) | ~2 s | | ~3-4 s | not shown |
+| apksim, small Compose app | 0.01 s | 0.22 s | 1.35 s | ~550-780 MB |
+| apksim, a large app (R8 release build, 12 MB DEX, SQLite + WebRTC .so) | 0.01 s | 0.36 s | 1.5 s | |
+| apksim, the same app's debug build (179 MB APK) | 0.01 s | 0.48 s | 1.6 s | |
+| Stock emulator, Quick Boot snapshot (same small app) | - | | 8.3-9.0 s | 3-4 GB |
+| Stock emulator, full boot | - | | 18 s | 3.3-4 GB |
+
+Before warm launches (same machine, interleaved runs): window 0.1 s, first frame 1.5 s (small app), 1.9 s (large
+app) and 2.0 s (its debug build).
 
 The talk's timings come from a video with the speaker's narration, so treat them as approximate. Google's
 hardware and app differ too, so this shows the same order of speed, not a controlled head-to-head.
@@ -81,7 +86,15 @@ hardware and app differ too, so this shows the same order of speed, not a contro
   bionic-to-macOS shim for structs, constants, errno and pthreads, and a bridge for the varargs ABI difference.
 - **Pixels:** Android's real render pipeline draws into a buffer that goes straight to an IOSurface on a
   native Cocoa window, about 0.5 ms per frame to present.
-- **Startup:** the JVM's AOT cache covers the framework, for any APK, so there is no per-APK install step.
+- **Startup:** the JVM's AOT cache covers the framework, for any APK, so there is no per-APK install step. On a Mac,
+  a launch goes to a **standby**: a JVM started in the background after the previous launch, which has loaded the
+  framework, its native runtime and an application, run a framework-only activity through rendering (so the
+  framework's call sites are linked and its hot code compiled), and waits. As Android's zygote, it holds no app
+  code: the launch hands it the APK and the terminal, and it becomes that instance in ~10 ms, window first. Then the
+  classes the app used last time are defined on background threads while the framework sets up the app, and
+  translated methods are about 15% shorter than straight translation. The rest of a warm launch is the app's own
+  startup code. A standby takes ~410 MB while it waits and quits after an hour unused; `./apksim --stop-standbys`
+  stops it and `APKSIM_STANDBY=0` turns it off.
 
 ## Frame rate
 

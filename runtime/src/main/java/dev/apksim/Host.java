@@ -97,7 +97,9 @@ public class Host {
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
     // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
     if (Device.current().systemBars()) DeviceControls.applySystemUi(Device.current());
+    Timing.detail("host-setup");
     app = RuntimeEnvironment.getApplication();
+    Timing.detail("got-application");
     useDeviceGestureThresholds(app);
     HostNetworks.install(app);
     dev.apksim.video.ShadowSimMediaCodec.install();
@@ -107,6 +109,7 @@ public class Host {
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
     controls.showTitle();
+    Timing.detail("controls");
 
     String launcher = System.getProperty("apksim.launcher");
     Intent intent = new Intent(Intent.ACTION_MAIN)
@@ -175,6 +178,9 @@ public class Host {
           // any others, as a device does under load.
           long passed = lineAtOrBefore(nowMs + availableMs);
           stepMs = passed > nowMs ? passed - nowMs : 0;
+          // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
+          // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
+          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / VSYNC_HZ + 1 - nowMs;
         }
       }
       long looperStart = System.nanoTime();
@@ -198,6 +204,7 @@ public class Host {
         if (firstFrame) {
           firstFrame = false;
           Timing.mark("first-frame");
+          Standby.spawnNextSoon();
           String shot = System.getProperty("apksim.screenshot");
           if (shot != null) saveFrame(shot);
           if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
@@ -206,7 +213,7 @@ public class Host {
           }
         }
       }
-      pace(last);
+      if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
     }
     exit(0);
   }
@@ -248,7 +255,7 @@ public class Host {
   private static void exit(int code) {
     ClassCache.flush();
     Storage.deleteScratch();
-    Runtime.getRuntime().halt(code);
+    Standby.halt(code);
   }
 
   // ---------------------------------------------------------------- activities

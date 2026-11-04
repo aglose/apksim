@@ -89,6 +89,7 @@ final class ClassCache {
     if (runtime == null) return null;
     // Classes translated with debug info (--debug) are kept apart, so neither kind is ever used for the other.
     if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
+    else if (!dev.apksim.dex.ClassTranslator.PEEPHOLE) runtime += "-raw";
     Path root = Path.of(System.getProperty("apksim.cacheRoot"), "classes");
     ClassCache cache = new ClassCache(root.resolve(runtime), keys, hintName);
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
@@ -318,7 +319,18 @@ final class ClassCache {
   }
 
   /** Identifies this runtime: the CRC of every class in its jar plus the class path (framework versions). */
-  private static String runtimeHash() {
+  private static String runtimeHash;
+
+  /**
+   * Identifies this runtime build (memoized: it reads every entry of apksim.jar, and the jar a process runs does not
+   * change under it). A standby computes it before it waits.
+   */
+  static synchronized String runtimeHash() {
+    if (runtimeHash == null) runtimeHash = computeRuntimeHash();
+    return runtimeHash;
+  }
+
+  private static String computeRuntimeHash() {
     try {
       Path jar = Path.of(ClassCache.class.getProtectionDomain().getCodeSource().getLocation().toURI());
       if (!Files.isRegularFile(jar)) return null;
