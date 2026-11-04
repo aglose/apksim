@@ -39,7 +39,11 @@ final class AppClasses {
   private static final Pattern DEX = Pattern.compile("classes\\d*\\.dex");
   private static final int ACC_INTERFACE = 0x0200;
 
-  private final Map<String, int[]> index = new HashMap<>(); // "a/b/C" -> {dex, classDef}
+  /** Lookups by name so far: "a/b/C" -> {dex, classDef}, or {@link #NONE}. See {@link #find}. */
+  private final Map<String, int[]> found = new ConcurrentHashMap<>();
+  private static final int[] NONE = new int[0];
+  /** Per DEX file, each type's class definition there or -1. */
+  private final List<int[]> defsByType = new ArrayList<>();
   private final List<DexFile> dexes = new ArrayList<>();
   private final Map<String, Boolean> otherInterfaces = new ConcurrentHashMap<>();
   /** Classes translated ahead by {@link #translateAhead} and not yet asked for. */
@@ -82,21 +86,45 @@ final class AppClasses {
         if (at != null) {
           data = ch.map(FileChannel.MapMode.READ_ONLY, at, z.getSize());
         } else {
-          try (InputStream in = zip.getInputStream(z)) {
-            data = ByteBuffer.wrap(in.readAllBytes());
-          }
+          data = inflated(apk, z);
         }
         DexFile dex = new DexFile(data);
         int dexIdx = dexes.size();
         keys[dexIdx] = String.format("%08x-%d", z.getCrc(), z.getSize());
         dexes.add(dex);
-        for (int i = 0; i < dex.classDefsSize; i++) {
-          String d = dex.className(i);
-          index.putIfAbsent(d.substring(1, d.length() - 1), new int[] {dexIdx, i});
-        }
+        defsByType.add(dex.classDefsByType());
       }
     }
     cache = ClassCache.open(keys, hintName);
+  }
+
+  /**
+   * A compressed DEX file (APKs for older Android versions compress them), inflated once and kept beside the APK's
+   * other extracted files, then mapped like a stored one: inflating the test app's 36 MB took ~60 ms every launch.
+   */
+  private ByteBuffer inflated(Path apk, ZipEntry z) throws IOException {
+    String dir = System.getProperty("apksim.cache");
+    Path file = dir == null ? null : Path.of(dir, "dex", String.format("%08x-%d.dex", z.getCrc(), z.getSize()));
+    if (file != null && file.toFile().length() == z.getSize()) {
+      try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
+        return ch.map(FileChannel.MapMode.READ_ONLY, 0, z.getSize());
+      }
+    }
+    byte[] bytes;
+    try (InputStream in = zip.getInputStream(z)) {
+      bytes = in.readAllBytes();
+    }
+    if (file != null) {
+      try {
+        java.nio.file.Files.createDirectories(file.getParent());
+        Path tmp = file.resolveSibling(file.getFileName() + "." + ProcessHandle.current().pid());
+        java.nio.file.Files.write(tmp, bytes);
+        java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+      } catch (IOException e) {
+        // Next launch inflates again.
+      }
+    }
+    return ByteBuffer.wrap(bytes);
   }
 
   /** Where each stored (uncompressed) entry's data starts in the file, from the zip central directory. */
@@ -143,10 +171,30 @@ final class AppClasses {
     return out;
   }
 
+  /**
+   * Where the APK defines class "a/b/C" ({dex, classDef}), or null. The first DEX file that has it wins, as on
+   * Android (classes.dex, then classes2.dex...).
+   */
+  private int[] find(String name) {
+    int[] at = found.get(name);
+    if (at == null) {
+      at = NONE;
+      for (int i = 0; i < dexes.size(); i++) {
+        int t = dexes.get(i).findClassType(name);
+        if (t >= 0 && defsByType.get(i)[t] >= 0) {
+          at = new int[] {i, defsByType.get(i)[t]};
+          break;
+        }
+      }
+      found.putIfAbsent(name, at);
+    }
+    return at == NONE ? null : at;
+  }
+
   private boolean isInterface(String owner) {
-    int[] at = index.get(owner);
+    int[] at = find(owner);
     if (at != null) return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0;
-    if (target != null && target.index.containsKey(owner)) return target.isInterface(owner);
+    if (target != null && target.find(owner) != null) return target.isInterface(owner);
     Boolean known = otherInterfaces.get(owner);
     if (known != null) return known;
     // Not computeIfAbsent: loading a class while holding the map's lock could deadlock with another thread.
@@ -162,13 +210,13 @@ final class AppClasses {
 
   /** What a translation learned about a class it calls; see {@link ClassCache}. */
   private int answer(String owner) {
-    int[] at = index.get(owner);
+    int[] at = find(owner);
     if (at == null) return target != null ? target.answer(owner) : ClassCache.NOT_APP;
     return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0 ? ClassCache.INTERFACE : ClassCache.CLASS;
   }
 
   synchronized byte[] translate(String internalName) {
-    int[] at = index.get(internalName);
+    int[] at = find(internalName);
     if (at == null) return null;
     asked.add(internalName);
     if (cache != null) {
@@ -218,7 +266,7 @@ final class AppClasses {
   private void translateAhead() {
     List<String> todo = new ArrayList<>();
     for (String name : cache.hints()) {
-      int[] at = index.get(name);
+      int[] at = find(name);
       if (at != null && !cache.has(at[0], name, this::answer)) todo.add(name);
     }
     if (todo.isEmpty()) return;
@@ -233,7 +281,7 @@ final class AppClasses {
         for (int i; (i = next.getAndIncrement()) < todo.size(); ) {
           String name = todo.get(i);
           if (asked.contains(name)) continue;
-          int[] at = index.get(name);
+          int[] at = find(name);
           if (views[at[0]] == null) views[at[0]] = dexes.get(at[0]).view();
           byte[] out = translate(views[at[0]], at, name);
           if (out != null && !asked.contains(name)) {
@@ -246,6 +294,36 @@ final class AppClasses {
               (System.nanoTime() - t0) / 1_000_000);
         }
       }, "apksim-translate-" + t);
+      worker.setDaemon(true);
+      worker.start();
+    }
+  }
+
+  /**
+   * Loads (defines, without initializing: no app code runs) the classes the app loaded last time, in that order, on
+   * background threads, while the main thread starts the framework and then the app. Defining a class costs ~40 us,
+   * ~120 ms for the test app's 2,800, which the main thread then mostly finds done. The JVM's application loader
+   * takes a lock per class name, so a class the main thread wants while a worker defines it is waited for, not
+   * defined twice. -Dapksim.loadAhead=false turns it off.
+   */
+  void loadAhead() {
+    if (cache == null || !Boolean.parseBoolean(System.getProperty("apksim.loadAhead", "true"))) return;
+    List<String> names = cache.hints();
+    if (names.isEmpty()) return;
+    AtomicInteger next = new AtomicInteger();
+    int threads = Integer.getInteger("apksim.loadAheadThreads", 2);
+    for (int t = 0; t < threads; t++) {
+      Thread worker = new Thread(() -> {
+        for (int i; (i = next.getAndIncrement()) < names.size(); ) {
+          String name = names.get(i);
+          if (find(name) == null) continue;
+          try {
+            Class.forName(name.replace('/', '.'), false, loader);
+          } catch (Throwable e) {
+            // Gone from this build, or broken: the app finds out itself if it asks.
+          }
+        }
+      }, "apksim-load-" + t);
       worker.setDaemon(true);
       worker.start();
     }
@@ -265,7 +343,7 @@ final class AppClasses {
       // Classes the app does not have are refused before translate()'s lock: translateAhead's threads look them up
       // while holding the class loader's lock for that name, and the main thread may be waiting for that lock.
       String name = path.substring(0, path.length() - 6);
-      byte[] b = index.containsKey(name) ? translate(name) : null;
+      byte[] b = find(name) != null ? translate(name) : null;
       if (b != null) return new ByteArrayInputStream(b);
     } else {
       ZipEntry z = zip.getEntry(path);
@@ -295,9 +373,14 @@ final class AppClasses {
 
   /** The test APK's classes, in DEX order, as "a.b.C". */
   List<String> classNames() {
-    List<String> out = new ArrayList<>(index.size());
-    for (String n : index.keySet()) out.add(n.replace('/', '.'));
-    return out;
+    java.util.Set<String> out = new java.util.LinkedHashSet<>();
+    for (DexFile dex : dexes) {
+      for (int i = 0; i < dex.classDefsSize; i++) {
+        String d = dex.className(i);
+        out.add(d.substring(1, d.length() - 1).replace('/', '.'));
+      }
+    }
+    return new ArrayList<>(out);
   }
 
   private static AppClasses install(Path apk, String rootPath, AppClasses target, String hintName) throws Exception {

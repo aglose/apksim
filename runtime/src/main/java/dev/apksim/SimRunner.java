@@ -99,6 +99,7 @@ public final class SimRunner extends RobolectricTestRunner {
     @Override
     public AndroidSandbox build(InstrumentationConfiguration config, Sdk runtimeSdk, Sdk compileSdk,
         ResourcesMode.Mode resourcesMode, SQLiteMode.Mode sqliteMode) {
+      Timing.detail("sandbox-build");
       return new AndroidSandbox(runtimeSdk, compileSdk, resourcesMode, new AndroidSandbox.TestEnvironmentSpec(SimTestEnvironment.class),
           new FlatLoader(config, runtimeSdk, instrumentor), shadowProviders, sqliteMode);
     }
@@ -135,7 +136,9 @@ public final class SimRunner extends RobolectricTestRunner {
      */
     @Override
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
+      Timing.detail("setup-app-state");
       super.setUpApplicationState(testName, config, manifest);
+      Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
       if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
@@ -218,6 +221,10 @@ public final class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected ManifestFactory getManifestFactory(Config config) {
+    if (System.getProperty("apksim.apk") == null) {
+      // A standby's warm-up (StandbyWarmup): no APK yet, so Robolectric's default application.
+      return c -> new ManifestIdentifier(null, null, null, null, List.of(), null);
+    }
     Path cache = Path.of(System.getProperty("apksim.cache"));
     Path apk = Path.of(System.getProperty("apksim.apk"));
     String pkg = System.getProperty("apksim.package");

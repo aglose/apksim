@@ -401,7 +401,7 @@ final class DeviceControls {
           if (op.equals("start")) {
             // On a Mac window: H.264 QuickTime through AVFoundation. Headless or on Linux: Motion-JPEG AVI.
             boolean avi = SimWindow.isHeadless() || (a.length > 2 && a[2].endsWith(".avi"));
-            String path = a.length > 2 ? Path.of(a[2]).toAbsolutePath().toString() : newMediaFile(avi ? "avi" : "mov").toString();
+            String path = a.length > 2 ? Storage.absolute(a[2]).toString() : newMediaFile(avi ? "avi" : "mov").toString();
             String err = avi ? MjpegRecorder.start(path, w, h) : SimWindow.recordStart(path);
             // Frames reach the AVI only as they are drawn: draw one now, so a still screen is recorded too.
             if (avi && err == null) for (android.view.View root : rootViews()) root.invalidate();
