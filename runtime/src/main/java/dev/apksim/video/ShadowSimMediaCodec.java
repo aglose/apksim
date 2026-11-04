@@ -85,10 +85,11 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible})
             .build())
         .build());
-    // Input big enough for a 4K key frame; output holds only a picture reference. Robolectric looks a codec up by
-    // the string it was created with: the type for createDecoderByType, the name for createByCodecName, which is
-    // what media players use.
-    CodecConfig config = new CodecConfig(8 << 20, 8, placeholder);
+    // Input sized once the format is known (Decoder.onConfigured, sizeInputs): Robolectric allocates its 10 input
+    // buffers here, zero-filled. Output holds only a picture reference. Robolectric looks a codec up by the string it
+    // was created with: the type for createDecoderByType, the name for createByCodecName, which is what media
+    // players use.
+    CodecConfig config = new CodecConfig(64 << 10, 8, placeholder);
     ShadowMediaCodec.addDecoder(mime, config);
     ShadowMediaCodec.addDecoder(name, config);
   }
@@ -155,12 +156,31 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     super.__constructor__(name, nameIsType, encoder);
     Object codec = ReflectionHelpers.getField(this, "fakeCodec");
     if (codec == AVC || codec == HEVC) {
-      decoder = new Decoder(codec == HEVC);
+      decoder = new Decoder(codec == HEVC, this);
       LIVE.add(decoder);
       ReflectionHelpers.setField(this, "fakeCodec", decoder);
     } else if (codec == AAC || codec == MP3) {
       audio = new AudioDecoder(codec == MP3);
       ReflectionHelpers.setField(this, "fakeCodec", audio);
+    }
+  }
+
+  /**
+   * Gives the input buffers the size a device's codec would: the format's max-input-size (media players set it), or a
+   * compressed picture's bound from its size (ExoPlayer's own for H.264), or 8 MB, enough for a 4K key frame. A fixed
+   * 8 MB made every video codec hold 80 MB of zero-filled native memory, freed only when a GC happened to run.
+   */
+  private void sizeInputs(MediaFormat format) {
+    int size = 8 << 20;
+    if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) && format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) > 0) {
+      size = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
+    } else if (format.containsKey(MediaFormat.KEY_WIDTH) && format.containsKey(MediaFormat.KEY_HEIGHT)) {
+      long pixels = (long) format.getInteger(MediaFormat.KEY_WIDTH) * format.getInteger(MediaFormat.KEY_HEIGHT);
+      size = (int) Math.min(Math.max(pixels * 3 / 4, 64 << 10), 32 << 20);
+    }
+    ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
+    for (int i = 0; i < inputs.length; i++) {
+      if (inputs[i].capacity() != size) inputs[i] = ByteBuffer.allocateDirect(size);
     }
   }
 
@@ -309,14 +329,18 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
     private boolean drewOne;
 
-    Decoder(boolean hevc) {
+    private final ShadowSimMediaCodec codec;
+
+    Decoder(boolean hevc, ShadowSimMediaCodec codec) {
       this.hevc = hevc;
+      this.codec = codec;
       name = hevc ? HEVC_DECODER : AVC_DECODER;
     }
 
     @Override
     public void onConfigured(MediaFormat format, Surface surface, MediaCrypto crypto, int flags) {
       System.err.println("[apksim] MediaCodec " + name + " configured: " + format + (surface == null ? ", no surface" : ""));
+      codec.sizeInputs(format);
       this.surface = surface;
       close();
       handle = VideoToolbox.create(hevc);

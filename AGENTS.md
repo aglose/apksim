@@ -214,7 +214,10 @@ to start (NoClassDefFoundError). `VideoToolbox` holds the natives for both paths
 Recorded video: `ShadowSimMediaCodec` lists `apksim.avc.decoder` (H.264) and `apksim.hevc.decoder` (HEVC Main/Main10),
 both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioToolbox (`native/audio.m`) in
 MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
-codecs by name; a miss falls back to Robolectric's 512-byte fake). Its placeholders are told apart by identity, so
+codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric allocates a codec's 10 input buffers,
+zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
+(else width×height×3/4, else 8 MB): a fixed 8 MB held 80 MB per video codec (playing the test clip: +100 → +16-33 MB).
+Its placeholders are told apart by identity, so
 each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
 with their own timestamps: Robolectric pairs each input with one output that keeps the input's timestamp, and with
@@ -477,6 +480,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
   one-offs.
 - macOS forbids W+X pages, so 4 KB-aligned `.so` files (Flipper and its libc++) cannot load. 16 KB-aligned ones work.
+- A `.so`'s code pages are mapped from the extracted file (`elfloader.c` `load_segment`), not copied, so pages nothing
+  patches stay clean (a large app's WebRTC library: 6.1 of 10.9 MB). macOS refuses `mmap(PROT_EXEC)` of a file but
+  allows `mprotect` to read+execute of a private file mapping; if refused, the range is copied as before. Never rewrite
+  an extracted `.so` in place (ElfLoader renames a new file over it).
 - Phone, foldable and tablet report a 24 dp (48 px) status bar and gesture-nav inset (Robolectric's `SystemUi`, set
   in `DeviceControls.applySystemUi`; desktop and TV have none), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
@@ -506,6 +513,13 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   shown), display 98-99% in all five, p95 interval 10.1 against 11.3 ms; flings grid ~140 fps of which 96-178 frames
   were replaced before being shown (84-97% new), display ~118 fps, 3-5 replaced, 97% new in every run. The grid's
   "on 120 Hz pace" figure is not comparable: it measures intervals against the grid, not the screen.
+- **Perf ideas measured and not kept (2026-11-03):** linear textures for effect-layer inputs (a full phone screen
+  uploads in 0.25 ms tiled, 0.19 ms linear: the ~3 ms untiling cost is readback only, and linear textures can sample
+  slower); skipping an `analyze()` pass when a value gains a non-array type name (no measurable time, and 2 of 32k
+  classes translated differently); writing GPU readback and video straight into Bitmap memory (the copies are
+  0.12 ms a frame on the Shader tab, and Robolectric exposes no pixel address); HWUI rendering into the window's
+  IOSurface (its buffers belong to Robolectric's ImageReader and CPU pipeline; the copy is 0.25-0.4 ms on the raster
+  thread, which is not the limit).
 - **Partial (damage-rect) redraw: tried 2026-11-03, no gain for Compose apps, not kept.** Robolectric's
   `SkiaCpuPipeline` draws into one buffer it keeps, but `getFrame()` reports buffer age 0 and `swapBuffers()` is a
   `return false` stub, so `CanvasContext` never clears `mHaveNewSurface` and redraws everything. Swapping vtable slots
