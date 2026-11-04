@@ -8,6 +8,7 @@ from-scratch take on what the Android team demoed as "Android Prototype" at Andr
 On an Apple Silicon Mac, with Homebrew:
 
     brew tap aglose/apksim           # once
+    brew trust aglose/apksim         # once: Homebrew 7 loads casks only from taps you trust
     brew install apksim
     apksim app.apk
     apksim --device foldable app.apk
