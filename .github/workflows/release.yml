@@ -1,0 +1,105 @@
+# Builds the self-contained release for Apple Silicon Macs (scripts/package-release.sh) and checks it starts as an
+# installed copy would: from a read-only folder, training its startup cache, then launching the test app headless.
+# - A pushed tag vX.Y.Z makes a draft GitHub release with the tarball, SHA256SUMS and the test app. Publishing the
+#   draft (by hand, after reading its notes) runs the `tap` job.
+# - The `tap` job writes packaging/homebrew/apksim.rb with the release's version and checksum into the
+#   aglose/homebrew-apksim tap, so `brew tap aglose/apksim && brew install apksim` gets it. It needs a TAP_TOKEN secret (a
+#   token that can push to that repository) and is skipped without one.
+# - Pull requests that change the packaging build and check the tarball without releasing it.
+name: release
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-release.sh
+      - scripts/setup.sh
+      - scripts/train.sh
+      - apksim
+      - install.sh
+      - packaging/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    if: github.event_name != 'release'
+    runs-on: macos-15  # Apple Silicon
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.0-ci.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      # Fetches Temurin 24 into work/jdk-24 (the JDK the release bundles), the libraries, builds the native runtime,
+      # the runtime jar and the test app. No training: a release trains on the user's machine.
+      - name: Build
+        run: scripts/setup.sh --no-train
+      - name: Package
+        run: scripts/package-release.sh "$VERSION" dist
+      - name: Check the installed release
+        run: |
+          mkdir -p "$RUNNER_TEMP/inst" "$RUNNER_TEMP/bin"
+          tar -xzf "dist/apksim-$VERSION-macos-arm64.tar.gz" -C "$RUNNER_TEMP/inst"
+          D="$RUNNER_TEMP/inst/apksim-$VERSION-macos-arm64"
+          chmod -R a-w "$D"
+          ln -s "$D/apksim" "$RUNNER_TEMP/bin/apksim"
+          export APKSIM_HOME="$RUNNER_TEMP/state" APKSIM_STANDBY=0
+          "$RUNNER_TEMP/bin/apksim" --version | grep -qx "apksim $VERSION"
+          "$RUNNER_TEMP/bin/apksim" --train --headless
+          "$RUNNER_TEMP/bin/apksim" --headless --no-network --exit-after-first-frame "$D/work/testapp.apk" 2>&1 | tee launch.log
+          grep -q first-frame launch.log
+      - name: Checksums
+        run: |
+          cd dist
+          cp ../testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk "apksim-testapp-$VERSION.apk"
+          shasum -a 256 "apksim-$VERSION-macos-arm64.tar.gz" "apksim-testapp-$VERSION.apk" > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release
+          path: |
+            dist/SHA256SUMS
+            launch.log
+            ${{ runner.temp }}/state/train-*.log
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "apksim $VERSION" --generate-notes \
+            "dist/apksim-$VERSION-macos-arm64.tar.gz" "dist/apksim-testapp-$VERSION.apk" dist/SHA256SUMS
+
+  tap:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "no TAP_TOKEN secret: the tap is not updated"; exit 0; fi
+          V="${TAG#v}"
+          gh release download "$TAG" -p SHA256SUMS
+          SHA="$(grep " \*\{0,1\}apksim-$V-macos-arm64.tar.gz\$" SHA256SUMS | cut -d' ' -f1)"
+          [ -n "$SHA" ] || { echo "no checksum for apksim-$V-macos-arm64.tar.gz"; exit 1; }
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/aglose/homebrew-apksim.git" tap
+          mkdir -p tap/Formula
+          sed -e "s/@VERSION@/$V/g" -e "s/@SHA256@/$SHA/" packaging/homebrew/apksim.rb > tap/Formula/apksim.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/apksim.rb
+          git diff --cached --quiet && { echo "the tap already has $V"; exit 0; }
+          git commit -m "apksim $V"
+          git push
