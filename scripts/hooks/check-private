@@ -1,0 +1,90 @@
+#!/bin/bash
+# Refuses personal information in the repo: terms from a private denylist must not appear in tracked files, added
+# lines, file names, commit messages, author/committer emails or (in CI) pull request titles and bodies.
+#
+#   check-private --staged          the changes staged for commit (pre-commit)
+#   check-private --commits RANGE   every commit in RANGE: message, emails, added lines, file names (pre-push, CI)
+#   check-private --tree            every tracked file, as in the working tree
+#   check-private --text < FILE     any text, e.g. a PR body or release notes
+#
+# Patterns, one case-insensitive extended regex per line ('#' comments), come from $APKSIM_DENYLIST (default
+# ~/.config/apksim/denylist) and from $PRIVATE_DENYLIST (CI: a repository secret). The host of the SERVER= line in
+# ~/.config/apksim/signin.conf, when there is one, is a pattern too. The list itself stays private, so reports name
+# where a term is (file and line, commit and field), never the term or the text around it.
+# With no patterns at all it warns and passes, so clones without a list are not blocked.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 2
+
+PATTERNS="$(mktemp)"; HITS="$(mktemp)"
+trap 'rm -f "$PATTERNS" "$HITS"' EXIT
+{
+  f="${APKSIM_DENYLIST:-$HOME/.config/apksim/denylist}"
+  [[ -f "$f" ]] && cat "$f"
+  [[ -n "${PRIVATE_DENYLIST:-}" ]] && printf '%s\n' "$PRIVATE_DENYLIST"
+  conf="$HOME/.config/apksim/signin.conf"
+  if [[ -f "$conf" ]]; then
+    host="$(sed -n 's/^SERVER=//p' "$conf" | head -1 | sed -E 's#^[a-z]+://##; s#[:/].*##')"
+    [[ -n "$host" && "$host" != *"<"* ]] && printf '%s\n' "$host" | sed 's/[.[\*^$()+?{}|]/\\&/g'
+  fi
+} | sed -e 's/#.*//' -e 's/[[:space:]]*$//' | grep -v '^$' > "$PATTERNS"
+if [[ ! -s "$PATTERNS" ]]; then
+  echo "check-private: no denylist (~/.config/apksim/denylist or PRIVATE_DENYLIST); not checked" >&2
+  exit 0
+fi
+
+# Prints the numbers of matching lines of stdin, or nothing.
+match_lines() { grep -n -i -E -f "$PATTERNS" | cut -d: -f1 | paste -sd, -; }
+hit() { printf '  %s\n' "$*" >> "$HITS"; }
+
+# Added lines and file names of a diff (git diff output on stdin), reported as file:line.
+check_diff() {
+  local label="$1"
+  awk -v label="$label" '
+    /^\+\+\+ / { file = substr($0, 5); sub(/^b\//, "", file); next }
+    /^diff --git / { n = split($0, p, " b/"); name = p[n]; print label "\t" name "\t0\t" name; next }
+    /^@@ / { split($3, a, ","); line = substr(a[1], 2) - 1; next }
+    /^\+/ { line++; print label "\t" file "\t" line "\t" substr($0, 2); next }
+    /^ / { line++ }
+  ' | while IFS=$'\t' read -r lab file line text; do
+    if printf '%s\n' "$text" | grep -q -i -E -f "$PATTERNS"; then
+      if [[ "$line" == 0 ]]; then hit "$lab: file name $file"; else hit "$lab: $file:$line"; fi
+    fi
+  done
+}
+
+check_commit() {
+  local c="$1" short; short="$(git rev-parse --short "$c")"
+  local lines; lines="$(git log -1 --format=%B "$c" | match_lines)"
+  [[ -n "$lines" ]] && hit "commit $short: message, line(s) $lines"
+  for field in '%an <%ae>' '%cn <%ce>'; do
+    git log -1 --format="$field" "$c" | grep -q -i -E -f "$PATTERNS" && \
+      hit "commit $short: $( [[ $field == '%an <%ae>' ]] && echo author || echo committer ) name or email"
+  done
+  # A merge's own changes (as against its first parent) are those of the commits it brings in, checked one by one.
+  [[ "$(git rev-list --parents -n1 "$c" | wc -w)" -gt 2 ]] && return
+  git show --format= -U0 --no-color --no-ext-diff "$c" | check_diff "commit $short"
+}
+
+case "${1:-}" in
+  --staged) git diff --cached -U0 --no-color --no-ext-diff | check_diff "staged" ;;
+  --commits)
+    [[ -n "${2:-}" ]] || { echo "usage: check-private --commits RANGE" >&2; exit 2; }
+    # shellcheck disable=SC2086  # RANGE may be several words: "SHA --not --remotes"
+    for c in $(git rev-list $2); do check_commit "$c"; done ;;
+  --tree)
+    git grep -n -i -I -E -f "$PATTERNS" -- . | sed -E 's/^([^:]*):([0-9]+):.*/\1:\2/' | sort -t: -k1,1 -k2,2n -u | \
+      while read -r loc; do hit "tracked file $loc"; done
+    git ls-files | grep -i -E -f "$PATTERNS" | while read -r f; do hit "file name $f"; done ;;
+  --text)
+    lines="$(match_lines)"
+    [[ -n "$lines" ]] && hit "${2:-text}: line(s) $lines" ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
+
+if [[ -s "$HITS" ]]; then
+  echo "check-private: personal information (a denylisted term) found:" >&2
+  cat "$HITS" >&2
+  echo "Remove it (AGENTS.md: \"Nothing personal goes in the repo\"). The terms are in ~/.config/apksim/denylist." >&2
+  exit 1
+fi
+exit 0

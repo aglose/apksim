@@ -52,11 +52,11 @@ SysV calls) and `native/linux/jnibridge_linux.c` (no varargs translation needed)
 |---|---|
 | Test app, AOT cache | ~7.0 s (Mac native: ~2.0 s) |
 | Test app, no AOT cache | ~8.0 s |
-| HomeSafe Preview (loads `libsqliteJni.so` and WebRTC's `libjingle_peerconnection_so.so`) | ~6.7 s |
+| A large R8 app (loads `libsqliteJni.so` and WebRTC's `libjingle_peerconnection_so.so`) | ~6.7 s |
 
 Most of the gap to the Mac is Rosetta translating the JVM. A native x86_64 runner has not been measured yet.
 
-Checked in the container: test app taps, navigation and SQLite (Trips list); HomeSafe sign-in screen and apps
+Checked in the container: test app taps, navigation and SQLite (Trips list); the large app's sign-in screen and bottom
 sheet with CPU-rendered AGSL backgrounds. The device controls work headless too (checked in the container): `--appearance dark`,
 `rotate`, `locale`, `fontscale`, `open URL`, `permission allow`, `notifications`, `location`, `clipboard`.
 

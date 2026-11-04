@@ -7,9 +7,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
 
 ## Owner's goals (in order asked)
 1. Launch as fast as the demo: done, 2.5 s first frame (window at 0.15 s), measured with `scripts/bench.py`.
-2. Run real APKs, including their HomeSafe app: done (HomeSafe Preview and debug builds both run).
+2. Run real APKs, including the owner's own app: done (its R8 release and debug builds both run).
 3. **120 fps**: the owner said "don't stop until it's that fast". Average is now ~117-120 fps on normal UI, the GPU
-   stress shader and HomeSafe's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
+   stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
    "Open work".
 
 ## Layout
@@ -41,7 +41,7 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
     renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader; a shader not drawn for a
     second has its frame collected by `sweep` (each one left behind mid-animation held a full-size Metal texture for
-    good: HomeSafe grew ~16 MB per Weather visit). `uniform shader` inputs
+    good: the owner's app grew ~16 MB per visit to a shader screen). `uniform shader` inputs
     become textures (`AgslChild`: bilinear, transparent outside, as Skia samples an effect's input).
     `GpuRenderNode` (Compose's graphicsLayer nodes) runs `createRuntimeShaderEffect(shader, "content")` on Metal:
     the app's drawing goes into a separate content node, which `HwRenderer.draw` (`beforeSync`, before HWUI syncs)
@@ -53,7 +53,7 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
     towards collecting as ART does, so free native-backed objects eagerly where the code knows they are done.
     `GpuBitmaps`: app `drawBitmap(bitmap, src, dst, paint)` calls (Compose's drawImage) that scale a filtered bitmap
     onto whole device pixels get a copy already that size, resampled once on Metal (bilinear in float, as Skia), which
-    HWUI then blits 1:1; Skia's CPU bilinear was most of Atlas's frame. Copies are cached (96 MB, LRU) and made only
+    HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame. Copies are cached (96 MB, LRU) and made only
     for a size asked for again within 8 frames, so zooms stay on the CPU. `-Dapksim.gpuBitmaps=false` turns it off;
     `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
     a tiled texture made the CPU untile it, ~3 ms per full screen.
@@ -73,8 +73,9 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   `bench.py` (launch times), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `instrument.py` (androidTest suites, JUnit XML), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
-  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `signin.sh`/`install-signin.sh`
-  (the owner's HomeSafe sign-in), `hooks/pre-push`.
+  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI),
+  `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
+  requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
@@ -94,8 +95,9 @@ python3 scripts/drive.py 7400 'wait 3000' 'tap 720 1690' 'wait 3000' 'frames' 'f
 python3 scripts/bench.py 5 <apk> [<apk>...]   # launch times
 ```
 Coordinates are device pixels (phone: 822x1782, density 2). Test-app bottom nav: Home 130, Trips 300-410,
-Settings 550-690, Shader 720; y=1690. FAB is at 733,1533. HomeSafe: the "Weather, Atlas…" row is at 400,1390, and in
-the sheet Fitness is at 300,820 and Weather at 300,300.
+Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
+The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
+repo): read it before working with that app.
 
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
@@ -127,13 +129,13 @@ delay passes (charging/idle ones wait for `jobs run ID`; WorkManager rides on th
 (Robolectric's auto-schedule) and reach manifest receivers. `jobs [run ID]`, `services`, `alarms` list them.
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
-only to a registered binder). Checked with HomeSafe: its HomeSafeMessagingService posts the alert.
+only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
 The Android Keystore (`SimKeyStore`, provider "AndroidKeyStore": KeyStore, AES/HMAC KeyGenerator, EC/RSA
 KeyPairGenerator with KeyGenParameterSpec) is a test keystore: keys persist in the app's data folder in the clear and
-no use restriction is enforced. HomeSafe seals its API keys with it.
+no use restriction is enforced.
 `record` without a Mac window (headless, Linux) writes Motion-JPEG `.avi` (`MjpegRecorder`, 30 fps, Android's JPEG
 encoder); with a window `.mov` H.264, or `.avi` if the file name says so. Configuration changes recreate activities as on a device (state not in
 `rememberSaveable`/`onSaveInstanceState` resets). A command that throws answers `error: ...` instead of ending the app.
@@ -145,7 +147,7 @@ encoder); with a window `.mov` H.264, or `.avi` if the file name says so. Config
 The window is resizable: dragging an edge resizes the display (`Device` rewrites the whole qualifier string:
 smallest width, size bucket and orientation follow), applied at most every 100 ms while dragging and once at the end;
 meanwhile the last frame stays pinned top left. Activities get the configuration change as on a device in a freeform
-window: recreated, or resized in place when they declare `screenSize` in configChanges (HomeSafe does). Zoom only
+window: recreated, or resized in place when they declare `screenSize` in configChanges. Zoom only
 scales the window. A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit.
 Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R), Device (Device Type > Phone/Foldable/
 Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
@@ -209,22 +211,15 @@ functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fa
 the arguments the Apple way (`syslog` then crashed in `strlen`). `scripts/so-imports.py APK` lists the imports;
 check new variadic ones against `bionic.c`. `syscall()` (`s_syscall`) handles Linux arm64 gettid, getpid, getrandom
 and futex WAIT/WAKE (on `os_sync_wait_on_address`); everything else is ENOSYS. libc++abi's guard for function-local
-statics needs the first two: with gettid -1 on every thread, two threads meeting at one static aborted HomeSafe now
+statics needs the first two: with gettid -1 on every thread, two threads meeting at one static aborted an app now
 and then at WebRTC start ("__cxa_guard_acquire detected recursive initialization", which it logged via syslog).
-HomeSafe recorded clips (checked 2026-11-03): 4K H.264 at 20-25 fps plus 8 kHz AAC over HLS play at their frame rate,
-in step with the audio clock, and seek. Drops with sound on (0-7%) come from the stream: its audio timestamps jump
-~240 ms at segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match;
-with `-Dapksim.audio=false` there are none. When a visit plays on into its next clip the picture freezes: an app bug
-(MomentsScreen keeps `CameraStreamPlayer` composed across the `playerKey` change, and `AndroidView(factory =
-{ textureView })` keeps the old view, so the new player's TextureView is never attached). Compose behaves the same on a phone, but this was not checked on the emulator (needs a sign-in).
-HomeSafe needs a sign-in on every cold start. The owner ran `homesafe-signin --save` once, which writes
-`work/autofill/<package>.properties` (mode 600) from 1Password; from then on every apksim launch signs the app in by
-itself (`Autofill.java`: finds fields by their label/placeholder in the accessibility tree, fills them, checks they
-stuck, presses `submit`; logs field names only). So restart freely with `scripts/relaunch.sh`. Never read, print or
-edit that file, never run `op` for the owner's secrets, and never type their password: if the file is missing, ask
-the owner to run `homesafe-signin --save` (or plain `homesafe-signin` for a one-off sign-in).
-HomeSafe also tries its compiled-in LAN server, so a test sign-in with dummy values still reaches the real Frigate as a
-failed login: test autofill without a `submit` line.
+Recorded HLS clips (4K H.264 at 20-25 fps plus 8 kHz AAC, checked 2026-11-03) play at their frame rate, in step
+with the audio clock, and seek. Drops with sound on (0-7%) came from the stream: its audio timestamps jump ~240 ms at
+segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match.
+Apps that sign in on every cold start can be signed in by apksim itself (`Autofill.java`): it reads
+`work/autofill/<package>.properties` (mode 600, written by the owner), finds fields by their label/placeholder in
+the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only. Never read,
+print or edit that file, and never type the owner's password: if it is missing, ask the owner.
 
 ## adb device
 `./apksim --adb PORT ...` (or `--adb auto`; the port is written to `work/tmp/<pid>/adb.port`), then
@@ -288,7 +283,7 @@ register's JVM local holds the declared kind (`LocalRanges`), so a debugger neve
 `this` is slot 0; parameters are the copies in Dalvik's registers, so JDI lists them as locals, not arguments.
 Split methods (`emitSplit`) get line numbers but no locals (their registers live in arrays). Without `--debug`,
 classes are byte-identical to before: debug info cost ~30 ms of a warm launch (bigger classes to load; R8 builds
-such as HomeSafe Preview carry a line entry per instruction) and ~5% of a cold one. Debug classes have their own class
+such as the owner's app carry a line entry per instruction) and ~5% of a cold one. Debug classes have their own class
 cache (`work/cache/classes/<hash>-debug`), so the first `--debug` launch after a build translates everything.
 Checked with a JDI client (what IntelliJ uses): `count++` at MainActivity.kt:63 stops with `$count$delegate`.
 R8-minified apps have pc-encoded lines (retrace them with the app's mapping file) and no locals.
@@ -314,16 +309,21 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   or rewrite history here while another session may have uncommitted edits: a `git filter-repo` run here once threw
   away a peer's work in progress. Do git-side work in a worktree (`git worktree add DIR -b topic origin/main`), or
   ask the session working in the folder to commit first.
-- **Nothing personal goes in a commit.** No hostnames of the owner's machines or tailnet, IP addresses, email
-  addresses, 1Password item names or saved sign-in values. The owner's real server is in
-  `~/.config/apksim/signin.conf`, which `scripts/install-signin.sh` creates with a placeholder. This checkout commits
-  as `7216340+aglose@users.noreply.github.com` (its local `git config user.email`); keep it that way.
+- **Nothing personal goes in the repo, ever:** not in files, code comments, commit messages, PR titles or bodies,
+  issues or release notes. That means no names of the owner's own apps, employer or servers, package names, hostnames,
+  IP addresses, email addresses other than the GitHub noreply one, 1Password item names or sign-in values. Say "the
+  owner's app" or describe it ("a large R8 app"). Private notes go in `~/.config/apksim/NOTES.md`.
+  `scripts/hooks/check-private` enforces it: `pre-commit` checks the staged changes, `pre-push` every new commit's
+  diff, message and author/committer email, against the terms in `~/.config/apksim/denylist` (private, one regex per
+  line). CI runs the same check with the `PRIVATE_DENYLIST` repository secret. Commits use the GitHub noreply
+  address (this checkout's local `git config user.email`), and so must merge commits: merge with
+  `gh pr merge --merge --author-email 7216340+aglose@users.noreply.github.com`.
 
 ## Hard-won rules
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
   port leaves the old build running and the new one dead.
 - **Never `pkill -f dev.apksim.Main`.** The owner may have their own instance open (for example, logged in to
-  HomeSafe). Quit your instances with `drive.py PORT quit`.
+  the owner's app). Quit your instances with `drive.py PORT quit`.
 - **Credentials:** never type or paste the owner's real passwords. 1Password autofill only works in Chrome, not this
   window. The owner signs in themselves: Cmd+V in the window pastes the clipboard.
 - **After any Java change, run `scripts/train.sh`** or timings silently get worse (no AOT). The cache is tied to the
@@ -340,12 +340,11 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
   animations.
-- **HomeSafe steps its shader clocks at 30 Hz on purpose** (`rememberShaderClock(frameSeconds = 1f/30f)` in
-  ~/AndroidStudioProjects/HomeSafe). Idle shader screens at 30-60 fps are by design. Measure 120 fps on interactions
-  or the test app's Shader tab. HomeSafe source is for reference only; do not edit it.
+- Some apps step their shader clocks at 30 Hz on purpose (the owner's does): idle shader screens at 30-60 fps can be
+  by design. Measure 120 fps on interactions or the test app's Shader tab.
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
   one-offs.
-- macOS forbids W+X pages, so 4 KB-aligned `.so` files (HappyApp's Flipper/libc++) cannot load. 16 KB-aligned ones work.
+- macOS forbids W+X pages, so 4 KB-aligned `.so` files (Flipper and its libc++) cannot load. 16 KB-aligned ones work.
 - Phone, foldable and tablet report a 24 dp (48 px) status bar and gesture-nav inset (Robolectric's `SystemUi`, set
   in `DeviceControls.applySystemUi`; desktop and TV have none), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
@@ -358,12 +357,9 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 
 ## Test APKs
 - `testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk`: the main regression app.
-- `~/Downloads/HomeSafe-Preview-pr223.apk`: the owner's app (R8, SQLite + WebRTC `.so`). It reaches its server
-  `frigate.local` over Tailscale.
-- `~/AndroidStudioProjects/HomeSafe/.claude/worktrees/*/androidApp/build/outputs/apk/debug/androidApp-debug.apk`:
-  179 MB debug build; exercises method splitting.
-- HappyApp debug: fails as expected (4 KB-aligned native libs + Crashlytics `System.exit`). Run it with
-  `--no-network`.
+- The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
+  `~/.config/apksim/NOTES.md`.
+- An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
 
 ## Open work
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
@@ -385,20 +381,20 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   caret, fling): Compose draws everything outside a `graphicsLayer` into the full-screen `AndroidComposeView`'s own
   display list, so any change re-records it. Only layer-property animations would get smaller damage.
 - AGSL drawn as a paint with `uniform shader` inputs runs on Metal when every input is an image BitmapShader (CLAMP,
-  linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (HomeSafe's
-  HEAT_SHADER `body`/`muscle`; self-test "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
-  the CPU. HomeSafe never draws HEAT_SHADER here: it is on the Fitness Body card, hidden without Health Connect.
-- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed (HomeSafe's clips need
+  linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (self-test
+  "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
+  the CPU.
+- MediaCodec has H.264, HEVC, AAC and MP3; VP9/AV1 video and Opus/Vorbis audio are not listed (the owner's app needs
   none of them).
-- Layer-content RenderEffects run on Metal (`GpuRenderNode`). HomeSafe Preview, fps with them on the CPU → on
-  Metal: camera page 49 → 130 (scrubbing the lens 42 → 128), Weather 23 → 86, Atlas 8.6 → 30, and Atlas panning
-  26 → 64-73 once scaled bitmaps went to the GPU and readback stopped untiling (2026-11-03). What is left is the
-  content raster: each effect layer is a second HWUI frame on the one render thread, serialized after the screen's
-  frame and waited for on the main thread (Atlas: two full-screen layers, ~6 ms raster + 0.8 ms shader each). Not
+- Layer-content RenderEffects run on Metal (`GpuRenderNode`). On the owner's app, fps with them on the CPU → on
+  Metal: a camera page 49 → 130, a weather screen 23 → 86, a map screen 8.6 → 30, and panning the map 26 → 64-73 once
+  scaled bitmaps went to the GPU and readback stopped untiling (2026-11-03). What is left is the content raster: each
+  effect layer is a second HWUI frame on the one render thread, serialized after the screen's frame and waited for on
+  the main thread (the map: two full-screen layers, ~6 ms raster + 0.8 ms shader each). Not
   tried: one frame behind (it would not help much: the render thread, not the main thread, is the limit), one
   renderer for all layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay
   on the CPU.
-- No Health Connect service, so HomeSafe Fitness hides its Body card and Heart rate chip that the emulator shows.
+- No Health Connect service, so apps hide what they would show from it.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
-- Real mouse and keyboard in the window were first used by the owner on 2026-11-02 (HomeSafe login). Scripted input
-  goes through `--control` instead.
+- Real mouse and keyboard in the window were first used by the owner on 2026-11-02. Scripted input goes through
+  `--control` instead.

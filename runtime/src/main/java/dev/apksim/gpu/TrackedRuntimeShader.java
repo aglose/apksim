@@ -349,7 +349,7 @@ public class TrackedRuntimeShader extends RuntimeShader {
   /**
    * Once a frame, on the main thread: collects the GPU frame of every shader not drawn for a second. A shader the app
    * stops drawing mid-animation (a page closing) would otherwise hold its full-size target texture for good, since
-   * only its next draw collects it; HomeSafe grew by its sky shaders on every visit to Weather. The pixels are kept,
+   * only its next draw collects it; an app grew by its sky shaders on every visit to a screen that animates them. The pixels are kept,
    * so a shader drawn again later still shows its latest frame.
    */
   public static void sweep() {
