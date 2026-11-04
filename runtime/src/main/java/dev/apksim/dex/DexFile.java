@@ -2,8 +2,6 @@ package dev.apksim.dex;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Read-only view of one .dex file. All offsets are as in the DEX format specification. The bytes are usually
@@ -19,9 +17,23 @@ public final class DexFile {
   private final int methodHandles;
   public final int classDefs;
   public final int classDefsSize;
+  // Decoded strings and references by DEX index, filled as they are asked for and shared by every view of the same
+  // bytes (a view's thread may decode an entry another already has: the objects are immutable, so a race only
+  // costs a second decode). Flat arrays: one load per lookup, no boxed keys.
   private final String[] strings;
+  private final Shared shared;
+
+  private static final class Shared {
+    volatile MethodRef[] methods;
+    volatile FieldRef[] fields;
+    volatile String[] internalTypes;
+  }
 
   public DexFile(ByteBuffer data) {
+    this(data, null, null);
+  }
+
+  private DexFile(ByteBuffer data, String[] strings, Shared shared) {
     d = data.order(ByteOrder.LITTLE_ENDIAN);
     if (d.get(0) != 'd' || d.get(1) != 'e' || d.get(2) != 'x') throw new IllegalArgumentException("not a dex file");
     stringIds = i32(0x3c);
@@ -31,13 +43,14 @@ public final class DexFile {
     methodIds = i32(0x5c);
     classDefsSize = i32(0x60);
     classDefs = i32(0x64);
-    strings = new String[i32(0x38)];
+    this.strings = strings != null ? strings : new String[i32(0x38)];
+    this.shared = shared != null ? shared : new Shared();
     methodHandles = findMethodHandles();
   }
 
-  /** Another reader of the same bytes, with its own caches, for use on another thread. */
+  /** Another reader of the same bytes, for use on another thread; it shares this one's decoded strings and references. */
   public DexFile view() {
-    return new DexFile(d.duplicate());
+    return new DexFile(d.duplicate(), strings, shared);
   }
 
   private int findMethodHandles() {
@@ -181,31 +194,84 @@ public final class DexFile {
     return i32(classDefOffset(classDefIdx) + 4);
   }
 
-  /** A field reference. */
-  public record FieldRef(String owner, String type, String name) {}
+  /** A field reference; ownerInternal is the owner as an internal name (com/example/Foo). */
+  public static final class FieldRef {
+    private final String owner, type, name, ownerInternal;
 
-  public FieldRef field(int idx) {
-    int p = fieldIds + idx * 8;
-    return new FieldRef(type(u16(p)), type(u16(p + 2)), string(i32(p + 4)));
-  }
+    FieldRef(String owner, String type, String name) {
+      this.owner = owner;
+      this.type = type;
+      this.name = name;
+      ownerInternal = internal(owner);
+    }
 
-  /** A method reference. */
-  public record MethodRef(String owner, String name, String[] params, String ret) {
-    public String descriptor() {
-      return DexFile.descriptor(params, ret);
+    public String owner() { return owner; }
+    public String type() { return type; }
+    public String name() { return name; }
+    public String ownerInternal() { return ownerInternal; }
+
+    @Override
+    public String toString() {
+      return owner + "." + name + ":" + type;
     }
   }
 
-  private final Map<Integer, MethodRef> methodCache = new HashMap<>();
+  public FieldRef field(int idx) {
+    FieldRef[] all = shared.fields;
+    if (all == null) shared.fields = all = new FieldRef[i32(0x50)];
+    FieldRef f = all[idx];
+    if (f != null) return f;
+    int p = fieldIds + idx * 8;
+    return all[idx] = new FieldRef(type(u16(p)), type(u16(p + 2)), string(i32(p + 4)));
+  }
+
+  /** A method reference, with its descriptor and the owner's internal name worked out once. */
+  public static final class MethodRef {
+    private final String owner, name, ret, descriptor, ownerInternal;
+    private final String[] params;
+
+    MethodRef(String owner, String name, String[] params, String ret) {
+      this.owner = owner;
+      this.name = name;
+      this.params = params;
+      this.ret = ret;
+      descriptor = DexFile.descriptor(params, ret);
+      ownerInternal = internal(owner);
+    }
+
+    public String owner() { return owner; }
+    public String name() { return name; }
+    public String[] params() { return params; }
+    public String ret() { return ret; }
+    public String descriptor() { return descriptor; }
+    public String ownerInternal() { return ownerInternal; }
+
+    @Override
+    public String toString() {
+      return owner + "." + name + descriptor;
+    }
+  }
 
   public MethodRef method(int idx) {
-    MethodRef m = methodCache.get(idx);
+    MethodRef[] all = shared.methods;
+    if (all == null) shared.methods = all = new MethodRef[i32(0x58)];
+    MethodRef m = all[idx];
     if (m != null) return m;
     int p = methodIds + idx * 8;
     int proto = protoIds + u16(p + 2) * 12;
-    m = new MethodRef(type(u16(p)), string(i32(p + 4)), protoParams(proto), type(i32(proto + 4)));
-    methodCache.put(idx, m);
-    return m;
+    return all[idx] = new MethodRef(type(u16(p)), string(i32(p + 4)), protoParams(proto), type(i32(proto + 4)));
+  }
+
+  /** Type [idx] as an internal name: com/example/Foo for Lcom/example/Foo;, an array's descriptor as it is. */
+  public String internalType(int idx) {
+    String[] all = shared.internalTypes;
+    if (all == null) shared.internalTypes = all = new String[i32(0x40)];
+    String t = all[idx];
+    return t != null ? t : (all[idx] = internal(type(idx)));
+  }
+
+  static String internal(String desc) {
+    return desc.charAt(0) == 'L' ? desc.substring(1, desc.length() - 1) : desc;
   }
 
   private String[] protoParams(int proto) {

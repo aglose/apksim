@@ -1,6 +1,5 @@
 package dev.apksim.dex;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -77,9 +76,14 @@ final class MethodTranslator implements Opcodes {
   private int[] blockOf;
   private int[] blockStart;
   private int blockCount;
-  private int[][] blockSucc;
-  private int[][] normalSucc; // blockSucc without the exception handlers
-  private BitSet[] liveIn;
+  private int[][] normalSucc; // successors by flow (exception handlers aside)
+  // Registers live into each block: block b's words at [b * liveWords, (b + 1) * liveWords).
+  private long[] liveIn;
+  private int liveWords;
+  // The try covering each instruction (index into tries), or -1; per try, its handlers' blocks. DEX try ranges do
+  // not overlap; if a method's did, tryAt is null and handlers are looked up range by range as before.
+  private int[] tryAt;
+  private int[][] tryHandlerBlocks;
   private int[][] blockState;
   private List<Try> tries = List.of();
 
@@ -665,33 +669,72 @@ final class MethodTranslator implements Opcodes {
     starts[bc] = count;
     blockStart = starts;
     blockCount = bc;
-    blockSucc = new int[bc][];
     normalSucc = new int[bc][];
     for (int bl = 0; bl < bc; bl++) {
       int last = blockStart[bl + 1] - 1;
       int o = op[last];
-      List<Integer> s = new ArrayList<>(2);
       if (isGoto(o)) {
-        s.add(blockOf[insnAt(a[last])]);
+        normalSucc[bl] = new int[] {blockOf[insnAt(a[last])]};
       } else if (isIf(o)) {
-        s.add(blockOf[insnAt(c[last])]);
-        s.add(blockOf[last + 1]);
+        normalSucc[bl] = new int[] {blockOf[insnAt(c[last])], blockOf[last + 1]};
       } else if (isSwitch(o)) {
-        for (int t : switchTargets(last)) s.add(blockOf[insnAt(t)]);
-        s.add(blockOf[last + 1]);
+        int[] targets = switchTargets(last);
+        int[] s = new int[targets.length + 1];
+        for (int k = 0; k < targets.length; k++) s[k] = blockOf[insnAt(targets[k])];
+        s[targets.length] = blockOf[last + 1];
+        normalSucc[bl] = s;
       } else if (!isReturnOrThrow(o) && last + 1 < count) {
-        s.add(blockOf[last + 1]);
+        normalSucc[bl] = new int[] {blockOf[last + 1]};
+      } else {
+        normalSucc[bl] = NONE;
       }
-      normalSucc[bl] = s.stream().mapToInt(Integer::intValue).toArray();
-      for (Try t : tries) {
-        if (addr[blockStart[bl]] >= t.start && addr[blockStart[bl]] < t.end) {
-          for (Handler h : t.handlers) s.add(blockOf[insnAt(h.addr)]);
-        }
-      }
-      int[] arr = new int[s.size()];
-      for (int i = 0; i < arr.length; i++) arr[i] = s.get(i);
-      blockSucc[bl] = arr;
     }
+    indexTries();
+  }
+
+  private static final int[] NONE = {};
+
+  /** Fills tryAt and tryHandlerBlocks: one pass over each try's instructions (addr is ascending). */
+  private void indexTries() {
+    if (tries.isEmpty()) return;
+    tryAt = new int[count];
+    Arrays.fill(tryAt, -1);
+    tryHandlerBlocks = new int[tries.size()][];
+    for (int t = 0; t < tries.size(); t++) {
+      Try tr = tries.get(t);
+      int[] hb = new int[tr.handlers.size()];
+      for (int k = 0; k < hb.length; k++) hb[k] = blockOf[insnAt(tr.handlers.get(k).addr)];
+      tryHandlerBlocks[t] = hb;
+      int lo = 0, hi = count;
+      while (lo < hi) {
+        int mid = (lo + hi) >>> 1;
+        if (addr[mid] < tr.start) lo = mid + 1;
+        else hi = mid;
+      }
+      for (int i = lo; i < count && addr[i] < tr.end; i++) {
+        if (tryAt[i] >= 0) {
+          tryAt = null; // Overlapping ranges: not valid DEX, but keep the general lookup for it.
+          return;
+        }
+        tryAt[i] = t;
+      }
+    }
+  }
+
+  /** Handler blocks instruction i may continue at if it throws (it must be able to: canThrow), or null. */
+  private int[] handlersOf(int i) {
+    if (tries.isEmpty()) return null;
+    if (tryAt != null) return tryAt[i] < 0 ? null : tryHandlerBlocks[tryAt[i]];
+    List<Integer> hs = new ArrayList<>(1);
+    for (Try t : tries) {
+      if (addr[i] >= t.start && addr[i] < t.end) {
+        for (Handler h : t.handlers) hs.add(blockOf[insnAt(h.addr)]);
+      }
+    }
+    if (hs.isEmpty()) return null;
+    int[] out = new int[hs.size()];
+    for (int k = 0; k < out.length; k++) out[k] = hs.get(k);
+    return out;
   }
 
   // ---------------------------------------------------------------- liveness
@@ -701,75 +744,75 @@ final class MethodTranslator implements Opcodes {
     return ch == 'J' || ch == 'D';
   }
 
-  private void addUses(int i, BitSet use) {
+  private void addUses(int i, long[] use) {
     int o = op[i];
     int ra = a[i];
     int rb = b[i];
     int rc = c[i];
     if (o == 0x01 || o == 0x02 || o == 0x03 || o == 0x07 || o == 0x08 || o == 0x09 || o == 0x21) {
-      use.set(rb);
+      setBit(use, rb);
     } else if (o == 0x04 || o == 0x05 || o == 0x06) {
-      use.set(rb);
-      use.set(rb + 1);
+      setBit(use, rb);
+      setBit(use, rb + 1);
     } else if (o == 0x0f || o == 0x11 || o == 0x1d || o == 0x1e || o == 0x27 || o == 0x1f || o == 0x26 || o == 0x2b || o == 0x2c
         || (o >= 0x38 && o <= 0x3d)) {
-      use.set(ra);
+      setBit(use, ra);
     } else if (o == 0x10) {
-      use.set(ra);
-      use.set(ra + 1);
+      setBit(use, ra);
+      setBit(use, ra + 1);
     } else if (o == 0x20 || o == 0x23) {
-      use.set(rb);
+      setBit(use, rb);
     } else if (o == 0x2d || o == 0x2e) {
-      use.set(rb);
-      use.set(rc);
+      setBit(use, rb);
+      setBit(use, rc);
     } else if (o >= 0x2f && o <= 0x31) {
-      use.set(rb);
-      use.set(rb + 1);
-      use.set(rc);
-      use.set(rc + 1);
+      setBit(use, rb);
+      setBit(use, rb + 1);
+      setBit(use, rc);
+      setBit(use, rc + 1);
     } else if (o >= 0x32 && o <= 0x37) {
-      use.set(ra);
-      use.set(rb);
+      setBit(use, ra);
+      setBit(use, rb);
     } else if (o >= 0x44 && o <= 0x4a) {
-      use.set(rb);
-      use.set(rc);
+      setBit(use, rb);
+      setBit(use, rc);
     } else if (o >= 0x4b && o <= 0x51) {
-      use.set(ra);
-      if (o == 0x4c) use.set(ra + 1);
-      use.set(rb);
-      use.set(rc);
+      setBit(use, ra);
+      if (o == 0x4c) setBit(use, ra + 1);
+      setBit(use, rb);
+      setBit(use, rc);
     } else if (o >= 0x52 && o <= 0x58) {
-      use.set(rb);
+      setBit(use, rb);
     } else if (o >= 0x59 && o <= 0x5f) {
-      use.set(ra);
-      if (o == 0x5a) use.set(ra + 1);
-      use.set(rb);
+      setBit(use, ra);
+      if (o == 0x5a) setBit(use, ra + 1);
+      setBit(use, rb);
     } else if (o >= 0x67 && o <= 0x6d) {
-      use.set(ra);
-      if (o == 0x68) use.set(ra + 1);
+      setBit(use, ra);
+      if (o == 0x68) setBit(use, ra + 1);
     } else if (args[i] != null) {
-      for (int r : args[i]) use.set(r);
+      for (int r : args[i]) setBit(use, r);
     } else if (o >= 0x7b && o <= 0x8f) {
-      use.set(rb);
-      if (o == 0x7d || o == 0x7e || o == 0x80 || o == 0x84 || o == 0x85 || o == 0x86 || o == 0x8a || o == 0x8b || o == 0x8c) use.set(rb + 1);
+      setBit(use, rb);
+      if (o == 0x7d || o == 0x7e || o == 0x80 || o == 0x84 || o == 0x85 || o == 0x86 || o == 0x8a || o == 0x8b || o == 0x8c) setBit(use, rb + 1);
     } else if (o >= 0x90 && o <= 0xaf) {
       boolean w = binWide(o - 0x90);
-      use.set(rb);
-      use.set(rc);
+      setBit(use, rb);
+      setBit(use, rc);
       if (w) {
-        use.set(rb + 1);
-        if (!isShift(o - 0x90)) use.set(rc + 1);
+        setBit(use, rb + 1);
+        if (!isShift(o - 0x90)) setBit(use, rc + 1);
       }
     } else if (o >= 0xb0 && o <= 0xcf) {
       boolean w = binWide(o - 0xb0);
-      use.set(ra);
-      use.set(rb);
+      setBit(use, ra);
+      setBit(use, rb);
       if (w) {
-        use.set(ra + 1);
-        if (!isShift(o - 0xb0)) use.set(rb + 1);
+        setBit(use, ra + 1);
+        if (!isShift(o - 0xb0)) setBit(use, rb + 1);
       }
     } else if (o >= 0xd0 && o <= 0xe2) {
-      use.set(rb);
+      setBit(use, rb);
     }
   }
 
@@ -809,49 +852,91 @@ final class MethodTranslator implements Opcodes {
    * typed the float as a reference and dropped it, so every animation in a v2 Compose test snapped to its end.)
    */
   private void computeLiveness() {
-    liveIn = new BitSet[blockCount];
-    for (int bl = 0; bl < blockCount; bl++) liveIn[bl] = new BitSet(regs);
-    int[][] handlersAt = new int[count][];
-    if (!tries.isEmpty()) {
-      for (int i = 0; i < count; i++) {
+    int words = (regs + 64) >>> 6; // a wide use of the last register names one past it
+    liveWords = words;
+    liveIn = new long[blockCount * words];
+    // Per block: reads before any write in it (gen), writes (kill), writes before its first instruction that can throw
+    // to a handler (killPre), and those handlers. A handler's live registers join at a throwing instruction, after its
+    // own write: so at block entry they are live less what earlier instructions write. Composed, in = gen + (out -
+    // kill) + (handlers' in - killPre), exactly what walking the block instruction by instruction gives. A block whose
+    // throwing instructions reach different handlers (only if try bounds were not block starts) is walked that way.
+    long[] gen = new long[blockCount * words];
+    long[] kill = new long[blockCount * words];
+    long[] killPre = new long[blockCount * words];
+    int[][] blockHandlers = new int[blockCount][];
+    boolean[] walk = new boolean[blockCount];
+    long[] use = new long[words];
+    for (int bl = 0; bl < blockCount; bl++) {
+      int o = bl * words;
+      int first = blockStart[bl], end = blockStart[bl + 1];
+      int firstThrow = -1;
+      for (int i = first; i < end; i++) {
         if (!canThrow(op[i])) continue;
-        List<Integer> hs = new ArrayList<>(1);
-        for (Try t : tries) {
-          if (addr[i] >= t.start && addr[i] < t.end) {
-            for (Handler h : t.handlers) hs.add(blockOf[insnAt(h.addr)]);
+        int[] hs = handlersOf(i);
+        if (hs == null) continue;
+        if (firstThrow < 0) {
+          firstThrow = i;
+          blockHandlers[bl] = hs;
+        } else if (hs != blockHandlers[bl]) {
+          walk[bl] = true;
+        }
+      }
+      for (int i = end - 1; i >= first; i--) {
+        int r = defReg(i);
+        if (r >= 0) {
+          int n = defWide(i) ? 2 : 1;
+          for (int k = r; k < r + n; k++) {
+            gen[o + (k >>> 6)] &= ~(1L << k);
+            kill[o + (k >>> 6)] |= 1L << k;
+            if (firstThrow >= 0 && i < firstThrow) killPre[o + (k >>> 6)] |= 1L << k;
           }
         }
-        if (!hs.isEmpty()) handlersAt[i] = hs.stream().mapToInt(Integer::intValue).toArray();
+        Arrays.fill(use, 0);
+        addUses(i, use);
+        for (int w = 0; w < words; w++) gen[o + w] |= use[w];
       }
     }
-    BitSet live = new BitSet(regs);
-    BitSet tmp = new BitSet(regs);
+    long[] live = new long[words];
     boolean changed = true;
     while (changed) {
       changed = false;
       for (int bl = blockCount - 1; bl >= 0; bl--) {
-        live.clear();
-        for (int s : normalSucc[bl]) live.or(liveIn[s]);
-        for (int i = blockStart[bl + 1] - 1; i >= blockStart[bl]; i--) {
-          int r = defReg(i);
-          if (r >= 0) {
-            live.clear(r);
-            if (defWide(i)) live.clear(r + 1);
+        int o = bl * words;
+        Arrays.fill(live, 0);
+        for (int s : normalSucc[bl]) for (int w = 0; w < words; w++) live[w] |= liveIn[s * words + w];
+        if (walk[bl]) {
+          for (int i = blockStart[bl + 1] - 1; i >= blockStart[bl]; i--) {
+            int r = defReg(i);
+            if (r >= 0) {
+              live[r >>> 6] &= ~(1L << r);
+              if (defWide(i)) live[(r + 1) >>> 6] &= ~(1L << (r + 1));
+            }
+            Arrays.fill(use, 0);
+            addUses(i, use);
+            for (int w = 0; w < words; w++) live[w] |= use[w];
+            int[] hs = canThrow(op[i]) ? handlersOf(i) : null;
+            if (hs != null) for (int h : hs) for (int w = 0; w < words; w++) live[w] |= liveIn[h * words + w];
           }
-          tmp.clear();
-          addUses(i, tmp);
-          live.or(tmp);
-          if (handlersAt[i] != null) for (int h : handlersAt[i]) live.or(liveIn[h]);
+        } else {
+          for (int w = 0; w < words; w++) live[w] = gen[o + w] | (live[w] & ~kill[o + w]);
+          if (blockHandlers[bl] != null) {
+            for (int h : blockHandlers[bl]) {
+              for (int w = 0; w < words; w++) live[w] |= liveIn[h * words + w] & ~killPre[o + w];
+            }
+          }
         }
-        tmp.clear();
-        tmp.or(live);
-        tmp.andNot(liveIn[bl]);
-        if (!tmp.isEmpty()) {
-          liveIn[bl].or(live);
-          changed = true;
+        for (int w = 0; w < words; w++) {
+          if ((live[w] & ~liveIn[o + w]) != 0) {
+            liveIn[o + w] |= live[w];
+            changed = true;
+          }
         }
       }
     }
+  }
+
+  private static void setBit(long[] words, int r) {
+    words[r >>> 6] |= 1L << r;
   }
 
   // ---------------------------------------------------------------- value typing
@@ -968,22 +1053,28 @@ final class MethodTranslator implements Opcodes {
     Arrays.fill(defNode, -1);
     blockState = new int[blockCount][];
     int[] entry = initialState();
+    // Blocks to visit, first in first out (the order decides which type name a value gets first): a ring of block
+    // indices, each queued at most once (a bit per block says which are).
+    work = new int[blockCount];
+    queued = new long[(blockCount + 63) >>> 6];
+    int[] s = new int[regs];
     while (true) {
       descChanged = false;
       Arrays.fill(blockState, null);
       blockState[0] = entry.clone();
-      ArrayDeque<Integer> work = new ArrayDeque<>();
-      boolean[] queued = new boolean[blockCount];
-      work.add(0);
-      queued[0] = true;
-      while (!work.isEmpty()) {
-        int bl = work.poll();
-        queued[bl] = false;
-        int[] s = blockState[bl].clone();
+      workHead = 0;
+      workSize = 0;
+      enqueue(0);
+      while (workSize > 0) {
+        int bl = work[workHead];
+        workHead = workHead + 1 == blockCount ? 0 : workHead + 1;
+        workSize--;
+        queued[bl >>> 6] &= ~(1L << bl);
+        System.arraycopy(blockState[bl], 0, s, 0, regs);
         for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
           curInsn = i;
           curWhat = "to handler";
-          mergeToHandlers(i, s, work, queued);
+          mergeToHandlers(i, s);
           curWhat = "transfer";
           transfer(i, s);
         }
@@ -992,29 +1083,37 @@ final class MethodTranslator implements Opcodes {
         int last = blockStart[bl + 1] - 1;
         int o = op[last];
         if (isGoto(o)) {
-          flow(blockOf[insnAt(a[last])], s, work, queued);
+          flow(blockOf[insnAt(a[last])], s);
         } else if (isIf(o)) {
-          flow(blockOf[insnAt(c[last])], s, work, queued);
-          flow(blockOf[last + 1], s, work, queued);
+          flow(blockOf[insnAt(c[last])], s);
+          flow(blockOf[last + 1], s);
         } else if (isSwitch(o)) {
-          for (int t : switchTargets(last)) flow(blockOf[insnAt(t)], s, work, queued);
-          flow(blockOf[last + 1], s, work, queued);
+          for (int t : switchTargets(last)) flow(blockOf[insnAt(t)], s);
+          flow(blockOf[last + 1], s);
         } else if (!isReturnOrThrow(o) && last + 1 < count) {
-          flow(blockOf[last + 1], s, work, queued);
+          flow(blockOf[last + 1], s);
         }
       }
       if (!descChanged) break;
     }
   }
 
-  private void mergeToHandlers(int i, int[] s, ArrayDeque<Integer> work, boolean[] queued) {
+  private int[] work;
+  private int workHead, workSize;
+  private long[] queued;
+
+  private void enqueue(int bl) {
+    if ((queued[bl >>> 6] & (1L << bl)) != 0) return;
+    queued[bl >>> 6] |= 1L << bl;
+    int at = workHead + workSize;
+    work[at < blockCount ? at : at - blockCount] = bl;
+    workSize++;
+  }
+
+  private void mergeToHandlers(int i, int[] s) {
     if (tries.isEmpty() || !canThrow(op[i])) return;
-    int pc = addr[i];
-    for (Try t : tries) {
-      if (pc >= t.start && pc < t.end) {
-        for (Handler h : t.handlers) flow(blockOf[insnAt(h.addr)], s, work, queued);
-      }
-    }
+    int[] hs = handlersOf(i);
+    if (hs != null) for (int h : hs) flow(h, s);
   }
 
   private static boolean canThrow(int o) {
@@ -1032,9 +1131,8 @@ final class MethodTranslator implements Opcodes {
     return true;
   }
 
-  private void flow(int target, int[] s, ArrayDeque<Integer> work, boolean[] queued) {
+  private void flow(int target, int[] s) {
     int[] in = blockState[target];
-    BitSet live = liveIn[target];
     boolean changed = false;
     if (in == null) {
       in = new int[regs];
@@ -1042,24 +1140,24 @@ final class MethodTranslator implements Opcodes {
       blockState[target] = in;
       changed = true;
     }
-    for (int r = live.nextSetBit(0); r >= 0; r = live.nextSetBit(r + 1)) {
-      int v = s[r];
-      if (v == UNSET) continue;
-      if (in[r] == UNSET) {
-        in[r] = v;
-        changed = true;
-      } else if (v >= 0 && in[r] >= 0) {
-        if (find(v) != find(in[r])) {
-          if (debugging()) curWhat = curWhat.replaceAll(" reg v\\d+.*", "") + " reg v" + r + " into block at 0x" + Integer.toHexString(addr[blockStart[target]]);
-          union(v, in[r]);
+    for (int w = 0, o = target * liveWords; w < liveWords; w++) {
+      for (long bits = liveIn[o + w]; bits != 0; bits &= bits - 1) {
+        int r = (w << 6) + Long.numberOfTrailingZeros(bits);
+        int v = s[r];
+        if (v == UNSET) continue;
+        if (in[r] == UNSET) {
+          in[r] = v;
           changed = true;
+        } else if (v >= 0 && in[r] >= 0) {
+          if (find(v) != find(in[r])) {
+            if (debugging()) curWhat = curWhat.replaceAll(" reg v\\d+.*", "") + " reg v" + r + " into block at 0x" + Integer.toHexString(addr[blockStart[target]]);
+            union(v, in[r]);
+            changed = true;
+          }
         }
       }
     }
-    if (changed && !queued[target]) {
-      queued[target] = true;
-      work.add(target);
-    }
+    if (changed) enqueue(target);
   }
 
   private int def(int i, int kind, boolean isWide, String d) {
@@ -1537,8 +1635,15 @@ final class MethodTranslator implements Opcodes {
   }
 
   private void emit() {
+    // Branches, handlers and try bounds all lead to block starts (buildBlocks makes them so), so only those and the
+    // end need a label; debug info (line numbers, local ranges) names every instruction.
     Label[] labels = new Label[count + 1];
-    for (int i = 0; i <= count; i++) labels[i] = new Label();
+    if (lines != null || !locals.isEmpty()) {
+      for (int i = 0; i <= count; i++) labels[i] = new Label();
+    } else {
+      for (int bl = 0; bl < blockCount; bl++) labels[blockStart[bl]] = new Label();
+      labels[count] = new Label();
+    }
     Map<Integer, Label> stubs = new HashMap<>();
     mv.visitCode();
     Label start = new Label();
@@ -1560,7 +1665,7 @@ final class MethodTranslator implements Opcodes {
       boolean reachable = blockState[bl] != null;
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
-        mv.visitLabel(labels[i]);
+        if (labels[i] != null) mv.visitLabel(labels[i]);
         if (lr != null) lr.at(i, reachable ? s : null, i == blockStart[bl]);
         // After the parameter copies for insn 0: a breakpoint there must already see the parameters.
         if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
@@ -1973,12 +2078,12 @@ final class MethodTranslator implements Opcodes {
         return;
       case 0x1f:
         load(s, ra, K_OBJ);
-        mv.visitTypeInsn(CHECKCAST, internal(dex.type(rb)));
+        mv.visitTypeInsn(CHECKCAST, dex.internalType(rb));
         store(s, i, ra, K_OBJ, false);
         return;
       case 0x20:
         load(s, rb, K_OBJ);
-        mv.visitTypeInsn(INSTANCEOF, internal(dex.type(rc)));
+        mv.visitTypeInsn(INSTANCEOF, dex.internalType(rc));
         store(s, i, ra, K_INT, false);
         return;
       case 0x21:
@@ -1987,7 +2092,7 @@ final class MethodTranslator implements Opcodes {
         store(s, i, ra, K_INT, false);
         return;
       case 0x22:
-        mv.visitTypeInsn(NEW, instantiated(internal(dex.type(rb))));
+        mv.visitTypeInsn(NEW, instantiated(dex.internalType(rb)));
         store(s, i, ra, K_OBJ, false);
         return;
       case 0x23:
@@ -2057,7 +2162,7 @@ final class MethodTranslator implements Opcodes {
     if (o >= 0x52 && o <= 0x58) {
       DexFile.FieldRef f = dex.field(rc);
       load(s, rb, K_OBJ);
-      mv.visitFieldInsn(GETFIELD, internal(f.owner()), f.name(), f.type());
+      mv.visitFieldInsn(GETFIELD, f.ownerInternal(), f.name(), f.type());
       store(s, i, ra, kindOf(f.type()), o == 0x53);
       return;
     }
@@ -2065,19 +2170,19 @@ final class MethodTranslator implements Opcodes {
       DexFile.FieldRef f = dex.field(rc);
       load(s, rb, K_OBJ);
       load(s, ra, kindOf(f.type()));
-      mv.visitFieldInsn(PUTFIELD, internal(f.owner()), f.name(), f.type());
+      mv.visitFieldInsn(PUTFIELD, f.ownerInternal(), f.name(), f.type());
       return;
     }
     if (o >= 0x60 && o <= 0x66) {
       DexFile.FieldRef f = dex.field(rb);
-      mv.visitFieldInsn(GETSTATIC, internal(f.owner()), f.name(), f.type());
+      mv.visitFieldInsn(GETSTATIC, f.ownerInternal(), f.name(), f.type());
       store(s, i, ra, kindOf(f.type()), o == 0x61);
       return;
     }
     if (o >= 0x67 && o <= 0x6d) {
       DexFile.FieldRef f = dex.field(rb);
       load(s, ra, kindOf(f.type()));
-      mv.visitFieldInsn(PUTSTATIC, internal(f.owner()), f.name(), f.type());
+      mv.visitFieldInsn(PUTSTATIC, f.ownerInternal(), f.name(), f.type());
       return;
     }
     if ((o >= 0x6e && o <= 0x72) || (o >= 0x74 && o <= 0x78)) {
@@ -2354,7 +2459,7 @@ final class MethodTranslator implements Opcodes {
     DexFile.MethodRef m = dex.method(b[i]);
     int kind = o <= 0x72 ? o - 0x6e : o - 0x74;
     int[] rs = args[i];
-    String ownerName = internal(m.owner());
+    String ownerName = m.ownerInternal();
     if (kind == 3) {
       loadArgs(s, rs, 0, m.params());
       call(INVOKESTATIC, ownerName, m, !"<init>".equals(m.name()) && isInterface.test(ownerName));
@@ -2438,7 +2543,7 @@ final class MethodTranslator implements Opcodes {
     int[] rs = args[i];
     load(s, rs[0], K_OBJ);
     loadArgs(s, rs, 1, ps);
-    mv.visitMethodInsn(INVOKEVIRTUAL, internal(m.owner()), m.name(), DexFile.descriptor(ps, r), false);
+    mv.visitMethodInsn(INVOKEVIRTUAL, m.ownerInternal(), m.name(), DexFile.descriptor(ps, r), false);
     afterCall(i, r);
   }
 
@@ -2454,7 +2559,7 @@ final class MethodTranslator implements Opcodes {
         case 2 -> H_PUTFIELD;
         default -> H_GETFIELD;
       };
-      return new Handle(tag, internal(f.owner()), f.name(), f.type(), false);
+      return new Handle(tag, f.ownerInternal(), f.name(), f.type(), false);
     }
     DexFile.MethodRef m = dex.method(member);
     int tag = switch (kind) {
@@ -2464,7 +2569,7 @@ final class MethodTranslator implements Opcodes {
       case 7 -> H_INVOKESPECIAL;
       default -> H_INVOKEINTERFACE;
     };
-    String o = internal(m.owner());
+    String o = m.ownerInternal();
     return new Handle(tag, o, m.name(), m.descriptor(), kind == 8 || (kind != 6 && isInterface.test(o)));
   }
 
