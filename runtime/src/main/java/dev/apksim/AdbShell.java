@@ -49,6 +49,8 @@ final class AdbShell {
   private OutputStream out;
   private String cwd = "/";
   private boolean interactive;
+  /** Run for UiAutomation.executeShellCommand: output is read once the command ends, so nothing may stream. */
+  private boolean inProcess;
   /** The command's standard input (the adb stream's), for `pm install-write ... -`; empty when there is none. */
   private final InputStream in;
   /** Whether the client closed the stream, for commands that wait (`am instrument -w`). */
@@ -102,6 +104,28 @@ final class AdbShell {
       out.flush();
       if (status == EXIT) return;
     }
+  }
+
+  /**
+   * A command line run for the app's own process (UiAutomation.executeShellCommand), returning all it printed. It
+   * runs on the calling thread, which in a test run is the main thread: a device's shell is another process and
+   * answers while the test waits, so here nothing may wait for the main thread. Commands that would stream (`logcat`
+   * without -d) print what there is and end.
+   */
+  static byte[] runInProcess(String line) {
+    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+    AdbShell shell = new AdbShell(out);
+    shell.inProcess = true;
+    try {
+      shell.run(line);
+    } catch (Exception e) {
+      try {
+        shell.print("error: " + e + "\n");
+      } catch (IOException ignored) {
+        // a ByteArrayOutputStream does not throw
+      }
+    }
+    return out.toByteArray();
   }
 
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */
@@ -441,6 +465,7 @@ final class AdbShell {
       p.put("sys.boot_completed", "1");
       p.put("dev.bootcomplete", "1");
       p.put("persist.sys.locale", app().getResources().getConfiguration().getLocales().get(0).toLanguageTag());
+      p.put("persist.sys.timezone", java.util.TimeZone.getDefault().getID());
     }
     p.put("ro.build.version.codename", "REL");
     p.put("init.svc.bootanim", booted ? "stopped" : "running");
@@ -1248,6 +1273,7 @@ final class AdbShell {
 
   // logcat [-c] [-d] [-t N] [-T N] [-s] [-e REGEX] [TAG:LEVEL...]: the app's android.util.Log lines (AdbLog).
   private int logcat(List<String> a) throws Exception {
+    AdbLog.install();
     boolean dump = false;
     boolean clear = false;
     int tail = -1;
@@ -1288,6 +1314,7 @@ final class AdbShell {
       AdbLog.clear();
       return 0;
     }
+    if (inProcess) dump = true;
     long from = tail >= 0 ? Math.max(0, AdbLog.next() - tail) : 0;
     while (true) {
       AdbLog.Batch b = AdbLog.since(from, dump ? 0 : 500);
@@ -1465,16 +1492,49 @@ final class AdbShell {
     return failed ? 1 : 0;
   }
 
-  /** Runs a control command on the Android main thread, exactly as `--control` would, and waits for its answer. */
+  /**
+   * Runs a control command on the Android main thread, exactly as `--control` would, and waits for its answer. From
+   * the main thread itself it runs at once (the Host loop that takes the queue is that thread). A test run has no Host
+   * loop: the few commands a test's shell calls need are done here (see {@link #testRunControl}).
+   */
   static String control(String... args) throws InterruptedException {
+    try {
+      if (TestActivities.testRun()) return testRunControl(args);
+      if (Looper.getMainLooper().isCurrentThread()) {
+        String r = Host.runOnMain(args);
+        if (r != null) return r;
+      }
+    } catch (InterruptedException e) {
+      throw e;
+    } catch (Exception e) {
+      return "error: " + e;
+    }
     Control.Pending p = new Control.Pending(args);
     Control.QUEUE.add(p);
     return p.await();
   }
 
+  /** Control commands in a test run, where there is no Host or device controls: what a test's shell calls reach. */
+  private static String testRunControl(String[] a) {
+    switch (a[0]) {
+      case "animscale" -> {
+        DeviceControls.setAnimatorScale(app(), a.length < 2 ? 1f : Float.parseFloat(a[1]));
+        return "ok";
+      }
+      case "fontscale" -> {
+        RuntimeEnvironment.setFontScale(Float.parseFloat(a[1]));
+        return "ok";
+      }
+      default -> {
+        return "error: " + a[0] + " is not available in a test run";
+      }
+    }
+  }
+
   /** Runs code on the Android main thread (the Host loop runs the looper's messages) and waits for it. */
   static <T> T onMain(Callable<T> c) throws Exception {
     if (app() == null) throw new IllegalStateException("the app has not started yet");
+    if (Looper.getMainLooper().isCurrentThread()) return c.call();
     CompletableFuture<T> f = new CompletableFuture<>();
     new Handler(Looper.getMainLooper()).post(() -> {
       try {

@@ -50,7 +50,7 @@ It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI, publishe
 
 Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
-`--appearance dark|light`, `--locale TAG`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
+`--appearance dark|light`, `--locale TAG`, `--timezone ZONE`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
 `--soft-keyboard`, `--fresh` (erase the app's data first), `--adb PORT|auto`, `--debug PORT`, `--instrument TEST.apk [-e KEY VALUE]...`, `--jvm ARG`.
 
 For tools: `--adb PORT` makes the instance an adb device (`adb connect localhost:PORT`, then `adb shell`, `push`/`pull`,
@@ -177,7 +177,8 @@ the 8.3 ms budget. Screens with full-screen translucent layers can exceed it on 
   render offscreen on ANGLE, but nothing presents GLES in the window. The talk's GLES 1 game and audio demos have no
   equivalent here.
 - **Test runs are Robolectric-style:** the test body runs on the main thread with a simulated clock, so tests that
-  wait for real time or another process (UiAutomator's shell commands, accessibility events) are not covered; see
+  wait for real time or another process (accessibility events, `runBlocking { delay() }` on the test thread) are not
+  covered; a JUnit `Timeout` rule and UiAutomation's shell commands (getprop, settings, logcat, files) work. See
   AGENTS.md, "Instrumentation tests".
 - **The native C library shim is partial.** It covers the functions these APKs import (sockets included, which
   libwebrtc needs), and an unsupported call prints its name.

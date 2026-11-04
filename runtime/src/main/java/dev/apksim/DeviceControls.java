@@ -326,6 +326,13 @@ final class DeviceControls {
   }
 
   /** Handles a control command, or returns null if it is not one of these. */
+  /** The animator duration scale, as the system sets it: ValueAnimator's for Views, the global setting for Compose. */
+  static void setAnimatorScale(Application app, float scale) {
+    ValueAnimator.setDurationScale(scale);
+    Settings.Global.putFloat(app.getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, scale);
+    app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), null);
+  }
+
   String run(String[] a) {
     Configuration before = new Configuration(app.getResources().getConfiguration());
     switch (a[0]) {
@@ -341,6 +348,12 @@ final class DeviceControls {
         // config: the configuration the app and its top activity see.
         Activity top = stack.isEmpty() ? null : stack.peek().get();
         return "app " + app.getResources().getConfiguration() + (top == null ? "" : " | activity " + top.getResources().getConfiguration());
+      }
+      case "timezone" -> {
+        // timezone: the zone the app sees, the JDK's and android.icu's (set at launch with --timezone ZONE)
+        String icu = android.icu.util.TimeZone.getDefault().getID();
+        String jdk = java.util.TimeZone.getDefault().getID();
+        return jdk.equals(icu) ? jdk : jdk + " (android.icu: " + icu + ")";
       }
       case "locale" -> {
         // locale fr-FR
@@ -366,9 +379,7 @@ final class DeviceControls {
         float scale = a.length < 2 ? 1f : a[1].equals("toggle") ? (slowAnimations ? 1f : 10f) : Float.parseFloat(a[1]);
         slowAnimations = scale > 1f;
         SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, slowAnimations);
-        ValueAnimator.setDurationScale(scale);
-        Settings.Global.putFloat(app.getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, scale);
-        app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), null);
+        setAnimatorScale(app, scale);
         return "ok";
       }
       case "memory" -> {
