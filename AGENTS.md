@@ -395,7 +395,7 @@ and goes on without it; a headless-trained cache is as fast as a windowed one (1
 follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
 `.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a
 *draft* release; publishing it pushes `packaging/homebrew/apksim.rb` (filled in) to the `aglose/homebrew-apksim` tap
-as `Casks/apksim.rb` (needs the `TAP_TOKEN` secret); users run `brew tap aglose/apksim`, then `brew install apksim`
+as `Casks/apksim.rb` (it pushes with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap only); users run `brew tap aglose/apksim`, then `brew install apksim`
 (a third-party tap has no shorter form: Homebrew takes `user/tap/name` or a bare name from its own repos). A cask, not a formula: Homebrew installs a bottle-less formula
 only with current Command Line Tools ("CLT does not support macOS 26" stopped it here). The cask clears the quarantine
 flag, since the release is not notarized. Homebrew 7 deprecates cask `postflight` blocks for `postflight_steps`.
