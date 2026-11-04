@@ -285,7 +285,9 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   @Implementation
   @Override
   protected boolean injectInputEvent(android.view.InputEvent event, boolean sync) {
-    if (TestActivities.testRun()) return super.injectInputEvent(event, sync);
+    // On the main thread (an instrumentation's onCreate, runOnMainSync) the Host loop that would take the event is
+    // this thread, so the queue would never be served: dispatch directly, as in test runs.
+    if (TestActivities.testRun() || Looper.myLooper() == Looper.getMainLooper()) return super.injectInputEvent(event, sync);
     if (event instanceof android.view.MotionEvent m) {
       int masked = m.getActionMasked();
       String action = masked == android.view.MotionEvent.ACTION_DOWN ? "down"
@@ -299,6 +301,8 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       // The Host's key command makes a whole press and release, so the down carries it and the up is done.
       if (k.getAction() != KeyEvent.ACTION_DOWN) return true;
       if (k.getKeyCode() == KeyEvent.KEYCODE_BACK && k.getMetaState() == 0) return live(sync, "back");
+      // HOME leaves the app (as `adb shell input keyevent HOME` does); the app never sees the key on a device.
+      if (k.getKeyCode() == KeyEvent.KEYCODE_HOME) return live(sync, "home");
       List<String> c = new ArrayList<>(List.of("key", KeyEvent.keyCodeToString(k.getKeyCode()).substring("KEYCODE_".length())));
       if (k.isCtrlPressed()) c.add("ctrl");
       if (k.isShiftPressed()) c.add("shift");
@@ -334,6 +338,11 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected boolean setRotation(int rotation) {
     if (rotation == UiAutomation.ROTATION_FREEZE_CURRENT || rotation == UiAutomation.ROTATION_UNFREEZE) return true;
     if (rotation < 0 || rotation > 3) return false;
+    if (!TestActivities.testRun()) {
+      // A running instance: the Host's device controls turn the display, so the window and renderer follow.
+      if (Looper.myLooper() == Looper.getMainLooper()) return false;  // would wait on this thread's own loop
+      return live(true, "rotate", rotation % 2 == 0 ? "portrait" : "landscape");
+    }
     return onMain(() -> {
       Context app = RuntimeEnvironment.getApplication();
       Display display = ShadowDisplay.getDefaultDisplay();
