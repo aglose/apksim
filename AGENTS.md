@@ -18,7 +18,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   `dev.apksim.Main`.
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
-  - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (120 Hz grid), and the `--control`
+  - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
@@ -435,13 +435,14 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   app's).
 - **Frame pacing to a strict 120 Hz:** remaining stragglers come from CPU raster (~6-7 ms for busy full-screen
   frames, single core) and GPU wait on heavy shaders. Not yet tried: zero-copy GPU output (render into Bitmap memory).
-- **Display vsync pacing is written but unmeasured** (`--jvm -Dapksim.vsync=display`, off by default): Host then starts
-  each animation frame 0.3 ms after the display's vsync (CADisplayLink on the window, `SimWindow.untilVsync`) instead
-  of on its own 120 Hz grid, and falls back to the grid whenever no vsyncs arrive. It was built while the Mac's display
-  was asleep (no vsyncs), so only the fallback was checked (same frame rates as the grid). To decide: on a lit 120 Hz
-  display, A/B the Shader tab and flings with `frames`, whose `screen` part counts per real vsync whether a new frame
-  arrived (repeated = the screen showed a frame twice; replaced = a frame never shown). Make it the default if it
-  raises "new frame on N% of vsyncs".
+- **Display vsync pacing is the default (2026-11-03):** Host starts each animation frame 0.3 ms after the display's
+  vsync (CADisplayLink on the window, `SimWindow.untilVsync`), falling back to its 120 Hz grid whenever no vsyncs
+  arrive (window hidden, display asleep, headless, test runs); `--jvm -Dapksim.vsync=grid` keeps the grid. A/B on a
+  lit 120 Hz display, 5 interleaved runs, `frames`' `screen` part (new frame on N% of real vsyncs): Shader tab grid
+  99-100% in three runs and 69% in two (its phase drifts against the display: ~146 frames shown twice, ~146 never
+  shown), display 98-99% in all five, p95 interval 10.1 against 11.3 ms; flings grid ~140 fps of which 96-178 frames
+  were replaced before being shown (84-97% new), display ~118 fps, 3-5 replaced, 97% new in every run. The grid's
+  "on 120 Hz pace" figure is not comparable: it measures intervals against the grid, not the screen.
 - **Partial (damage-rect) redraw: tried 2026-11-03, no gain for Compose apps, not kept.** Robolectric's
   `SkiaCpuPipeline` draws into one buffer it keeps, but `getFrame()` reports buffer age 0 and `swapBuffers()` is a
   `return false` stub, so `CanvasContext` never clears `mHaveNewSurface` and redraws everything. Swapping vtable slots
