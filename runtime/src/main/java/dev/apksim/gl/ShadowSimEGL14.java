@@ -100,7 +100,7 @@ public class ShadowSimEGL14 extends ShadowEGL14 {
       return ShadowEGL14.eglChooseConfig(dpy, attribList, attribOffset, configs, configsOffset, configSize, numConfig, numConfigOffset);
     }
     try (Arena a = Arena.ofConfined()) {
-      Gl.Copy attribs = Gl.array(a, attribList, attribOffset);
+      Gl.Copy attribs = Gl.array(a, pbufferConfig(attribList, attribOffset), 0);
       MemorySegment out = a.allocate(ValueLayout.ADDRESS, Math.max(1, configSize));
       MemorySegment n = a.allocate(ValueLayout.JAVA_INT);
       boolean r = ok(Gl.call("eglChooseConfig", "IPPPIP", ptr(dpy), attribs.seg(),
@@ -114,6 +114,40 @@ public class ShadowSimEGL14 extends ShadowEGL14 {
       }
       return r;
     }
+  }
+
+  private static final int EGL_SURFACE_TYPE = 0x3033;
+  private static final int EGL_WINDOW_BIT = 0x0004;
+  private static final int EGL_PBUFFER_BIT = 0x0001;
+  private static final int EGL_RECORDABLE_ANDROID = 0x3142;
+
+  /**
+   * An eglChooseConfig attribute list as this EGL can answer it. A window surface here is a pbuffer
+   * (eglCreateWindowSurface), so a config asked for windows, or for no surface type at all (EGL then means windows: WebRTC's
+   * EglBase does this), is asked for pbuffers instead; and EGL_RECORDABLE_ANDROID, which only Android's EGL knows, is left
+   * out. Mesa's surfaceless platform has no window configs, so these found none and WebRTC threw.
+   */
+  static int[] pbufferConfig(int[] attribList, int offset) {
+    if (attribList == null) return new int[] {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL14.EGL_NONE};
+    java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
+    boolean surfaceType = false;
+    for (int i = offset; i + 1 < attribList.length && attribList[i] != EGL14.EGL_NONE; i += 2) {
+      int key = attribList[i];
+      int value = attribList[i + 1];
+      if (key == EGL_RECORDABLE_ANDROID) continue;
+      if (key == EGL_SURFACE_TYPE) {
+        surfaceType = true;
+        if (value != -1 /* EGL_DONT_CARE */ && (value & EGL_WINDOW_BIT) != 0) value = (value & ~EGL_WINDOW_BIT) | EGL_PBUFFER_BIT;
+      }
+      out.add(key);
+      out.add(value);
+    }
+    if (!surfaceType) {
+      out.add(EGL_SURFACE_TYPE);
+      out.add(EGL_PBUFFER_BIT);
+    }
+    out.add(EGL14.EGL_NONE);
+    return out.stream().mapToInt(Integer::intValue).toArray();
   }
 
   @Implementation

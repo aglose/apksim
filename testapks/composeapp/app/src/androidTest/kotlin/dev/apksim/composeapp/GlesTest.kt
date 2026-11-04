@@ -52,6 +52,27 @@ class GlesTest {
     }
   }
 
+  /**
+   * WebRTC's EglBase asks for a config without a surface type, which EGL takes to mean window surfaces (on apksim a window
+   * surface is a pbuffer of its size). Mesa's surfaceless EGL has no window configs, so apksim must still find one.
+   */
+  @Test
+  fun aConfigWithoutASurfaceTypeIsFound() {
+    val dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+    val version = IntArray(2)
+    assertTrue(EGL14.eglInitialize(dpy, version, 0, version, 1))
+    try {
+      val configs = arrayOfNulls<EGLConfig>(1)
+      val count = IntArray(1)
+      val plain = intArrayOf(EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+        EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, 0x3142 /* EGL_RECORDABLE_ANDROID */, 1, EGL14.EGL_NONE)
+      assertTrue(EGL14.eglChooseConfig(dpy, plain, 0, configs, 0, 1, count, 0))
+      assertEquals("configs", 1, count[0])
+    } finally {
+      EGL14.eglTerminate(dpy)
+    }
+  }
+
   private fun drawAndCheck() {
     GLES20.glViewport(0, 0, SIZE, SIZE)
     GLES20.glClearColor(0f, 0f, 1f, 1f)
