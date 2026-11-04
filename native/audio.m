@@ -4,6 +4,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/CoreAudio.h>
 #include <jni.h>
+#include <os/os_sync_wait_on_address.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -126,9 +127,16 @@ typedef struct {
   _Atomic int muted;
   uint32_t frameBytes;
   int running;
-  pthread_mutex_t lock;
-  pthread_cond_t space;
+  // Wakes a writer waiting for room. The render callback runs on CoreAudio's real-time thread, so it takes no lock:
+  // it bumps [wakes] and wakes the address only when a writer said it waits.
+  _Atomic uint32_t wakes;
+  _Atomic int waiting;
 } AudioOut;
+
+static void wake_writer(AudioOut *o) {
+  atomic_fetch_add(&o->wakes, 1);
+  if (atomic_load(&o->waiting)) os_sync_wake_by_address_all(&o->wakes, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+}
 
 static OSStatus render(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time, UInt32 bus, UInt32 frames,
                        AudioBufferList *data) {
@@ -150,9 +158,7 @@ static OSStatus render(void *ref, AudioUnitRenderActionFlags *flags, const Audio
   }
   atomic_store(&o->read, r + n);
   atomic_fetch_add(&o->played, n / o->frameBytes);
-  pthread_mutex_lock(&o->lock);
-  pthread_cond_broadcast(&o->space);
-  pthread_mutex_unlock(&o->lock);
+  wake_writer(o);
   return noErr;
 }
 
@@ -189,8 +195,6 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_video_SimAudio_nativeOutCreate(JNIEnv *e
   o->capacity = bufferBytes > 0 && (uint64_t)bufferBytes > minimum ? (uint64_t)bufferBytes : minimum;
   o->capacity -= o->capacity % o->frameBytes;
   o->ring = malloc((size_t)o->capacity);
-  pthread_mutex_init(&o->lock, NULL);
-  pthread_cond_init(&o->space, NULL);
   return (jlong)(intptr_t)o;
 }
 
@@ -205,16 +209,15 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeOutWrite(JNIEnv *env
     uint64_t w = atomic_load(&o->written), room = o->capacity - (w - atomic_load(&o->read));
     if (room == 0) {
       if (!blocking || !o->running) break;
-      pthread_mutex_lock(&o->lock);
-      struct timespec t;
-      clock_gettime(CLOCK_REALTIME, &t);
-      t.tv_nsec += 20000000;
-      if (t.tv_nsec >= 1000000000) {
-        t.tv_sec++;
-        t.tv_nsec -= 1000000000;
+      // Say we wait before looking at [wakes] and the ring again: either the callback sees [waiting] and wakes us,
+      // or we see the room it made. The 20 ms timeout is only a backstop.
+      atomic_store(&o->waiting, 1);
+      uint32_t gen = atomic_load(&o->wakes);
+      if (o->capacity - (atomic_load(&o->written) - atomic_load(&o->read)) == 0 && o->running) {
+        os_sync_wait_on_address_with_timeout(&o->wakes, gen, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE, OS_CLOCK_MACH_ABSOLUTE_TIME,
+                                             20000000);
       }
-      pthread_cond_timedwait(&o->space, &o->lock, &t);
-      pthread_mutex_unlock(&o->lock);
+      atomic_store(&o->waiting, 0);
       continue;
     }
     uint64_t n = (uint64_t)length - done < room ? (uint64_t)length - done : room;
@@ -232,9 +235,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_video_SimAudio_nativeOutPlay(JNIEnv *env,
   if (play && !o->running) AudioOutputUnitStart(o->unit);
   if (!play && o->running) AudioOutputUnitStop(o->unit);
   o->running = play;
-  pthread_mutex_lock(&o->lock);
-  pthread_cond_broadcast(&o->space);
-  pthread_mutex_unlock(&o->lock);
+  wake_writer(o);
 }
 
 // Drops what has not been played and starts the head again at 0, as AudioTrack.flush() does.
@@ -273,8 +274,6 @@ JNIEXPORT void JNICALL Java_dev_apksim_video_SimAudio_nativeOutRelease(JNIEnv *e
   AudioOutputUnitStop(o->unit);
   AudioUnitUninitialize(o->unit);
   AudioComponentInstanceDispose(o->unit);
-  pthread_cond_destroy(&o->space);
-  pthread_mutex_destroy(&o->lock);
   free(o->ring);
   free(o);
 }

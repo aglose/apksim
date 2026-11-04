@@ -70,9 +70,10 @@ final class Autofill {
    * unchanged for 1.5 s, fills them, checks on the next look that the values stuck (filling again up to three
    * times), and only then presses the button.
    */
-  void tick(List<View> roots) {
+  void tick(java.util.function.Supplier<List<View>> rootViews) {
     long now = System.nanoTime();
     if (done || now < nextLookNanos) return;
+    List<View> roots = rootViews.get();
     nextLookNanos = now + 500_000_000L;
     if (fills > 0) {
       verify();
