@@ -68,8 +68,20 @@ python3 scripts/instrument.py --apksim "docker run --rm --platform linux/amd64 -
   app.apk test.apk --xml out/junit.xml
 ```
 
-Mount a volume at `/opt/apksim/work/cache` to keep app data and per-APK caches between runs. For no network,
-use `docker run --network none` (`--no-network` is macOS-only).
+Keep the cache between runs with a volume at `/opt/apksim/work/cache` (translated classes, the per-APK manifest and
+native libraries, app data). Without one every `docker run` translates the app's classes again: for a large app's
+journey run alone (one container per test, `instrument.py --isolate`) that was 15.6 s a test against 10.4-10.6 s with
+the cache warm, under Rosetta.
+
+```bash
+python3 scripts/instrument.py --isolate -j 4 \
+  --apksim "docker run --rm --platform linux/amd64 -v $PWD/out:/work -v $PWD/out/cache:/opt/apksim/work/cache apksim:latest" \
+  app.apk test.apk --xml out/junit.xml
+```
+
+Containers started together can share it: files are written under a unique temporary name and renamed into place.
+Not by PID: the image's JVM is PID 1 in every container, so four at once used to write the same temporary files. For no network, use `docker run --network none` (`--no-network` is
+macOS-only).
 
 ## What differs from the Mac
 

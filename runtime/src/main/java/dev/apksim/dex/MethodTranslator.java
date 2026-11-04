@@ -2523,6 +2523,12 @@ final class MethodTranslator implements Opcodes {
       // a Robolectric test on the main thread would run it at once. Let the queue go first (dev.apksim.TestActivities).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "beforeUiThreadAction", "()V", false);
     }
+    if (opcode == INVOKESTATIC && "java/lang/Thread".equals(ownerName) && "sleep".equals(m.name())
+        && ("(J)V".equals(m.descriptor()) || "(JI)V".equals(m.descriptor()))) {
+      // A test sleeping on the main thread lets the main queue run meanwhile, as a device's own main thread would.
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "sleep", m.descriptor(), false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);
       return;

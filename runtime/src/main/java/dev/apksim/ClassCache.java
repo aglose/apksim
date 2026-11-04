@@ -202,7 +202,7 @@ final class ClassCache {
         int dex = t.getKey();
         Map<String, Fresh> add = t.getValue();
         Path pack = dir.resolve(keys[dex] + ".pack");
-        Path tmp = dir.resolve(keys[dex] + ".pack." + ProcessHandle.current().pid());
+        Path tmp = dir.resolve(keys[dex] + ".pack" + Storage.tmpTag());
         Map<String, Entry> old;
         synchronized (this) {
           old = loaded[dex];
@@ -233,7 +233,7 @@ final class ClassCache {
         written += add.size();
       }
       if (names != null) {
-        Path tmp = dir.resolve(hintFile.getFileName() + "." + ProcessHandle.current().pid());
+        Path tmp = dir.resolve(hintFile.getFileName() + Storage.tmpTag());
         Files.write(tmp, names);
         Files.move(tmp, hintFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       }

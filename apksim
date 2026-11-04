@@ -85,6 +85,8 @@ while [[ $# -gt 1 ]]; do
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
     --headless) EXTRA+=("-Dapksim.headless=true"); shift ;;
+    # Erase the app's data first, so it starts as just installed (reproducible runs).
+    --fresh) EXTRA+=("-Dapksim.fresh=true"); shift ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
     --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
@@ -104,7 +106,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
-      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.headless=*|-Dapksim.logcat=*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       *) WARM_OK="" ;;
@@ -184,10 +186,17 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   fi
   SANDBOX=(sandbox-exec -p "$PROFILE")
 fi
+# The JDK reaches 127.0.0.1 as ::ffff:127.0.0.1 on a dual-stack socket, which the rule above cannot allow, so under
+# --no-network libloopback moves those connects to IPv4 sockets. Set through env: dyld drops DYLD_* variables when
+# it starts sandbox-exec (a system binary), and so would not pass them on. A standby's instance inherits it.
+ENVP=()
+if [[ "$OS" == Darwin && -n "${NO_NET:-}" && -z "${NO_SANDBOX:-}" && -f "$ROOT/work/runtime/libloopback.dylib" ]]; then
+  ENVP=(/usr/bin/env "DYLD_INSERT_LIBRARIES=$ROOT/work/runtime/libloopback.dylib")
+fi
 if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
   echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
 fi
-if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
+if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
 AOT=()
 if [[ "$AOT_ROOT" == "$ROOT" ]]; then
   AOT=("-XX:AOTCache=$STATE/app.aot")
@@ -196,7 +205,7 @@ elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
 fi
 # A small young generation keeps GC pauses inside a frame: fewer objects live long enough to be copied
 # (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
-exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "$JAVA" \
+exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \

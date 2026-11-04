@@ -26,7 +26,7 @@ final class AppInfo {
     }
     Path manifest = cache.resolve("AndroidManifest.xml");
     // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
-    Path tmp = cache.resolve("AndroidManifest.xml." + ProcessHandle.current().pid() + ".tmp");
+    Path tmp = cache.resolve("AndroidManifest.xml" + Storage.tmpTag());
     Files.writeString(tmp, xml);
     Files.move(tmp, manifest, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
