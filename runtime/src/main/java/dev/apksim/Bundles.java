@@ -137,8 +137,9 @@ public final class Bundles {
    * The test method's statement, captured when it throws, before @After methods and rules run (and with --bundles-on
    * all when it returns). An assumption failing is not a failure.
    */
-  static Statement wrap(Statement s) {
+  static Statement wrap(Statement s, Class<? extends Throwable> expected) {
     if (!ON) return s;
+    boolean expects = expected != null && expected != org.junit.Test.None.class;
     return new Statement() {
       @Override
       public void evaluate() throws Throwable {
@@ -148,6 +149,11 @@ public final class Bundles {
         } catch (org.junit.internal.AssumptionViolatedException e) {
           throw e;
         } catch (Throwable t) {
+          if (expects && !ALL && expected.isInstance(t)) {
+            // What @Test(expected) expects: the test passes, so a failures-only run writes nothing (rather than a
+            // bundle testFinished would delete).
+            throw t;
+          }
           if (written == null) {
             locked("test body", t, false);
           } else if (!sameFailure(t, writtenFor) && !sameFailure(t, writtenAlias)) {
@@ -744,12 +750,21 @@ public final class Bundles {
   private static String threads() {
     Map<Thread, StackTraceElement[]> all = Thread.getAllStackTraces();
     List<Thread> order = new ArrayList<>(all.keySet());
-    Thread main = Looper.getMainLooper().getThread();
-    order.sort(java.util.Comparator.<Thread>comparingInt(t -> t == main ? 0 : 1).thenComparing(Thread::getName));
+    // The Android main thread, when there is one to name: a run whose classes all have their own plain JUnit runner,
+    // or one that failed before the sandbox existed, may have no main Looper; the dump is written all the same.
+    Thread main = null;
+    try {
+      Looper l = Looper.getMainLooper();
+      if (l != null) main = l.getThread();
+    } catch (Throwable ignored) {
+      // no main thread to put first
+    }
+    Thread mainThread = main;
+    order.sort(java.util.Comparator.<Thread>comparingInt(t -> t == mainThread ? 0 : 1).thenComparing(Thread::getName));
     StringBuilder b = new StringBuilder();
     for (Thread t : order) {
       b.append('"').append(t.getName()).append("\" ").append(t.getState()).append(t.isDaemon() ? " daemon" : "")
-          .append(t == main ? " (main)" : "").append('\n');
+          .append(t == mainThread ? " (main)" : "").append('\n');
       StackTraceElement[] st = all.get(t);
       for (int i = 0; i < st.length && i < 200; i++) b.append("\tat ").append(st[i]).append('\n');
       b.append('\n');
