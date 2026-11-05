@@ -11,7 +11,8 @@ reported failed, with the exit status and the tail of the process's stderr, and 
 new process, again until each has one. Which tests those are comes from listing the suite (`-e log true`, with the
 same -e arguments) once the first process has died, so a run that does not crash pays nothing for it; the rest is
 passed as `-e class` (whole classes where none of their tests ran, else Class#method), the other -e arguments kept,
-in chunks short enough for one argument. No test with a result runs again. A new process that adds no result
+in chunks short enough for one argument. A comma in a name (Parameterized's `test[0: x, y]`) is written `\\,` and a
+backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runner has none; --isolate uses them too). No test with a result runs again. A new process that adds no result
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
@@ -82,12 +83,34 @@ def parse_run(raw):
     return out, running
 
 
+def escape_selector(name):
+    """A class or method name for -e class/notClass, with apksim's escapes: `\\,` for a comma in it (Parameterized's
+    `test[0: x, y]`), `\\\\` for a backslash. Instrument.selectorParts reads them; a device's runner has no escapes."""
+    return name.replace("\\", "\\\\").replace(",", "\\,")
+
+
+def selectors(s):
+    """-e class/notClass -> its names, split on unescaped commas and unescaped, as Instrument.selectorParts does."""
+    out, part, i = [], [], 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s) and s[i + 1] in ",\\":
+            part.append(s[i + 1])
+            i += 1
+        elif s[i] == ",":
+            out.append("".join(part))
+            part = []
+        else:
+            part.append(s[i])
+        i += 1
+    return out + ["".join(part)]
+
+
 def narrow(args, listing, remaining, budget=100_000):
     """The -e arguments that run the first of [remaining] (of the suite's [listing], in its order): the user's own
     without `class`, plus `class` naming them. A class none of whose listed tests has a result is named whole, unless
     the user's `class` picked methods of it; otherwise its methods are named one by one. The list stops before it
     passes [budget] characters (Linux takes at most 128 KB in one argument): the rest go in later processes."""
-    picked = [c.strip() for c in dict(args).get("class", "").split(",") if c.strip()]
+    picked = [c.strip() for c in selectors(dict(args).get("class", "")) if c.strip()]
     left = set(remaining)
     by_class = {}
     for t in listing:
@@ -96,9 +119,9 @@ def narrow(args, listing, remaining, budget=100_000):
     for c, tests in by_class.items():
         todo = [t for t in tests if t in left]
         if len(todo) == len(tests) and (not picked or c in picked):
-            names.append(c)
+            names.append(escape_selector(c))
         else:
-            names += [f"{c}#{m}" for _, m in todo]
+            names += [f"{escape_selector(c)}#{escape_selector(m)}" for _, m in todo]
     chunk, size = [], 0
     for n in names:
         if chunk and size + len(n) + 1 > budget:
@@ -224,7 +247,7 @@ def main():
         def one(t):
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
-            r = apksim(a.app, a.test, others + [("class", f"{t[0]}#{t[1]}")], passthrough)
+            r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)
             got = parse(r.stdout)
             why = incomplete(r, got)
             if not got or why:

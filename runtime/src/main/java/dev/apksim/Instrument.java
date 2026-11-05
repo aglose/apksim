@@ -142,7 +142,7 @@ final class Instrument {
     List<String> onlyClasses = new ArrayList<>();
     String cls = args.get("class");
     if (cls != null) {
-      for (String c : cls.split(",")) onlyClasses.add(c.split("#")[0].trim());
+      for (String c : selectorParts(cls)) onlyClasses.add(c.split("#")[0].trim());
     }
     List<String> packages = split(args.get("package"));
     List<String> notPackages = split(args.get("notPackage"));
@@ -222,10 +222,48 @@ final class Instrument {
     return sup != null && !sup.equals("java/lang/Object") && isTestClass(tests, sup, false);
   }
 
+  /**
+   * -e class or notClass split on its commas as {@code String.split(",")} would, except that {@code \,} is a comma and
+   * {@code \\} a backslash inside a name: an apksim extension (AndroidJUnitRunner has no escape), for names such as
+   * Parameterized's {@code test[0: x, y]}, which instrument.py passes when it reruns tests. Any other backslash stays
+   * as it is, so input without one parses as before.
+   */
+  static List<String> selectorParts(String s) {
+    List<String> out = new ArrayList<>();
+    StringBuilder part = new StringBuilder();
+    for (int i = 0; i < s.length(); i++) {
+      char ch = s.charAt(i);
+      if (ch == '\\' && i + 1 < s.length() && (s.charAt(i + 1) == ',' || s.charAt(i + 1) == '\\')) {
+        part.append(s.charAt(++i));
+      } else if (ch == ',') {
+        out.add(part.toString());
+        part.setLength(0);
+      } else {
+        part.append(ch);
+      }
+    }
+    out.add(part.toString());
+    if (out.size() > 1) {  // as String.split: trailing empty parts go (a lone empty string stays)
+      while (!out.isEmpty() && out.get(out.size() - 1).isEmpty()) out.remove(out.size() - 1);
+    }
+    return out;
+  }
+
+  /** {@link #selectorParts}, trimmed, without blank parts. */
+  private static List<String> selectors(String s) {
+    List<String> out = new ArrayList<>();
+    if (s != null) {
+      for (String p : selectorParts(s)) {
+        if (!p.isBlank()) out.add(p.trim());
+      }
+    }
+    return out;
+  }
+
   /** -e class a.B,a.C#m and -e notClass, as tests to keep. */
   private static Filter methodFilter(String only, String not) {
-    List<String> keep = split(only);
-    List<String> drop = split(not);
+    List<String> keep = selectors(only);
+    List<String> drop = selectors(not);
     if (keep.isEmpty() && drop.isEmpty()) return null;
     return new Filter() {
       @Override
