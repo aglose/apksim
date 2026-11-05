@@ -370,7 +370,14 @@ instrumentation class itself (AndroidJUnitRunner or a subclass such as a custom 
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--xml FILE] [-- APKSIM_OPTS]` runs a suite
 and writes JUnit XML; `--isolate` gives every test its own process, as the AndroidX Test Orchestrator with
-`clearPackageData` does. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
+`clearPackageData` does. Without it, a process that ends before every test has a result (a native crash or abort, or
+the Timeout watchdog below) does not end the run: the test that was running is reported failed with the exit status
+and the stderr tail, the suite is listed (`-e log true`, the run's own `-e` arguments, only once a process has died),
+and the tests with no result run in a new process, as `-e class` (whole classes where none of their tests ran, else
+Class#method, chunked under Linux's 128 KB argument limit) with the other `-e` arguments kept. No test runs twice; a
+new process that adds no result (a crash at startup) ends the run, the rest reported failed as not run.
+`ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
+the process, one ignores interrupts past its timeout, and the tests after each still pass. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
 sandbox brought a second main thread to a main Looper already bound to the first), and `SimTestEnvironment`, whose
 reset between tests asks the JVM's loader which classes are loaded (Robolectric casts its own loader to
 `ClassTracker`, which `FlatLoader` bypasses). Every test runs on API 36 whatever the APK targets (`SimRunner.OneSdk`:
@@ -412,7 +419,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
   stays on the main thread and a watchdog interrupts it when the time is up (`TimeoutRuleTest`). A test still running
   10 s later, ignoring interrupts, ends the process with its stack (a device abandons its thread and goes on; here it
-  holds the main thread): `instrument.py` reports that as a failed "incomplete" entry.
+  holds the main thread): `instrument.py` reports that test failed and runs the rest in a new process.
 - `UiAutomation.executeShellCommand` (UiDevice's too) runs apksim's adb shell (`AdbShell`) in the process, to the end,
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a

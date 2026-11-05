@@ -46,7 +46,9 @@ journeys at `-j 4`, against 684 s here). One process per test costs a JVM start 
 cache volume a fresh translation of the app's classes: alone, one journey took 15.6 s in a fresh container and
 10.4-10.6 s with `/opt/apksim/work/cache` on a volume (2026-11-04). Four at a time on 4 vCPUs, each JVM's own JIT
 threads compete, which makes it ~36 s a test. Mount the cache volume, and prefer one process for the journeys
-(the single-process timeouts below are the app's, now explained).
+(the single-process timeouts below are the app's, now explained). A test that ends that one process (a native crash,
+or one that ignores interrupts 10 s past its JUnit timeout) no longer takes the rest of the run with it: `instrument.py`
+reports it failed and runs the tests with no result yet in a new process.
 The emulator times leave out its boot (~1.5 min per job) and installing each ~170 MB test APK. A cold class cache made
 no difference (166 s cold, 164 s warm for the shared module): the tests' own work dominates.
 
