@@ -13,6 +13,21 @@ final class InstallState {
   static void beforeApplicationOnCreate(Application app) {
     seedAndroidId(app);
     grantInstallPermissions(app);
+    hostNetworks(app);
+  }
+
+  /**
+   * The host's network, as a device's connected one: HostNetworks shows its interfaces as Android networks with
+   * INTERNET and VALIDATED, as Host does for a running instance. Robolectric's default network has neither, so an app
+   * that checks NET_CAPABILITY_VALIDATED before a request decided it was offline and refused its own requests
+   * (NoNetworkConnectionException from its OkHttp interceptor) while the host's network worked.
+   */
+  private static void hostNetworks(Application app) {
+    try {
+      HostNetworks.install(app);
+    } catch (Exception e) {
+      System.err.println("[apksim] host networks: " + e);
+    }
   }
 
   /**
