@@ -76,6 +76,17 @@ final class ActivityResults {
     deliver(r, Activity.RESULT_CANCELED, null);
   }
 
+  /**
+   * Forgets every pending request without answering it, and closes a file panel still open: `restart` destroyed the
+   * activities that asked, and the next screen's requests must not queue behind theirs.
+   */
+  void clear() {
+    inApp.clear();
+    if (pickTicket >= 0) SimWindow.dismissPick();
+    pickTicket = -1;
+    picking = null;
+  }
+
   /** Polled each loop turn: the Mac panel's answer. */
   void tick() {
     if (picking == null || pickTicket < 0) return;

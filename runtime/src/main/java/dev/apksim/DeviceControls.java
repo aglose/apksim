@@ -104,7 +104,7 @@ final class DeviceControls {
   static void applyLaunchOptions() {
     BackgroundWork.enableAlarms();
     String appearance = System.getProperty("apksim.appearance");
-    if (appearance != null) RuntimeEnvironment.setQualifiers(nightQualifier(appearance));
+    if (appearance != null) overlayQualifiers(nightQualifier(appearance));
     String locale = System.getProperty("apksim.locale");
     if (locale != null) applyLocale(locale);
     String fontScale = System.getProperty("apksim.fontScale");
@@ -340,7 +340,7 @@ final class DeviceControls {
         // appearance dark|light|toggle
         String mode = a.length > 1 ? a[1] : "toggle";
         if (mode.equals("toggle")) mode = isNight() ? "light" : "dark";
-        RuntimeEnvironment.setQualifiers(nightQualifier(mode));
+        overlayQualifiers(nightQualifier(mode));
         SimWindow.setMenuState(TAG_APPEARANCE, isNight());
         return configurationChanged(before) + " (" + mode + ")";
       }
@@ -348,6 +348,10 @@ final class DeviceControls {
         // config: the configuration the app and its top activity see.
         Activity top = stack.isEmpty() ? null : stack.peek().get();
         return "app " + app.getResources().getConfiguration() + (top == null ? "" : " | activity " + top.getResources().getConfiguration());
+      }
+      case "clock" -> {
+        // clock [ISO|epoch-ms|real]: the wall clock the app sees starts at that instant and runs on (SimClock)
+        return SimClock.command(a);
       }
       case "timezone" -> {
         // timezone: the zone the app sees, the JDK's and android.icu's (set at launch with --timezone ZONE)
@@ -847,8 +851,25 @@ final class DeviceControls {
   private static void applyLocale(String tag) {
     Locale locale = Locale.forLanguageTag(tag);
     String q = locale.getLanguage() + (locale.getCountry().isEmpty() ? "" : "-r" + locale.getCountry());
-    RuntimeEnvironment.setQualifiers("+" + q);
+    overlayQualifiers("+" + q);
     Locale.setDefault(locale);
+  }
+
+  /**
+   * RuntimeEnvironment.setQualifiers("+night") (or a locale), keeping the display as it is. Robolectric first rebuilds
+   * the default display from the overlay alone (ShadowDisplayManager.changeDisplay), which turned a landscape display
+   * portrait: on a tablet, dark mode left the configuration at 2560x1600 and gave new windows 1600x2560. So the
+   * display is set again from the full qualifiers the overlay produced.
+   */
+  private static void overlayQualifiers(String q) {
+    int rotation = app().getSystemService(android.view.WindowManager.class).getDefaultDisplay().getRotation();
+    RuntimeEnvironment.setQualifiers(q);
+    org.robolectric.shadows.ShadowDisplayManager.changeDisplay(android.view.Display.DEFAULT_DISPLAY, RuntimeEnvironment.getQualifiers());
+    org.robolectric.Shadows.shadowOf(app().getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(rotation);
+  }
+
+  private static Application app() {
+    return RuntimeEnvironment.getApplication();
   }
 
   /**

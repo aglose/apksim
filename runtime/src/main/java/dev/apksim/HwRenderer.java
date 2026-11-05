@@ -65,17 +65,8 @@ final class HwRenderer {
     renderer.setSurface(reader.getSurface());
     rootNode.setPosition(0, 0, w, h);
     renderer.setContentRoot(rootNode);
-    DisplayMetrics m = context.getResources().getDisplayMetrics();
-    TypedArray a = context.obtainStyledAttributes(null, R.styleable.Lighting, 0, 0);
-    float lightY = a.getDimension(R.styleable.Lighting_lightY, 0f);
-    float lightZ = a.getDimension(R.styleable.Lighting_lightZ, 600f * m.density);
-    float lightRadius = a.getDimension(R.styleable.Lighting_lightRadius, 800f * m.density);
-    float ambient = a.getFloat(R.styleable.Lighting_ambientShadowAlpha, 0.039f);
-    float spot = a.getFloat(R.styleable.Lighting_spotShadowAlpha, 0.19f);
-    renderer.setLightSourceGeometry(m.widthPixels / 2f, lightY, lightZ, lightRadius);
-    renderer.setLightSourceAlpha(ambient, spot);
-    dev.apksim.gpu.GpuRenderNode.setLight(m.widthPixels / 2f, lightY, lightZ, lightRadius, ambient, spot);
-    a.recycle();
+    this.context = context;
+    setLight();
     Thread worker = new Thread(this::rasterLoop, "apksim-raster");
     worker.setDaemon(true);
     worker.setPriority(Thread.MAX_PRIORITY);
@@ -179,6 +170,27 @@ final class HwRenderer {
   }
 
   /** A new display size (rotation, resizing): swaps the surface and the window's buffers while no frame is in flight. */
+  private final Context context;
+
+  /**
+   * Shadows' light, from the theme's Lighting attributes, above the display's top centre, as ThreadedRenderer places it
+   * for each window. Set again on every resize: with the launch width kept, a phone switched to a tablet cast its
+   * shadows from the phone's centre, and the same screen differed from one launched as a tablet.
+   */
+  private void setLight() {
+    DisplayMetrics m = context.getResources().getDisplayMetrics();
+    TypedArray a = context.obtainStyledAttributes(null, R.styleable.Lighting, 0, 0);
+    float lightY = a.getDimension(R.styleable.Lighting_lightY, 0f);
+    float lightZ = a.getDimension(R.styleable.Lighting_lightZ, 600f * m.density);
+    float lightRadius = a.getDimension(R.styleable.Lighting_lightRadius, 800f * m.density);
+    float ambient = a.getFloat(R.styleable.Lighting_ambientShadowAlpha, 0.039f);
+    float spot = a.getFloat(R.styleable.Lighting_spotShadowAlpha, 0.19f);
+    a.recycle();
+    renderer.setLightSourceGeometry(width / 2f, lightY, lightZ, lightRadius);
+    renderer.setLightSourceAlpha(ambient, spot);
+    dev.apksim.gpu.GpuRenderNode.setLight(width / 2f, lightY, lightZ, lightRadius, ambient, spot);
+  }
+
   void resize(int w, int h, boolean actualSize) {
     idle.acquireUninterruptibly();
     try {
@@ -192,6 +204,7 @@ final class HwRenderer {
       rootNode.setPosition(0, 0, w, h);
       width = w;
       height = h;
+      setLight();
       old.close();
       SimWindow.resize(w, h, actualSize);
     } finally {

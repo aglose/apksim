@@ -30,6 +30,9 @@ fun SettingsScreen() {
     var on by remember { mutableStateOf(true) }
     Row { Text("Notifications", Modifier.weight(1f)); Switch(on, { on = it }) }
     Text("android.os.Build.VERSION.SDK_INT = ${android.os.Build.VERSION.SDK_INT}")
+    // The wall clock, in the locale's format: fixed in screenshot tests (apksim `clock ISO`, docs/snapshots.md).
+    Text("Now: " + java.time.LocalDateTime.now().format(
+      java.time.format.DateTimeFormatter.ofLocalizedDateTime(java.time.format.FormatStyle.MEDIUM, java.time.format.FormatStyle.SHORT)))
     // Two-finger gestures (apksim: Option-drag, trackpad pinch, `pinch` command).
     var zoom by remember { mutableFloatStateOf(1f) }
     var angle by remember { mutableFloatStateOf(0f) }
