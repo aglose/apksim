@@ -227,6 +227,7 @@ public final class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       applyTimeZone();
+      RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;

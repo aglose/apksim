@@ -70,11 +70,24 @@ public class RunnerApplication {
     }
   }
 
+  /**
+   * At each test's setup, before Robolectric replaces ApplicationInfo.className with the configured Application (the
+   * probe's plain one): the manifest's own class, which a device passes to newApplication and a runner may test.
+   */
+  static void noteManifest(org.robolectric.manifest.AndroidManifest manifest) {
+    if (manifest == null || manifestApplication != null) return;
+    String name = manifest.getApplicationName();
+    String pkg = manifest.getPackageName();
+    if (name == null || name.isEmpty()) name = Application.class.getName();
+    else if (name.startsWith(".")) name = pkg + name;
+    else if (name.indexOf('.') < 0) name = pkg + "." + name;
+    manifestApplication = name;
+  }
+
   @Test
   public void probe() {
     Application app = RuntimeEnvironment.getApplication();
-    String manifest = app.getApplicationInfo().className;
-    manifestApplication = manifest != null ? manifest : Application.class.getName();
+    if (manifestApplication == null) manifestApplication = Application.class.getName();  // a manifest without one
     try {
       Instrumentation runner = (Instrumentation) Class.forName(runnerClass, true, RunnerApplication.class.getClassLoader())
           .getDeclaredConstructor().newInstance();
