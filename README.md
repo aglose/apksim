@@ -50,7 +50,8 @@ It also runs headless on Linux x86_64 in a 565 MB Docker image, for CI, publishe
 
 Options: `--device phone|foldable|tablet|desktop|tv|WxH[@density]` (dp, e.g. `1024x768@1.5`), `--no-network`, `--no-sandbox`, `--headless`,
 `--control PORT|auto`, `--control-bind ADDR`, `--shot FILE`, `--exit-after-first-frame`, `--window-x N`,
-`--appearance dark|light`, `--locale TAG`, `--timezone ZONE`, `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
+`--appearance dark|light`, `--locale TAG`, `--timezone ZONE`, `--realtime-clock` (test runs: the clock follows real time instead
+of skipping idle time), `--font-scale N`, `--permissions ask|grant|deny`, `--biometrics enrolled`,
 `--soft-keyboard`, `--fresh` (erase the app's data first), `--adb PORT|auto`, `--debug PORT`, `--instrument TEST.apk [-e KEY VALUE]...`, `--jvm ARG`.
 
 For tools: `--adb PORT` makes the instance an adb device (`adb connect localhost:PORT`, then `adb shell`, `push`/`pull`,

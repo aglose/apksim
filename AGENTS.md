@@ -373,7 +373,14 @@ test manifest, finds the test classes (library packages are not searched), and r
 (`@RunWith(AndroidJUnit4)` is pointed there by `android.junit.runner`). Tests run the Robolectric way, not the device
 way: the test body on the main thread, Espresso/ActivityScenario through Robolectric's in-process `LocalUiController`
 and `LocalActivityInvoker`, a simulated clock that jumps over idle time, and no window or Host loop. The
-instrumentation class itself (AndroidJUnitRunner or a subclass such as a custom `newApplication`) is not run.
+instrumentation class itself (AndroidJUnitRunner or a subclass) is not run, except its `newApplication`: when it is
+not plain AndroidJUnitRunner, `RunnerApplication` first runs a probe test (with a plain Application, so the app's
+onCreate does not run) that creates the runner and calls its newApplication with the manifest's class; the
+Instrumentation shadow records the class it hands on to Instrumentation.newApplication and stops there, and every test
+then gets that Application (`SimTestEnvironment` sets `Config.application`; Robolectric's global config is fixed
+before the probe). If the runner's newApplication fails with the probe's context, the manifest's is kept, with a
+line in the log; `--jvm -Dapksim.runnerApplication=false` skips the probe. The test app's `HarnessRunner` swaps in
+`HarnessTestApplication` (`RunnerApplicationTest`). The runner's listeners and other runner arguments are not run.
 `-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work, and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
@@ -432,6 +439,16 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
   when it skips idle time. `--timezone ZONE` sets the JDK's and android.icu's zone, at each test's setup (ICU caches
   its default, and a standby may have worked it out before the launch) (`WallClockTest` with `-e timezone ZONE`).
+- `--realtime-clock` (opt-in, test runs only; `RealTimeClock`): the simulated clock follows real time instead of
+  skipping idle time, for suites written for a device whose timed UI must last (a banner that closes itself after
+  5 s). By default Robolectric's Choreographer is not paused in a test run, so each frame asked for moves the clock
+  15 ms and runs at once, and one Espresso check ran every frame of a running animation, closing the banner first.
+  With the switch the Choreographer is paused as Host runs it, each frame asked for queues an asynchronous vsync
+  message (`ShadowRealTimeDisplayEventReceiver`), a main-thread clock read moves the clock up to real time
+  (`ShadowRealTimeSystemClock`), a looper held by a traversal's sync barrier waits up to 100 ms for that frame
+  (Espresso posts its check behind the barrier, drains, then blocks on it: without the wait it never ran), and
+  anything moving the clock past real time (idleFor, SystemClock.sleep) waits for it. Off, nothing is registered.
+  The test app's suite takes 13 s with it against 5.6 s (`RealTimeClockTest`, run with `-e realtimeClock true`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):

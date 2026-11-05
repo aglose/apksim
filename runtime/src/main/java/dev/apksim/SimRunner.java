@@ -176,6 +176,36 @@ public final class SimRunner extends RobolectricTestRunner {
     }
 
     /**
+     * The test's configuration, with the Application the test APK's runner asks for in newApplication
+     * (RunnerApplication) when it is not the manifest's. Set here, where Robolectric makes the Application: its global
+     * configuration is fixed when the first runner is made, before the probe runs.
+     */
+    private static ConfigurationStrategy.Configuration withRunnerApplication(ConfigurationStrategy.Configuration c) {
+      Class<? extends android.app.Application> chosen = RunnerApplication.chosen;
+      Config base = c.get(Config.class);
+      if (chosen == null || base == null || !Config.Builder.isDefaultApplication(base.application())) return c;
+      Config changed = new Config.Builder(base).setApplication(chosen).build();
+      java.util.Map<Class<?>, Object> map = new java.util.HashMap<>(c.map());
+      map.put(Config.class, changed);
+      return new ConfigurationStrategy.Configuration() {
+        @Override
+        public <T> T get(Class<T> key) {
+          return key.cast(map.get(key));
+        }
+
+        @Override
+        public java.util.Collection<Class<?>> keySet() {
+          return map.keySet();
+        }
+
+        @Override
+        public java.util.Map<Class<?>, Object> map() {
+          return map;
+        }
+      };
+    }
+
+    /**
      * The device's time zone, `--timezone ZONE` (-Dapksim.timezone): the JDK's default and android.icu's. ICU keeps
      * the zone it first worked out, and a standby may have formatted a date before the launch named one, so its cached
      * zone is dropped too and taken again from the JDK's. Here, inside the sandbox, rather than in Main: ICU's classes
@@ -197,7 +227,9 @@ public final class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       applyTimeZone();
-      super.setUpApplicationState(testName, config, manifest);
+      RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
+      super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
+      if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
@@ -242,6 +274,7 @@ public final class SimRunner extends RobolectricTestRunner {
     /** As AndroidTestEnvironment.resetState, but with a tracker this process can answer. */
     @Override
     public void resetState() {
+      RealTimeClock.endTest();
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));
       FakeMediaProvider media = ReflectionHelpers.getField(this, "fakeMediaProvider");
@@ -271,6 +304,15 @@ public final class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected Class<?>[] getExtraShadows(FrameworkMethod method) {
+    Class<?>[] shadows = baseShadows();
+    if (!RealTimeClock.requested()) return shadows;
+    Class<?>[] more = java.util.Arrays.copyOf(shadows, shadows.length + 2);  // --realtime-clock
+    more[shadows.length] = RealTimeClock.ShadowRealTimeSystemClock.class;
+    more[shadows.length + 1] = RealTimeClock.ShadowRealTimeDisplayEventReceiver.class;
+    return more;
+  }
+
+  private static Class<?>[] baseShadows() {
     return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class};
   }
 
