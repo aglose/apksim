@@ -65,8 +65,11 @@ Extensions (HAR allows `_` fields):
   session presents the real certificates: hostname verification and OkHttp `CertificatePinner` pins pass as they did
   when recording.
 - `request._bodySha256`: informational; matching recomputes it from `postData.text`, so hand edits count.
-- `postData._encoding: base64` for a binary request body; `content._apksimTruncated` for a body over 32 MB (relayed,
-  not stored).
+- `postData._encoding: base64` for a binary request body; `content._apksimTruncated` for a response body over 32 MB
+  (relayed, not stored); `postData._apksimTruncated` for a request body over 32 MB: only its `_bodySha256` is
+  stored, and replay matches it by that. Request bodies stream to the server as they arrive (hashed on the way), so
+  an upload needs no more memory than without apksim. A gzip body is stored decoded only while it decodes to 32 MB or
+  less; a bigger one is stored and replayed as sent.
 
 Replayed responses carry `X-Apksim-Replay: recorded` and a fresh `Content-Length`; hop-by-hop headers and headers
 recorded as `REDACTED` are left out (a redacted `Set-Cookie` sets nothing).
@@ -133,7 +136,8 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
-- Offline also closes the connections the hooks made without the engine (before the layer was turned on by a
+- Offline also closes the engine's connections on both sides (a worker waiting on a silent server wakes), the
+  connections the hooks made without the engine (before the layer was turned on by a
   `network` command, TLS-first sockets), and a numeric-address URL (no lookup to fail) still goes to the engine, which
   refuses it.
 - ConnectivityManager (`NetConnectivity`, over Robolectric's shadow): offline removes the networks and tells

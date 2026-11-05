@@ -43,7 +43,8 @@ final class NetEngine {
   /** Bodies bigger than this are relayed but not recorded. */
   private static final int MAX_BODY = 32 << 20;
   private ServerSocket server;
-  private final Set<Socket> open = ConcurrentHashMap.newKeySet();
+  /** Live connections, both sides: going offline closes the client's and the server's. */
+  private final Set<Conn> open = ConcurrentHashMap.newKeySet();
   final AtomicInteger recorded = new AtomicInteger(), replayed = new AtomicInteger(), missed = new AtomicInteger(),
       relayed = new AtomicInteger();
   private SSLSocketFactory upstreamTls;
@@ -74,8 +75,8 @@ final class NetEngine {
   }
 
   private void serve(Socket client) {
-    open.add(client);
     Conn c = new Conn(client);
+    open.add(c);
     try {
       c.run();
     } catch (IOException e) {
@@ -83,19 +84,14 @@ final class NetEngine {
     } catch (RuntimeException e) {
       Net.log("network: " + c.host + ":" + c.port + " failed: " + e);
     } finally {
-      open.remove(client);
+      open.remove(c);
       c.close();
     }
   }
 
-  /** Going offline: every connection drops, as when Wi-Fi goes away. */
+  /** Going offline: every connection drops, as when Wi-Fi goes away, upstream too (a worker blocked on it wakes). */
   void closeAll() {
-    for (Socket s : open) {
-      try {
-        s.close();
-      } catch (IOException ignored) {
-      }
-    }
+    for (Conn c : open) c.close();
   }
 
   String counts() {
@@ -185,7 +181,11 @@ final class NetEngine {
       this.client = client;
     }
 
+    /** Closed for good (offline, or the client is done): no upstream may be opened after this. */
+    volatile boolean closed;
+
     void close() {
+      closed = true;
       try {
         client.close();
       } catch (IOException ignored) {
@@ -193,13 +193,22 @@ final class NetEngine {
       closeUpstream();
     }
 
-    void closeUpstream() {
+    synchronized void closeUpstream() {
       if (up == null) return;
       try {
         up.close();
       } catch (IOException ignored) {
       }
       up = null;
+    }
+
+    /** Takes a new upstream socket, unless the connection was closed meanwhile (then closes it and throws). */
+    synchronized void adopt(Socket s) throws IOException {
+      if (closed) {
+        s.close();
+        throw new java.net.SocketException("connection closed");
+      }
+      up = s;
     }
 
     void run() throws IOException {
@@ -328,10 +337,11 @@ final class NetEngine {
       if (Net.mode == Net.Mode.REPLAY) return null;
       long t0 = System.nanoTime();
       try {
+        if (closed) throw new java.net.SocketException("connection closed");
         Socket s = new Socket();
         s.setTcpNoDelay(true);
         s.connect(target(host, port), timeout);
-        up = s;
+        adopt(s);
         uin = new BufferedInputStream(s.getInputStream());
         uout = s.getOutputStream();
         connectMs = (System.nanoTime() - t0) / 1_000_000;
@@ -365,7 +375,7 @@ final class NetEngine {
       params.setEndpointIdentificationAlgorithm("HTTPS");
       s.setSSLParameters(params);
       s.startHandshake();
-      up = s;
+      adopt(s);
       uin = new BufferedInputStream(s.getInputStream());
       uout = s.getOutputStream();
       List<String> chain = new ArrayList<>();
@@ -410,7 +420,6 @@ final class NetEngine {
           cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
         }
-        readRequestBody(req);
         String authority = req.header("Host");
         if (authority == null) authority = (tls ? tlsHost : host) + (port == (tls ? 443 : 80) ? "" : ":" + port);
         req.url = proxied ? req.target : (tls ? "https://" : "http://") + authority + req.target;
@@ -428,20 +437,25 @@ final class NetEngine {
       }
     }
 
-    void readRequestBody(Request req) throws IOException {
+    /**
+     * Streams the request's body to the server (or nowhere, replaying) as it arrives, at the upload bandwidth, and
+     * hashes all of it while keeping at most MAX_BODY: a large upload uses no more memory than without apksim.
+     */
+    void streamRequestBody(Request req, OutputStream sink) throws IOException {
       String te = req.header("Transfer-Encoding");
       String cl = req.header("Content-Length");
-      int up = Net.conditions.upKbps();
+      Capture cap = new Capture(MAX_BODY);
+      OutputStream out = new Paced(sink, false);
       if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
-        ByteArrayOutputStream raw = new ByteArrayOutputStream(), body = new ByteArrayOutputStream();
-        copyChunked(cin, raw, body, Integer.MAX_VALUE);  // a request is kept whole: its hash is matched
-        req.rawBody = raw.toByteArray();
-        req.body = body.toByteArray();
+        copyChunked(cin, out, cap);
+        req.hasBody = true;
       } else if (cl != null && Long.parseLong(cl.trim()) > 0) {
-        req.body = cin.readNBytes(Integer.parseInt(cl.trim()));
-        req.rawBody = req.body;
+        copy(cin, out, cap, Long.parseLong(cl.trim()), true);
+        req.hasBody = true;
       }
-      if (req.body != null) Conditions.pace(req.body.length, up);
+      req.body = cap.kept();
+      req.bodySha = cap.sha256();
+      req.bodyTruncated = cap.truncated();
     }
 
     boolean record(Request req) throws IOException {
@@ -455,7 +469,7 @@ final class NetEngine {
         // request sent again from here could reach the server twice.
         if (up == null || up.isClosed() || (exchanges > 0 && upstreamPeek() < 0)) reconnect();
         uout.write(head);
-        if (req.rawBody != null) uout.write(req.rawBody);
+        streamRequestBody(req, uout);
         uout.flush();
         sent = System.nanoTime();
         statusLine = readLineBytes(uin);
@@ -482,7 +496,9 @@ final class NetEngine {
       e.url = req.url;
       e.httpVersion = req.version;
       e.reqHeaders = redacted(req.headers);
-      e.reqBody = req.body;
+      e.reqBody = req.hasBody ? req.body : null;
+      e.reqSha = req.bodySha;
+      e.reqTruncated = req.bodyTruncated;
       e.status = resp.status;
       e.statusText = resp.text;
       e.respHeaders = redacted(resp.headers);
@@ -494,29 +510,32 @@ final class NetEngine {
         relay(cin, cout, uin, uout, client, up);
         return false;
       }
-      ByteArrayOutputStream body = new ByteArrayOutputStream();
+      Capture body = new Capture(MAX_BODY);
       String te = resp.header("Transfer-Encoding");
       String cl = resp.header("Content-Length");
       boolean none = req.method.equals("HEAD") || resp.status == 204 || resp.status == 304;
-      long total = 0;
       if (none) {
         // nothing
       } else if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
-        total = copyChunked(uin, new Paced(cout), body, MAX_BODY);
+        copyChunked(uin, new Paced(cout, true), body);
       } else if (cl != null) {
-        total = copy(uin, new Paced(cout), body, Long.parseLong(cl.trim()), MAX_BODY, true);
+        copy(uin, new Paced(cout, true), body, Long.parseLong(cl.trim()), true);
       } else {
-        total = copy(uin, new Paced(cout), body, Long.MAX_VALUE, MAX_BODY, false);
+        copy(uin, new Paced(cout, true), body, Long.MAX_VALUE, false);
         keep = false;
       }
       cout.flush();
       long done = System.nanoTime();
-      byte[] bytes = body.toByteArray();
-      e.truncated = total > body.size();
+      byte[] bytes = body.kept();
+      e.truncated = body.truncated();
       if ("gzip".equalsIgnoreCase(resp.header("Content-Encoding")) && !e.truncated) {
+        // Decoded only while it stays within MAX_BODY; a bigger one is stored as sent (still gzip, and replayed so).
         try (InputStream gz = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
-          bytes = gz.readAllBytes();
-          e.gzip = true;
+          byte[] decoded = gz.readNBytes(MAX_BODY + 1);
+          if (decoded.length <= MAX_BODY) {
+            bytes = decoded;
+            e.gzip = true;
+          }
         } catch (IOException notGzip) {
           // stored as sent
         }
@@ -539,11 +558,12 @@ final class NetEngine {
     }
 
     boolean replay(Request req) throws IOException {
-      Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.body);
+      streamRequestBody(req, OutputStream.nullOutputStream());
+      Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.bodySha);
       Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
       if (e == null) {
         missed.incrementAndGet();
-        String closest = Net.recording.closest(req.method, req.url, req.headers, req.body);
+        String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
         String msg = "network replay: no recorded response for " + req.method + " " + req.url
             + (closest == null ? "" : "\n         closest: " + closest);
         Net.log(msg);
@@ -586,7 +606,7 @@ final class NetEngine {
       if (!none) h.append("Content-Length: ").append(req.method.equals("HEAD") && recordedLength != null ? recordedLength : String.valueOf(body.length)).append("\r\n");
       h.append("X-Apksim-Replay: recorded\r\n\r\n");
       cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
-      if (!none && !req.method.equals("HEAD")) new Paced(cout).write(body, 0, body.length);
+      if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(body, 0, body.length);
       cout.flush();
       return true;
     }
@@ -637,7 +657,10 @@ final class NetEngine {
   static final class Request {
     String method, target, version, url;
     final List<String[]> headers = new ArrayList<>();
-    byte[] body, rawBody;
+    /** The body as kept (at most MAX_BODY), the SHA-256 of all of it, and whether there was one at all. */
+    byte[] body;
+    String bodySha;
+    boolean hasBody, bodyTruncated;
 
     String header(String name) {
       for (String[] h : headers) if (h[0].equalsIgnoreCase(name)) return h[1];
@@ -693,14 +716,47 @@ final class NetEngine {
     return b.size() == 0 ? null : b.toByteArray();
   }
 
+  /** A body as it passes: all of it hashed, at most max bytes kept. */
+  static final class Capture {
+    private final ByteArrayOutputStream kept = new ByteArrayOutputStream();
+    private final java.security.MessageDigest digest;
+    private final int max;
+    private long total;
+
+    Capture(int max) {
+      this.max = max;
+      try {
+        digest = java.security.MessageDigest.getInstance("SHA-256");
+      } catch (java.security.NoSuchAlgorithmException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    void write(byte[] b, int off, int len) {
+      digest.update(b, off, len);
+      if (kept.size() < max) kept.write(b, off, Math.min(len, max - kept.size()));
+      total += len;
+    }
+
+    byte[] kept() {
+      return kept.toByteArray();
+    }
+
+    boolean truncated() {
+      return total > kept.size();
+    }
+
+    String sha256() {
+      return java.util.HexFormat.of().formatHex(digest.digest());
+    }
+  }
+
   /**
-   * Copies n bytes, or to end of stream when not exact, capturing up to max; returns how many it copied. An exact
-   * copy that ends early throws: the body is incomplete, and must neither look complete to the client nor be recorded.
+   * Copies n bytes, or to end of stream when not exact, into capture as well. An exact copy that ends early throws:
+   * the body is incomplete, and must neither look complete to the client nor be recorded.
    */
-  static long copy(InputStream in, OutputStream out, ByteArrayOutputStream capture, long n, int max, boolean exact)
-      throws IOException {
+  static void copy(InputStream in, OutputStream out, Capture capture, long n, boolean exact) throws IOException {
     byte[] buf = new byte[16 * 1024];
-    long total = 0;
     while (n > 0) {
       int r = in.read(buf, 0, (int) Math.min(buf.length, n));
       if (r < 0) {
@@ -708,16 +764,13 @@ final class NetEngine {
         break;
       }
       out.write(buf, 0, r);
-      if (capture.size() < max) capture.write(buf, 0, Math.min(r, max - capture.size()));
+      capture.write(buf, 0, r);
       n -= r;
-      total += r;
     }
-    return total;
   }
 
-  /** Copies a chunked body as sent, capturing its decoded data up to max; returns the decoded length. */
-  static long copyChunked(InputStream in, OutputStream out, ByteArrayOutputStream capture, int max) throws IOException {
-    long total = 0;
+  /** Copies a chunked body as sent, its decoded data into capture as well. */
+  static void copyChunked(InputStream in, OutputStream out, Capture capture) throws IOException {
     while (true) {
       byte[] sizeLine = readLineBytes(in);
       if (sizeLine == null) throw new IOException("chunked body ended early");
@@ -730,21 +783,23 @@ final class NetEngine {
           byte[] t = readLineBytes(in);
           if (t == null) throw new IOException("chunked body ended early");
           out.write(t);
-          if (trimEol(t).isEmpty()) return total;
+          if (trimEol(t).isEmpty()) return;
         }
       }
-      total += copy(in, out, capture, size, max, true);
+      copy(in, out, capture, size, true);
       byte[] crlf = readLineBytes(in);
       if (crlf != null) out.write(crlf);
     }
   }
 
-  /** Writes at the current download bandwidth. */
+  /** Writes at the current download (or upload) bandwidth. */
   static final class Paced extends OutputStream {
     private final OutputStream out;
+    private final boolean down;
 
-    Paced(OutputStream out) {
+    Paced(OutputStream out, boolean down) {
       this.out = out;
+      this.down = down;
     }
 
     @Override
@@ -755,7 +810,7 @@ final class NetEngine {
     @Override
     public void write(byte[] b, int off, int len) throws IOException {
       while (len > 0) {
-        int kbps = Net.conditions.downKbps();
+        int kbps = down ? Net.conditions.downKbps() : Net.conditions.upKbps();
         int n = kbps <= 0 ? len : Math.min(len, Math.max(512, kbps * 16));  // ~1/8 s per slice
         out.write(b, off, n);
         out.flush();

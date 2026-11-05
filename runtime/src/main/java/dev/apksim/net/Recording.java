@@ -41,6 +41,9 @@ final class Recording {
     String httpVersion = "HTTP/1.1";
     List<String[]> reqHeaders = new ArrayList<>();
     byte[] reqBody;
+    /** The SHA-256 of the whole request body (reqBody may be only its first MAX_BODY bytes: reqTruncated). */
+    String reqSha;
+    boolean reqTruncated;
     int status;
     String statusText = "";
     List<String[]> respHeaders = new ArrayList<>();
@@ -71,11 +74,14 @@ final class Recording {
 
   // ------------------------------------------------------------------ matching
 
-  String key(String method, String url, List<String[]> headers, byte[] body) {
+  static final String EMPTY_SHA = sha256(new byte[0]);
+
+  /** bodySha: the SHA-256 of the request's whole body (EMPTY_SHA, or null, for none). */
+  String key(String method, String url, List<String[]> headers, String bodySha) {
     StringBuilder k = new StringBuilder();
     if (match.fields.contains("method")) k.append(method.toUpperCase(Locale.ROOT)).append(' ');
     if (match.fields.contains("url")) k.append(normalizeUrl(url, match.ignoreQuery)).append(' ');
-    if (match.fields.contains("body")) k.append(sha256(body == null ? new byte[0] : body)).append(' ');
+    if (match.fields.contains("body")) k.append(bodySha == null ? EMPTY_SHA : bodySha).append(' ');
     if (match.fields.contains("headers")) {
       TreeSet<String> hs = new TreeSet<>();
       for (String[] h : headers) {
@@ -121,13 +127,14 @@ final class Recording {
   }
 
   private void index(Entry e) {
-    e.key = key(e.method, e.url, e.reqHeaders, e.reqBody);
+    if (e.reqSha == null) e.reqSha = e.reqBody == null ? EMPTY_SHA : sha256(e.reqBody);
+    e.key = key(e.method, e.url, e.reqHeaders, e.reqSha);
     byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
   }
 
   /** The answer for a request: entries with its key in recorded order, the last repeating; null if none. */
-  synchronized Entry find(String method, String url, List<String[]> headers, byte[] body) {
-    List<Entry> list = byKey.get(key(method, url, headers, body));
+  synchronized Entry find(String method, String url, List<String[]> headers, String bodySha) {
+    List<Entry> list = byKey.get(key(method, url, headers, bodySha));
     if (list == null) return null;
     for (Entry e : list) {
       if (e.served == 0) {
@@ -141,7 +148,7 @@ final class Recording {
   }
 
   /** The recorded entry most like a request that matched none, and what differs; null if nothing is close. */
-  synchronized String closest(String method, String url, List<String[]> headers, byte[] body) {
+  synchronized String closest(String method, String url, List<String[]> headers, String bodySha) {
     URI want = URI.create(url);
     Entry best = null;
     int bestScore = -1;
@@ -162,7 +169,7 @@ final class Recording {
     String a = normalizeUrl(best.url, match.ignoreQuery), b = normalizeUrl(url, match.ignoreQuery);
     if (!a.equals(b)) diffs.add(URI.create(a).getRawPath().equals(URI.create(b).getRawPath())
         ? "query differs: " + URI.create(a).getRawQuery() + " recorded" : "path differs");
-    String ha = sha256(best.reqBody == null ? new byte[0] : best.reqBody), hb = sha256(body == null ? new byte[0] : body);
+    String ha = best.reqSha == null ? EMPTY_SHA : best.reqSha, hb = bodySha == null ? EMPTY_SHA : bodySha;
     if (match.fields.contains("body") && !ha.equals(hb)) diffs.add("body differs: " + ha.substring(0, 8) + ".. recorded, " + hb.substring(0, 8) + ".. now");
     if (diffs.isEmpty() && match.fields.contains("headers")) diffs.add("headers differ");
     return best.method + " " + best.url + (diffs.isEmpty() ? "" : " (" + String.join("; ", diffs) + ")");
@@ -233,14 +240,17 @@ final class Recording {
       String mime = e.header(e.reqHeaders, "Content-Type");
       post.put("mimeType", mime == null ? "" : mime);
       String text = text(e.reqBody);
-      if (text != null) {
+      if (e.reqTruncated) {
+        post.put("text", "");  // over MAX_BODY: only its hash (below) is kept, and matched
+        post.put("_apksimTruncated", true);
+      } else if (text != null) {
         post.put("text", text);
       } else {
         post.put("text", Base64.getEncoder().encodeToString(e.reqBody));
         post.put("_encoding", "base64");
       }
       req.put("postData", post);
-      req.put("_bodySha256", sha256(e.reqBody));
+      req.put("_bodySha256", e.reqSha != null ? e.reqSha : sha256(e.reqBody));
     }
     req.put("headersSize", -1);
     req.put("bodySize", e.reqBody == null ? 0 : e.reqBody.length);
@@ -329,6 +339,11 @@ final class Recording {
       if (post != null && post.get("text") != null) {
         String t = (String) post.get("text");
         e.reqBody = "base64".equals(post.get("_encoding")) ? Base64.getDecoder().decode(t) : t.getBytes(StandardCharsets.UTF_8);
+        // A body too big to store matches by the hash recorded with it; any other, by its text (hand edits count).
+        if (Boolean.TRUE.equals(post.get("_apksimTruncated")) && req.get("_bodySha256") instanceof String sha) {
+          e.reqSha = sha;
+          e.reqTruncated = true;
+        }
       }
       e.status = (int) num(resp.get("status"));
       e.statusText = String.valueOf(resp.getOrDefault("statusText", ""));
