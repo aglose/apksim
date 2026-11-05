@@ -146,6 +146,27 @@ fun DeviceFeatures() {
     Button({ keystore = runCatching { keystoreCheck() }.getOrElse { "failed: $it" } }) { Text("Keystore") }
     Text("keystore: $keystore", Modifier.padding(start = 12.dp))
   }
+  // Binding a service whose onBind returns null: a device reports it with onNullBinding, then the unbind is clean.
+  var binding by remember { mutableStateOf("-") }
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Button({
+      val connection = object : android.content.ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName, service: android.os.IBinder) {
+          binding = "connected"
+        }
+        override fun onServiceDisconnected(name: android.content.ComponentName) {
+          binding = "disconnected"
+        }
+        override fun onNullBinding(name: android.content.ComponentName) {
+          binding = "null binding to ${name.shortClassName}"
+          context.unbindService(this)
+        }
+      }
+      binding = "binding"
+      context.bindService(android.content.Intent(context, NullBindingService::class.java), connection, android.content.Context.BIND_AUTO_CREATE)
+    }) { Text("Bind") }
+    Text("bind: $binding", Modifier.padding(start = 12.dp))
+  }
   ClipPlayer()
 }
 
