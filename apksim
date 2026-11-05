@@ -105,7 +105,9 @@ while [[ $# -gt 1 ]]; do
     # Record and replay the app's HTTP(S), and network conditions (docs/network.md).
     --network)
       [[ "$2" == record || "$2" == replay ]] || { echo "--network takes record FILE or replay FILE" >&2; exit 2; }
-      NET_FILE="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")" || exit 2
+      # The folder is resolved on its own: a missing one must stop here, not become "/" (and a sandbox rule for it).
+      NET_DIR="$(cd "$(dirname "$3")" 2>/dev/null && pwd)" || { echo "no folder $(dirname "$3") for $3" >&2; exit 2; }
+      NET_FILE="$NET_DIR/$(basename "$3")"
       [[ "$2" == replay && ! -f "$NET_FILE" ]] && { echo "no recording at $3" >&2; exit 2; }
       [[ "$2" == record ]] && NET_RECORD_DIR="$(dirname "$NET_FILE")"
       EXTRA+=("-Dapksim.network=$2:$NET_FILE"); shift 3 ;;
@@ -117,7 +119,9 @@ while [[ $# -gt 1 ]]; do
     --network-unmatched) EXTRA+=("-Dapksim.networkUnmatched=$2"); shift 2 ;;
     --network-replay-timing) EXTRA+=("-Dapksim.networkReplayTiming=$2"); shift 2 ;;
     --network-host) NET_HOSTS="${NET_HOSTS:+$NET_HOSTS,}$2"; shift 2 ;;
-    --network-trust) EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
+    --network-trust)
+      [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
+      EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac

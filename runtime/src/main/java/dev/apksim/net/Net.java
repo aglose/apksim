@@ -308,14 +308,21 @@ public final class Net {
       Conditions.sleep(Math.min(timeout > 0 ? timeout : 10_000, 10_000));
       throw new SocketTimeoutException("failed to connect to " + where + " after " + (timeout > 0 ? timeout : 10_000) + "ms");
     }
-    Conditions.sleep(c.rtt());  // the TCP handshake's round trip
-    s.connect(engine.address(), timeout);
+    // The TCP handshake's round trip counts against the caller's connect timeout, as a real one would.
+    int rtt = c.rtt();
+    if (timeout > 0 && rtt >= timeout) {
+      Conditions.sleep(timeout);
+      throw new SocketTimeoutException("failed to connect to " + where + " after " + timeout + "ms");
+    }
+    Conditions.sleep(rtt);
+    int left = timeout > 0 ? timeout - rtt : 0;
+    s.connect(engine.address(), left);
     int before = s.getSoTimeout();
     try {
       OutputStream out = s.getOutputStream();
-      out.write(("APKSIM " + host + " " + isa.getPort() + " " + timeout + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+      out.write(("APKSIM " + host + " " + isa.getPort() + " " + left + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
       out.flush();
-      s.setSoTimeout(timeout > 0 ? timeout + 1000 : 0);
+      s.setSoTimeout(left > 0 ? left + 1000 : 0);
       String reply = readLine(s.getInputStream());
       if (reply == null) throw new ConnectException("failed to connect to " + where + ": connection closed");
       if (reply.startsWith("ERR ")) throw exception(reply.substring(4), false);
@@ -340,8 +347,18 @@ public final class Net {
     try {
       s = f instanceof SSLSocketFactory ? new Socket() : f.createSocket();
     } catch (IOException | UnsupportedOperationException e) {
+      // A factory that makes only connected sockets: its connection cannot go through the engine. Offline and replaying
+      // that means failing (nothing may leave); otherwise it connects directly, unrecorded.
       if (conditions.offline()) throw new ConnectException("failed to connect to " + host + " (port " + port + "): connect failed: ENETUNREACH (Network is unreachable)");
-      return tracked(f.createSocket(host, port));  // a factory that makes only connected sockets
+      if (mode == Mode.REPLAY) {
+        String msg = "network replay: " + f.getClass().getName() + " makes only connected sockets, so its connection to "
+            + host + ":" + port + " cannot be replayed";
+        log(msg);
+        unmatched.add(msg);
+        throw new ConnectException(msg);
+      }
+      if (mode == Mode.RECORD) log("network record: " + host + ":" + port + " connected directly by " + f.getClass().getName() + ": not recorded");
+      return tracked(f.createSocket(host, port));
     }
     connect(s, new InetSocketAddress(host, port), 0);
     if (f instanceof SSLSocketFactory ssl && !(s instanceof SSLSocket)) return createSocket(ssl, s, host, port, true);
@@ -379,13 +396,13 @@ public final class Net {
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
     String host = u.getHost();
-    // Offline, a host name fails its lookup (NetResolver) as on a device; a numeric address needs none, so it still
-    // goes to the engine, which refuses it.
-    boolean numeric = !host.isEmpty() && (Character.isDigit(host.charAt(0)) || host.startsWith("["));
-    if (!active || (conditions.offline() && !numeric) || !(proto.equals("http") || proto.equals("https"))
+    if (!active || !(proto.equals("http") || proto.equals("https"))
         || bypass(InetSocketAddress.createUnresolved(host, 1)) || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
+    // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
+    // (no lookup to fail) would otherwise still reach the server.
+    if (conditions.offline()) return OfflineConnection.of(u);
     URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
     if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
       https.setSSLSocketFactory(FakeTlsSocket.FACTORY);

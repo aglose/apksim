@@ -312,7 +312,29 @@ final class NetEngine {
       } finally {
         if (!client.isClosed()) client.setSoTimeout(0);
       }
-      return readLineBytes(cin);
+      return readStartLine();
+    }
+
+    /**
+     * A first line, read only while it can still be an HTTP request line or FakeTlsSocket's hello (a method of capital
+     * letters, a space, then text up to the line's end): a binary protocol that sends a few bytes and waits stops it
+     * at once, with those bytes, rather than waiting for a newline that never comes.
+     */
+    byte[] readStartLine() throws IOException {
+      ByteArrayOutputStream b = new ByteArrayOutputStream(128);
+      boolean method = true;
+      int c;
+      while ((c = cin.read()) != -1) {
+        b.write(c);
+        if (c == '\n') break;
+        if (method) {
+          if (c == ' ' && b.size() > 1) method = false;
+          else if (!(c >= 'A' && c <= 'Z') && c != '-' || b.size() > 32) break;  // cannot be a method
+        } else if (c < 0x20 && c != '\r' && c != '\t' || b.size() > 16 * 1024) {
+          break;
+        }
+      }
+      return b.size() == 0 ? null : b.toByteArray();
     }
 
     /** Without blocking: 1 if the server has sent something, -1 if it closed the connection, 0 if neither. */
@@ -561,11 +583,18 @@ final class NetEngine {
       streamRequestBody(req, OutputStream.nullOutputStream());
       Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.bodySha);
       Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
-      if (e == null) {
+      if (e == null || e.truncated) {
         missed.incrementAndGet();
-        String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
-        String msg = "network replay: no recorded response for " + req.method + " " + req.url
-            + (closest == null ? "" : "\n         closest: " + closest);
+        String msg;
+        if (e != null) {
+          // Its body was over the recording's 32 MB: answering 200 with what is not there would pass for a download.
+          msg = "network replay: the recorded response for " + req.method + " " + req.url
+              + " was too big to store (over 32 MB), so it cannot be replayed";
+        } else {
+          String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
+          msg = "network replay: no recorded response for " + req.method + " " + req.url
+              + (closest == null ? "" : "\n         closest: " + closest);
+        }
         Net.log(msg);
         Net.unmatched.add(msg.replace("\n         ", "; "));
         byte[] body = (msg + "\n").getBytes(StandardCharsets.UTF_8);
@@ -812,9 +841,9 @@ final class NetEngine {
       while (len > 0) {
         int kbps = down ? Net.conditions.downKbps() : Net.conditions.upKbps();
         int n = kbps <= 0 ? len : Math.min(len, Math.max(512, kbps * 16));  // ~1/8 s per slice
+        Conditions.pace(n, kbps);  // before: a body that fits in one slice is slowed too
         out.write(b, off, n);
         out.flush();
-        Conditions.pace(n, kbps);
         off += n;
         len -= n;
       }
@@ -869,9 +898,9 @@ final class NetEngine {
           int off = 0;
           while (off < c.data.length) {
             int n = kbps <= 0 ? c.data.length - off : Math.min(c.data.length - off, Math.max(512, kbps * 16));
+            Conditions.pace(n, kbps);
             out.write(c.data, off, n);
             out.flush();
-            Conditions.pace(n, kbps);
             off += n;
           }
         }

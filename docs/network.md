@@ -66,7 +66,7 @@ Extensions (HAR allows `_` fields):
   when recording.
 - `request._bodySha256`: informational; matching recomputes it from `postData.text`, so hand edits count.
 - `postData._encoding: base64` for a binary request body; `content._apksimTruncated` for a response body over 32 MB
-  (relayed, not stored); `postData._apksimTruncated` for a request body over 32 MB: only its `_bodySha256` is
+  (relayed, not stored; replaying it fails the request as unmatched, never an empty 200); `postData._apksimTruncated` for a request body over 32 MB: only its `_bodySha256` is
   stored, and replay matches it by that. Request bodies stream to the server as they arrive (hashed on the way), so
   an upload needs no more memory than without apksim. A gzip body is stored decoded only while it decodes to 32 MB or
   less; a bigger one is stored and replayed as sent.
@@ -74,7 +74,9 @@ Extensions (HAR allows `_` fields):
 Replayed responses carry `X-Apksim-Replay: recorded` and a fresh `Content-Length`; hop-by-hop headers and headers
 recorded as `REDACTED` are left out (a redacted `Set-Cookie` sets nothing).
 
-Redacted header values are written as `REDACTED`, and redacted request headers never take part in matching.
+Redacted header values are written as `REDACTED`, and redacted request headers never take part in matching: the
+file lists the names it redacted (`log._apksimRedacted`), and those count when replaying whatever that launch's
+`--network-redact` says.
 
 ## Matching
 
@@ -124,7 +126,9 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   twice: a kept-alive server connection that closed is replaced before the request goes out, and a failure after that
   ends the client's connection, whose own retry policy then decides. A body that ends before its Content-Length or
   last chunk is an error, never a recorded entry. It waits as long as the client stays idle (a connection opened
-  ahead of its first request); a server that speaks first is relayed unrecorded. Replaying: it answers from the file
+  ahead of its first request); a server that speaks first is relayed unrecorded, and a first line that cannot be HTTP
+  (a binary hello with no newline) is handed on at its first impossible byte: relayed recording, unmatched replaying.
+  Bandwidth pacing comes before each write, so even a body of a few bytes is slowed. Replaying: it answers from the file
   (a HEAD answer keeps the recorded Content-Length; a body stored still encoded, deflate or br, keeps its
   Content-Encoding). Conditions only (no file): it relays bytes and shapes them (latency
   as a delay line each way, bandwidth as pacing, loss as refused connections and resets; at most 1 MB queued each
@@ -136,6 +140,11 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
+- Offline, `URL.openConnection` returns a connection that fails when used (UnknownHostException for a name,
+  ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive sockets could otherwise still carry a
+  request. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
+  out after 100 ms). A socket factory that makes only connected sockets cannot go through the engine: replaying, its
+  connect fails and counts as unmatched; recording, it connects directly, unrecorded.
 - Offline also closes the engine's connections on both sides (a worker waiting on a silent server wakes), the
   connections the hooks made without the engine (before the layer was turned on by a
   `network` command, TLS-first sockets), and a numeric-address URL (no lookup to fail) still goes to the engine, which

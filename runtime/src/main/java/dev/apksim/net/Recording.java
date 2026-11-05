@@ -66,6 +66,11 @@ final class Recording {
   /** Each host's certificate chain as the server sent it (base64 DER), for replayed TLS sessions. */
   final Map<String, List<String>> certificates = new LinkedHashMap<>();
   private final Map<String, List<Entry>> byKey = new HashMap<>();
+  /**
+   * Header names redacted in the recording itself (its `_apksimRedacted`, and any request header stored as REDACTED):
+   * never matched, whatever this launch's --network-redact says, since their recorded values are gone.
+   */
+  final Set<String> recordedRedactions = new java.util.HashSet<>();
 
   Recording(Path path, Match match) {
     this.path = path;
@@ -86,7 +91,7 @@ final class Recording {
       TreeSet<String> hs = new TreeSet<>();
       for (String[] h : headers) {
         String n = h[0].toLowerCase(Locale.ROOT);
-        if (HOP.contains(n) || match.ignoreHeaders.contains(n) || match.redact.contains(n)) continue;
+        if (HOP.contains(n) || match.ignoreHeaders.contains(n) || match.redact.contains(n) || recordedRedactions.contains(n)) continue;
         hs.add(n + ":" + h[1].trim());
       }
       k.append(hs);
@@ -198,6 +203,7 @@ final class Recording {
     log.put("creator", Map.of("name", "apksim", "version", "1"));
     log.put("entries", list);
     if (!certificates.isEmpty()) log.put("_apksimCertificates", certificates);
+    log.put("_apksimRedacted", new ArrayList<>(new java.util.TreeSet<>(match.redact)));
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("log", log);
     Path tmp = path.resolveSibling(path.getFileName() + "." + ProcessHandle.current().pid() + ".tmp");
@@ -325,6 +331,10 @@ final class Recording {
     if (certs instanceof Map<?, ?> cm) {
       for (Map.Entry<?, ?> c : cm.entrySet()) r.certificates.put(c.getKey().toString().toLowerCase(Locale.ROOT), (List<String>) c.getValue());
     }
+    if (log.get("_apksimRedacted") instanceof List<?> names) {
+      for (Object n : names) r.recordedRedactions.add(String.valueOf(n).toLowerCase(Locale.ROOT));
+    }
+    List<Entry> loaded = new ArrayList<>();
     for (Object o : (List<Object>) log.get("entries")) {
       Map<String, Object> m = (Map<String, Object>) o;
       Map<String, Object> req = (Map<String, Object>) m.get("request");
@@ -354,10 +364,14 @@ final class Recording {
         e.respBody = "base64".equals(content.get("encoding")) ? Base64.getDecoder().decode(t) : t.getBytes(StandardCharsets.UTF_8);
         e.gzip = Boolean.TRUE.equals(content.get("_apksimGzip"));
       }
+      // A body that was too big to store: replaying it fails the request (NetEngine), never an empty success.
+      if (content != null) e.truncated = Boolean.TRUE.equals(content.get("_apksimTruncated"));
       Map<String, Object> timings = (Map<String, Object>) m.get("timings");
       if (timings != null) e.wait = Math.max(0, num(timings.get("wait")));
-      r.add(e);
+      for (String[] h : e.reqHeaders) if (REDACTED.equals(h[1])) r.recordedRedactions.add(h[0].toLowerCase(Locale.ROOT));
+      loaded.add(e);
     }
+    for (Entry e : loaded) r.add(e);  // indexed once every redacted name is known
     return r;
   }
 
