@@ -88,6 +88,25 @@ class RealTimeClockTest {
     seen.forEachIndexed { i, ms -> assertTrue("sleeper $i saw $ms ms pass", ms >= 990) }
   }
 
+  /** A time a worker reads and hands to the main thread is never ahead of what the main thread reads next. */
+  @Test
+  fun aWorkersTimeIsNeverAheadOfTheMainThreads() {
+    assumeTrue(!onApksim || InstrumentationRegistry.getArguments().getString("realtimeClock") == "true")
+    repeat(200) { i ->
+      var worker = 0L
+      var workerUptime = 0L
+      thread {
+        worker = SystemClock.elapsedRealtimeNanos()
+        workerUptime = SystemClock.uptimeMillis()
+      }.join()
+      val main = SystemClock.elapsedRealtimeNanos()
+      val mainUptime = SystemClock.uptimeMillis()
+      assertTrue("round $i: the main thread read $main ns after a worker read $worker", main >= worker)
+      assertTrue("round $i: the main thread read $mainUptime ms after a worker read $workerUptime", mainUptime >= workerUptime)
+      Thread.sleep(1)
+    }
+  }
+
   private fun bannerShown(): Boolean = try {
     onView(withText(BANNER)).check(matches(isDisplayed()))
     true

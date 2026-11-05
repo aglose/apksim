@@ -40,8 +40,9 @@ import org.robolectric.shadows.ShadowSystemClock;
  *   <li>SystemClock.sleep sleeps in real time until its own deadline (two threads sleeping a second each take a
  *       second, not two), and anything else that moves the clock ahead of real time (Robolectric's idleFor) waits for
  *       real time to catch up;
- *   <li>elapsedRealtime reads catch up as uptime reads do, and a read off the main thread reports at least real time
- *       without moving the clock (only the main thread moves it, so frames stay on that thread).
+ *   <li>elapsedRealtime reads catch up as uptime reads do, and a read off the main thread reports real time, in the
+ *       main thread's whole milliseconds, without moving the clock (only the main thread moves it, so frames stay on
+ *       that thread).
  * </ul>
  * Real time is counted from each test's setup, where Robolectric's clock starts again.
  */
@@ -110,12 +111,15 @@ final class RealTimeClock {
   }
 
   /**
-   * What a clock read reports: on the main thread the clock caught up to real time; elsewhere, without moving it, at
-   * least the real time since the test started (both clocks start a test together and advance together).
+   * What a clock read reports: on the main thread the clock, caught up to real time; elsewhere, without moving it, the
+   * real time since the test started (both clocks start a test together), in whole milliseconds as the main thread's
+   * catch-up moves it, so a time a worker hands to the main thread is never ahead of the main thread's own. Not the
+   * simulated clock when that is ahead: while idleFor waits for real time to catch up with it, a worker would see that
+   * future time and a real sleep of its own would seem to take none.
    */
   private static long readNanos(long simulated, long base) {
     if (!on || Thread.currentThread() == main) return simulated;
-    return Math.max(simulated, base + realElapsedNanos());
+    return base + realElapsedNanos() / 1_000_000L * 1_000_000L;
   }
 
   /** SystemClock.sleep: a real-time sleep to its own deadline, ignoring interrupts and keeping them, as Android's. */
