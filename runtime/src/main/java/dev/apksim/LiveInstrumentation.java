@@ -150,7 +150,7 @@ final class LiveInstrumentation {
   }
 
   /** The instrumentation APK's assets, as its own context would have them (the Android CLI reads its VERSION). */
-  private static AssetManager assets(java.nio.file.Path apk) throws Exception {
+  static AssetManager assets(java.nio.file.Path apk) throws Exception {
     AssetManager am = AssetManager.class.getDeclaredConstructor().newInstance();
     Method add = AssetManager.class.getDeclaredMethod("addAssetPath", String.class);
     add.setAccessible(true);
@@ -261,6 +261,18 @@ final class LiveInstrumentation {
     @Override
     public AssetManager getAssets() {
       return assets;
+    }
+
+    private android.content.res.Resources resources;
+
+    /** Resources over the package's own AssetManager: its strings and raw files, not the base context's app. */
+    @Override
+    public synchronized android.content.res.Resources getResources() {
+      if (resources == null) {
+        android.content.res.Resources base = getBaseContext().getResources();
+        resources = new android.content.res.Resources(assets, base.getDisplayMetrics(), base.getConfiguration());
+      }
+      return resources;
     }
 
     @Override

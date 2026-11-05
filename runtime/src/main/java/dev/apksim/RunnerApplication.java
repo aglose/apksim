@@ -33,6 +33,9 @@ public class RunnerApplication {
   /** Set while the probe calls newApplication: the Instrumentation shadow records the class instead of making it. */
   static volatile boolean recording;
 
+  /** Set while the probe's run lasts: its plain Application is not the test's, so install state is not set up for it. */
+  static volatile boolean probing;
+
   private static volatile String runnerClass;
   private static volatile String manifestApplication;
   private static volatile String recorded;
@@ -51,7 +54,13 @@ public class RunnerApplication {
     if (!Boolean.parseBoolean(System.getProperty("apksim.runnerApplication", "true"))) return;  // the manifest's, as before
     long t0 = System.nanoTime();
     runnerClass = instrumentation;
-    Result r = new JUnitCore().run(Request.aClass(RunnerApplication.class));
+    Result r;
+    probing = true;
+    try {
+      r = new JUnitCore().run(Request.aClass(RunnerApplication.class));
+    } finally {
+      probing = false;
+    }
     String manifest = manifestApplication;
     String ms = (System.nanoTime() - t0) / 1_000_000 + " ms";
     if (!r.wasSuccessful() || failure != null || recorded == null) {

@@ -149,7 +149,7 @@ class FailureBundleAfterTest {
   }
 }
 
-/** A class with its own runner (not SimRunner): its failures reach only the listener. Names with commas. */
+/** Parameterized: each parameter set runs as a SimRunner child (SimParameterized), captured in its body. Names with commas. */
 @RunWith(Parameterized::class)
 class FailureBundleParameterizedTest(private val a: Int, private val b: Int) {
   companion object {

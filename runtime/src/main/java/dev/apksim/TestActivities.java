@@ -108,6 +108,59 @@ public final class TestActivities {
     pumpFor(total > Long.MAX_VALUE - nanos ? Long.MAX_VALUE : total + nanos);
   }
 
+  /**
+   * LockSupport.parkNanos from app or test code (MethodTranslator). kotlinx.coroutines' runBlocking parks its thread
+   * this way between events, so a suite's polling helper, runBlocking { while (!done) delay(poll) } on the main
+   * thread, held it while the app's main-thread work (a Dispatchers.Main continuation, a postDelayed callback) waited
+   * behind it, and the poll timed out. As with sleep: in a test run on the main thread, outside a dispatch, the main
+   * queue runs, and the clock moves on by the real time the park took, as a device's would while its test thread
+   * waits. A park may return early, so this parks one short step and lets the caller check again.
+   */
+  public static void parkNanos(Object blocker, long nanos) {
+    if (nanos > 0 && pumpsWhileSleeping()) {
+      parkStep(nanos);
+      return;
+    }
+    java.util.concurrent.locks.LockSupport.parkNanos(blocker, nanos);
+  }
+
+  public static void parkNanos(long nanos) {
+    if (nanos > 0 && pumpsWhileSleeping()) {
+      parkStep(nanos);
+      return;
+    }
+    java.util.concurrent.locks.LockSupport.parkNanos(nanos);
+  }
+
+  /**
+   * Parked time not yet given to the clock: the looper moves it in whole milliseconds and drops the rest, so parks of
+   * under a millisecond each would never move it. Carried over between parks; reset between tests (beforeReset).
+   */
+  private static long parkCarryNanos;
+
+  private static void parkStep(long nanos) {
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    main.idle();
+    long start = System.nanoTime();
+    java.util.concurrent.locks.LockSupport.parkNanos(Math.min(nanos, 2_000_000L));
+    long elapsed = System.nanoTime() - start;
+    // With --realtime-clock the clock already follows real time (the next idle's clock read catches it up).
+    if (elapsed <= 0 || RealTimeClock.requested()) return;
+    long total = parkCarryNanos + elapsed;
+    long ms = total / 1_000_000L;
+    parkCarryNanos = total - ms * 1_000_000L;
+    if (ms > 0) main.idleFor(java.time.Duration.ofMillis(ms));
+  }
+
+  /** The test APK's own context in a test run (SimRunner.useTestApkContext); null elsewhere. */
+  static volatile Context testApkContext;
+
+  /** Instrumentation.getContext() from translated code: the test APK's context, as on a device. */
+  public static Context instrumentationContext(Instrumentation instrumentation) {
+    Context c = testApkContext;
+    return c != null && testRun() ? c : instrumentation.getContext();
+  }
+
   private static boolean pumpsWhileSleeping() {
     return testRun() && Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
   }
@@ -261,7 +314,56 @@ public final class TestActivities {
       java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
 
   /** Called by SimTestEnvironment before Robolectric resets the framework between two tests. */
+  private static volatile java.lang.ref.WeakReference<Object> composeIdling;
+  private static volatile java.lang.reflect.Method composeIdleNow;
+  private static volatile java.lang.reflect.Method loopUntilIdle;
+
+  /**
+   * A Compose test rule was set up in its Robolectric mode (MethodTranslator, at RobolectricIdlingStrategy's
+   * constructor): its idling resource, whose isIdleNow moves the rule's frame clock on a frame when something waits for
+   * one. On a device the rule registers that resource with Espresso, so every Espresso check waits for Compose to be
+   * idle and a Compose animation (an animated scroll to a section) runs to its end while a check polls for its result.
+   * In Robolectric mode only the rule's own calls move the clock, and the animation stood still.
+   */
+  public static void composeIdling(Object resource) {
+    composeIdling = new java.lang.ref.WeakReference<>(resource);
+  }
+
+  /**
+   * UiController.loopMainThreadUntilIdle from Espresso (MethodTranslator): Robolectric's, then, as Espresso on a device
+   * waits for the idling resources too, until the Compose rule's resource (composeIdling) is idle, for at most 2,000
+   * frames, with the main queue run between them.
+   */
+  public static void espressoLoopMainThreadUntilIdle(Object controller) throws Throwable {
+    java.lang.reflect.Method loop = loopUntilIdle;
+    if (loop == null || loop.getDeclaringClass() != controller.getClass()) {
+      loop = controller.getClass().getMethod("loopMainThreadUntilIdle");
+      loop.setAccessible(true);
+      loopUntilIdle = loop;
+    }
+    try {
+      loop.invoke(controller);
+      java.lang.ref.WeakReference<Object> ref = composeIdling;
+      Object resource = ref == null ? null : ref.get();
+      if (resource == null || !testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
+      java.lang.reflect.Method idleNow = composeIdleNow;
+      if (idleNow == null || idleNow.getDeclaringClass() != resource.getClass()) {
+        idleNow = resource.getClass().getMethod("isIdleNow");
+        idleNow.setAccessible(true);
+        composeIdleNow = idleNow;
+      }
+      for (int i = 0; i < 2000 && !(Boolean) idleNow.invoke(resource); i++) loop.invoke(controller);
+    } catch (java.lang.reflect.InvocationTargetException e) {
+      throw e.getCause();
+    }
+  }
+
   static void beforeReset() {
+    composeIdling = null;
+    parkCarryNanos = 0;
+    // Until the next test publishes its own (SimRunner.useTestApkContext, after its Application starts), calls fall
+    // back to the current instrumentation rather than a context over the previous test's Application.
+    testApkContext = null;
     try {
       Object si = Shadow.extract(ShadowInstrumentation.getInstrumentation());
       List<?> wrappers = ReflectionHelpers.callInstanceMethod(si, "getRegisteredReceivers");
@@ -324,6 +426,41 @@ public final class TestActivities {
   @Implements(Instrumentation.class)
   public static class ShadowSimInstrumentation extends ShadowInstrumentation {
     @org.robolectric.annotation.RealObject private Instrumentation self;
+
+    /** In a test run, what a device has before the app starts (InstallState), then the app's onCreate. */
+    @Implementation
+    protected void callApplicationOnCreate(android.app.Application app) {
+      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
+      if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
+      try {
+        java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
+            "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
+        m.setAccessible(true);
+        m.invoke(self, app);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        if (e.getCause() instanceof RuntimeException r) throw r;
+        if (e.getCause() instanceof Error r) throw r;
+        throw new IllegalStateException(e.getCause());
+      } catch (ReflectiveOperationException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    /*
+     * On a device bindService returns false, and never calls back, when no installed service matches the intent.
+     * Robolectric returns true and calls onServiceConnected(null, null), which a Kotlin connection (non-null
+     * parameters) throws on: one app's bind to a service in a companion app that isn't installed failed every test.
+     * Other apps do not exist here, so a bind that BoundServices does not take (not one of the app's own services) and
+     * that no installed service resolves is a bind to nothing; what a test set up through ShadowApplication stays
+     * Robolectric's.
+     */
+    private static boolean resolves(Intent intent) {
+      if (!testRun()) return true;
+      Context app = org.robolectric.RuntimeEnvironment.getApplication();
+      if (app.getPackageManager().resolveService(intent, 0) != null) return true;
+      System.err.println("[apksim] bindService: no installed service matches " + intent + "; false, as on a device");
+      return false;
+    }
 
     /** An instrumentation started over adb (LiveInstrumentation) reports to that `am instrument`, not a watcher. */
     @Implementation
@@ -395,12 +532,14 @@ public final class TestActivities {
     @Override
     protected boolean bindService(Intent intent, android.content.ServiceConnection connection, int flags) {
       if (bindHere(intent, flags, null, connection)) return true;
+      if (!setUpByTest(intent) && !resolves(intent)) return false;
       return super.bindService(intent, connection, flags);
     }
 
     @Override
     protected boolean bindService(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
       if (bindHere(intent, flags, executor, connection)) return true;
+      if (!setUpByTest(intent) && !resolves(intent)) return false;
       return super.bindService(intent, flags, executor, connection);
     }
 
@@ -416,16 +555,18 @@ public final class TestActivities {
       bound.remove(connection);
     }
 
-    private boolean bindHere(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
-      // What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents,
-      // a bind that throws) stays Robolectric's.
+    /** What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents, a bind that throws). */
+    private boolean setUpByTest(Intent intent) {
       ServiceConnectionDataWrapper data = getServiceConnectionDataWrapper(intent);
       List<android.content.ComponentName> unbindable = ReflectionHelpers.getField(this, "unbindableComponents");
-      if (data.componentNameForBindService != null || data.binderForBindService != null
+      return data.componentNameForBindService != null || data.binderForBindService != null
           || ReflectionHelpers.getField(this, "exceptionForBindService") != null
-          || getUnbindableActions().contains(intent.getAction()) || unbindable.contains(intent.getComponent())) {
-        return false;
-      }
+          || getUnbindableActions().contains(intent.getAction()) || unbindable.contains(intent.getComponent());
+    }
+
+    private boolean bindHere(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
+      // What a test set up through ShadowApplication stays Robolectric's.
+      if (setUpByTest(intent)) return false;
       if (!BoundServices.of(RuntimeEnvironment.getApplication()).bind(intent, flags, executor, connection)) return false;
       List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
       List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
@@ -446,20 +587,81 @@ public final class TestActivities {
       return r;
     }
 
-    /** An activity that is already running and whose launch mode takes the intent itself. */
+    /**
+   * --start-activities: a start of one of the app's activities that no running one takes (a new instance) launches it,
+   * as ActivityThread does: the activity on top is paused, the new one created, started and resumed, then the one
+   * below stopped (unless it is finishing, which finish() already ends). Robolectric only records such a start
+   * (getNextStartedActivity), so a suite whose flow goes through a second activity (it starts one, and that one does the
+   * next step) waited for a step that never came. Off by default: suites written for Robolectric check the recorded
+   * start instead.
+   */
+  private static void launch(Intent intent, ActivityInfo info, List<Activity> running) {
+    Context app = RuntimeEnvironment.getApplication();
+    try {
+      // An activity-alias's name is the alias; the class to make is its targetActivity (the intent keeps the alias).
+      String className = info.targetActivity != null ? info.targetActivity : info.name;
+      Class<? extends Activity> cls = Class.forName(className, true, app.getClassLoader()).asSubclass(Activity.class);
+      Activity top = running.isEmpty() ? null : running.get(running.size() - 1);
+      ActivityController<?> below = top == null ? null : controller(top);
+      if (below != null && top.isResumed()) below.pause();
+      Intent start = new Intent(intent);
+      if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
+      org.robolectric.Robolectric.buildActivity(cls, start).setup();
+      if (below != null && !top.isFinishing() && !top.isDestroyed()) below.stop();
+    } catch (ReflectiveOperationException | LinkageError e) {
+      // No such class: on a device the start fails in the app's own call.
+      throw new IllegalStateException("starting " + info.name + ": " + e, e);
+    }
+    // An exception from the new activity's onCreate/onStart/onResume propagates to the app's startActivity call, as a
+    // device's crash would end the test; a clear-task start then stops before destroying the old task (below).
+  }
+
+  /**
+   * NEW_TASK | CLEAR_TASK, as an app restarts itself (a profile switch): on a device the task's activities are
+   * finished and a new instance of the target comes up, whatever its launch mode, so its onCreate runs again. Here: the
+   * new one is launched over the top one (paused), then every earlier one is finished and stopped and destroyed.
+   */
+  private static void clearTaskAndLaunch(Intent intent, ActivityInfo info, List<Activity> running) {
+    launch(intent, info, running);
+    for (int i = running.size() - 1; i >= 0; i--) {
+      Activity old = running.get(i);
+      ActivityController<?> c = controller(old);
+      if (c == null || old.isDestroyed()) continue;
+      ReflectionHelpers.setField(Activity.class, old, "mFinished", true);
+      try {
+        if (old.isResumed()) c.pause();
+        if (!(boolean) ReflectionHelpers.getField(old, "mStopped")) c.stop();
+        c.destroy();
+      } catch (RuntimeException e) {
+        System.err.println("[apksim] clearing " + old.getClass().getName() + ": " + e);
+      }
+    }
+  }
+
+  /** An activity that is already running and whose launch mode takes the intent itself. */
     private static void deliverToRunning(Intent intent) {
       Context app = RuntimeEnvironment.getApplication();
       android.content.pm.ResolveInfo ri = app.getPackageManager().resolveActivity(intent, 0);
       ActivityInfo info = ri == null ? null : ri.activityInfo;
       if (info == null || !info.packageName.equals(app.getPackageName())) return;
       List<Activity> running = withWindows();
+      int clearTask = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK;
+      if (Boolean.getBoolean("apksim.startActivities") && (intent.getFlags() & clearTask) == clearTask) {
+        clearTaskAndLaunch(intent, info, running);
+        return;
+      }
       Activity existing = null;
-      for (Activity a : running) if (a.getClass().getName().equals(info.name)) existing = a;
-      if (existing == null) return;
-      boolean onTop = running.get(running.size() - 1) == existing;
-      boolean reuse = info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
-          || ((info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0) && onTop);
-      if (!reuse) return;
+      // Started through an activity-alias, the running instance's class is the alias's targetActivity.
+      String className = info.targetActivity != null ? info.targetActivity : info.name;
+      for (Activity a : running) if (a.getClass().getName().equals(className)) existing = a;
+      boolean onTop = existing != null && running.get(running.size() - 1) == existing;
+      boolean reuse = existing != null && (info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK
+          || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
+          || ((info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0) && onTop));
+      if (!reuse) {
+        if (Boolean.getBoolean("apksim.startActivities")) launch(intent, info, running);
+        return;
+      }
       ActivityController<?> c = controller(existing);
       if (c == null) return;
       // As ActivityThread: a resumed activity is paused around onNewIntent; a stopped one restarts first. The start

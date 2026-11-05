@@ -282,7 +282,7 @@ in `RawListener.testFailure` finds no windows. Hence:
    Compose's timeouts, the Timeout watchdog's interrupt) is captured there, on the main thread, before `@After` and
    rules run, then rethrown unchanged. An AssumptionViolatedException is not a failure and is not captured.
 2. **Listener.** `RawListener.testFailure` covers everything else: failures in `@Before`, `@After` and rules, classes
-   run by their own `@RunWith` (Parameterized, plain JUnit4) that do not go through SimRunner, and initializationError.
+   run by their own `@RunWith` (plain JUnit4; Parameterized runs as SimRunner children since `SimParameterized`) that do not go through SimRunner, and initializationError.
    It captures whatever is still there, and nothing when (1) already wrote this test's bundle.
 3. **Watchdog.** When the `FailOnTimeout` watchdog is about to end the process because a test ignores interrupts, it
    first writes `failure.txt`, `threads.txt` and `logcat.txt` from its own thread. The main thread is held, so there

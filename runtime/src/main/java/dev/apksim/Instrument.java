@@ -59,6 +59,9 @@ final class Instrument {
     }
     Map<String, String> args = arguments();
     AppClasses tests = AppClasses.installTest(testApk, app);
+    // For each test's InstrumentationRegistry.getInstrumentation().getContext(): the test APK's own (SimRunner).
+    System.setProperty("apksim.testApk", testApk.toAbsolutePath().toString());
+    System.setProperty("apksim.testPackage", testPackage(testApk));
     // @RunWith(AndroidJUnit4.class) hands each class to the runner this names (it would pick Robolectric's own).
     System.setProperty("android.junit.runner", SimRunner.class.getName());
     // What Host's annotations ask for, for test classes that carry none.
@@ -81,7 +84,21 @@ final class Instrument {
     List<Runner> runners = new ArrayList<>();
     for (Class<?> c : classes) {
       // A class without @RunWith gets what AndroidJUnitRunner would give it, an Android runner: here, Robolectric's.
-      runners.add(c.isAnnotationPresent(RunWith.class) ? Request.aClass(c).getRunner() : new SimRunner(c));
+      // JUnit's Parameterized would run outside the test environment: each parameter set runs as a SimRunner child.
+      RunWith with = c.getAnnotation(RunWith.class);
+      // (An @Ignore'd class stays on JUnit's path, which reports it ignored without building it or its parameters.)
+      if (with != null && with.value() == org.junit.runners.Parameterized.class && !c.isAnnotationPresent(org.junit.Ignore.class)) {
+        try {
+          runners.add(new SimParameterized(c));
+        } catch (org.junit.internal.AssumptionViolatedException a) {
+          // An assumption in @Parameters skips the class, as JUnit's Parameterized reports it, rather than failing it.
+          runners.add(SimParameterized.assumptionFailed(c, a));
+        } catch (Throwable t) {
+          runners.add(new org.junit.internal.runners.ErrorReportingRunner(c, t));
+        }
+        continue;
+      }
+      runners.add(with != null ? Request.aClass(c).getRunner() : new SimRunner(c));
     }
     Request request = Request.runner(new org.junit.runners.Suite((Class<?>) null, runners) {});
     Filter filter = methodFilter(args.get("class"), args.get("notClass"));
@@ -121,6 +138,16 @@ final class Instrument {
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
     return r.wasSuccessful() && raw.networkFailures.isEmpty() ? 0 : 1;
+  }
+
+  /** The test APK's own package. */
+  private static String testPackage(Path testApk) throws Exception {
+    String xml;
+    try (ZipFile zip = new ZipFile(testApk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
+      xml = Axml.decode(in.readAllBytes());
+    }
+    return DocumentBuilderFactory.newInstance().newDocumentBuilder()
+        .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8))).getDocumentElement().getAttribute("package");
   }
 
   /** The test APK's {@code <instrumentation>}: its class and the package it targets. */

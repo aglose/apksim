@@ -82,7 +82,8 @@ def main():
         (PKG + "FailureBundleTest", "c_failsWithDialogOpen"): ("test body", True, "Bundle dialog"),
         (PKG + "FailureBundleEspressoTest", "noMatchingView"): ("Espresso failure handler", True, "FAB clicks: 0"),
         (PKG + "FailureBundleAfterTest", "afterFails"): ("listener", False, None),
-        (PKG + "FailureBundleParameterizedTest", "sameNumbers[1: 1, 2]"): ("listener", False, None),
+        # Parameterized runs inside the test environment, as a SimRunner child: captured in its body too
+        (PKG + "FailureBundleParameterizedTest", "sameNumbers[1: 1, 2]"): ("test body", False, None),
     }
     markers = {"b_composeAssertionFails": "b_composeAssertionFails", "c_failsWithDialogOpen": "c_failsWithDialogOpen",
                "noMatchingView": "noMatchingView", "afterFails": "afterFails", "sameNumbers[1: 1, 2]": "sameNumbers 1 2"}
@@ -149,7 +150,7 @@ def main():
           and os.path.exists(os.path.join(d, "windows.txt")), "the bundle says failed, with the @After failure, and keeps the body's capture")
     d = os.path.join(out, "all", folder(PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"))
     f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
-    check("status: passed" in f, "a passing test of a class with its own runner gets a bundle that says passed")
+    check("status: passed" in f, "a passing Parameterized case gets a bundle that says passed")
     d = os.path.join(out, "all", folder(PKG + "FailureBundleExpectedTest", "expectedThrows"))
     f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
     check("status: passed" in f, "@Test(expected) with --bundles-on all ends with a bundle that says passed")

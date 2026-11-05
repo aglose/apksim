@@ -2562,6 +2562,19 @@ final class MethodTranslator implements Opcodes {
       // a Robolectric test on the main thread would run it at once. Let the queue go first (dev.apksim.TestActivities).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "beforeUiThreadAction", "()V", false);
     }
+    if (opcode == INVOKESPECIAL && "androidx/compose/ui/test/RobolectricIdlingStrategy".equals(ownerName) && "<init>".equals(m.name())
+        && "(Landroidx/compose/ui/test/ComposeRootRegistry;Landroidx/compose/ui/test/ComposeIdlingResource;)V".equals(m.descriptor())) {
+      // A Compose test rule in Robolectric mode: note its idling resource, which Espresso's waits then wait for, as on a
+      // device (dev.apksim.TestActivities.composeIdling). The resource is on top of the stack, the strategy below it.
+      mv.visitInsn(DUP);
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "composeIdling", "(Ljava/lang/Object;)V", false);
+    }
+    if ((opcode == INVOKEINTERFACE || opcode == INVOKEVIRTUAL) && "loopMainThreadUntilIdle".equals(m.name())
+        && "()V".equals(m.descriptor()) && ownerName.startsWith("androidx/test/espresso/")) {
+      // Espresso's wait for the main thread: on a device it also waits for Compose (dev.apksim.TestActivities).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "espressoLoopMainThreadUntilIdle", "(Ljava/lang/Object;)V", false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/lang/Thread".equals(ownerName) && "sleep".equals(m.name())
         && ("(J)V".equals(m.descriptor()) || "(JI)V".equals(m.descriptor()))) {
       // A test sleeping on the main thread lets the main queue run meanwhile, as a device's own main thread would.
@@ -2573,6 +2586,31 @@ final class MethodTranslator implements Opcodes {
         && "androidx/compose/foundation/text/input/internal/CursorAnimationState".equals(ownerName)) {
       // Compose's caret blinks unless made with animate=false; --snapshot holds it (dev.apksim.Snapshot).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Snapshot", "cursorBlink", "(Z)Z", false);
+    }
+    if (opcode == INVOKEVIRTUAL && "android/app/Instrumentation".equals(ownerName) && "getContext".equals(m.name())
+        && "()Landroid/content/Context;".equals(m.descriptor())) {
+      // The test APK's own context, as on a device (Robolectric's instrumentation returns the app's).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "instrumentationContext",
+          "(Landroid/app/Instrumentation;)Landroid/content/Context;", false);
+      return;
+    }
+    if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())
+        && ("(Ljava/lang/Object;J)V".equals(m.descriptor()) || "(J)V".equals(m.descriptor()))) {
+      // runBlocking's event loop parks here; on the main thread in a test run, the main queue runs meanwhile.
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "parkNanos", m.descriptor(), false);
+      return;
+    }
+    if (opcode == INVOKESTATIC && "java/security/KeyStore".equals(ownerName) && "getDefaultType".equals(m.name())) {
+      // Android's default keystore type, BKS, with Bouncy Castle to read it (KeyStores).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/KeyStores", "getDefaultType", "()Ljava/lang/String;", false);
+      return;
+    }
+    if (opcode == INVOKEVIRTUAL && "javax/crypto/Cipher".equals(ownerName) && "init".equals(m.name())
+        && ("(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V".equals(m.descriptor())
+            || "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V".equals(m.descriptor()))) {
+      // AES/GCM set up again with the same key and IV, which Android's provider allows and the JDK's refuses (Ciphers).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Ciphers", "init", "(Ljavax/crypto/Cipher;" + m.descriptor().substring(1), false);
+      return;
     }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);

@@ -114,6 +114,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --bundles-on) EXTRA+=("-Dapksim.bundles.on=$2"); shift 2 ;;
     --bundles-max) EXTRA+=("-Dapksim.bundles.max=$2"); shift 2 ;;
     --bundles-redact) EXTRA+=("-Dapksim.bundles.redact.${REDACT_N:-0}=$2"); REDACT_N=$((${REDACT_N:-0} + 1)); shift 2 ;;
+    --start-activities) EXTRA+=("-Dapksim.startActivities=true"); shift ;;
     --no-network) NO_NET=1; shift ;;
     # Record and replay the app's HTTP(S), and network conditions (docs/network.md).
     --network)

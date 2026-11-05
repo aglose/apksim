@@ -45,7 +45,7 @@ import org.robolectric.util.ReflectionHelpers;
 import org.robolectric.util.inject.Injector;
 
 /** Points Robolectric's framework bootstrap at the unmodified APK instead of a test project. */
-public final class SimRunner extends RobolectricTestRunner {
+public class SimRunner extends RobolectricTestRunner {
   /**
    * One injector, so one SandboxManager and one sandbox, for every class run here. The framework is loaded once per
    * process ({@link FlatLoader}), so a second sandbox would bring a second "main thread" to a main Looper already
@@ -88,10 +88,15 @@ public final class SimRunner extends RobolectricTestRunner {
     return new HelperTestRunner(bootstrapped) {
       @Override
       protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
-        org.junit.Test t = method.getAnnotation(org.junit.Test.class);
-        return Bundles.wrap(super.methodInvoker(method, test), t == null ? org.junit.Test.None.class : t.expected());
+        return bundled(method, super.methodInvoker(method, test));
       }
     };
+  }
+
+  /** A test method's statement with its failure bundle hook (Bundles.wrap); every helper runner here uses it. */
+  static org.junit.runners.model.Statement bundled(FrameworkMethod method, org.junit.runners.model.Statement s) {
+    org.junit.Test t = method.getAnnotation(org.junit.Test.class);
+    return Bundles.wrap(s, t == null ? org.junit.Test.None.class : t.expected());
   }
 
   /** Robolectric's interceptors, with the framework's wall clock replaced by the real one ({@link WallClock}). */
@@ -266,10 +271,33 @@ public final class SimRunner extends RobolectricTestRunner {
       }
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
       initJniConstants();
+      useTestApkContext();
       try {
         Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
       } catch (Exception e) {
         System.err.println("[apksim] gesture thresholds: " + e);
+      }
+    }
+
+    private static android.content.res.AssetManager testAssets;
+
+    /**
+     * InstrumentationRegistry.getInstrumentation().getContext() is the test APK's own on a device: its package and its
+     * assets. Robolectric's is the app's, so a suite reading its JSON fixtures from the test APK's assets got
+     * FileNotFoundException. A context over the test APK (as LiveInstrumentation gives an adb-started one), which test
+     * code's Instrumentation.getContext() returns (MethodTranslator; RoboMonitoringInstrumentation's returns the app).
+     */
+    private static void useTestApkContext() {
+      String apk = System.getProperty("apksim.testApk");
+      if (apk == null) return;
+      try {
+        if (testAssets == null) testAssets = LiveInstrumentation.assets(java.nio.file.Path.of(apk));
+        android.app.Application app = RuntimeEnvironment.getApplication();
+        android.content.Context ctx = new LiveInstrumentation.PackageContext(app, System.getProperty("apksim.testPackage"),
+            app.getClassLoader(), testAssets);
+        TestActivities.testApkContext = ctx;
+      } catch (Exception e) {
+        System.err.println("[apksim] test APK context: " + e);
       }
     }
 
@@ -339,7 +367,7 @@ public final class SimRunner extends RobolectricTestRunner {
   }
 
   private static Class<?>[] baseShadows() {
-    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class};
+    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class};
   }
 
   @Override

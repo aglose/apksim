@@ -32,6 +32,8 @@ final class HostNetworks {
     shadow.clearAllNetworks();
     int netId = 100;
     NetworkInfo active = null;
+    NetworkCapabilities activeCaps = null;
+    LinkProperties activeLinks = null;
     for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
       if (!ni.isUp() || ni.isLoopback() || !hasIpv4(ni)) continue;
       boolean tunnel = ni.getName().startsWith("utun") || ni.isPointToPoint();
@@ -62,10 +64,23 @@ final class HostNetworks {
         lp.addLinkAddress(new LinkAddress(a.getAddress(), a.getNetworkPrefixLength()));
       }
       shadow.setLinkProperties(network, lp);
-      if (active == null && !tunnel) active = info;
+      if (active == null && !tunnel) {
+        active = info;
+        activeCaps = caps;
+        activeLinks = lp;
+      }
       if (Boolean.getBoolean("apksim.verbose")) System.err.println("[apksim] network " + ni.getName() + " as " + info.getTypeName());
     }
-    if (active != null) shadow.setActiveNetworkInfo(active);
+    if (active != null) {
+      shadow.setActiveNetworkInfo(active);
+      // Robolectric's getActiveNetwork() answers with its own Network for the active type, not the one added above:
+      // give that one the same capabilities (INTERNET, VALIDATED), as apps ask getNetworkCapabilities(activeNetwork).
+      Network reported = cm.getActiveNetwork();
+      if (reported != null) {
+        shadow.setNetworkCapabilities(reported, activeCaps);
+        shadow.setLinkProperties(reported, activeLinks);
+      }
+    }
   }
 
   private static boolean hasIpv4(NetworkInterface ni) {
