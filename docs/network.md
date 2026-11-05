@@ -16,7 +16,7 @@ remote route answered the same way every run, and its offline and slow paths tes
 --network-redact NAMES       comma-separated header names to redact as well (default: Authorization,
                              Proxy-Authorization, Cookie, Set-Cookie); "-Name" takes one off the default list
 --network-match FIELDS       what a replayed request must match: method,url,body (default), plus headers
---network-ignore-query NAMES query parameters left out of the match (cache busters, timestamps)
+--network-ignore-query NAMES query parameters left out of the match (cache busters, timestamps); case-sensitive
 --network-ignore-header NAMES request headers left out of the match when it includes headers
 --network-unmatched POLICY   what an unmatched replay request gets: fail (default: 599 response, logged, and in a
                              test run the test fails) or respond (599 only)
@@ -75,7 +75,8 @@ Redacted header values are written as `REDACTED`, and redacted request headers n
 
 ## Matching
 
-A request's key is its method, its URL with the ignored query parameters removed and the rest sorted, the SHA-256 of
+A request's key is its method, its URL with the ignored query parameters removed and the rest sorted (repeats kept:
+`?id=1&id=1` is not `?id=1`), the SHA-256 of
 its body, and (with `--network-match ...,headers`) its request headers apart from hop-by-hop ones, redacted ones and
 ignored ones. Entries with the same key answer in recorded order; the last repeats once they run out (polling).
 
@@ -115,14 +116,26 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
     engine as an HTTP proxy (`CONNECT` for https, with `FakeTlsSocket` as its `SSLSocketFactory` when recording or
     replaying). The JDK's HttpURLConnection is not app code, so its sockets are not rewritten: this is its hook.
 - The engine (`NetEngine`) parses HTTP/1.1 in both directions. Recording: it opens the real connection (real TLS,
-  with the JDK's trust store plus `--network-trust`), relays the exchange byte for byte while capturing it, and adds
-  an entry. Replaying: it answers from the file. Conditions only (no file): it relays bytes and shapes them (latency
-  as a delay line each way, bandwidth as pacing, loss as refused connections and resets); TLS stays end to end.
+  with the JDK's trust store plus `--network-trust`, for the name the client's TLS gave, not the address it
+  connected to), relays the exchange byte for byte while capturing it, and adds an entry. It never sends a request
+  twice: a kept-alive server connection that closed is replaced before the request goes out, and a failure after that
+  ends the client's connection, whose own retry policy then decides. A body that ends before its Content-Length or
+  last chunk is an error, never a recorded entry. It waits as long as the client stays idle (a connection opened
+  ahead of its first request); a server that speaks first is relayed unrecorded. Replaying: it answers from the file
+  (a HEAD answer keeps the recorded Content-Length; a body stored still encoded, deflate or br, keeps its
+  Content-Encoding). Conditions only (no file): it relays bytes and shapes them (latency
+  as a delay line each way, bandwidth as pacing, loss as refused connections and resets; at most 1 MB queued each
+  way, so a slow profile pushes back on the server instead of filling the heap); TLS stays end to end.
 - DNS: a JDK `InetAddressResolverProvider` (`NetResolver`, META-INF/services), so every Java lookup, the JDK's own
   included, sees offline (UnknownHostException, as Android says "Unable to resolve host"), and a replay never needs
   the recorded hosts to resolve (they get a placeholder address in 198.18.0.0/15, the benchmarking range).
-- Natives (`native/bionic_net.c`, Mac): offline only. `connect()` to a non-loopback address fails with ENETUNREACH
-  and `getaddrinfo` of a non-local name with EAI_NONAME. libwebrtc and Cronet's native stack are not recorded.
+- Natives (`native/bionic_net.c`, Mac): offline only. `connect()` to a non-loopback address fails with ENETUNREACH,
+  as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
+  datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
+  connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
+- Offline also closes the connections the hooks made without the engine (before the layer was turned on by a
+  `network` command, TLS-first sockets), and a numeric-address URL (no lookup to fail) still goes to the engine, which
+  refuses it.
 - ConnectivityManager (`NetConnectivity`, over Robolectric's shadow): offline removes the networks and tells
   callbacks of the default one. Two fixes it needed in `HostNetworks`: Robolectric finds the active network by its
   type, so the default network now has netId TYPE_WIFI (apps were handed Robolectric's stand-in, without
@@ -134,8 +147,8 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
 ## Clients
 
 - OkHttp 3, 4, 5, minified or not, and anything on it (Retrofit, Ktor's OkHttp engine, Coil, Glide's OkHttp
-  integration): recorded and replayed. WebSockets (an upgrade) are relayed while recording but not recorded; replaying
-  one is an unmatched request.
+  integration): recorded and replayed. WebSockets (an upgrade) are relayed while recording but not recorded (the 101
+  is left out of the file too); replaying one is an unmatched request.
 - `HttpURLConnection` / `HttpsURLConnection`, Ktor's Android engine, Volley's HurlStack, `URL.readText()`: recorded and
   replayed.
 - Ktor CIO: uses NIO `SocketChannel` and its own TLS; not hooked (conditions: offline DNS only).

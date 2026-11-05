@@ -99,12 +99,14 @@ final class Recording {
     b.append(u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath());
     String q = u.getRawQuery();
     if (q != null && !q.isEmpty()) {
-      TreeSet<String> params = new TreeSet<>();
+      // Sorted, but repeats kept: ?id=1&id=1 is not ?id=1.
+      List<String> params = new ArrayList<>();
       for (String p : q.split("&")) {
         String name = p.contains("=") ? p.substring(0, p.indexOf('=')) : p;
         if (ignoreQuery.contains(URLDecoder.decode(name, StandardCharsets.UTF_8))) continue;
         params.add(p);
       }
+      java.util.Collections.sort(params);
       if (!params.isEmpty()) b.append('?').append(String.join("&", params));
     }
     return b.toString();

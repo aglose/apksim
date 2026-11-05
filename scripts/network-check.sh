@@ -16,10 +16,11 @@ mkdir -p "$OUT/fixture"
 python3 "$OUT/network-fixture.py" "$OUT/fixture" --cert-only
 drive() { python3 "$ROOT/scripts/drive.py" "$PORT" "$@"; }
 FIXTURE_PID=""
+LAUNCHED=""  # an instance this script started is on PORT: only then does cleanup send it quit
 cleanup() {
   if [[ -n "$FIXTURE_PID" ]]; then kill "$FIXTURE_PID" 2>/dev/null || true; fi
   if [[ -n "$IMAGE" ]]; then docker logs "$NAME" >> "$OUT/container.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true; fi
-  drive quit >/dev/null 2>&1 || true
+  if [[ -n "$LAUNCHED" ]]; then drive quit >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
@@ -59,6 +60,11 @@ expect() {  # expect WHAT ACTUAL PATTERN
 # start LOG [fixture] -- APKSIM_ARGS...: the app (and the fixture), then the network screen.
 start() {
   local log="$1" fixture="$2"; shift 3
+  # Another instance on the port would take this script's commands (and its quit): refuse to share it.
+  if drive ping 2>/dev/null | grep -q pong; then
+    echo "port $PORT already has an apksim instance on it; set NETCHECK_PORT to a free one" >&2
+    exit 1
+  fi
   if [[ -z "$IMAGE" ]]; then
     if [[ -n "$fixture" ]]; then
       python3 "$OUT/network-fixture.py" "$OUT/fixture" > "$OUT/fixture.log" 2>&1 &
@@ -80,12 +86,14 @@ start() {
     docker run -d --name "$NAME" --platform linux/amd64 -p "127.0.0.1:$PORT:$PORT" -v "$OUT:/work" --entrypoint bash "$IMAGE" \
       -c "${pre}exec apksim --control $PORT --control-bind 0.0.0.0 ${args[*]} app.apk > /work/$log 2>&1" >/dev/null
   fi
+  LAUNCHED=1
   for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
   drive ping | grep -q pong || { echo "the app never answered on the control channel" >&2; tail -20 "$OUT/$log" >&2; exit 1; }
   drive 'wait 1500' 'open apksim://network' 'wait 2500' >/dev/null
 }
 stop() {
   drive quit >/dev/null 2>&1 || true
+  LAUNCHED=""
   if [[ -n "$IMAGE" ]]; then docker wait "$NAME" >/dev/null 2>&1 || true; docker logs "$NAME" >> "$OUT/container.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
   else for _ in $(seq 1 20); do drive ping >/dev/null 2>&1 || break; sleep 0.5; done; fi
   if [[ -n "$FIXTURE_PID" ]]; then kill "$FIXTURE_PID" 2>/dev/null || true; wait "$FIXTURE_PID" 2>/dev/null || true; FIXTURE_PID=""; fi

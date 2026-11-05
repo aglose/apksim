@@ -61,6 +61,11 @@ public final class Net {
   static Path trust;
   /** Sockets this redirected to the engine, which FakeTlsSocket may wrap. */
   private static final Set<Socket> redirected = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+  /**
+   * Remote connections the hooks made directly (before the layer was on, or TLS-first sockets), which going offline
+   * must drop as well: the engine never saw them.
+   */
+  private static final Set<Socket> direct = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
   /** Unmatched replay requests since launch or the current test started (docs/network.md "Matching"). */
   static final List<String> unmatched = new CopyOnWriteArrayList<>();
   private static final List<Consumer<Boolean>> offlineListeners = new CopyOnWriteArrayList<>();
@@ -84,8 +89,9 @@ public final class Net {
         String to = h.substring(eq + 1);
         int colon = to.lastIndexOf(':');
         boolean hasPort = colon > 0 && !to.endsWith("]") && to.indexOf(':') == colon;
+        // Port 0: keep the port the app connects to (NetEngine.target).
         hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(hasPort ? to.substring(0, colon) : to,
-            hasPort ? Integer.parseInt(to.substring(colon + 1)) : -1));
+            hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
       }
       String t = System.getProperty("apksim.networkTrust");
       if (t != null) trust = Path.of(t);
@@ -99,7 +105,7 @@ public final class Net {
         if (colon < 0) throw new IllegalArgumentException("--network takes record FILE or replay FILE");
         Path file = Path.of(spec.substring(colon + 1));
         Set<String> fields = list(System.getProperty("apksim.networkMatch", "method,url,body"));
-        Recording.Match match = new Recording.Match(fields, list(System.getProperty("apksim.networkIgnoreQuery")),
+        Recording.Match match = new Recording.Match(fields, names(System.getProperty("apksim.networkIgnoreQuery")),
             list(System.getProperty("apksim.networkIgnoreHeader")), redact);
         switch (m) {
           case "record" -> {
@@ -122,11 +128,19 @@ public final class Net {
     }
   }
 
+  /** A comma-separated list, lowercased: header names, hosts, match fields. */
   private static Set<String> list(String s) {
+    Set<String> out = new java.util.LinkedHashSet<>();
+    for (String p : names(s)) out.add(p.toLowerCase(Locale.ROOT));
+    return out;
+  }
+
+  /** A comma-separated list as given: query parameter names, which are case-sensitive. */
+  private static Set<String> names(String s) {
     Set<String> out = new java.util.LinkedHashSet<>();
     if (s == null) return out;
     for (String p : s.split(",")) {
-      if (!p.isBlank()) out.add(p.trim().toLowerCase(Locale.ROOT));
+      if (!p.isBlank()) out.add(p.trim());
     }
     return out;
   }
@@ -159,7 +173,21 @@ public final class Net {
   static void setConditions(Conditions c) {
     boolean was = conditions.offline();
     conditions = c;
-    if (c.offline() && engine != null) engine.closeAll();
+    if (c.offline()) {
+      if (engine != null) engine.closeAll();
+      List<Socket> drop;
+      synchronized (direct) {
+        drop = new ArrayList<>(direct);
+        direct.clear();
+      }
+      for (Socket s : drop) {
+        try {
+          s.close();
+        } catch (IOException ignored) {
+          // closing anyway
+        }
+      }
+    }
     if (was != c.offline()) {
       flushDnsCache();
       for (Consumer<Boolean> l : offlineListeners) l.accept(c.offline());
@@ -256,8 +284,13 @@ public final class Net {
   }
 
   public static void connect(Socket s, SocketAddress a, int timeout) throws IOException {
-    if (!active || !(a instanceof InetSocketAddress isa) || bypass(isa)) {
+    if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
       s.connect(a, timeout);
+      return;
+    }
+    if (!active) {
+      s.connect(a, timeout);
+      direct.add(s);  // for a `network offline` later
       return;
     }
     Conditions c = conditions;
@@ -268,6 +301,7 @@ public final class Net {
       // TLS from the start, named by the address it connects to: going through the engine would lose that name (SNI,
       // hostname checks). Connects directly; Net.createSocket layers TLS on a plain socket instead where it can.
       s.connect(a, timeout);
+      direct.add(s);
       return;
     }
     if (c.refuse()) {
@@ -301,20 +335,27 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
-    if (!active) return f.createSocket(host, port);
+    if (!active) return tracked(f.createSocket(host, port));
     Socket s;
     try {
       s = f instanceof SSLSocketFactory ? new Socket() : f.createSocket();
     } catch (IOException | UnsupportedOperationException e) {
-      return f.createSocket(host, port);  // a factory that makes only connected sockets
+      if (conditions.offline()) throw new ConnectException("failed to connect to " + host + " (port " + port + "): connect failed: ENETUNREACH (Network is unreachable)");
+      return tracked(f.createSocket(host, port));  // a factory that makes only connected sockets
     }
     connect(s, new InetSocketAddress(host, port), 0);
     if (f instanceof SSLSocketFactory ssl && !(s instanceof SSLSocket)) return createSocket(ssl, s, host, port, true);
     return s;
   }
 
+  /** A socket connected without the engine: remembered, so going offline closes it. */
+  private static Socket tracked(Socket s) {
+    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) direct.add(s);
+    return s;
+  }
+
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
-    if (!active) return f.createSocket(address, port);
+    if (!active) return tracked(f.createSocket(address, port));
     return createSocket(f, address.getHostName(), port);
   }
 
@@ -337,14 +378,18 @@ public final class Net {
 
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
-    if (!active || conditions.offline() || !(proto.equals("http") || proto.equals("https"))
-        || bypass(InetSocketAddress.createUnresolved(u.getHost(), 1)) || isLiteralLoopback(u.getHost())) {
+    String host = u.getHost();
+    // Offline, a host name fails its lookup (NetResolver) as on a device; a numeric address needs none, so it still
+    // goes to the engine, which refuses it.
+    boolean numeric = !host.isEmpty() && (Character.isDigit(host.charAt(0)) || host.startsWith("["));
+    if (!active || (conditions.offline() && !numeric) || !(proto.equals("http") || proto.equals("https"))
+        || bypass(InetSocketAddress.createUnresolved(host, 1)) || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
     URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
     if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
       https.setSSLSocketFactory(FakeTlsSocket.FACTORY);
-      https.setHostnameVerifier((host, session) -> true);
+      https.setHostnameVerifier((name, session) -> true);
     }
     return c;
   }

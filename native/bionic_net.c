@@ -341,19 +341,38 @@ static int name_of(int fd, void *a, socklen_t *alen, int peer) {
 static int net_getsockname(int fd, void *a, socklen_t *alen) { return name_of(fd, a, alen, 0); }
 static int net_getpeername(int fd, void *a, socklen_t *alen) { return name_of(fd, a, alen, 1); }
 
+// Offline, sending on a socket connected before (a peer that is not loopback) fails as connect does.
+static int offline_peer(int fd) {
+  if (!net_offline) return 0;
+  struct sockaddr_storage peer;
+  socklen_t plen = sizeof peer;
+  if (getpeername(fd, (struct sockaddr *)&peer, &plen) != 0 || loopback_m(&peer)) return 0;
+  errno = ENETUNREACH;
+  return 1;
+}
+
+// Offline, a datagram for an address that is not loopback goes nowhere.
+static int offline_dest(const struct sockaddr_storage *m) {
+  if (!net_offline || loopback_m(m)) return 0;
+  errno = ENETUNREACH;
+  return 1;
+}
+
 static ssize_t net_send(int fd, const void *b, size_t n, int flags) {
   int s = nl_slot(fd);
   if (s >= 0) return nl_send(s, b, n);
+  if (offline_peer(fd)) return -1;
   return send(fd, b, n, msg_flags_a2m(flags));
 }
 
 static ssize_t net_sendto(int fd, const void *b, size_t n, int flags, const void *a, socklen_t alen) {
   int s = nl_slot(fd);
   if (s >= 0) return nl_send(s, b, n);
-  if (!a) return send(fd, b, n, msg_flags_a2m(flags));
+  if (!a) return offline_peer(fd) ? -1 : send(fd, b, n, msg_flags_a2m(flags));
   struct sockaddr_storage m;
   socklen_t mlen;
   if (addr_a2m(a, alen, &m, &mlen) < 0) return -1;
+  if (offline_dest(&m)) return -1;
   return sendto(fd, b, n, msg_flags_a2m(flags), (struct sockaddr *)&m, mlen);
 }
 
@@ -383,6 +402,7 @@ static ssize_t net_sendmsg(int fd, const AMsgHdr *a, int flags) {
   struct sockaddr_storage m;
   socklen_t mlen = 0;
   if (a->name && addr_a2m(a->name, a->namelen, &m, &mlen) < 0) return -1;
+  if (a->name ? offline_dest(&m) : offline_peer(fd)) return -1;
   struct msghdr h = {a->name ? &m : NULL, mlen, a->iov, (int)a->iovlen, NULL, 0, 0};
   return sendmsg(fd, &h, msg_flags_a2m(flags));  // Ancillary data on send is not translated.
 }

@@ -170,6 +170,8 @@ final class NetEngine {
     InputStream cin;
     OutputStream cout;
     String host = "?";
+    /** The name TLS is for: FakeTlsSocket's, else the destination's. */
+    String tlsHost;
     int port;
     int timeout = 10_000;
     boolean tls;
@@ -242,7 +244,7 @@ final class NetEngine {
         pending = firstBytes;
         proxied = true;
         Conditions.sleep(Net.conditions.rtt());
-        if (Net.mode != Net.Mode.REPLAY) {
+        if (Net.mode != Net.Mode.REPLAY || Net.conditions.offline()) {
           String err = connectUpstream();
           if (err != null) {
             cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
@@ -252,6 +254,7 @@ final class NetEngine {
         }
       }
 
+      tlsHost = host;
       if (Net.mode == Net.Mode.SHAPE) {
         relayed.incrementAndGet();
         if (pending != null) uout.write(originForm(pending));
@@ -260,38 +263,68 @@ final class NetEngine {
       }
 
       if (pending == null) {
-        // Next: a TLS hello from FakeTlsSocket, or the first request. A protocol where the server speaks first sends
-        // nothing: after a while, relay it (recording) or give up on it (replaying).
-        client.setSoTimeout(1500);
-        try {
-          pending = readLineBytes(cin);
-        } catch (SocketTimeoutException e) {
-          pending = new byte[0];
-        }
-        client.setSoTimeout(0);
+        // Next: a TLS hello from FakeTlsSocket, or the first request.
+        pending = nextLine();
         if (pending == null) return;
         String l = trimEol(pending);
         if (l.startsWith("APKSIM-TLS")) {
           tls = true;
+          // The name the client's TLS checks: not the TCP destination, which may be an address.
+          String[] p = l.split(" ");
+          if (p.length > 1 && !p[1].isEmpty()) tlsHost = p[1];
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
           if (reply.startsWith("ERR")) return;
-          client.setSoTimeout(1500);
-          try {
-            pending = readLineBytes(cin);
-          } catch (SocketTimeoutException e) {
-            pending = new byte[0];
-          }
-          client.setSoTimeout(0);
+          pending = nextLine();
           if (pending == null) return;
         }
       }
       exchanges(pending, proxied);
     }
 
+    /**
+     * The client's next line, however long it stays idle first (a client may connect ahead and send later). Recording,
+     * a server that speaks first (not HTTP) gets an empty line instead, so the connection is relayed.
+     */
+    byte[] nextLine() throws IOException {
+      client.setSoTimeout(500);
+      try {
+        while (true) {
+          try {
+            cin.mark(1);
+            if (cin.read() < 0) return null;
+            cin.reset();
+            break;
+          } catch (SocketTimeoutException e) {
+            if (Net.mode == Net.Mode.RECORD && upstreamPeek() > 0) return new byte[0];
+          }
+        }
+      } finally {
+        if (!client.isClosed()) client.setSoTimeout(0);
+      }
+      return readLineBytes(cin);
+    }
+
+    /** Without blocking: 1 if the server has sent something, -1 if it closed the connection, 0 if neither. */
+    int upstreamPeek() throws IOException {
+      if (up == null || up.isClosed()) return -1;
+      up.setSoTimeout(1);
+      try {
+        uin.mark(1);
+        if (uin.read() < 0) return -1;
+        uin.reset();
+        return 1;
+      } catch (SocketTimeoutException e) {
+        return 0;
+      } finally {
+        if (!up.isClosed()) up.setSoTimeout(0);
+      }
+    }
+
     /** Connects to where the client was going (not when replaying); an "ERR ..." reply on failure, else null. */
     String connectUpstream() {
+      if (Net.conditions.offline()) return "ERR ConnectException connect failed: ENETUNREACH (Network is unreachable)\r\n";
       if (Net.mode == Net.Mode.REPLAY) return null;
       long t0 = System.nanoTime();
       try {
@@ -313,21 +346,21 @@ final class NetEngine {
       Conditions c = Net.conditions;
       Conditions.sleep(c.rtt());
       if (Net.mode == Net.Mode.REPLAY) {
-        List<String> chain = Net.recording.certificates(host);
+        List<String> chain = Net.recording.certificates(tlsHost);
         return "OK " + (chain == null ? "" : String.join(",", chain)) + "\r\n";
       }
       try {
         List<String> chain = upgradeUpstream();
-        Net.recording.certificates(host, chain);
+        Net.recording.certificates(tlsHost, chain);
         return "OK " + String.join(",", chain) + "\r\n";
       } catch (Exception e) {
-        Net.log("network record: TLS to " + host + ":" + port + " failed: " + e.getMessage());
+        Net.log("network record: TLS to " + tlsHost + ":" + port + " failed: " + e.getMessage());
         return Net.errorReply(e);
       }
     }
 
     List<String> upgradeUpstream() throws Exception {
-      SSLSocket s = (SSLSocket) upstreamTls().createSocket(up, host, port, true);
+      SSLSocket s = (SSLSocket) upstreamTls().createSocket(up, tlsHost, port, true);
       SSLParameters params = s.getSSLParameters();
       params.setEndpointIdentificationAlgorithm("HTTPS");
       s.setSSLParameters(params);
@@ -379,7 +412,7 @@ final class NetEngine {
         }
         readRequestBody(req);
         String authority = req.header("Host");
-        if (authority == null) authority = host + (port == (tls ? 443 : 80) ? "" : ":" + port);
+        if (authority == null) authority = (tls ? tlsHost : host) + (port == (tls ? 443 : 80) ? "" : ":" + port);
         req.url = proxied ? req.target : (tls ? "https://" : "http://") + authority + req.target;
         if (proxied) req.target = URI.create(req.target).getRawPath() + (URI.create(req.target).getRawQuery() == null ? "" : "?" + URI.create(req.target).getRawQuery());
         Conditions c = Net.conditions;
@@ -401,7 +434,7 @@ final class NetEngine {
       int up = Net.conditions.upKbps();
       if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
         ByteArrayOutputStream raw = new ByteArrayOutputStream(), body = new ByteArrayOutputStream();
-        copyChunked(cin, raw, body, Integer.MAX_VALUE);
+        copyChunked(cin, raw, body, Integer.MAX_VALUE);  // a request is kept whole: its hash is matched
         req.rawBody = raw.toByteArray();
         req.body = body.toByteArray();
       } else if (cl != null && Long.parseLong(cl.trim()) > 0) {
@@ -415,26 +448,24 @@ final class NetEngine {
       long t0 = System.nanoTime();
       long sent = t0;
       byte[] head = requestHead(req);
-      byte[] statusLine = null;
-      for (int attempt = 0; attempt < 2 && statusLine == null; attempt++) {
-        try {
-          if (up == null || up.isClosed()) reconnect();
-          uout.write(head);
-          if (req.rawBody != null) uout.write(req.rawBody);
-          uout.flush();
-          sent = System.nanoTime();
-          statusLine = readLineBytes(uin);
-        } catch (Exception e) {
-          if (attempt == 1 || exchanges == 0) {
-            Net.log("network record: " + req.method + " " + req.url + " failed: " + e);
-            return false;
-          }
-        }
-        if (statusLine == null && exchanges > 0 && attempt == 0) {
-          closeUpstream();  // the server closed a kept-alive connection: once more on a new one
-          continue;
-        }
-        if (statusLine == null) return false;
+      byte[] statusLine;
+      try {
+        // A kept-alive connection the server has closed meanwhile is replaced before the request goes out. Once it
+        // has gone out, a failure ends the client's connection too, and the client's own retry policy decides: a
+        // request sent again from here could reach the server twice.
+        if (up == null || up.isClosed() || (exchanges > 0 && upstreamPeek() < 0)) reconnect();
+        uout.write(head);
+        if (req.rawBody != null) uout.write(req.rawBody);
+        uout.flush();
+        sent = System.nanoTime();
+        statusLine = readLineBytes(uin);
+      } catch (Exception e) {
+        Net.log("network record: " + req.method + " " + req.url + " failed: " + e);
+        return false;
+      }
+      if (statusLine == null) {
+        Net.log("network record: " + req.method + " " + req.url + ": the server closed the connection without answering");
+        return false;
       }
       Response resp = readResponseHead(statusLine);
       while (resp.status >= 100 && resp.status < 200 && resp.status != 101) {
@@ -458,8 +489,7 @@ final class NetEngine {
       e.connect = exchanges == 0 ? connectMs : -1;
       boolean keep = true;
       if (resp.status == 101) {
-        e.timeMs = (waited - t0) / 1_000_000;
-        add(e);
+        // Not added: what follows is not recorded, so a replay could not answer it; replaying, it is unmatched.
         Net.log("network record: " + req.url + " switched protocols: relayed from here on, not recorded");
         relay(cin, cout, uin, uout, client, up);
         return false;
@@ -468,20 +498,21 @@ final class NetEngine {
       String te = resp.header("Transfer-Encoding");
       String cl = resp.header("Content-Length");
       boolean none = req.method.equals("HEAD") || resp.status == 204 || resp.status == 304;
+      long total = 0;
       if (none) {
-        // no body
+        // nothing
       } else if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
-        copyChunked(uin, new Paced(cout), body, MAX_BODY);
+        total = copyChunked(uin, new Paced(cout), body, MAX_BODY);
       } else if (cl != null) {
-        copy(uin, new Paced(cout), body, Long.parseLong(cl.trim()));
+        total = copy(uin, new Paced(cout), body, Long.parseLong(cl.trim()), MAX_BODY, true);
       } else {
-        copy(uin, new Paced(cout), body, Long.MAX_VALUE);
+        total = copy(uin, new Paced(cout), body, Long.MAX_VALUE, MAX_BODY, false);
         keep = false;
       }
       cout.flush();
       long done = System.nanoTime();
       byte[] bytes = body.toByteArray();
-      e.truncated = body.size() >= MAX_BODY;
+      e.truncated = total > body.size();
       if ("gzip".equalsIgnoreCase(resp.header("Content-Encoding")) && !e.truncated) {
         try (InputStream gz = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
           bytes = gz.readAllBytes();
@@ -541,15 +572,18 @@ final class NetEngine {
           .append(e.statusText.isEmpty() ? Net.statusText(e.status) : e.statusText).append("\r\n");
       for (String[] x : e.respHeaders) {
         String n = x[0].toLowerCase(Locale.ROOT);
+        // Content-Encoding is redone only for a body stored decoded (gzip); any other is sent as it was recorded.
         if (n.equals("content-length") || n.equals("transfer-encoding") || n.equals("connection")
-            || n.equals("content-encoding") || n.equals("keep-alive") || x[1].equals(Recording.REDACTED)) {
+            || (n.equals("content-encoding") && e.gzip) || n.equals("keep-alive") || x[1].equals(Recording.REDACTED)) {
           continue;
         }
         h.append(x[0]).append(": ").append(x[1]).append("\r\n");
       }
       if (gzip) h.append("Content-Encoding: gzip\r\n");
       boolean none = e.status == 204 || e.status == 304 || (e.status >= 100 && e.status < 200);
-      if (!none) h.append("Content-Length: ").append(body.length).append("\r\n");
+      // A HEAD answer keeps the length the server gave (its body was never there to measure).
+      String recordedLength = e.header(e.respHeaders, "Content-Length");
+      if (!none) h.append("Content-Length: ").append(req.method.equals("HEAD") && recordedLength != null ? recordedLength : String.valueOf(body.length)).append("\r\n");
       h.append("X-Apksim-Replay: recorded\r\n\r\n");
       cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
       if (!none && !req.method.equals("HEAD")) new Paced(cout).write(body, 0, body.length);
@@ -659,20 +693,31 @@ final class NetEngine {
     return b.size() == 0 ? null : b.toByteArray();
   }
 
-  /** Copies n bytes (or to end of stream), capturing up to MAX_BODY. */
-  static void copy(InputStream in, OutputStream out, ByteArrayOutputStream capture, long n) throws IOException {
+  /**
+   * Copies n bytes, or to end of stream when not exact, capturing up to max; returns how many it copied. An exact
+   * copy that ends early throws: the body is incomplete, and must neither look complete to the client nor be recorded.
+   */
+  static long copy(InputStream in, OutputStream out, ByteArrayOutputStream capture, long n, int max, boolean exact)
+      throws IOException {
     byte[] buf = new byte[16 * 1024];
+    long total = 0;
     while (n > 0) {
       int r = in.read(buf, 0, (int) Math.min(buf.length, n));
-      if (r < 0) break;
+      if (r < 0) {
+        if (exact) throw new IOException("body ended " + n + " bytes early");
+        break;
+      }
       out.write(buf, 0, r);
-      if (capture.size() < MAX_BODY) capture.write(buf, 0, Math.min(r, MAX_BODY - capture.size()));
+      if (capture.size() < max) capture.write(buf, 0, Math.min(r, max - capture.size()));
       n -= r;
+      total += r;
     }
+    return total;
   }
 
-  /** Copies a chunked body as sent, capturing its decoded data. */
-  static void copyChunked(InputStream in, OutputStream out, ByteArrayOutputStream capture, int max) throws IOException {
+  /** Copies a chunked body as sent, capturing its decoded data up to max; returns the decoded length. */
+  static long copyChunked(InputStream in, OutputStream out, ByteArrayOutputStream capture, int max) throws IOException {
+    long total = 0;
     while (true) {
       byte[] sizeLine = readLineBytes(in);
       if (sizeLine == null) throw new IOException("chunked body ended early");
@@ -683,14 +728,12 @@ final class NetEngine {
       if (size == 0) {
         while (true) {  // trailers, then the blank line
           byte[] t = readLineBytes(in);
-          if (t == null) return;
+          if (t == null) throw new IOException("chunked body ended early");
           out.write(t);
-          if (trimEol(t).isEmpty()) return;
+          if (trimEol(t).isEmpty()) return total;
         }
       }
-      ByteArrayOutputStream chunk = new ByteArrayOutputStream();
-      copy(in, out, chunk, size);
-      if (capture.size() + chunk.size() <= max) chunk.writeTo(capture);
+      total += copy(in, out, capture, size, max, true);
       byte[] crlf = readLineBytes(in);
       if (crlf != null) out.write(crlf);
     }
@@ -754,8 +797,11 @@ final class NetEngine {
 
   private static final Chunk END = new Chunk(0, null);
 
+  /** At most this many chunks (16 KB each) in flight one way: past it the reader waits, and TCP pushes back. */
+  private static final int IN_FLIGHT = 64;
+
   private static void pump(InputStream in, OutputStream out, boolean down, long cutAfter, Socket outSocket) {
-    LinkedBlockingQueue<Chunk> line = new LinkedBlockingQueue<>();
+    LinkedBlockingQueue<Chunk> line = new LinkedBlockingQueue<>(IN_FLIGHT);
     Thread writer = Thread.ofVirtual().start(() -> {
       try {
         while (true) {
@@ -787,16 +833,28 @@ final class NetEngine {
     byte[] buf = new byte[16 * 1024];
     try {
       int r;
+      reading:
       while ((r = in.read(buf)) >= 0) {
         int n = (int) Math.min(r, cutAfter - total);
-        line.add(new Chunk(System.currentTimeMillis(), java.util.Arrays.copyOf(buf, n)));
+        Chunk c = new Chunk(System.currentTimeMillis(), java.util.Arrays.copyOf(buf, n));
+        while (!line.offer(c, 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+          if (!writer.isAlive()) break reading;  // the writer failed: nothing will take more
+        }
         total += n;
         if (total >= cutAfter) break;
       }
     } catch (IOException ignored) {
       // the other side went away
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
-    line.add(END);
+    try {
+      while (writer.isAlive() && !line.offer(END, 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+        // the writer is still draining
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
     try {
       writer.join();
     } catch (InterruptedException ignored) {
