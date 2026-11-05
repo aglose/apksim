@@ -19,6 +19,14 @@ class TestApkContextTest {
   }
 
   @Test
+  fun theTestApksResourcesAreItsContexts() {
+    val res = instrumentation.context.resources
+    val id = res.getIdentifier("test_apk_greeting", "string", instrumentation.context.packageName)
+    assertTrue("the test APK's string resource", id != 0)
+    assertEquals("from the test APK's resources", res.getString(id))
+  }
+
+  @Test
   fun itsPackageIsTheTestApks() {
     assertEquals(instrumentation.targetContext.packageName + ".test", instrumentation.context.packageName)
   }

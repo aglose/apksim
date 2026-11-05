@@ -24,7 +24,6 @@ public final class KeyStores {
     if (installed) return;
     synchronized (KeyStores.class) {
       if (installed) return;
-      installed = true;
       try {
         if (Security.getProvider("BC") == null) {
           Provider bc = (Provider) Class.forName("org.bouncycastle.jce.provider.BouncyCastleProvider")
@@ -33,6 +32,10 @@ public final class KeyStores {
         }
       } catch (ReflectiveOperationException | LinkageError e) {
         System.err.println("[apksim] Bouncy Castle for BKS: " + e);
+      } finally {
+        // Only once the provider is registered (or could not be): a concurrent first caller waits on the lock
+        // instead of answering "BKS" before anything reads it.
+        installed = true;
       }
     }
   }

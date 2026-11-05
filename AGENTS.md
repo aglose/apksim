@@ -616,9 +616,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
 - Before Application.onCreate, as installing and ActivityThread do (`InstallState`): `Settings.Secure.ANDROID_ID` is set
-  (Robolectric leaves it null), every requested permission of protection level normal is granted (all requested ones
-  with `--permissions grant`), and the app's content providers are created, highest initOrder first (AndroidX
-  Startup's initializers run). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
+  (Robolectric leaves it null), every requested permission of protection level normal is granted (runtime ones too
+  with `--permissions grant`; signature, privileged and internal ones stay denied unless the app defines them, with
+  the framework's levels read from its own manifest, which Robolectric's package manager lacks), and the app's content
+  providers are created, highest initOrder first (AndroidX Startup's initializers run; not for the runner probe's
+  plain Application). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
 - `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
   the translator (`TestActivities.instrumentationContext`).
 - JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child

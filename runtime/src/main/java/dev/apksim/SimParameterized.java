@@ -34,13 +34,23 @@ public final class SimParameterized extends Suite {
     List<Object[]> all = parameters(method);
     for (int i = 0; i < all.size(); i++) {
       String name = MessageFormat.format(pattern.replace("{index}", Integer.toString(i)), all.get(i));
-      runners.add(new ForParameters(klass, i, "[" + name + "]"));
+      runners.add(new ForParameters(klass, all.get(i), "[" + name + "]"));
     }
   }
 
   @Override
   protected List<Runner> getChildren() {
     return runners;
+  }
+
+  /**
+   * Only the children: each is a SimRunner, which runs the class's @BeforeClass, @AfterClass and @ClassRule inside the
+   * test environment. Suite's own class block would run them once more, outside it, where an instrumentation-dependent
+   * fixture fails. (So they run once per parameter set, not once for the class as JUnit's Parameterized does.)
+   */
+  @Override
+  protected org.junit.runners.model.Statement classBlock(org.junit.runner.notification.RunNotifier notifier) {
+    return childrenInvoker(notifier);
   }
 
   static FrameworkMethod parametersMethod(TestClass tc) throws Exception {
@@ -60,12 +70,13 @@ public final class SimParameterized extends Suite {
 
   /** One parameter set: a SimRunner whose test instance gets the set's values, built in the test environment. */
   static final class ForParameters extends SimRunner {
-    private final int index;
+    /** The set's values, from the one @Parameters call the suite made: the factory is not called again per test. */
+    private final Object[] values;
     private final String name;
 
-    ForParameters(Class<?> klass, int index, String name) throws InitializationError {
+    ForParameters(Class<?> klass, Object[] values, String name) throws InitializationError {
       super(klass);
-      this.index = index;
+      this.values = values;
       this.name = name;
     }
 
@@ -94,12 +105,6 @@ public final class SimParameterized extends Suite {
           @Override
           protected Object createTest() throws Exception {
             TestClass tc = getTestClass();
-            Object[] values;
-            try {
-              values = parameters(parametersMethod(tc)).get(index);
-            } catch (Throwable t) {
-              throw t instanceof Exception e ? e : new Exception(t);
-            }
             List<FrameworkField> fields = tc.getAnnotatedFields(Parameterized.Parameter.class);
             if (fields.isEmpty()) return tc.getOnlyConstructor().newInstance(values);
             Object test = tc.getOnlyConstructor().newInstance();

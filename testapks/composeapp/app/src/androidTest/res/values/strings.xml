@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A resource of the test APK itself, which TestApkContextTest reads through Instrumentation.getContext(). -->
+<resources>
+    <string name="test_apk_greeting">from the test APK\'s resources</string>
+</resources>

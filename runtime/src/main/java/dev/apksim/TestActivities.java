@@ -132,6 +132,12 @@ public final class TestActivities {
     java.util.concurrent.locks.LockSupport.parkNanos(nanos);
   }
 
+  /**
+   * Parked time not yet given to the clock: the looper moves it in whole milliseconds and drops the rest, so parks of
+   * under a millisecond each would never move it. Carried over between parks; reset between tests (beforeReset).
+   */
+  private static long parkCarryNanos;
+
   private static void parkStep(long nanos) {
     org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
     main.idle();
@@ -139,7 +145,11 @@ public final class TestActivities {
     java.util.concurrent.locks.LockSupport.parkNanos(Math.min(nanos, 2_000_000L));
     long elapsed = System.nanoTime() - start;
     // With --realtime-clock the clock already follows real time (the next idle's clock read catches it up).
-    if (elapsed > 0 && !RealTimeClock.requested()) main.idleFor(java.time.Duration.ofNanos(elapsed));
+    if (elapsed <= 0 || RealTimeClock.requested()) return;
+    long total = parkCarryNanos + elapsed;
+    long ms = total / 1_000_000L;
+    parkCarryNanos = total - ms * 1_000_000L;
+    if (ms > 0) main.idleFor(java.time.Duration.ofMillis(ms));
   }
 
   /** The test APK's own context in a test run (SimRunner.useTestApkContext); null elsewhere. */
@@ -350,6 +360,7 @@ public final class TestActivities {
 
   static void beforeReset() {
     composeIdling = null;
+    parkCarryNanos = 0;
     try {
       Object si = Shadow.extract(ShadowInstrumentation.getInstrumentation());
       List<?> wrappers = ReflectionHelpers.callInstanceMethod(si, "getRegisteredReceivers");
@@ -416,7 +427,8 @@ public final class TestActivities {
     /** In a test run, what a device has before the app starts (InstallState), then the app's onCreate. */
     @Implementation
     protected void callApplicationOnCreate(android.app.Application app) {
-      if (testRun()) InstallState.beforeApplicationOnCreate(app);
+      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
+      if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
             "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
@@ -583,7 +595,9 @@ public final class TestActivities {
   private static void launch(Intent intent, ActivityInfo info, List<Activity> running) {
     Context app = RuntimeEnvironment.getApplication();
     try {
-      Class<? extends Activity> cls = Class.forName(info.name, true, app.getClassLoader()).asSubclass(Activity.class);
+      // An activity-alias's name is the alias; the class to make is its targetActivity (the intent keeps the alias).
+      String className = info.targetActivity != null ? info.targetActivity : info.name;
+      Class<? extends Activity> cls = Class.forName(className, true, app.getClassLoader()).asSubclass(Activity.class);
       Activity top = running.isEmpty() ? null : running.get(running.size() - 1);
       ActivityController<?> below = top == null ? null : controller(top);
       if (below != null && top.isResumed()) below.pause();

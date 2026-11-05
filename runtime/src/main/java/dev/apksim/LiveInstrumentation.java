@@ -263,6 +263,18 @@ final class LiveInstrumentation {
       return assets;
     }
 
+    private android.content.res.Resources resources;
+
+    /** Resources over the package's own AssetManager: its strings and raw files, not the base context's app. */
+    @Override
+    public synchronized android.content.res.Resources getResources() {
+      if (resources == null) {
+        android.content.res.Resources base = getBaseContext().getResources();
+        resources = new android.content.res.Resources(assets, base.getDisplayMetrics(), base.getConfiguration());
+      }
+      return resources;
+    }
+
     @Override
     public Context getApplicationContext() {
       return this;

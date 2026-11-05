@@ -28,6 +28,12 @@ class InstallPermissionsTest {
     assertEquals(PackageManager.PERMISSION_GRANTED, ComposeApp.vibrateAtCreate)
   }
 
+  /** A signature permission of the platform is not an ordinary APK's, whatever it asks for (even with `-e permissions grant`). */
+  @Test
+  fun signaturePermissionsAreNot() {
+    assertEquals(PackageManager.PERMISSION_DENIED, context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS))
+  }
+
   /** Not with `-e permissions grant` (apksim's --permissions grant, an emulator's `adb install -g`). */
   @Test
   fun runtimePermissionsAreNot() {

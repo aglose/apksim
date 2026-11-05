@@ -43,8 +43,12 @@ class StartActivityTest {
       }
       InstrumentationRegistry.getInstrumentation().waitForIdleSync()
       assertTrue("the first instance is destroyed", first.isDestroyed)
-      val resumed = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
-        .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)
+      // The lifecycle monitor answers on the main thread only; a device runs this body on the instrumentation's.
+      var resumed: Collection<android.app.Activity> = emptyList()
+      InstrumentationRegistry.getInstrumentation().runOnMainSync {
+        resumed = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+          .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).toList()
+      }
       assertTrue("a new MainActivity is resumed: $resumed", resumed.any { it is MainActivity && it !== first })
     }
   }

@@ -86,7 +86,8 @@ final class Instrument {
       // A class without @RunWith gets what AndroidJUnitRunner would give it, an Android runner: here, Robolectric's.
       // JUnit's Parameterized would run outside the test environment: each parameter set runs as a SimRunner child.
       RunWith with = c.getAnnotation(RunWith.class);
-      if (with != null && with.value() == org.junit.runners.Parameterized.class) {
+      // (An @Ignore'd class stays on JUnit's path, which reports it ignored without building it or its parameters.)
+      if (with != null && with.value() == org.junit.runners.Parameterized.class && !c.isAnnotationPresent(org.junit.Ignore.class)) {
         try {
           runners.add(new SimParameterized(c));
         } catch (Throwable t) {

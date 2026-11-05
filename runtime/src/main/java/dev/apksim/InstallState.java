@@ -33,9 +33,15 @@ final class InstallState {
 
   /**
    * What installing the APK grants: every requested permission of protection level normal (INTERNET, VIBRATE,
-   * BLUETOOTH...), and with --permissions grant everything requested, as `adb install -g` does. Robolectric grants
+   * BLUETOOTH...), and with --permissions grant the runtime ones too, as `adb install -g` does. Robolectric grants
    * none, so a framework check of a normal permission (BluetoothAdapter.getProfileProxy's, in one app's startup) threw
-   * in every test. Runtime permissions still wait for a grant, as on a device.
+   * in every test. Runtime permissions still wait for a grant, as on a device. Signature, privileged and internal
+   * permissions (WRITE_SECURE_SETTINGS) stay denied, as for an ordinary APK on a device, except a signature
+   * permission the app defines itself, which its own signature satisfies. A permission the package manager does not
+   * know: a framework one (android.permission.*) is denied unless it is a known runtime one; one another app defines
+   * (Play services' c2dm RECEIVE, Play's install referrer) is granted as install-time, since other apps are not
+   * modelled here and those are normal on a device. Robolectric's package manager has no PermissionInfo for the
+   * framework's permissions, so their levels come from the framework's own manifest (frameworkProtection).
    */
   private static void grantInstallPermissions(Application app) {
     android.content.pm.PackageManager pm = app.getPackageManager();
@@ -49,18 +55,62 @@ final class InstallState {
     if (requested == null) return;
     java.util.List<String> grant = new java.util.ArrayList<>();
     for (String p : requested) {
-      if (all || !isRuntimePermission(pm, p)) grant.add(p);
+      if (eligible(pm, app.getPackageName(), p, all)) grant.add(p);
     }
     org.robolectric.Shadows.shadowOf(app).grantPermissions(grant.toArray(new String[0]));
   }
 
-  /** Runtime ("dangerous") permissions need the user's grant; one the package manager does not know is install-time. */
-  private static boolean isRuntimePermission(android.content.pm.PackageManager pm, String permission) {
+  /** Whether installing grants [permission] (with [runtime]: --permissions grant, runtime ones as well). */
+  private static boolean eligible(android.content.pm.PackageManager pm, String pkg, String permission, boolean runtime) {
+    android.content.pm.PermissionInfo info;
     try {
-      return pm.getPermissionInfo(permission, 0).getProtection() == android.content.pm.PermissionInfo.PROTECTION_DANGEROUS;
+      info = pm.getPermissionInfo(permission, 0);
     } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-      return RUNTIME_PERMISSIONS.contains(permission);
+      Integer level = frameworkProtection().get(permission);
+      if (level != null) return grantedAt(level & android.content.pm.PermissionInfo.PROTECTION_MASK_BASE, runtime, false);
+      if (RUNTIME_PERMISSIONS.contains(permission)) return runtime;
+      return !permission.startsWith("android.permission.");
     }
+    return grantedAt(info.getProtection(), runtime, pkg.equals(info.packageName));
+  }
+
+  /** Granted at install at base protection level [protection]: normal always, dangerous with [runtime], signature if [own]. */
+  private static boolean grantedAt(int protection, boolean runtime, boolean own) {
+    if (protection == android.content.pm.PermissionInfo.PROTECTION_NORMAL) return true;
+    if (protection == android.content.pm.PermissionInfo.PROTECTION_DANGEROUS) return runtime;
+    if (protection == android.content.pm.PermissionInfo.PROTECTION_SIGNATURE) return own;
+    return false;  // signatureOrSystem, internal, or a level this does not know
+  }
+
+  private static java.util.Map<String, Integer> frameworkProtection;
+
+  /**
+   * The framework's permissions and their android:protectionLevel, from the framework's own AndroidManifest.xml (in
+   * the jar that holds android.view.View), read once per process (~1,000 permissions).
+   */
+  static synchronized java.util.Map<String, Integer> frameworkProtection() {
+    if (frameworkProtection != null) return frameworkProtection;
+    java.util.Map<String, Integer> out = new java.util.HashMap<>();
+    try {
+      java.net.URL jar = android.view.View.class.getProtectionDomain().getCodeSource().getLocation();
+      String xml;
+      try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(new java.io.File(jar.toURI()));
+           java.io.InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
+        xml = Axml.decode(in.readAllBytes());
+      }
+      java.util.regex.Matcher element = java.util.regex.Pattern.compile("<permission\\s([^>]*)>").matcher(xml);
+      java.util.regex.Pattern name = java.util.regex.Pattern.compile("android:name=\"([^\"]+)\"");
+      java.util.regex.Pattern level = java.util.regex.Pattern.compile("android:protectionLevel=\"0x([0-9a-fA-F]+)\"");
+      while (element.find()) {
+        java.util.regex.Matcher n = name.matcher(element.group(1));
+        java.util.regex.Matcher l = level.matcher(element.group(1));
+        if (n.find()) out.put(n.group(1), l.find() ? (int) Long.parseLong(l.group(1), 16) : 0);
+      }
+    } catch (Exception e) {
+      System.err.println("[apksim] framework permissions: " + e);
+    }
+    frameworkProtection = out;
+    return out;
   }
 
   /** API 36's runtime permissions, for when the package manager has no PermissionInfo for one. */
