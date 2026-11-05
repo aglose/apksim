@@ -206,7 +206,9 @@ final class Recording {
     log.put("_apksimRedacted", new ArrayList<>(new java.util.TreeSet<>(match.redact)));
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("log", log);
-    Path tmp = path.resolveSibling(path.getFileName() + "." + ProcessHandle.current().pid() + ".tmp");
+    // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
+    // process per file).
+    Path tmp = path.resolveSibling(path.getFileName() + ".apksim-tmp");
     Files.writeString(tmp, Json.write(root));
     Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
   }

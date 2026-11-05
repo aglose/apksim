@@ -307,7 +307,7 @@ its certificate). Any option turns it on; without one, the hooks cost one static
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
-  allow writing the file's folder); replay and conditions launch warm.
+  allow writing the file and `FILE.apksim-tmp`, and only those, not the folder); replay and conditions launch warm.
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
   (docs/network.md says what it would need), WebSocket replay (relayed while recording). Checks:
   `scripts/network-check.sh APK OUT [IMAGE]` (CI runs it in the image from `ci-smoke.sh`) and `NetworkReplayTest`

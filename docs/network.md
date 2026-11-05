@@ -29,7 +29,7 @@ remote route answered the same way every run, and its offline and slow paths tes
 
 Any of these turns the network layer on; without them nothing changes (one static check per hooked call). Replay
 and conditions launches are handed to a warm standby; a recording launches cold, since its sandbox must allow writing
-the recording's folder. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
+the recording: that file and `FILE.apksim-tmp` beside it (written, then renamed over it), nothing else in its folder. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
 
 ## Control command
 

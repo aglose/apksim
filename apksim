@@ -120,7 +120,11 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
       NET_DIR="$(cd "$(dirname "$3")" 2>/dev/null && pwd)" || { echo "no folder $(dirname "$3") for $3" >&2; exit 2; }
       NET_FILE="$NET_DIR/$(basename "$3")"
       [[ "$2" == replay && ! -f "$NET_FILE" ]] && { echo "no recording at $3" >&2; exit 2; }
-      [[ "$2" == record ]] && NET_RECORD_DIR="$(dirname "$NET_FILE")"
+      # Recording, the sandbox lets the app write the recording and its temporary file, nothing else beside them.
+      if [[ "$2" == record ]]; then
+        [[ "$NET_FILE" == *'"'* || "$NET_FILE" == *'\'* ]] && { echo "a recording path cannot hold \" or \\" >&2; exit 2; }
+        NET_RECORD_FILE="$NET_FILE"
+      fi
       EXTRA+=("-Dapksim.network=$2:$NET_FILE"); shift 3 ;;
     --network-profile) EXTRA+=("-Dapksim.networkProfile=$2"); shift 2 ;;
     --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
@@ -234,8 +238,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
-(allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_DIR:+
-(allow file-write* (subpath \"$NET_RECORD_DIR\"))}
+(allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_FILE:+
+(allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"

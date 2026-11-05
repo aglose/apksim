@@ -123,6 +123,7 @@ final class NetEngine {
         Net.recording.save();
       }
     } catch (IOException e) {
+      dirty = true;  // still unsaved: the next save (a later exchange, `network save`, the way out) tries again
       Net.log("network record: cannot write " + Net.recording.path + ": " + e);
     }
   }
