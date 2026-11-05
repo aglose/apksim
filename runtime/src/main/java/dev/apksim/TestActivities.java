@@ -325,6 +325,24 @@ public final class TestActivities {
   public static class ShadowSimInstrumentation extends ShadowInstrumentation {
     @org.robolectric.annotation.RealObject private Instrumentation self;
 
+    /** In a test run, what a device has before the app starts (InstallState), then the app's onCreate. */
+    @Implementation
+    protected void callApplicationOnCreate(android.app.Application app) {
+      if (testRun()) InstallState.beforeApplicationOnCreate(app);
+      try {
+        java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
+            "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
+        m.setAccessible(true);
+        m.invoke(self, app);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        if (e.getCause() instanceof RuntimeException r) throw r;
+        if (e.getCause() instanceof Error r) throw r;
+        throw new IllegalStateException(e.getCause());
+      } catch (ReflectiveOperationException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
     /** An instrumentation started over adb (LiveInstrumentation) reports to that `am instrument`, not a watcher. */
     @Implementation
     protected void sendStatus(int resultCode, Bundle results) {
