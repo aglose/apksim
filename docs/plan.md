@@ -324,8 +324,13 @@ when nothing fails.
 
 **Built (2026-11-05).** As specified, with these findings:
 - Kotlin's `use {}` (and try-with-resources) closes an ActivityScenario before the exception leaves the test method,
-  so the body capture found no windows for Espresso failures. Espresso's failure handler is now wrapped at each
-  test's start and captures first; a test that expects an Espresso failure, catches it and passes loses that bundle.
+  so the body capture found no windows for Espresso failures. The handler Espresso has at the start of each test
+  body is now wrapped (captures, then delegates, so a test's own handler still decides); a test that expects an
+  Espresso failure, catches it and passes loses that bundle.
+- From review: no part may hold up the suite (deadlines, then the part is skipped for the run), the uptime is read
+  without moving `--realtime-clock`, a test's first log lines survive the ring, `instrument.py` clears an earlier
+  run's bundles and redacts its own notes, and `--bundles-on all` reconciles a body that passed with a teardown that
+  failed.
 - 12d needed no fallback: Robolectric's HardwareRenderingScreenshot draws Compose screens and a Dialog over an
   activity correctly. A capture of a full bundle takes ~150 ms (screen ~100 ms), only on failure.
 - In the image apksim runs as root, so bundle folders are made writable by everyone there, for the host's

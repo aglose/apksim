@@ -16,7 +16,8 @@ import argparse, os, re, shutil, subprocess, sys, xml.etree.ElementTree as ET, z
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 PKG = "dev.apksim.composeapp."
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
-FAIL = [PKG + c for c in ("FailureBundleTest", "FailureBundleEspressoTest", "FailureBundleAfterTest", "FailureBundleParameterizedTest")]
+FAIL = [PKG + c for c in ("FailureBundleTest", "FailureBundleEspressoTest", "FailureBundleAfterTest", "FailureBundleParameterizedTest",
+                          "FailureBundleCustomHandlerTest")]
 problems = []
 
 
@@ -65,6 +66,10 @@ def main():
     print("tests that fail on purpose, with --bundles:")
     bdir, local = os.path.join(a.out, "bundles"), os.path.join(out, "bundles")
     xml = os.path.join(out, "junit.xml")
+    # An earlier run's bundle for a test that passes now: instrument.py must remove it before this run.
+    stale = os.path.join(local, folder(PKG + "FailureBundleTest", "a_passes"))
+    os.makedirs(stale)
+    open(os.path.join(stale, "failure.txt"), "w").write("an earlier run's failure\n")
     r = instrument(a, xml, bdir, local, "-e", "failOnPurpose", "true", "-e", "class", ",".join(FAIL))
     check(r.returncode == 1, f"the run fails (exit {r.returncode})")
     expect = {  # (class, method): (captured by, screen and tree expected, text the tree must hold)
@@ -100,9 +105,12 @@ def main():
     if (PKG + "FailureBundleTest", "c_failsWithDialogOpen") in expect:
         w = open(os.path.join(local, folder(PKG + "FailureBundleTest", "c_failsWithDialogOpen"), "windows.txt")).read()
         check(len(w.strip().splitlines()) == 2, "the dialog test's windows.txt lists two windows")
-    for c, m in ((PKG + "FailureBundleTest", "a_passes"), (PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]")):
+    for c, m in ((PKG + "FailureBundleTest", "a_passes"), (PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"),
+                 (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides")):
         check(not os.path.exists(os.path.join(local, folder(c, m))), f"no bundle for passing {m}")
     cases = {(t.get("classname"), t.get("name")): t for t in ET.parse(xml).iter("testcase")}
+    own = cases.get((PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"))
+    check(own is not None and own.find("failure") is None, "a test's own Espresso failure handler still decides (it passed)")
     for key in expect:
         t = cases.get(key)
         prop = t is not None and t.find("properties/property[@name='apksim.bundle']")
@@ -120,16 +128,29 @@ def main():
         check(rr.returncode == 1 and results == [("b_composeAssertionFails", "-2")],
               f"repro.sh: exit {rr.returncode}, results {results}")
 
-    print("the watchdog's test, which ends the process:")
+    print("--bundles-on all: a body that returned, then an @After that fails:")
+    r = instrument(a, os.path.join(out, "junit-all.xml"), os.path.join(a.out, "all"), os.path.join(out, "all"),
+                   "-e", "failOnPurpose", "true", "-e", "class", PKG + "FailureBundleAfterTest", "--", "--bundles-on", "all")
+    d = os.path.join(out, "all", folder(PKG + "FailureBundleAfterTest", "afterFails"))
+    f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
+    # (afterFails opens no activity: what is kept from the body is its windows.txt and tree, here empty)
+    check("status: failed" in f and "@After fails on purpose" in f and "from the end of the body" in f
+          and os.path.exists(os.path.join(d, "windows.txt")), "the bundle says failed, with the @After failure, and keeps the body's capture")
+
+    print("the watchdog's test, which ends the process (with --bundles-redact):")
     wxml = os.path.join(out, "junit-watchdog.xml")
     r = instrument(a, wxml, os.path.join(a.out, "watchdog"), os.path.join(out, "watchdog"),
-                   "-e", "failOnPurpose", "watchdog", "-e", "class", PKG + "FailureBundleWatchdogTest")
+                   "-e", "failOnPurpose", "watchdog", "-e", "class", PKG + "FailureBundleWatchdogTest",
+                   "--", "--bundles-redact", "still running")
     d = os.path.join(out, "watchdog", folder(PKG + "FailureBundleWatchdogTest", "ignoresInterrupts"))
     files = set(os.listdir(d)) if os.path.isdir(d) else set()
     check({"failure.txt", "threads.txt", "logcat.txt", "process.txt"} <= files, f"watchdog bundle files: {sorted(files)}")
     if "failure.txt" in files:
         check("captured by: timeout watchdog" in open(os.path.join(d, "failure.txt")).read(), "captured by the watchdog")
         check("ignoresInterrupts" in open(os.path.join(d, "threads.txt")).read(), "threads.txt shows the stuck test")
+    if "process.txt" in files:
+        p_ = open(os.path.join(d, "process.txt")).read()
+        check("[redacted]" in p_ and "still running" not in p_, "process.txt is redacted as apksim's own files are")
 
     if not a.apksim:
         print("a passing run prints the same with and without --bundles:")

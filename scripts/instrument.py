@@ -31,9 +31,10 @@ failing test's screen, tree, log, threads and repro.sh in DIR/<class>/<method>-<
 gets failure.txt (if apksim wrote none) and process.txt (exit status, stderr tail). The JUnit XML links each bundle
 (a property, and screen.png as a [[ATTACHMENT|...]] in system-out, relative to the XML), and DIR/index.html shows
 them all. With --apksim, DIR is the path that apksim sees (relative to the mounted folder) and --bundles-local the
-same folder here. apksim's other bundle options (--bundles-on all, --bundles-max N, --bundles-redact REGEX) go after --.
+same folder here. apksim's other bundle options (--bundles-on all, --bundles-max N, --bundles-redact REGEX) go after --
+(the redactions apply to process.txt too). An earlier run's bundles in DIR are removed first.
 """
-import argparse, concurrent.futures, hashlib, html, os, re, shlex, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, subprocess, sys, threading, time
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -262,8 +263,38 @@ def died(st):
     return st.startswith(("apksim ", "not run:"))
 
 
-def collect_bundles(local, results):
-    """{(class, method): bundle folder} for the results that have one; writes the notes for tests whose process died."""
+def clear_bundles(local):
+    """Removes an earlier run's bundles from DIR, once before this run's processes start, so that a test passing now
+    is not linked to its old failure: index.html and the folders that are bundles (they hold failure.txt or
+    process.txt), then class folders left empty. Anything else in DIR stays."""
+    if not os.path.isdir(local):
+        return
+    if os.path.exists(os.path.join(local, "index.html")):
+        os.remove(os.path.join(local, "index.html"))
+    for c in os.listdir(local):
+        cdir = os.path.join(local, c)
+        if not os.path.isdir(cdir):
+            continue
+        for b in os.listdir(cdir):
+            bdir = os.path.join(cdir, b)
+            if os.path.isdir(bdir) and {"failure.txt", "process.txt"} & set(os.listdir(bdir)):
+                shutil.rmtree(bdir)
+        if not os.listdir(cdir):
+            os.rmdir(cdir)
+
+
+def redactions(passthrough):
+    """apksim's --bundles-redact REGEX options (after --): applied here too, to what this script writes."""
+    return [re.compile(passthrough[i + 1]) for i, o in enumerate(passthrough[:-1]) if o == "--bundles-redact"]
+
+
+def collect_bundles(local, results, redact=()):
+    """{(class, method): bundle folder} for the results that have one; writes the notes for tests whose process died
+    (redacted as apksim redacts its own text files)."""
+    def clean(text):
+        for r in redact:
+            text = r.sub("[redacted]", text)
+        return text
     found = {}
     for c, m, s, st, _ in results:
         if c in ("(run)", "(listing)"):
@@ -272,11 +303,11 @@ def collect_bundles(local, results):
         if s == "failed" and died(st or ""):
             os.makedirs(path, exist_ok=True)
             with open(os.path.join(path, "process.txt"), "w") as f:
-                f.write(st)
+                f.write(clean(st))
             if not os.path.exists(os.path.join(path, "failure.txt")):
                 with open(os.path.join(path, "failure.txt"), "w") as f:
-                    f.write(f"test: {c}#{m}\nstatus: failed\ncaptured by: instrument.py (the process gave no result for "
-                            f"this test)\n\n{st}\n")
+                    f.write(clean(f"test: {c}#{m}\nstatus: failed\ncaptured by: instrument.py (the process gave no result "
+                                  f"for this test)\n\n{st}\n"))
         if os.path.isdir(path):
             found[(c, m)] = path
     return found
@@ -348,6 +379,7 @@ def main():
     a = p.parse_args(argv)
     if a.bundles:
         passthrough = passthrough + ["--bundles", a.bundles]
+        clear_bundles(a.bundles_local or a.bundles)
         os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
@@ -406,7 +438,7 @@ def main():
         print(f"\nFAILED {c}#{m}\n{st}", file=sys.stderr)
     counts = {s: sum(1 for r in results if r[2] == s) for s in sorted({r[2] for r in results})}
     print(f"{len(results)} tests in {time.time() - t0:.1f} s: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
-    bundles = collect_bundles(a.bundles_local or a.bundles, results) if a.bundles else {}
+    bundles = collect_bundles(a.bundles_local or a.bundles, results, redactions(passthrough)) if a.bundles else {}
     if a.bundles:
         write_index(a.bundles_local or a.bundles, results, bundles)
         print(f"{len(bundles)} failure bundles: {os.path.join(a.bundles_local or a.bundles, 'index.html')}", file=sys.stderr)

@@ -427,12 +427,18 @@ is), `windows.txt`, `nodes.txt` (as the `nodes` command), `logcat.txt` (that tes
 for the run), `threads.txt`, `looper.txt` (the main queue and androidx.test's activity stages) and `repro.sh` (the
 launch narrowed to `-e class` that test, from `-Dapksim.argv`). Where it captures matters: listeners hear of a
 failure after `@After` and rules have closed the activity, so `SimRunner`'s helper runner wraps `methodInvoker`
-(the body), Espresso's failure handler is wrapped at each test's start (a scenario closed by `use {}` is gone by the
-time the exception leaves the body; a test that catches an Espresso failure and passes loses its bundle), the
-listener takes the rest (@Before/@After/rule failures, classes with their own `@RunWith`), and `FailOnTimeout`'s
-watchdog writes the failure, threads and log before it ends the process. A capture never runs the main queue or moves
-the clock. `--bundles-on all`, `--bundles-max N` (default 50 full bundles a process), `--bundles-redact REGEX`.
-`instrument.py` adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
+(the body), the handler Espresso has at the start of each body is wrapped through its holder (`Espresso.BASE
+.failureHolder()`: the wrapper captures, then hands the failure to that handler, so a test's own still decides; a
+scenario closed by `use {}` is gone by the time the exception leaves the body; a test that catches an Espresso failure
+and passes loses its bundle), the listener takes the rest (@Before/@After/rule failures, classes with their own
+`@RunWith`; with `--bundles-on all` it rewrites a body's "passed" bundle when teardown then fails), and
+`FailOnTimeout`'s watchdog writes the failure, threads and log before it ends the process. A capture never runs the
+main queue or moves the clock (uptime is read through `ApksimClock`, not SystemClock, which `--realtime-clock` would
+advance); a part past its deadline (screen 2 s, others 5 s) has its thread interrupted and is skipped in later bundles;
+a test's first 2,500 log lines are kept as they arrive (`AdbLog.keepHead`), past the ring's 20,000. A bundle's folder is
+emptied before it is written. `--bundles-on all`, `--bundles-max N` (default 50 full bundles a process),
+`--bundles-redact REGEX` (instrument.py applies it to process.txt too).
+`instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
 `--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,
 for the host's `instrument.py`. `scripts/bundle-check.py` (CI) checks it with the test app's `FailureBundle*Test`

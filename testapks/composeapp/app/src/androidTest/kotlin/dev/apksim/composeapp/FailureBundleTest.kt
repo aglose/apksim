@@ -6,7 +6,9 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ActivityScenario
+import androidx.test.espresso.Espresso
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.base.DefaultFailureHandler
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
@@ -14,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.locks.LockSupport
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
@@ -76,6 +79,30 @@ class FailureBundleEspressoTest {
   fun noMatchingView() {
     failOnPurpose()
     marker("noMatchingView")
+    ActivityScenario.launch(MainActivity::class.java).use {
+      onView(withText("No view has this text")).check(matches(isDisplayed()))
+    }
+  }
+}
+
+/**
+ * A test's own Espresso failure handler still decides (here: it swallows the failure, so the test passes), with or
+ * without --bundles, which wraps the handler it finds at the start of the test body. Runs everywhere.
+ */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleCustomHandlerTest {
+  @Before
+  fun swallowFailures() {
+    Espresso.setFailureHandler { _, _ -> }
+  }
+
+  @After
+  fun restoreHandler() {
+    Espresso.setFailureHandler(DefaultFailureHandler(InstrumentationRegistry.getInstrumentation().targetContext))
+  }
+
+  @Test
+  fun ownHandlerDecides() {
     ActivityScenario.launch(MainActivity::class.java).use {
       onView(withText("No view has this text")).check(matches(isDisplayed()))
     }

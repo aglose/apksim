@@ -6,7 +6,6 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Point;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.util.StringBuilderPrinter;
 import android.view.View;
 import android.view.WindowManager;
@@ -73,7 +72,19 @@ public final class Bundles {
   private static int testsBefore = -1;
   /** The bundle the current test has, or null. */
   private static volatile Path written;
+  /** It took one of the --bundles-max full slots (a bundle written past the limit has failure.txt only). */
+  private static boolean writtenFull;
+  /** It was written for a body that returned (--bundles-on all): a later failure (@After, a rule) still rewrites it. */
+  private static boolean writtenPassed;
   private static int full;
+  /** Parts that ran past their deadline once: skipped in later bundles of this process. */
+  private static final java.util.Set<String> TIMED_OUT = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.concurrent.ScheduledExecutorService DEADLINES =
+      java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "bundle-deadline");
+        t.setDaemon(true);
+        return t;
+      });
 
   private static List<Pattern> redactions() {
     List<Pattern> out = new ArrayList<>();
@@ -95,10 +106,16 @@ public final class Bundles {
       current = d;
       written = null;
       testsBefore++;
-      logFrom = AdbLog.next();
+      markLog();
     } finally {
       LOCK.unlock();
     }
+  }
+
+  /** From here on the current test's log lines are kept, its first ones even past the ring's capacity. */
+  private static void markLog() {
+    logFrom = AdbLog.next();
+    AdbLog.keepHead(logFrom, LOG_LINES / 2);
   }
 
   /** The bundle a finished test has, or null: for its status block (apksim_bundle=PATH). */
@@ -122,10 +139,10 @@ public final class Bundles {
         } catch (org.junit.internal.AssumptionViolatedException e) {
           throw e;
         } catch (Throwable t) {
-          if (written == null) locked("test body", t);  // else Espresso's failure handler already captured it
+          if (written == null) locked("test body", t, false);  // else Espresso's failure handler already captured it
           throw t;
         }
-        if (ALL) locked("test body (passed)", null);
+        if (ALL) locked("test body (passed)", null, true);
       }
     };
   }
@@ -141,9 +158,10 @@ public final class Bundles {
       Path w = written;
       if (w == null || !d.equals(current)) return;
       written = null;
-      full--;
-      try (java.util.stream.Stream<Path> files = Files.walk(w)) {
-        files.sorted(java.util.Comparator.reverseOrder()).forEach(f -> f.toFile().delete());
+      if (writtenFull) full--;
+      writtenFull = false;
+      try {
+        delete(w, true);
       } catch (IOException e) {
         System.err.println("[apksim] could not remove the failure bundle of passing test " + d + ": " + e);
       }
@@ -154,48 +172,63 @@ public final class Bundles {
 
   // --- Espresso ---------------------------------------------------------------------------------------------------
 
+  private static Object espressoHolder;
+  private static Method holderGet, holderUpdate;
   private static Class<?> espressoHandlerType;
-  private static Method setFailureHandler;
-  private static java.lang.reflect.Constructor<?> defaultHandler;
   private static boolean noEspresso;
+  /** Our wrappers, and the handler each wraps: a wrapper is never wrapped again. */
+  private static final Map<Object, Object> WRAPS = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
 
   /**
    * Espresso's failures are captured as they happen, in its failure handler: by the time its exception leaves the test
-   * method, a scenario closed by `use {}` (or try-with-resources) has destroyed the activity. The handler set here
-   * wraps Espresso's default one and changes nothing else; a test that sets its own replaces it, and its failures
-   * are then captured when they leave the test method. Set at each test's start, with that test's context.
+   * method, a scenario closed by `use {}` (or try-with-resources) has destroyed the activity. At the start of each
+   * test body (after @Before and rules, which may set a handler of their own) the handler Espresso has is wrapped:
+   * the wrapper captures, then hands the failure to that handler, so a test's own handler still decides what happens.
+   * Through Espresso's handler holder (Espresso.BASE.failureHolder()), read by reflection; where that is not there (a
+   * minified or much older Espresso), nothing is wrapped and failures are captured when they leave the test method.
    */
   private static void installEspressoHandler() {
     if (noEspresso) return;
     try {
-      if (espressoHandlerType == null) {
+      if (espressoHolder == null) {
         ClassLoader l = ClassLoader.getSystemClassLoader();
         espressoHandlerType = Class.forName("androidx.test.espresso.FailureHandler", false, l);
-        setFailureHandler = Class.forName("androidx.test.espresso.Espresso", false, l).getMethod("setFailureHandler", espressoHandlerType);
-        defaultHandler = Class.forName("androidx.test.espresso.base.DefaultFailureHandler", false, l).getConstructor(android.content.Context.class);
+        java.lang.reflect.Field base = Class.forName("androidx.test.espresso.Espresso", true, l).getDeclaredField("BASE");
+        base.setAccessible(true);
+        Object component = base.get(null);
+        Method failureHolder = component.getClass().getMethod("failureHolder");
+        failureHolder.setAccessible(true);
+        Object holder = failureHolder.invoke(component);
+        holderGet = holder.getClass().getMethod("get");
+        holderUpdate = holder.getClass().getMethod("update", espressoHandlerType);
+        espressoHolder = holder;
       }
-      Object fallback = defaultHandler.newInstance(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().getTargetContext());
+      Object installed = holderGet.invoke(espressoHolder);
+      Object inner = WRAPS.getOrDefault(installed, installed);
+      if (inner == null) return;
       Object proxy = java.lang.reflect.Proxy.newProxyInstance(espressoHandlerType.getClassLoader(), new Class<?>[] {espressoHandlerType},
           (self, m, args) -> {
             if (m.getDeclaringClass() == Object.class) {
               return switch (m.getName()) {
                 case "equals" -> self == args[0];
                 case "hashCode" -> System.identityHashCode(self);
-                default -> "apksim failure bundles around " + fallback;
+                default -> "apksim failure bundles around " + inner;
               };
             }
             if (m.getName().equals("handle") && args != null && args.length > 0 && args[0] instanceof Throwable t && written == null) {
-              locked("Espresso failure handler", t);
+              locked("Espresso failure handler", t, false);
             }
             try {
-              return m.invoke(fallback, args);
+              m.setAccessible(true);
+              return m.invoke(inner, args);
             } catch (java.lang.reflect.InvocationTargetException e) {
               throw e.getCause();
             }
           });
-      setFailureHandler.invoke(null, proxy);
-    } catch (ClassNotFoundException | NoSuchMethodException e) {
-      noEspresso = true;  // a test APK without Espresso (or one too different to wrap)
+      WRAPS.put(proxy, inner);
+      holderUpdate.invoke(espressoHolder, proxy);
+    } catch (ReflectiveOperationException | LinkageError e) {
+      noEspresso = true;  // a test APK without Espresso, or one whose holder is not there to read
     } catch (Throwable e) {
       System.err.println("[apksim] failure bundles: Espresso's failure handler not wrapped: " + e);
     }
@@ -206,14 +239,19 @@ public final class Bundles {
     if (!ON) return;
     LOCK.lock();
     try {
-      if (written != null && d.equals(current)) return;
+      if (written != null && d.equals(current)) {
+        // A bundle written for a body that returned (--bundles-on all): the test failed after all, in @After or a rule.
+        // Keep the screen from the end of the body; the failure, log and threads are this failure's.
+        if (writtenPassed) capture("listener (after the test's teardown; screen and tree from the end of the body)", t, false, false);
+        return;
+      }
       if (!d.equals(current)) {
         // A failure for something that never started (a class-level error) is that thing's bundle.
         current = d;
         written = null;
-        logFrom = AdbLog.next();
+        markLog();
       }
-      capture("listener (after the test's teardown)", t, true);
+      capture("listener (after the test's teardown)", t, true, true);
     } finally {
       LOCK.unlock();
     }
@@ -228,7 +266,7 @@ public final class Bundles {
     try {
       if (!LOCK.tryLock(2, java.util.concurrent.TimeUnit.SECONDS)) return;
       try {
-        capture("timeout watchdog, before ending the process", new Exception(why), false);
+        capture("timeout watchdog, before ending the process", new Exception(why), false, written == null);
       } finally {
         LOCK.unlock();
       }
@@ -239,28 +277,40 @@ public final class Bundles {
 
   // ---------------------------------------------------------------------------------------------------------------
 
-  private static void locked(String point, Throwable t) {
+  private static void locked(String point, Throwable t, boolean passed) {
     LOCK.lock();
     try {
-      capture(point, t, true);
+      capture(point, t, true, true);
+      writtenPassed = passed;
     } finally {
       LOCK.unlock();
     }
   }
 
-  /** Writes the current test's bundle; LOCK is held. */
-  private static void capture(String point, Throwable t, boolean screen) {
+  /**
+   * Writes the current test's bundle; LOCK is held. [fresh]: a new bundle, in a folder emptied first (an earlier
+   * run's files must not pass for this one's); otherwise the current bundle's failure, log and threads are rewritten.
+   */
+  private static void capture(String point, Throwable t, boolean screen, boolean fresh) {
     Description d = current;
     if (d == null) return;
     long t0 = System.nanoTime();
     StringBuilder parts = new StringBuilder();
     try {
       Path dir = Path.of(ROOT).resolve(d.getClassName()).resolve(folder(d.getClassName(), d.getMethodName()));
-      Files.createDirectories(dir);
-      shareWithHost(dir);
-      written = dir;
-      boolean whole = full < MAX;
-      if (whole) full++;
+      boolean whole;
+      if (fresh) {
+        if (Files.isDirectory(dir)) delete(dir, false);
+        Files.createDirectories(dir);
+        shareWithHost(dir);
+        written = dir;
+        writtenPassed = false;
+        whole = full < MAX;
+        writtenFull = whole;
+        if (whole) full++;
+      } else {
+        whole = writtenFull;
+      }
       // failure.txt first, so that a part that hangs or kills the process still leaves it; again at the end with the parts.
       String head = failure(d, point, t);
       write(dir.resolve("failure.txt"), redact(head + "parts: (capturing)\n"));
@@ -288,13 +338,49 @@ public final class Bundles {
     void run() throws Exception;
   }
 
+  /** Deadline for one part: the screen 2 s (docs/plan.md phase 5), anything else 5 s. */
+  private static long deadlineMs(String name) {
+    return name.equals("screen.png") ? 2000 : 5000;
+  }
+
+  /**
+   * Runs one part. Past its deadline the capturing thread is interrupted, which ends a part that waits (a lock, a
+   * queue, a sleep) but not one spinning in code that never looks; the part is then skipped in later bundles of this
+   * process, so one that hangs costs once. The interrupt is cleared afterwards, for the test's own teardown.
+   */
   private static void part(StringBuilder parts, String name, Part p) {
+    if (TIMED_OUT.contains(name)) {
+      parts.append("  ").append(name).append(" skipped: it ran past its deadline in an earlier bundle\n");
+      return;
+    }
     long t0 = System.nanoTime();
+    Thread self = Thread.currentThread();
+    java.util.concurrent.atomic.AtomicBoolean fired = new java.util.concurrent.atomic.AtomicBoolean();
+    java.util.concurrent.ScheduledFuture<?> deadline = DEADLINES.schedule(() -> {
+      fired.set(true);
+      self.interrupt();
+    }, deadlineMs(name), java.util.concurrent.TimeUnit.MILLISECONDS);
     try {
       p.run();
       parts.append("  ").append(name).append(' ').append((System.nanoTime() - t0) / 1_000_000).append(" ms\n");
     } catch (Throwable e) {
       parts.append("  ").append(name).append(" failed: ").append(e).append('\n');
+    } finally {
+      deadline.cancel(false);
+      if (fired.get()) {
+        Thread.interrupted();
+        TIMED_OUT.add(name);
+        parts.append("  ").append(name).append(" ran past its ").append(deadlineMs(name)).append(" ms deadline (interrupted)\n");
+      }
+    }
+  }
+
+  /** Deletes a folder's files, and the folder itself when [self]. */
+  private static void delete(Path dir, boolean self) throws IOException {
+    try (java.util.stream.Stream<Path> files = Files.walk(dir)) {
+      for (Path f : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
+        if (self || !f.equals(dir)) Files.delete(f);
+      }
     }
   }
 
@@ -343,7 +429,7 @@ public final class Bundles {
     b.append("captured by: ").append(point).append('\n');
     b.append("tests before this one in this process: ").append(Math.max(testsBefore, 0))
         .append(testsBefore > 0 ? " (if repro.sh passes, state carried over from them: app statics)" : "").append('\n');
-    b.append("simulated uptime: ").append(safe(() -> SystemClock.uptimeMillis() + " ms")).append('\n');
+    b.append("simulated uptime: ").append(safe(() -> uptimeMs() + " ms")).append('\n');
     b.append("wall time: ").append(Instant.now()).append('\n');
     b.append("time zone: ").append(TimeZone.getDefault().getID()).append('\n');
     b.append("device: ").append(safe(Bundles::device)).append('\n');
@@ -362,6 +448,14 @@ public final class Bundles {
       b.append("\n").append(w).append('\n');
     }
     return b.toString();
+  }
+
+  /**
+   * The simulated uptime, read without moving it: with --realtime-clock, SystemClock.uptimeMillis on the main thread
+   * catches the clock up to real time, so a capture would change the state it reports.
+   */
+  private static long uptimeMs() {
+    return org.robolectric.shadows.ApksimClock.uptimeNanos() / 1_000_000L;
   }
 
   private interface Text {
@@ -438,21 +532,29 @@ public final class Bundles {
     List<Win> wins = visibleWindows();
     if (wins.isEmpty()) throw new IllegalStateException("no visible windows");
     Point size = displaySize();
+    // Recycled in finally: pixels are native memory, which HotSpot's GC does not count (AGENTS.md), and a capture that
+    // throws must not leave a screen's worth behind each time.
     Bitmap out = Bitmap.createBitmap(size.x, size.y, Bitmap.Config.ARGB_8888);
-    Canvas canvas = new Canvas(out);
-    canvas.drawColor(0xff000000);
-    int[] at = new int[2];
-    for (Win w : wins) {
-      Bitmap one = Bitmap.createBitmap(w.view.getWidth(), w.view.getHeight(), Bitmap.Config.ARGB_8888);
-      drawRoot(w.view, one);
-      w.view.getLocationOnScreen(at);
-      canvas.drawBitmap(one, at[0], at[1], null);
-      one.recycle();
+    try {
+      Canvas canvas = new Canvas(out);
+      canvas.drawColor(0xff000000);
+      int[] at = new int[2];
+      for (Win w : wins) {
+        Bitmap one = Bitmap.createBitmap(w.view.getWidth(), w.view.getHeight(), Bitmap.Config.ARGB_8888);
+        try {
+          drawRoot(w.view, one);
+          w.view.getLocationOnScreen(at);
+          canvas.drawBitmap(one, at[0], at[1], null);
+        } finally {
+          one.recycle();
+        }
+      }
+      try (FileOutputStream f = new FileOutputStream(file.toFile())) {
+        out.compress(Bitmap.CompressFormat.PNG, 100, f);
+      }
+    } finally {
+      out.recycle();
     }
-    try (FileOutputStream f = new FileOutputStream(file.toFile())) {
-      out.compress(Bitmap.CompressFormat.PNG, 100, f);
-    }
-    out.recycle();
   }
 
   private static Method canHw, hw;
@@ -482,7 +584,7 @@ public final class Bundles {
   // --- the main thread and the log -------------------------------------------------------------------------------
 
   private static String looper() {
-    StringBuilder b = new StringBuilder("simulated uptime ").append(SystemClock.uptimeMillis()).append(" ms\n\nmain looper:\n");
+    StringBuilder b = new StringBuilder("simulated uptime ").append(uptimeMs()).append(" ms\n\nmain looper:\n");
     Looper.getMainLooper().dump(new StringBuilderPrinter(b), "  ");
     b.append("\nactivities by stage (androidx.test's lifecycle monitor):\n");
     b.append(safe(Bundles::stages));
@@ -503,18 +605,31 @@ public final class Bundles {
     return b.length() == 0 ? "  none\n" : b.toString();
   }
 
+  /**
+   * The test's log lines: all of them up to LOG_LINES, else the first and last half of that with a line saying how
+   * many went between. The first ones are kept as they arrive (AdbLog.keepHead), since the ring holds only the last
+   * 20,000 lines of the process.
+   */
   private static String logcat() throws InterruptedException {
-    List<AdbLog.Line> lines = AdbLog.since(logFrom, 0).lines();
+    AdbLog.Batch batch = AdbLog.since(logFrom, 0);
+    long end = batch.next();
+    long total = end - logFrom;
+    if (total == 0) return "no log lines during this test\n";
+    List<AdbLog.Line> lines = batch.lines();
+    long firstSeq = end - lines.size();
     StringBuilder b = new StringBuilder();
-    int n = lines.size();
-    for (int i = 0; i < n; i++) {
-      if (n > LOG_LINES && i == LOG_LINES / 2) {
-        b.append("... ").append(n - LOG_LINES).append(" lines cut ...\n");
-        i = n - LOG_LINES / 2;
-      }
-      b.append(lines.get(i).text()).append('\n');
+    if (total <= LOG_LINES && firstSeq <= logFrom) {
+      for (AdbLog.Line l : lines) b.append(l.text()).append('\n');
+      return b.toString();
     }
-    return n == 0 ? "no log lines during this test\n" : b.toString();
+    List<AdbLog.Line> head = AdbLog.head();
+    for (AdbLog.Line l : head) b.append(l.text()).append('\n');
+    long tailFrom = Math.max(logFrom + head.size(), Math.max(firstSeq, end - LOG_LINES / 2));
+    if (tailFrom > logFrom + head.size()) {
+      b.append("... ").append(tailFrom - logFrom - head.size()).append(" lines cut ...\n");
+    }
+    for (int i = (int) (tailFrom - firstSeq); i < lines.size(); i++) b.append(lines.get(i).text()).append('\n');
+    return b.toString();
   }
 
   private static String threads() {
@@ -562,7 +677,9 @@ public final class Bundles {
     }
     String sel = d.getClassName() + (d.getMethodName() == null ? "" : "#" + d.getMethodName().replace("\\", "\\\\").replace(",", "\\,"));
     args.addAll(Math.max(args.size() - 1, 0), List.of("-e", "class", sel));
-    StringBuilder b = new StringBuilder("#!/bin/sh\n# Runs ").append(sel).append(" alone, as the run that wrote this bundle ran it.\n");
+    // (A Parameterized name can hold a line break: in the comment it must not end the line.)
+    String shown = sel.replace("\r", "\\r").replace("\n", "\\n");
+    StringBuilder b = new StringBuilder("#!/bin/sh\n# Runs ").append(shown).append(" alone, as the run that wrote this bundle ran it.\n");
     if (argv == null) b.append("# The launch's own arguments were not recorded: fill in the app APK and options.\n");
     String cwd = System.getProperty("apksim.cwd", System.getProperty("user.dir"));
     b.append("cd ").append(quote(cwd)).append(" || exit 1\nexec ").append(quote(System.getProperty("apksim.launcherScript", "./apksim")));
