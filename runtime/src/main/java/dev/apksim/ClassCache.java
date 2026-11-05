@@ -90,6 +90,7 @@ final class ClassCache {
     // Classes translated with debug info (--debug) are kept apart, so neither kind is ever used for the other.
     if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
     else if (!dev.apksim.dex.ClassTranslator.PEEPHOLE) runtime += "-raw";
+    runtime += dev.apksim.dex.Probes.cacheKey();  // test-impact recording: probed classes
     Path root = Path.of(System.getProperty("apksim.cacheRoot"), "classes");
     ClassCache cache = new ClassCache(root.resolve(runtime), keys, hintName);
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
