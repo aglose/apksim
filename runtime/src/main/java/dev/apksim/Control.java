@@ -41,6 +41,29 @@ final class Control {
 
   private Control() {}
 
+  private static void serve(Socket socket) {
+    try (Socket s = socket;
+        BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
+        PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
+      s.setTcpNoDelay(true);  // replies are small and a tool may wait on each one
+      String line;
+      while ((line = in.readLine()) != null) {
+        String[] args = line.trim().split("\\s+");
+        if (args[0].equals("stream")) {
+          // stream [QUALITY]: this connection becomes a stream of JPEG frames (FrameStream) until it closes.
+          out.println("ok stream");
+          FrameStream.serve(s.getInputStream(), s.getOutputStream(), args.length > 1 ? Integer.parseInt(args[1]) : 80);
+          return;
+        }
+        Pending p = new Pending(args);
+        QUEUE.add(p);
+        out.println(p.await());
+      }
+    } catch (IOException | InterruptedException | RuntimeException e) {
+      // The client went away (or sent a bad stream request).
+    }
+  }
+
   static void start(int port) throws IOException {
     // Loopback only, unless told otherwise: inside a container the host reaches it through a published port.
     String bind = System.getProperty("apksim.controlBind");
@@ -51,19 +74,17 @@ final class Control {
         String.valueOf(server.getLocalPort()));
     if (port == 0) System.err.println("[apksim] control port " + server.getLocalPort());
     Thread t = new Thread(() -> {
+      // Each connection on its own thread: a tool can watch (`stream`) while another drives the instance.
       while (true) {
-        try (Socket s = server.accept();
-            BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
-            PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
-          String line;
-          while ((line = in.readLine()) != null) {
-            Pending p = new Pending(line.trim().split("\\s+"));
-            QUEUE.add(p);
-            out.println(p.await());
-          }
-        } catch (IOException | InterruptedException e) {
-          // The client went away: wait for the next one.
+        Socket s;
+        try {
+          s = server.accept();
+        } catch (IOException e) {
+          continue;
         }
+        Thread c = new Thread(() -> serve(s), "control-" + s.getPort());
+        c.setDaemon(true);
+        c.start();
       }
     }, "control");
     t.setDaemon(true);

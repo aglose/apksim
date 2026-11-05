@@ -130,7 +130,9 @@ public class Host {
         .setComponent(new ComponentName(System.getProperty("apksim.package"), launcher));
     start(launcher, intent);
     Timing.mark("activity-resumed");
-    Autofill autofill = Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
+    // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
+    Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
+        : Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
 
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
     long lastInput = 0;
@@ -164,8 +166,10 @@ public class Host {
       controls.tick();
       Control.Pending cmd;
       while ((cmd = Control.QUEUE.poll()) != null) {
-        // Logged so a scripted session can be followed afterwards. Pasted text is not in the command.
-        System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
+        // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
+        // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
+        String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
+        if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
         if (cmd.args[0].equals("settle")) {
           // Answered later, from the loop, once the UI is quiet (or it gives up).
           Settle next;
@@ -404,12 +408,21 @@ public class Host {
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
 
+  /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
+  private static Path dataDir;
+
   /** Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. */
   private static void usePersistentDataDir() throws Exception {
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
     if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
+    dataDir = data;
+    // apksim serve learns the slot from here (not from `stats`, which waits for the activity to start): it empties the
+    // slot when the session ends, even if the app never got that far.
+    if (System.getProperty("apksim.dataSlots") != null) {
+      System.err.println("[apksim] data slot " + data + " pid " + ProcessHandle.current().pid());
+    }
     Path link = RuntimeEnvironment.getTempDirectory().getBasePath().resolve(pkg + "-dataDir");
     Storage.deleteTree(link);
     Files.createSymbolicLink(link, data);
@@ -965,7 +978,12 @@ public class Host {
       }
       case "stats" -> {
         Runtime rt = Runtime.getRuntime();
-        return String.format("frames=%d heapUsedMb=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20);
+        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
+            ProcessHandle.current().pid(), dataDir);
+      }
+      case "redraw" -> {
+        // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).
+        for (View r : rootViews()) r.invalidate();
       }
       default -> {
         String r = controls.run(a);
