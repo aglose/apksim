@@ -408,7 +408,17 @@ static pthread_cond_t *host_cond(void *c) {
   free(n);
   return atomic_load(&s->host);
 }
-static int s_cond_init(void *c, void *a) { atomic_store(&shell_of(c)->host, NULL); return 0; }
+// The clock a condition variable's timed waits measure their deadline on, kept beside its host pointer (Android's
+// pthread_cond_t is 48 bytes): 0 is CLOCK_REALTIME, which the all-zero static initialiser means, 1 CLOCK_MONOTONIC.
+typedef struct { _Atomic(void *) host; int clock; } CondShell;
+static inline CondShell *cond_shell(void *c) { return (CondShell *)shell_of(c); }
+
+static int s_cond_init(void *c, void *a) {
+  atomic_store(&shell_of(c)->host, NULL);
+  // Android's pthread_condattr_t is a long; ours holds the clock pthread_condattr_setclock set (see s_condattr_init).
+  cond_shell(c)->clock = a ? (int)*(long *)a : 0;
+  return 0;
+}
 static int s_cond_destroy(void *c) {
   void *h = atomic_exchange(&shell_of(c)->host, NULL);
   if (h) {
@@ -420,9 +430,35 @@ static int s_cond_destroy(void *c) {
 static int s_cond_signal(void *c) { return pthread_cond_signal(host_cond(c)); }
 static int s_cond_broadcast(void *c) { return pthread_cond_broadcast(host_cond(c)); }
 static int s_cond_wait(void *c, void *m) { return d2a_errno(pthread_cond_wait(host_cond(c), host_mutex(m))); }
-static int s_cond_timedwait(void *c, void *m, const struct timespec *t) { return d2a_errno(pthread_cond_timedwait(host_cond(c), host_mutex(m), t)); }
+static int s_clock_gettime(int id, struct timespec *t);
+// A deadline on Android's clock [clk] (0 realtime, 1 monotonic). Apple's pthread_cond_timedwait takes realtime
+// deadlines only: a monotonic one (seconds since boot) read as realtime is long past, so every wait returned at
+// once and callers that wait in a loop spun a core each (WebRTC's threads: two cores for as long as an app ran).
+// So a monotonic deadline becomes a relative wait, measured from the same clock clock_gettime gives the app.
+static int cond_wait_until(void *c, void *m, int clk, const struct timespec *t) {
+  if (clk == 0) return d2a_errno(pthread_cond_timedwait(host_cond(c), host_mutex(m), t));
+  struct timespec now, rel;
+  s_clock_gettime(clk, &now);
+  rel.tv_sec = t->tv_sec - now.tv_sec;
+  rel.tv_nsec = t->tv_nsec - now.tv_nsec;
+  if (rel.tv_nsec < 0) { rel.tv_nsec += 1000000000L; rel.tv_sec--; }
+  if (rel.tv_sec < 0) return d2a_errno(ETIMEDOUT);
+  return d2a_errno(pthread_cond_timedwait_relative_np(host_cond(c), host_mutex(m), &rel));
+}
+static int s_cond_timedwait(void *c, void *m, const struct timespec *t) { return cond_wait_until(c, m, cond_shell(c)->clock, t); }
+static int s_cond_timedwait_monotonic(void *c, void *m, const struct timespec *t) { return cond_wait_until(c, m, 1, t); }
+static int s_cond_clockwait(void *c, void *m, int clk, const struct timespec *t) {
+  if (clk != 0 && clk != 1) return 22;  // EINVAL: bionic takes CLOCK_REALTIME and CLOCK_MONOTONIC only
+  return cond_wait_until(c, m, clk, t);
+}
+static int s_condattr_init(void *a) { *(long *)a = 0; return 0; }
 static int s_condattr_noop(void *a) { return 0; }
-static int s_condattr_setclock(void *a, int clk) { return 0; }
+static int s_condattr_setclock(void *a, int clk) {
+  if (clk != 0 && clk != 1) return 22;
+  *(long *)a = clk;
+  return 0;
+}
+static int s_condattr_getclock(const void *a, int *clk) { *clk = (int)*(const long *)a; return 0; }
 
 static pthread_rwlock_t *host_rwlock(void *l) {
   Shell *s = shell_of(l);
@@ -917,7 +953,9 @@ static const Entry table[] = {
     E("pthread_mutex_trylock", s_mutex_trylock), E("pthread_mutex_unlock", s_mutex_unlock),
     E("pthread_cond_init", s_cond_init), E("pthread_cond_destroy", s_cond_destroy), E("pthread_cond_signal", s_cond_signal),
     E("pthread_cond_broadcast", s_cond_broadcast), E("pthread_cond_wait", s_cond_wait), E("pthread_cond_timedwait", s_cond_timedwait),
-    E("pthread_condattr_init", s_condattr_noop), E("pthread_condattr_destroy", s_condattr_noop), E("pthread_condattr_setclock", s_condattr_setclock),
+    E("pthread_condattr_init", s_condattr_init), E("pthread_condattr_destroy", s_condattr_noop), E("pthread_condattr_setclock", s_condattr_setclock),
+    E("pthread_condattr_getclock", s_condattr_getclock), E("pthread_cond_clockwait", s_cond_clockwait),
+    E("pthread_cond_timedwait_monotonic_np", s_cond_timedwait_monotonic), E("pthread_cond_timedwait_monotonic", s_cond_timedwait_monotonic),
     E("pthread_rwlock_init", s_rwlock_init), E("pthread_rwlock_destroy", s_rwlock_destroy), E("pthread_rwlock_rdlock", s_rwlock_rdlock),
     E("pthread_rwlock_wrlock", s_rwlock_wrlock), E("pthread_rwlock_tryrdlock", s_rwlock_tryrdlock), E("pthread_rwlock_trywrlock", s_rwlock_trywrlock),
     E("pthread_rwlock_unlock", s_rwlock_unlock), E("pthread_once", s_once), E("pthread_key_create", s_key_create),

@@ -83,6 +83,20 @@ jobs:
           assert failed == ["b_haltsTheProcess", "d_ignoresInterruptsPastItsTimeout"], f"failed: {failed}"
           print(f"{len(crash)} tests, failed as meant: {failed}")
           EOF
+      # The same suite split over 3 processes at once (-e numShards/shardIndex): every test once, the same results.
+      - name: Test run in shards
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-sharded.xml --shards 3 -e timezone America/New_York -- --timezone America/New_York
+          python3 - tests/junit.xml tests/junit-sharded.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          def cases(f):
+              return [(c.get("classname"), c.get("name"), c.find("failure") is not None) for c in ET.parse(f).iter("testcase")]
+          whole, sharded = cases(sys.argv[1]), cases(sys.argv[2])
+          assert len(set(sharded)) == len(sharded), "a test ran twice"
+          assert sorted(sharded) == sorted(whole), f"results differ: {set(sharded) ^ set(whole)}"
+          print(f"{len(sharded)} tests in 3 shards, as in one process")
+          EOF
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,3 +107,4 @@ jobs:
             tests/junit.xml
             tests/junit-realtime.xml
             tests/junit-crash.xml
+            tests/junit-sharded.xml
