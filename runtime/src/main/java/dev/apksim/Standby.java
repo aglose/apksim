@@ -136,6 +136,7 @@ final class Standby {
 
   /** Ends the process, passing the exit code to the launcher's client when this instance came from a standby. */
   static void halt(int code) {
+    dev.apksim.net.Net.flush();  // a recording in progress
     spawnNext();
     System.err.flush();
     System.out.flush();

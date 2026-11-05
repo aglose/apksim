@@ -75,7 +75,7 @@ final class DeviceControls {
     "key VOLUME_DOWN", "back", "locale {text}", "notifications open last", "location {text}", "location run",
     "location bike", "location drive", "location none", "biometrics toggle", "biometrics match", "biometrics nomatch",
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
-    "device desktop", "device tv",
+    "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
   };
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
@@ -472,6 +472,10 @@ final class DeviceControls {
       }
       case "location" -> {
         return location().run(a);
+      }
+      case "network" -> {
+        // network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save] (docs/network.md).
+        return dev.apksim.net.Net.command(a);
       }
       case "notifications" -> {
         return notifications().run(a);

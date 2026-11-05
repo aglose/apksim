@@ -67,6 +67,8 @@ dependencies {
   implementation(libs.androidx.compose.material3.adaptive)
   // Video: the Settings tab's "Play clip" (HEVC + AAC through MediaCodec and AudioTrack)
   implementation(libs.androidx.media3.exoplayer)
+  // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
+  implementation(libs.okhttp)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

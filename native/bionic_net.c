@@ -288,10 +288,27 @@ static int net_bind(int fd, const void *a, socklen_t alen) {
   return bind(fd, (struct sockaddr *)&m, mlen);
 }
 
+// `network offline` (dev.apksim.net.Net, set through ElfLoader.nativeSetOffline): native code's connections to
+// anything but loopback fail as with no network, and names do not resolve, as Java's do.
+volatile int net_offline;
+
+static int loopback_m(const struct sockaddr_storage *m) {
+  if (m->ss_family == AF_INET) return (ntohl(((const struct sockaddr_in *)m)->sin_addr.s_addr) >> 24) == 127;
+  if (m->ss_family == AF_INET6) {
+    const struct in6_addr *a = &((const struct sockaddr_in6 *)m)->sin6_addr;
+    return IN6_IS_ADDR_LOOPBACK(a) || (IN6_IS_ADDR_V4MAPPED(a) && a->s6_addr[12] == 127);
+  }
+  return 1;  // not an internet address (Unix sockets)
+}
+
 static int net_connect(int fd, const void *a, socklen_t alen) {
   struct sockaddr_storage m;
   socklen_t mlen;
   if (addr_a2m(a, alen, &m, &mlen) < 0) return -1;
+  if (net_offline && !loopback_m(&m)) {
+    errno = ENETUNREACH;
+    return -1;
+  }
   return connect(fd, (struct sockaddr *)&m, mlen);
 }
 
@@ -324,19 +341,38 @@ static int name_of(int fd, void *a, socklen_t *alen, int peer) {
 static int net_getsockname(int fd, void *a, socklen_t *alen) { return name_of(fd, a, alen, 0); }
 static int net_getpeername(int fd, void *a, socklen_t *alen) { return name_of(fd, a, alen, 1); }
 
+// Offline, sending on a socket connected before (a peer that is not loopback) fails as connect does.
+static int offline_peer(int fd) {
+  if (!net_offline) return 0;
+  struct sockaddr_storage peer;
+  socklen_t plen = sizeof peer;
+  if (getpeername(fd, (struct sockaddr *)&peer, &plen) != 0 || loopback_m(&peer)) return 0;
+  errno = ENETUNREACH;
+  return 1;
+}
+
+// Offline, a datagram for an address that is not loopback goes nowhere.
+static int offline_dest(const struct sockaddr_storage *m) {
+  if (!net_offline || loopback_m(m)) return 0;
+  errno = ENETUNREACH;
+  return 1;
+}
+
 static ssize_t net_send(int fd, const void *b, size_t n, int flags) {
   int s = nl_slot(fd);
   if (s >= 0) return nl_send(s, b, n);
+  if (offline_peer(fd)) return -1;
   return send(fd, b, n, msg_flags_a2m(flags));
 }
 
 static ssize_t net_sendto(int fd, const void *b, size_t n, int flags, const void *a, socklen_t alen) {
   int s = nl_slot(fd);
   if (s >= 0) return nl_send(s, b, n);
-  if (!a) return send(fd, b, n, msg_flags_a2m(flags));
+  if (!a) return offline_peer(fd) ? -1 : send(fd, b, n, msg_flags_a2m(flags));
   struct sockaddr_storage m;
   socklen_t mlen;
   if (addr_a2m(a, alen, &m, &mlen) < 0) return -1;
+  if (offline_dest(&m)) return -1;
   return sendto(fd, b, n, msg_flags_a2m(flags), (struct sockaddr *)&m, mlen);
 }
 
@@ -366,6 +402,7 @@ static ssize_t net_sendmsg(int fd, const AMsgHdr *a, int flags) {
   struct sockaddr_storage m;
   socklen_t mlen = 0;
   if (a->name && addr_a2m(a->name, a->namelen, &m, &mlen) < 0) return -1;
+  if (a->name ? offline_dest(&m) : offline_peer(fd)) return -1;
   struct msghdr h = {a->name ? &m : NULL, mlen, a->iov, (int)a->iovlen, NULL, 0, 0};
   return sendmsg(fd, &h, msg_flags_a2m(flags));  // Ancillary data on send is not translated.
 }
@@ -451,6 +488,10 @@ static const char *net_inet_ntop(int af, const void *src, char *dst, socklen_t s
 // Android's addrinfo has the BSD field order, so only the family and the address inside need converting.
 static int net_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
   struct addrinfo h, *list = NULL;
+  if (net_offline && node && strcmp(node, "localhost") != 0) {
+    unsigned char buf[sizeof(struct in6_addr)];
+    if (inet_pton(AF_INET, node, buf) != 1 && inet_pton(AF_INET6, node, buf) != 1) return EAI_NONAME;
+  }
   if (hints) {
     h = *hints;
     h.ai_family = af_a2m(hints->ai_family);

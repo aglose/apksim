@@ -2498,6 +2498,35 @@ final class MethodTranslator implements Opcodes {
       "org/webrtc/DefaultVideoDecoderFactory", "dev/apksim/video/SimVideoDecoderFactory",
       "org/webrtc/EglRenderer", "dev/apksim/video/SimEglRenderer");
 
+  /**
+   * JDK network calls in app code that go through dev.apksim.net.Net (docs/network.md "Where it hooks"): sockets and
+   * TLS layered on them, URL connections, and the app setting an HTTPS connection's socket factory. JDK names, which R8 never renames, so minified OkHttp is covered too.
+   * Each maps owner.name+descriptor to Net's static method, which takes the receiver as its first argument.
+   */
+  private static final Map<String, String[]> NET_HOOKS = Map.ofEntries(
+      Map.entry("java/net/Socket.connect(Ljava/net/SocketAddress;)V",
+          new String[] {"connect", "(Ljava/net/Socket;Ljava/net/SocketAddress;)V"}),
+      Map.entry("java/net/Socket.connect(Ljava/net/SocketAddress;I)V",
+          new String[] {"connect", "(Ljava/net/Socket;Ljava/net/SocketAddress;I)V"}),
+      Map.entry("javax/net/SocketFactory.createSocket(Ljava/lang/String;I)Ljava/net/Socket;",
+          new String[] {"createSocket", "(Ljavax/net/SocketFactory;Ljava/lang/String;I)Ljava/net/Socket;"}),
+      Map.entry("javax/net/SocketFactory.createSocket(Ljava/net/InetAddress;I)Ljava/net/Socket;",
+          new String[] {"createSocket", "(Ljavax/net/SocketFactory;Ljava/net/InetAddress;I)Ljava/net/Socket;"}),
+      Map.entry("javax/net/ssl/SSLSocketFactory.createSocket(Ljava/lang/String;I)Ljava/net/Socket;",
+          new String[] {"createSocket", "(Ljavax/net/SocketFactory;Ljava/lang/String;I)Ljava/net/Socket;"}),
+      Map.entry("javax/net/ssl/SSLSocketFactory.createSocket(Ljava/net/InetAddress;I)Ljava/net/Socket;",
+          new String[] {"createSocket", "(Ljavax/net/SocketFactory;Ljava/net/InetAddress;I)Ljava/net/Socket;"}),
+      Map.entry("javax/net/ssl/SSLSocketFactory.createSocket(Ljava/net/Socket;Ljava/lang/String;IZ)Ljava/net/Socket;",
+          new String[] {"createSocket", "(Ljavax/net/ssl/SSLSocketFactory;Ljava/net/Socket;Ljava/lang/String;IZ)Ljava/net/Socket;"}),
+      Map.entry("java/net/URL.openConnection()Ljava/net/URLConnection;",
+          new String[] {"openConnection", "(Ljava/net/URL;)Ljava/net/URLConnection;"}),
+      Map.entry("java/net/URL.openConnection(Ljava/net/Proxy;)Ljava/net/URLConnection;",
+          new String[] {"openConnection", "(Ljava/net/URL;Ljava/net/Proxy;)Ljava/net/URLConnection;"}),
+      Map.entry("java/net/URL.openStream()Ljava/io/InputStream;",
+          new String[] {"openStream", "(Ljava/net/URL;)Ljava/io/InputStream;"}),
+      Map.entry("javax/net/ssl/HttpsURLConnection.setSSLSocketFactory(Ljavax/net/ssl/SSLSocketFactory;)V",
+          new String[] {"setSSLSocketFactory", "(Ljavax/net/ssl/HttpsURLConnection;Ljavax/net/ssl/SSLSocketFactory;)V"}));
+
   /** The class app code should instantiate, or extend, in place of [type]. */
   static String instantiated(String type) {
     return SUBSTITUTES.getOrDefault(type, type);
@@ -2512,6 +2541,16 @@ final class MethodTranslator implements Opcodes {
         && ("createRuntimeShaderEffect".equals(m.name()) || "createBlurEffect".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/gpu/GpuEffects", m.name(), m.descriptor(), false);
       return;
+    }
+    if (opcode == INVOKEVIRTUAL && (ownerName.startsWith("java/net/") || ownerName.startsWith("javax/net/"))) {
+      String[] hook = NET_HOOKS.get(ownerName + "." + m.name() + m.descriptor());
+      if (hook == null && "javax/net/ssl/SSLSocket".equals(ownerName) && "connect".equals(m.name())) {
+        hook = NET_HOOKS.get("java/net/Socket." + m.name() + m.descriptor());
+      }
+      if (hook != null) {
+        mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/net/Net", hook[0], hook[1], false);
+        return;
+      }
     }
     if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && SUBSTITUTES.containsKey(ownerName)) {
       mv.visitMethodInsn(opcode, instantiated(ownerName), m.name(), m.descriptor(), false);

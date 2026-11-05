@@ -318,6 +318,12 @@ static void install_table(JNIEnv *env) {
 static char search[1024];
 const char *elf_search_dir(void) { return search; }
 
+extern volatile int net_offline;
+
+JNIEXPORT void JNICALL Java_dev_apksim_ElfLoader_nativeSetOffline(JNIEnv *env, jclass c, jboolean offline) {
+  net_offline = offline;
+}
+
 JNIEXPORT jlong JNICALL Java_dev_apksim_ElfLoader_nativeLoad(JNIEnv *env, jclass c, jstring jpath, jstring jdir) {
   install_table(env);
   const char *dir = (*env)->GetStringUTFChars(env, jdir, NULL);

@@ -113,10 +113,35 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --bundles-max) EXTRA+=("-Dapksim.bundles.max=$2"); shift 2 ;;
     --bundles-redact) EXTRA+=("-Dapksim.bundles.redact.${REDACT_N:-0}=$2"); REDACT_N=$((${REDACT_N:-0} + 1)); shift 2 ;;
     --no-network) NO_NET=1; shift ;;
+    # Record and replay the app's HTTP(S), and network conditions (docs/network.md).
+    --network)
+      [[ "$2" == record || "$2" == replay ]] || { echo "--network takes record FILE or replay FILE" >&2; exit 2; }
+      # The folder is resolved on its own: a missing one must stop here, not become "/" (and a sandbox rule for it).
+      NET_DIR="$(cd "$(dirname "$3")" 2>/dev/null && pwd)" || { echo "no folder $(dirname "$3") for $3" >&2; exit 2; }
+      NET_FILE="$NET_DIR/$(basename "$3")"
+      [[ "$2" == replay && ! -f "$NET_FILE" ]] && { echo "no recording at $3" >&2; exit 2; }
+      # Recording, the sandbox lets the app write the recording and its temporary file, nothing else beside them.
+      if [[ "$2" == record ]]; then
+        [[ "$NET_FILE" == *'"'* || "$NET_FILE" == *'\'* ]] && { echo "a recording path cannot hold \" or \\" >&2; exit 2; }
+        NET_RECORD_FILE="$NET_FILE"
+      fi
+      EXTRA+=("-Dapksim.network=$2:$NET_FILE"); shift 3 ;;
+    --network-profile) EXTRA+=("-Dapksim.networkProfile=$2"); shift 2 ;;
+    --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
+    --network-match) EXTRA+=("-Dapksim.networkMatch=$2"); shift 2 ;;
+    --network-ignore-query) EXTRA+=("-Dapksim.networkIgnoreQuery=$2"); shift 2 ;;
+    --network-ignore-header) EXTRA+=("-Dapksim.networkIgnoreHeader=$2"); shift 2 ;;
+    --network-unmatched) EXTRA+=("-Dapksim.networkUnmatched=$2"); shift 2 ;;
+    --network-replay-timing) EXTRA+=("-Dapksim.networkReplayTiming=$2"); shift 2 ;;
+    --network-host) NET_HOSTS="${NET_HOSTS:+$NET_HOSTS,}$2"; shift 2 ;;
+    --network-trust)
+      [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
+      EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+[[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
 if [[ -n "${BUNDLES:-}" ]]; then
   IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
@@ -138,6 +163,10 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
+      # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
+      -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
+      -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
+      -Dapksim.networkReplayTiming=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*) ;;
       *) WARM_OK="" ;;
     esac
   done
@@ -209,7 +238,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
-(allow file-write* (subpath \"$BUNDLES\"))}
+(allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_FILE:+
+(allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"

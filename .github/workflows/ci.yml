@@ -1,7 +1,7 @@
 # Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh, with the adb
-# device check of scripts/adb-check.py and screenshot tests of scripts/snapshot.py) and its androidTest suite with
-# --instrument (JUnit XML in the artifact), checks the DEX translator on an R8 fixture, and checks test-impact selection
-# and balanced shards (scripts/affected-check.py).
+# device check of scripts/adb-check.py, the network check of scripts/network-check.sh and screenshot tests of
+# scripts/snapshot.py) and its androidTest suite with --instrument (JUnit XML in the artifact), checks the DEX
+# translator on an R8 fixture, and checks test-impact selection and balanced shards (scripts/affected-check.py).
 # The Mac-only parts (window, Metal, VideoToolbox, AOT timings) are not covered here.
 name: ci
 on:
@@ -67,6 +67,25 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-realtime.xml -e timezone America/New_York -e realtimeClock true \
             -- --timezone America/New_York --realtime-clock
+      # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
+      # unmatched request on purpose passes, and that one fails with the request named.
+      - name: Test run with the network replayed
+        run: |
+          cp testapks/composeapp/app/src/androidTest/network/greeting.har tests/greeting.har
+          status=0
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-network.xml -e class dev.apksim.composeapp.NetworkReplayTest -e networkReplay true \
+            -e unmatchedOnPurpose true -- --network replay /work/greeting.har || status=$?
+          test "$status" = 1
+          python3 - tests/junit-network.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          cases = {c.get("name"): c.find("failure") for c in ET.parse(sys.argv[1]).iter("testcase")}
+          failed = sorted(n for n, f in cases.items() if f is not None)
+          assert len(cases) == 7, f"tests: {sorted(cases)}"
+          assert failed == ["z_anUnmatchedRequestLeftUnclearedFailsItsTest"], f"failed: {failed}"
+          assert "POST https://api.apksim.test/v1/elsewhere" in cases[failed[0]].text, cases[failed[0]].text
+          print(f"{len(cases)} network replay tests, failed as meant: {failed}")
+          EOF
       # ProcessDeathTest's two crashing tests end the process (a halt, the Timeout watchdog): instrument.py must
       # report those two failed and still run every other test, in new processes.
       - name: Test run that ends its process on purpose
@@ -118,6 +137,8 @@ jobs:
           path: |
             smoke/*.png
             smoke/*.log
+            smoke/network/*.log
+            smoke/network/rec.har
             smoke/snapshots/*.log
             smoke/snapshots/*/report.html
             smoke/snapshots/*/results.json
@@ -125,6 +146,7 @@ jobs:
             smoke/snapshots/*/golden/**
             smoke/snapshots/*/diff/**
             tests/junit.xml
+            tests/junit-network.xml
             tests/junit-realtime.xml
             tests/junit-crash.xml
             tests/junit-sharded.xml

@@ -46,6 +46,11 @@ final class ElfLoader {
       }
     }
     System.load(HostOs.runtimeLib("libelfloader").toString());
+    if (HostOs.MAC) {
+      // Natives follow `network offline` too (native/bionic_net.c). Linux's shim has no network layer of its own.
+      nativeSetOffline(dev.apksim.net.Net.offline());
+      dev.apksim.net.Net.onOfflineChange(ElfLoader::nativeSetOffline);
+    }
     libDir = dir;
     return dir;
   }
@@ -159,6 +164,8 @@ final class ElfLoader {
   }
 
   private static native long nativeLoad(String path, String searchDir);
+
+  private static native void nativeSetOffline(boolean offline);
 
   private static native String nativeJavaSymbols(long handle);
 
