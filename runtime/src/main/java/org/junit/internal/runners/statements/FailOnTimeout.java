@@ -109,9 +109,11 @@ public class FailOnTimeout extends Statement {
     @Override
     public void run() {
       long deadline = System.nanoTime() + nanos;
+      // Time apksim spends writing a failure bundle (--bundles) is not the test's: the deadline moves by it.
+      long paused = dev.apksim.Bundles.pausedNanos();
       synchronized (this) {
         try {
-          for (long left; !done && (left = deadline - System.nanoTime()) > 0; ) {
+          for (long left; !done && (left = deadline + (dev.apksim.Bundles.pausedNanos() - paused) - System.nanoTime()) > 0; ) {
             TimeUnit.NANOSECONDS.timedWait(this, left);
           }
           if (done) return;
@@ -134,6 +136,7 @@ public class FailOnTimeout extends Statement {
           .append(" s after its timeout of ").append(TimeUnit.NANOSECONDS.toMillis(nanos))
           .append(" ms, ignoring interrupts; ending the process (on a device its thread would be abandoned). It is at:\n");
       for (StackTraceElement e : target.getStackTrace()) b.append("\tat ").append(e).append('\n');
+      dev.apksim.Bundles.watchdog(b.toString());  // with --bundles: the failure, threads and log, before the process ends
       System.err.print(b);
       System.err.flush();
       System.out.flush();

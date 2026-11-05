@@ -114,6 +114,7 @@ final class Instrument {
       raw.finish(r, 0);
       return 0;
     }
+    Bundles.runStarted();
     JUnitCore core = new JUnitCore();
     core.addListener(raw);
     if (dev.apksim.dex.Probes.ON) core.addListener(new DepsListener(out));  // after raw: its lines go between blocks
@@ -437,6 +438,7 @@ final class Instrument {
       code = OK;
       failure = null;
       dev.apksim.net.Net.testStarted();
+      Bundles.testStarted(d);
       String stream = "";
       if (!d.getClassName().equals(lastClass)) {
         stream = "\n" + d.getClassName() + ":";
@@ -450,11 +452,13 @@ final class Instrument {
       if (f.getDescription().isTest() && failure == null) {
         code = FAILURE;
         failure = f;
+        Bundles.listenerFailure(f.getDescription(), f.getException());
       } else if (!f.getDescription().isTest()) {
         // A class that could not run at all (initializationError): report it as one failed test, as the runner does.
         testStarted(f.getDescription());
         code = FAILURE;
         failure = f;
+        Bundles.listenerFailure(f.getDescription(), f.getException());
         testFinished(f.getDescription());
       }
     }
@@ -480,12 +484,17 @@ final class Instrument {
         failure = new Failure(d, new AssertionError(unmatched.size() + " request" + (unmatched.size() == 1 ? "" : "s")
             + " the network recording has no answer for (apksim --network replay):\n  " + String.join("\n  ", unmatched)));
         networkFailures.add(failure);
+        Bundles.listenerFailure(d, failure.getException());
       }
+      Bundles.testFinished(d, code == OK, code == FAILURE);
       String stream = code == FAILURE ? "\nError in " + d.getMethodName() + "(" + d.getClassName() + "):\n" + trace(failure) : ".";
       status(d, code, stream, code == FAILURE || code == ASSUMPTION ? trace(failure) : null);
     }
 
     private void status(Description d, int statusCode, String stream, String stack) {
+      // Where this test's failure bundle is (--bundles): an extra key, which am instrument parsers keep or ignore.
+      String bundle = statusCode == START ? null : Bundles.bundleOf(d);
+      if (bundle != null) out.println("INSTRUMENTATION_STATUS: apksim_bundle=" + bundle);
       out.println("INSTRUMENTATION_STATUS: class=" + d.getClassName());
       out.println("INSTRUMENTATION_STATUS: current=" + current);
       out.println("INSTRUMENTATION_STATUS: id=" + id);

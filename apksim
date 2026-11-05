@@ -96,6 +96,11 @@ while [[ $# -gt 1 ]]; do
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
     # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
     --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
+    # Failure bundles (test runs): what each failing test left, in DIR/<class>/<method>-<hash>/ (docs/plan.md phase 5).
+    --bundles) mkdir -p "$2" && BUNDLES="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.bundles=$BUNDLES"); shift 2 ;;
+    --bundles-on) EXTRA+=("-Dapksim.bundles.on=$2"); shift 2 ;;
+    --bundles-max) EXTRA+=("-Dapksim.bundles.max=$2"); shift 2 ;;
+    --bundles-redact) EXTRA+=("-Dapksim.bundles.redact.${REDACT_N:-0}=$2"); REDACT_N=$((${REDACT_N:-0} + 1)); shift 2 ;;
     --no-network) NO_NET=1; shift ;;
     # Record and replay the app's HTTP(S), and network conditions (docs/network.md).
     --network)
@@ -118,6 +123,11 @@ while [[ $# -gt 1 ]]; do
   esac
 done
 [[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
+# A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
+if [[ -n "${BUNDLES:-}" ]]; then
+  IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
+  EXTRA+=("-Dapksim.argv=$ARGV" "-Dapksim.cwd=$PWD" "-Dapksim.launcherScript=$ROOT/apksim")
+fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}"
@@ -204,7 +214,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   export APKSIM_SANDBOXED=1
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
-(allow file-write* (subpath \"$STATE\"))${NET_RECORD_DIR:+
+(allow file-write* (subpath \"$STATE\"))${BUNDLES:+
+(allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_DIR:+
 (allow file-write* (subpath \"$NET_RECORD_DIR\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")

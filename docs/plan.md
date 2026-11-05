@@ -236,6 +236,126 @@ them. Needs the SDK's binder interface; medium effort.
 native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EGL14 already reach ANGLE in test runs
 (phase 0); native `libGLESv*.so` imports and presenting GLES in the window are what is left.
 
+## Phase 5: failure bundles for test runs (spec 2026-11-05)
+
+Goal: when a test fails in an `--instrument` run, CI keeps enough to see why without running it again: what was on
+the screen, the accessibility tree, that test's log, the threads, the main queue, and a command that runs only that
+test again. Today a failure leaves a stack trace in the JUnit XML and, for a process that died, the stderr tail, so
+a red check usually means rerunning the job, or the test locally, to see anything.
+
+**12a. Interface.**
+- `./apksim --instrument ... --bundles DIR` (the launcher passes `-Dapksim.bundles=DIR`, resolved with
+  `Storage.absolute`). `--bundles-on failed|all` (default `failed`; `all` is for debugging a passing test) and
+  `--bundles-max N` (default 50 per process; later failures get `failure.txt` only, so a broken build failing 4,000
+  tests does not write gigabytes).
+- `instrument.py --bundles DIR` passes it to every process it starts (shards, `--isolate`, the reruns after a
+  process died), links each bundle from the JUnit XML and writes `DIR/index.html`. With `--apksim CMD` (the image),
+  DIR must be inside the folder mounted into the container, and is passed as the container sees it, with
+  `--bundles-local PATH` for the same folder on the host.
+- Off by default. Without the flag nothing is captured, no log tee is installed, and a run prints exactly what it
+  prints today.
+
+**12b. Layout.** `DIR/<Class>/<method>-<hash8>/`: the method name cut down to `[A-Za-z0-9._-]`, plus 8 hex digits of
+the hash of the whole description, so Parameterized names (`test[0: x, y]`) stay unique and short. In it:
+- `failure.txt`: test, status, exception and stack trace, the run's `-e` arguments, apksim version and runtime hash,
+  device (size, density, qualifiers, dark mode, font scale, locale, time zone), simulated uptime and wall time at the
+  capture, and which capture point wrote the bundle (12c), with any part that failed to capture and why.
+- `screen.png`: every visible window drawn bottom to top as it was at the failure. `windows.txt`: each window's type,
+  activity, bounds and focus.
+- `nodes.txt`: `Nodes.dump` of the roots (text, hints, fields, clickables with bounds; Compose semantics through
+  virtual nodes), the same format as the `nodes` control command.
+- `logcat.txt`: the app's log lines (`AdbLog`) from this test's start to the capture, at most 5,000 (head and tail
+  kept, the middle cut with a line saying how many went).
+- `threads.txt`: every thread's stack, main thread first.
+- `looper.txt`: the main looper's queued messages with their due times against the simulated clock, and the
+  activity stack with each activity's lifecycle state: what an idling or timeout failure was waiting on.
+- `repro.sh`: the `./apksim --instrument` command that runs this test alone with the run's `-e` arguments (without
+  `class`, `notClass`, `numShards`, `shardIndex`), device, `--timezone`, `--realtime-clock` and `-D` switches. A test
+  that fails in the run and passes alone has state carried in from earlier tests (app statics): `failure.txt` says
+  how many tests ran in the process before it.
+
+**12c. Capture points.** JUnit tells listeners about a failure only after the test's `@After` methods and rules
+have run, and ActivityScenarioRule and createAndroidComposeRule close their activity in that teardown, so a capture
+in `RawListener.testFailure` finds no windows. Hence:
+1. **Test body.** `SimRunner` overrides `getHelperTestRunner` and wraps `methodInvoker` of the helper it gets from
+   RobolectricTestRunner. A Throwable out of the test method (an assertion, Espresso's NoMatchingViewException,
+   Compose's timeouts, the Timeout watchdog's interrupt) is captured there, on the main thread, before `@After` and
+   rules run, then rethrown unchanged. An AssumptionViolatedException is not a failure and is not captured.
+2. **Listener.** `RawListener.testFailure` covers everything else: failures in `@Before`, `@After` and rules, classes
+   run by their own `@RunWith` (Parameterized, plain JUnit4) that do not go through SimRunner, and initializationError.
+   It captures whatever is still there, and nothing when (1) already wrote this test's bundle.
+3. **Watchdog.** When the `FailOnTimeout` watchdog is about to end the process because a test ignores interrupts, it
+   first writes `failure.txt`, `threads.txt` and `logcat.txt` from its own thread. The main thread is held, so there
+   is no screen, tree or queue.
+4. **Process died.** For a test `instrument.py` reports failed with an exit status (native crash, abort, watchdog), it
+   writes `process.txt` (exit status, stderr tail), and `failure.txt` if the folder has none.
+
+A capture must not change the result: each part runs in its own try/catch with a time limit (2 s for the screen),
+a part that fails is noted in `failure.txt`, and the test's own Throwable is always the one reported. A capture must
+not move the simulated clock or run the main queue (no idle, no new frame or traversal), so it shows the state the
+assertion saw.
+
+**12d. Drawing the screen in a test run.** Test runs have no Host loop and no HwRenderer frame. Start from what
+UiAutomation's `takeScreenshot` uses (Robolectric's ShadowUiAutomation, which ShadowSimUiAutomation keeps): it
+composes the windows. Check it on a Compose screen, a Dialog over an activity, a `GpuRenderNode` effect layer and a
+TextureView. Where layers come out blank, draw each root through a HardwareRenderer as `HwRenderer` does.
+
+**12e. instrument.py and CI.** The test's status block gets an extra key, `INSTRUMENTATION_STATUS: apksim_bundle=PATH`
+(ddmlib-based parsers keep unknown keys as test metrics; others ignore them). `instrument.py` puts each bundle in
+the XML's testcase as `<system-out>[[ATTACHMENT|PATH/screen.png]]</system-out>` (GitLab's and Jenkins' JUnit
+attachment convention) and `<properties><property name="apksim.bundle" value="PATH"/></properties>`, with paths
+relative to the XML file so a downloaded artifact still works. `DIR/index.html` is one self-contained page with a card
+per failure: screenshot, the failure's first line, links to the files. `.github/workflows/ci.yml` uploads DIR with
+the test app's results.
+
+**12f. Privacy.** A bundle holds the app's log and what it showed, so whatever the app logs or displays (tokens, a
+test account's data) ends up in the CI artifact. The docs say so. `--bundles-redact REGEX` (repeatable) replaces
+matches in `logcat.txt`, `nodes.txt` and `failure.txt` with `[redacted]`. A bundle never copies app data folders or
+anything under `work/autofill`.
+
+**12g. Checks.** The test app gets `FailureBundleTest`, skipped unless `-e failOnPurpose true` (as `ProcessDeathTest`
+does with `crashOnPurpose`): an assertion failing on a Compose screen, Espresso's NoMatchingViewException in a View
+activity, a failure with a Dialog open, an `@After` failure, a Parameterized case, and a timeout that ignores
+interrupts. `scripts/bundle-check.py` (a CI step) runs it with `--bundles` and checks that each folder has the files
+its capture point should write, that `screen.png` is not blank, that `nodes.txt` has the screen's text, that
+`logcat.txt` holds only that test's lines, and that `repro.sh` fails the same way on its own. A passing run must
+print the same output with and without `--bundles`. On the owner's app's suites `--bundles` must cost under 2% time
+when nothing fails.
+
+**Built (2026-11-05).** As specified, with these findings:
+- Kotlin's `use {}` (and try-with-resources) closes an ActivityScenario before the exception leaves the test method,
+  so the body capture found no windows for Espresso failures. The handler Espresso has at the start of each test
+  body is now wrapped (captures, then delegates, so a test's own handler still decides); a test that expects an
+  Espresso failure, catches it and passes loses that bundle.
+- From review: no part may hold up the suite (deadlines, then the part is skipped for the run), the uptime is read
+  without moving `--realtime-clock`, a test's first log lines survive the ring, `instrument.py` clears an earlier
+  run's bundles and redacts its own notes, and `--bundles-on all` reconciles a body that passed with a teardown that
+  failed.
+- 12d needed no fallback: Robolectric's HardwareRenderingScreenshot draws Compose screens and a Dialog over an
+  activity correctly. A capture of a full bundle takes ~150 ms (screen ~100 ms), only on failure.
+- In the image apksim runs as root, so bundle folders are made writable by everyone there, for the host's
+  `instrument.py` to add `process.txt`.
+- `scripts/bundle-check.py` checks it on the Mac (all checks pass, 24 s) and is a CI step in the image. Not done
+  yet: the owner's app's suites with `--bundles` (the under-2% cost check) and a GpuRenderNode effect layer and a
+  TextureView in a screen capture.
+
+**Done when:** `bundle-check.py` passes on the Mac and in the Linux image (`ci-smoke.sh`), CI uploads the bundles,
+and docs/ci-testbed.md says how to read one. Size: medium, 3-4 days. Later: a filmstrip (a small frame at each
+injected input, the last 20 kept) to show what the test did before it failed. Video does not fit test runs: there is
+no frame loop, and the clock skips idle time.
+
+## Phase 6: more features for teams (started 2026-11-05, each in its own session and branch)
+
+Each has its own spec in its own doc, so the branches do not conflict in this file:
+- **Affected tests and balanced shards** (docs/affected-tests.md): record which classes each test loads, run only the
+  tests a diff can reach, and split shards by measured time.
+- **Screenshot tests across devices and settings** (docs/snapshots.md): golden screenshots across devices, dark mode,
+  locales and font scales, with a diff report.
+- **Hermetic network** (docs/network.md): record and replay an app's HTTP(S) traffic, plus latency, loss and offline
+  profiles.
+- **Browser previews of builds** (docs/serve.md): `apksim serve`, a pool of standbys streaming instances to a browser
+  tab per build.
+
 ## Not planned
 
 - Rust rewrite of the native C-library shim: safety, not speed, and the shim is small. Revisit only if it keeps
@@ -264,6 +384,8 @@ native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EG
 | 9 More codecs | small each | an app that needs them |
 | 10 Health Connect | medium | - |
 | 11 GLES/native audio | large | an app that needs them |
+| 12 Failure bundles | built; the owner's suites' cost check left | - |
+| Phase 6 features | medium-large each | their own sessions |
 
 4 and 7 both touch `gpu/` and should not run in parallel. What is left without the owner: 0h, and 0f/0g/9-11 when
 an app needs them. 0a's CI job and 0c's patches are changes to the owner's app.
