@@ -108,8 +108,9 @@ def selectors(s):
 def narrow(args, listing, remaining, budget=100_000):
     """The -e arguments that run the first of [remaining] (of the suite's [listing], in its order): the user's own
     without `class`, plus `class` naming them. A class none of whose listed tests has a result is named whole, unless
-    the user's `class` picked methods of it; otherwise its methods are named one by one. The list stops before it
-    passes [budget] characters (Linux takes at most 128 KB in one argument): the rest go in later processes."""
+    the user's `class` picked methods of it; otherwise its methods are named one by one. The list stops before the
+    argument it becomes passes [budget] bytes, as UTF-8 and with the launcher's `-Dapksim.instrument.class=` before it
+    (Linux takes at most 131,072 bytes in one argument, E2BIG past that): the rest go in later processes."""
     picked = [c.strip() for c in selectors(dict(args).get("class", "")) if c.strip()]
     left = set(remaining)
     by_class = {}
@@ -122,12 +123,13 @@ def narrow(args, listing, remaining, budget=100_000):
             names.append(escape_selector(c))
         else:
             names += [f"{escape_selector(c)}#{escape_selector(m)}" for _, m in todo]
-    chunk, size = [], 0
+    chunk, size = [], len(b"-Dapksim.instrument.class=")  # the one argument the launcher makes of `-e class X`
     for n in names:
-        if chunk and size + len(n) + 1 > budget:
+        n_bytes = len(n.encode("utf-8")) + 1  # and its comma
+        if chunk and size + n_bytes > budget:
             break
         chunk.append(n)
-        size += len(n) + 1
+        size += n_bytes
     return [kv for kv in args if kv[0] != "class"] + [("class", ",".join(chunk))]
 
 

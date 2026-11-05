@@ -37,11 +37,17 @@ def fake():
         else:
             i += 1
     sc, state = os.environ["CHECK_SCENARIO"], os.environ["CHECK_DIR"]
+    # The longest argument in UTF-8 bytes (Linux's limit, 131,072, counts bytes), each -e as the launcher passes it to
+    # the JVM: one -Dapksim.instrument.KEY=VALUE.
+    longest = max([len(f"-Dapksim.instrument.{k}={v}".encode("utf-8")) for k, v in e.items()]
+                  + [len(a.encode("utf-8")) for a in args])
     with open(os.path.join(state, "calls"), "a") as f:
-        f.write(f"{'list' if e.get('log') == 'true' else 'run'} {max(len(a) for a in args)}\n")
+        f.write(f"{'list' if e.get('log') == 'true' else 'run'} {longest}\n")
     calls = sum(1 for line in open(os.path.join(state, "calls")) if line.startswith("run"))
-    big = sc == "big"
+    big = sc in ("big", "non-ascii")
     pre = "com.example.averylongpackagenamefortheargumentlimit.feature." if big else "p."
+    if sc == "non-ascii":  # 200 CJK characters a class name: ~60k characters for 299 classes, but ~180k bytes
+        pre = "p." + "測試" * 100
     universe = [(f"{pre}C{c:03d}", f"m{m}") for c in range(300 if big else 3) for m in range(10 if big else 3)]
     if sc == "parameterized":  # JUnit Parameterized names: a comma (and here a backslash) in them
         universe = [("p.C000", m) for m in ("m0", "test[0: a, b]", "test[1: c\\d, e]", "m3")] + universe[3:]
@@ -80,6 +86,7 @@ def fake():
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
         if {"during-test": calls == 1 and n == 1, "rerun-startup": n == 1, "big": calls == 1 and n == 1,
+                "non-ascii": calls == 1 and n == 1,
                 "listing-fails": n == 1, "parameterized": calls == 1 and n == 0, "before-class": (c, m) == ("p.C002", "m1")}.get(sc, False):
             print("dies in a test", file=sys.stderr)
             sys.exit(134)
@@ -100,6 +107,7 @@ SCENARIOS = {
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),
     "parameterized": (1, 3, 10, ["p.C000#m0"]),
     "big": (1, 3, 3000, ["com.example.averylongpackagenamefortheargumentlimit.feature.C000#m1"]),
+    "non-ascii": (1, 4, 3000, ["p." + "測試" * 100 + "C000#m1"]),
 }
 
 
@@ -127,7 +135,7 @@ def main():
                 ("an entry twice", len(set(names)) != len(names)),
                 ("a test run twice", len(set(ran)) != len(ran)),
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
-                (f"an argument of {longest} characters", longest > 100_000),
+                (f"an argument of {longest} bytes", longest > 100_000),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
             if problems:
