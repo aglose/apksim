@@ -40,7 +40,12 @@ def parse_args(argv):
         if a == "--update":
             opts["update"] = True
         elif a == "-j":
-            opts["jobs"] = int(next(it))
+            try:
+                opts["jobs"] = int(next(it, ""))
+            except ValueError:
+                opts["jobs"] = 0
+            if opts["jobs"] < 1:
+                fail("-j takes a number of instances, 1 or more")
         elif a in ("--out", "--screens", "--apk", "--goldens"):
             opts[a[2:]] = next(it)
         elif a in ("-h", "--help"):
@@ -435,8 +440,6 @@ def main():
     for d in ("actual", "golden", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)
-    if opts["jobs"] is not None and opts["jobs"] < 1:
-        fail(f"-j takes a number of instances, 1 or more, not {opts['jobs']}")
     jobs = opts["jobs"] or max(1, min(4, (os.cpu_count() or 2) // 2))
     jobs = min(jobs, len(combos))
     results, lock = [], threading.Lock()
