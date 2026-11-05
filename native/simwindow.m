@@ -78,8 +78,56 @@ static NSString *pendingText;
 static NSMutableDictionary<NSNumber *, NSMenuItem *> *menuItems;
 static BOOL selfResizing;  // a resize this file asked for (zoom, nativeResize), not the user's
 static float openScale;  // device pixels per point at actual size: the display's density
+static NSWindow *simWindow;
+static int launchMode;  // --window, applied once NSApp has finished launching
+static NSRunningApplication *launchedOver;  // the app that was frontmost when this one started
 
-@interface MenuTarget : NSObject
+// How the window shows itself (--window, `window` command). FRONT is a normal app: shown, focused. The others never
+// take focus from the app the user is in: NOFOCUS shows the window on top, BACKGROUND behind every other window,
+// MINIMIZED in the Dock, HIDDEN not at all. The app runs the same in all of them (frames go to the window's layer;
+// with no vsync from a hidden window Host paces on its 120 Hz grid). A click on the Dock icon shows it, focused.
+enum { WIN_FRONT = 0, WIN_NOFOCUS, WIN_BACKGROUND, WIN_MINIMIZED, WIN_HIDDEN };
+static BOOL hideWhenDeminiaturized, minimizeWhenUnhidden;
+static void applyWindowMode(int mode) {
+  hideWhenDeminiaturized = minimizeWhenUnhidden = NO;
+  NSWindow *w = simWindow;
+  if (!w) return;
+  // After Hide (Cmd+H) the whole app is hidden, its minimized windows' Dock tiles too. Unhiding finishes
+  // asynchronously, and a window minimized meanwhile comes back visible: minimize it once the app is back
+  // (applicationDidUnhide).
+  if (mode != WIN_HIDDEN && NSApp.hidden) {
+    [NSApp unhideWithoutActivation];
+    if (mode == WIN_MINIMIZED) {
+      minimizeWhenUnhidden = YES;
+      return;
+    }
+  }
+  if (mode != WIN_HIDDEN && mode != WIN_MINIMIZED && w.miniaturized) [w deminiaturize:nil];
+  switch (mode) {
+    case WIN_FRONT:
+      [w makeKeyAndOrderFront:nil];
+      [NSApp activateIgnoringOtherApps:YES];
+      break;
+    case WIN_NOFOCUS: [w orderFrontRegardless]; break;
+    case WIN_BACKGROUND: [w orderBack:nil]; break;
+    case WIN_MINIMIZED:
+      if (!w.visible && !w.miniaturized) [w orderBack:nil];  // a window must be on screen to go to the Dock
+      [w miniaturize:nil];
+      break;
+    case WIN_HIDDEN:
+      // orderOut leaves a minimized window's Dock tile: bring it back first, and hide it once it is back
+      // (windowDidDeminiaturize; deminiaturizing finishes asynchronously).
+      if (w.miniaturized) {
+        hideWhenDeminiaturized = YES;
+        [w deminiaturize:nil];
+      } else {
+        [w orderOut:nil];
+      }
+      break;
+  }
+}
+
+@interface MenuTarget : NSObject <NSApplicationDelegate>
 @end
 static void setZoom(int how);
 @implementation MenuTarget
@@ -87,6 +135,25 @@ static void setZoom(int how);
 - (void)zoom:(NSMenuItem *)item { setZoom((int)item.tag); }
 // Quit as closing the window does, so the app's main thread exits on its own path (it saves caches first).
 - (void)quit:(id)sender { post(EV_CLOSE, 0, 0, 0); }
+// The window server activates a newly launched regular app (one with a Dock icon) just after it finishes launching,
+// whether or not it asks. So in a mode that must not take focus the app starts as an accessory app, which is not
+// activated, and becomes a regular one here; should it be active anyway, it hands activation back.
+- (void)applicationDidFinishLaunching:(NSNotification *)n {
+  if (launchMode != WIN_FRONT) [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  applyWindowMode(launchMode);
+  if (launchMode != WIN_FRONT && NSApp.active && launchedOver && !launchedOver.terminated) {
+    if (@available(macOS 14.0, *)) [NSApp yieldActivationToApplication:launchedOver];
+    [launchedOver activateWithOptions:0];
+  }
+}
+- (void)applicationDidUnhide:(NSNotification *)n {
+  if (minimizeWhenUnhidden) applyWindowMode(WIN_MINIMIZED);
+}
+// A click on the Dock icon brings back a window that was hidden or minimized (--window hidden|minimized).
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
+  if (!simWindow.visible || simWindow.miniaturized) applyWindowMode(WIN_FRONT);
+  return NO;
+}
 - (void)ask:(NSMenuItem *)item {
   NSAlert *a = [NSAlert new];
   BOOL url = item.tag == TAG_OPEN_URL, loc = item.tag == TAG_LOCATION_CUSTOM;
@@ -188,6 +255,10 @@ static void buildMenus(NSMenu *bar) {
   [features addItem:[NSMenuItem separatorItem]];
   addItem(features, @"Open URL…", TAG_OPEN_URL, @"o", cmd | shift);
   NSMenu *window = submenu(bar, @"Window");
+  NSMenuItem *mini = [[NSMenuItem alloc] initWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+  mini.keyEquivalentModifierMask = cmd;
+  [window addItem:mini];
+  [window addItem:[NSMenuItem separatorItem]];
   NSString *zooms[] = {@"Actual Size", @"Fit Screen", @"Zoom In", @"Zoom Out"};
   NSString *keys[] = {@"1", @"3", @"=", @"-"};
   for (int i = 0; i < 4; i++) {
@@ -402,6 +473,10 @@ static int androidMeta(NSEventModifierFlags f) {
   for (NSUInteger i = 0; i < s.length; i++) post(EV_CHAR, 0, 0, (float)[s characterAtIndex:i]);
 }
 - (void)windowWillClose:(NSNotification *)n { post(EV_CLOSE, 0, 0, 0); }
+- (void)windowDidDeminiaturize:(NSNotification *)n {
+  if (hideWhenDeminiaturized) [self.window orderOut:nil];
+  hideWhenDeminiaturized = NO;
+}
 // Dragging the window's edges (or full screen) resizes the device's display, as a resizable emulator does: the new
 // size goes to the Java side in device pixels, which reconfigures the app and calls nativeResize. While dragging,
 // the last frame stays pinned top left at its own scale rather than stretching.
@@ -430,18 +505,31 @@ static void onMain(dispatch_block_t block) {
   CFRunLoopWakeUp(main);
 }
 
-static void openWindow(int w, int h, float scale, NSString *title, int xOffset) {
+static void openWindow(int w, int h, float scale, NSString *title, int xOffset, int mode) {
   [NSApplication sharedApplication];
-  [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  launchMode = mode;
+  launchedOver = NSWorkspace.sharedWorkspace.frontmostApplication;
+  [NSApp setActivationPolicy:mode == WIN_FRONT ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
+  // No App Nap: macOS throttles the timers of an app whose windows are hidden or covered, and the app's frame loop
+  // and background work run on timers. Idle system sleep is still allowed.
+  static id activity;
+  activity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
+                                                          reason:@"Android app running"];
   NSMenu *menu = [[NSMenu alloc] init];
   NSMenuItem *appItem = [[NSMenuItem alloc] init];
   [menu addItem:appItem];
   NSMenu *appMenu = [[NSMenu alloc] init];
+  [appMenu addItemWithTitle:@"Hide apksim" action:@selector(hide:) keyEquivalent:@"h"];
+  NSMenuItem *others = [appMenu addItemWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
+  others.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+  [appMenu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
+  [appMenu addItem:[NSMenuItem separatorItem]];
   NSMenuItem *quit = [appMenu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
   appItem.submenu = appMenu;
   buildMenus(menu);
   quit.target = menuTarget;
   NSApp.mainMenu = menu;
+  NSApp.delegate = menuTarget;
 
   NSRect frame = NSMakeRect(80 + xOffset, 80, w / scale, h / scale);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:frame
@@ -477,11 +565,12 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset) 
   vsyncLink = [view displayLinkWithTarget:view selector:@selector(vsync:)];
   [vsyncLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
   [window makeFirstResponder:view];
-  [window makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  simWindow = window;
+  // Shown now in front mode, as before; the others wait for applicationDidFinishLaunching (above).
+  if (mode == WIN_FRONT) applyWindowMode(mode);
 }
 
-JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeOpen(JNIEnv *env, jclass c, jint w, jint h, jfloat scale, jstring title, jint xOffset) {
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeOpen(JNIEnv *env, jclass c, jint w, jint h, jfloat scale, jstring title, jint xOffset, jint mode) {
   devW = w;
   devH = h;
   deviceScale = openScale = scale;
@@ -498,7 +587,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeOpen(JNIEnv *env, jclass 
   NSString *ns = [NSString stringWithUTF8String:t];
   (*env)->ReleaseStringUTFChars(env, title, t);
   onMain(^{
-    openWindow(w, h, scale, ns, xOffset);
+    openWindow(w, h, scale, ns, xOffset, mode);
     [NSApp run];
   });
 }
@@ -1024,6 +1113,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeAsk(JNIEnv *env, jclass c
     a.informativeText = message;
     for (NSString *b in buttons) [a addButtonWithTitle:b];
     askAlert = a;
+    if (!simWindow.visible) [NSApp requestUserAttention:NSInformationalRequest];  // hidden or minimized: bounce the Dock icon
     [a beginSheetModalForWindow:NSApp.windows.firstObject completionHandler:^(NSModalResponse r) {
       askAnswer = (int)(r - NSAlertFirstButtonReturn);
       askAlert = nil;
@@ -1279,4 +1369,27 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativePaste(JNIEnv *env, jclass
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
   return n;
+}
+
+// ---------------------------------------------------------------- window mode (`window show|hide|...`)
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeWindowMode(JNIEnv *env, jclass c, jint mode) {
+  onMain(^{ applyWindowMode(mode); });
+}
+
+// What the window is doing: visible/minimized/hidden, and whether apksim is the active app.
+JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeWindowState(JNIEnv *env, jclass c) {
+  __block NSString *state = @"no window";
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  onMain(^{
+    NSWindow *w = simWindow;
+    if (w) {
+      NSString *shown = NSApp.hidden ? @"hidden (app)" : w.miniaturized ? @"minimized" : w.visible ? @"visible" : @"hidden";
+      state = [NSString stringWithFormat:@"%@, %@%@", shown, NSApp.active ? @"active" : @"not active",
+                                         w.visible && w.isKeyWindow && NSApp.active ? @", key" : @""];
+    }
+    dispatch_semaphore_signal(done);
+  });
+  if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC))) return (*env)->NewStringUTF(env, "main thread busy");
+  return (*env)->NewStringUTF(env, state.UTF8String);
 }

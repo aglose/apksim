@@ -164,6 +164,8 @@ Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu 
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
+`window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden
+and whether the app is active),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
 also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
@@ -220,7 +222,7 @@ Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
 Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
-Cmd+3, Zoom In/Out Cmd+=/-), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
+Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
 Accessibility Audit). Permission requests
 and biometric prompts show as sheets on the window; notifications as a banner (click opens it).
 Saves go to `work/screenshots` (the sandbox keeps the app out of ~/Desktop). Option-drag pinches around the screen
@@ -230,7 +232,14 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
+`--biometrics enrolled`, `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`APKSIM_WINDOW`). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
+Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
+launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
+applicationDidFinishLaunching. Hidden or minimized, there is no display vsync and Host paces on its grid; App Nap is
+held off (`beginActivityWithOptions`) in every mode, since it throttles the timers of covered or hidden apps. A
+permission or biometric sheet on a window the user cannot see bounces the Dock icon. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
 Pick file/Choose trip (in-app result)/Share/Background/Keystore/Bind buttons for these (Bind: "bind: null
 binding to .NullBindingService"), and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
