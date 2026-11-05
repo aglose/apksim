@@ -114,7 +114,8 @@ match the "Android Prototype" demo from Android Dev Summit 2026 (talk: https://w
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
-  data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead),
+  data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
+  `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -379,7 +380,7 @@ within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--xml FILE
 and writes JUnit XML; `--isolate` gives every test its own process, as the AndroidX Test Orchestrator with
 `clearPackageData` does. Without it, a process that ends before every test has a result (a native crash or abort, or
 the Timeout watchdog below) does not end the run: the test that was running is reported failed with the exit status
-and the stderr tail, the suite is listed (`-e log true`, the run's own `-e` arguments, only once a process has died),
+and the stderr tail (with none running, a failed "(run)" entry is, so the run still fails), the suite is listed (`-e log true`, the run's own `-e` arguments, only once a process has died),
 and the tests with no result run in a new process, as `-e class` (whole classes where none of their tests ran, else
 Class#method, chunked under Linux's 128 KB argument limit) with the other `-e` arguments kept. No test runs twice; a
 new process that adds no result (a crash at startup) ends the run, the rest reported failed as not run.

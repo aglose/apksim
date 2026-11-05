@@ -15,9 +15,10 @@ in chunks short enough for one argument. No test with a result runs again. A new
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
-Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a run did not account
-for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and that
-could not be put on a test, which the report lists as a failed "incomplete" entry.
+Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
+for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
+test was running to put that on (it died between tests, at startup or at exit): the report then lists a failed
+"incomplete" entry for that process, even when the tests left all pass in the next one.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
 """
@@ -146,13 +147,19 @@ def one_process(a, passthrough):
                 finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
                 record(*running, "failed", f"apksim exited ({r.returncode}) while this test was running"
                                            + (f" ({why})" if finished else "") + ":\n" + tail)
+            elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
+                # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
+                # device. One entry per such process, named apart so the XML keeps one entry per name.
+                name = "incomplete" if processes == 1 else f"incomplete (process {processes})"
+                results.append(("(run)", name, "failed", why + ":\n" + tail, None))
+                counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+                if remaining is None and "INSTRUMENTATION_CODE: " in r.stdout and counts and len(got) >= max(counts):
+                    break  # every test has a result (it failed at exit, say): nothing to list or rerun
         if remaining is None and not why:
             break  # the usual case: every test has a result, and the suite was never listed
         if not new and not crashed:
             # This process got no further than the last one (a crash at startup, say): no new process.
-            if remaining is None:
-                results.append(("(run)", "incomplete", "failed", (why or "no test results") + ":\n" + tail, None))
-            else:
+            if remaining is not None:
                 for c, m in remaining:
                     if not has_result((c, m)):
                         record(c, m, "failed", f"not run: the apksim process started for the {len(remaining)} tests "
@@ -164,16 +171,14 @@ def one_process(a, passthrough):
             processes += 1
             lwhy = incomplete(listed, parse(listed.stdout))
             if lwhy:
-                results.append(("(run)", "incomplete", "failed", f"{why}; listing the suite to run the rest failed "
-                                f"too ({lwhy}):\n" + listed.stderr[-4000:], None))
+                results.append(("(listing)", "incomplete", "failed", f"after the run failed ({why}), listing the suite "
+                                f"to run the rest failed too ({lwhy}):\n" + listed.stderr[-4000:], None))
                 break
             listing = [(c, m) for c, m, _, _ in parse(listed.stdout)]
             if first_count is not None and first_count != len(listing):
                 print(f"the suite lists {len(listing)} tests, the run announced {first_count}", file=sys.stderr)
         remaining = [t for t in listing if not has_result(t)]
         if not remaining:
-            if why and not crashed:
-                results.append(("(run)", "incomplete", "failed", why + ":\n" + tail, None))
             break
         args = narrow(a.e, listing, remaining)
         if why:
