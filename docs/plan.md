@@ -346,20 +346,20 @@ no frame loop, and the clock skips idle time.
 
 ## Phase 6: more features for teams (built 2026-11-05, each in its own session and branch)
 
-All four are merged, each with its spec, checks and measurements in its own doc:
+Each has its spec, checks and measurements in its own doc. Three are in 0.9.0; the network one gets its own release:
 - **Affected tests and balanced shards** (docs/affected-tests.md, PR #39): record which classes each test reaches,
   run only the tests a diff can reach, and split shards by measured time. Recording costs nothing measurable on a
   large app's suites; `scripts/affected-check.py` is a CI step.
 - **Screenshot tests across devices and settings** (docs/snapshots.md, PR #42): `scripts/snapshot.py`, golden
   screenshots across devices, dark mode, locales and font scales, with a diff report. 80 captures byte-identical over
   five runs on the Mac and in the image; goldens are made in the image.
-- **Hermetic network** (docs/network.md, PR #41): HAR record and replay of an app's HTTP(S) (OkHttp,
+- **Hermetic network** (docs/network.md, PR #41, not merged yet: its own release after 0.9.0): HAR record and replay of an app's HTTP(S) (OkHttp,
   HttpURLConnection and what is built on them), and offline, 3G, lossy, latency and bandwidth conditions. Not covered:
   Cronet and Ktor CIO (their own TLS), raw sockets.
 - **Browser previews of builds** (docs/serve.md, PR #40): `apksim serve`, an instance per browser tab streaming
   JPEG frames, with touch, keys and device controls; loopback unless a token is set.
 
-Failure bundles (phase 5, PRs #38 and #43) shipped with them; all five are in 0.9.0.
+Failure bundles (phase 5, PRs #38 and #43) shipped with them in 0.9.0.
 
 ## Not planned
 
@@ -390,7 +390,7 @@ Failure bundles (phase 5, PRs #38 and #43) shipped with them; all five are in 0.
 | 10 Health Connect | medium | - |
 | 11 GLES/native audio | large | an app that needs them |
 | 12 Failure bundles | built; the owner's suites' cost check left | - |
-| Phase 6 features | built (0.9.0) | - |
+| Phase 6 features | three in 0.9.0; network in PR #41 | a release for #41 |
 
 4 and 7 both touch `gpu/` and should not run in parallel. What is left without the owner: 0h, and 0f/0g/9-11 when
 an app needs them. 0a's CI job and 0c's patches are changes to the owner's app.

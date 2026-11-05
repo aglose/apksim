@@ -89,7 +89,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Text size | Dynamic Type overrides | Fixed | `fontScale` in the config; slider in the menu | S |
 | Accessibility settings (bold text, reduce motion, contrast) | Environment overrides | None | Font weight adjustment (API 31+ config field), `Settings.Global.ANIMATOR_DURATION_SCALE = 0` for remove animations, high-contrast text | S |
 | Slow animations | Cmd+T | None | `ValueAnimator.setDurationScale(10)` and the same setting Compose reads | S |
-| Network conditions | Network Link Conditioner (Mac-wide) | **Done (beyond parity)**: per instance, `--network-profile` and `network offline\|3g\|lossy\|latency MS\|bandwidth KBPS` (also Features > Network), offline down to DNS, sockets and `ConnectivityManager` callbacks; plus HAR record and replay of the app's HTTP(S) (docs/network.md). Mac's Link Conditioner still applies on top | - | - |
+| Network conditions | Network Link Conditioner (Mac-wide) | Host sockets, so Mac's Link Conditioner already applies. Per-instance conditions (offline down to DNS, sockets and `ConnectivityManager` callbacks; 3G, lossy, latency, bandwidth) and HAR record and replay are in PR #41, not released yet | Release PR #41 | S |
 | Biometrics | Face ID / Touch ID enrolled, matching / non-matching | Disabled (`ShadowNoBiometrics`) | Replace with an enrolled/not-enrolled toggle; when `BiometricPrompt` shows, draw a Cocoa sheet with Match / No match / Cancel and call the callback | M |
 | Permissions | Real prompts; `simctl privacy grant/revoke/reset` | Robolectric default | When `requestPermissions` is called, show a Cocoa alert (Allow / Deny / Only this time) and answer through `onRequestPermissionsResult`; `permission grant/revoke/reset` commands | M |
 | Keychain / secure storage | `simctl keychain` | Unknown: `AndroidKeyStore` is not provided by Robolectric | Provide a JCA `AndroidKeyStore` backed by an in-memory or file keystore under app data, so EncryptedSharedPreferences and token storage work; `keystore reset` | M |
@@ -134,8 +134,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 
 - Launch to first frame in ~2.5 s, no boot.
 - Several devices at once in separate processes; persistent app data per instance.
-- Live network, SQLite, WebRTC video (H.264 on VideoToolbox); per-instance network conditions and HTTP(S) record and
-  replay (docs/network.md), and Mac's Network Link Conditioner on top.
+- Live network, SQLite, WebRTC video (H.264 on VideoToolbox); Mac's Network Link Conditioner applies for free.
 - Screenshot (golden) tests across devices and settings of the real APK (`scripts/snapshot.py`, docs/snapshots.md),
   and an APK in a browser tab (`apksim serve`, docs/serve.md): no counterpart in the iOS Simulator.
 - GPU-translated AGSL shaders.
