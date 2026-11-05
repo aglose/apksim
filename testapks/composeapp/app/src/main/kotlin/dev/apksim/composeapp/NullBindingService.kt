@@ -40,9 +40,11 @@ class NullBindingService : Service() {
   }
 }
 
-/** A service with a binder. */
+/** A service with a binder, the same one for every intent. */
 class BinderService : Service() {
-  override fun onBind(intent: Intent?): IBinder = Binder()
+  private val binder = Binder()
+
+  override fun onBind(intent: Intent?): IBinder = binder
 }
 
 /**
