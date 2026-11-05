@@ -37,8 +37,11 @@ import org.robolectric.shadows.ShadowSystemClock;
  *       its frame) with the frame due within a few milliseconds, it waits that long: Espresso posts its check, runs the
  *       queue until idle and then waits on the check from the main thread itself, which on a device is another thread,
  *       so a check behind the barrier would otherwise never run;
- *   <li>anything that moves the clock ahead of real time (Robolectric's idleFor, SystemClock.sleep) waits for real
- *       time to catch up.
+ *   <li>SystemClock.sleep sleeps in real time until its own deadline (two threads sleeping a second each take a
+ *       second, not two), and anything else that moves the clock ahead of real time (Robolectric's idleFor) waits for
+ *       real time to catch up;
+ *   <li>elapsedRealtime reads catch up as uptime reads do, and a read off the main thread reports at least real time
+ *       without moving the clock (only the main thread moves it, so frames stay on that thread).
  * </ul>
  * Real time is counted from each test's setup, where Robolectric's clock starts again.
  */
@@ -49,6 +52,7 @@ final class RealTimeClock {
   private static volatile Thread main;
   private static volatile long realBaseNanos;
   private static volatile long simBaseNanos;
+  private static volatile long elapsedBaseNanos;
   private static boolean listening;
   /** Set on the main thread while it moves the clock itself, so that move neither recurses nor waits. */
   private static boolean catchingUp;
@@ -72,6 +76,7 @@ final class RealTimeClock {
     vsyncPosted = false;
     ShadowChoreographer.setPaused(true);
     simBaseNanos = ApksimClock.uptimeNanos();
+    elapsedBaseNanos = ApksimClock.elapsedRealtimeNanos();
     realBaseNanos = System.nanoTime();
     on = true;
   }
@@ -97,6 +102,36 @@ final class RealTimeClock {
     } finally {
       catchingUp = false;
     }
+  }
+
+  /** Real time since the test started, in nanoseconds. */
+  private static long realElapsedNanos() {
+    return System.nanoTime() - realBaseNanos;
+  }
+
+  /**
+   * What a clock read reports: on the main thread the clock caught up to real time; elsewhere, without moving it, at
+   * least the real time since the test started (both clocks start a test together and advance together).
+   */
+  private static long readNanos(long simulated, long base) {
+    if (!on || Thread.currentThread() == main) return simulated;
+    return Math.max(simulated, base + realElapsedNanos());
+  }
+
+  /** SystemClock.sleep: a real-time sleep to its own deadline, ignoring interrupts and keeping them, as Android's. */
+  private static void sleepRealTime(long ms) {
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ms);
+    boolean interrupted = false;
+    for (long left; (left = deadline - System.nanoTime()) > 0; ) {
+      try {
+        // On the main thread in a test body, the queue keeps running as for Thread.sleep (TestActivities.sleep).
+        TestActivities.sleep(TimeUnit.NANOSECONDS.toMillis(left), (int) (left % 1_000_000L));
+      } catch (InterruptedException e) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) Thread.currentThread().interrupt();
+    catchUp();
   }
 
   /** After any advance of the clock, on the thread that made it: waits until real time has caught up with it. */
@@ -199,7 +234,23 @@ final class RealTimeClock {
     protected static long uptimeMillis() {
       catchUp();
       if (on && !catchingUp && Thread.currentThread() == main && looperPeek()) waitOutBarrier();
-      return ShadowPausedSystemClock.uptimeMillis();
+      return readNanos(ApksimClock.uptimeNanos(), simBaseNanos) / 1_000_000L;
+    }
+
+    @Implementation
+    protected static long elapsedRealtime() {
+      return elapsedRealtimeNanos() / 1_000_000L;
+    }
+
+    @Implementation
+    protected static long elapsedRealtimeNanos() {
+      catchUp();
+      return readNanos(ApksimClock.elapsedRealtimeNanos(), elapsedBaseNanos);
+    }
+
+    @Implementation
+    protected static void sleep(long ms) {
+      if (on) sleepRealTime(ms); else ShadowPausedSystemClock.sleep(ms);
     }
   }
 }
