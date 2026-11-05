@@ -527,20 +527,74 @@ public final class TestActivities {
       return r;
     }
 
-    /** An activity that is already running and whose launch mode takes the intent itself. */
+    /**
+   * --start-activities: a start of one of the app's activities that no running one takes (a new instance) launches it,
+   * as ActivityThread does: the activity on top is paused, the new one created, started and resumed, then the one
+   * below stopped (unless it is finishing, which finish() already ends). Robolectric only records such a start
+   * (getNextStartedActivity), so a suite whose flow goes through a second activity (it starts one, and that one does the
+   * next step) waited for a step that never came. Off by default: suites written for Robolectric check the recorded
+   * start instead.
+   */
+  private static void launch(Intent intent, ActivityInfo info, List<Activity> running) {
+    Context app = RuntimeEnvironment.getApplication();
+    try {
+      Class<? extends Activity> cls = Class.forName(info.name, true, app.getClassLoader()).asSubclass(Activity.class);
+      Activity top = running.isEmpty() ? null : running.get(running.size() - 1);
+      ActivityController<?> below = top == null ? null : controller(top);
+      if (below != null && top.isResumed()) below.pause();
+      Intent start = new Intent(intent);
+      if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
+      org.robolectric.Robolectric.buildActivity(cls, start).setup();
+      if (below != null && !top.isFinishing() && !top.isDestroyed()) below.stop();
+    } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+      System.err.println("[apksim] starting " + info.name + ": " + e);
+    }
+  }
+
+  /**
+   * NEW_TASK | CLEAR_TASK, as an app restarts itself (a profile switch): on a device the task's activities are
+   * finished and a new instance of the target comes up, whatever its launch mode, so its onCreate runs again. Here: the
+   * new one is launched over the top one (paused), then every earlier one is finished and stopped and destroyed.
+   */
+  private static void clearTaskAndLaunch(Intent intent, ActivityInfo info, List<Activity> running) {
+    launch(intent, info, running);
+    for (int i = running.size() - 1; i >= 0; i--) {
+      Activity old = running.get(i);
+      ActivityController<?> c = controller(old);
+      if (c == null || old.isDestroyed()) continue;
+      ReflectionHelpers.setField(Activity.class, old, "mFinished", true);
+      try {
+        if (old.isResumed()) c.pause();
+        if (!(boolean) ReflectionHelpers.getField(old, "mStopped")) c.stop();
+        c.destroy();
+      } catch (RuntimeException e) {
+        System.err.println("[apksim] clearing " + old.getClass().getName() + ": " + e);
+      }
+    }
+  }
+
+  /** An activity that is already running and whose launch mode takes the intent itself. */
     private static void deliverToRunning(Intent intent) {
       Context app = RuntimeEnvironment.getApplication();
       android.content.pm.ResolveInfo ri = app.getPackageManager().resolveActivity(intent, 0);
       ActivityInfo info = ri == null ? null : ri.activityInfo;
       if (info == null || !info.packageName.equals(app.getPackageName())) return;
       List<Activity> running = withWindows();
+      int clearTask = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK;
+      if (Boolean.getBoolean("apksim.startActivities") && (intent.getFlags() & clearTask) == clearTask) {
+        clearTaskAndLaunch(intent, info, running);
+        return;
+      }
       Activity existing = null;
       for (Activity a : running) if (a.getClass().getName().equals(info.name)) existing = a;
-      if (existing == null) return;
-      boolean onTop = running.get(running.size() - 1) == existing;
-      boolean reuse = info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
-          || ((info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0) && onTop);
-      if (!reuse) return;
+      boolean onTop = existing != null && running.get(running.size() - 1) == existing;
+      boolean reuse = existing != null && (info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK
+          || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
+          || ((info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0) && onTop));
+      if (!reuse) {
+        if (Boolean.getBoolean("apksim.startActivities")) launch(intent, info, running);
+        return;
+      }
       ActivityController<?> c = controller(existing);
       if (c == null) return;
       // As ActivityThread: a resumed activity is paused around onNewIntent; a stopped one restarts first. The start
