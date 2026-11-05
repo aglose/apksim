@@ -32,6 +32,9 @@
         <service android:name=".TripSyncJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
         <service android:name=".UploadService" android:exported="false" />
         <service android:name=".NullBindingService" android:exported="false" />
+        <service android:name=".BinderService" android:exported="false" />
+        <service android:name=".SingletonBinderService" android:exported="false" />
+        <service android:name=".StaticHandlerService" android:exported="false" />
         <receiver android:name=".ReminderReceiver" android:exported="false" />
     </application>
 

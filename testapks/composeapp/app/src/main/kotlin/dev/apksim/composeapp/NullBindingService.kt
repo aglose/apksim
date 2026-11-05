@@ -2,6 +2,8 @@ package dev.apksim.composeapp
 
 import android.app.Service
 import android.content.Intent
+import android.os.Binder
+import android.os.Handler
 import android.os.IBinder
 import java.util.Collections
 
@@ -16,6 +18,7 @@ class NullBindingService : Service() {
 
   override fun onBind(intent: Intent?): IBinder? {
     events.add("bind")
+    tags.add(intent?.getStringExtra("tag"))
     return null
   }
 
@@ -31,5 +34,37 @@ class NullBindingService : Service() {
   companion object {
     /** What ran, in order: create, bind, unbind, destroy. */
     val events: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** The "tag" extra of each intent onBind was given. */
+    val tags: MutableList<String?> = Collections.synchronizedList(mutableListOf())
+  }
+}
+
+/** A service with a binder, the same one for every intent. */
+class BinderService : Service() {
+  private val binder = Binder()
+
+  override fun onBind(intent: Intent?): IBinder = binder
+}
+
+/** A service whose binder is one object for the whole process, the same after the service is made again. */
+class SingletonBinderService : Service() {
+  override fun onBind(intent: Intent?): IBinder = binder
+
+  companion object {
+    val binder = Binder()
+  }
+}
+
+/**
+ * A service whose class makes a Handler for the current thread when it is initialized: on a device that is the main
+ * thread, which creates services, whichever thread called bindService.
+ */
+class StaticHandlerService : Service() {
+  override fun onBind(intent: Intent?): IBinder = Binder()
+
+  companion object {
+    @Suppress("DEPRECATION")
+    val handler = Handler()
   }
 }

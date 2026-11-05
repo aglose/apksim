@@ -184,7 +184,11 @@ test runs and running instances alike): Robolectric never runs a service on bind
 registered binder, else with (null, null). For a service in the app's own manifest apksim binds as a device does: a
 BIND_AUTO_CREATE binding creates it, onBind runs once per intent, and each connection gets onServiceConnected with
 that binder or, when onBind returned null, onNullBinding; unbinding calls onUnbind (then onDestroy once no
-BIND_AUTO_CREATE binding is left) and never onServiceDisconnected. Other packages' services, and intents a binder was
+BIND_AUTO_CREATE binding is left) and never onServiceDisconnected; connections bound without the flag that outlive
+the service get onServiceDisconnected and onBindingDied, and are not connected again. As on the API 36 emulator (`NullBindingTest`), the
+service class initializes on the main thread, onBind gets the first binding's intent for its filter even if that
+binding ended before the service ran, and a connection bound twice hears of a binder once but of a null binding once
+per binding (LoadedApk's ServiceDispatcher). Other packages' services, and intents a binder was
 registered for through ShadowApplication (the FCM service below), stay Robolectric's. A bound service is not the
 instance startService runs, and an `android:process` service gets its local binder, not a proxy.
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
