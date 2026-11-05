@@ -18,8 +18,12 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
   above the screen's tolerance is a failure. Exit status 1 if anything failed, 0 if all matched, 2 for a bad spec or
   an instance that could not start.
 - `--update`: captures are written as the new goldens (the report still shows what changed against the old ones);
-  exit 1 only if a capture itself failed (a screen that never settled, a step that errored).
-- `-j N`: N headless instances at once (default: half the CPU count, at most 4, at most the number of combinations).
+  exit 1 only if a capture itself failed (a screen that never settled, a step that errored). A golden is rewritten
+  whenever its bytes differ, also when the difference is within the tolerance.
+- `-j N`: N headless instances at once, 1 or more (default: half the CPU count, at most 4, at most the number of
+  combinations). Instances write captures and difference maps to a temporary folder, moved into OUT by the script:
+  the control protocol splits on whitespace, and on the Mac the launcher's sandbox lets the app write under the home
+  folder only in apksim's own state folder. So OUT and GOLDENS can be anywhere, spaces included.
 - `--out DIR` (default `work/snapshots/<time>`, `~/.apksim/snapshots/<time>` for a release): `report.html`, `actual/`, `golden/` (copies, so the folder is a
   self-contained CI artifact), `diff/`, `results.json`, and each instance's log.
 - `--screens a,b`: only these screens.
@@ -91,7 +95,7 @@ what removes it:
 |---|---|
 | Animations mid-flight | `animscale 0` once per instance: ValueAnimator's scale and the global setting Compose reads, so both snap to their end. |
 | When to take the shot | `settle [MAX_MS] [QUIET_MS]`, below; no fixed sleeps. |
-| Wall clock | `clock ISO\|epoch-ms\|real`: the app's wall clock starts at that instant and runs on from it. The translator routes app and library calls to `System.currentTimeMillis()`, `java.time` `X.now()`, `Clock.systemUTC/systemDefaultZone()`, `new Date()` and `Calendar.getInstance(...)` through `SimClock`; framework code reads it through the WallClock interceptor. `--clock ISO` at launch. A screen showing seconds still changes; minutes do not unless a screen's steps take a minute. |
+| Wall clock | `clock ISO\|epoch-ms\|real`: the app's wall clock starts at that instant and runs on from it. `--clock ISO` sets it before the Application and its startup providers run (and at each test's setup in `--instrument` runs). A `Clock` the app keeps reads the current setting at every read. The translator routes app and library calls to `System.currentTimeMillis()`, `java.time` `X.now()`, `Clock.systemUTC/systemDefaultZone()`, `new Date()` and `Calendar.getInstance(...)` through `SimClock`; framework code reads it through the WallClock interceptor. A screen showing seconds still changes; minutes do not unless a screen's steps take a minute. |
 | Time zone | `--timezone` at launch (the JDK's and android.icu's zone). |
 | Caret blink | `--snapshot`: the top activity's window has focus, as on a device (apksim's windows otherwise have none, and Compose and Views draw a caret only in a focused window), Compose's `CursorAnimationState` is made with blinking off (the caret stays drawn, as Compose's own tests have it; matched by class name, so debug builds only: R8 renames it) and View `Editor`s render the caret whenever it is visible, not in the blink's "on" half only. |
 | GPU paths | `--snapshot` sets `apksim.cpuLayerEffects`, `apksim.gpuBitmaps=false` and `apksim.noGpu` (AGSL paint shaders on CPU Skia): Metal's float math and sampling differ from Skia's in the last bits, and Linux has no Metal. Screens with endless shader animation never settle; leave them out. |

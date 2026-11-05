@@ -168,8 +168,15 @@ public class Host {
         System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
         if (cmd.args[0].equals("settle")) {
           // Answered later, from the loop, once the UI is quiet (or it gives up).
+          Settle next;
+          try {
+            next = new Settle(cmd);
+          } catch (NumberFormatException ex) {
+            cmd.finish("error: usage: settle [MAX_MS] [QUIET_MS] [HORIZON_MS]: " + ex.getMessage());
+            continue;
+          }
           if (settle != null) settle.pending.finish("error: replaced by another settle");
-          settle = new Settle(cmd);
+          settle = next;
           continue;
         }
         String reply;

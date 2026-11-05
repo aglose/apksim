@@ -1,7 +1,6 @@
 package dev.apksim;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Calendar;
@@ -48,31 +47,75 @@ public final class SimClock {
     return System.currentTimeMillis() + offsetMs;
   }
 
-  private static Clock shifted(Clock c) {
-    long o = offsetMs;
-    return o == 0 ? c : Clock.offset(c, Duration.ofMillis(o));
+  /**
+   * The system clock in [zone], shifted by whatever offset is current at each read: a Clock an app keeps (a static,
+   * an injected singleton) follows later `clock` commands, as System.currentTimeMillis does.
+   */
+  private static final class Shifted extends Clock {
+    private final ZoneId zone;
+
+    Shifted(ZoneId zone) {
+      this.zone = zone;
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return zone;
+    }
+
+    @Override
+    public Clock withZone(ZoneId z) {
+      return z.equals(zone) ? this : new Shifted(z);
+    }
+
+    @Override
+    public long millis() {
+      return currentTimeMillis();
+    }
+
+    @Override
+    public Instant instant() {
+      long o = offsetMs;
+      Instant now = Instant.now();
+      return o == 0 ? now : now.plusMillis(o);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      return other instanceof Shifted s && s.zone.equals(zone);
+    }
+
+    @Override
+    public int hashCode() {
+      return zone.hashCode() + 1;
+    }
+
+    @Override
+    public String toString() {
+      return "SimClock[" + zone + "]";
+    }
   }
 
   /** What java.time's X.now() reads (Clock.systemDefaultZone), shifted. */
   public static Clock clock() {
-    return shifted(Clock.systemDefaultZone());
+    return new Shifted(ZoneId.systemDefault());
   }
 
   /** What X.now(zone) reads. */
   public static Clock clock(ZoneId zone) {
-    return shifted(Clock.system(zone));
+    return new Shifted(java.util.Objects.requireNonNull(zone, "zone"));
   }
 
   public static Clock systemUTC() {
-    return shifted(Clock.systemUTC());
+    return new Shifted(java.time.ZoneOffset.UTC);
   }
 
   public static Clock systemDefaultZone() {
-    return shifted(Clock.systemDefaultZone());
+    return new Shifted(ZoneId.systemDefault());
   }
 
   public static Clock system(ZoneId zone) {
-    return shifted(Clock.system(zone));
+    return clock(zone);
   }
 
   private static Calendar at(Calendar c) {

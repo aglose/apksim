@@ -244,6 +244,8 @@ public final class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       applyTimeZone();
+      // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
+      SimClock.applyLaunchOption();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration

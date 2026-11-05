@@ -17,7 +17,7 @@ OUT/golden, OUT/diff, OUT/logs. --update writes the captures as the new goldens.
 or differed from its golden beyond the screen's tolerance (or had none), 2 for a bad spec or an instance that never
 started, else 0.
 """
-import html, itertools, json, os, re, shutil, socket, subprocess, sys, threading, time
+import html, itertools, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AXES = ("device", "appearance", "locale", "fontscale")
@@ -104,7 +104,18 @@ def load_spec(opts):
         if missing:
             fail(f"no such screen: {', '.join(sorted(missing))}")
         screens = [s for s in screens if s["name"] in wanted]
-    default_tol = tolerance(spec.get("tolerance"))
+    for s in screens:
+        if not isinstance(s.get("open", ""), str) or not isinstance(s.get("steps", []), list) \
+                or not all(isinstance(x, str) and x.strip() for x in s.get("steps", [])) \
+                or not isinstance(s.get("only", {}), dict):
+            fail(f"screen {s['name']}: 'open' is a URL, 'steps' a list of commands, 'only' an object of axis values")
+    try:
+        default_tol = tolerance(spec.get("tolerance"))
+        for s in screens:
+            if "tolerance" in s:
+                tolerance(s["tolerance"])
+    except (TypeError, ValueError, AttributeError) as e:
+        fail(f"bad tolerance: {e}")
     for s in screens:
         s["_tol"] = tolerance(s["tolerance"]) if "tolerance" in s else default_tol
         s["_only"] = s.get("only", {})
@@ -121,8 +132,12 @@ class Worker:
     def __init__(self, i, combos, ctx):
         self.i, self.combos, self.ctx = i, combos, ctx
         self.log = os.path.join(ctx["out"], "logs", f"instance-{i}.log")
-        self.proc = self.file = None
+        self.proc = self.file = self.sock = None
         self.error = None
+        # Captures and difference maps are written here by the instance, then moved into OUT: the control protocol
+        # splits on whitespace, and the Mac launcher's sandbox lets the app write under the home folder only in
+        # apksim's own state folder. Created in main().
+        self.stage = None
 
     def start(self):
         launcher = os.path.join(ROOT, "apksim")
@@ -150,21 +165,25 @@ class Worker:
             time.sleep(0.1)
         while port and time.time() < deadline and self.proc.poll() is None:
             try:
-                sock = socket.create_connection(("127.0.0.1", port), timeout=2)
-                sock.settimeout(120)
-                self.file = sock.makefile("rw")
+                self.sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+                self.sock.settimeout(120)
+                self.file = self.sock.makefile("rw")
                 if self.send("ping") == "pong":
                     break
             except (OSError, Closed):
-                self.file = None
+                self.close()
                 time.sleep(0.2)
         if self.file is None:
             code = self.proc.poll()
             raise Closed(f"instance {self.i} " + (f"exited with status {code}" if code is not None else "did not answer")
                          + f" (see {self.log})")
-        # The first frame: `settle` waits for it, then for the UI to go quiet.
-        self.expect("settle 60000")
         self.expect("animscale 0")
+        # Wait for the launch screen's first frame (a cold start can take seconds), but not for it to settle: it may
+        # animate for ever while every screen asked for is static. Each capture restarts and settles its own screen.
+        while not re.search(r"frames=[1-9]", self.send("stats")):
+            if time.time() > deadline:
+                raise Closed(f"instance {self.i} drew no frame within 180 s (see {self.log})")
+            time.sleep(0.1)
 
     def send(self, cmd):
         self.file.write(cmd + "\n")
@@ -183,15 +202,26 @@ class Worker:
         return reply
 
     def run(self):
+        todo = [(c, s) for c in self.combos for s in applicable(self.ctx["screens"], c)]
         try:
             self.start()
-        except (Closed, OSError, StepFailed) as e:
+        except Exception as e:  # anything: the captures this instance had fail, and the run with them
             self.error = str(e)
-            for c in self.combos:
-                for s in applicable(self.ctx["screens"], c):
-                    self.ctx["record"](capture_result(s, c, "error", str(e)))
+            for c, s in todo:
+                self.ctx["record"](capture_result(s, c, "error", str(e)))
+            self.quit()
             return
-        todo = [(c, s) for c in self.combos for s in applicable(self.ctx["screens"], c)]
+        try:
+            self.captures(todo)
+        except Exception as e:  # a bug here, not the instance: still every capture gets a result
+            self.error = f"{type(e).__name__}: {e}"
+            for c, s in todo:
+                self.ctx["record"](capture_result(s, c, "error", self.error))
+        finally:
+            self.quit()
+
+    def captures(self, todo):
+        """Runs the captures in [todo], removing each once it has a result."""
         applied = None
         while todo:
             c, s = todo[0]
@@ -211,16 +241,17 @@ class Worker:
                 # The instance is gone: what it had left fails with the reason.
                 code = self.proc.poll()
                 why = f"{e}" + (f" (exit status {code})" if code is not None else "")
-                for c2, s2 in todo:
+                while todo:
+                    c2, s2 = todo.pop(0)
                     self.ctx["record"](capture_result(s2, c2, "error", why))
                 return
-        self.quit()
 
     def capture(self, screen, combo):
         ctx = self.ctx
         rel = os.path.join(screen["name"], combo_name(combo) + ".png")
         actual = os.path.join(ctx["out"], "actual", rel)
         os.makedirs(os.path.dirname(actual), exist_ok=True)
+        staged = os.path.join(self.stage, "capture.png")
         t0 = time.time()
         try:
             if ctx["spec"].get("clock"):
@@ -231,7 +262,8 @@ class Worker:
                 settled = self.expect(step)
                 if not step.startswith("settle"):
                     settled = self.expect("settle")
-            self.expect(f"shot {actual}")
+            self.expect(f"shot {staged}")
+            shutil.move(staged, actual)
         except StepFailed as e:
             return capture_result(screen, combo, "error", str(e), actual=None)
         r = compare(screen, combo, rel, actual, ctx, self)
@@ -239,15 +271,33 @@ class Worker:
         r["settle"] = settled
         return r
 
+    def close(self):
+        for f in (self.file, self.sock):
+            try:
+                if f:
+                    f.close()
+            except OSError:
+                pass
+        self.file = self.sock = None
+
     def quit(self):
-        try:
-            self.send("quit")
-        except (Closed, OSError):
-            pass
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
+        """Ends the instance whatever state it is in: `quit` if it still answers, else SIGTERM, then SIGKILL."""
+        if self.proc is None:
+            return
+        if self.file is not None and self.proc.poll() is None:
+            try:
+                self.send("quit")
+            except (Closed, OSError, ValueError):
+                pass
+        self.close()
+        for stop in (None, self.proc.terminate, self.proc.kill):
+            if stop:
+                stop()
+            try:
+                self.proc.wait(timeout=30 if stop is None else 10)
+                return
+            except subprocess.TimeoutExpired:
+                pass
 
 
 class StepFailed(Exception):
@@ -276,6 +326,7 @@ def compare(screen, combo, rel, actual, ctx, worker):
     r = capture_result(screen, combo, "match", "", actual=rel)
     tol = screen["_tol"]
     have = os.path.isfile(golden)
+    same = False
     if have:
         os.makedirs(os.path.dirname(gcopy), exist_ok=True)
         shutil.copyfile(golden, gcopy)
@@ -286,7 +337,12 @@ def compare(screen, combo, rel, actual, ctx, worker):
             r.update(pixels=0, detail="identical")
         else:
             os.makedirs(os.path.dirname(dmap), exist_ok=True)
-            reply = worker.send(f"diff {golden} {actual} {dmap} {tol['delta']}")
+            sg, sa, sm = (os.path.join(worker.stage, n) for n in ("golden.png", "actual.png", "diff.png"))
+            shutil.copyfile(golden, sg)
+            shutil.copyfile(actual, sa)
+            reply = worker.send(f"diff {sg} {sa} {sm} {tol['delta']}")
+            if os.path.exists(sm):
+                shutil.move(sm, dmap)
             m = re.search(r"size (\d+x\d+)(?: (\d+x\d+))? pixels=(\d+) total=(\d+) maxDelta=(\d+)", reply)
             if not m:
                 r.update(status="error", detail=f"diff: {reply}")
@@ -303,7 +359,8 @@ def compare(screen, combo, rel, actual, ctx, worker):
             else:
                 r.update(detail=f"{pixels} pixels differ beyond delta {tol['delta']}, within tolerance")
     if ctx["update"]:
-        if not have or r["status"] != "match" or r.get("pixels"):
+        # Rewritten whenever the bytes differ, also when the difference is within the tolerance.
+        if not have or not same:
             os.makedirs(os.path.dirname(golden), exist_ok=True)
             shutil.copyfile(actual, golden)
             r["updated"] = True
@@ -378,6 +435,8 @@ def main():
     for d in ("actual", "golden", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)
+    if opts["jobs"] is not None and opts["jobs"] < 1:
+        fail(f"-j takes a number of instances, 1 or more, not {opts['jobs']}")
     jobs = opts["jobs"] or max(1, min(4, (os.cpu_count() or 2) // 2))
     jobs = min(jobs, len(combos))
     results, lock = [], threading.Lock()
@@ -394,6 +453,12 @@ def main():
     workers = [Worker(i, combos[len(combos) * i // jobs:len(combos) * (i + 1) // jobs], ctx) for i in range(jobs)]
     total = sum(len(applicable(screens, c)) for c in combos)
     print(f"{total} captures: {len(screens)} screens x {len(combos)} combinations on {jobs} instance(s)", flush=True)
+    stage = tempfile.mkdtemp(prefix="apksim-snapshot-")
+    if re.search(r"\s", stage):
+        fail(f"the temporary folder {stage!r} has whitespace in its path, which the control protocol cannot carry: set TMPDIR")
+    for w in workers:
+        w.stage = os.path.join(stage, str(w.i))
+        os.makedirs(w.stage)
     t0 = time.time()
     threads = [threading.Thread(target=w.run) for w in workers]
     for t in threads:
@@ -401,9 +466,13 @@ def main():
     for t in threads:
         t.join()
     seconds = time.time() - t0
+    shutil.rmtree(stage, ignore_errors=True)
     counts = report(out, results, os.path.abspath(opts["spec"]), opts["update"], seconds)
     print(f"{len(results)} captures in {seconds:.1f} s: " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
     print(f"report: {os.path.join(out, 'report.html')}")
+    if len(results) != total:
+        print(f"snapshot: {total - len(results)} of {total} captures have no result", file=sys.stderr)
+        sys.exit(2)
     if any(w.error for w in workers):
         sys.exit(2)
     bad = sum(counts.get(s, 0) for s in ("error", "mismatch") + (() if opts["update"] else ("missing",)))

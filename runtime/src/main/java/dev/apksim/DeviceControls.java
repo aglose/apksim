@@ -103,7 +103,6 @@ final class DeviceControls {
   /** Launch options (--appearance, --locale, --font-scale), applied before the first activity starts. */
   static void applyLaunchOptions() {
     BackgroundWork.enableAlarms();
-    SimClock.applyLaunchOption();
     String appearance = System.getProperty("apksim.appearance");
     if (appearance != null) overlayQualifiers(nightQualifier(appearance));
     String locale = System.getProperty("apksim.locale");
