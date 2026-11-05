@@ -45,7 +45,7 @@ import org.robolectric.util.ReflectionHelpers;
 import org.robolectric.util.inject.Injector;
 
 /** Points Robolectric's framework bootstrap at the unmodified APK instead of a test project. */
-public final class SimRunner extends RobolectricTestRunner {
+public class SimRunner extends RobolectricTestRunner {
   /**
    * One injector, so one SandboxManager and one sandbox, for every class run here. The framework is loaded once per
    * process ({@link FlatLoader}), so a second sandbox would bring a second "main thread" to a main Looper already

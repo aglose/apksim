@@ -81,7 +81,17 @@ final class Instrument {
     List<Runner> runners = new ArrayList<>();
     for (Class<?> c : classes) {
       // A class without @RunWith gets what AndroidJUnitRunner would give it, an Android runner: here, Robolectric's.
-      runners.add(c.isAnnotationPresent(RunWith.class) ? Request.aClass(c).getRunner() : new SimRunner(c));
+      // JUnit's Parameterized would run outside the test environment: each parameter set runs as a SimRunner child.
+      RunWith with = c.getAnnotation(RunWith.class);
+      if (with != null && with.value() == org.junit.runners.Parameterized.class) {
+        try {
+          runners.add(new SimParameterized(c));
+        } catch (Throwable t) {
+          runners.add(new org.junit.internal.runners.ErrorReportingRunner(c, t));
+        }
+        continue;
+      }
+      runners.add(with != null ? Request.aClass(c).getRunner() : new SimRunner(c));
     }
     Request request = Request.runner(new org.junit.runners.Suite((Class<?>) null, runners) {});
     Filter filter = methodFilter(args.get("class"), args.get("notClass"));
