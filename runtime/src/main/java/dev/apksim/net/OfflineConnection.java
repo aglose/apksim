@@ -103,10 +103,11 @@ final class OfflineConnection {
     @Override public int getResponseCode() throws IOException { return resolve().getResponseCode(); }
     @Override public String getResponseMessage() throws IOException { return resolve().getResponseMessage(); }
     @Override public InputStream getErrorStream() { return real == null ? null : real.getErrorStream(); }
-    @Override public String getHeaderField(String n) { return real == null ? null : real.getHeaderField(n); }
-    @Override public String getHeaderField(int i) { return real == null ? null : real.getHeaderField(i); }
-    @Override public String getHeaderFieldKey(int i) { return real == null ? null : real.getHeaderFieldKey(i); }
-    @Override public Map<String, List<String>> getHeaderFields() { return real == null ? Map.of() : real.getHeaderFields(); }
+    // Reading a header sends the request, as on the JDK's own connection; still offline, there are none.
+    @Override public String getHeaderField(String n) { try { return resolve().getHeaderField(n); } catch (IOException e) { return null; } }
+    @Override public String getHeaderField(int i) { try { return resolve().getHeaderField(i); } catch (IOException e) { return null; } }
+    @Override public String getHeaderFieldKey(int i) { try { return resolve().getHeaderFieldKey(i); } catch (IOException e) { return null; } }
+    @Override public Map<String, List<String>> getHeaderFields() { try { return resolve().getHeaderFields(); } catch (IOException e) { return Map.of(); } }
     @Override public void disconnect() { if (real != null) real.disconnect(); }
     @Override public boolean usingProxy() { return real != null && real.usingProxy(); }
   }
@@ -145,7 +146,7 @@ final class OfflineConnection {
       else if (chunkLength > 0) c.setChunkedStreamingMode(chunkLength);
       // The app's own TLS settings, only those it made: the connection Net opens keeps its own otherwise.
       if (c instanceof HttpsURLConnection h) {
-        if (factorySet) h.setSSLSocketFactory(getSSLSocketFactory());
+        if (factorySet) Net.setSSLSocketFactory(h, getSSLSocketFactory());  // the fake transport, if any, stays
         if (verifierSet) h.setHostnameVerifier(getHostnameVerifier());
       }
     }
@@ -161,10 +162,11 @@ final class OfflineConnection {
     @Override public int getResponseCode() throws IOException { return resolve().getResponseCode(); }
     @Override public String getResponseMessage() throws IOException { return resolve().getResponseMessage(); }
     @Override public InputStream getErrorStream() { return real == null ? null : real.getErrorStream(); }
-    @Override public String getHeaderField(String n) { return real == null ? null : real.getHeaderField(n); }
-    @Override public String getHeaderField(int i) { return real == null ? null : real.getHeaderField(i); }
-    @Override public String getHeaderFieldKey(int i) { return real == null ? null : real.getHeaderFieldKey(i); }
-    @Override public Map<String, List<String>> getHeaderFields() { return real == null ? Map.of() : real.getHeaderFields(); }
+    // Reading a header sends the request, as on the JDK's own connection; still offline, there are none.
+    @Override public String getHeaderField(String n) { try { return resolve().getHeaderField(n); } catch (IOException e) { return null; } }
+    @Override public String getHeaderField(int i) { try { return resolve().getHeaderField(i); } catch (IOException e) { return null; } }
+    @Override public String getHeaderFieldKey(int i) { try { return resolve().getHeaderFieldKey(i); } catch (IOException e) { return null; } }
+    @Override public Map<String, List<String>> getHeaderFields() { try { return resolve().getHeaderFields(); } catch (IOException e) { return Map.of(); } }
     @Override public void disconnect() { if (real != null) real.disconnect(); }
     @Override public boolean usingProxy() { return real != null && real.usingProxy(); }
     @Override public String getCipherSuite() { return tls().getCipherSuite(); }

@@ -288,7 +288,7 @@ its certificate). Any option turns it on; without one, the hooks cost one static
 - Where it hooks (measured: the owner's R8 build has no `okhttp3/OkHttpClient$Builder`, R8 renamed OkHttp): the
   translator sends app calls to JDK APIs, which R8 never renames, to `dev.apksim.net.Net` (`MethodTranslator.NET_HOOKS`):
   `Socket.connect`, `SocketFactory`/`SSLSocketFactory.createSocket(host, port)`, `SSLSocketFactory.createSocket(socket,
-  host, port, autoClose)` and `URL.openConnection`/`openStream`. A connection to a non-loopback address goes to
+  host, port, autoClose)`, `URL.openConnection`/`openStream` and `HttpsURLConnection.setSSLSocketFactory`. A connection to a non-loopback address goes to
   `NetEngine` on a loopback port instead (a first line says where it was going; the engine answers with the real
   connect's result). Recording or replaying, TLS on such a socket is a `FakeTlsSocket`: its handshake gets the
   server's certificates from the engine (the real chain, so hostname checks and pins pass) and the bytes stay plain

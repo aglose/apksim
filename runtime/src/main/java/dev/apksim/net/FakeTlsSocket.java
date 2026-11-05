@@ -208,20 +208,32 @@ final class FakeTlsSocket extends SSLSocket {
   }
 
   /** The socket factory the JDK's HttpsURLConnection gets while recording or replaying (Net.openConnection). */
-  static final SSLSocketFactory FACTORY = new SSLSocketFactory() {
+  static final SSLSocketFactory FACTORY = new Factory(null);
+
+  /**
+   * FakeTlsSocket for the JDK's HttpsURLConnection; with the app's own factory (it set one on the connection,
+   * Net.setSSLSocketFactory), that factory does the real handshake with the server, as for app sockets.
+   */
+  static final class Factory extends SSLSocketFactory {
+    final SSLSocketFactory app;
+
+    Factory(SSLSocketFactory app) {
+      this.app = app;
+    }
+
     @Override public String[] getDefaultCipherSuites() { return supported(); }
     @Override public String[] getSupportedCipherSuites() { return supported(); }
 
     @Override
     public java.net.Socket createSocket(java.net.Socket s, String host, int port, boolean autoClose) {
-      return new FakeTlsSocket(s, host, port, autoClose);
+      return new FakeTlsSocket(s, host, port, autoClose, app);
     }
 
     @Override
     public java.net.Socket createSocket(String host, int port) throws IOException {
       java.net.Socket s = new java.net.Socket();
       Net.connect(s, new java.net.InetSocketAddress(host, port), 0);
-      return new FakeTlsSocket(s, host, port, true);
+      return new FakeTlsSocket(s, host, port, true, app);
     }
 
     @Override
@@ -238,7 +250,7 @@ final class FakeTlsSocket extends SSLSocket {
     public java.net.Socket createSocket(InetAddress a, int port, InetAddress local, int localPort) throws IOException {
       return createSocket(a.getHostName(), port);
     }
-  };
+  }
 
   private final class Session implements SSLSession {
     private final X509Certificate[] chain;

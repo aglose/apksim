@@ -121,6 +121,8 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   - `URL.openConnection()`, `openConnection(Proxy)`, `openStream()` → the JDK's own `HttpURLConnection` through the
     engine as an HTTP proxy (`CONNECT` for https, with `FakeTlsSocket` as its `SSLSocketFactory` when recording or
     replaying). The JDK's HttpURLConnection is not app code, so its sockets are not rewritten: this is its hook.
+  - `HttpsURLConnection.setSSLSocketFactory(f)` → keeps that fake transport (or the offline tracking) and hands `f`
+    on, so the app's own factory does the real handshake instead of replacing the transport.
 - The engine (`NetEngine`) parses HTTP/1.1 in both directions. Recording: it opens the real connection (real TLS,
   with the JDK's trust store plus `--network-trust`, for the name the client's TLS gave, not the address it
   connected to), relays the exchange byte for byte while capturing it, and adds an entry. It never sends a request

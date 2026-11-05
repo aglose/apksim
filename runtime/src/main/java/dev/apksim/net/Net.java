@@ -490,6 +490,22 @@ public final class Net {
 
   private static final Map<SSLSocketFactory, TrackingFactory> trackingFactories = new java.util.concurrent.ConcurrentHashMap<>();
 
+  /**
+   * The app setting an HTTPS connection's socket factory (translated app code calls this). On a connection Net gave
+   * the fake transport (recording, replaying), the transport stays and the app's factory does the real handshake; on
+   * one it tracks, the app's factory is tracked too. Otherwise it is set as asked.
+   */
+  public static void setSSLSocketFactory(HttpsURLConnection c, SSLSocketFactory f) {
+    if (f == null || f instanceof FakeTlsSocket.Factory || f instanceof TrackingFactory) {
+      c.setSSLSocketFactory(f);
+      return;
+    }
+    SSLSocketFactory now = c.getSSLSocketFactory();
+    if (now instanceof FakeTlsSocket.Factory) c.setSSLSocketFactory(new FakeTlsSocket.Factory(f));
+    else if (now instanceof TrackingFactory) c.setSSLSocketFactory(trackingFactories.computeIfAbsent(f, TrackingFactory::new));
+    else c.setSSLSocketFactory(f);
+  }
+
   /** Remembers each socket its TLS is layered on (or opened by it), as Net.connect does for app sockets. */
   static final class TrackingFactory extends SSLSocketFactory {
     private final SSLSocketFactory inner;
