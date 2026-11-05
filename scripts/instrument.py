@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
-                     [-- APKSIM_OPTION...]
+Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
+                     [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
+                     [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
@@ -26,8 +27,26 @@ test was running to put that on (it died between tests, at startup or at exit): 
 "incomplete" entry for that process, even when the tests left all pass in the next one.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
+--bundles DIR: failure bundles (apksim's --bundles, docs/plan.md phase 5) in DIR, which every process gets: each
+failing test's screen, tree, log, threads and repro.sh in DIR/<class>/<method>-<hash>/. A test whose process died
+gets failure.txt (if apksim wrote none) and process.txt (exit status, stderr tail). The JUnit XML links each bundle
+(a property, and screen.png as a [[ATTACHMENT|...]] in system-out, relative to the XML), and DIR/index.html shows
+them all. With --apksim, DIR is the path that apksim sees (relative to the mounted folder) and --bundles-local the
+same folder here. apksim's other bundle options (--bundles-on all, --bundles-max N, --bundles-redact REGEX) go after --
+(the redactions apply to process.txt too). An earlier run's bundles in DIR are removed first.
+Test impact and balanced shards (docs/affected-tests.md):
+--record-deps FILE records which of the app's and the tests' classes each test runs code of, into FILE.
+--affected-by FILE with --changed PATH... (or @LIST, a file of paths) or --diff REV (`git diff --name-only REV`, e.g.
+`origin/main...HEAD`; --repo DIR for another checkout) runs only the tests that reached a class compiled from a changed
+Kotlin or Java file, plus tests FILE has no record of; any other change (resources, manifests, build files, assets, a
+source file of no class the recording knows) runs everything. --ignore GLOB leaves out changed paths that cannot affect
+the tests (docs, JVM unit tests: `--ignore '*.md' --ignore '*/src/test/*'`).
+--timings XML (an earlier run's --xml; repeatable) makes --shards split the tests by their measured times, longest first,
+each shard given an `-e class` list, instead of by hash. --shard I runs only shard I (0-based) of the N, for CI jobs
+on separate machines; every job must be given the same suite, timings and change.
 """
-import argparse, concurrent.futures, os, re, shlex, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, subprocess, sys, threading, time
+import affected
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -35,6 +54,7 @@ CODES = {0: "passed", -2: "failed", -3: "ignored", -4: "skipped"}
 
 
 LAUNCHER = [ROOT + "/apksim"]
+RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
 
 
 def apksim(app, test, extra_args, apksim_opts):
@@ -47,8 +67,11 @@ def apksim(app, test, extra_args, apksim_opts):
     err = []
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
-    lines, seconds, started, block = [], {}, {}, {}
+    lines, seconds, started, block, deps = [], {}, {}, {}, []
     for line in p.stdout:
+        if line.startswith(affected.PREFIX):
+            deps.append(line)
+            continue
         lines.append(line)
         m = re.match(r"INSTRUMENTATION_STATUS: (class|test)=(.*)", line)
         if m:
@@ -62,6 +85,8 @@ def apksim(app, test, extra_args, apksim_opts):
             block = {}
     p.wait()
     reader.join()
+    if deps:
+        RECORDED.append(deps)
     r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
     r.seconds = seconds
     return r
@@ -243,6 +268,161 @@ def one_process(a, passthrough, label=""):
     return results
 
 
+def bundle_folder(c, m):
+    """A test's bundle folder under DIR, as apksim's Bundles.folder names it: <class>/<method>-<8 hex of SHA-256>."""
+    method = None if m in (None, "null") else m
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", method or "class")[:60]
+    h = hashlib.sha256(f"{c}#{method or ''}".encode()).hexdigest()[:8]
+    return os.path.join(c, f"{safe}-{h}")
+
+
+def died(st):
+    """A failure this script reported, not the test: the process ended without the test's result (see one_process)."""
+    return st.startswith(("apksim ", "not run:"))
+
+
+def clear_bundles(local):
+    """Removes an earlier run's bundles from DIR, once before this run's processes start, so that a test passing now
+    is not linked to its old failure: index.html and the folders that are bundles (they hold failure.txt or
+    process.txt), then class folders left empty. Anything else in DIR stays."""
+    if not os.path.isdir(local):
+        return
+    if os.path.exists(os.path.join(local, "index.html")):
+        os.remove(os.path.join(local, "index.html"))
+    for c in os.listdir(local):
+        cdir = os.path.join(local, c)
+        if os.path.islink(cdir) or not os.path.isdir(cdir):  # (a link may lead out of DIR: never followed)
+            continue
+        for b in os.listdir(cdir):
+            bdir = os.path.join(cdir, b)
+            if not os.path.islink(bdir) and os.path.isdir(bdir) and {"failure.txt", "process.txt"} & set(os.listdir(bdir)):
+                shutil.rmtree(bdir)
+        if not os.listdir(cdir):
+            os.rmdir(cdir)
+
+
+def java_regex(rx):
+    """A --bundles-redact pattern (Java's syntax, which apksim compiles) for Python's re: Java's \\Q...\\E quoting
+    becomes re.escape. Other syntax must be what both read; redactions() checks that before the run starts."""
+    return re.sub(r"\\Q(.*?)(?:\\E|$)", lambda m: re.escape(m[1]), rx, flags=re.S)
+
+
+def redactions(passthrough):
+    """apksim's --bundles-redact REGEX options (after --): applied here too, to what this script writes (process.txt,
+    a fallback failure.txt, index.html). Raises ValueError, before any test runs, for one Python's re cannot read."""
+    out = []
+    for i, o in enumerate(passthrough[:-1]):
+        if o == "--bundles-redact":
+            try:
+                out.append(re.compile(java_regex(passthrough[i + 1])))
+            except re.error as e:
+                raise ValueError(f"--bundles-redact {passthrough[i + 1]!r}: {e}. instrument.py applies it with Python's "
+                                 f"re as well as apksim with Java's Pattern: use syntax both read (\\Q...\\E is fine)")
+    return out
+
+
+def redact_text(text, redact):
+    for r in redact:
+        text = r.sub("[redacted]", text)
+    return text
+
+
+def collect_bundles(local, results, redact=()):
+    """{(class, method): bundle folder} for the results that have one; writes the notes for tests whose process died
+    (redacted as apksim redacts its own text files)."""
+    def clean(text):
+        return redact_text(text, redact)
+    found = {}
+    for c, m, s, st, _ in results:
+        if c in ("(run)", "(listing)"):
+            continue
+        path = os.path.join(local, bundle_folder(c, m))
+        if s == "failed" and died(st or ""):
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, "process.txt"), "w") as f:
+                f.write(clean(st))
+            if not os.path.exists(os.path.join(path, "failure.txt")):
+                with open(os.path.join(path, "failure.txt"), "w") as f:
+                    f.write(clean(f"test: {c}#{m}\nstatus: failed\ncaptured by: instrument.py (the process gave no result "
+                                  f"for this test)\n\n{st}\n"))
+        if os.path.isdir(path):
+            found[(c, m)] = path
+    return found
+
+
+def write_index(local, results, bundles, redact=()):
+    """DIR/index.html: one card per bundle (screen, the failure's first lines, the files), in one self-contained page.
+    The previews are redacted as the bundles' own text files are: the page is uploaded with them."""
+    cards = []
+    for c, m, s, st, _ in results:
+        path = bundles.get((c, m))
+        if not path:
+            continue
+        rel = os.path.relpath(path, local)
+        files = sorted(os.listdir(path))
+        captured = ""
+        try:
+            with open(os.path.join(path, "failure.txt")) as f:
+                captured = next((line[len("captured by: "):].strip() for line in f if line.startswith("captured by: ")), "")
+        except OSError:
+            pass
+        first = redact_text(next((line for line in (st or "").splitlines() if line.strip()), s), redact)
+        img = (f'<a href="{html.escape(rel)}/screen.png"><img loading="lazy" src="{html.escape(rel)}/screen.png" alt=""></a>'
+               if "screen.png" in files else '<div class="noshot">no screen</div>')
+        links = " ".join(f'<a href="{html.escape(rel)}/{html.escape(n)}">{html.escape(n)}</a>' for n in files if n != "screen.png")
+        cards.append(f'<article class="{html.escape(s)}">{img}<div><h2>{html.escape(c.rsplit(".", 1)[-1])}'
+                     f'<span>#{html.escape(m or "")}</span></h2><p class="cls">{html.escape(c)}</p>'
+                     f'<p class="why">{html.escape(first[:300])}</p><p class="meta">{html.escape(s)}'
+                     f'{" · " + html.escape(captured) if captured else ""}</p><p class="files">{links}</p></div></article>')
+    failed = sum(1 for r in results if r[2] == "failed")
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Failure bundles</title><style>
+:root{{--bg:#fafafa;--card:#fff;--fg:#1d1d1f;--dim:#6e6e73;--line:#e3e3e6;--bad:#c0392b;--ok:#2e7d32}}
+@media (prefers-color-scheme: dark){{:root{{--bg:#151517;--card:#1f1f22;--fg:#ececee;--dim:#9a9aa0;--line:#333338;--bad:#ff6b5e;--ok:#7ccf83}}}}
+body{{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif}}
+main{{max-width:1100px;margin:0 auto}} h1{{font-size:20px;margin:0 0 4px}} .sum{{color:var(--dim);margin:0 0 20px}}
+article{{display:flex;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 12px}}
+article img,.noshot{{width:120px;flex:none;border-radius:6px;border:1px solid var(--line)}}
+.noshot{{height:200px;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px}}
+article>div{{min-width:0}} h2{{font-size:16px;margin:0}} h2 span{{color:var(--dim);font-weight:500}}
+.cls,.meta{{color:var(--dim);margin:2px 0;font-size:12px;overflow-wrap:anywhere}}
+.why{{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--bad);margin:8px 0;overflow-wrap:anywhere}}
+.passed .why{{color:var(--ok)}} .files a{{margin-right:10px;color:inherit}}
+@media (max-width:560px){{article{{flex-direction:column}} article img,.noshot{{width:100%;max-width:240px}}}}
+</style></head><body><main><h1>Failure bundles</h1>
+<p class="sum">{len(results)} tests, {failed} failed, {len(cards)} with a bundle</p>
+{"".join(cards) or "<p>No bundles.</p>"}</main></body></html>
+"""
+    with open(os.path.join(local, "index.html"), "w") as f:
+        f.write(page)
+
+
+def list_suite(a, passthrough):
+    """The suite as a.e names it, listed by apksim (`-e log true`): [(class, method)], or exits if it cannot be listed."""
+    listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+    why = incomplete(listed, parse(listed.stdout))
+    if why:
+        sys.stderr.write(listed.stderr[-4000:])
+        sys.exit(f"listing the suite failed: {why}")
+    return [(c, m) for c, m, _, _ in parse(listed.stdout)]
+
+
+def run_tests(a, passthrough, listing, tests, label=""):
+    """Runs exactly [tests] (of the suite's [listing]) as one process does (one_process), naming them with -e class
+    (narrow: whole classes where it can), in as many processes one after another as the argument's length limit needs."""
+    remaining, results, part = list(tests), [], 0
+    while remaining:
+        args = narrow(a.e, listing, remaining)
+        names = selectors(dict(args)["class"])
+        covered = {t for t in remaining if t[0] in names or f"{t[0]}#{t[1]}" in names}
+        remaining = [t for t in remaining if t not in covered]
+        part += 1
+        sa = argparse.Namespace(**vars(a))
+        sa.e = args
+        results += one_process(sa, passthrough, label + (f" (part {part})" if part > 1 or remaining else ""))
+    return results
+
+
 def main():
     argv = sys.argv[1:]
     passthrough = []
@@ -258,7 +438,26 @@ def main():
     p.add_argument("--xml")
     p.add_argument("--apksim")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
+    p.add_argument("--bundles")
+    p.add_argument("--bundles-local")
+    p.add_argument("--record-deps", metavar="FILE")
+    p.add_argument("--affected-by", metavar="FILE")
+    p.add_argument("--changed", nargs="+", action="extend", default=[], metavar="PATH")
+    p.add_argument("--diff", metavar="REV")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--ignore", action="append", default=[], metavar="GLOB")
+    p.add_argument("--timings", action="append", default=[], metavar="XML")
+    p.add_argument("--shard", type=int, metavar="I")
     a = p.parse_args(argv)
+    redact = []
+    if a.bundles:
+        try:
+            redact = redactions(passthrough)
+        except ValueError as e:
+            p.error(str(e))
+        passthrough = passthrough + ["--bundles", a.bundles]
+        clear_bundles(a.bundles_local or a.bundles)
+        os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
 
@@ -267,10 +466,64 @@ def main():
     if a.shards > 1 and a.isolate:
         p.error("--shards splits a suite over processes that each run many tests; --isolate gives every test its own"
                 " process already (use -j for how many at a time)")
-    if a.shards > 1:
+    if a.shard is not None and not 0 <= a.shard < a.shards:
+        p.error("--shard I runs shard I of --shards N: 0 <= I < N")
+    if a.record_deps and a.affected_by:
+        p.error("--record-deps records the whole suite; run it without --affected-by")
+    if (a.changed or a.diff) and not a.affected_by:
+        p.error("--changed and --diff need --affected-by DEPS (a file --record-deps wrote)")
+    if a.record_deps:
+        passthrough = ["--jvm", "-Dapksim.deps=true"] + passthrough
+
+    listing, selected = None, None  # selected: the tests to run, when not every test a.e names
+    if a.affected_by:
+        doc = affected.read_deps(a.affected_by)
+        if not (a.changed or a.diff):
+            p.error("--affected-by needs --changed PATH... or --diff REV")
+        changed = affected.changed_files(a.changed, a.diff, a.repo)
+        try:  # classes the recorded build did not have (new files): from the APKs as they are now
+            now = affected.source_map([a.app, a.test], doc["packages"])
+        except OSError as e:  # (with --apksim the APKs may be named for another file system)
+            print(f"could not read the APKs' classes here ({e}): only the recorded build's are known", file=sys.stderr)
+            now = {}
+        classes, notes = affected.affected_classes(doc, changed, now, a.ignore)
+        if classes is None:
+            print(f"running every test: {notes}", file=sys.stderr)
+        else:
+            for n in notes:
+                print("  " + n, file=sys.stderr)
+            listing = list_suite(a, passthrough)
+            selected, unknown = affected.select(doc, listing, classes)
+            print(f"{len(selected)} of {len(listing)} tests affected by {len(changed)} changed files"
+                  + (f" ({unknown} of them new or not recorded)" if unknown else ""), file=sys.stderr)
+    timings = affected.read_timings(a.timings)
+    if a.shards > 1 and (timings or selected is not None):
+        # Shards by measured time (or, without timings, by count), each named with -e class.
+        if any(k in ("numShards", "shardIndex") for k, _ in a.e):
+            p.error("--shards sets which tests each shard runs itself")
+        if listing is None:
+            listing = list_suite(a, passthrough)
+        lists, totals = affected.balance(selected if selected is not None else listing, timings, a.shards)
+        which = range(a.shards) if a.shard is None else [a.shard]
+        print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
+              + ", ".join(f"{totals[i]:.0f} s" for i in range(a.shards))
+              + ("" if a.shard is None else f"; running shard {a.shard}"), file=sys.stderr)
+
+        def balanced(i):
+            start = time.time()
+            got = run_tests(a, passthrough, listing, lists[i], f" (shard {i + 1} of {a.shards})") if lists[i] else []
+            print(f"  shard {i + 1} of {a.shards}: {len(got)} tests in {time.time() - start:.1f} s", file=sys.stderr)
+            return got
+
+        with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
+            for got in pool.map(balanced, which):
+                results += got
+    elif a.shards > 1:
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets -e numShards and shardIndex itself")
-        print(f"{a.shards} shards, one process each, all at once", file=sys.stderr)
+        which = range(a.shards) if a.shard is None else [a.shard]
+        print(f"{a.shards} shards, one process each, " + ("all at once" if a.shard is None else f"running shard {a.shard}"),
+              file=sys.stderr)
 
         def shard(i):
             sa = argparse.Namespace(**vars(a))
@@ -280,11 +533,14 @@ def main():
             print(f"  shard {i + 1} of {a.shards}: {len(got)} tests in {time.time() - start:.1f} s", file=sys.stderr)
             return got
 
-        with concurrent.futures.ThreadPoolExecutor(a.shards) as pool:
-            for got in pool.map(shard, range(a.shards)):
+        with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
+            for got in pool.map(shard, which):
                 results += got
     elif not a.isolate:
-        results = one_process(a, passthrough)
+        results = run_tests(a, passthrough, listing, selected) if selected is not None else one_process(a, passthrough)
+    elif selected is not None:
+        tests = selected
+        print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
         tests = [(c, m) for c, m, _, _ in parse(listed.stdout)]
@@ -294,6 +550,7 @@ def main():
             results.append(("(listing)", "incomplete", "failed", why + ":\n" + listed.stderr[-4000:], None))
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
+    if a.isolate:
         def one(t):
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
@@ -316,7 +573,12 @@ def main():
         print(f"\nFAILED {c}#{m}\n{st}", file=sys.stderr)
     counts = {s: sum(1 for r in results if r[2] == s) for s in sorted({r[2] for r in results})}
     print(f"{len(results)} tests in {time.time() - t0:.1f} s: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
+    bundles = collect_bundles(a.bundles_local or a.bundles, results, redact) if a.bundles else {}
+    if a.bundles:
+        write_index(a.bundles_local or a.bundles, results, bundles, redact)
+        print(f"{len(bundles)} failure bundles: {os.path.join(a.bundles_local or a.bundles, 'index.html')}", file=sys.stderr)
     if a.xml:
+        xml_dir = os.path.dirname(os.path.abspath(a.xml))
         with open(a.xml, "w") as f:
             f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
             f.write(f'<testsuite name="apksim" tests="{len(results)}" failures="{len(failed)}" '
@@ -324,13 +586,28 @@ def main():
             for c, m, s, st, sec in results:
                 f.write(f'  <testcase classname={quoteattr(c or "")} name={quoteattr(m or "")}'
                         + (f' time="{sec:.3f}"' if sec is not None else "") + ">")
+                bundle = bundles.get((c, m))
+                rel = os.path.relpath(bundle, xml_dir) if bundle else None
+                if rel:
+                    f.write(f'<properties><property name="apksim.bundle" value={quoteattr(rel)}/></properties>')
                 if s == "failed":
                     f.write(f"<failure message={quoteattr(st.splitlines()[0] if st else '')}>{escape(st)}</failure>")
                 elif s in ("ignored", "skipped"):
                     f.write("<skipped/>")
+                if rel:
+                    # GitLab's and Jenkins' JUnit attachments: a screenshot shown with the test.
+                    shot = "screen.png" if os.path.exists(os.path.join(bundle, "screen.png")) else "failure.txt"
+                    f.write(f"<system-out>{escape(f'[[ATTACHMENT|{os.path.join(rel, shot)}]]')}</system-out>")
                 f.write("</testcase>\n")
             f.write("</testsuite>\n")
-    sys.exit(1 if failed or not results else 0)
+    if a.record_deps:
+        affected.write_deps(a.record_deps, RECORDED, [a.app, a.test])
+    if selected is not None and not selected:
+        print("no test is affected by the change", file=sys.stderr)
+        sys.exit(0)
+    # No results at all fails a run (no tests found), except for a shard, which can be empty by design (more shards
+    # than tests, a selection smaller than the CI matrix): a process that did not finish has a "(run)" entry anyway.
+    sys.exit(1 if failed or (not results and a.shards == 1) else 0)
 
 
 main()

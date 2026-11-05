@@ -24,6 +24,8 @@ public final class ClassTranslator implements Opcodes {
   static final boolean DEBUG_INFO = Boolean.getBoolean("apksim.debugInfo");
   /** -Dapksim.peephole=false writes methods as translated, for A/B runs (it changes the class cache's key too). */
   public static final boolean PEEPHOLE = !DEBUG_INFO && Boolean.parseBoolean(System.getProperty("apksim.peephole", "true"));
+  /** Test-impact recording (-Dapksim.deps): probes at method starts, see {@link Probes}. Off, classes are unchanged. */
+  static final boolean RECORDING = Probes.ON;
   private static final int VIS_RUNTIME = 1;
   private static final int VIS_SYSTEM = 2;
 
@@ -33,6 +35,8 @@ public final class ClassTranslator implements Opcodes {
   private ClassWriter cw;
   private Set<String> split = Set.of();
   private String name;
+  private boolean probe;
+  private boolean isIface;
 
   private final Map<Integer, Integer> fieldAnnots = new HashMap<>();
   private final Map<Integer, Integer> methodAnnots = new HashMap<>();
@@ -105,6 +109,9 @@ public final class ClassTranslator implements Opcodes {
     if ((access & ACC_PROTECTED) != 0) classAccess |= ACC_PUBLIC;
     if ((access & ACC_INTERFACE) == 0) classAccess |= ACC_SUPER;
     cw.visit(V1_8, classAccess, name, signature, sup, interfaces);
+    probe = RECORDING && Probes.probed(name);
+    isIface = (access & ACC_INTERFACE) != 0;
+    if (probe && !isIface) cw.visitField(ACC_PRIVATE | ACC_STATIC | ACC_SYNTHETIC, PROBE_FIELD, "I", null, null).visitEnd();
 
     int src = dex.i32(def + 16);
     if (src != -1 || sourceDebug != null) cw.visitSource(src == -1 ? null : dex.string(src), sourceDebug);
@@ -193,6 +200,32 @@ public final class ClassTranslator implements Opcodes {
     return out;
   }
 
+  private static final String PROBE_FIELD = "$apksimDeps";
+  private static final String PROBES = "dev/apksim/dex/Probes";
+
+  /**
+   * Test-impact recording: the method first tells {@link Probes} that this class's code ran, once per span (its static
+   * field keeps the epoch it last reported in). Interfaces keep theirs in Probes.
+   */
+  private void addProbe(org.objectweb.asm.tree.MethodNode node) {
+    org.objectweb.asm.tree.InsnList p = new org.objectweb.asm.tree.InsnList();
+    if (isIface) {
+      p.add(new org.objectweb.asm.tree.LdcInsnNode(Type.getObjectType(name)));
+      p.add(new org.objectweb.asm.tree.MethodInsnNode(INVOKESTATIC, PROBES, "hitInterface", "(Ljava/lang/Class;)V", false));
+    } else {
+      org.objectweb.asm.tree.LabelNode skip = new org.objectweb.asm.tree.LabelNode();
+      p.add(new org.objectweb.asm.tree.FieldInsnNode(GETSTATIC, name, PROBE_FIELD, "I"));
+      p.add(new org.objectweb.asm.tree.FieldInsnNode(GETSTATIC, PROBES, "epoch", "I"));
+      p.add(new org.objectweb.asm.tree.JumpInsnNode(IF_ICMPEQ, skip));
+      p.add(new org.objectweb.asm.tree.LdcInsnNode(Type.getObjectType(name)));
+      p.add(new org.objectweb.asm.tree.MethodInsnNode(INVOKESTATIC, PROBES, "hit", "(Ljava/lang/Class;)I", false));
+      p.add(new org.objectweb.asm.tree.FieldInsnNode(PUTSTATIC, name, PROBE_FIELD, "I"));
+      p.add(skip);
+    }
+    node.instructions.insert(p);
+    node.maxStack = Math.max(node.maxStack, 2);
+  }
+
   private void readMethods(DexFile.Cursor cur, int n) {
     int idx = 0;
     for (int i = 0; i < n; i++) {
@@ -209,7 +242,7 @@ public final class ClassTranslator implements Opcodes {
         exceptions = throwsFrom(annots);
       }
       // Buffered, so Peephole can shrink the code before it is written (not with debug info, which names the slots).
-      org.objectweb.asm.tree.MethodNode node = PEEPHOLE
+      org.objectweb.asm.tree.MethodNode node = PEEPHOLE || probe
           ? new org.objectweb.asm.tree.MethodNode(org.objectweb.asm.Opcodes.ASM9, access, m.name(), m.descriptor(), sig, exceptions)
           : null;
       MethodVisitor mv = node != null ? node : cw.visitMethod(access, m.name(), m.descriptor(), sig, exceptions);
@@ -235,7 +268,8 @@ public final class ClassTranslator implements Opcodes {
         mv.visitEnd();
       }
       if (node != null) {
-        Peephole.optimize(node);
+        if (PEEPHOLE) Peephole.optimize(node);
+        if (probe && code != 0) addProbe(node);
         node.accept(cw);
       }
     }

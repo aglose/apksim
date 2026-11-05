@@ -113,6 +113,31 @@ scripts/instrument.py app-debug.apk app-debug-androidTest.apk --isolate -j 4 --x
 scripts/instrument.py --apksim "docker run --rm -v $PWD/out:/work apksim:ci" app-debug.apk app-debug-androidTest.apk --xml out/e2e.xml
 ```
 
+### Failure bundles
+
+With `--bundles DIR` (on `instrument.py` or `./apksim --instrument`) every failing test leaves a folder,
+`DIR/<class>/<method>-<hash>/`, and `DIR/index.html` lists them with their screens. Upload DIR with the JUnit XML,
+which links each test to its folder. To read one:
+- `screen.png` and `nodes.txt`: what was on the screen when the test failed, before its teardown closed the activity
+  (not for failures in `@After` or rules, which happen after it: `failure.txt` says which capture point wrote it).
+- `failure.txt`: the stack, the device and settings, how many tests ran before it in the process (a test that fails
+  only after others is fed by app statics), and the run's `-e` arguments.
+- `logcat.txt`: the app's log during that test only. `looper.txt`: what the main thread still had queued and which
+  activities were in which stage, for idling and timeout failures. `threads.txt`: every thread.
+- `repro.sh`: runs that test alone with the same options, from the folder the run started in.
+- `process.txt` (from `instrument.py`): the process died during the test (native crash, abort, the timeout watchdog),
+  with its exit status and stderr tail.
+
+```bash
+scripts/instrument.py app-debug.apk app-debug-androidTest.apk --xml out/e2e.xml --bundles out/bundles
+# in the image: DIR as the container sees it, and the same folder here
+scripts/instrument.py --apksim "docker run --rm -v $PWD/out:/work apksim:ci" app-debug.apk app-debug-androidTest.apk \
+  --xml out/e2e.xml --bundles bundles --bundles-local out/bundles
+```
+
+A bundle holds what the app logged and showed, so it can hold a test account's data or tokens; `-- --bundles-redact
+REGEX` replaces matches in the text files.
+
 In another repository's CI, the released image runs a suite with its own `instrument.py`, with no apksim checkout
 (`docker run --rm -v $PWD/out:/work --entrypoint instrument.py ghcr.io/aglose/apksim:VERSION app.apk test.apk ...`;
 a job to copy: [linux-docker.md](linux-docker.md#prebuilt-image)).
