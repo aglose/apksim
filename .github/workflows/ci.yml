@@ -44,6 +44,8 @@ jobs:
         uses: ./.github/actions/linux-build
       - name: Translator check (R8 and D8 fixtures)
         run: scripts/check-translator.sh
+      - name: instrument.py check (test processes that die, against a stand-in apksim)
+        run: python3 scripts/instrument-check.py
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Smoke test
@@ -63,6 +65,24 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-realtime.xml -e timezone America/New_York -e realtimeClock true \
             -- --timezone America/New_York --realtime-clock
+      # ProcessDeathTest's two crashing tests end the process (a halt, the Timeout watchdog): instrument.py must
+      # report those two failed and still run every other test, in new processes.
+      - name: Test run that ends its process on purpose
+        run: |
+          status=0
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-crash.xml -e crashOnPurpose true || status=$?
+          test "$status" = 1
+          python3 - tests/junit.xml tests/junit-crash.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          def cases(f):
+              return {(c.get("classname"), c.get("name")): c.find("failure") is not None for c in ET.parse(f).iter("testcase")}
+          normal, crash = cases(sys.argv[1]), cases(sys.argv[2])
+          failed = sorted(m for (c, m), f in crash.items() if f)
+          assert set(crash) == set(normal), f"tests differ: {set(crash) ^ set(normal)}"
+          assert failed == ["b_haltsTheProcess", "d_ignoresInterruptsPastItsTimeout"], f"failed: {failed}"
+          print(f"{len(crash)} tests, failed as meant: {failed}")
+          EOF
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -72,3 +92,4 @@ jobs:
             smoke/*.log
             tests/junit.xml
             tests/junit-realtime.xml
+            tests/junit-crash.xml
