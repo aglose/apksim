@@ -1,7 +1,7 @@
 # Builds the runtime and the Linux image, then runs the test app headless in it (scripts/ci-smoke.sh, with the adb
-# device check of scripts/adb-check.py and the network check of scripts/network-check.sh) and its androidTest suite
-# with --instrument (JUnit XML in the artifact), checks the DEX translator on an R8 fixture, and checks test-impact
-# selection and balanced shards (scripts/affected-check.py).
+# device check of scripts/adb-check.py, the network check of scripts/network-check.sh and screenshot tests of
+# scripts/snapshot.py) and its androidTest suite with --instrument (JUnit XML in the artifact), checks the DEX
+# translator on an R8 fixture, and checks test-impact selection and balanced shards (scripts/affected-check.py).
 # The Mac-only parts (window, Metal, VideoToolbox, AOT timings) are not covered here.
 name: ci
 on:
@@ -139,6 +139,12 @@ jobs:
             smoke/*.log
             smoke/network/*.log
             smoke/network/rec.har
+            smoke/snapshots/*.log
+            smoke/snapshots/*/report.html
+            smoke/snapshots/*/results.json
+            smoke/snapshots/*/actual/**
+            smoke/snapshots/*/golden/**
+            smoke/snapshots/*/diff/**
             tests/junit.xml
             tests/junit-network.xml
             tests/junit-realtime.xml

@@ -167,6 +167,19 @@ public class Host {
       while ((cmd = Control.QUEUE.poll()) != null) {
         // Logged so a scripted session can be followed afterwards. Pasted text is not in the command.
         System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
+        if (cmd.args[0].equals("settle")) {
+          // Answered later, from the loop, once the UI is quiet (or it gives up).
+          Settle next;
+          try {
+            next = new Settle(cmd);
+          } catch (NumberFormatException ex) {
+            cmd.finish("error: usage: settle [MAX_MS] [QUIET_MS] [HORIZON_MS]: " + ex.getMessage());
+            continue;
+          }
+          if (settle != null) settle.pending.finish("error: replaced by another settle");
+          settle = next;
+          continue;
+        }
         String reply;
         try {
           reply = runCommand(cmd.args);
@@ -212,6 +225,7 @@ public class Host {
       looperNanos += System.nanoTime() - looperStart;
       updateActivityStack();
       if (stack.isEmpty()) break;
+      if (Snapshot.ON) focusTopWindow();
       List<View> roots = rootViews();
       if (!controls.hidden() && (firstFrame ? laidOut(roots) : anyDirty(roots))) {
         render(roots);
@@ -227,9 +241,143 @@ public class Host {
           }
         }
       }
+      if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
       if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
     }
     exit(0);
+  }
+
+  // ---------------------------------------------------------------- settle: the idle signal for screenshots
+
+  /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */
+  private Settle settle;
+
+  /**
+   * `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]`: answers once the UI has been quiet for QUIET_MS (default 200) of real
+   * time, no frame rendered meanwhile, or with an error after MAX_MS (default 10000) saying what was still busy.
+   * Quiet: see {@link #busy}. Messages due later than HORIZON_MS (default 1000) of simulated time do not count, so a
+   * 5 s auto-dismiss does not hold a screenshot up. docs/snapshots.md.
+   */
+  private final class Settle {
+    final Control.Pending pending;
+    final long start = System.nanoTime();
+    final long maxNanos;
+    final long quietNanos;
+    final long horizonMs;
+    long quietSince;
+    long framesAtQuiet;
+    String reason = "";
+
+    Settle(Control.Pending p) {
+      pending = p;
+      String[] a = p.args;
+      maxNanos = (a.length > 1 ? Long.parseLong(a[1]) : 10_000) * 1_000_000L;
+      quietNanos = (a.length > 2 ? Long.parseLong(a[2]) : 200) * 1_000_000L;
+      horizonMs = a.length > 3 ? Long.parseLong(a[3]) : 1000;
+    }
+
+    /** Called every loop turn with what keeps the UI busy (null when nothing does); true once answered. */
+    boolean check(String busy) {
+      long now = System.nanoTime();
+      if (busy == null && quietSince != 0 && frames != framesAtQuiet) busy = "a frame was drawn";
+      if (busy != null) {
+        reason = busy;
+        quietSince = 0;
+      } else if (quietSince == 0) {
+        quietSince = now;
+        framesAtQuiet = frames;
+      } else if (now - quietSince >= quietNanos) {
+        hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
+        pending.finish("settled in " + (now - start) / 1_000_000 + " ms");
+        return true;
+      }
+      if (now - start > maxNanos) {
+        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + reason);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  /** What keeps the UI from being quiet for a screenshot, or null. */
+  private String busy(ShadowLooper looper, List<View> roots) {
+    if (!pendingScript.isEmpty()) return "input queued";
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
+    for (View r : roots) {
+      if (r.isDirty() || r.isLayoutRequested()) return "a window needs drawing (" + r.getClass().getSimpleName() + ")";
+    }
+    if (!looper.isIdle()) return "the main looper has messages due";
+    String due = dueMessage(SystemClock.uptimeMillis() + settle.horizonMs);
+    return due == null ? null : "a message is due: " + due;
+  }
+
+  /**
+   * The first message on the main queue due by [until] (uptime ms) that can change what is on screen, described, or
+   * null. Some that never draw are skipped: ViewRootImpl's MSG_TOUCH_BOOST_TIMEOUT (39) and
+   * MSG_CHECK_INVALIDATION_IDLE (40), frame-rate bookkeeping that reposts itself for a few seconds after touches and
+   * drawing, and AnimationHandler's pauser, which pauses the animators of windows no longer visible a second after one
+   * goes (every `restart`).
+   */
+  private static String dueMessage(long until) {
+    try {
+      android.os.Message m = ReflectionHelpers.getField(Looper.getMainLooper().getQueue(), "mMessages");
+      long now = SystemClock.uptimeMillis();
+      for (; m != null && m.getWhen() <= until; m = ReflectionHelpers.getField(m, "next")) {
+        android.os.Handler target = m.getTarget();
+        String handler = target == null ? "" : target.getClass().getName();
+        if ((m.what == 39 || m.what == 40) && handler.equals("android.view.ViewRootImpl$ViewRootHandler")) continue;
+        if (m.what == 2 && handler.equals("android.view.Choreographer$FrameHandler") && m.obj != null
+            && m.obj.getClass().getName().startsWith("android.animation.AnimationHandler$$Lambda")) continue;
+        Object cb = m.getCallback();
+        return "in " + (m.getWhen() - now) + " ms, " + (target == null ? "barrier" : target.getClass().getName())
+            + (cb == null ? " what=" + m.what : " " + cb.getClass().getName()) + (m.obj == null ? "" : " " + m.obj.getClass().getName());
+      }
+      return null;
+    } catch (RuntimeException e) {
+      return "unreadable queue: " + e;
+    }
+  }
+
+  /**
+   * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the launcher activity started
+   * again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
+   * Application and data persist. Screenshot tests start every screen this way, so none sees what another left.
+   */
+  private String restart(String url) throws Exception {
+    String pkg = System.getProperty("apksim.package");
+    String cls = System.getProperty("apksim.launcher");
+    Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+    if (url != null) {
+      // Resolved first: with no activity left the process would end.
+      intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(pkg);
+      android.content.pm.ResolveInfo r = app.getPackageManager().resolveActivity(intent, 0);
+      if (r == null || r.activityInfo == null) return "error: no activity in " + pkg + " handles " + url;
+      cls = r.activityInfo.name;
+    }
+    if (controls.hidden()) controls.show();
+    while (shadowOf(app).getNextStartedActivity() != null) {
+      // Starts not yet acted on belong to the activities being dropped.
+    }
+    ActivityController<? extends Activity> top = stack.peek();
+    if (top != null) top.pause().stop();
+    while (!stack.isEmpty()) stack.pop().destroy();
+    controls.results().clear();
+    pendingScript.clear();
+    intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    start(cls, intent);
+    return "ok, " + cls;
+  }
+
+  /**
+   * --snapshot: the top activity's window has focus, as on a device, so a focused text field draws its caret (Compose
+   * and Views draw one only in a focused window). Robolectric gives windows no focus, and running instances leave
+   * it so for now; a screenshot should show what a device would.
+   */
+  private void focusTopWindow() {
+    ActivityController<? extends Activity> top = stack.peek();
+    if (top == null || controls.hidden()) return;
+    View decor = top.get().getWindow().peekDecorView();
+    if (decor != null && decor.getViewRootImpl() != null && !decor.hasWindowFocus()) top.windowFocusChanged(true);
   }
 
   /** The last line of the 120 Hz grid at or before this time. Lines fall on 8, 16, 25, 33... ms. */
@@ -702,6 +850,13 @@ public class Host {
         return "pasted " + n + " characters";
       }
       case "shot" -> saveFrame(a[1]);
+      case "restart" -> {
+        return restart(a.length > 1 ? a[1] : null);
+      }
+      case "diff" -> {
+        // diff GOLDEN.png ACTUAL.png [MAP.png] [DELTA]: how many pixels differ by more than DELTA in any channel.
+        return ImageDiff.compare(a[1], a[2], a.length > 3 ? a[3] : null, a.length > 4 ? Integer.parseInt(a[4]) : 0);
+      }
       case "wshot" -> SimWindow.windowSnapshot(a[1]);
       case "quit" -> exit(0);
       case "ping" -> {
@@ -715,7 +870,7 @@ public class Host {
         for (View r : rootViews()) {
           int[] at = position(r);
           b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
-              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append("; ");
+              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "").append("; ");
         }
         return b.toString();
       }

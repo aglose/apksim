@@ -88,7 +88,8 @@ public final class SimRunner extends RobolectricTestRunner {
     return new HelperTestRunner(bootstrapped) {
       @Override
       protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
-        return Bundles.wrap(super.methodInvoker(method, test));
+        org.junit.Test t = method.getAnnotation(org.junit.Test.class);
+        return Bundles.wrap(super.methodInvoker(method, test), t == null ? org.junit.Test.None.class : t.expected());
       }
     };
   }
@@ -109,7 +110,8 @@ public final class SimRunner extends RobolectricTestRunner {
    * so the framework thought it was January 1970 while the app knew the date: DateUtils.isToday(System
    * .currentTimeMillis()) in an app was false, android.icu.util.Calendar.getInstance() was in 1970, relative time spans
    * were 50 years long. The uptime clock (SystemClock, nanoTime, the loopers) stays Robolectric's: as on a device the
-   * two are separate clocks, though here the wall clock does not jump when the simulated one skips idle time.
+   * two are separate clocks, though here the wall clock does not jump when the simulated one skips idle time. It is
+   * SimClock's, so `clock ISO` (screenshot tests) moves the framework's wall clock with the app's.
    * Public: Robolectric makes its own instance by reflection when it links a call site.
    */
   public static final class WallClock extends AndroidInterceptors.SystemTimeInterceptor {
@@ -117,14 +119,14 @@ public final class SimRunner extends RobolectricTestRunner {
 
     @Override
     public org.robolectric.util.Function<Object, Object> handle(MethodSignature signature) {
-      if ("currentTimeMillis".equals(signature.methodName)) return (theClass, value, params) -> System.currentTimeMillis();
+      if ("currentTimeMillis".equals(signature.methodName)) return (theClass, value, params) -> SimClock.currentTimeMillis();
       return super.handle(signature);
     }
 
     @Override
     public MethodHandle getMethodHandle(String name, MethodType type) throws NoSuchMethodException, IllegalAccessException {
       if ("currentTimeMillis".equals(name)) {
-        return MethodHandles.lookup().findStatic(System.class, "currentTimeMillis", MethodType.methodType(long.class));
+        return MethodHandles.lookup().findStatic(SimClock.class, "currentTimeMillis", MethodType.methodType(long.class));
       }
       return super.getMethodHandle(name, type);
     }
@@ -243,6 +245,8 @@ public final class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       applyTimeZone();
+      // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
+      SimClock.applyLaunchOption();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
       NetConnectivity.beforeApplication();
@@ -325,12 +329,13 @@ public final class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected Class<?>[] getExtraShadows(FrameworkMethod method) {
-    Class<?>[] shadows = baseShadows();
-    if (!RealTimeClock.requested()) return shadows;
-    Class<?>[] more = java.util.Arrays.copyOf(shadows, shadows.length + 2);  // --realtime-clock
-    more[shadows.length] = RealTimeClock.ShadowRealTimeSystemClock.class;
-    more[shadows.length + 1] = RealTimeClock.ShadowRealTimeDisplayEventReceiver.class;
-    return more;
+    List<Class<?>> shadows = new ArrayList<>(java.util.Arrays.asList(baseShadows()));
+    if (RealTimeClock.requested()) {  // --realtime-clock
+      shadows.add(RealTimeClock.ShadowRealTimeSystemClock.class);
+      shadows.add(RealTimeClock.ShadowRealTimeDisplayEventReceiver.class);
+    }
+    if (Snapshot.ON) shadows.add(Snapshot.ShadowSteadyCaret.class);  // --snapshot: carets that do not blink
+    return shadows.toArray(new Class<?>[0]);
   }
 
   private static Class<?>[] baseShadows() {

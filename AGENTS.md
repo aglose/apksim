@@ -51,7 +51,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`-Dapksim.debugTypes=owner/Class.method` reports such a merge). Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
     `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
-    `new RenderNode` → `GpuRenderNode`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
+    `new RenderNode` → `GpuRenderNode`, wall-clock reads (`System.currentTimeMillis`, java.time `X.now()`,
+    `Clock.system*`, `new Date()`, `Calendar.getInstance`) → `SimClock`, and Compose's `CursorAnimationState(animate)`
+    through `Snapshot.cursorBlink`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
     is read from the parameter, and an adjacent `xstore n; xload n` with n dead after (liveness, handlers included)
     goes, so a getter is `aload_0 getfield ireturn` rather than 7 bytecodes. ~15% fewer bytecodes, ~4% off a warm
     launch; `-Dapksim.peephole=false` for A/B (its own class cache). The translator runs on every class a launch
@@ -83,6 +85,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
+  - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
+    blinking, the top window focused), `SimClock` (`clock`, `--clock`), `ImageDiff` (`diff`), and in `Host` the
+    `settle` idle signal and `restart`.
   - `gl/`: GLES20/30 and EGL14 on a real GLES (ANGLE) for offscreen rendering in test runs (see "GLES").
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
@@ -115,10 +120,12 @@ Read README.md for results and limits; this file covers how to work on the code.
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
-  docs/parallel.md), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
-  `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim), `affected.py`
-  (instrument.py's test-impact recording and selection and its time-balanced shards, see docs/affected-tests.md;
-  `affected-check.py` checks them on the test app, breaking a file and rebuilding it),
+  docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
+  goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
+  `--apksim CMD` runs the Linux image instead; `instrument-check.py` checks how it handles a process that dies,
+  against a stand-in apksim), `affected.py` (instrument.py's test-impact recording and selection and its
+  time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
+  and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
@@ -135,13 +142,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
-  and why, what each client gets), `plan.md` (remaining work, in order).
+  and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
+  image), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
-  reads. Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
+  reads; Settings shows the wall clock in the locale's format. `snapshots/` has its screenshot-test specs
+  (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
   manifest, extracted `.so` files, app data).
@@ -165,6 +174,11 @@ Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`, `ping`, `quit`.
+For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
+dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
+drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the launcher activity or the
+URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
+than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone` (the zone the app sees; set at launch with
@@ -240,8 +254,8 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
-`--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
+`--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
@@ -620,8 +634,8 @@ shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects trans
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
 /private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
 (`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION` (`release.yml`'s `image`
-job; `:latest` moves on publishing), with `instrument.py` and `drive.py` on its `PATH` for other repositories' CI
-(`--entrypoint instrument.py`). `.github/actions/linux-build` is the Linux build both workflows share.
+job; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
+repositories' CI (`--entrypoint instrument.py`, `--entrypoint snapshot.py`). `.github/actions/linux-build` is the Linux build both workflows share.
 
 ## Debugging app code
 `./apksim --debug 5005 --control 7400 app.apk`, then IntelliJ/Android Studio "Remote JVM Debug" (Attach, localhost,

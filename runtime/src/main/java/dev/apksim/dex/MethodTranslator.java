@@ -2562,6 +2562,12 @@ final class MethodTranslator implements Opcodes {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "sleep", m.descriptor(), false);
       return;
     }
+    if (clock(opcode, ownerName, m)) return;
+    if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && "(Z)V".equals(m.descriptor())
+        && "androidx/compose/foundation/text/input/internal/CursorAnimationState".equals(ownerName)) {
+      // Compose's caret blinks unless made with animate=false; --snapshot holds it (dev.apksim.Snapshot).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Snapshot", "cursorBlink", "(Z)Z", false);
+    }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);
       return;
@@ -2573,6 +2579,49 @@ final class MethodTranslator implements Opcodes {
     }
     mv.visitMethodInsn(opcode, ownerName, m.name(), m.descriptor(), itf);
   }
+
+  /** java.time classes whose now() and now(ZoneId) app code reads the wall clock through. */
+  private static final Set<String> TIME_NOW = Set.of("java/time/Instant", "java/time/LocalDate", "java/time/LocalTime",
+      "java/time/LocalDateTime", "java/time/ZonedDateTime", "java/time/OffsetDateTime", "java/time/OffsetTime",
+      "java/time/Year", "java/time/YearMonth", "java/time/MonthDay");
+
+  /**
+   * Reads of the wall clock go to dev.apksim.SimClock, which `clock ISO` can set (screenshot tests): the same
+   * methods, so with the clock real nothing changes but one static call. Emits the call and returns true if [m] is one.
+   */
+  private boolean clock(int opcode, String ownerName, DexFile.MethodRef m) {
+    String name = m.name();
+    String d = m.descriptor();
+    if (opcode == INVOKESTATIC) {
+      if ("java/lang/System".equals(ownerName) && "currentTimeMillis".equals(name)) {
+        mv.visitMethodInsn(INVOKESTATIC, SIM_CLOCK, name, d, false);
+        return true;
+      }
+      if (TIME_NOW.contains(ownerName) && "now".equals(name) && (d.startsWith("()") || d.startsWith("(Ljava/time/ZoneId;)"))) {
+        // X.now() = X.now(Clock.systemDefaultZone()), X.now(zone) = X.now(Clock.system(zone)): the same, shifted.
+        mv.visitMethodInsn(INVOKESTATIC, SIM_CLOCK, "clock", d.startsWith("()") ? "()Ljava/time/Clock;"
+            : "(Ljava/time/ZoneId;)Ljava/time/Clock;", false);
+        mv.visitMethodInsn(INVOKESTATIC, ownerName, name, "(Ljava/time/Clock;)" + d.substring(d.indexOf(')') + 1), false);
+        return true;
+      }
+      if ("java/time/Clock".equals(ownerName) && ("systemUTC".equals(name) || "systemDefaultZone".equals(name) || "system".equals(name))) {
+        mv.visitMethodInsn(INVOKESTATIC, SIM_CLOCK, name, d, false);
+        return true;
+      }
+      if ("java/util/Calendar".equals(ownerName) && "getInstance".equals(name)) {
+        mv.visitMethodInsn(INVOKESTATIC, SIM_CLOCK, "calendar", d, false);
+        return true;
+      }
+    }
+    if (opcode == INVOKESPECIAL && "java/util/Date".equals(ownerName) && "<init>".equals(name) && "()V".equals(d)) {
+      mv.visitMethodInsn(INVOKESTATIC, SIM_CLOCK, "currentTimeMillis", "()J", false);
+      mv.visitMethodInsn(INVOKESPECIAL, ownerName, name, "(J)V", false);
+      return true;
+    }
+    return false;
+  }
+
+  private static final String SIM_CLOCK = "dev/apksim/SimClock";
 
   private void emitInvokePolymorphic(int i, int[] s) {
     DexFile.MethodRef m = dex.method(b[i]);

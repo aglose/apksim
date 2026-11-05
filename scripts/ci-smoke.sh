@@ -2,7 +2,9 @@
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
 # channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
-# (scripts/adb-check.py). Then the network check (scripts/network-check.sh). Screens and logs go to OUT.
+# (scripts/adb-check.py). Then the network check (scripts/network-check.sh) and screenshot tests on a small matrix
+# (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught. Screens, logs and
+# snapshot reports go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,4 +50,39 @@ fi
 drive quit >/dev/null || true
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
+
+# Screenshot tests in the image (scripts/snapshot.py, docs/snapshots.md), on a small matrix: record goldens, run again
+# against them (the image must give the same pixels), then a spec whose home screen shows something else (one FAB tap)
+# must fail on exactly those captures. Reports in OUT/snapshots/*/report.html.
+SNAP="$OUT/snapshots"
+rm -rf "$SNAP" && mkdir -p "$SNAP"
+cp "$APK" "$SNAP/app.apk"
+cp "$ROOT/testapks/composeapp/snapshots/ci.json" "$SNAP/ci.json"
+python3 - "$SNAP/ci.json" "$SNAP/changed.json" <<'EOF'
+import json, sys
+spec = json.load(open(sys.argv[1]))
+for s in spec["screens"]:
+    if s["name"] == "home":
+        s["steps"] = ["tap-text Add"]
+json.dump(spec, open(sys.argv[2], "w"), indent=1)
+EOF
+snapshot() { docker run --rm --platform linux/amd64 -v "$SNAP:/work" --entrypoint snapshot.py "$IMAGE" "$@" --apk app.apk --goldens goldens; }
+snapshot ci.json --update --out record > "$SNAP/record.log" 2>&1 || { cat "$SNAP/record.log"; exit 1; }
+tail -2 "$SNAP/record.log" | head -1
+snapshot ci.json --out rerun > "$SNAP/rerun.log" 2>&1 || { cat "$SNAP/rerun.log"; echo "a rerun did not match its goldens" >&2; exit 1; }
+tail -2 "$SNAP/rerun.log" | head -1
+status=0
+snapshot changed.json --out changed > "$SNAP/changed.log" 2>&1 || status=$?
+python3 - "$SNAP/changed/results.json" "$status" <<'EOF'
+import json, sys
+results = json.load(open(sys.argv[1]))["results"]
+assert sys.argv[2] == "1", f"a changed screen should exit 1, not {sys.argv[2]}"
+home = [r for r in results if r["screen"] == "home"]
+rest = [r for r in results if r["screen"] != "home"]
+assert home and all(r["status"] == "mismatch" for r in home), \
+    f"every home capture should be a mismatch: {[(r['combo'], r['status'], r['detail']) for r in home]}"
+assert rest and all(r["status"] == "match" for r in rest), \
+    f"every other capture should match: {[(r['screen'], r['combo'], r['status']) for r in rest if r['status'] != 'match']}"
+print(f"changed screen caught: all {len(home)} home captures differ, all {len(rest)} others match")
+EOF
 echo "smoke test passed"
