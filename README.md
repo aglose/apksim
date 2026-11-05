@@ -10,8 +10,6 @@ machine, no install step.** The app is on screen about a quarter of a second aft
 standard `adb` tooling. The same runtime runs an app's instrumented test suite, on the Mac or headless in a Linux
 container, several times faster than an emulator.
 
-It is a from-scratch take on what the Android team demoed as "Android Prototype" at Android Dev Summit 2026.
-
 ```bash
 brew tap aglose/apksim && brew trust aglose/apksim && brew install apksim
 apksim app-debug.apk
@@ -131,8 +129,8 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--biometrics enrolled` | Start with a fingerprint enrolled |
 | | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
 | | `--fresh` | Erase the app's data first, as if just installed |
-| Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable |
-| | `--no-sandbox` | Run without the `sandbox-exec` profile |
+| Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
+| | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
 | Automation | `--control PORT\|auto` | Open the [control channel](#automation) |
 | | `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
 | | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
@@ -177,14 +175,16 @@ Start an instance with `--control PORT` (or `auto`). It then accepts one command
 one line. There are three ways to send commands:
 
 ```bash
-scripts/drive.py 7400 'tap 720 1690' 'wait 1000' 'shot home.png' 'quit'    # by port
+scripts/drive.py 7400 'tap 720 1690' 'wait 1000' 'shot /tmp/home.png' 'quit'    # by port
 scripts/ctl.py list                                                       # find instances
-scripts/ctl.py @myapp appearance dark ';' wait 500 ';' shot dark.png      # by PID, port or APK name
+scripts/ctl.py @myapp appearance dark ';' wait 500 ';' shot /tmp/dark.png  # by PID, port or APK name
 ```
 
 `ctl.py` also manages app data: `ctl.py apps` lists the apps that have data, `ctl.py container PKG` shows a
 package's data folder, and `ctl.py erase PKG` deletes it, refusing while an instance is using it. Coordinates are
-device pixels: the phone is 822 × 1782.
+device pixels: the phone is 822 × 1782. File paths in commands resolve against the launch's working directory. On
+macOS, the sandbox only lets apksim write inside your home folder to its state folder, so save to `/tmp` or the
+state folder.
 
 | Group | Commands |
 |---|---|
@@ -290,7 +290,8 @@ the newest release. It's about 565 MB and holds:
 - `instrument.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
-VideoToolbox: rendering and shaders run on the CPU. APKs need x86_64 native libraries there. Building the image and
+VideoToolbox: rendering and shaders run on the CPU. APKs need x86_64 native libraries there (4 KB-aligned ones load). There is no sandbox inside the container,
+so use `docker run --network none` to keep an app off the network. Building the image and
 running it on a Mac are covered in [docs/linux-docker.md](docs/linux-docker.md).
 
 ## Debugging
@@ -326,7 +327,6 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.mute=true` | Keep audio timing, but play silence |
 | `-Dapksim.audio=false` | Turn off sound and the audio decoders |
 | `-Dapksim.runnerApplication=false` | In test runs, ignore the runner's `newApplication` |
-| `-Dapksim.standbyIdle=SECONDS` | How long an unused standby waits before quitting (default an hour) |
 
 A launch is warm when it's handed to a pre-booted standby. `--debug`, test runs and most JVM options launch cold,
 because the standby read them when it booted. Of the switches above, only `timing`, `vsync` and `classCache` still
@@ -350,15 +350,11 @@ framework. A *cold* launch starts a JVM.
 
 | | Window | First frame, warm | Cold | Memory |
 |---|---|---|---|---|
-| Android Prototype, as demoed (Linux x86, small app) | ~2 s | | ~3-4 s | not shown |
 | apksim, small Compose app | 0.01 s | 0.22 s | 1.35 s | ~550-780 MB |
 | apksim, a large app (R8 release build, 12 MB DEX, SQLite and WebRTC native code) | 0.01 s | 0.36 s | 1.5 s | |
 | apksim, the same app's debug build (179 MB APK) | 0.01 s | 0.48 s | 1.6 s | |
 | Stock emulator, Quick Boot snapshot (small app) | - | | 8.3-9.0 s | 3-4 GB |
 | Stock emulator, full boot | - | | 18 s | 3.3-4 GB |
-
-The talk's timings come from a narrated video, so treat them as approximate. Google's hardware and app differ too,
-so this shows the same order of speed, not a controlled head-to-head.
 
 **Frame rate.** Frames follow the display's vsync. On a 120 Hz display, normal UI, a full-screen noise shader and the
 large app's sheet animation all average 117-120 fps. Frames that miss are typically 9-12 ms, not dropped. What's
@@ -379,7 +375,7 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.
-- **Native libraries:** they must be arm64-v8a (x86_64 on Linux) and 16 KB-aligned. macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
+- **Native libraries:** they must be arm64-v8a (x86_64 on Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
 - **Test runs are Robolectric-style:** the test body runs on the main thread, so `runBlocking { delay() }` on the test thread freezes the app, and accessibility events aren't sent.
 - **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
