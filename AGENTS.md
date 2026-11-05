@@ -114,7 +114,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
-  `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim),
+  `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim), `affected.py`
+  (instrument.py's test-impact recording and selection and its time-balanced shards, see docs/affected-tests.md;
+  `affected-check.py` checks them on the test app, breaking a file and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
@@ -128,7 +130,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
-  suites side by side, fleets, what limits them), `plan.md` (remaining work, in order).
+  suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
+  shards balanced by measured time), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
@@ -405,13 +408,20 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 `instrument.py` writes when it names tests; any other backslash is literal), and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
-within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N] [--xml FILE] [-- APKSIM_OPTS]` runs a
+within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N [--timings XML] [--shard I]]
+[--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [-- APKSIM_OPTS]` runs a
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
 process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
 (a test's shard is `abs(description.hashCode() % N)`, AndroidJUnitRunner's `abs(hash) % N` except for a hash of
-`Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests). Test runs stop the JIT at
-C1 (the launcher adds `-XX:TieredStopAtLevel=1` for `--instrument`, before `--jvm` options): ~40% less CPU at the same
+`Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests); with `--timings XML` (an
+earlier run's JUnit XML) the shards are balanced by measured time instead, longest first, each named with `-e class`,
+and `--shard I` runs only one of them (a CI matrix). `--record-deps FILE` records which of the app's and tests'
+classes each test runs code of (`-Dapksim.deps=true`: the translator adds a probe to every method of the app's
+packages, `dex/Probes`, and Instrument's `DepsListener` reports each test's classes on stdout), and `--affected-by FILE
+--changed PATH...|--diff REV` runs only the tests that reached a class compiled from a changed `.kt`/`.java` file (by
+DEX source file, package and Kotlin's SMAP), and the whole suite for any other change (docs/affected-tests.md). Test
+runs stop the JIT at C1 (the launcher adds `-XX:TieredStopAtLevel=1` for `--instrument`, before `--jvm` options): ~40% less CPU at the same
 wall time on a large app's suites, and no cliff when more processes run than there are cores (docs/parallel.md). Without it, a process that ends before every test has a result (a native crash or abort, or
 the Timeout watchdog below) does not end the run: the test that was running is reported failed with the exit status
 and the stderr tail (with none running, a failed "(run)" entry is, so the run still fails), the suite is listed (`-e log true`, the run's own `-e` arguments, only once a process has died),

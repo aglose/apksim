@@ -25,6 +25,12 @@ test's shard comes from its name's hash, every test runs once, and each shard re
 does. Results make one JUnit XML, with each test's time. A shard's tests share its process, so a suite that passes in
 one process passes sharded unless its tests depend on running after one another.
 
+**Shards balanced by measured time.** Hash sharding gives shards equal numbers of tests, not equal times.
+`--shards N --timings XML` (an earlier run's `--xml`) splits the suite longest test first, each to the shard with the
+least time so far, and names each shard's tests with `-e class`; `--shard I` runs just one shard, for N CI jobs on
+separate machines. See [affected-tests.md](affected-tests.md#balanced-shards), which also covers running only the
+tests a change reaches (`--record-deps`, `--affected-by`).
+
 **Prefer one process per suite to one per test.** `--isolate` (a process per test, as the Orchestrator with
 `clearPackageData`) pays a JVM start, a cold JIT and an app start for every test. apksim already gives every test a
 fresh Application and data folder; only statics carry over. The app's 10 end-to-end tests: 16 s isolated, 4 at a

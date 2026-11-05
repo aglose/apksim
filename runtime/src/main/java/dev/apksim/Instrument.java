@@ -117,6 +117,7 @@ final class Instrument {
     Bundles.runStarted();
     JUnitCore core = new JUnitCore();
     core.addListener(raw);
+    if (dev.apksim.dex.Probes.ON) core.addListener(new DepsListener(out));  // after raw: its lines go between blocks
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
     return r.wasSuccessful() ? 0 : 1;
@@ -335,6 +336,77 @@ final class Instrument {
       for (Description c : d.getChildren()) leaves(c, out);
     }
     return out;
+  }
+
+  /**
+   * Test-impact recording (-Dapksim.deps=true, `instrument.py --record-deps`): which classes' code ran in each test, as
+   * lines on stdout between am instrument's status blocks, which instrument.py takes out of the output:
+   * {@code INSTRUMENTATION_APKSIM_DEPS: P <packages>} lists the probed packages, {@code ... C <id> <class>} names a class the first time it appears,
+   * {@code ... T <class> <method> <ids>} lists a finished test's classes, and {@code ... G <class> <ids>} classes that ran
+   * between tests (@BeforeClass/@AfterClass), which count for every test of the class before and after them; the class
+   * {@code *} stands for every test (what ran before the first: the runners' construction, the runner's setup). Fields are tab-separated, with tab, newline and backslash escaped. A test that never finishes (the
+   * process died) has no line, and instrument.py selects such tests always.
+   */
+  private static final class DepsListener extends RunListener {
+    private static final String PREFIX = "INSTRUMENTATION_APKSIM_DEPS: ";
+    private final PrintStream out;
+    private final Map<String, Integer> ids = new java.util.HashMap<>();
+    private String lastClass;
+
+    DepsListener(PrintStream out) {
+      this.out = out;
+    }
+
+    @Override
+    public void testRunStarted(Description d) {
+      out.println(PREFIX + "P\t" + dev.apksim.dex.Probes.packages());
+      // Before the first test: building the runners (a Parameterized class's @Parameters), the runner's
+      // newApplication probe. Any class's tests may depend on that, so "*" puts it on every test.
+      line("G", "*", null, dev.apksim.dex.Probes.mark());
+    }
+
+    @Override
+    public void testStarted(Description d) {
+      List<String> gap = dev.apksim.dex.Probes.mark();
+      String c = d.getClassName();
+      if (lastClass != null && !lastClass.equals(c)) line("G", lastClass, null, gap);
+      line("G", c, null, gap);
+      lastClass = c;
+    }
+
+    @Override
+    public void testFinished(Description d) {
+      line("T", d.getClassName(), d.getMethodName(), dev.apksim.dex.Probes.mark());
+    }
+
+    @Override
+    public void testRunFinished(Result r) {
+      if (lastClass != null) line("G", lastClass, null, dev.apksim.dex.Probes.mark());
+    }
+
+    private void line(String kind, String cls, String method, List<String> classes) {
+      if (classes.isEmpty() && kind.equals("G")) return;
+      StringBuilder ref = new StringBuilder();
+      StringBuilder names = new StringBuilder();
+      for (String name : classes) {
+        Integer id = ids.get(name);
+        if (id == null) {
+          id = ids.size();
+          ids.put(name, id);
+          names.append(PREFIX).append("C\t").append(id).append('\t').append(escape(name)).append('\n');
+        }
+        if (ref.length() > 0) ref.append(' ');
+        ref.append(id);
+      }
+      StringBuilder s = new StringBuilder(names).append(PREFIX).append(kind).append('\t').append(escape(cls));
+      if (method != null) s.append('\t').append(escape(method));
+      s.append('\t').append(ref);
+      out.println(s);
+    }
+
+    private static String escape(String s) {
+      return s == null ? "" : s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n");
+    }
   }
 
   /** am instrument -r output, as AndroidJUnitRunner's InstrumentationResultPrinter writes it. */
