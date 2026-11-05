@@ -19,7 +19,7 @@ import org.junit.runners.model.TestTimedOutException;
  * <p>On a device a test that ignores interrupts is left running on its abandoned thread and the run goes on. Here
  * it holds the main thread, and the run would hang for good. So if it is still running {@link #GRACE_MS} after its
  * timeout, the watchdog prints where it is and ends the process with status 1: the run then has no result for that
- * test, which `instrument.py` reports as a failed "incomplete" entry (with --isolate, only that test's process).
+ * test, which `instrument.py` reports failed, running the tests left in a new process (--isolate: its own anyway).
  */
 public class FailOnTimeout extends Statement {
   /** How long past its timeout a test that ignores interrupts may run before the process ends. */

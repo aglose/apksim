@@ -5,11 +5,20 @@ Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--xml FILE] [-e KEY VA
                      [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
-the app's own statics carry over). With --isolate each test runs in a process of its own, N at a time, as the
-Orchestrator with clearPackageData does. -e passes am instrument arguments (class, notClass, package, notPackage).
-Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a run did not account
-for its tests (apksim crashed or was killed: no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit
-with no failed test), which the report lists as a failed "incomplete" entry.
+the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
+apksim's Timeout watchdog ending a test that ignores interrupts past its timeout), the test that was running is
+reported failed, with the exit status and the tail of the process's stderr, and the tests with no result yet run in a
+new process, again until each has one. Which tests those are comes from listing the suite (`-e log true`, with the
+same -e arguments) once the first process has died, so a run that does not crash pays nothing for it; the rest is
+passed as `-e class` (whole classes where none of their tests ran, else Class#method), the other -e arguments kept,
+in chunks short enough for one argument. No test with a result runs again. A new process that adds no result
+(a crash at startup) ends the run: the tests still without one are reported failed as not run.
+With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does.
+-e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
+Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
+for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
+test was running to put that on (it died between tests, at startup or at exit): the report then lists a failed
+"incomplete" entry for that process, even when the tests left all pass in the next one.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
 """
@@ -46,7 +55,13 @@ def incomplete(r, results, test=None):
 
 def parse(raw):
     """am instrument -r output -> [(class, method, status, stack)] for each finished test."""
-    out, block, key = [], {}, None
+    return parse_run(raw)[0]
+
+
+def parse_run(raw):
+    """am instrument -r output -> ([(class, method, status, stack)] for each finished test, (class, method) of the test
+    that had started and not finished when the output ends, or None)."""
+    out, block, key, running = [], {}, None, None
     for line in raw.splitlines():
         m = re.match(r"INSTRUMENTATION_STATUS: (\w+)=(.*)", line)
         if m:
@@ -56,12 +71,123 @@ def parse(raw):
             code = int(line.split(": ")[1])
             if code != 1:
                 out.append((block.get("class"), block.get("test"), CODES.get(code, f"code {code}"), block.get("stack", "")))
+                running = None
+            else:
+                running = (block.get("class"), block.get("test"))
             block, key = {}, None
         elif line.startswith("INSTRUMENTATION_"):
             key = None
         elif key:
             block[key] += "\n" + line
-    return out
+    return out, running
+
+
+def narrow(args, listing, remaining, budget=100_000):
+    """The -e arguments that run the first of [remaining] (of the suite's [listing], in its order): the user's own
+    without `class`, plus `class` naming them. A class none of whose listed tests has a result is named whole, unless
+    the user's `class` picked methods of it; otherwise its methods are named one by one. The list stops before it
+    passes [budget] characters (Linux takes at most 128 KB in one argument): the rest go in later processes."""
+    picked = [c.strip() for c in dict(args).get("class", "").split(",") if c.strip()]
+    left = set(remaining)
+    by_class = {}
+    for t in listing:
+        by_class.setdefault(t[0], []).append(t)
+    names = []
+    for c, tests in by_class.items():
+        todo = [t for t in tests if t in left]
+        if len(todo) == len(tests) and (not picked or c in picked):
+            names.append(c)
+        else:
+            names += [f"{c}#{m}" for _, m in todo]
+    chunk, size = [], 0
+    for n in names:
+        if chunk and size + len(n) + 1 > budget:
+            break
+        chunk.append(n)
+        size += len(n) + 1
+    return [kv for kv in args if kv[0] != "class"] + [("class", ",".join(chunk))]
+
+
+def one_process(a, passthrough):
+    """Runs the suite in one process, and the tests it left without a result in new ones (see the module doc)."""
+    results = []  # (class, method, status, stack, seconds)
+    done, done_classes = set(), set()
+
+    def record(c, m, s, st):
+        results.append((c, m, s, st, None))
+        done.add((c, m))
+        if m in (None, "null"):  # a class-level failure (initializationError, @BeforeClass) stands for all its tests
+            done_classes.add(c)
+
+    def has_result(t):
+        return t in done or t[0] in done_classes
+
+    listing, remaining, args, processes, first_count = None, None, a.e, 0, None
+    while True:
+        r = apksim(a.app, a.test, args, passthrough)
+        processes += 1
+        got, running = parse_run(r.stdout)
+        if remaining is None:
+            new = [g for g in got if not has_result((g[0], g[1]))]
+            counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+            first_count = max(counts) if counts else None
+        else:  # only what this process was asked for: not, say, JUnit's "No tests found matching" failure
+            asked, asked_classes = set(remaining), {c for c, _ in remaining}
+            new = [g for g in got if not has_result((g[0], g[1]))
+                   and ((g[0], g[1]) in asked or (g[1] in (None, "null") and g[0] in asked_classes))]
+        for g in new:
+            record(*g)
+        why = incomplete(r, got)
+        tail = r.stderr[-4000:]
+        crashed = None
+        if why:
+            sys.stderr.write(tail)
+            if running and not has_result(running) and (remaining is None or running in set(remaining)):
+                crashed = running
+                finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
+                record(*running, "failed", f"apksim exited ({r.returncode}) while this test was running"
+                                           + (f" ({why})" if finished else "") + ":\n" + tail)
+            elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
+                # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
+                # device. One entry per such process, named apart so the XML keeps one entry per name.
+                name = "incomplete" if processes == 1 else f"incomplete (process {processes})"
+                results.append(("(run)", name, "failed", why + ":\n" + tail, None))
+                counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+                if remaining is None and "INSTRUMENTATION_CODE: " in r.stdout and counts and len(got) >= max(counts):
+                    break  # every test has a result (it failed at exit, say): nothing to list or rerun
+        if remaining is None and not why:
+            break  # the usual case: every test has a result, and the suite was never listed
+        if not new and not crashed:
+            # This process got no further than the last one (a crash at startup, say): no new process.
+            if remaining is not None:
+                for c, m in remaining:
+                    if not has_result((c, m)):
+                        record(c, m, "failed", f"not run: the apksim process started for the {len(remaining)} tests "
+                                               f"left gave none of them a result ({why or f'exit {r.returncode}'}):\n"
+                                               + tail)
+            break
+        if listing is None:
+            listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+            processes += 1
+            lwhy = incomplete(listed, parse(listed.stdout))
+            if lwhy:
+                results.append(("(listing)", "incomplete", "failed", f"after the run failed ({why}), listing the suite "
+                                f"to run the rest failed too ({lwhy}):\n" + listed.stderr[-4000:], None))
+                break
+            listing = [(c, m) for c, m, _, _ in parse(listed.stdout)]
+            if first_count is not None and first_count != len(listing):
+                print(f"the suite lists {len(listing)} tests, the run announced {first_count}", file=sys.stderr)
+        remaining = [t for t in listing if not has_result(t)]
+        if not remaining:
+            break
+        args = narrow(a.e, listing, remaining)
+        if why:
+            at = f" while {crashed[0]}#{crashed[1]} was running" if crashed else ""
+            print(f"apksim exited ({r.returncode}){at}: {len(listing) - len(remaining)} of {len(listing)} tests have "
+                  f"results, running the {len(remaining)} left in a new process", file=sys.stderr)
+    if processes > 1:
+        print(f"{processes} apksim processes, one of them listing the suite", file=sys.stderr)
+    return results
 
 
 def main():
@@ -85,12 +211,7 @@ def main():
     t0 = time.time()
     results = []  # (class, method, status, stack, seconds)
     if not a.isolate:
-        r = apksim(a.app, a.test, a.e, passthrough)
-        results = [(c, m, s, st, None) for c, m, s, st in parse(r.stdout)]
-        why = incomplete(r, results)
-        if why:
-            sys.stderr.write(r.stderr[-4000:])
-            results.append(("(run)", "incomplete", "failed", why + ":\n" + r.stderr[-4000:], None))
+        results = one_process(a, passthrough)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
         tests = [(c, m) for c, m, _, _ in parse(listed.stdout)]
