@@ -25,6 +25,7 @@ apksim app-debug.apk
 - [Automation](#automation)
 - [adb device](#adb-device)
 - [Instrumented tests and CI](#instrumented-tests-and-ci)
+- [Screenshot tests](#screenshot-tests)
 - [Linux and Docker](#linux-and-docker)
 - [Debugging](#debugging)
 - [Configuration reference](#configuration-reference)
@@ -43,6 +44,8 @@ apksim app-debug.apk
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
 | **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
+| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, and shards balanced by measured time. |
+| **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
 | **GPU where it counts** | AGSL shaders, shader effects on Compose layers, and scaled bitmaps run on Metal; video decodes on VideoToolbox. |
 
@@ -140,6 +143,9 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Testing | `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
 | | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
 | | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
+| | `--bundles DIR` | In test runs, a [failure bundle](#failure-bundles) in DIR for each failing test. `--bundles-on all` for passing tests too, `--bundles-max N` (default 50 a process), `--bundles-redact REGEX` |
+| | `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
+| | `--snapshot` | Deterministic drawing for [screenshot tests](#screenshot-tests): CPU only, carets that don't blink |
 | Debugging | `--debug PORT` | A JDWP port for "Remote JVM Debug", with source-level debug info |
 | | `--jvm ARG` | Pass a JVM option, for example `--jvm -Dapksim.timing=verbose` |
 
@@ -197,6 +203,7 @@ state folder.
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
 | Inspection | `activity`, `windows`, `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
+| Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video`, `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
 
@@ -252,6 +259,9 @@ library's device-test APK, such as a KMP `androidDeviceTest`, instruments itself
 - **`--shards N`:** splits the suite over N processes at once, with AndroidJUnitRunner's `-e numShards`/`shardIndex` (which `--instrument` takes too), into one report. Prefer it, and running suites side by side, to `--isolate`: every process pays a JVM and app start. On a large app's 4,134 tests, the whole set went from 167 s to 58 s on a Mac and from 670 s to about 135 s on 4 CPUs in the Linux image; in the app's own CI, on a GitHub runner, from a median 310 s to 140 s ([docs/parallel.md](docs/parallel.md)).
 - **Crash recovery:** without `--isolate`, if the process dies mid-run (a native crash, or a test that ignores its timeout), the test that was running is reported failed and the rest run in a new process.
 - **Arguments:** `-e` passes instrumentation arguments: `class`, `notClass`, `package`, `notPackage`, `log`, and anything your tests read. Options after `--` go to apksim.
+- **Failure bundles (`--bundles DIR`):** what each failing test left, so a red check can be read without a rerun ([below](#failure-bundles)).
+- **Only the affected tests (`--record-deps`, `--affected-by`):** record once on main which classes each test reaches, then on a pull request run only the tests the branch's changes can reach ([below](#affected-tests-and-balanced-shards)).
+- **Balanced shards (`--shards N --timings XML`):** split by each test's time in an earlier run instead of by name hash; `--shard I` runs one shard, for a CI matrix on separate machines.
 
 **What works:**
 - **Test frameworks:** Compose UI tests (`createComposeRule`, `createAndroidComposeRule`), Espresso, ActivityScenario, UiAutomator (window tree, clicks, gestures, `setOrientation`, `waitForIdle`) and AndroidX Test rules.
@@ -277,16 +287,66 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.7.0 \
-      app-debug.apk app-debug-androidTest.apk --xml junit.xml
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.9.0 \
+      app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
-  with: { name: apksim-tests, path: out/junit.xml }
+  with:
+    name: apksim-tests
+    path: |
+      out/junit.xml
+      out/bundles
 ```
+
+### Failure bundles
+
+```bash
+scripts/instrument.py app-debug.apk app-debug-androidTest.apk --xml out/junit.xml --bundles out/bundles
+```
+
+Every failing test leaves `out/bundles/<class>/<method>-<hash>/`:
+- `screen.png` and `nodes.txt`: the screen and its accessibility tree when the test failed, captured before the test's teardown closed the activity (in the test body, or in Espresso's failure handler);
+- `failure.txt`: the stack trace, the device and settings, and how many tests ran before it in the same process;
+- `logcat.txt`: the app's log during that test only. `threads.txt`, `looper.txt`: every thread, and what the main thread still had queued;
+- `repro.sh`: reruns that one test with the same options;
+- `process.txt`: when the process died during the test, its exit status and the end of its stderr.
+
+`out/bundles/index.html` shows every bundle with its screenshot, and the JUnit XML links each test to its folder (GitLab and Jenkins show the screenshot with the test). Capturing costs nothing until a test fails, and its time never counts against a test's timeout. A bundle holds what the app logged and showed, so `-- --bundles-redact REGEX` blanks matches in its text files. Reading one: [docs/ci-testbed.md](docs/ci-testbed.md#failure-bundles).
+
+### Affected tests and balanced shards
+
+```bash
+# on main, after each merge or nightly: record which classes each test reaches, and how long each took
+scripts/instrument.py app.apk app-androidTest.apk --record-deps deps.json.gz --xml timings.xml
+# on a pull request: only the tests the branch's changes reach, in 4 shards balanced by measured time
+scripts/instrument.py app.apk app-androidTest.apk --affected-by deps.json.gz --diff origin/main...HEAD \
+  --ignore '*.md' --ignore '*/src/test/*' --shards 4 --timings timings.xml --xml out.xml
+```
+
+apksim translates every class itself, so recording which classes each test runs costs nothing measurable. A change to a
+Kotlin or Java file selects the tests that reached a class compiled from it; a change the class map can't see (resources,
+manifests, build files) runs the whole suite and says why. How it works, its limits and measurements on a large app:
+[docs/affected-tests.md](docs/affected-tests.md).
 
 **Not supported yet:** accessibility events for UiAutomator, the Test Storage service, the runner's own listeners,
 and `adb shell am instrument` of a test APK. Tests that wait for another process won't work either. See AGENTS.md,
 "Instrumentation tests", for the details, and [docs/plan.md](docs/plan.md) for what's planned.
+
+## Screenshot tests
+
+```bash
+scripts/snapshot.py spec.json --update     # record goldens (in the Linux image, where CI checks them)
+scripts/snapshot.py spec.json -j 4         # compare every screen in every combination; exit 1 on any difference
+```
+
+`scripts/snapshot.py` captures a list of screens (deep links, or a few control commands each) across a matrix of
+devices, dark and light mode, locales and font scales, compares each capture with its golden image, and writes
+`report.html` with the actual, golden and difference images side by side. Each screen's tolerance is set in the spec.
+It runs the real APK, so there is no screenshot test to write per screen. Captures are deterministic: animations off,
+a fixed clock and time zone, the UI settled before each shot (`settle`), and CPU-only drawing (`--snapshot`). 80
+captures of the test app came out byte-identical across five runs, both on the Mac and in the Linux image, and a 1 dp
+change was caught. Make goldens in the Linux image, where CI checks them. Spec format and measurements:
+[docs/snapshots.md](docs/snapshots.md).
 
 ## Linux and Docker
 
@@ -294,7 +354,7 @@ Each release publishes a headless Linux x86_64 image, `ghcr.io/aglose/apksim:VER
 the newest release. It's about 565 MB and holds:
 - the launcher and a trained startup cache;
 - Mesa, for offscreen GLES;
-- `instrument.py` and `drive.py` on the `PATH`.
+- `instrument.py`, `snapshot.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
 VideoToolbox: rendering and shaders run on the CPU. APKs need x86_64 native libraries there (4 KB-aligned ones load). There is no sandbox inside the container,
