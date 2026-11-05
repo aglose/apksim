@@ -59,6 +59,10 @@ jobs:
           cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit.xml -e timezone America/New_York -- --timezone America/New_York
+          # Again with the clock following real time (opt-in), which RealTimeClockTest needs.
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-realtime.xml -e timezone America/New_York -e realtimeClock true \
+            -- --timezone America/New_York --realtime-clock
       # ProcessDeathTest's two crashing tests end the process (a halt, the Timeout watchdog): instrument.py must
       # report those two failed and still run every other test, in new processes.
       - name: Test run that ends its process on purpose
@@ -85,3 +89,5 @@ jobs:
             smoke/*.png
             smoke/*.log
             tests/junit.xml
+            tests/junit-realtime.xml
+            tests/junit-crash.xml
