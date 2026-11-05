@@ -30,8 +30,8 @@ D="$STAGE/$NAME"
 mkdir -p "$D/scripts" "$D/work/lib"
 
 cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/README.md" "$D/"
-# train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py runs test suites.
-cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" "$D/scripts/"
+# train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py (with affected.py) runs test suites.
+cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" "$ROOT/scripts/affected.py" "$D/scripts/"
 cp "$ROOT/work/apksim.jar" "$D/work/"
 # Robolectric's native runtime is unpacked into work/runtime (prepare-runtime.sh) and never read from its jar.
 for j in "$ROOT"/work/lib/*.jar; do
