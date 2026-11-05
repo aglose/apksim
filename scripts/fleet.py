@@ -239,6 +239,9 @@ def main():
             t.join()
     else:  # left running, but one that has already ended with an error still fails (a crash during a final `wait`)
         for inst in insts:
+            if inst.file is None and inst.proc.poll() is None:
+                end(inst.proc)  # never answered: it has failed, and nothing could reach it to use it later
+                continue
             code = inst.proc.poll()
             if code not in (None, 0) and not inst.quit and not inst.failure:
                 inst.failure = f"the process exited with status {code} after its script"
