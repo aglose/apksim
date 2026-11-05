@@ -22,7 +22,7 @@ import java.util.Map;
  */
 final class GpuBitmaps {
   static final boolean ENABLED = !"false".equals(System.getProperty("apksim.gpuBitmaps"))
-      && !Boolean.getBoolean("apksim.noGpu") && dev.apksim.HostOs.MAC;
+      && !Boolean.getBoolean("apksim.noGpu") && !dev.apksim.Snapshot.ON && dev.apksim.HostOs.MAC;
   private static final int MIN_PIXELS = 64 * 64;
   private static final long BUDGET_BYTES = 96L << 20;
   /** Frames a copy or an uploaded source survives without being drawn. */

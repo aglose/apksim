@@ -14,6 +14,7 @@ import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import java.util.concurrent.locks.LockSupport
 import org.junit.After
 import org.junit.Before
@@ -106,6 +107,31 @@ class FailureBundleCustomHandlerTest {
     ActivityScenario.launch(MainActivity::class.java).use {
       onView(withText("No view has this text")).check(matches(isDisplayed()))
     }
+  }
+}
+
+/**
+ * A body that throws what @Test(expected) expects passes. In a failures-only run apksim must not even start a bundle
+ * for it: this @After runs before the test's end could delete one, and fails if its class folder exists in the
+ * bundle folder (`-e bundleDir DIR`, as apksim sees it). With `-e bundlesAll true` (a --bundles-on all run) the check
+ * is off: there the test ends with a bundle that says passed, which bundle-check.py reads.
+ */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleExpectedTest {
+  @After
+  fun noBundleStarted() {
+    val args = InstrumentationRegistry.getArguments()
+    val dir = args.getString("bundleDir") ?: return
+    if (args.getString("bundlesAll") == "true") return
+    val folder = File(dir, FailureBundleExpectedTest::class.java.name)
+    if (folder.exists()) fail("a bundle was started for a test that threw what it expected: $folder")
+  }
+
+  @Test(expected = IllegalStateException::class)
+  fun expectedThrows() {
+    failOnPurpose()
+    marker("expectedThrows")
+    throw IllegalStateException("expected, on purpose")
   }
 }
 

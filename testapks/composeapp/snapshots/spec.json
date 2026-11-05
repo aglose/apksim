@@ -1,0 +1,19 @@
+{
+  "apk": "../app/build/outputs/apk/debug/app-debug.apk",
+  "goldens": "goldens",
+  "clock": "2026-01-01T09:41:00Z",
+  "timezone": "UTC",
+  "matrix": {
+    "device": ["phone", "tablet"],
+    "appearance": ["light", "dark"],
+    "locale": ["en-US", "de-DE"],
+    "fontscale": [1.0, 1.3]
+  },
+  "screens": [
+    {"name": "home", "open": "apksim://composeapp/home"},
+    {"name": "home-fab", "open": "apksim://composeapp/home", "steps": ["tap-text Add", "tap-text Add", "tap-text Add"]},
+    {"name": "trips", "open": "apksim://composeapp/trips"},
+    {"name": "trips-note", "open": "apksim://composeapp/trips", "steps": ["tap-text Trip note", "type Pack the camera"]},
+    {"name": "settings", "open": "apksim://composeapp/settings"}
+  ]
+}
