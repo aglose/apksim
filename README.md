@@ -352,8 +352,12 @@ and `adb shell am instrument` of a test APK. Tests that wait for another process
 ## Screenshot tests
 
 ```bash
-scripts/snapshot.py spec.json --update     # record goldens (in the Linux image, where CI checks them)
-scripts/snapshot.py spec.json -j 4         # compare every screen in every combination; exit 1 on any difference
+# record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder)
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.9.0 spec.json --update
+# compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.9.0 spec.json
+# a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
+scripts/snapshot.py spec.json -j 4
 ```
 
 `scripts/snapshot.py` captures a list of screens (deep links, or a few control commands each) across a matrix of
