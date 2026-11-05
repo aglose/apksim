@@ -89,7 +89,7 @@ while [[ $# -gt 1 ]]; do
     # Erase the app's data first, so it starts as just installed (reproducible runs).
     --fresh) EXTRA+=("-Dapksim.fresh=true"); shift ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
-    --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
+    --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); TEST_RUN=1; shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
     # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
     --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
@@ -200,6 +200,11 @@ if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
   echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
 fi
 if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
+# A test run's JIT stops at C1: C2's compiles cost more CPU than a test process gets back from them. Measured on a large
+# app's 4,134 device tests: the same wall time or less and ~40% less CPU on the Mac; on 4 CPUs in the Linux image,
+# three suites at once took 135 s against 312 s, and a third of the CPU. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
+JIT=()
+[[ -n "${TEST_RUN:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
 AOT=()
 if [[ "$AOT_ROOT" == "$ROOT" ]]; then
   AOT=("-XX:AOTCache=$STATE/app.aot")
@@ -217,6 +222,6 @@ exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" \
   --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --enable-native-access=ALL-UNNAMED \
   -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
-  -Djava.io.tmpdir="$STATE/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$STATE/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" \
+  -Djava.io.tmpdir="$STATE/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$STATE/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" "${JIT[@]+"${JIT[@]}"}" \
   "${EXTRA[@]+"${EXTRA[@]}"}" \
   -cp "$CP" dev.apksim.Main "$APK"
