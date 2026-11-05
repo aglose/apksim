@@ -87,15 +87,22 @@ static NSRunningApplication *launchedOver;  // the app that was frontmost when t
 // MINIMIZED in the Dock, HIDDEN not at all. The app runs the same in all of them (frames go to the window's layer;
 // with no vsync from a hidden window Host paces on its 120 Hz grid). A click on the Dock icon shows it, focused.
 enum { WIN_FRONT = 0, WIN_NOFOCUS, WIN_BACKGROUND, WIN_MINIMIZED, WIN_HIDDEN };
-static BOOL hideWhenDeminiaturized;
+static BOOL hideWhenDeminiaturized, minimizeWhenUnhidden;
 static void applyWindowMode(int mode) {
-  hideWhenDeminiaturized = NO;
+  hideWhenDeminiaturized = minimizeWhenUnhidden = NO;
   NSWindow *w = simWindow;
   if (!w) return;
-  if (mode != WIN_HIDDEN && mode != WIN_MINIMIZED) {
-    if (NSApp.hidden) [NSApp unhideWithoutActivation];
-    if (w.miniaturized) [w deminiaturize:nil];
+  // After Hide (Cmd+H) the whole app is hidden, its minimized windows' Dock tiles too. Unhiding finishes
+  // asynchronously, and a window minimized meanwhile comes back visible: minimize it once the app is back
+  // (applicationDidUnhide).
+  if (mode != WIN_HIDDEN && NSApp.hidden) {
+    [NSApp unhideWithoutActivation];
+    if (mode == WIN_MINIMIZED) {
+      minimizeWhenUnhidden = YES;
+      return;
+    }
   }
+  if (mode != WIN_HIDDEN && mode != WIN_MINIMIZED && w.miniaturized) [w deminiaturize:nil];
   switch (mode) {
     case WIN_FRONT:
       [w makeKeyAndOrderFront:nil];
@@ -138,6 +145,9 @@ static void setZoom(int how);
     if (@available(macOS 14.0, *)) [NSApp yieldActivationToApplication:launchedOver];
     [launchedOver activateWithOptions:0];
   }
+}
+- (void)applicationDidUnhide:(NSNotification *)n {
+  if (minimizeWhenUnhidden) applyWindowMode(WIN_MINIMIZED);
 }
 // A click on the Dock icon brings back a window that was hidden or minimized (--window hidden|minimized).
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
