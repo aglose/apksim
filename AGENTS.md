@@ -408,7 +408,9 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
   Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
-  stays on the main thread and a watchdog interrupts it when the time is up (`TimeoutRuleTest`).
+  stays on the main thread and a watchdog interrupts it when the time is up (`TimeoutRuleTest`). A test still running
+  10 s later, ignoring interrupts, ends the process with its stack (a device abandons its thread and goes on; here it
+  holds the main thread): `instrument.py` reports that as a failed "incomplete" entry.
 - `UiAutomation.executeShellCommand` (UiDevice's too) runs apksim's adb shell (`AdbShell`) in the process, to the end,
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a

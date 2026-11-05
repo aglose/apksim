@@ -14,10 +14,17 @@ import org.junit.runners.model.TestTimedOutException;
  * on a device. So this runs the statement on the calling thread, as Robolectric's TimeLimitedStatement does for its own
  * @Test(timeout), and a watchdog interrupts that thread once the time is up, and again every second until the
  * statement returns, in case something swallows an interrupt. Then it fails the test with TestTimedOutException, its
- * stack trace being where the test was when the time ran out (JUnit's lookingForStuckThread). A statement that never
- * checks for interrupts is not stopped (on a device its thread would be left running).
+ * stack trace being where the test was when the time ran out (JUnit's lookingForStuckThread).
+ *
+ * <p>On a device a test that ignores interrupts is left running on its abandoned thread and the run goes on. Here
+ * it holds the main thread, and the run would hang for good. So if it is still running {@link #GRACE_MS} after its
+ * timeout, the watchdog prints where it is and ends the process with status 1: the run then has no result for that
+ * test, which `instrument.py` reports as a failed "incomplete" entry (with --isolate, only that test's process).
  */
 public class FailOnTimeout extends Statement {
+  /** How long past its timeout a test that ignores interrupts may run before the process ends. */
+  static final long GRACE_MS = 10_000;
+
   private final Statement statement;
   private final long timeout;
   private final TimeUnit unit;
@@ -109,7 +116,9 @@ public class FailOnTimeout extends Statement {
           }
           if (done) return;
           stuck = target.getStackTrace();
+          long giveUp = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GRACE_MS);
           while (!done) {
+            if (System.nanoTime() - giveUp >= 0) halt();
             target.interrupt();
             wait(1000);
           }
@@ -117,6 +126,18 @@ public class FailOnTimeout extends Statement {
           // finish() interrupts only after done is set
         }
       }
+    }
+
+    /** The test ignored every interrupt for GRACE_MS past its timeout: say where it is, then end the process. */
+    private void halt() {
+      StringBuilder b = new StringBuilder("[apksim] test still running ").append(GRACE_MS / 1000)
+          .append(" s after its timeout of ").append(TimeUnit.NANOSECONDS.toMillis(nanos))
+          .append(" ms, ignoring interrupts; ending the process (on a device its thread would be abandoned). It is at:\n");
+      for (StackTraceElement e : target.getStackTrace()) b.append("\tat ").append(e).append('\n');
+      System.err.print(b);
+      System.err.flush();
+      System.out.flush();
+      Runtime.getRuntime().halt(1);
     }
 
     /**
