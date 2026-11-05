@@ -32,7 +32,9 @@ A GitHub Actions job (on `ubuntu-24.04`, after the Gradle build of the APKs):
 ```
 
 `-e class|notClass|package|notPackage` and `-- --device tablet` pass through as on the Mac (see `instrument.py
---help`). Tests run the Robolectric way on API 36 (AGENTS.md, "Instrumentation tests"), so keep an emulator for
+--help`). On a 4-CPU runner, run three suites at once (a container each) rather than one after another, split the
+longest with `--shards 2`, and avoid `--isolate` where the suite allows: [parallel.md](parallel.md) has the
+measurements (a large app's tests: 670 s one suite at a time, about 135 s that way). Tests run the Robolectric way on API 36 (AGENTS.md, "Instrumentation tests"), so keep an emulator for
 anything that measures a real device, such as startup time.
 
 ## Build

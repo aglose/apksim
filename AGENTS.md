@@ -112,7 +112,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
   `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
-  data), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
+  data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
+  docs/parallel.md), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
   `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
@@ -125,7 +126,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
-  device tests here: results, CI cost, commands), `plan.md` (remaining work, in order).
+  device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
+  suites side by side, fleets, what limits them), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
@@ -280,7 +282,11 @@ ELF natives whose stack arguments differ between Apple's and AAPCS64's conventio
 arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed. Variadic libc
 functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fall through to libSystem, which reads
 the arguments the Apple way (`syslog` then crashed in `strlen`). `scripts/so-imports.py APK` lists the imports;
-check new variadic ones against `bionic.c`. `syscall()` (`s_syscall`) handles Linux arm64 gettid, getpid, getrandom
+check new variadic ones against `bionic.c`. Condition variables keep the clock `pthread_condattr_setclock` gave them
+(`CondShell`): Apple's `pthread_cond_timedwait` reads deadlines as wall-clock time, so a monotonic deadline becomes a
+relative wait. It used to return at once, and two of WebRTC's threads spun a core each for as long as an app with
+libjingle ran. `jnibridge.c`'s `fill_args` parks a native thread that calls into Java once the VM is exiting (JVMTI
+then gives no signature; reading it crashed short test runs' exits while WebRTC's threads were starting). `syscall()` (`s_syscall`) handles Linux arm64 gettid, getpid, getrandom
 and futex WAIT/WAKE (on `os_sync_wait_on_address`); everything else is ENOSYS. libc++abi's guard for function-local
 statics needs the first two: with gettid -1 on every thread, two threads meeting at one static aborted an app now
 and then at WebRTC start ("__cxa_guard_acquire detected recursive initialization", which it logged via syslog).
@@ -389,9 +395,13 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 `instrument.py` writes when it names tests; any other backslash is literal), and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
-within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--xml FILE] [-- APKSIM_OPTS]` runs a suite
-and writes JUnit XML; `--isolate` gives every test its own process, as the AndroidX Test Orchestrator with
-`clearPackageData` does. Without it, a process that ends before every test has a result (a native crash or abort, or
+within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N] [--xml FILE] [-- APKSIM_OPTS]` runs a
+suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
+process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
+at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
+(a test's shard is `abs(description.hashCode()) % N`; an empty shard is a run of no tests). Test runs stop the JIT at
+C1 (the launcher adds `-XX:TieredStopAtLevel=1` for `--instrument`, before `--jvm` options): ~40% less CPU at the same
+wall time on a large app's suites, and no cliff when more processes run than there are cores (docs/parallel.md). Without it, a process that ends before every test has a result (a native crash or abort, or
 the Timeout watchdog below) does not end the run: the test that was running is reported failed with the exit status
 and the stderr tail (with none running, a failed "(run)" entry is, so the run still fails), the suite is listed (`-e log true`, the run's own `-e` arguments, only once a process has died),
 and the tests with no result run in a new process, as `-e class` (whole classes where none of their tests ran, else

@@ -72,6 +72,12 @@ once in the Linux image. No descriptor leak (~460, flat).
   journey's stored connection, already closed (ci-testbed.md). With the app's fix, a whole run in its CI had no flaky
   journeys, and the suite took 96 s instead of 225-286 s.
 
+**0i. Parallel runs (done 2026-11-04).** `instrument.py --shards N` (AndroidJUnitRunner's numShards/shardIndex),
+suites side by side, `scripts/fleet.py` for N instances at once, the JIT stopped at C1 for test runs, and two macOS
+fixes found under load (monotonic condition variables spinning, a crash at exit). The app's 4,134 tests: 167 → 58 s on
+the Mac, 670 → ~135 s on 4 CPUs in the Linux image ([parallel.md](parallel.md)). Left: the app's CI to adopt the
+schedule (its own repository), and measuring it on a native x86 runner, where Rosetta's cost of compiled code is gone.
+
 **0d. A translator regression test with R8's register reuse.** The two miscompilations needed R8-shaped code (a
 register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
 not produce it, so `TranslatorTest` only checks behaviour. Commit a small R8-built DEX fixture and a check that

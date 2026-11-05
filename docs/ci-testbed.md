@@ -75,6 +75,15 @@ Found on the way, in apksim: Mesa's EGL has no window configs and WebRTC's `EglB
 live camera failed in the image until `eglChooseConfig` asked for pbuffer configs), and processes started together
 raced on extracting the APK's native libraries (fixed: rename into place).
 
+## Running the suites in parallel (2026-11-04)
+
+The app's CI runs the suites one after another, the end-to-end tests one process per test: 670 s and 1,318
+CPU-seconds in the Linux image on 4 CPUs (under Rosetta), 167 s on the Mac. With the end-to-end tests in one process,
+three suites at once, the journeys in two shards and the JIT stopped at C1 (now the default for test runs), the same
+4,134 tests took 133-137 s and ~435 CPU-seconds there; on the Mac, four at once, ~58 s. One journey waits 30 s of real time for the app's poll, which
+bounds the run. Measurements, limits and how-to: [parallel.md](parallel.md). It also found two macOS bugs (WebRTC
+threads spinning on monotonic condition variables, and a crash at exit), both fixed.
+
 ## CI time and cost
 
 From the 27 green runs before 2026-11-03: the two emulator jobs take a median 16.5 and 18.8 min, so a pull request
