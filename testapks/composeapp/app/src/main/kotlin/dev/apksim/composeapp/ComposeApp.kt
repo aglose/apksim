@@ -13,10 +13,12 @@ open class ComposeApp : Application() {
     super.onCreate()
     androidIdAtCreate = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
     vibrateAtCreate = checkSelfPermission(Manifest.permission.VIBRATE)
+    providerBeforeCreate = StartupProvider.created
   }
 
   companion object {
     @Volatile var androidIdAtCreate: String? = null
     @Volatile var vibrateAtCreate: Int? = null
+    @Volatile var providerBeforeCreate = false
   }
 }

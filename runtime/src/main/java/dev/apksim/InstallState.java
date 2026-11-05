@@ -14,6 +14,7 @@ final class InstallState {
     seedAndroidId(app);
     grantInstallPermissions(app);
     hostNetworks(app);
+    installProviders(app);
   }
 
   /**
@@ -89,6 +90,42 @@ final class InstallState {
     android.content.ContentResolver cr = app.getContentResolver();
     if (Settings.Secure.getString(cr, Settings.Secure.ANDROID_ID) == null) {
       Settings.Secure.putString(cr, Settings.Secure.ANDROID_ID, "a75e5101d0c0ffee");
+    }
+  }
+
+  /**
+   * The app's content providers, as ActivityThread installs them before Application.onCreate: each one in the app's
+   * process, highest initOrder first, created, attached (its onCreate runs) and registered for its authorities.
+   * Robolectric creates a provider only when it is first used, so a provider's startup work never ran: AndroidX
+   * Startup's InitializationProvider runs the app's initializers (lifecycle, emoji, an HTTP client's that hands it the
+   * application Context), and without it the HTTP client could not read the public suffix list from the app's assets
+   * and canceled its requests.
+   */
+  private static void installProviders(Application app) {
+    android.content.pm.ProviderInfo[] providers;
+    try {
+      providers = app.getPackageManager()
+          .getPackageInfo(app.getPackageName(), android.content.pm.PackageManager.GET_PROVIDERS).providers;
+    } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+      return;
+    }
+    if (providers == null) return;
+    String process = app.getApplicationInfo().processName;
+    java.util.List<android.content.pm.ProviderInfo> ordered = new java.util.ArrayList<>(java.util.Arrays.asList(providers));
+    ordered.sort((a, b) -> Integer.compare(b.initOrder, a.initOrder));
+    for (android.content.pm.ProviderInfo info : ordered) {
+      if (info.processName != null && process != null && !info.processName.equals(process)) continue;
+      if (info.authority == null) continue;
+      try {
+        android.content.ContentProvider provider = (android.content.ContentProvider)
+            Class.forName(info.name, true, app.getClassLoader()).getDeclaredConstructor().newInstance();
+        provider.attachInfo(app, info);
+        for (String authority : info.authority.split(";")) {
+          org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
+        }
+      } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+        System.err.println("[apksim] content provider " + info.name + ": " + e);
+      }
     }
   }
 }
