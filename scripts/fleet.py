@@ -4,8 +4,10 @@
 Usage: fleet.py N APK [--keep] [--log DIR] [-- APKSIM_OPTION...] -- CMD [CMD...]
 
 Starts N headless instances (`apksim --headless --control auto`; cold launches, no standby), reads the port each one
-bound from its own log (so no command reaches a process this run did not start), waits until each answers `ping`,
-then sends every instance the commands in order, all instances at once, and quits them (unless --keep).
+bound from its own log (DIR, default work/fleet, then a folder of this run's own, so no command reaches a process this
+run did not start), waits until each answers `ping`, then sends every instance the commands in order, all instances at
+once, and quits them (unless --keep): an instance whose process then exits with a nonzero status, or does not exit
+within 30 s, fails.
 Commands are drive.py's control commands (tap, swipe, type, key, back, nodes, shot, ...) plus:
   wait MS         sleep
   expect TEXT     the last command's reply must contain TEXT (e.g. after `nodes`), else the instance fails here
@@ -24,7 +26,7 @@ FAB taps, then the Trips tab):
 """
 import os, re, socket, subprocess, sys, threading, time
 
-ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
 
 def rss_mb(pids):
@@ -103,6 +105,7 @@ class Instance:
         try:
             code = self.proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
+            self.proc.terminate()
             return "'quit': the process did not exit within 30 s"
         return None if code == 0 else f"'quit': the process exited with status {code}"
 
@@ -144,8 +147,10 @@ def main():
         opts, rest = rest[:second], rest[second + 1:]
     n, apk = int(head[0]), os.path.abspath(head[1])
     keep = "--keep" in head
-    logdir = head[head.index("--log") + 1] if "--log" in head else os.path.join(ROOT, "work", "fleet")
-    os.makedirs(logdir, exist_ok=True)
+    base = head[head.index("--log") + 1] if "--log" in head else os.path.join(ROOT, "work", "fleet")
+    # A folder of this run's own: two fleets at once must not read each other's logs for their instances' ports.
+    logdir = os.path.join(base, f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}")
+    os.makedirs(logdir)
 
     t0 = time.time()
     procs, insts = [], []
@@ -193,6 +198,30 @@ def main():
     sampler.join()
     total = time.time() - t0
 
+    def shut(inst):
+        """Quits an instance the script left running; its exit counts towards the result, as an explicit `quit`."""
+        if inst.quit:
+            return
+        if inst.file is None:  # never connected: it has failed already
+            if inst.proc.poll() is None:
+                inst.proc.terminate()
+            return
+        if inst.proc.poll() is None:
+            why = inst.stop()
+            why = why and why.replace("'quit'", "shutting down")
+        else:  # it ended by itself after its script (a crash during a final `wait`, say)
+            code = inst.proc.returncode
+            why = None if code == 0 else f"the process exited with status {code} before shutdown"
+        if why and not inst.failure:
+            inst.failure = why
+
+    if not keep:
+        stoppers = [threading.Thread(target=shut, args=(inst,)) for inst in insts]
+        for t in stoppers:
+            t.start()
+        for t in stoppers:
+            t.join()
+
     for inst in insts:
         ready = f"ready {inst.ready:5.1f} s" if inst.ready is not None else "never ready"
         script = f"script {inst.script:5.1f} s" if inst.script is not None else ""
@@ -200,19 +229,7 @@ def main():
     failed = sum(1 for inst in insts if inst.failure)
     print(f"{n} instances, {n - failed} passed, {failed} failed in {total:.1f} s; "
           f"peak memory {peak[0]:.0f} MB together, {peak[0] / n:.0f} MB each")
-    if not keep:
-        for inst in insts:
-            try:
-                if inst.file and not inst.quit:
-                    inst.file.write("quit\n")
-                    inst.file.flush()
-            except OSError:
-                pass
-        for p in procs:
-            try:
-                p.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                p.terminate()
+    print(f"logs in {logdir}")
     sys.exit(1 if failed else 0)
 
 

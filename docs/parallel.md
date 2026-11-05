@@ -12,10 +12,11 @@ page is how to do each, what was measured on a large app (2026-11-04), and the l
 ```bash
 # two suites at a time on a 4-CPU runner; each its own container of the image
 docker run --rm -v "$PWD:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:VERSION \
-  shared-androidTest.apk shared-androidTest.apk --xml out/shared.xml &
+  shared-androidTest.apk shared-androidTest.apk --xml out/shared.xml & shared=$!
 docker run --rm -v "$PWD:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:VERSION \
-  app-androidTest.apk app-androidTest.apk --shards 2 --xml out/app.xml &
-wait
+  app-androidTest.apk app-androidTest.apk --shards 2 --xml out/app.xml & app=$!
+# wait for each by PID: a bare `wait` returns 0 whatever the suites returned
+status=0; wait $shared || status=1; wait $app || status=1; exit $status
 ```
 
 **One suite over several processes.** `instrument.py --shards N` runs N processes at once, each given
