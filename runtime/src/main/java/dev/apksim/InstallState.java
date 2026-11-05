@@ -26,6 +26,9 @@ final class InstallState {
   private static void hostNetworks(Application app) {
     try {
       HostNetworks.install(app);
+      // With --network-profile offline the test environment took the networks away before this; keep them away (and
+      // keep these as the ones `network online` brings back), as Host does.
+      NetConnectivity.networksReplaced();
     } catch (Exception e) {
       System.err.println("[apksim] host networks: " + e);
     }
@@ -149,7 +152,9 @@ final class InstallState {
    * Robolectric creates a provider only when it is first used, so a provider's startup work never ran: AndroidX
    * Startup's InitializationProvider runs the app's initializers (lifecycle, emoji, an HTTP client's that hands it the
    * application Context), and without it the HTTP client could not read the public suffix list from the app's assets
-   * and canceled its requests.
+   * and canceled its requests. A provider that cannot be made or whose onCreate throws fails the test's setup, as it
+   * crashes the app's start on a device; `-Dapksim.providerFailures=log` only logs it and goes on (the earlier
+   * behaviour, for a suite that must run past a provider apksim cannot start).
    */
   private static void installProviders(Application app) {
     android.content.pm.ProviderInfo[] providers;
@@ -174,7 +179,13 @@ final class InstallState {
           org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
         }
       } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-        System.err.println("[apksim] content provider " + info.name + ": " + e);
+        if ("log".equals(System.getProperty("apksim.providerFailures"))) {
+          System.err.println("[apksim] content provider " + info.name + ": " + e);
+        } else {
+          Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : e;
+          throw new IllegalStateException("content provider " + info.name + " failed at the app's start, as it would crash it on a "
+              + "device (-Dapksim.providerFailures=log to go on)", cause);
+        }
       }
     }
   }

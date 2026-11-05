@@ -15,9 +15,10 @@ public final class KeyStores {
 
   private KeyStores() {}
 
+  /** "BKS" when a provider can read it (Bouncy Castle registered), else the JDK's own default, which then still works. */
   public static String getDefaultType() {
     installBouncyCastle();
-    return "BKS";
+    return Security.getProvider("BC") != null ? "BKS" : java.security.KeyStore.getDefaultType();
   }
 
   static void installBouncyCastle() {

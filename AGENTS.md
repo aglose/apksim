@@ -620,7 +620,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   with `--permissions grant`; signature, privileged and internal ones stay denied unless the app defines them, with
   the framework's levels read from its own manifest, which Robolectric's package manager lacks), and the app's content
   providers are created, highest initOrder first (AndroidX Startup's initializers run; not for the runner probe's
-  plain Application). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
+  plain Application; a provider that fails fails the test's setup, as it crashes a device's app start, unless
+  `-Dapksim.providerFailures=log`). `--network-profile offline` still holds through it (`NetConnectivity.networksReplaced`). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
 - `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
   the translator (`TestActivities.instrumentationContext`).
 - JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child
