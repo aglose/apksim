@@ -153,9 +153,11 @@ final class NetEngine {
     return upstreamTls;
   }
 
-  static InetSocketAddress target(String host, int port) {
+  /** Where to connect: --network-host's mapping first, then the address the app chose, else host looked up here. */
+  static InetSocketAddress target(String host, String address, int port) throws IOException {
     InetSocketAddress m = Net.hostMap.get(host.toLowerCase(Locale.ROOT));
     if (m != null) return new InetSocketAddress(m.getHostString(), m.getPort() > 0 ? m.getPort() : port);
+    if (address != null) return new InetSocketAddress(InetAddress.getByAddress(host, InetAddress.getByName(address).getAddress()), port);
     return new InetSocketAddress(host, port);
   }
 
@@ -166,6 +168,8 @@ final class NetEngine {
     InputStream cin;
     OutputStream cout;
     String host = "?";
+    /** The address the app chose for host (its own DNS, one of several), or null to look host up here. */
+    String address;
     /** The name TLS is for: FakeTlsSocket's, else the destination's. */
     String tlsHost;
     int port;
@@ -224,6 +228,7 @@ final class NetEngine {
         host = p[1];
         port = Integer.parseInt(p[2]);
         if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
+        if (p.length > 4 && !p[4].equals("-")) address = p[4];
         String err = connectUpstream();
         cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
@@ -337,6 +342,43 @@ final class NetEngine {
       return b.size() == 0 ? null : b.toByteArray();
     }
 
+    /**
+     * Waits for the server's answer to begin, giving up if the client goes away meanwhile (its timeout closed the
+     * connection): otherwise a server that never answers kept this worker and its connection for good.
+     */
+    void awaitUpstream() throws IOException {
+      up.setSoTimeout(500);
+      try {
+        while (true) {
+          try {
+            uin.mark(1);
+            if (uin.read() >= 0) uin.reset();
+            return;
+          } catch (java.net.SocketTimeoutException e) {
+            if (clientGone()) throw new IOException("the client went away while the server was still to answer");
+          }
+        }
+      } finally {
+        if (up != null && !up.isClosed()) up.setSoTimeout(0);
+      }
+    }
+
+    /** Without blocking: whether the client has closed its connection (bytes it sent stay to be read). */
+    boolean clientGone() throws IOException {
+      if (client.isClosed()) return true;
+      client.setSoTimeout(1);
+      try {
+        cin.mark(1);
+        if (cin.read() < 0) return true;
+        cin.reset();
+        return false;
+      } catch (java.net.SocketTimeoutException e) {
+        return false;
+      } finally {
+        if (!client.isClosed()) client.setSoTimeout(0);
+      }
+    }
+
     /** Without blocking: 1 if the server has sent something, -1 if it closed the connection, 0 if neither. */
     int upstreamPeek() throws IOException {
       if (up == null || up.isClosed()) return -1;
@@ -362,7 +404,7 @@ final class NetEngine {
         if (closed) throw new java.net.SocketException("connection closed");
         Socket s = new Socket();
         s.setTcpNoDelay(true);
-        s.connect(target(host, port), timeout);
+        s.connect(target(host, address, port), timeout);
         adopt(s);
         uin = new BufferedInputStream(s.getInputStream());
         uout = s.getOutputStream();
@@ -494,6 +536,7 @@ final class NetEngine {
         streamRequestBody(req, uout);
         uout.flush();
         sent = System.nanoTime();
+        awaitUpstream();
         statusLine = readLineBytes(uin);
       } catch (Exception e) {
         Net.log("network record: " + req.method + " " + req.url + " failed: " + e);

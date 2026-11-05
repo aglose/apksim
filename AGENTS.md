@@ -282,6 +282,8 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   network that netId: before, apps got Robolectric's stand-in (no INTERNET or VALIDATED capability). On Linux the
   container's `eth0` counts as Ethernet; before, ConnectivityManager had no network there at all.
   `setDefaultNetworkActive(true)` with an active network calls onAvailable itself, so NetConnectivity sets it first.
+  The shadow's state is static, so NetConnectivity applies an offline launch profile before the Application exists
+  (`SimTestEnvironment.setUpApplicationState`): `Application.onCreate` sees no network, in Host and in tests.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must

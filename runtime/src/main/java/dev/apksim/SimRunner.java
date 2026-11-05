@@ -244,6 +244,8 @@ public final class SimRunner extends RobolectricTestRunner {
       Timing.detail("setup-app-state");
       applyTimeZone();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
+      // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
+      NetConnectivity.beforeApplication();
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
@@ -260,7 +262,6 @@ public final class SimRunner extends RobolectricTestRunner {
       }
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
       initJniConstants();
-      NetConnectivity.install();  // --network-profile offline: each test's ConnectivityManager starts with none
       try {
         Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
       } catch (Exception e) {

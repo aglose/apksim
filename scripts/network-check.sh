@@ -143,4 +143,13 @@ drive 'network online' 'wait 1000' >/dev/null
 expect "back online" "$(fetch Fetch okhttp:)" '^okhttp: 200 Hello, apksim! \[recorded\]'
 expect "online connectivity" "$(text connectivity:)" '^connectivity: (wifi|cellular|vpn|other)'
 stop
+
+echo "== launched offline"
+start offline.log "" -- --network replay @OUT@/rec.har --network-profile offline
+expect "Application.onCreate saw" "$(text 'at app start:')" '^at app start: none$'
+expect "connectivity at launch" "$(text connectivity:)" '^connectivity: none$'
+drive 'network online' 'wait 1000' >/dev/null
+expect "online after an offline launch" "$(fetch Fetch okhttp:)" '^okhttp: 200 Hello, apksim! \[recorded\]'
+expect "connectivity back" "$(text connectivity:)" '^connectivity: (wifi|cellular|vpn|other)'
+stop
 echo "network check passed"

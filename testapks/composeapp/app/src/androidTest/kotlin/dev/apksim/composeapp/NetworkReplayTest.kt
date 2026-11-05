@@ -80,6 +80,14 @@ class NetworkReplayTest {
     }
   }
 
+  /** Run with `--network-profile offline` as well: the Application started with no network. */
+  @Test
+  fun startsOfflineWhenTheProfileSaysSo() {
+    assumeTrue(args.getString("networkProfile") == "offline")
+    assertEquals("none", ComposeApp.networkAtStart)
+    assertNull(context.getSystemService(ConnectivityManager::class.java).activeNetwork)
+  }
+
   /** Conditions a test sets are undone before the next one: this runs after the offline test (name order). */
   @Test
   fun p_aTestStartsOnline() {

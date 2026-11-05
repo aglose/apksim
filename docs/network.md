@@ -140,6 +140,14 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
+- A redirected connection tells the engine the address the app chose as well as the name (custom DNS, one address
+  of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name.
+- `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
+  request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
+- While the engine waits for a server's answer it watches the client: an app that times out and closes its
+  connection ends the server's too, so a server that never answers does not keep a worker and a socket for good.
+- The recording is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
+  (Ctrl-C, the app's `System.exit`).
 - Offline, `URL.openConnection` returns a connection that fails when used (UnknownHostException for a name,
   ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive sockets could otherwise still carry a
   request. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
@@ -149,8 +157,10 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   connections the hooks made without the engine (before the layer was turned on by a
   `network` command, TLS-first sockets), and a numeric-address URL (no lookup to fail) still goes to the engine, which
   refuses it.
-- ConnectivityManager (`NetConnectivity`, over Robolectric's shadow): offline removes the networks and tells
-  callbacks of the default one. Two fixes it needed in `HostNetworks`: Robolectric finds the active network by its
+- ConnectivityManager (`NetConnectivity`, over Robolectric's shadow, whose state is static): offline removes the
+  networks and tells callbacks of the default one. A launch profile of offline is set before the Application is
+  created (SimTestEnvironment.setUpApplicationState, for Host and each test), so `Application.onCreate` already
+  sees no network; Host's own networks (HostNetworks, installed later) stay away until `network online`. Two fixes it needed in `HostNetworks`: Robolectric finds the active network by its
   type, so the default network now has netId TYPE_WIFI (apps were handed Robolectric's stand-in, without
   NET_CAPABILITY_INTERNET or VALIDATED); and on Linux a container's `eth0` counts (it had no network at all).
 - Loopback (127.0.0.0/8, ::1, localhost) is never touched: a test's MockWebServer and adb forwards keep working.
@@ -204,8 +214,9 @@ fine. Record with one process: parallel processes recording to one file overwrit
   a throwaway certificate, `--network-host api.apksim.test=127.0.0.1:PORT --network-trust`), checks the HAR
   (Authorization and Set-Cookie redacted, bodies present, no token anywhere in the file), stops the server, replays
   (same greetings), "Fetch other" gives 599, `network latency 1500` makes the fetch take over 1.5 s, `network offline`
-  gives a failed lookup and "connectivity: none", `network online` brings both back. With IMAGE, in the Linux image
-  (the fixture runs inside the container).
+  gives a failed lookup and "connectivity: none", `network online` brings both back; then a launch with
+  `--network-profile offline`, whose Application.onCreate saw no network, comes online. With IMAGE, in the Linux
+  image (the fixture runs inside the container).
 - `NetworkReplayTest` (androidTest, runs with `-e networkReplay true` and `--network replay` of the committed
   `testapks/composeapp/app/src/androidTest/network/greeting.har`, which network-check.sh recorded): replayed answers
   through both clients, offline via `executeShellCommand("apksim network offline")` (a failed fetch, no active

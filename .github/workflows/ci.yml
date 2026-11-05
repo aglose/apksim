@@ -81,7 +81,7 @@ jobs:
           import sys, xml.etree.ElementTree as ET
           cases = {c.get("name"): c.find("failure") for c in ET.parse(sys.argv[1]).iter("testcase")}
           failed = sorted(n for n, f in cases.items() if f is not None)
-          assert len(cases) == 6, f"tests: {sorted(cases)}"
+          assert len(cases) == 7, f"tests: {sorted(cases)}"
           assert failed == ["z_anUnmatchedRequestLeftUnclearedFailsItsTest"], f"failed: {failed}"
           assert "POST https://api.apksim.test/v1/elsewhere" in cases[failed[0]].text, cases[failed[0]].text
           print(f"{len(cases)} network replay tests, failed as meant: {failed}")

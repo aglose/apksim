@@ -122,6 +122,9 @@ public final class Net {
       engine = new NetEngine();
       engine.start();
       active = true;
+      // Saved on the way out by Standby.halt (Runtime.halt runs no hooks), and here on an ordinary exit too:
+      // Ctrl-C, or the app calling System.exit.
+      if (mode == Mode.RECORD) Runtime.getRuntime().addShutdownHook(new Thread(Net::flush, "apksim-net-save"));
       log("network " + describe());
     } catch (Exception e) {
       throw new IllegalStateException("[apksim] network setup: " + e.getMessage(), e);
@@ -320,7 +323,10 @@ public final class Net {
     int before = s.getSoTimeout();
     try {
       OutputStream out = s.getOutputStream();
-      out.write(("APKSIM " + host + " " + isa.getPort() + " " + left + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+      // The host name (for TLS and recording) and the address the app chose (custom DNS, one of several), if any.
+      String ip = isa.isUnresolved() || NetResolver.hostFor(isa.getAddress().getHostAddress()) != null
+          ? "-" : isa.getAddress().getHostAddress();
+      out.write(("APKSIM " + host + " " + isa.getPort() + " " + left + " " + ip + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
       out.flush();
       s.setSoTimeout(left > 0 ? left + 1000 : 0);
       String reply = readLine(s.getInputStream());
@@ -403,6 +409,12 @@ public final class Net {
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
     // (no lookup to fail) would otherwise still reach the server.
     if (conditions.offline()) return OfflineConnection.of(u);
+    if (p != null && p.type() != Proxy.Type.DIRECT && mode != Mode.REPLAY) {
+      // The app's own proxy is its route out: kept, so the request goes through it as it would have (not recorded or
+      // shaped). Replaying, nothing goes out, so the engine answers as for any other request.
+      log("network: " + u.getHost() + " through the app's proxy " + p + ": not " + (mode == Mode.RECORD ? "recorded" : "shaped"));
+      return u.openConnection(p);
+    }
     URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
     if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
       https.setSSLSocketFactory(FakeTlsSocket.FACTORY);

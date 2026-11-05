@@ -123,6 +123,7 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
           Text("okhttp: $okhttp", Modifier.padding(top = 12.dp))
           Text("urlconnection: $huc", Modifier.padding(top = 8.dp))
           Text("connectivity: $connectivity", Modifier.padding(top = 8.dp))
+          Text("at app start: ${ComposeApp.networkAtStart}", Modifier.padding(top = 8.dp))
           Text("callbacks: $events", Modifier.padding(top = 8.dp))
         }
       }
