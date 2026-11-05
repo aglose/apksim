@@ -118,6 +118,35 @@ class NullBindingTest {
     context.unbindService(connection)
   }
 
+  /**
+   * A connection bound without BIND_AUTO_CREATE when the last BIND_AUTO_CREATE binding goes: the service is brought
+   * down, and the connection hears what the device says to every connection of a service brought down.
+   */
+  @Test
+  fun aConnectionWithoutAutoCreateHearsTheServiceGoAndCome() {
+    val component = ComponentName(context, SingletonBinderService::class.java)
+    val waiting = Recorder()
+    val creating = Recorder()
+    assertTrue(context.bindService(Intent().setComponent(component), waiting, 0))
+    assertTrue(context.bindService(Intent().setComponent(component), creating, Context.BIND_AUTO_CREATE))
+    waitFor { waiting.calls.isNotEmpty() && creating.calls.isNotEmpty() }
+    context.unbindService(creating) // the service is destroyed
+    waitFor { waiting.calls.size >= 2 }
+    Thread.sleep(300)
+    val again = Recorder()
+    assertTrue(context.bindService(Intent().setComponent(component), again, Context.BIND_AUTO_CREATE)) // made again
+    waitFor { again.calls.isNotEmpty() }
+    Thread.sleep(300)
+    android.util.Log.i("NullBindingTest", "waiting connection: ${waiting.calls}")
+    assertEquals(listOf("onServiceConnected($component, binder)"), creating.calls.toList())
+    assertEquals(listOf("onServiceConnected($component, binder)"), again.calls.toList())
+    assertEquals(
+      listOf("onServiceConnected($component, binder)", "onServiceDisconnected($component)", "onBindingDied($component)"),
+      waiting.calls.toList())
+    context.unbindService(again)
+    context.unbindService(waiting)
+  }
+
   /** The same with a null binder: ServiceDispatcher keeps no null binder to compare, so each binding is told. */
   @Test
   fun aConnectionBoundTwiceToANullBindingIsToldForEachBinding() {

@@ -30,9 +30,10 @@ import org.robolectric.android.controller.ServiceController;
  * service ran); each binding then gets onServiceConnected with that binder, or onNullBinding (API 28) when it is
  * null, on the main thread (or the bind's Executor). As LoadedApk's ServiceDispatcher, a connection is not told
  * again of a binder it already has, but is told of a null binding once per binding (the API 36 emulator does both).
- * Unbinding never calls onServiceDisconnected (on a device only a dead
- * process does); the last connection of an intent gets the service onUnbind (onRebind on the next bind if it returned
- * true), and with no BIND_AUTO_CREATE connection left the service is destroyed. Service code and callbacks run from
+ * Unbinding never calls onServiceDisconnected on the connection unbound; the last connection of an intent gets the
+ * service onUnbind (onRebind on the next bind if it returned true), and with no BIND_AUTO_CREATE connection left the
+ * service is destroyed: connections still bound without the flag then get onServiceDisconnected and onBindingDied, as
+ * for a service brought down on a device, and are not connected again. Service code and callbacks run from
  * the main looper, after bindService returns, as on a device.
  *
  * <p>Left to Robolectric: services outside the app's package or not in its manifest (Play Services, other apps), and
@@ -148,7 +149,7 @@ final class BoundServices {
     }
     main.post(() -> {
       for (Conn c : cs) {
-        if (c.binding == null) continue;  // never attached
+        if (c.binding == null) continue;  // never attached, or its service was brought down
         c.binding.conns.remove(c);
         settle(c.record);
       }
@@ -219,25 +220,38 @@ final class BoundServices {
       }
     }
     if (autoCreate) return;
-    // No BIND_AUTO_CREATE connection left (and nothing here starts services): the service goes. Connections bound
-    // without the flag stay and are connected again if a new binding creates it.
+    // No BIND_AUTO_CREATE connection left (and nothing here starts services): the service goes, and with it its
+    // record. As ActiveServices.bringDownServiceLocked, every connection still bound (those without the flag) is told
+    // the service is dead, connected(name, null, dead): onServiceDisconnected if it had a binder, then onBindingDied.
+    // It is not connected again if a new binding makes the service again (API 36 emulator).
     for (Binding b : r.bindings.values()) {
       if (b.bound) s.onUnbind(b.intent);
     }
     r.controller.destroy();
     r.controller = null;
-    r.bindings.values().removeIf(b -> b.conns.isEmpty());
     for (Binding b : r.bindings.values()) {
-      b.bound = b.received = b.rebind = false;
-      b.binder = null;
-      for (Conn c : b.conns) c.delivered = false;
+      for (Conn c : b.conns) {
+        deliverDeath(c, r.name);
+        c.binding = null;  // unbindService then has nothing left to do for it
+        c.record = null;
+      }
     }
-    if (r.bindings.isEmpty()) records.remove(r.name);
+    r.bindings.clear();
+    records.remove(r.name);
   }
 
   private void deliver(Conn c, ComponentName name, IBinder binder) {
+    post(c, name, binder, false);
+  }
+
+  private void deliverDeath(Conn c, ComponentName name) {
+    post(c, name, null, true);
+  }
+
+  /** ServiceDispatcher.doConnected, on the connection's thread and in order with its other callbacks. */
+  private void post(Conn c, ComponentName name, IBinder binder, boolean dead) {
     // Each binding is told (ActiveServices calls connected() once per ConnectionRecord); the dispatcher drops a binder
-    // the connection already has, and keeps no null one to compare with (ServiceDispatcher.doConnected).
+    // the connection already has, and keeps no null one to compare with. A death drops the binder it had.
     Dispatcher d = c.dispatcher;
     Runnable callback = () -> {
       IBinder old;
@@ -249,7 +263,8 @@ final class BoundServices {
         else d.active.remove(name);
       }
       if (old != null) c.connection.onServiceDisconnected(name);
-      if (binder != null) c.connection.onServiceConnected(name, binder);
+      if (dead) c.connection.onBindingDied(name);
+      else if (binder != null) c.connection.onServiceConnected(name, binder);
       else c.connection.onNullBinding(name);
     };
     if (c.executor != null) c.executor.execute(callback);

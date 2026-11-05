@@ -47,6 +47,15 @@ class BinderService : Service() {
   override fun onBind(intent: Intent?): IBinder = binder
 }
 
+/** A service whose binder is one object for the whole process, the same after the service is made again. */
+class SingletonBinderService : Service() {
+  override fun onBind(intent: Intent?): IBinder = binder
+
+  companion object {
+    val binder = Binder()
+  }
+}
+
 /**
  * A service whose class makes a Handler for the current thread when it is initialized: on a device that is the main
  * thread, which creates services, whichever thread called bindService.
