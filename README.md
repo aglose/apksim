@@ -121,6 +121,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Display | `--device NAME\|WxH[@density]` | The device to simulate (table above) |
 | | `--headless` | No window; the app still runs and renders |
 | | `--window-x N` | The window's horizontal position on screen |
+| | `--window front\|nofocus\|background\|minimized\|hidden` | How the window shows itself. `front` (default) takes focus like any app; the others never take focus from the app you are in: `nofocus` shows it on top, `background` behind your other windows, `minimized` in the Dock, `hidden` not at all. The app runs and renders the same; click the Dock icon to bring the window forward. `APKSIM_WINDOW=MODE` sets a default for every launch |
 | Look and locale | `--appearance dark\|light` | Dark or light mode |
 | | `--locale TAG` | For example `fr-FR`; `ar-XB` is the right-to-left pseudo-locale |
 | | `--timezone ZONE` | For example `America/New_York` (JDK and `android.icu`) |
@@ -189,7 +190,7 @@ state folder.
 | Group | Commands |
 |---|---|
 | Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste` |
-| Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
+| Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `config` |
 | Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |

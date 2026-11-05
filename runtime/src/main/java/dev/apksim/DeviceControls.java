@@ -557,8 +557,12 @@ final class DeviceControls {
       }
       case "window" -> {
         // window WxH: sets the Mac window's content size in points as a drag of its corner would (checks that path).
-        String[] wh = a.length > 1 ? a[1].split("x") : new String[0];
-        if (wh.length != 2) return "usage: window WxH (points)";
+        // window front|show|background|minimize|hide: how the window shows itself (--window); window: its state.
+        if (a.length == 1) return SimWindow.windowState();
+        int mode = SimWindow.mode(a[1]);
+        if (mode >= 0) return SimWindow.setMode(mode) ? "ok" : "no window";
+        String[] wh = a[1].split("x");
+        if (wh.length != 2) return "usage: window [WxH (points)|front|show|background|minimize|hide]";
         return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1])) ? "ok" : "no window";
       }
       case "rotate" -> {

@@ -45,7 +45,13 @@ final class SimWindow {
     headless = Boolean.getBoolean("apksim.headless") || !HostOs.MAC;
     if (headless) return;
     System.load(HostOs.runtimeLib("libsimwindow").toString());
-    nativeOpen(w, h, scale, title, Integer.getInteger("apksim.windowX", 0));
+    String mode = System.getProperty("apksim.window", "front");
+    int m = mode(mode);
+    if (m < 0) {
+      System.err.println("apksim: unknown --window " + mode + " (" + String.join("|", MODES) + "), using front");
+      m = 0;
+    }
+    nativeOpen(w, h, scale, title, Integer.getInteger("apksim.windowX", 0), m);
     Timing.mark("window-open");
   }
 
@@ -106,7 +112,41 @@ final class SimWindow {
     return headless ? "headless" : nativeDisplayInfo();
   }
 
-  private static native void nativeOpen(int w, int h, float scale, String title, int xOffset);
+  private static native void nativeOpen(int w, int h, float scale, String title, int xOffset, int mode);
+
+  /**
+   * How the window shows itself, as native/simwindow.m's WIN_*: front takes focus as a normal app does; nofocus shows
+   * it on top without taking focus; background behind every other window; minimized in the Dock; hidden not at all
+   * (the Dock icon brings it back). The app runs the same in each.
+   */
+  static final String[] MODES = {"front", "nofocus", "background", "minimized", "hidden"};
+
+  /** A mode's index in {@link #MODES} (with a few synonyms), or -1. */
+  static int mode(String name) {
+    String n = switch (name) {
+      case "show" -> "nofocus";
+      case "back" -> "background";
+      case "minimize", "dock", "docked" -> "minimized";
+      case "hide" -> "hidden";
+      default -> name;
+    };
+    return java.util.Arrays.asList(MODES).indexOf(n);
+  }
+
+  /** Changes how the window shows itself while running; false without a window. */
+  static boolean setMode(int mode) {
+    if (headless) return false;
+    nativeWindowMode(mode);
+    return true;
+  }
+
+  static String windowState() {
+    return headless ? "headless" : nativeWindowState();
+  }
+
+  private static native void nativeWindowMode(int mode);
+
+  private static native String nativeWindowState();
 
   private static native void nativePresent(ByteBuffer rgba);
 

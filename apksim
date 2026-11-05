@@ -86,6 +86,9 @@ while [[ $# -gt 1 ]]; do
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
     --headless) EXTRA+=("-Dapksim.headless=true"); shift ;;
+    # How the Mac window shows itself: front (default), nofocus, background, minimized, hidden. APKSIM_WINDOW sets a
+    # default for every launch.
+    --window) WINDOW_MODE="$2"; shift 2 ;;
     # Erase the app's data first, so it starts as just installed (reproducible runs).
     --fresh) EXTRA+=("-Dapksim.fresh=true"); shift ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
@@ -98,6 +101,8 @@ while [[ $# -gt 1 ]]; do
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+# Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
+EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}"
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
@@ -109,7 +114,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
-      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       *) WARM_OK="" ;;
