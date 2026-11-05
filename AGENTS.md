@@ -386,7 +386,9 @@ then gets that Application (`SimTestEnvironment` sets `Config.application`; Robo
 before the probe). If the runner's newApplication fails with the probe's context, the manifest's is kept, with a
 line in the log; `--jvm -Dapksim.runnerApplication=false` skips the probe. The test app's `HarnessRunner` swaps in
 `HarnessTestApplication` (`RunnerApplicationTest`). The runner's listeners and other runner arguments are not run.
-`-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work, and every `-e` reaches
+`-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work (in `class`/`notClass`, `\,` is
+a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`: an apksim extension, which
+`instrument.py` writes when it names tests; any other backslash is literal), and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--xml FILE] [-- APKSIM_OPTS]` runs a suite
