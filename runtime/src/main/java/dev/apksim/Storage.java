@@ -87,10 +87,17 @@ final class Storage {
     for (Path p : paths) Files.delete(p);  // walking does not follow links, so a link is removed, not its target
   }
 
-  /** The persistent data directory for this instance. */
+  /**
+   * The persistent data directory for this instance: the first free of default, instance-1, ... or, with
+   * {@code --data-slots NAME} (apksim serve), of NAME-0, NAME-1, ..., which an ordinary launch never takes, so a
+   * served session's --fresh never empties the owner's own data.
+   */
   static Path dataDir(Path root, String pkg) throws IOException {
+    String name = System.getProperty("apksim.dataSlots");
+    if (name != null && !name.matches("[a-z][a-z0-9]{0,15}")) throw new IOException("bad --data-slots name: " + name);
     for (int slot = 0; ; slot++) {
-      Path dir = root.resolve("data").resolve(pkg).resolve(slot == 0 ? "default" : "instance-" + slot);
+      String slotName = name != null ? name + "-" + slot : slot == 0 ? "default" : "instance-" + slot;
+      Path dir = root.resolve("data").resolve(pkg).resolve(slotName);
       Files.createDirectories(dir);
       FileChannel lock = FileChannel.open(dir.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
       FileLock l = lock.tryLock();

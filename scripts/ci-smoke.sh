@@ -2,9 +2,9 @@
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
 # channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
-# (scripts/adb-check.py). Then the network check (scripts/network-check.sh) and screenshot tests on a small matrix
-# (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught. Screens, logs and
-# snapshot reports go to OUT.
+# (scripts/adb-check.py). Then the network check (scripts/network-check.sh), screenshot tests on a small matrix
+# (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught, and `apksim serve` in the
+# image, driven as a browser tab would (scripts/serve-check.py). Screens, logs and snapshot reports go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -85,4 +85,15 @@ assert rest and all(r["status"] == "match" for r in rest), \
     f"every other capture should match: {[(r['screen'], r['combo'], r['status']) for r in rest if r['status'] != 'match']}"
 print(f"changed screen caught: all {len(home)} home captures differ, all {len(rest)} others match")
 EOF
+
+# apksim serve: a token (any address but loopback needs one), only serve's port published, the test app listed.
+SERVE_NAME=apksim-serve-smoke-$$ SERVE_PORT=7402
+head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$OUT/serve.token"
+docker run -d --name "$SERVE_NAME" --platform linux/amd64 -p "127.0.0.1:$SERVE_PORT:8080" -v "$OUT:/work" "$IMAGE" \
+  serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --max-upload 64 >/dev/null
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker logs "$SERVE_NAME" > "$OUT/serve.log" 2>&1 || true; docker rm -f "$SERVE_NAME" >/dev/null 2>&1 || true' EXIT
+for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
+python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
+  | tee "$OUT/serve-check.log"
 echo "smoke test passed"
