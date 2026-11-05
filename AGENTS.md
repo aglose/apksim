@@ -178,6 +178,14 @@ Downloads. ACTION_SEND (and choosers) go to the Mac share menu and the log.
 Background work (`BackgroundWork`): started services run (and stop on stopSelf), JobScheduler jobs run once their
 delay passes (charging/idle ones wait for `jobs run ID`; WorkManager rides on this), alarms fire on the simulated clock
 (Robolectric's auto-schedule) and reach manifest receivers. `jobs [run ID]`, `services`, `alarms` list them.
+Bound services (`BoundServices`, from `TestActivities.ShadowSimInstrumentation`'s bindService/unbindService, so in
+test runs and running instances alike): Robolectric never runs a service on bind and calls onServiceConnected with a
+registered binder, else with (null, null). For a service in the app's own manifest apksim binds as a device does: a
+BIND_AUTO_CREATE binding creates it, onBind runs once per intent, and each connection gets onServiceConnected with
+that binder or, when onBind returned null, onNullBinding; unbinding calls onUnbind (then onDestroy once no
+BIND_AUTO_CREATE binding is left) and never onServiceDisconnected. Other packages' services, and intents a binder was
+registered for through ShadowApplication (the FCM service below), stay Robolectric's. A bound service is not the
+instance startService runs, and an `android:process` service gets its local binder, not a proxy.
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
 only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
@@ -216,7 +224,8 @@ app opens outside itself go to the Mac's browser/mail app. The keyboard sends Co
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
-Pick file/Choose trip (in-app result)/Share/Background/Keystore buttons for these, and "Play clip" (ExoPlayer, a 3 s
+Pick file/Choose trip (in-app result)/Share/Background/Keystore/Bind buttons for these (Bind: "bind: null
+binding to .NullBindingService"), and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links.
