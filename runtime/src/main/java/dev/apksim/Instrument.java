@@ -37,7 +37,8 @@ import org.w3c.dom.NodeList;
  * whenever the main thread is idle. So nothing is drawn in a window and no test waits for real time. The test APK's
  * instrumentation class (AndroidJUnitRunner or a subclass) is read from its manifest but not run; each test class
  * runs under {@link SimRunner}. Arguments are am instrument's {@code -e} ones: class, notClass, package, notPackage
- * and log (list the tests without running them).
+ * and log (list the tests without running them), and numShards/shardIndex (AndroidJUnitRunner's sharding: a test runs in
+ * shard {@code abs(description.hashCode()) % numShards}, so N processes given 0..N-1 run every test exactly once).
  */
 final class Instrument {
   /** Library code a test APK carries, never searched for tests (AndroidJUnitRunner skips most of these too). */
@@ -85,6 +86,12 @@ final class Instrument {
     Request request = Request.runner(new org.junit.runners.Suite((Class<?>) null, runners) {});
     Filter filter = methodFilter(args.get("class"), args.get("notClass"));
     if (filter != null) request = request.filterWith(filter);
+    Filter shard = shardFilter(args.get("numShards"), args.get("shardIndex"));
+    if (shard != null) {
+      // A shard can be empty (more shards than tests): that is a run of no tests, not JUnit's "No tests found".
+      boolean any = leaves(request.getRunner().getDescription(), new ArrayList<>()).stream().anyMatch(shard::shouldRun);
+      request = any ? request.filterWith(shard) : Request.runner(new org.junit.runners.Suite((Class<?>) null, List.of()) {});
+    }
 
     PrintStream out = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8);
     RawListener raw = new RawListener(out, instr[0]);
@@ -278,6 +285,36 @@ final class Instrument {
       @Override
       public String describe() {
         return "class " + keep + " notClass " + drop;
+      }
+    };
+  }
+
+  /**
+   * -e numShards N -e shardIndex I, as AndroidJUnitRunner's ShardingFilter: a test belongs to the shard its
+   * description's hash picks, so shards split classes but every test lands in exactly one, whatever else is filtered.
+   */
+  private static Filter shardFilter(String numShards, String shardIndex) {
+    if (numShards == null && shardIndex == null) return null;
+    int n = Integer.parseInt(numShards == null ? "1" : numShards.trim());
+    int i = Integer.parseInt(shardIndex == null ? "0" : shardIndex.trim());
+    if (n < 1 || i < 0 || i >= n) {
+      throw new IllegalArgumentException("-e numShards " + numShards + " -e shardIndex " + shardIndex
+          + ": the index must be at least 0 and less than the number of shards");
+    }
+    if (n == 1) return null;
+    return new Filter() {
+      @Override
+      public boolean shouldRun(Description d) {
+        if (d.isTest()) return (Math.abs(d.hashCode()) % n) == i;
+        for (Description child : d.getChildren()) {
+          if (shouldRun(child)) return true;
+        }
+        return false;
+      }
+
+      @Override
+      public String describe() {
+        return "shard " + i + " of " + n;
       }
     };
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
+Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
                      [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
@@ -15,6 +15,10 @@ in chunks short enough for one argument. A comma in a name (Parameterized's `tes
 backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runner has none; --isolate uses them too). No test with a result runs again. A new process that adds no result
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does.
+With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
+`-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
+process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
+suite that passes in one process passes sharded unless its tests depend on running after one another.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
 for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
@@ -23,7 +27,7 @@ test was running to put that on (it died between tests, at startup or at exit): 
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
 """
-import argparse, concurrent.futures, os, re, shlex, subprocess, sys, time
+import argparse, concurrent.futures, os, re, shlex, subprocess, sys, threading, time
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -34,10 +38,33 @@ LAUNCHER = [ROOT + "/apksim"]
 
 
 def apksim(app, test, extra_args, apksim_opts):
+    """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
+    from when each test's start and end blocks arrived (the output is read as it comes)."""
     cmd = LAUNCHER + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
-    return subprocess.run(cmd + apksim_opts + [app], capture_output=True, text=True)
+    p = subprocess.Popen(cmd + apksim_opts + [app], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    err = []
+    reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
+    reader.start()
+    lines, seconds, started, block = [], {}, {}, {}
+    for line in p.stdout:
+        lines.append(line)
+        m = re.match(r"INSTRUMENTATION_STATUS: (class|test)=(.*)", line)
+        if m:
+            block[m[1]] = m[2].rstrip("\n")
+        elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            t = (block.get("class"), block.get("test"))
+            if line.split(": ")[1].strip() == "1":
+                started[t] = time.time()
+            elif t in started:
+                seconds[t] = time.time() - started.pop(t)
+            block = {}
+    p.wait()
+    reader.join()
+    r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
+    r.seconds = seconds
+    return r
 
 
 def incomplete(r, results, test=None):
@@ -133,13 +160,14 @@ def narrow(args, listing, remaining, budget=100_000):
     return [kv for kv in args if kv[0] != "class"] + [("class", ",".join(chunk))]
 
 
-def one_process(a, passthrough):
-    """Runs the suite in one process, and the tests it left without a result in new ones (see the module doc)."""
+def one_process(a, passthrough, label=""):
+    """Runs the suite in one process, and the tests it left without a result in new ones (see the module doc).
+    [label] names the shard in messages and in the "(run)" entries, which must stay apart across shards."""
     results = []  # (class, method, status, stack, seconds)
     done, done_classes = set(), set()
 
-    def record(c, m, s, st):
-        results.append((c, m, s, st, None))
+    def record(c, m, s, st, sec=None):
+        results.append((c, m, s, st, sec))
         done.add((c, m))
         if m in (None, "null"):  # a class-level failure (initializationError, @BeforeClass) stands for all its tests
             done_classes.add(c)
@@ -161,7 +189,7 @@ def one_process(a, passthrough):
             new = [g for g in got if not has_result((g[0], g[1]))
                    and ((g[0], g[1]) in asked or (g[1] in (None, "null") and g[0] in asked_classes))]
         for g in new:
-            record(*g)
+            record(*g, r.seconds.get((g[0], g[1])))
         why = incomplete(r, got)
         tail = r.stderr[-4000:]
         crashed = None
@@ -175,7 +203,7 @@ def one_process(a, passthrough):
             elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
                 # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
                 # device. One entry per such process, named apart so the XML keeps one entry per name.
-                name = "incomplete" if processes == 1 else f"incomplete (process {processes})"
+                name = ("incomplete" if processes == 1 else f"incomplete (process {processes})") + label
                 results.append(("(run)", name, "failed", why + ":\n" + tail, None))
                 counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
                 if remaining is None and "INSTRUMENTATION_CODE: " in r.stdout and counts and len(got) >= max(counts):
@@ -196,22 +224,22 @@ def one_process(a, passthrough):
             processes += 1
             lwhy = incomplete(listed, parse(listed.stdout))
             if lwhy:
-                results.append(("(listing)", "incomplete", "failed", f"after the run failed ({why}), listing the suite "
+                results.append(("(listing)", "incomplete" + label, "failed", f"after the run failed ({why}), listing the suite "
                                 f"to run the rest failed too ({lwhy}):\n" + listed.stderr[-4000:], None))
                 break
             listing = [(c, m) for c, m, _, _ in parse(listed.stdout)]
             if first_count is not None and first_count != len(listing):
-                print(f"the suite lists {len(listing)} tests, the run announced {first_count}", file=sys.stderr)
+                print(f"the suite{label} lists {len(listing)} tests, the run announced {first_count}", file=sys.stderr)
         remaining = [t for t in listing if not has_result(t)]
         if not remaining:
             break
         args = narrow(a.e, listing, remaining)
         if why:
             at = f" while {crashed[0]}#{crashed[1]} was running" if crashed else ""
-            print(f"apksim exited ({r.returncode}){at}: {len(listing) - len(remaining)} of {len(listing)} tests have "
+            print(f"apksim exited ({r.returncode}){label}{at}: {len(listing) - len(remaining)} of {len(listing)} tests have "
                   f"results, running the {len(remaining)} left in a new process", file=sys.stderr)
     if processes > 1:
-        print(f"{processes} apksim processes, one of them listing the suite", file=sys.stderr)
+        print(f"{processes} apksim processes{label}, one of them listing the suite", file=sys.stderr)
     return results
 
 
@@ -226,6 +254,7 @@ def main():
     p.add_argument("test")
     p.add_argument("--isolate", action="store_true")
     p.add_argument("-j", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 3)))
+    p.add_argument("--shards", type=int, default=1)
     p.add_argument("--xml")
     p.add_argument("--apksim")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
@@ -235,7 +264,26 @@ def main():
 
     t0 = time.time()
     results = []  # (class, method, status, stack, seconds)
-    if not a.isolate:
+    if a.shards > 1 and a.isolate:
+        p.error("--shards splits a suite over processes that each run many tests; --isolate gives every test its own"
+                " process already (use -j for how many at a time)")
+    if a.shards > 1:
+        if any(k in ("numShards", "shardIndex") for k, _ in a.e):
+            p.error("--shards sets -e numShards and shardIndex itself")
+        print(f"{a.shards} shards, one process each, all at once", file=sys.stderr)
+
+        def shard(i):
+            sa = argparse.Namespace(**vars(a))
+            sa.e = a.e + [("numShards", str(a.shards)), ("shardIndex", str(i))]
+            start = time.time()
+            got = one_process(sa, passthrough, f" (shard {i + 1} of {a.shards})")
+            print(f"  shard {i + 1} of {a.shards}: {len(got)} tests in {time.time() - start:.1f} s", file=sys.stderr)
+            return got
+
+        with concurrent.futures.ThreadPoolExecutor(a.shards) as pool:
+            for got in pool.map(shard, range(a.shards)):
+                results += got
+    elif not a.isolate:
         results = one_process(a, passthrough)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)

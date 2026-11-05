@@ -4,7 +4,7 @@
 Usage: instrument-check.py. No apksim, APK or JVM needed: instrument.py runs with `--apksim "instrument-check.py
 --fake"`, and this script then plays apksim --instrument, writing `am instrument -r` output for a made-up suite
 (classes p.C000.., methods m0..) and dying where the scenario (CHECK_SCENARIO) says. It honours -e class, notClass
-and log true as apksim does, and counts its calls in CHECK_DIR. Each scenario checks the exit status, the processes
+log true and numShards/shardIndex as apksim does, and counts its calls in CHECK_DIR. Each scenario checks the exit status, the processes
 started, and the JUnit XML (one entry per test, the failures expected). The real thing is ProcessDeathTest, run with
 `-e crashOnPurpose true` (CI's linux-smoke job).
 """
@@ -26,6 +26,14 @@ def selectors(s):
             part += s[i]
         i += 1
     return [p.strip() for p in out + [part] if p.strip()]
+
+
+def java_hash(s):
+    """Java's String.hashCode, which JUnit's Description.hashCode (its display name's) and so a test's shard use."""
+    h = 0
+    for ch in s:
+        h = (31 * h + ord(ch)) & 0xFFFFFFFF
+    return h - (1 << 32) if h >= 1 << 31 else h
 
 
 def fake():
@@ -54,6 +62,9 @@ def fake():
     keep, drop = selectors(e.get("class", "")), selectors(e.get("notClass", ""))
     tests = [(c, m) for c, m in universe
              if c not in drop and f"{c}#{m}" not in drop and (not keep or c in keep or f"{c}#{m}" in keep)]
+    if "numShards" in e:  # AndroidJUnitRunner's ShardingFilter: abs(description.hashCode()) % numShards
+        n, i = int(e["numShards"]), int(e["shardIndex"])
+        tests = [(c, m) for c, m in tests if abs(java_hash(f"{m}({c})")) % n == i]
 
     def block(c, m, n, code, stack=None):
         print(f"INSTRUMENTATION_STATUS: class={c}\nINSTRUMENTATION_STATUS: current={n}\n"
@@ -87,6 +98,8 @@ def fake():
             f.write(f"{c}#{m}\n")
         if {"during-test": calls == 1 and n == 1, "rerun-startup": n == 1, "big": calls == 1 and n == 1,
                 "non-ascii": calls == 1 and n == 1,
+                # Shards run at once, so not by call count: the first time this test runs (in shard 0 of 3, first).
+                "sharded-crash": (c, m) == ("p.C001", "m1") and ran_before(state, f"{c}#{m}"),
                 "listing-fails": n == 1, "parameterized": calls == 1 and n == 0, "before-class": (c, m) == ("p.C002", "m1")}.get(sc, False):
             print("dies in a test", file=sys.stderr)
             sys.exit(134)
@@ -94,6 +107,11 @@ def fake():
     print("INSTRUMENTATION_CODE: -1")
     if sc == "at-exit":
         sys.exit(134)
+
+
+def ran_before(state, test):
+    """Whether [test] ran only once so far (it was just recorded): a crash that a rerun must not repeat."""
+    return open(os.path.join(state, "ran")).read().splitlines().count(test) == 1
 
 
 # scenario: (exit status, apksim processes, entries, failed entries)
@@ -108,7 +126,11 @@ SCENARIOS = {
     "parameterized": (1, 3, 10, ["p.C000#m0"]),
     "big": (1, 3, 3000, ["com.example.averylongpackagenamefortheargumentlimit.feature.C000#m1"]),
     "non-ascii": (1, 4, 3000, ["p." + "測試" * 100 + "C000#m1"]),
+    # --shards 3 (SHARDS): shard 0 is C001#m1, C001#m2, C002#m0; 1 is C000#m2, C001#m0, C002#m1; 2 the rest.
+    "sharded": (0, 3, 9, []),
+    "sharded-crash": (1, 5, 9, ["p.C001#m1"]),  # shard 0 dies in its first test: it lists, and reruns the other two
 }
+SHARDS = {"sharded": 3, "sharded-crash": 3}
 
 
 def main():
@@ -119,7 +141,9 @@ def main():
             env = dict(os.environ, CHECK_SCENARIO=sc, CHECK_DIR=d)
             r = subprocess.run([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim",
                                 f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake", "app.apk", "test.apk",
-                                "--xml", xml, "-e", "other", "kept"], env=env, capture_output=True, text=True)
+                                "--xml", xml, "-e", "other", "kept"]
+                               + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []),
+                               env=env, capture_output=True, text=True)
             calls = open(os.path.join(d, "calls")).read().split()
             cases = [(c.get("classname"), c.get("name"), c.find("failure") is not None)
                      for c in ET.parse(xml).iter("testcase")] if os.path.exists(xml) else []
