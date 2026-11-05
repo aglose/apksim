@@ -77,6 +77,18 @@ So on 4 CPUs: three suites at once, the longest split in two, five times faster 
 of the CPU. The VM shares the Mac's cores and Apple's virtualization reports no steal time, so a busy host slows a run
 without showing it: one run of the best schedule took 261 s. Compare runs made back to back, as these were.
 
+**In the app's own CI (GitHub's ubuntu-24.04, 4 vCPU, native x86; 2026-11-05):** the same schedule (three suites at
+once, the journeys in 2 shards, the end-to-end tests in one process) on the released 0.8.0 image:
+
+| The device-test step | Wall |
+|---|---|
+| 0.5.0, one suite at a time, end-to-end isolated: 10 recent green runs | median 310 s (265-349 s) |
+| 0.8.0, three at once | **140 s**, all 4,144 tests passing, none flaky |
+
+Each suite takes longer side by side (the journeys 95 → 115 s, the shared module 58 → 89 s), the end-to-end tests less
+(82 → 29 s, one process instead of ten), and the whole set 2.2 times less. The runner came out close to the Mac's VM
+(147 s there with the same image and script). The job's Gradle build of the test APKs (4-11 minutes) is now most of it.
+
 **Instances at once (`fleet.py`, the test app, Mac):** each instance started cold, waited for its UI, tapped the
 FAB three times and checked the count, opened Trips and checked a trip, then ran the Shader tab for 2 s.
 

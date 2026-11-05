@@ -80,7 +80,9 @@ raced on extracting the APK's native libraries (fixed: rename into place).
 The app's CI runs the suites one after another, the end-to-end tests one process per test: 670 s and 1,318
 CPU-seconds in the Linux image on 4 CPUs (under Rosetta), 167 s on the Mac. With the end-to-end tests in one process,
 three suites at once, the journeys in two shards and the JIT stopped at C1 (now the default for test runs), the same
-4,134 tests took 133-137 s and ~435 CPU-seconds there; on the Mac, four at once, ~58 s. One journey waits 30 s of real time for the app's poll, which
+4,134 tests took 133-137 s and ~435 CPU-seconds there; on the Mac, four at once, ~58 s. The app's CI adopted it with
+apksim 0.8.0 (2026-11-05): its device-test step went from a median 310 s (265-349 s over 10 green runs) to 140 s on
+an ubuntu-24.04 runner, 4,144 tests passing, none flaky. One journey waits 30 s of real time for the app's poll, which
 bounds the run. Measurements, limits and how-to: [parallel.md](parallel.md). It also found two macOS bugs (WebRTC
 threads spinning on monotonic condition variables, and a crash at exit), both fixed.
 

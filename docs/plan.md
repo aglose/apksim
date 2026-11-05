@@ -75,8 +75,9 @@ once in the Linux image. No descriptor leak (~460, flat).
 **0i. Parallel runs (done 2026-11-04).** `instrument.py --shards N` (AndroidJUnitRunner's numShards/shardIndex),
 suites side by side, `scripts/fleet.py` for N instances at once, the JIT stopped at C1 for test runs, and two macOS
 fixes found under load (monotonic condition variables spinning, a crash at exit). The app's 4,134 tests: 167 → 58 s on
-the Mac, 670 → ~135 s on 4 CPUs in the Linux image ([parallel.md](parallel.md)). Left: the app's CI to adopt the
-schedule (its own repository), and measuring it on a native x86 runner, where Rosetta's cost of compiled code is gone.
+the Mac, 670 → ~135 s on 4 CPUs in the Linux image ([parallel.md](parallel.md)). The app's CI adopted it with 0.8.0
+(2026-11-05): on its ubuntu-24.04 runner the device-test step went from a median 310 s to 140 s. What is left there is
+the Gradle build of the test APKs, now most of the job, and one journey's 30 s real-time wait (the app's).
 
 **0d. A translator regression test with R8's register reuse.** The two miscompilations needed R8-shaped code (a
 register reused across int, float and object, a return inside a catch-all range); the test app's D8 debug build does
