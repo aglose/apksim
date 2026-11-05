@@ -97,6 +97,7 @@ final class HwRenderer {
       Image next = reader.acquireNextImage();
       if (next != null) {
         SimWindow.present(next.getPlanes()[0].getBuffer());
+        if (FrameStream.active()) FrameStream.frame(next.getPlanes()[0].getBuffer(), next.getWidth(), next.getHeight());
         synchronized (frameLock) {
           if (current != null) current.close();
           current = next;

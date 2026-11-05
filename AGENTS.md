@@ -92,6 +92,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
+  - `FrameStream`: the screen as JPEG frames for `apksim serve` (see "apksim serve"). `Control` serves each connection
+    on its own thread, so one can stream while another drives.
+  - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
+    `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
@@ -116,7 +120,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   docs/parallel.md), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
   `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `serve-check.py` (a running
+  `apksim serve` driven as a browser tab, see "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
@@ -125,7 +130,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
@@ -156,7 +161,8 @@ Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
-last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`, `ping`, `quit`.
+last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
+(frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone` (the zone the app sees; set at launch with
@@ -381,6 +387,25 @@ Robolectric's test environment. The server runs in the app's process, so a crash
 Not supported: other apps beside the running one, split APKs (`install-multiple`), `am force-stop`
 (it is this process; `adb shell apksim quit`), `jdwp`, shell_v2 (so no exit codes or separate stderr) and
 `logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
+
+## apksim serve (APKs in a browser tab)
+`./apksim serve [--port 8080] [--bind ADDR] [--token FILE] [--max 4] [--idle 600] [--apps DIR|FILE]... [--max-upload MB]`:
+an HTTP server whose page (one self-contained file) runs a listed or uploaded APK per tab and streams it; docs/serve.md
+is the spec, the security model and the measurements. Each tab is an ordinary launch (`--headless --fresh --control
+auto`, warm on the Mac when the standby is ready, cold on Linux), read from its stderr (`[apksim] control port N`;
+the rest goes to `STATE/serve/logs/<session>.log`). Serve opens two control connections: commands, pipelined, and
+`stream`, after which `FrameStream` sends each presented frame that differs from the last as a JPEG (Android's encoder,
+on its own thread; `redraw` makes the Host draw one for a new subscriber). Serve relays frames with at most two in
+flight per tab (the page acknowledges each one drawn), and passes on only input and device commands
+(`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
+another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
+non-loopback `Host` header (DNS rebinding). Instances are never given `--adb` or `--control-bind`. A session ends when
+its tab closes, after `--idle` seconds without input, or when the app exits; its data slot is then emptied.
+`scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
+memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
+tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;
+Linux image (Rosetta) first frame 6-10 s cold, tap to frame 44-61 ms, ~700 MB a session. The page's latency figures
+match the tab's clock to the server's (`t` messages), so frame times compare across machines.
 
 ## Instrumentation tests (androidTest APKs)
 `./apksim --instrument app-debug-androidTest.apk [-e KEY VALUE]... app-debug.apk` runs a test APK against the app as

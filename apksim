@@ -1,5 +1,6 @@
 #!/bin/bash
 # Usage: apksim [--shot FILE] [--exit-after-first-frame] [--debug PORT] [--instrument test.apk [-e KEY VALUE]...] app.apk
+#        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
@@ -31,6 +32,8 @@ case "${1:-}" in
   # Builds the startup cache now, in the foreground (an installed release otherwise builds it in the background on
   # its first launch).
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
+  # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
+  serve) SERVE=1; shift ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first
@@ -65,7 +68,7 @@ if [[ "${1:-}" == --standby ]]; then
   # Claim the slot: exec below keeps this PID for the JVM.
   if ! (set -C; echo $$ > "$STANDBY_SOCK.pid") 2>/dev/null; then exit 0; fi
 fi
-while [[ $# -gt 1 ]]; do
+while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
   case "$1" in
     --shot) EXTRA+=("-Dapksim.screenshot=$2"); shift 2 ;;
     --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
@@ -136,6 +139,10 @@ if [[ "$OS" == Darwin ]]; then
   fi
 else
   JAVA="${APKSIM_JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+fi
+if [[ -n "${SERVE:-}" ]]; then
+  exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
+    -cp "$ROOT/work/apksim.jar" dev.apksim.serve.Serve "$@"
 fi
 # APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
 [[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")

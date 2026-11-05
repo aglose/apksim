@@ -164,8 +164,9 @@ public class Host {
       controls.tick();
       Control.Pending cmd;
       while ((cmd = Control.QUEUE.poll()) != null) {
-        // Logged so a scripted session can be followed afterwards. Pasted text is not in the command.
-        System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
+        // Logged so a scripted session can be followed afterwards. Pasted text is not in the command. Not each move of
+        // a drag (a browser sends one per frame) or the redraws a stream asks for.
+        if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
         String reply;
         try {
           reply = runCommand(cmd.args);
@@ -256,12 +257,16 @@ public class Host {
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
 
+  /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
+  private static Path dataDir;
+
   /** Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. */
   private static void usePersistentDataDir() throws Exception {
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
     if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
+    dataDir = data;
     Path link = RuntimeEnvironment.getTempDirectory().getBasePath().resolve(pkg + "-dataDir");
     Storage.deleteTree(link);
     Files.createSymbolicLink(link, data);
@@ -810,7 +815,12 @@ public class Host {
       }
       case "stats" -> {
         Runtime rt = Runtime.getRuntime();
-        return String.format("frames=%d heapUsedMb=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20);
+        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
+            ProcessHandle.current().pid(), dataDir);
+      }
+      case "redraw" -> {
+        // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).
+        for (View r : rootViews()) r.invalidate();
       }
       default -> {
         String r = controls.run(a);
