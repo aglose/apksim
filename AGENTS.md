@@ -421,6 +421,16 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
   when it skips idle time. `--timezone ZONE` sets the JDK's and android.icu's zone, at each test's setup (ICU caches
   its default, and a standby may have worked it out before the launch) (`WallClockTest` with `-e timezone ZONE`).
+- `--realtime-clock` (opt-in, test runs only; `RealTimeClock`): the simulated clock follows real time instead of
+  skipping idle time, for suites written for a device whose timed UI must last (a banner that closes itself after
+  5 s). By default Robolectric's Choreographer is not paused in a test run, so each frame asked for moves the clock
+  15 ms and runs at once, and one Espresso check ran every frame of a running animation, closing the banner first.
+  With the switch the Choreographer is paused as Host runs it, each frame asked for queues an asynchronous vsync
+  message (`ShadowRealTimeDisplayEventReceiver`), a main-thread clock read moves the clock up to real time
+  (`ShadowRealTimeSystemClock`), a looper held by a traversal's sync barrier waits up to 100 ms for that frame
+  (Espresso posts its check behind the barrier, drains, then blocks on it: without the wait it never ran), and
+  anything moving the clock past real time (idleFor, SystemClock.sleep) waits for it. Off, nothing is registered.
+  The test app's suite takes 13 s with it against 5.6 s (`RealTimeClockTest`, run with `-e realtimeClock true`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
