@@ -343,6 +343,22 @@ public final class TestActivities {
       }
     }
 
+    /*
+     * On a device bindService returns false, and never calls back, when no installed service matches the intent.
+     * Robolectric returns true and calls onServiceConnected(null, null), which a Kotlin connection (non-null
+     * parameters) throws on: one app's bind to a service in a companion app that isn't installed failed every test.
+     * Other apps do not exist here, so a bind that BoundServices does not take (not one of the app's own services) and
+     * that no installed service resolves is a bind to nothing; what a test set up through ShadowApplication stays
+     * Robolectric's.
+     */
+    private static boolean resolves(Intent intent) {
+      if (!testRun()) return true;
+      Context app = org.robolectric.RuntimeEnvironment.getApplication();
+      if (app.getPackageManager().resolveService(intent, 0) != null) return true;
+      System.err.println("[apksim] bindService: no installed service matches " + intent + "; false, as on a device");
+      return false;
+    }
+
     /** An instrumentation started over adb (LiveInstrumentation) reports to that `am instrument`, not a watcher. */
     @Implementation
     protected void sendStatus(int resultCode, Bundle results) {
@@ -413,12 +429,14 @@ public final class TestActivities {
     @Override
     protected boolean bindService(Intent intent, android.content.ServiceConnection connection, int flags) {
       if (bindHere(intent, flags, null, connection)) return true;
+      if (!setUpByTest(intent) && !resolves(intent)) return false;
       return super.bindService(intent, connection, flags);
     }
 
     @Override
     protected boolean bindService(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
       if (bindHere(intent, flags, executor, connection)) return true;
+      if (!setUpByTest(intent) && !resolves(intent)) return false;
       return super.bindService(intent, flags, executor, connection);
     }
 
@@ -434,16 +452,18 @@ public final class TestActivities {
       bound.remove(connection);
     }
 
-    private boolean bindHere(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
-      // What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents,
-      // a bind that throws) stays Robolectric's.
+    /** What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents, a bind that throws). */
+    private boolean setUpByTest(Intent intent) {
       ServiceConnectionDataWrapper data = getServiceConnectionDataWrapper(intent);
       List<android.content.ComponentName> unbindable = ReflectionHelpers.getField(this, "unbindableComponents");
-      if (data.componentNameForBindService != null || data.binderForBindService != null
+      return data.componentNameForBindService != null || data.binderForBindService != null
           || ReflectionHelpers.getField(this, "exceptionForBindService") != null
-          || getUnbindableActions().contains(intent.getAction()) || unbindable.contains(intent.getComponent())) {
-        return false;
-      }
+          || getUnbindableActions().contains(intent.getAction()) || unbindable.contains(intent.getComponent());
+    }
+
+    private boolean bindHere(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
+      // What a test set up through ShadowApplication stays Robolectric's.
+      if (setUpByTest(intent)) return false;
       if (!BoundServices.of(RuntimeEnvironment.getApplication()).bind(intent, flags, executor, connection)) return false;
       List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
       List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
