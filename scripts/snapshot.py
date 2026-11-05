@@ -127,6 +127,11 @@ def load_spec(opts):
     return spec, os.path.abspath(apk), os.path.abspath(goldens), combos, screens
 
 
+# Replies that mean a command did not do what it was asked: "error: ...", "unknown command: x", "unknown key: x",
+# "usage: ...", "not found: TEXT" (tap-text), "no activity ...", "no window", "no picker is waiting".
+FAILED_REPLIES = ("error", "unknown", "usage", "not found", "no activity", "no window", "no picker")
+
+
 class Closed(Exception):
     pass
 
@@ -201,8 +206,7 @@ class Worker:
     def expect(self, cmd):
         """Sends a command whose reply must not be an error."""
         reply = self.send(cmd)
-        if reply.startswith("error") or reply.startswith("unknown command") or reply.startswith("not found") \
-                or reply.startswith("usage") or reply.startswith("no activity"):
+        if reply.startswith(FAILED_REPLIES):
             raise StepFailed(f"{cmd!r}: {reply}")
         return reply
 
