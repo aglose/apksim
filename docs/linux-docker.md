@@ -7,15 +7,15 @@ natively on x86_64 CI runners and on Apple Silicon under Rosetta.
 
 Each release publishes the image as `ghcr.io/aglose/apksim:VERSION` (and `:latest`, moved when a release is
 published), built and checked by `.github/workflows/release.yml`. It holds the launcher, a trained startup cache,
-Mesa for offscreen GLES, and `instrument.py`/`drive.py` on the `PATH`, so another repository's CI needs nothing of
+Mesa for offscreen GLES, and `instrument.py`, `snapshot.py` and `drive.py` on the `PATH`, so another repository's CI needs nothing of
 apksim but the image. Pin a version: a new release can change how apps translate.
 
 ```bash
 # A whole androidTest suite in one container, JUnit XML beside the APKs (one process per test, 4 at a time)
-docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.3.0 \
+docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.9.0 \
   app-debug.apk app-debug-androidTest.apk --isolate -j 4 --xml junit.xml
 # A library's device-test APK (KMP androidDeviceTest) instruments itself: pass it as both
-docker run --rm -v "$PWD/out:/work" ghcr.io/aglose/apksim:0.3.0 --instrument lib-androidTest.apk lib-androidTest.apk
+docker run --rm -v "$PWD/out:/work" ghcr.io/aglose/apksim:0.9.0 --instrument lib-androidTest.apk lib-androidTest.apk
 ```
 
 A GitHub Actions job (on `ubuntu-24.04`, after the Gradle build of the APKs):
@@ -24,7 +24,7 @@ A GitHub Actions job (on `ubuntu-24.04`, after the Gradle build of the APKs):
       - name: Device tests on apksim
         run: |
           mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-          docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.3.0 \
+          docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.9.0 \
             app-debug.apk app-debug-androidTest.apk --xml junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
