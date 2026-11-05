@@ -152,7 +152,7 @@ final class Session {
     String open = options.get("open");
     if (open != null && check("open " + open) != null) send("open " + open, r -> ws.sendText("r open: " + r));
     String orientation = options.get("orientation");
-    if ("landscape".equals(orientation)) send("rotate landscape", r -> {});
+    if ("landscape".equals(orientation) || "portrait".equals(orientation)) send("rotate " + orientation, r -> {});
   }
 
   private static Socket connect(int port) throws IOException {
@@ -384,9 +384,13 @@ final class Session {
       ended = true;
       notifyAll();
     }
-    synchronized (replies) {
-      if (controlOut != null) controlOut.println("quit");
-    }
+    // Best effort, on its own thread: an app whose main thread hangs stops reading commands, and a write to its full
+    // socket would block. Ending the process below does not wait for it, and closing the socket frees that write.
+    Thread.ofVirtual().name("serve-quit-" + id).start(() -> {
+      synchronized (replies) {
+        if (controlOut != null) controlOut.println("quit");
+      }
+    });
     Process p;
     synchronized (this) {
       p = process;

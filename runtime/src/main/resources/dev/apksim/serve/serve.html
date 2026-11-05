@@ -427,7 +427,8 @@ $("copy").onclick = async () => {
   const q = new URLSearchParams({ app: state.app, device: state.device });
   if (state.appearance === "dark") q.set("appearance", "dark");
   for (const k of ["locale", "fontscale", "open"]) if (state[k]) q.set(k, state[k]);
-  if (frameW > frameH && (state.device === "phone" || state.device === "foldable")) q.set("orientation", "landscape");
+  // Always the screen's current orientation: some devices start in landscape (foldable, tablet), others in portrait.
+  if (frameW && frameH) q.set("orientation", frameW > frameH ? "landscape" : "portrait");
   const link = location.origin + "/?" + q;
   $("link").value = link;
   try { await navigator.clipboard.writeText(link); log("link copied (people without the token cookie need the token link once)"); }

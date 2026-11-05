@@ -45,13 +45,16 @@ final class Http {
     }
   }
 
-  /** The request's head, or null if the client closed or sent something that is not HTTP. */
-  static Request read(InputStream in) throws IOException {
-    ByteArrayOutputStream head = new ByteArrayOutputStream();
+  /**
+   * The request's head, or null if the client closed, sent something that is not HTTP, or had not finished by the
+   * deadline (System.nanoTime()).
+   */
+  static Request read(InputStream in, long deadlineNanos) throws IOException {
+    ByteArrayOutputStream head = new ByteArrayOutputStream(512);
     int last4 = 0;
     while (last4 != 0x0d0a0d0a) {
       int b = in.read();
-      if (b < 0 || head.size() >= MAX_HEAD) return null;
+      if (b < 0 || head.size() >= MAX_HEAD || System.nanoTime() > deadlineNanos) return null;
       head.write(b);
       last4 = (last4 << 8) | b;
     }

@@ -169,6 +169,11 @@ def main():
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
 
+    # A request head that never ends (a byte now and then would do the same): the server must drop it (10 s).
+    hostport = url.split("//")[1]
+    slow = socket.create_connection((hostport.split(":")[0], int(hostport.split(":")[1])), timeout=30)
+    slow.sendall(b"GET / HTTP/1.1\r\nHost: " + hostport.encode() + b"\r\n")
+    slow_since = time.time()
     if token:
         status, _ = http(url, "/api/apps")
         check(status == 401, f"no token: refused ({status})")
@@ -297,6 +302,12 @@ def main():
     st = json.loads(body) if status == 200 else {}
     check(any(x.get("id") == s.stats.get("id") for x in st.get("sessions", [])), "the session is in /api/status")
     s.ws.s.close()
+    slow.settimeout(max(1, 15 - (time.time() - slow_since)))
+    try:
+        dropped = slow.recv(100) == b""
+    except (socket.timeout, ConnectionResetError):
+        dropped = False
+    check(dropped, "an unfinished request head is dropped")
     # The tab closed: the session ends and its instance goes.
     gone = False
     for _ in range(30):

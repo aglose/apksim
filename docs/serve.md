@@ -81,8 +81,8 @@ The tab sends commands in the control channel's own words, and serve passes on o
 Anything else (`shot FILE`, `record`, `pick FILE`, `quit`, ...) never reaches an instance from a tab: those read or
 write files on the machine.
 
-"Copy link" puts a URL on the clipboard that opens a new session in the same state: the app, device, appearance,
-locale, text size and the last deep link opened. It does not carry what the app did since (navigation inside the app
+"Copy link" puts a URL on the clipboard that opens a new session in the same state: the app, device, orientation,
+appearance, locale, text size and the last deep link opened. It does not carry what the app did since (navigation inside the app
 that no deep link names, data entered).
 
 ### Status
@@ -97,6 +97,9 @@ that no deep link names, data entered).
   `Authorization: Bearer`, or the one-time `?token=` link).
 - Instances' control channels stay on loopback, and serve never starts them with `--adb` (the adb device has no AUTH).
   In a container, only serve's port is published.
+- At most 128 connections at once (open sessions' included), taken before anything is allocated for one; a request's
+  head must arrive within 10 s in all, so idle or trickling connections cannot use up memory or descriptors. (They
+  can still keep others out while they last: put a server open to the internet behind a proxy that limits per client.)
 - The page cannot be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`): no clickjacking of
   its controls.
 - What a visitor types is not kept: the instance logs `type (N characters)`, not the text (passwords, pasted tokens).

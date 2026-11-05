@@ -54,6 +54,8 @@ public final class Serve {
   boolean loopbackBind;
   private final List<String> apps = new ArrayList<>();
   private final Map<String, Session> sessions = new ConcurrentHashMap<>();
+  /** Connections open at once (open sessions' WebSockets among them). */
+  private final java.util.concurrent.Semaphore connections = new java.util.concurrent.Semaphore(128);
   private byte[] page;
   private final long startedAt = System.currentTimeMillis();
 
@@ -152,7 +154,23 @@ public final class Serve {
     }));
     while (true) {
       Socket c = server.accept();
-      Thread.ofVirtual().name("serve-http").start(() -> handle(c));
+      // A bounded number of connections at once, taken before anything is allocated for one: idle or trickling
+      // connections (before any token is checked) cannot use up memory or descriptors.
+      if (!connections.tryAcquire()) {
+        try {
+          c.close();
+        } catch (IOException e) {
+          // nothing to do
+        }
+        continue;
+      }
+      Thread.ofVirtual().name("serve-http").start(() -> {
+        try {
+          handle(c);
+        } finally {
+          connections.release();
+        }
+      });
     }
   }
 
@@ -177,11 +195,13 @@ public final class Serve {
   private void handle(Socket socket) {
     try (Socket s = socket) {
       s.setTcpNoDelay(true);
-      s.setSoTimeout(30_000);
-      InputStream in = new BufferedInputStream(s.getInputStream(), 1 << 16);
-      OutputStream out = new BufferedOutputStream(s.getOutputStream(), 1 << 16);
-      Http.Request r = Http.read(in);
+      // The request's head within 10 s in all (a byte at a time does not keep it open), then 30 s per read (uploads).
+      s.setSoTimeout(10_000);
+      InputStream in = new BufferedInputStream(s.getInputStream(), 1 << 14);
+      OutputStream out = new BufferedOutputStream(s.getOutputStream(), 1 << 14);
+      Http.Request r = Http.read(in, System.nanoTime() + 10_000_000_000L);
       if (r == null) return;
+      s.setSoTimeout(30_000);
       route(r, s, in, out);
     } catch (IOException | RuntimeException e) {
       // the client went away
