@@ -102,6 +102,22 @@ class NullBindingTest {
     context.unbindService(connection)
   }
 
+  /**
+   * One connection bound to two intents of one service that are not filterEquals: onBind runs for each, both give
+   * the same binder, and the dispatcher, which keeps the binder by component, tells the connection once.
+   */
+  @Test
+  fun aConnectionBoundToTwoIntentsWithTheSameBinderIsConnectedOnce() {
+    val component = ComponentName(context, BinderService::class.java)
+    val connection = Recorder()
+    assertTrue(context.bindService(Intent("one").setComponent(component), connection, Context.BIND_AUTO_CREATE))
+    assertTrue(context.bindService(Intent("two").setComponent(component), connection, Context.BIND_AUTO_CREATE))
+    waitFor { connection.calls.isNotEmpty() }
+    Thread.sleep(300) // time for a second callback that should not come
+    assertEquals(listOf("onServiceConnected($component, binder)"), connection.calls.toList())
+    context.unbindService(connection)
+  }
+
   /** The same with a null binder: ServiceDispatcher keeps no null binder to compare, so each binding is told. */
   @Test
   fun aConnectionBoundTwiceToANullBindingIsToldForEachBinding() {
