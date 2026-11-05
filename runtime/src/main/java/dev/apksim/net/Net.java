@@ -303,6 +303,14 @@ public final class Net {
     if (s instanceof SSLSocket) {
       // TLS from the start, named by the address it connects to: going through the engine would lose that name (SNI,
       // hostname checks). Connects directly; Net.createSocket layers TLS on a plain socket instead where it can.
+      // Replaying, nothing may leave the process: such a connection fails, and counts as unmatched.
+      if (mode == Mode.REPLAY) {
+        String msg = "network replay: a socket that does TLS from the start (" + s.getClass().getName() + ") to " + where
+            + " cannot be replayed";
+        log(msg);
+        unmatched.add(msg);
+        throw new ConnectException(msg);
+      }
       s.connect(a, timeout);
       direct.add(s);
       return;

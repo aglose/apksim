@@ -245,7 +245,7 @@ final class Recording {
       Map<String, Object> post = new LinkedHashMap<>();
       String mime = e.header(e.reqHeaders, "Content-Type");
       post.put("mimeType", mime == null ? "" : mime);
-      String text = text(e.reqBody);
+      String text = e.reqTruncated ? null : text(e.reqBody);
       if (e.reqTruncated) {
         post.put("text", "");  // over MAX_BODY: only its hash (below) is kept, and matched
         post.put("_apksimTruncated", true);

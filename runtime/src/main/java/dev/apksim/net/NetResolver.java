@@ -42,6 +42,16 @@ public final class NetResolver extends InetAddressResolverProvider {
 
       @Override
       public String lookupByAddress(byte[] addr) throws UnknownHostException {
+        // Offline or replaying, a reverse lookup (getCanonicalHostName) of anything but loopback would ask a DNS
+        // server: a placeholder answers locally, anything else fails.
+        if (Net.active && (Net.conditions.offline() || Net.mode == Net.Mode.REPLAY)) {
+          InetAddress a = InetAddress.getByAddress(addr);
+          if (!a.isLoopbackAddress()) {
+            String host = hostByAddress.get(a.getHostAddress());
+            if (host != null) return host;
+            throw new UnknownHostException(a.getHostAddress());
+          }
+        }
         return builtin.lookupByAddress(addr);
       }
     };

@@ -596,7 +596,8 @@ final class NetEngine {
       e.url = req.url;
       e.httpVersion = req.version;
       e.reqHeaders = redacted(req.headers);
-      e.reqBody = req.hasBody ? req.body : null;
+      // An upload over MAX_BODY is matched and stored by its hash alone: its kept prefix is not held for the run.
+      e.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
       e.reqSha = req.bodySha;
       e.reqTruncated = req.bodyTruncated;
       e.status = resp.status;
