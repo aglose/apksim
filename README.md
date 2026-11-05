@@ -27,6 +27,7 @@ apksim app-debug.apk
 - [In a browser tab](#in-a-browser-tab)
 - [Instrumented tests and CI](#instrumented-tests-and-ci)
 - [Screenshot tests](#screenshot-tests)
+- [Network: record, replay and conditions](#network-record-replay-and-conditions)
 - [Linux and Docker](#linux-and-docker)
 - [Debugging](#debugging)
 - [Configuration reference](#configuration-reference)
@@ -47,6 +48,7 @@ apksim app-debug.apk
 | **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
 | **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, and shards balanced by measured time. |
+| **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
 | **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
 | **GPU where it counts** | AGSL shaders, shader effects on Compose layers, and scaled bitmaps run on Metal; video decodes on VideoToolbox. |
@@ -137,6 +139,9 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--fresh` | Erase the app's data first, as if just installed |
 | Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
+| | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
+| | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
+| | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead |
 | Automation | `--control PORT\|auto` | Open the [control channel](#automation) |
 | | `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
 | | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
@@ -200,6 +205,7 @@ state folder.
 | Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste` |
 | Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `config` |
+| Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
 | Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
@@ -364,6 +370,29 @@ a fixed clock and time zone, the UI settled before each shot (`settle`), and CPU
 captures of the test app came out byte-identical across five runs, both on the Mac and in the Linux image, and a 1 dp
 change was caught. Make goldens in the Linux image, where CI checks them. Spec format and measurements:
 [docs/snapshots.md](docs/snapshots.md).
+
+## Network: record, replay and conditions
+
+```bash
+apksim --network record api.har app.apk                  # use the app against its real backend; every exchange is saved
+apksim --network replay api.har app.apk                  # the same answers, with nothing leaving the process
+apksim --network replay api.har --instrument app-androidTest.apk app.apk   # hermetic test runs
+apksim --network-profile 3g app.apk                      # or offline, lossy, latency:MS, bandwidth:KBPS
+```
+
+The recording is a standard HAR 1.2 file, so browser dev tools and proxies can read it, and it can be edited by hand.
+`Authorization`, `Cookie` and `Set-Cookie` are redacted by default (`--network-redact` adds names). A replayed request
+must match on method, URL and body (`--network-match`, `--network-ignore-query` for cache busters). One that doesn't
+gets a 599, is logged with the closest recorded entry, and in a test run fails the test.
+
+Offline is offline the whole way down. DNS fails, connections fail, open ones close, and `ConnectivityManager` loses
+its network, so the app's network callbacks fire as on a device. `network offline`, `network 3g` and the others switch
+conditions while the app runs (also from the Features > Network menu, `adb shell apksim network ...` or a test's shell
+command).
+
+Recorded and replayed: OkHttp 3-5 and everything on it (Retrofit, Ktor's OkHttp engine, Coil), `HttpURLConnection`,
+Ktor's Android engine and Volley. Not recorded: Cronet and Ktor CIO, which do their own TLS (offline still applies), and
+raw sockets. Details and measurements: [docs/network.md](docs/network.md).
 
 ## Linux and Docker
 
