@@ -390,6 +390,50 @@ public final class TestActivities {
       }
     }
 
+    // ShadowContextImpl's bindService and unbindService come here: the app's own services are bound as on a device
+    // (BoundServices), anything else as Robolectric does.
+    @Override
+    protected boolean bindService(Intent intent, android.content.ServiceConnection connection, int flags) {
+      if (bindHere(intent, flags, null, connection)) return true;
+      return super.bindService(intent, connection, flags);
+    }
+
+    @Override
+    protected boolean bindService(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
+      if (bindHere(intent, flags, executor, connection)) return true;
+      return super.bindService(intent, flags, executor, connection);
+    }
+
+    @Override
+    protected void unbindService(android.content.ServiceConnection connection) {
+      if (!BoundServices.of(RuntimeEnvironment.getApplication()).unbind(connection)) {
+        super.unbindService(connection);
+        return;
+      }
+      List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
+      List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
+      unbound.add(connection);
+      bound.remove(connection);
+    }
+
+    private boolean bindHere(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
+      // What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents,
+      // a bind that throws) stays Robolectric's.
+      ServiceConnectionDataWrapper data = getServiceConnectionDataWrapper(intent);
+      List<android.content.ComponentName> unbindable = ReflectionHelpers.getField(this, "unbindableComponents");
+      if (data.componentNameForBindService != null || data.binderForBindService != null
+          || ReflectionHelpers.getField(this, "exceptionForBindService") != null
+          || getUnbindableActions().contains(intent.getAction()) || unbindable.contains(intent.getComponent())) {
+        return false;
+      }
+      if (!BoundServices.of(RuntimeEnvironment.getApplication()).bind(intent, flags, executor, connection)) return false;
+      List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
+      List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
+      bound.add(connection);
+      unbound.remove(connection);
+      return true;
+    }
+
     @Implementation
     @Override
     protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,
