@@ -8,7 +8,7 @@ log true and numShards/shardIndex as apksim does, and counts its calls in CHECK_
 started, and the JUnit XML (one entry per test, the failures expected). The real thing is ProcessDeathTest, run with
 `-e crashOnPurpose true` (CI's linux-smoke job).
 """
-import math, os, re, subprocess, sys, tempfile
+import gzip, json, math, os, re, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -52,7 +52,7 @@ def fake():
     with open(os.path.join(state, "calls"), "a") as f:
         f.write(f"{'list' if e.get('log') == 'true' else 'run'} {longest}\n")
     calls = sum(1 for line in open(os.path.join(state, "calls")) if line.startswith("run"))
-    big = sc in ("big", "non-ascii")
+    big = sc in ("big", "non-ascii", "balanced-big")
     pre = "com.example.averylongpackagenamefortheargumentlimit.feature." if big else "p."
     if sc == "non-ascii":  # 200 CJK characters a class name: ~60k characters for 299 classes, but ~180k bytes
         pre = "p." + "測試" * 100
@@ -129,8 +129,33 @@ SCENARIOS = {
     # --shards 3 (SHARDS): shard 0 is C001#m1, C001#m2, C002#m0; 1 is C000#m2, C001#m0, C002#m1; 2 the rest.
     "sharded": (0, 3, 9, []),
     "sharded-crash": (1, 5, 9, ["p.C001#m1"]),  # shard 0 dies in its first test: it lists, and reruns the other two
+    # --timings: a listing, then 3 shards of 7 s each (C000's three 5 s tests apart, the 1 s ones two to a shard).
+    "balanced": (0, 4, 9, []),
+    # 3,000 tests of long names over 2 shards by time: each shard's -e class list is two arguments' worth.
+    "balanced-big": (0, 5, 3000, []),
+    # --affected-by: a change to C000.kt runs C000's tests and C002's, which the deps file has no record of.
+    "affected": (0, 2, 6, []),
 }
-SHARDS = {"sharded": 3, "sharded-crash": 3}
+SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2}
+
+
+def extra_args(sc, d):
+    """Scenario arguments that need files: timings XML, a deps file."""
+    if sc.startswith("balanced"):
+        xml = os.path.join(d, "timings.xml")
+        with open(xml, "w") as f:
+            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
+                                            for c in range(3) for m in range(3)) + "</testsuite>")
+        return ["--timings", xml]
+    if sc == "affected":
+        deps = os.path.join(d, "deps.json.gz")
+        doc = {"version": 1, "apks": [], "packages": ["p/"], "named": 1.0, "classes": ["p/C000", "p/C001"],
+               "sources": {"p/C000.kt": [0], "p/C001.kt": [1]},
+               "tests": {f"p.C00{c}#m{m}": [c] for c in range(2) for m in range(3)}}
+        with gzip.open(deps, "wt") as f:
+            json.dump(doc, f)
+        return ["--affected-by", deps, "--changed", "app/src/main/kotlin/p/C000.kt"]
+    return []
 
 
 def main():
@@ -142,7 +167,7 @@ def main():
             r = subprocess.run([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim",
                                 f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake", "app.apk", "test.apk",
                                 "--xml", xml, "-e", "other", "kept"]
-                               + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []),
+                               + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + extra_args(sc, d),
                                env=env, capture_output=True, text=True)
             calls = open(os.path.join(d, "calls")).read().split()
             cases = [(c.get("classname"), c.get("name"), c.find("failure") is not None)

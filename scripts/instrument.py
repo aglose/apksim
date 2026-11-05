@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
-                     [-- APKSIM_OPTION...]
+Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
+                     [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
+                     [-e KEY VALUE]... [--apksim CMD] [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
@@ -26,8 +27,19 @@ test was running to put that on (it died between tests, at startup or at exit): 
 "incomplete" entry for that process, even when the tests left all pass in the next one.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
+Test impact and balanced shards (docs/affected-tests.md):
+--record-deps FILE records which of the app's and the tests' classes each test runs code of, into FILE.
+--affected-by FILE with --changed PATH... (or @LIST, a file of paths) or --diff REV (`git diff --name-only REV`, e.g.
+`origin/main...HEAD`; --repo DIR for another checkout) runs only the tests that reached a class compiled from a changed
+Kotlin or Java file, plus tests FILE has no record of; any other change (resources, manifests, build files, assets, a
+source file of no class the recording knows) runs everything. --ignore GLOB leaves out changed paths that cannot affect
+the tests (docs, JVM unit tests: `--ignore '*.md' --ignore '*/src/test/*'`).
+--timings XML (an earlier run's --xml; repeatable) makes --shards split the tests by their measured times, longest first,
+each shard given an `-e class` list, instead of by hash. --shard I runs only shard I (0-based) of the N, for CI jobs
+on separate machines; every job must be given the same suite, timings and change.
 """
 import argparse, concurrent.futures, os, re, shlex, subprocess, sys, threading, time
+import affected
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -35,6 +47,7 @@ CODES = {0: "passed", -2: "failed", -3: "ignored", -4: "skipped"}
 
 
 LAUNCHER = [ROOT + "/apksim"]
+RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
 
 
 def apksim(app, test, extra_args, apksim_opts):
@@ -47,8 +60,11 @@ def apksim(app, test, extra_args, apksim_opts):
     err = []
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
-    lines, seconds, started, block = [], {}, {}, {}
+    lines, seconds, started, block, deps = [], {}, {}, {}, []
     for line in p.stdout:
+        if line.startswith(affected.PREFIX):
+            deps.append(line)
+            continue
         lines.append(line)
         m = re.match(r"INSTRUMENTATION_STATUS: (class|test)=(.*)", line)
         if m:
@@ -62,6 +78,8 @@ def apksim(app, test, extra_args, apksim_opts):
             block = {}
     p.wait()
     reader.join()
+    if deps:
+        RECORDED.append(deps)
     r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
     r.seconds = seconds
     return r
@@ -243,6 +261,32 @@ def one_process(a, passthrough, label=""):
     return results
 
 
+def list_suite(a, passthrough):
+    """The suite as a.e names it, listed by apksim (`-e log true`): [(class, method)], or exits if it cannot be listed."""
+    listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+    why = incomplete(listed, parse(listed.stdout))
+    if why:
+        sys.stderr.write(listed.stderr[-4000:])
+        sys.exit(f"listing the suite failed: {why}")
+    return [(c, m) for c, m, _, _ in parse(listed.stdout)]
+
+
+def run_tests(a, passthrough, listing, tests, label=""):
+    """Runs exactly [tests] (of the suite's [listing]) as one process does (one_process), naming them with -e class
+    (narrow: whole classes where it can), in as many processes one after another as the argument's length limit needs."""
+    remaining, results, part = list(tests), [], 0
+    while remaining:
+        args = narrow(a.e, listing, remaining)
+        names = selectors(dict(args)["class"])
+        covered = {t for t in remaining if t[0] in names or f"{t[0]}#{t[1]}" in names}
+        remaining = [t for t in remaining if t not in covered]
+        part += 1
+        sa = argparse.Namespace(**vars(a))
+        sa.e = args
+        results += one_process(sa, passthrough, label + (f" (part {part})" if part > 1 or remaining else ""))
+    return results
+
+
 def main():
     argv = sys.argv[1:]
     passthrough = []
@@ -258,6 +302,14 @@ def main():
     p.add_argument("--xml")
     p.add_argument("--apksim")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
+    p.add_argument("--record-deps", metavar="FILE")
+    p.add_argument("--affected-by", metavar="FILE")
+    p.add_argument("--changed", nargs="+", action="extend", default=[], metavar="PATH")
+    p.add_argument("--diff", metavar="REV")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--ignore", action="append", default=[], metavar="GLOB")
+    p.add_argument("--timings", action="append", default=[], metavar="XML")
+    p.add_argument("--shard", type=int, metavar="I")
     a = p.parse_args(argv)
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
@@ -267,10 +319,64 @@ def main():
     if a.shards > 1 and a.isolate:
         p.error("--shards splits a suite over processes that each run many tests; --isolate gives every test its own"
                 " process already (use -j for how many at a time)")
-    if a.shards > 1:
+    if a.shard is not None and not 0 <= a.shard < a.shards:
+        p.error("--shard I runs shard I of --shards N: 0 <= I < N")
+    if a.record_deps and a.affected_by:
+        p.error("--record-deps records the whole suite; run it without --affected-by")
+    if (a.changed or a.diff) and not a.affected_by:
+        p.error("--changed and --diff need --affected-by DEPS (a file --record-deps wrote)")
+    if a.record_deps:
+        passthrough = ["--jvm", "-Dapksim.deps=true"] + passthrough
+
+    listing, selected = None, None  # selected: the tests to run, when not every test a.e names
+    if a.affected_by:
+        doc = affected.read_deps(a.affected_by)
+        if not (a.changed or a.diff):
+            p.error("--affected-by needs --changed PATH... or --diff REV")
+        changed = affected.changed_files(a.changed, a.diff, a.repo)
+        try:  # classes the recorded build did not have (new files): from the APKs as they are now
+            now = affected.source_map([a.app, a.test], doc["packages"])
+        except OSError as e:  # (with --apksim the APKs may be named for another file system)
+            print(f"could not read the APKs' classes here ({e}): only the recorded build's are known", file=sys.stderr)
+            now = {}
+        classes, notes = affected.affected_classes(doc, changed, now, a.ignore)
+        if classes is None:
+            print(f"running every test: {notes}", file=sys.stderr)
+        else:
+            for n in notes:
+                print("  " + n, file=sys.stderr)
+            listing = list_suite(a, passthrough)
+            selected, unknown = affected.select(doc, listing, classes)
+            print(f"{len(selected)} of {len(listing)} tests affected by {len(changed)} changed files"
+                  + (f" ({unknown} of them new or not recorded)" if unknown else ""), file=sys.stderr)
+    timings = affected.read_timings(a.timings)
+    if a.shards > 1 and (timings or selected is not None):
+        # Shards by measured time (or, without timings, by count), each named with -e class.
+        if any(k in ("numShards", "shardIndex") for k, _ in a.e):
+            p.error("--shards sets which tests each shard runs itself")
+        if listing is None:
+            listing = list_suite(a, passthrough)
+        lists, totals = affected.balance(selected if selected is not None else listing, timings, a.shards)
+        which = range(a.shards) if a.shard is None else [a.shard]
+        print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
+              + ", ".join(f"{totals[i]:.0f} s" for i in range(a.shards))
+              + ("" if a.shard is None else f"; running shard {a.shard}"), file=sys.stderr)
+
+        def balanced(i):
+            start = time.time()
+            got = run_tests(a, passthrough, listing, lists[i], f" (shard {i + 1} of {a.shards})") if lists[i] else []
+            print(f"  shard {i + 1} of {a.shards}: {len(got)} tests in {time.time() - start:.1f} s", file=sys.stderr)
+            return got
+
+        with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
+            for got in pool.map(balanced, which):
+                results += got
+    elif a.shards > 1:
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets -e numShards and shardIndex itself")
-        print(f"{a.shards} shards, one process each, all at once", file=sys.stderr)
+        which = range(a.shards) if a.shard is None else [a.shard]
+        print(f"{a.shards} shards, one process each, " + ("all at once" if a.shard is None else f"running shard {a.shard}"),
+              file=sys.stderr)
 
         def shard(i):
             sa = argparse.Namespace(**vars(a))
@@ -280,11 +386,14 @@ def main():
             print(f"  shard {i + 1} of {a.shards}: {len(got)} tests in {time.time() - start:.1f} s", file=sys.stderr)
             return got
 
-        with concurrent.futures.ThreadPoolExecutor(a.shards) as pool:
-            for got in pool.map(shard, range(a.shards)):
+        with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
+            for got in pool.map(shard, which):
                 results += got
     elif not a.isolate:
-        results = one_process(a, passthrough)
+        results = run_tests(a, passthrough, listing, selected) if selected is not None else one_process(a, passthrough)
+    elif selected is not None:
+        tests = selected
+        print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
         tests = [(c, m) for c, m, _, _ in parse(listed.stdout)]
@@ -294,6 +403,7 @@ def main():
             results.append(("(listing)", "incomplete", "failed", why + ":\n" + listed.stderr[-4000:], None))
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
+    if a.isolate:
         def one(t):
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
@@ -330,6 +440,11 @@ def main():
                     f.write("<skipped/>")
                 f.write("</testcase>\n")
             f.write("</testsuite>\n")
+    if a.record_deps:
+        affected.write_deps(a.record_deps, RECORDED, [a.app, a.test])
+    if selected is not None and not selected:
+        print("no test is affected by the change", file=sys.stderr)
+        sys.exit(0)
     sys.exit(1 if failed or not results else 0)
 
 
