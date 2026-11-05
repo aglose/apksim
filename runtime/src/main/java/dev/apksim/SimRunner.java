@@ -88,7 +88,8 @@ public final class SimRunner extends RobolectricTestRunner {
     return new HelperTestRunner(bootstrapped) {
       @Override
       protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
-        return Bundles.wrap(super.methodInvoker(method, test));
+        org.junit.Test t = method.getAnnotation(org.junit.Test.class);
+        return Bundles.wrap(super.methodInvoker(method, test), t == null ? org.junit.Test.None.class : t.expected());
       }
     };
   }
