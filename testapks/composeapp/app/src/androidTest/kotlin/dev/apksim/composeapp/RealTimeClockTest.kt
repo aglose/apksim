@@ -2,6 +2,7 @@ package dev.apksim.composeapp
 
 import android.animation.ValueAnimator
 import android.os.Build
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
@@ -17,6 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.concurrent.thread
 
 /**
  * Timed UI as on a device: a banner that closes itself after 5 s, shown while an animation runs, is still there when
@@ -53,6 +55,37 @@ class RealTimeClockTest {
       val goneMs = (System.nanoTime() - shownAt) / 1_000_000
       assertTrue("the banner closed after $goneMs ms, not 5 s", goneMs >= 4_900)
     }
+  }
+
+  /** A timeout loop on the main thread that reads only elapsedRealtime: no animation, no looper, the clock still moves. */
+  @Test
+  fun elapsedRealtimeMovesWhileTheMainThreadPollsIt() {
+    assumeTrue(!onApksim || InstrumentationRegistry.getArguments().getString("realtimeClock") == "true")
+    val start = SystemClock.elapsedRealtime()
+    val giveUp = System.nanoTime() + 5_000_000_000L  // real time: so a frozen clock fails the test instead of hanging it
+    while (SystemClock.elapsedRealtime() - start < 300 && System.nanoTime() < giveUp) {
+      // spin, as a polling loop that never sleeps or idles does
+    }
+    assertTrue("elapsedRealtime stood still for 5 s", SystemClock.elapsedRealtime() - start >= 300)
+  }
+
+  /** Two threads sleeping a second each take about a second, and each sees its own second pass. */
+  @Test
+  fun concurrentSleepsOverlap() {
+    assumeTrue(!onApksim || InstrumentationRegistry.getArguments().getString("realtimeClock") == "true")
+    val seen = LongArray(2)
+    val startNanos = System.nanoTime()
+    val sleepers = (0..1).map { i ->
+      thread {
+        val before = SystemClock.uptimeMillis()
+        SystemClock.sleep(1_000)
+        seen[i] = SystemClock.uptimeMillis() - before
+      }
+    }
+    sleepers.forEach { it.join() }
+    val tookMs = (System.nanoTime() - startNanos) / 1_000_000
+    assertTrue("two 1 s sleeps took $tookMs ms", tookMs < 1_700)
+    seen.forEachIndexed { i, ms -> assertTrue("sleeper $i saw $ms ms pass", ms >= 990) }
   }
 
   private fun bannerShown(): Boolean = try {

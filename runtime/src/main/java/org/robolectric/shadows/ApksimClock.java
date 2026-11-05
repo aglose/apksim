@@ -16,6 +16,11 @@ public final class ApksimClock {
     ShadowPausedSystemClock.addStaticListener(listener::accept);
   }
 
+  /** The simulated elapsed realtime in nanoseconds, as Robolectric keeps it. */
+  public static long elapsedRealtimeNanos() {
+    return ShadowPausedSystemClock.elapsedRealtimeNanos();
+  }
+
   /** The simulated uptime in nanoseconds, as Robolectric keeps it. */
   public static long uptimeNanos() {
     return ShadowPausedSystemClock.uptimeNanos();
