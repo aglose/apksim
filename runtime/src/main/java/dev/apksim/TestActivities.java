@@ -605,9 +605,12 @@ public final class TestActivities {
       if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
       org.robolectric.Robolectric.buildActivity(cls, start).setup();
       if (below != null && !top.isFinishing() && !top.isDestroyed()) below.stop();
-    } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-      System.err.println("[apksim] starting " + info.name + ": " + e);
+    } catch (ReflectiveOperationException | LinkageError e) {
+      // No such class: on a device the start fails in the app's own call.
+      throw new IllegalStateException("starting " + info.name + ": " + e, e);
     }
+    // An exception from the new activity's onCreate/onStart/onResume propagates to the app's startActivity call, as a
+    // device's crash would end the test; a clear-task start then stops before destroying the old task (below).
   }
 
   /**

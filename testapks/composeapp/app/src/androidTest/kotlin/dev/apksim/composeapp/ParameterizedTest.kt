@@ -22,6 +22,12 @@ class ParameterizedTest(private val size: String, private val count: Int) {
     assertEquals(size.length, count)
   }
 
+  /** @Parameterized.BeforeParam ran for this set, with its values, before its tests (JUnit 4.13's per-parameter setup). */
+  @Test
+  fun beforeParamRanForThisSet() {
+    assertEquals(size, beforeParamFor)
+  }
+
   /** It runs where every other test does: the app's main looper is there and an activity can be launched. */
   @Test
   fun eachParameterSetRunsInTheTestEnvironment() {
@@ -35,5 +41,20 @@ class ParameterizedTest(private val size: String, private val count: Int) {
     @JvmStatic
     @Parameterized.Parameters(name = "{0}")
     fun data(): Collection<Array<Any>> = listOf(arrayOf("phone", 5), arrayOf("tablet", 6))
+
+    /** The set the last @BeforeParam ran for; @AfterParam clears it, so a set that skipped it would see null. */
+    @Volatile var beforeParamFor: String? = null
+
+    @JvmStatic
+    @Parameterized.BeforeParam
+    fun beforeParam(size: String, count: Int) {
+      beforeParamFor = size
+    }
+
+    @JvmStatic
+    @Parameterized.AfterParam
+    fun afterParam() {
+      beforeParamFor = null
+    }
   }
 }

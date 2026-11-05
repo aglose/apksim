@@ -44,6 +44,37 @@ public final class SimParameterized extends Suite {
   }
 
   /**
+   * One parameter set, between its @Parameterized.BeforeParam and @AfterParam methods (JUnit 4.13's per-parameter
+   * callbacks: public static, with no arguments or the set's values), as JUnit's Parameterized runs them. They run
+   * around the set's SimRunner, so not inside its test environment (which each test sets up and resets).
+   */
+  @Override
+  protected void runChild(Runner child, org.junit.runner.notification.RunNotifier notifier) {
+    Object[] values = child instanceof ForParameters p ? p.values : new Object[0];
+    try {
+      callbacks(Parameterized.BeforeParam.class, values);
+    } catch (Throwable t) {
+      notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+      return;
+    }
+    try {
+      super.runChild(child, notifier);
+    } finally {
+      try {
+        callbacks(Parameterized.AfterParam.class, values);
+      } catch (Throwable t) {
+        notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+      }
+    }
+  }
+
+  private void callbacks(Class<? extends java.lang.annotation.Annotation> kind, Object[] values) throws Throwable {
+    for (FrameworkMethod m : getTestClass().getAnnotatedMethods(kind)) {
+      m.invokeExplosively(null, m.getMethod().getParameterCount() == 0 ? new Object[0] : values);
+    }
+  }
+
+  /**
    * Only the children: each is a SimRunner, which runs the class's @BeforeClass, @AfterClass and @ClassRule inside the
    * test environment. Suite's own class block would run them once more, outside it, where an instrumentation-dependent
    * fixture fails. (So they run once per parameter set, not once for the class as JUnit's Parameterized does.)
@@ -71,7 +102,7 @@ public final class SimParameterized extends Suite {
   /** One parameter set: a SimRunner whose test instance gets the set's values, built in the test environment. */
   static final class ForParameters extends SimRunner {
     /** The set's values, from the one @Parameters call the suite made: the factory is not called again per test. */
-    private final Object[] values;
+    final Object[] values;
     private final String name;
 
     ForParameters(Class<?> klass, Object[] values, String name) throws InitializationError {

@@ -625,7 +625,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
   the translator (`TestActivities.instrumentationContext`).
 - JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child
-  (`SimParameterized`), so a constructor can read the instrumentation's arguments.
+  (`SimParameterized`), so a constructor can read the instrumentation's arguments. `@Parameters` is called once;
+  `@BeforeParam`/`@AfterParam` run around each set. Not yet: `@Parameters` itself runs before the test environment
+  exists (a factory reading the instrumentation's arguments or the app's resources fails), class fixtures run once
+  per set rather than once, and the test APK's context is published after the Application's onCreate (an Application
+  or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back (Robolectric called back with
   nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
   (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
