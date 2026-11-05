@@ -28,7 +28,10 @@ public final class Snapshot {
     return animate && !ON;
   }
 
-  /** A View's caret (android.widget.Editor) rendered whenever it is visible, not only in the blink's "on" half. */
+  /**
+   * A View's caret (android.widget.Editor) rendered whenever it is visible, not only in the blink's "on" half, and
+   * no blink scheduled.
+   */
   @Implements(className = "android.widget.Editor", isInAndroidSdk = false)
   public static class ShadowSteadyCaret {
     @RealObject private Object real;
@@ -36,6 +39,15 @@ public final class Snapshot {
     @Implementation
     protected boolean shouldRenderCursor() {
       return reflector(EditorReflector.class, real).isCursorVisible();
+    }
+
+    /**
+     * No blink timer either: Editor.makeBlink only posts its Blink runnable (an invalidate every 500 ms, which would
+     * keep `settle` from ever answering) when this is true, and removes it otherwise.
+     */
+    @Implementation
+    protected boolean shouldBlink() {
+      return false;
     }
 
     @ForType(className = "android.widget.Editor")

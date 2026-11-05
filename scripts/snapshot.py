@@ -262,10 +262,18 @@ class Worker:
             if ctx["spec"].get("clock"):
                 self.expect(f"clock {ctx['spec']['clock']}")
             self.expect("restart" + (f" {screen['open']}" if screen.get("open") else ""))
-            settled = self.expect("settle")
-            for step in screen.get("steps", []):
-                settled = self.expect(step)
-                if not step.startswith("settle"):
+            # A settle after the restart and after each step, unless the screen's next step is its own settle (with a
+            # longer limit, say), which then replaces it.
+            steps = screen.get("steps", [])
+            explicit = [x.split()[0] == "settle" for x in steps] + [False]
+            settled = None
+            if not explicit[0]:
+                settled = self.expect("settle")
+            for i, step in enumerate(steps):
+                reply = self.expect(step)
+                if explicit[i]:
+                    settled = reply
+                elif not explicit[i + 1]:
                     settled = self.expect("settle")
             self.expect(f"shot {staged}")
             shutil.move(staged, actual)
@@ -437,6 +445,12 @@ def main():
     state = os.environ.get("APKSIM_HOME") or (os.path.expanduser("~/.apksim") if os.path.exists(
         os.path.join(ROOT, "work", "release")) else os.path.join(ROOT, "work"))
     out = os.path.abspath(opts["out"] or os.path.join(state, "snapshots", time.strftime("%Y%m%d-%H%M%S")))
+    # OUT's actual/, golden/ and diff/ are emptied below: never where the goldens are (a downloaded report's own
+    # golden/ copy given back as --goldens, or --out inside the golden folder).
+    real_out, real_goldens = os.path.realpath(out), os.path.realpath(goldens)
+    if os.path.commonpath([real_out, real_goldens]) in (real_out, real_goldens):
+        fail(f"--out {out} and the golden folder {goldens} overlap: put the report elsewhere (a copy of the goldens"
+             " from a report can be used by copying it out first)")
     for d in ("actual", "golden", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)

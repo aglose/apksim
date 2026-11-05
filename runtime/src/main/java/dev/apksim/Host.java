@@ -360,6 +360,7 @@ public class Host {
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) top.pause().stop();
     while (!stack.isEmpty()) stack.pop().destroy();
+    controls.results().clear();
     pendingScript.clear();
     intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     start(cls, intent);

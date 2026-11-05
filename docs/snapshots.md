@@ -24,7 +24,8 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
   combinations). Instances write captures and difference maps to a temporary folder, moved into OUT by the script:
   the control protocol splits on whitespace, and on the Mac the launcher's sandbox lets the app write under the home
   folder only in apksim's own state folder. So OUT and GOLDENS can be anywhere, spaces included.
-- `--out DIR` (default `work/snapshots/<time>`, `~/.apksim/snapshots/<time>` for a release): `report.html`, `actual/`, `golden/` (copies, so the folder is a
+- `--out DIR` (default `work/snapshots/<time>`, `~/.apksim/snapshots/<time>` for a release; it must not overlap the
+  golden folder, since its `actual/`, `golden/` and `diff/` are emptied first): `report.html`, `actual/`, `golden/` (copies, so the folder is a
   self-contained CI artifact), `diff/`, `results.json`, and each instance's log.
 - `--screens a,b`: only these screens.
 - Options after `--` go to every `apksim` launch.
@@ -59,8 +60,9 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
   combinations are the cross product, minus each `exclude` entry (an entry matches a combination when every key it
   names matches).
 - A screen is `name` plus `open` (a deep link the app's activity is started with) and/or `steps` (control commands
-  run in order after it starts: `tap`, `tap-text`, `swipe X1 Y1 X2 Y2 MS`, `type`, `key`, `back`, `scroll`...; a
-  bare `settle` waits for the UI between steps). `only` limits a screen to some values of an axis.
+  run in order after it starts: `tap`, `tap-text`, `swipe X1 Y1 X2 Y2 MS`, `type`, `key`, `back`...). A default
+  `settle` follows the restart and every step; a step that is itself `settle ...` (a longer limit for a slow screen,
+  `settle 30000 1000`) replaces the one before it. `only` limits a screen to some values of an axis.
 - `tolerance`: a pixel differs when any channel differs by more than `delta` (0-255); a capture matches when the
   share of differing pixels is at most `pixels` (a fraction; `pixels: 12` with a value of 1 or more is a count).
   The spec's `tolerance` is the default; a screen's own replaces it. The default is exact.
@@ -84,7 +86,8 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
    `appearance`, `locale`, `fontscale` (configuration changes; cheaper than a relaunch, and `restart` follows anyway).
 3. **The clock** is set to `clock` (`clock ISO`) before each screen's restart, so a screen that shows the time or
    date shows the same one in every run.
-4. **Steps**, then **`settle`**, then `shot`.
+4. **Steps**, each followed by **`settle`**, then `shot`. `restart` also drops pending activity results and closes a
+   file picker a previous screen left open.
 
 ## Determinism
 
@@ -97,7 +100,7 @@ what removes it:
 | When to take the shot | `settle [MAX_MS] [QUIET_MS]`, below; no fixed sleeps. |
 | Wall clock | `clock ISO\|epoch-ms\|real`: the app's wall clock starts at that instant and runs on from it. `--clock ISO` sets it before the Application and its startup providers run (and at each test's setup in `--instrument` runs). A `Clock` the app keeps reads the current setting at every read. The translator routes app and library calls to `System.currentTimeMillis()`, `java.time` `X.now()`, `Clock.systemUTC/systemDefaultZone()`, `new Date()` and `Calendar.getInstance(...)` through `SimClock`; framework code reads it through the WallClock interceptor. A screen showing seconds still changes; minutes do not unless a screen's steps take a minute. |
 | Time zone | `--timezone` at launch (the JDK's and android.icu's zone). |
-| Caret blink | `--snapshot`: the top activity's window has focus, as on a device (apksim's windows otherwise have none, and Compose and Views draw a caret only in a focused window), Compose's `CursorAnimationState` is made with blinking off (the caret stays drawn, as Compose's own tests have it; matched by class name, so debug builds only: R8 renames it) and View `Editor`s render the caret whenever it is visible, not in the blink's "on" half only. |
+| Caret blink | `--snapshot`: the top activity's window has focus, as on a device (apksim's windows otherwise have none, and Compose and Views draw a caret only in a focused window), Compose's `CursorAnimationState` is made with blinking off (the caret stays drawn, as Compose's own tests have it; matched by class name, so debug builds only: R8 renames it) and View `Editor`s render the caret whenever it is visible, not in the blink's "on" half only, with no blink timer (whose invalidations every 500 ms would keep `settle` from answering). |
 | GPU paths | `--snapshot` sets `apksim.cpuLayerEffects`, `apksim.gpuBitmaps=false` and `apksim.noGpu` (AGSL paint shaders on CPU Skia): Metal's float math and sampling differ from Skia's in the last bits, and Linux has no Metal. Screens with endless shader animation never settle; leave them out. |
 | Window size, density | the `device` command sets both; `shot` takes app pixels at device resolution, independent of the Mac window's zoom or display. |
 | Fonts | apksim's own fonts in `work/runtime` on every platform, not the host's. |

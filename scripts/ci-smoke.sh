@@ -73,9 +73,13 @@ snapshot changed.json --out changed > "$SNAP/changed.log" 2>&1 || status=$?
 python3 - "$SNAP/changed/results.json" "$status" <<'EOF'
 import json, sys
 results = json.load(open(sys.argv[1]))["results"]
-failed = sorted({r["screen"] for r in results if r["status"] != "match"})
 assert sys.argv[2] == "1", f"a changed screen should exit 1, not {sys.argv[2]}"
-assert failed == ["home"], f"only the changed screen should fail: {failed}"
-print(f"changed screen caught: {sum(r['screen'] == 'home' for r in results)} home captures differ, the rest match")
+home = [r for r in results if r["screen"] == "home"]
+rest = [r for r in results if r["screen"] != "home"]
+assert home and all(r["status"] == "mismatch" for r in home), \
+    f"every home capture should be a mismatch: {[(r['combo'], r['status'], r['detail']) for r in home]}"
+assert rest and all(r["status"] == "match" for r in rest), \
+    f"every other capture should match: {[(r['screen'], r['combo'], r['status']) for r in rest if r['status'] != 'match']}"
+print(f"changed screen caught: all {len(home)} home captures differ, all {len(rest)} others match")
 EOF
 echo "smoke test passed"
