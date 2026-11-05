@@ -2535,6 +2535,12 @@ final class MethodTranslator implements Opcodes {
       // Compose's caret blinks unless made with animate=false; --snapshot holds it (dev.apksim.Snapshot).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Snapshot", "cursorBlink", "(Z)Z", false);
     }
+    if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())
+        && ("(Ljava/lang/Object;J)V".equals(m.descriptor()) || "(J)V".equals(m.descriptor()))) {
+      // runBlocking's event loop parks here; on the main thread in a test run, the main queue runs meanwhile.
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "parkNanos", m.descriptor(), false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);
       return;

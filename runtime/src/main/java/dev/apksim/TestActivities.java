@@ -108,6 +108,40 @@ public final class TestActivities {
     pumpFor(total > Long.MAX_VALUE - nanos ? Long.MAX_VALUE : total + nanos);
   }
 
+  /**
+   * LockSupport.parkNanos from app or test code (MethodTranslator). kotlinx.coroutines' runBlocking parks its thread
+   * this way between events, so a suite's polling helper, runBlocking { while (!done) delay(poll) } on the main
+   * thread, held it while the app's main-thread work (a Dispatchers.Main continuation, a postDelayed callback) waited
+   * behind it, and the poll timed out. As with sleep: in a test run on the main thread, outside a dispatch, the main
+   * queue runs, and the clock moves on by the real time the park took, as a device's would while its test thread
+   * waits. A park may return early, so this parks one short step and lets the caller check again.
+   */
+  public static void parkNanos(Object blocker, long nanos) {
+    if (nanos > 0 && pumpsWhileSleeping()) {
+      parkStep(nanos);
+      return;
+    }
+    java.util.concurrent.locks.LockSupport.parkNanos(blocker, nanos);
+  }
+
+  public static void parkNanos(long nanos) {
+    if (nanos > 0 && pumpsWhileSleeping()) {
+      parkStep(nanos);
+      return;
+    }
+    java.util.concurrent.locks.LockSupport.parkNanos(nanos);
+  }
+
+  private static void parkStep(long nanos) {
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    main.idle();
+    long start = System.nanoTime();
+    java.util.concurrent.locks.LockSupport.parkNanos(Math.min(nanos, 2_000_000L));
+    long elapsed = System.nanoTime() - start;
+    // With --realtime-clock the clock already follows real time (the next idle's clock read catches it up).
+    if (elapsed > 0 && !RealTimeClock.requested()) main.idleFor(java.time.Duration.ofNanos(elapsed));
+  }
+
   private static boolean pumpsWhileSleeping() {
     return testRun() && Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
   }
