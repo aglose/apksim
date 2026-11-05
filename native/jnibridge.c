@@ -36,7 +36,12 @@ typedef struct {
 
 static void fill_args(jmethodID mid, AVaList *v, jvalue *out, int max) {
   char *sig = NULL;
-  (*jvmti)->GetMethodName(jvmti, mid, NULL, &sig, NULL);
+  if ((*jvmti)->GetMethodName(jvmti, mid, NULL, &sig, NULL) != JVMTI_ERROR_NONE || sig == NULL) {
+    // JVMTI's live phase is over: the VM is exiting. A native thread calling into Java now (WebRTC's, still starting
+    // when a short test run ends) read sig + 1 and crashed the exit with SIGSEGV, failing a run whose tests passed.
+    // The JVM blocks a thread that comes back from native during exit; do the same until the process is gone.
+    for (;;) pause();
+  }
   const char *p = sig + 1;
   int n = 0;
   while (*p != ')' && n < max) {
