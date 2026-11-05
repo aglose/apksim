@@ -30,15 +30,21 @@ final class AdbLog {
 
   private AdbLog() {}
 
-  static void install() {
+  /**
+   * Starts keeping the log (once; later calls only put the tee back in front at once). The adb device does it at
+   * start, a test run too (a test's `logcat -c`/`-d` through UiAutomation), and a running instance on the first
+   * `logcat` a shell command asks for.
+   */
+  static synchronized void install() {
+    if (tee != null) {
+      intercept();
+      return;
+    }
     tee = new PrintStream(new TeeOut(), true, StandardCharsets.UTF_8);
+    intercept();
     Thread t = new Thread(() -> {
       while (true) {
-        PrintStream current = ShadowLog.stream;
-        if (current != tee) {
-          delegate = current;
-          ShadowLog.stream = tee;
-        }
+        intercept();
         try {
           Thread.sleep(250);
         } catch (InterruptedException e) {
@@ -48,6 +54,14 @@ final class AdbLog {
     }, "adb-log");
     t.setDaemon(true);
     t.start();
+  }
+
+  private static synchronized void intercept() {
+    PrintStream current = ShadowLog.stream;
+    if (current != tee) {
+      delegate = current;
+      ShadowLog.stream = tee;
+    }
   }
 
   static synchronized void clear() {

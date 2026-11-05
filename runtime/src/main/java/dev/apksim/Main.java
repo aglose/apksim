@@ -24,6 +24,8 @@ public final class Main {
         }
       })));
     }
+    String zone = System.getProperty("apksim.timezone");
+    if (zone != null) java.time.ZoneId.of(zone);  // an unknown zone stops the launch here (SimRunner applies it)
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");

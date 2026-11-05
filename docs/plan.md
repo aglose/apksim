@@ -99,7 +99,8 @@ which no longer dies: what it starts (availability checks, geofencing) now runs.
   not a snap), and the log's only exception is the missing Health Connect service.
 
 **0f. What a test run still lacks, when a suite needs it:** accessibility events for UiAutomator
-(`executeAndWaitForEvent` reports a window change only), its `executeShellCommand` (empty output) and global actions
+(`executeAndWaitForEvent` reports a window change only), shell commands beyond the in-process shell's (input,
+screencap) and global actions
 other than Back; starting an activity that is not running (only recorded, as Robolectric does) and CLEAR_TOP;
 `adb shell am instrument` of a test APK (a self-targeting one runs live, see AGENTS.md "adb device"); the test APK's
 own resources and context.
