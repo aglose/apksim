@@ -353,9 +353,10 @@ Each has its spec, checks and measurements in its own doc. Three are in 0.9.0; t
 - **Screenshot tests across devices and settings** (docs/snapshots.md, PR #42): `scripts/snapshot.py`, golden
   screenshots across devices, dark mode, locales and font scales, with a diff report. 80 captures byte-identical over
   five runs on the Mac and in the image; goldens are made in the image.
-- **Hermetic network** (docs/network.md, PR #41, not merged yet: its own release after 0.9.0): HAR record and replay of an app's HTTP(S) (OkHttp,
-  HttpURLConnection and what is built on them), and offline, 3G, lossy, latency and bandwidth conditions. Not covered:
-  Cronet and Ktor CIO (their own TLS), raw sockets.
+- **Hermetic network** (docs/network.md, PR #41, its own release after 0.9.0): HAR record and replay of an app's
+  HTTP(S) (OkHttp, minified or not, HttpURLConnection and what is built on them; the app's own TLS trust and its own
+  proxy kept), and offline, 3G, lossy, latency and bandwidth conditions down to DNS, sockets and ConnectivityManager.
+  Not covered: Cronet's native stack and Ktor CIO (their own TLS and sockets), NIO channels, WebSocket replay.
 - **Browser previews of builds** (docs/serve.md, PR #40): `apksim serve`, an instance per browser tab streaming
   JPEG frames, with touch, keys and device controls; loopback unless a token is set.
 
@@ -390,7 +391,7 @@ Failure bundles (phase 5, PRs #38 and #43) shipped with them in 0.9.0.
 | 10 Health Connect | medium | - |
 | 11 GLES/native audio | large | an app that needs them |
 | 12 Failure bundles | built; the owner's suites' cost check left | - |
-| Phase 6 features | three in 0.9.0; network in PR #41 | a release for #41 |
+| Phase 6 features | done: three in 0.9.0, network in the release after it | - |
 
 4 and 7 both touch `gpu/` and should not run in parallel. What is left without the owner: 0h, and 0f/0g/9-11 when
 an app needs them. 0a's CI job and 0c's patches are changes to the owner's app.

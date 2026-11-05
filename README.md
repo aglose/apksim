@@ -141,7 +141,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
 | | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
 | | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
-| | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead |
+| | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
 | Automation | `--control PORT\|auto` | Open the [control channel](#automation) |
 | | `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
 | | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
@@ -386,9 +386,15 @@ apksim --network-profile 3g app.apk                      # or offline, lossy, la
 ```
 
 The recording is a standard HAR 1.2 file, so browser dev tools and proxies can read it, and it can be edited by hand.
-`Authorization`, `Cookie` and `Set-Cookie` are redacted by default (`--network-redact` adds names). A replayed request
-must match on method, URL and body (`--network-match`, `--network-ignore-query` for cache busters). One that doesn't
-gets a 599, is logged with the closest recorded entry, and in a test run fails the test.
+`Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are redacted by default (`--network-redact` adds
+names). A replayed request must match on method, URL and body (`--network-match` adds headers, `--network-ignore-query`
+and `--network-ignore-header` for cache busters). One that doesn't gets a 599, is logged with the closest recorded
+entry, and in a test run fails the test.
+
+It works on the app's own HTTP stack, through the JDK calls R8 never renames, so minified builds record too, and the
+app's TLS stays the app's: its trust manager (pins in it included) decides when recording, and the server's real
+certificate chain is replayed. To record against a local fixture server for an address compiled into the app, use
+`--network-host api.example.com=127.0.0.1:8443` and, for its throwaway certificate, `--network-trust cert.pem`.
 
 Offline is offline the whole way down. DNS fails, connections fail, open ones close, and `ConnectivityManager` loses
 its network, so the app's network callbacks fire as on a device. `network offline`, `network 3g` and the others switch
@@ -396,8 +402,9 @@ conditions while the app runs (also from the Features > Network menu, `adb shell
 command).
 
 Recorded and replayed: OkHttp 3-5 and everything on it (Retrofit, Ktor's OkHttp engine, Coil), `HttpURLConnection`,
-Ktor's Android engine and Volley. Not recorded: Cronet and Ktor CIO, which do their own TLS (offline still applies), and
-raw sockets. Details and measurements: [docs/network.md](docs/network.md).
+Ktor's Android engine and Volley, including requests through the app's own proxy. WebSockets are relayed while
+recording but not replayed. Not recorded: Cronet's native stack and Ktor CIO, which bring their own TLS and sockets
+(offline still applies to them), and NIO channels. Details and measurements: [docs/network.md](docs/network.md).
 
 ## Linux and Docker
 
