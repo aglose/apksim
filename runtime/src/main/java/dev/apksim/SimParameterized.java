@@ -60,10 +60,10 @@ public final class SimParameterized extends Suite {
         setUp = true;
       } catch (org.junit.internal.AssumptionViolatedException a) {
         // An assumption skips the set, as JUnit's Parameterized does; its cleanup still runs (finally).
-        notifier.fireTestAssumptionFailed(new org.junit.runner.notification.Failure(child.getDescription(), a));
+        eachTest(child, notifier, a, true);
         setUp = false;
       } catch (Throwable t) {
-        notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+        eachTest(child, notifier, t, false);
         setUp = false;
       }
       if (setUp) super.runChild(child, notifier);
@@ -76,6 +76,33 @@ public final class SimParameterized extends Suite {
           notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
         }
       }
+    }
+  }
+
+  /**
+   * A set that did not run, reported as each of its tests skipped ([assumption]) or failed: every test gets a start,
+   * the result and a finish, so the run accounts for all of them (instrument.py would otherwise see fewer results
+   * than numtests and run them again).
+   */
+  private static void eachTest(Runner child, org.junit.runner.notification.RunNotifier notifier, Throwable why, boolean assumption) {
+    java.util.List<org.junit.runner.Description> leaves = new ArrayList<>();
+    collectTests(child.getDescription(), leaves);
+    for (org.junit.runner.Description d : leaves) {
+      notifier.fireTestStarted(d);
+      if (assumption) {
+        notifier.fireTestAssumptionFailed(new org.junit.runner.notification.Failure(d, why));
+      } else {
+        notifier.fireTestFailure(new org.junit.runner.notification.Failure(d, why));
+      }
+      notifier.fireTestFinished(d);
+    }
+  }
+
+  private static void collectTests(org.junit.runner.Description d, java.util.List<org.junit.runner.Description> out) {
+    if (d.isTest()) {
+      out.add(d);
+    } else {
+      for (org.junit.runner.Description c : d.getChildren()) collectTests(c, out);
     }
   }
 
