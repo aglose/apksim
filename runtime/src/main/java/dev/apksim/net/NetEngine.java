@@ -115,6 +115,28 @@ final class NetEngine {
     });
   }
 
+  /** Exchanges whose answer is going to the client but not yet recorded. */
+  final AtomicInteger inFlight = new AtomicInteger();
+
+  /**
+   * The last save, on the way out: first up to 2 s for exchanges still being written down (the app may already have
+   * read an answer the engine is still decoding), so none is lost when the process ends right after it.
+   */
+  void flushAtExit() {
+    long until = System.currentTimeMillis() + 2000;
+    synchronized (inFlight) {
+      while (inFlight.get() > 0 && System.currentTimeMillis() < until) {
+        try {
+          inFlight.wait(50);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+    flushNow();
+  }
+
   synchronized void flushNow() {
     if (Net.mode != Net.Mode.RECORD) return;
     try {
@@ -278,6 +300,11 @@ final class NetEngine {
         return;
       }
 
+      session(pending, proxied);
+    }
+
+    /** From a new connection (or a tunnel just opened through the app's proxy): TLS if asked, then the exchanges. */
+    void session(byte[] pending, boolean proxied) throws IOException {
       if (pending == null) {
         // Next: a TLS hello from FakeTlsSocket, or the first request.
         pending = nextLine();
@@ -517,13 +544,18 @@ final class NetEngine {
           if (colon <= 0) continue;
           req.headers.add(new String[] {h.substring(0, colon).trim(), h.substring(colon + 1).trim()});
         }
-        if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
-          cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
-          cout.flush();
+        if (req.method.equals("CONNECT") && !proxied) {
+          // The app opening a tunnel through its own HTTP proxy (it connected to the proxy through here).
+          tunnel(req);
+          return;
         }
         String authority = req.header("Host");
         if (authority == null) authority = (tls ? tlsHost : host) + (port == (tls ? 443 : 80) ? "" : ":" + port);
-        req.url = proxied ? req.target : (tls ? "https://" : "http://") + authority + req.target;
+        // An absolute target is the URL: through the engine as a proxy (proxied), or through the app's own proxy
+        // (it reached the proxy through here), which then gets the request as it was.
+        boolean absolute = req.target.startsWith("http://") || req.target.startsWith("https://");
+        req.url = absolute ? req.target : (tls ? "https://" : "http://") + authority + req.target;
+        req.toProxy = absolute && !proxied;
         if (proxied) req.target = URI.create(req.target).getRawPath() + (URI.create(req.target).getRawQuery() == null ? "" : "?" + URI.create(req.target).getRawQuery());
         Conditions c = Net.conditions;
         if (c.offline()) return;
@@ -535,6 +567,118 @@ final class NetEngine {
         exchanges++;
         if (!keep || "close".equalsIgnoreCase(req.header("Connection"))) return;
         line = readLineBytes(cin);
+      }
+    }
+
+    /**
+     * CONNECT through the app's own proxy: recording, the proxy's answer goes back to the app; replaying, the engine
+     * answers 200 itself. Once open, the tunnel is a new session: TLS for the name the app gives, then requests,
+     * recorded under their own https:// URLs (so they replay as direct requests too).
+     */
+    void tunnel(Request req) throws IOException {
+      String hp = req.target;
+      int colon = hp.lastIndexOf(':');
+      if (Net.mode == Net.Mode.RECORD) {
+        req.toProxy = true;
+        uout.write(requestHead(req, false));
+        uout.flush();
+        Response r = readResponseHead(readLineBytes(uin));
+        cout.write(r.head);
+        cout.flush();
+        if (r.status != 200) return;
+      } else {
+        cout.write("HTTP/1.1 200 Connection established\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+      }
+      host = colon > 0 ? hp.substring(0, colon) : hp;
+      tlsHost = host;
+      port = colon > 0 ? Integer.parseInt(hp.substring(colon + 1)) : 443;
+      tls = false;
+      exchanges = 0;
+      session(null, false);
+    }
+
+    /** The server's next status line, read on a thread of its own while the request body goes up. */
+    final class Answer {
+      private final java.util.concurrent.CompletableFuture<byte[]> line = new java.util.concurrent.CompletableFuture<>();
+
+      Answer() {
+        Thread.ofVirtual().name("apksim-net-answer").start(() -> {
+          try {
+            line.complete(readLineBytes(uin));
+          } catch (Throwable t) {
+            line.completeExceptionally(t);
+          }
+        });
+      }
+
+      boolean arrived() {
+        return line.isDone();
+      }
+
+      /** The line, waiting at most ms (0: as long as it takes); null if it has not come by then. */
+      byte[] get(long ms) throws IOException {
+        try {
+          return ms > 0 ? line.get(ms, java.util.concurrent.TimeUnit.MILLISECONDS) : line.get();
+        } catch (java.util.concurrent.TimeoutException e) {
+          return null;
+        } catch (java.util.concurrent.ExecutionException e) {
+          throw e.getCause() instanceof IOException io ? io : new IOException(e.getCause());
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new java.io.InterruptedIOException();
+        }
+      }
+    }
+
+    /**
+     * The body's way to the server: once the server has answered (an early 401 or 413), the rest is read from the
+     * client and hashed but no longer sent; a write the server refuses after answering ends the sending the same way.
+     */
+    final class EarlyStop extends OutputStream {
+      private final OutputStream out;
+      private final Answer answer;
+      boolean stopped;
+
+      EarlyStop(OutputStream out, Answer answer) {
+        this.out = out;
+        this.answer = answer;
+      }
+
+      @Override
+      public void write(int b) throws IOException {
+        write(new byte[] {(byte) b}, 0, 1);
+      }
+
+      @Override
+      public void write(byte[] b, int off, int len) throws IOException {
+        if (stopped || (stopped = answer.arrived())) return;
+        try {
+          out.write(b, off, len);
+        } catch (IOException e) {
+          if (answer.get(1000) == null) throw e;  // a failure with no answer: the server went away
+          stopped = true;
+        }
+      }
+
+      @Override
+      public void flush() throws IOException {
+        if (!stopped) out.flush();
+      }
+    }
+
+    /** Without blocking: whether the client has sent something (bytes stay to be read) or closed its side. */
+    boolean clientSent() throws IOException {
+      client.setSoTimeout(1);
+      try {
+        cin.mark(1);
+        cin.read();
+        cin.reset();
+        return true;
+      } catch (SocketTimeoutException e) {
+        return false;
+      } finally {
+        if (!client.isClosed()) client.setSoTimeout(0);
       }
     }
 
@@ -559,30 +703,76 @@ final class NetEngine {
       req.bodyTruncated = cap.truncated();
     }
 
+    /** Set once the server's answer starts on its way to the client, until the exchange is recorded or fails. */
+    boolean answering;
+
     boolean record(Request req) throws IOException {
+      try {
+        return recordExchange(req);
+      } finally {
+        if (answering) {
+          answering = false;
+          if (inFlight.decrementAndGet() == 0) synchronized (inFlight) { inFlight.notifyAll(); }
+        }
+      }
+    }
+
+    boolean recordExchange(Request req) throws IOException {
       long t0 = System.nanoTime();
       long sent = t0;
-      byte[] head = requestHead(req);
-      byte[] statusLine;
+      boolean expect = "100-continue".equalsIgnoreCase(req.header("Expect"));
+      byte[] statusLine = null;
+      Response early = null;  // a final answer that came before the body (to Expect: 100-continue)
+      boolean cutShort = false;  // the server answered while the body was still going up
       try {
         // A kept-alive connection the server has closed meanwhile is replaced before the request goes out. Once it
         // has gone out, a failure ends the client's connection too, and the client's own retry policy decides: a
         // request sent again from here could reach the server twice.
         if (up == null || up.isClosed() || (exchanges > 0 && upstreamPeek() < 0)) reconnect();
-        uout.write(head);
-        streamRequestBody(req, uout);
+        uout.write(requestHead(req, expect));
         uout.flush();
-        sent = System.nanoTime();
-        statusLine = readLineBytes(uin);
+        // The server's answer is read on its own thread from here, so one that comes early is heard. Meanwhile only
+        // this thread reads the client: the answer's reader must not look at it (watching off until the body is up).
+        watching = false;
+        Answer answer = new Answer();
+        if (expect) {
+          // As a client would: the body waits for the server's 100 Continue or its final answer, unless the client
+          // stops waiting and sends it anyway. Either way, whatever arrives is passed on as it arrives.
+          while (!answer.arrived() && !clientSent()) Thread.sleep(5);
+          if (answer.arrived()) {
+            Response r = readResponseHead(answer.get(0));
+            if (r.status == 100) {
+              cout.write(r.head);
+              cout.flush();
+              answer = new Answer();
+            } else {
+              early = r;  // no body follows a final answer
+            }
+          }
+        }
+        if (early == null) {
+          EarlyStop sink = new EarlyStop(uout, answer);
+          streamRequestBody(req, sink);
+          sink.flush();
+          cutShort = sink.stopped;
+          sent = System.nanoTime();
+          watching = true;
+          statusLine = answer.get(0);
+        }
       } catch (Exception e) {
         Net.log("network record: " + req.method + " " + req.url + " failed: " + e);
         return false;
+      } finally {
+        watching = true;
       }
-      if (statusLine == null) {
+      if (early == null && statusLine == null) {
         Net.log("network record: " + req.method + " " + req.url + ": the server closed the connection without answering");
         return false;
       }
-      Response resp = readResponseHead(statusLine);
+      Response resp = early != null ? early : readResponseHead(statusLine);
+      // From here the client may have the answer before it is recorded: saving on the way out waits for it.
+      answering = true;
+      inFlight.incrementAndGet();
       while (resp.status >= 100 && resp.status < 200 && resp.status != 101) {
         cout.write(resp.head);
         resp = readResponseHead(readLineBytes(uin));
@@ -601,6 +791,7 @@ final class NetEngine {
       e.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
       e.reqSha = req.bodySha;
       e.reqTruncated = req.bodyTruncated;
+      e.expectAnswered = early != null;
       e.status = resp.status;
       e.statusText = resp.text;
       e.respHeaders = redacted(resp.headers);
@@ -649,7 +840,9 @@ final class NetEngine {
       e.receive = (done - waited) / 1_000_000;
       e.timeMs = (done - t0) / 1_000_000;
       add(e);
-      if ("close".equalsIgnoreCase(resp.header("Connection"))) keep = false;
+      // After an answer that came before the whole body was sent, the server's side of the exchange is not where
+      // a next request could follow.
+      if ("close".equalsIgnoreCase(resp.header("Connection")) || early != null || cutShort) keep = false;
       return keep;
     }
 
@@ -661,6 +854,18 @@ final class NetEngine {
     }
 
     boolean replay(Request req) throws IOException {
+      if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
+        // Recorded answered before its body (the server refused it at once): answered the same way, no body read.
+        Recording.Entry early = Net.recording.findExpectAnswered(req.method, req.url, req.headers);
+        if (early != null) {
+          Conditions.sleep(Net.conditions.rtt());
+          replayed.incrementAndGet();
+          writeRecorded(req, early);
+          return false;
+        }
+        cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+      }
       streamRequestBody(req, OutputStream.nullOutputStream());
       Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.bodySha);
       Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
@@ -687,6 +892,12 @@ final class NetEngine {
         return true;
       }
       replayed.incrementAndGet();
+      writeRecorded(req, e);
+      return true;
+    }
+
+    /** A recorded response, as the client asked for it (gzip only if it accepts it), at the download bandwidth. */
+    void writeRecorded(Request req, Recording.Entry e) throws IOException {
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network replay: " + e.status + " " + e.method + " " + e.url);
       byte[] body = e.respBody;
       String accept = req.header("Accept-Encoding");
@@ -718,7 +929,6 @@ final class NetEngine {
       cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
       if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(body, 0, body.length);
       cout.flush();
-      return true;
     }
 
     void nonHttp(byte[] consumed) throws IOException {
@@ -772,6 +982,8 @@ final class NetEngine {
     byte[] body;
     String bodySha;
     boolean hasBody, bodyTruncated;
+    /** For the app's own proxy (an absolute target, or CONNECT, that reached the proxy through here). */
+    boolean toProxy;
 
     String header(String name) {
       for (String[] h : headers) if (h[0].equalsIgnoreCase(name)) return h[1];
@@ -791,11 +1003,14 @@ final class NetEngine {
     }
   }
 
-  /** The request as the server gets it: origin-form target, no proxy headers. */
-  static byte[] requestHead(Request req) {
+  /**
+   * The request as the server gets it: Expect kept only when the server is to answer it (recording), proxy headers
+   * only when the server is the app's own proxy.
+   */
+  static byte[] requestHead(Request req, boolean expect) {
     StringBuilder b = new StringBuilder(req.method).append(' ').append(req.target).append(' ').append(req.version).append("\r\n");
     for (String[] h : req.headers) {
-      if (h[0].equalsIgnoreCase("Proxy-Connection") || h[0].equalsIgnoreCase("Expect")) continue;
+      if (h[0].equalsIgnoreCase("Proxy-Connection") && !req.toProxy || h[0].equalsIgnoreCase("Expect") && !expect) continue;
       b.append(h[0]).append(": ").append(h[1]).append("\r\n");
     }
     return b.append("\r\n").toString().getBytes(StandardCharsets.ISO_8859_1);
@@ -986,7 +1201,12 @@ final class NetEngine {
             off += n;
           }
         }
-        if (outSocket != null && !(outSocket instanceof SSLSocket) && !outSocket.isClosed()) outSocket.shutdownOutput();
+        // The end of one direction: a plain socket half-closes, as TCP lets it; TLS cannot, so its socket closes (the
+        // client's side gave up, with or without a WebSocket close frame), which also ends the other direction.
+        if (outSocket != null && !outSocket.isClosed()) {
+          if (outSocket instanceof SSLSocket) outSocket.close();
+          else outSocket.shutdownOutput();
+        }
       } catch (IOException | InterruptedException ignored) {
         try {
           if (outSocket != null) outSocket.close();

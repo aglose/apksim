@@ -44,6 +44,8 @@ final class Recording {
     /** The SHA-256 of the whole request body (reqBody may be only its first MAX_BODY bytes: reqTruncated). */
     String reqSha;
     boolean reqTruncated;
+    /** Answered before its body was sent (Expect: 100-continue and a final status): the body is not part of it. */
+    boolean expectAnswered;
     int status;
     String statusText = "";
     List<String[]> respHeaders = new ArrayList<>();
@@ -150,6 +152,19 @@ final class Recording {
     Entry last = list.get(list.size() - 1);
     last.served++;
     return last;
+  }
+
+  /** A recorded answer given before the body (Expect: 100-continue) to this request, or null. */
+  synchronized Entry findExpectAnswered(String method, String url, List<String[]> headers) {
+    List<Entry> list = byKey.get(key(method, url, headers, EMPTY_SHA));
+    if (list == null) return null;
+    for (Entry e : list) {
+      if (e.expectAnswered) {
+        e.served++;
+        return e;
+      }
+    }
+    return null;
   }
 
   /** The recorded entry most like a request that matched none, and what differs; null if nothing is close. */
@@ -260,6 +275,7 @@ final class Recording {
       req.put("postData", post);
       req.put("_bodySha256", e.reqSha != null ? e.reqSha : sha256(e.reqBody));
     }
+    if (e.expectAnswered) req.put("_apksimExpectAnswered", true);
     req.put("headersSize", -1);
     req.put("bodySize", e.reqBody == null ? 0 : e.reqBody.length);
 
@@ -347,6 +363,7 @@ final class Recording {
       e.method = (String) req.get("method");
       e.url = (String) req.get("url");
       e.reqHeaders = readHeaders(req.get("headers"));
+      e.expectAnswered = Boolean.TRUE.equals(req.get("_apksimExpectAnswered"));
       Map<String, Object> post = (Map<String, Object>) req.get("postData");
       if (post != null && post.get("text") != null) {
         String t = (String) post.get("text");

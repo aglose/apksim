@@ -87,11 +87,13 @@ public final class Net {
         int eq = h.indexOf('=');
         if (eq < 0) throw new IllegalArgumentException("--network-host takes HOST=ADDR[:PORT], not " + h);
         String to = h.substring(eq + 1);
+        // ADDR, ADDR:PORT, [IPV6] or [IPV6]:PORT; a bare IPv6 address has no port.
         int colon = to.lastIndexOf(':');
-        boolean hasPort = colon > 0 && !to.endsWith("]") && to.indexOf(':') == colon;
+        boolean hasPort = to.startsWith("[") ? colon > to.indexOf(']') : colon > 0 && to.indexOf(':') == colon;
         // Port 0: keep the port the app connects to (NetEngine.target).
-        hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(hasPort ? to.substring(0, colon) : to,
-            hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
+        String addr = hasPort ? to.substring(0, colon) : to;
+        if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.substring(1, addr.length() - 1);
+        hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(addr, hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
       }
       String t = System.getProperty("apksim.networkTrust");
       if (t != null) trust = Path.of(t);
@@ -233,7 +235,7 @@ public final class Net {
 
   /** Writes the recording now; on the way out (Standby.halt). */
   public static void flush() {
-    if (engine != null) engine.flushNow();
+    if (engine != null) engine.flushAtExit();
   }
 
   // ------------------------------------------------------------------ control command
@@ -293,7 +295,7 @@ public final class Net {
     }
     if (!active) {
       s.connect(a, timeout);
-      direct.add(s);  // for a `network offline` later
+      directly(s, isa);  // for a `network offline` later
       return;
     }
     Conditions c = conditions;
@@ -312,7 +314,7 @@ public final class Net {
         throw new ConnectException(msg);
       }
       s.connect(a, timeout);
-      direct.add(s);
+      directly(s, isa);
       return;
     }
     if (c.refuse()) {
@@ -357,6 +359,12 @@ public final class Net {
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
     if (!active) return tracked(f.createSocket(host, port));
+    return createSocket(f, new InetSocketAddress(host, port), host);
+  }
+
+  /** dest: where to connect (an address the caller chose stays chosen); host: the name for TLS and the log. */
+  private static Socket createSocket(SocketFactory f, InetSocketAddress dest, String host) throws IOException {
+    int port = dest.getPort();
     Socket s;
     try {
       s = f instanceof SSLSocketFactory ? new Socket() : f.createSocket();
@@ -372,22 +380,37 @@ public final class Net {
         throw new ConnectException(msg);
       }
       if (mode == Mode.RECORD) log("network record: " + host + ":" + port + " connected directly by " + f.getClass().getName() + ": not recorded");
-      return tracked(f.createSocket(host, port));
+      return tracked(dest.isUnresolved() ? f.createSocket(host, port) : f.createSocket(dest.getAddress(), port));
     }
-    connect(s, new InetSocketAddress(host, port), 0);
+    connect(s, dest, 0);
     if (f instanceof SSLSocketFactory ssl && !(s instanceof SSLSocket)) return createSocket(ssl, s, host, port, true);
     return s;
   }
 
   /** A socket connected without the engine: remembered, so going offline closes it. */
-  private static Socket tracked(Socket s) {
-    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) direct.add(s);
+  private static Socket tracked(Socket s) throws IOException {
+    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) directly(s, a);
     return s;
+  }
+
+  /**
+   * Registers a socket connected without the engine, then looks at the conditions: a connect that finished while
+   * `network offline` was taking its snapshot of these sockets is closed here instead of staying usable.
+   */
+  private static void directly(Socket s, InetSocketAddress a) throws IOException {
+    direct.add(s);
+    if (conditions.offline()) {
+      direct.remove(s);
+      s.close();
+      throw new ConnectException("failed to connect to " + a + ": connect failed: ENETUNREACH (Network is unreachable)");
+    }
   }
 
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
     if (!active) return tracked(f.createSocket(address, port));
-    return createSocket(f, address.getHostName(), port);
+    // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
+    InetSocketAddress dest = new InetSocketAddress(address, port);
+    return createSocket(f, dest, dest.getHostString());
   }
 
   public static Socket createSocket(SSLSocketFactory f, Socket s, String host, int port, boolean autoClose) throws IOException {
@@ -410,10 +433,11 @@ public final class Net {
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
     String host = u.getHost();
-    if (!active || !(proto.equals("http") || proto.equals("https"))
-        || bypass(InetSocketAddress.createUnresolved(host, 1)) || isLiteralLoopback(host)) {
+    if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, 1))
+        || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
+    if (!active) return trackedTls(p == null ? u.openConnection() : u.openConnection(p));
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
     // (no lookup to fail) would otherwise still reach the server.
     if (conditions.offline()) return OfflineConnection.of(u);
@@ -421,7 +445,7 @@ public final class Net {
       // The app's own proxy is its route out: kept, so the request goes through it as it would have (not recorded or
       // shaped). Replaying, nothing goes out, so the engine answers as for any other request.
       log("network: " + u.getHost() + " through the app's proxy " + p + ": not " + (mode == Mode.RECORD ? "recorded" : "shaped"));
-      return u.openConnection(p);
+      return trackedTls(u.openConnection(p));
     }
     URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
     if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
@@ -429,6 +453,42 @@ public final class Net {
       https.setHostnameVerifier((name, session) -> true);
     }
     return c;
+  }
+
+  /**
+   * A JDK HttpsURLConnection that does not go through the engine (the layer off, or the app's own proxy): its socket
+   * factory is wrapped so the socket under its TLS is remembered, and `network offline` closes it, a download in
+   * progress included. (Plain http through the JDK makes its socket out of reach; Android apps rarely use cleartext.)
+   */
+  private static URLConnection trackedTls(URLConnection c) {
+    if (c instanceof HttpsURLConnection https && !(https.getSSLSocketFactory() instanceof TrackingFactory)) {
+      https.setSSLSocketFactory(new TrackingFactory(https.getSSLSocketFactory()));
+    }
+    return c;
+  }
+
+  /** Remembers each socket its TLS is layered on (or opened by it), as Net.connect does for app sockets. */
+  static final class TrackingFactory extends SSLSocketFactory {
+    private final SSLSocketFactory inner;
+
+    TrackingFactory(SSLSocketFactory inner) {
+      this.inner = inner;
+    }
+
+    @Override public String[] getDefaultCipherSuites() { return inner.getDefaultCipherSuites(); }
+    @Override public String[] getSupportedCipherSuites() { return inner.getSupportedCipherSuites(); }
+
+    @Override
+    public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
+      tracked(s);
+      return inner.createSocket(s, host, port, autoClose);
+    }
+
+    @Override public Socket createSocket() throws IOException { return inner.createSocket(); }
+    @Override public Socket createSocket(String h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }
+    @Override public Socket createSocket(String h, int p, InetAddress l, int lp) throws IOException { return tracked(inner.createSocket(h, p, l, lp)); }
+    @Override public Socket createSocket(InetAddress h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }
+    @Override public Socket createSocket(InetAddress h, int p, InetAddress l, int lp) throws IOException { return tracked(inner.createSocket(h, p, l, lp)); }
   }
 
   private static boolean isLiteralLoopback(String host) {

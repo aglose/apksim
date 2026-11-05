@@ -22,7 +22,7 @@ remote route answered the same way every run, and its offline and slow paths tes
                              test run the test fails) or respond (599 only)
 --network-replay-timing T    none (default: answer at once) or recorded (wait as long as the server took)
 --network-host H=ADDR[:PORT] send connections for host H to ADDR (and PORT) instead: a fixture server for an address
-                             compiled into the app (repeatable, comma-separated)
+                             compiled into the app (repeatable, comma-separated; IPv6 as [::1] or [::1]:8443)
 --network-trust FILE         also trust this PEM/DER certificate on the way out (recording against a local HTTPS
                              server with a self-signed certificate)
 ```
@@ -142,14 +142,29 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
 - A redirected connection tells the engine the address the app chose as well as the name (custom DNS, one address
   of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name.
+  `SocketFactory.createSocket(InetAddress, port)` keeps the address it is given too (no new lookup).
+- The app's own proxy, reached through a redirected socket (OkHttp with `.proxy(...)`): an absolute-form request is
+  recorded under its URL and forwarded to the proxy as it was; a CONNECT is forwarded too (replaying, the engine
+  answers 200 itself), and the tunnel then starts over (TLS for the name the app gives, then requests, recorded
+  under their own https:// URLs, so they replay as direct requests as well).
+- Uploads: the server's answer is read on its own thread while the body goes up, so one that answers early (401,
+  413, then closes) is heard and relayed; the rest of the body is read from the app and hashed but not sent.
+  `Expect: 100-continue` is passed on: the body waits for the server's 100 or its final answer, or until the app
+  sends it anyway. A final answer before the body is recorded as such (`request._apksimExpectAnswered`) and
+  replayed the same way, without reading a body.
 - `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
   request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
+- An HttpsURLConnection that does not go through the engine (the layer off, the app's own proxy) gets its socket
+  factory wrapped, so the socket under its TLS is remembered and `network offline` closes it, a download in progress
+  included. Plain http through the JDK's own HttpURLConnection is out of reach that way.
+- A direct connect that finishes while `network offline` is closing connections is closed as it registers.
 - Every read from a server that waits (for the answer to begin, or in the middle of a body) checks every 500 ms
   whether the client is still there: an app that times out and closes its connection ends the server's too, so a
   server that stalls does not keep a worker and both sockets for good. A TLS handshake with the server gets the app's
   connect timeout.
 - The recording is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
-  (Ctrl-C, the app's `System.exit`).
+  (Ctrl-C, the app's `System.exit`). The last save waits up to 2 s for exchanges whose answer has reached the app but
+  is still being written down (a large gzip body decodes after it is relayed). A save that fails is retried.
 - Offline, `URL.openConnection` returns a connection that fails when used (UnknownHostException for a name,
   ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive sockets could otherwise still carry a
   request. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
@@ -173,7 +188,8 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
 
 - OkHttp 3, 4, 5, minified or not, and anything on it (Retrofit, Ktor's OkHttp engine, Coil, Glide's OkHttp
   integration): recorded and replayed. WebSockets (an upgrade) are relayed while recording but not recorded (the 101
-  is left out of the file too); replaying one is an unmatched request.
+  is left out of the file too); replaying one is an unmatched request. When the app leaves a relayed TLS connection
+  (a WebSocket closed without a close frame), the server's side is closed too: TLS cannot half-close.
 - `HttpURLConnection` / `HttpsURLConnection`, Ktor's Android engine, Volley's HurlStack, `URL.readText()`: recorded and
   replayed.
 - Ktor CIO: uses NIO `SocketChannel` and its own TLS; not hooked (conditions: offline DNS only).
