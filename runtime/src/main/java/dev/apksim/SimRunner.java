@@ -176,6 +176,36 @@ public final class SimRunner extends RobolectricTestRunner {
     }
 
     /**
+     * The test's configuration, with the Application the test APK's runner asks for in newApplication
+     * (RunnerApplication) when it is not the manifest's. Set here, where Robolectric makes the Application: its global
+     * configuration is fixed when the first runner is made, before the probe runs.
+     */
+    private static ConfigurationStrategy.Configuration withRunnerApplication(ConfigurationStrategy.Configuration c) {
+      Class<? extends android.app.Application> chosen = RunnerApplication.chosen;
+      Config base = c.get(Config.class);
+      if (chosen == null || base == null || !Config.Builder.isDefaultApplication(base.application())) return c;
+      Config changed = new Config.Builder(base).setApplication(chosen).build();
+      java.util.Map<Class<?>, Object> map = new java.util.HashMap<>(c.map());
+      map.put(Config.class, changed);
+      return new ConfigurationStrategy.Configuration() {
+        @Override
+        public <T> T get(Class<T> key) {
+          return key.cast(map.get(key));
+        }
+
+        @Override
+        public java.util.Collection<Class<?>> keySet() {
+          return map.keySet();
+        }
+
+        @Override
+        public java.util.Map<Class<?>, Object> map() {
+          return map;
+        }
+      };
+    }
+
+    /**
      * The device's time zone, `--timezone ZONE` (-Dapksim.timezone): the JDK's default and android.icu's. ICU keeps
      * the zone it first worked out, and a standby may have formatted a date before the launch named one, so its cached
      * zone is dropped too and taken again from the JDK's. Here, inside the sandbox, rather than in Main: ICU's classes
@@ -197,7 +227,7 @@ public final class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       applyTimeZone();
-      super.setUpApplicationState(testName, config, manifest);
+      super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
