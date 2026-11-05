@@ -11,7 +11,7 @@ within 30 s, fails.
 Commands are drive.py's control commands (tap, swipe, type, key, back, nodes, shot, ...) plus:
   wait MS         sleep
   expect TEXT     the last command's reply must contain TEXT (e.g. after `nodes`), else the instance fails here
-  until MS TEXT   repeat `nodes` until its reply contains TEXT, at most MS milliseconds, else fail
+  until MS TEXT   repeat `nodes` until a reply received within MS milliseconds contains TEXT, else fail
   quit            ends the instance; it fails unless the process then exits with status 0
 `{i}` in a command is the instance's number (0..N-1), e.g. `shot work/fleet/{i}.png` or `type user{i}`.
 
@@ -135,11 +135,10 @@ class Instance:
                 ms, _, text = rest.partition(" ")
                 deadline = time.time() + int(ms) / 1000
                 while True:
-                    # A reply shows the screen when its request arrived: a match counts only if it was asked for in
-                    # time (one sent after the deadline would hide a timeout under load).
-                    asked = time.time()
+                    # A match counts only if its reply came by the deadline: the instance may answer a request sent in
+                    # time with a screen from after it (its UI reads queue behind the main thread's work).
                     last = self.send("nodes")
-                    if text in last and asked <= deadline:
+                    if text in last and time.time() <= deadline:
                         break
                     if time.time() > deadline:
                         return f"{raw!r}: not on screen after {ms} ms: {last[:300]!r}"
