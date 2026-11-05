@@ -82,7 +82,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
     a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
-    them, and UiAutomator (see "Instrumentation tests").
+    them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
   - `gl/`: GLES20/30 and EGL14 on a real GLES (ANGLE) for offscreen rendering in test runs (see "GLES").
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
@@ -116,7 +116,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   docs/parallel.md), `instrument.py` (androidTest suites, JUnit XML; `--apksim CMD` runs the Linux image instead;
   `instrument-check.py` checks how it handles a process that dies, against a stand-in apksim),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
+  bundles, see "Instrumentation tests"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
@@ -418,7 +419,24 @@ and the tests with no result run in a new process, as `-e class` (whole classes 
 Class#method, chunked under Linux's 128 KB argument limit) with the other `-e` arguments kept. No test runs twice; a
 new process that adds no result (a crash at startup) ends the run, the rest reported failed as not run.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
-the process, one ignores interrupts past its timeout, and the tests after each still pass. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
+the process, one ignores interrupts past its timeout, and the tests after each still pass.
+**Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
+failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
+which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot
+is), `windows.txt`, `nodes.txt` (as the `nodes` command), `logcat.txt` (that test's lines only: `AdbLog` is installed
+for the run), `threads.txt`, `looper.txt` (the main queue and androidx.test's activity stages) and `repro.sh` (the
+launch narrowed to `-e class` that test, from `-Dapksim.argv`). Where it captures matters: listeners hear of a
+failure after `@After` and rules have closed the activity, so `SimRunner`'s helper runner wraps `methodInvoker`
+(the body), Espresso's failure handler is wrapped at each test's start (a scenario closed by `use {}` is gone by the
+time the exception leaves the body; a test that catches an Espresso failure and passes loses its bundle), the
+listener takes the rest (@Before/@After/rule failures, classes with their own `@RunWith`), and `FailOnTimeout`'s
+watchdog writes the failure, threads and log before it ends the process. A capture never runs the main queue or moves
+the clock. `--bundles-on all`, `--bundles-max N` (default 50 full bundles a process), `--bundles-redact REGEX`.
+`instrument.py` adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
+`[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
+`--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,
+for the host's `instrument.py`. `scripts/bundle-check.py` (CI) checks it with the test app's `FailureBundle*Test`
+classes, which fail only with `-e failOnPurpose true` (`watchdog` for the one that ends the process). Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
 sandbox brought a second main thread to a main Looper already bound to the first), and `SimTestEnvironment`, whose
 reset between tests asks the JVM's loader which classes are loaded (Robolectric casts its own loader to
 `ClassTracker`, which `FlatLoader` bypasses). Every test runs on API 36 whatever the APK targets (`SimRunner.OneSdk`:

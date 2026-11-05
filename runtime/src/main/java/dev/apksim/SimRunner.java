@@ -77,6 +77,22 @@ public final class SimRunner extends RobolectricTestRunner {
     super(c, INJECTOR);
   }
 
+  /**
+   * Robolectric's helper runner, with the test method wrapped for failure bundles ({@link Bundles#wrap}): a failure is
+   * captured there, before @After methods and rules tear the activity down. Unchanged when bundles are off.
+   */
+  @Override
+  protected org.robolectric.internal.SandboxTestRunner.HelperTestRunner getHelperTestRunner(Class<?> bootstrapped)
+      throws InitializationError {
+    if (!Bundles.ON) return super.getHelperTestRunner(bootstrapped);
+    return new HelperTestRunner(bootstrapped) {
+      @Override
+      protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
+        return Bundles.wrap(super.methodInvoker(method, test));
+      }
+    };
+  }
+
   /** Robolectric's interceptors, with the framework's wall clock replaced by the real one ({@link WallClock}). */
   @Override
   protected Collection<Interceptor> findInterceptors() {

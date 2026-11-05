@@ -1,0 +1,133 @@
+package dev.apksim.composeapp
+
+import android.app.AlertDialog
+import android.util.Log
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.test.core.app.ActivityScenario
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.assertion.ViewAssertions.matches
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withText
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.locks.LockSupport
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.Timeout
+import org.junit.runner.Description
+import org.junit.runner.RunWith
+import org.junit.runners.Parameterized
+import org.junit.runners.model.Statement
+
+/**
+ * Tests that fail on purpose, for checking apksim's failure bundles (`--bundles DIR`, scripts/bundle-check.py). They run
+ * only with `-e failOnPurpose true` (the timeout that ends the process only with `-e failOnPurpose watchdog`) and are
+ * skipped otherwise, on a device and in normal runs. Each logs a marker, so a check can tell that a bundle's log holds
+ * only its own test's lines.
+ */
+private fun failOnPurpose(kind: String = "true") =
+  assumeTrue(InstrumentationRegistry.getArguments().getString("failOnPurpose") == kind)
+
+private fun marker(name: String) = Log.i("BundleTest", "marker $name")
+
+@RunWith(AndroidJUnit4::class)
+class FailureBundleTest {
+  @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+
+  /** Passes: no bundle (without --bundles-on all). */
+  @Test
+  fun a_passes() {
+    failOnPurpose()
+    marker("a_passes")
+    compose.onNodeWithText("FAB clicks: 0").assertIsDisplayed()
+  }
+
+  /** A Compose assertion failing in the test body: the screen still shows "FAB clicks: 0". */
+  @Test
+  fun b_composeAssertionFails() {
+    failOnPurpose()
+    marker("b_composeAssertionFails")
+    compose.onNodeWithText("FAB clicks: 99").assertIsDisplayed()
+  }
+
+  /** A failure while a dialog is open over the activity: two windows, the dialog's title in the tree. */
+  @Test
+  fun c_failsWithDialogOpen() {
+    failOnPurpose()
+    marker("c_failsWithDialogOpen")
+    compose.runOnUiThread {
+      AlertDialog.Builder(compose.activity).setTitle("Bundle dialog").setMessage("Open while the test fails").show()
+    }
+    compose.waitForIdle()
+    fail("failing with a dialog open")
+  }
+}
+
+/** Plain Espresso in an ActivityScenario: NoMatchingViewException from the test body. */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleEspressoTest {
+  @Test
+  fun noMatchingView() {
+    failOnPurpose()
+    marker("noMatchingView")
+    ActivityScenario.launch(MainActivity::class.java).use {
+      onView(withText("No view has this text")).check(matches(isDisplayed()))
+    }
+  }
+}
+
+/** The test passes and its @After fails: only the listener sees it, after teardown. */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleAfterTest {
+  @After
+  fun tearDown() {
+    if (InstrumentationRegistry.getArguments().getString("failOnPurpose") == "true") fail("@After fails on purpose")
+  }
+
+  @Test
+  fun afterFails() {
+    marker("afterFails")
+  }
+}
+
+/** A class with its own runner (not SimRunner): its failures reach only the listener. Names with commas. */
+@RunWith(Parameterized::class)
+class FailureBundleParameterizedTest(private val a: Int, private val b: Int) {
+  companion object {
+    @JvmStatic
+    @Parameterized.Parameters(name = "{index}: {0}, {1}")
+    fun cases() = listOf(arrayOf(1, 1), arrayOf(1, 2))
+  }
+
+  @Test
+  fun sameNumbers() {
+    failOnPurpose()
+    marker("sameNumbers $a $b")
+    assertEquals(a, b)
+  }
+}
+
+/** Ignores interrupts past its timeout, so the watchdog ends the process: run alone, with -e failOnPurpose watchdog. */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleWatchdogTest {
+  @Test
+  fun ignoresInterrupts() {
+    failOnPurpose("watchdog")
+    marker("ignoresInterrupts")
+    val stuck = object : Statement() {
+      override fun evaluate() {
+        while (true) {
+          Thread.interrupted()
+          LockSupport.parkNanos(50_000_000)
+        }
+      }
+    }
+    Timeout.millis(300).apply(stuck, Description.EMPTY).evaluate()
+  }
+}

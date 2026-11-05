@@ -97,6 +97,12 @@ jobs:
           assert sorted(sharded) == sorted(whole), f"results differ: {set(sharded) ^ set(whole)}"
           print(f"{len(sharded)} tests in 3 shards, as in one process")
           EOF
+      # Failure bundles (--bundles): the test app's FailureBundle*Test classes fail on purpose, and each failure must
+      # leave its screen, tree, log, threads and repro.sh (scripts/bundle-check.py says what it checks).
+      - name: Failure bundles
+        run: |
+          python3 scripts/bundle-check.py app.apk test.apk bundle-check \
+            --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -108,3 +114,4 @@ jobs:
             tests/junit-realtime.xml
             tests/junit-crash.xml
             tests/junit-sharded.xml
+            tests/bundle-check

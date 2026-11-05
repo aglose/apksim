@@ -2,7 +2,7 @@
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
 Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N] [--xml FILE] [-e KEY VALUE]... [--apksim CMD]
-                     [-- APKSIM_OPTION...]
+                     [--bundles DIR [--bundles-local PATH]] [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
@@ -26,8 +26,14 @@ test was running to put that on (it died between tests, at startup or at exit): 
 "incomplete" entry for that process, even when the tests left all pass in the next one.
 --apksim runs another apksim, such as the Linux image: `--apksim "docker run --rm -v $PWD/out:/work apksim:ci"`
 with APP and TEST given relative to the mounted folder (the image's working directory).
+--bundles DIR: failure bundles (apksim's --bundles, docs/plan.md phase 5) in DIR, which every process gets: each
+failing test's screen, tree, log, threads and repro.sh in DIR/<class>/<method>-<hash>/. A test whose process died
+gets failure.txt (if apksim wrote none) and process.txt (exit status, stderr tail). The JUnit XML links each bundle
+(a property, and screen.png as a [[ATTACHMENT|...]] in system-out, relative to the XML), and DIR/index.html shows
+them all. With --apksim, DIR is the path that apksim sees (relative to the mounted folder) and --bundles-local the
+same folder here. apksim's other bundle options (--bundles-on all, --bundles-max N, --bundles-redact REGEX) go after --.
 """
-import argparse, concurrent.futures, os, re, shlex, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, html, os, re, shlex, subprocess, sys, threading, time
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -243,6 +249,85 @@ def one_process(a, passthrough, label=""):
     return results
 
 
+def bundle_folder(c, m):
+    """A test's bundle folder under DIR, as apksim's Bundles.folder names it: <class>/<method>-<8 hex of SHA-256>."""
+    method = None if m in (None, "null") else m
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", method or "class")[:60]
+    h = hashlib.sha256(f"{c}#{method or ''}".encode()).hexdigest()[:8]
+    return os.path.join(c, f"{safe}-{h}")
+
+
+def died(st):
+    """A failure this script reported, not the test: the process ended without the test's result (see one_process)."""
+    return st.startswith(("apksim ", "not run:"))
+
+
+def collect_bundles(local, results):
+    """{(class, method): bundle folder} for the results that have one; writes the notes for tests whose process died."""
+    found = {}
+    for c, m, s, st, _ in results:
+        if c in ("(run)", "(listing)"):
+            continue
+        path = os.path.join(local, bundle_folder(c, m))
+        if s == "failed" and died(st or ""):
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, "process.txt"), "w") as f:
+                f.write(st)
+            if not os.path.exists(os.path.join(path, "failure.txt")):
+                with open(os.path.join(path, "failure.txt"), "w") as f:
+                    f.write(f"test: {c}#{m}\nstatus: failed\ncaptured by: instrument.py (the process gave no result for "
+                            f"this test)\n\n{st}\n")
+        if os.path.isdir(path):
+            found[(c, m)] = path
+    return found
+
+
+def write_index(local, results, bundles):
+    """DIR/index.html: one card per bundle (screen, the failure's first lines, the files), in one self-contained page."""
+    cards = []
+    for c, m, s, st, _ in results:
+        path = bundles.get((c, m))
+        if not path:
+            continue
+        rel = os.path.relpath(path, local)
+        files = sorted(os.listdir(path))
+        captured = ""
+        try:
+            with open(os.path.join(path, "failure.txt")) as f:
+                captured = next((line[len("captured by: "):].strip() for line in f if line.startswith("captured by: ")), "")
+        except OSError:
+            pass
+        first = next((line for line in (st or "").splitlines() if line.strip()), s)
+        img = (f'<a href="{html.escape(rel)}/screen.png"><img loading="lazy" src="{html.escape(rel)}/screen.png" alt=""></a>'
+               if "screen.png" in files else '<div class="noshot">no screen</div>')
+        links = " ".join(f'<a href="{html.escape(rel)}/{html.escape(n)}">{html.escape(n)}</a>' for n in files if n != "screen.png")
+        cards.append(f'<article class="{html.escape(s)}">{img}<div><h2>{html.escape(c.rsplit(".", 1)[-1])}'
+                     f'<span>#{html.escape(m or "")}</span></h2><p class="cls">{html.escape(c)}</p>'
+                     f'<p class="why">{html.escape(first[:300])}</p><p class="meta">{html.escape(s)}'
+                     f'{" · " + html.escape(captured) if captured else ""}</p><p class="files">{links}</p></div></article>')
+    failed = sum(1 for r in results if r[2] == "failed")
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Failure bundles</title><style>
+:root{{--bg:#fafafa;--card:#fff;--fg:#1d1d1f;--dim:#6e6e73;--line:#e3e3e6;--bad:#c0392b;--ok:#2e7d32}}
+@media (prefers-color-scheme: dark){{:root{{--bg:#151517;--card:#1f1f22;--fg:#ececee;--dim:#9a9aa0;--line:#333338;--bad:#ff6b5e;--ok:#7ccf83}}}}
+body{{margin:0;padding:24px 16px;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,system-ui,sans-serif}}
+main{{max-width:1100px;margin:0 auto}} h1{{font-size:20px;margin:0 0 4px}} .sum{{color:var(--dim);margin:0 0 20px}}
+article{{display:flex;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 12px}}
+article img,.noshot{{width:120px;flex:none;border-radius:6px;border:1px solid var(--line)}}
+.noshot{{height:200px;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px}}
+article>div{{min-width:0}} h2{{font-size:16px;margin:0}} h2 span{{color:var(--dim);font-weight:500}}
+.cls,.meta{{color:var(--dim);margin:2px 0;font-size:12px;overflow-wrap:anywhere}}
+.why{{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--bad);margin:8px 0;overflow-wrap:anywhere}}
+.passed .why{{color:var(--ok)}} .files a{{margin-right:10px;color:inherit}}
+@media (max-width:560px){{article{{flex-direction:column}} article img,.noshot{{width:100%;max-width:240px}}}}
+</style></head><body><main><h1>Failure bundles</h1>
+<p class="sum">{len(results)} tests, {failed} failed, {len(cards)} with a bundle</p>
+{"".join(cards) or "<p>No bundles.</p>"}</main></body></html>
+"""
+    with open(os.path.join(local, "index.html"), "w") as f:
+        f.write(page)
+
+
 def main():
     argv = sys.argv[1:]
     passthrough = []
@@ -258,7 +343,12 @@ def main():
     p.add_argument("--xml")
     p.add_argument("--apksim")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
+    p.add_argument("--bundles")
+    p.add_argument("--bundles-local")
     a = p.parse_args(argv)
+    if a.bundles:
+        passthrough = passthrough + ["--bundles", a.bundles]
+        os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
 
@@ -316,7 +406,12 @@ def main():
         print(f"\nFAILED {c}#{m}\n{st}", file=sys.stderr)
     counts = {s: sum(1 for r in results if r[2] == s) for s in sorted({r[2] for r in results})}
     print(f"{len(results)} tests in {time.time() - t0:.1f} s: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
+    bundles = collect_bundles(a.bundles_local or a.bundles, results) if a.bundles else {}
+    if a.bundles:
+        write_index(a.bundles_local or a.bundles, results, bundles)
+        print(f"{len(bundles)} failure bundles: {os.path.join(a.bundles_local or a.bundles, 'index.html')}", file=sys.stderr)
     if a.xml:
+        xml_dir = os.path.dirname(os.path.abspath(a.xml))
         with open(a.xml, "w") as f:
             f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
             f.write(f'<testsuite name="apksim" tests="{len(results)}" failures="{len(failed)}" '
@@ -324,10 +419,18 @@ def main():
             for c, m, s, st, sec in results:
                 f.write(f'  <testcase classname={quoteattr(c or "")} name={quoteattr(m or "")}'
                         + (f' time="{sec:.3f}"' if sec is not None else "") + ">")
+                bundle = bundles.get((c, m))
+                rel = os.path.relpath(bundle, xml_dir) if bundle else None
+                if rel:
+                    f.write(f'<properties><property name="apksim.bundle" value={quoteattr(rel)}/></properties>')
                 if s == "failed":
                     f.write(f"<failure message={quoteattr(st.splitlines()[0] if st else '')}>{escape(st)}</failure>")
                 elif s in ("ignored", "skipped"):
                     f.write("<skipped/>")
+                if rel:
+                    # GitLab's and Jenkins' JUnit attachments: a screenshot shown with the test.
+                    shot = "screen.png" if os.path.exists(os.path.join(bundle, "screen.png")) else "failure.txt"
+                    f.write(f"<system-out>{escape(f'[[ATTACHMENT|{os.path.join(rel, shot)}]]')}</system-out>")
                 f.write("</testcase>\n")
             f.write("</testsuite>\n")
     sys.exit(1 if failed or not results else 0)

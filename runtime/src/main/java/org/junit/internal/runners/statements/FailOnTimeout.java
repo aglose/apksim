@@ -134,6 +134,7 @@ public class FailOnTimeout extends Statement {
           .append(" s after its timeout of ").append(TimeUnit.NANOSECONDS.toMillis(nanos))
           .append(" ms, ignoring interrupts; ending the process (on a device its thread would be abandoned). It is at:\n");
       for (StackTraceElement e : target.getStackTrace()) b.append("\tat ").append(e).append('\n');
+      dev.apksim.Bundles.watchdog(b.toString());  // with --bundles: the failure, threads and log, before the process ends
       System.err.print(b);
       System.err.flush();
       System.out.flush();
