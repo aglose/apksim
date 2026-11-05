@@ -77,6 +77,22 @@ public final class SimRunner extends RobolectricTestRunner {
     super(c, INJECTOR);
   }
 
+  /**
+   * Robolectric's helper runner, with the test method wrapped for failure bundles ({@link Bundles#wrap}): a failure is
+   * captured there, before @After methods and rules tear the activity down. Unchanged when bundles are off.
+   */
+  @Override
+  protected org.robolectric.internal.SandboxTestRunner.HelperTestRunner getHelperTestRunner(Class<?> bootstrapped)
+      throws InitializationError {
+    if (!Bundles.ON) return super.getHelperTestRunner(bootstrapped);
+    return new HelperTestRunner(bootstrapped) {
+      @Override
+      protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
+        return Bundles.wrap(super.methodInvoker(method, test));
+      }
+    };
+  }
+
   /** Robolectric's interceptors, with the framework's wall clock replaced by the real one ({@link WallClock}). */
   @Override
   protected Collection<Interceptor> findInterceptors() {
@@ -235,6 +251,9 @@ public final class SimRunner extends RobolectricTestRunner {
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
       if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
+      // That replaced the log tee failure bundles read (AdbLog): put it back now, not at its watcher's next turn
+      // (250 ms), which a short test can outrun.
+      if (Bundles.ON) AdbLog.install();
       Bundle args = new Bundle();
       String prefix = "apksim.instrument.";
       for (String k : System.getProperties().stringPropertyNames()) {
