@@ -437,7 +437,12 @@ main queue or moves the clock (uptime is read through `ApksimClock`, not SystemC
 advance); a part past its deadline (screen 2 s, others 5 s) has its thread interrupted and is skipped in later bundles;
 a test's first 2,500 log lines are kept as they arrive (`AdbLog.keepHead`), past the ring's 20,000. A bundle's folder is
 emptied before it is written. `--bundles-on all`, `--bundles-max N` (default 50 full bundles a process),
-`--bundles-redact REGEX` (instrument.py applies it to process.txt too).
+`--bundles-redact REGEX` (instrument.py applies it to process.txt and index.html's previews too, with Python's re:
+`\Q...\E` is translated, other syntax must be what both read, and one Python cannot read stops the run before it
+starts). A bundle follows the test's outcome: a different exception ending the test after a handled one rewrites it
+(Espresso's handler throws its own exception for what it got, which counts as the same failure); with
+`--bundles-on all` a test that passed, including one whose class has its own runner or whose body threw what
+`@Test(expected)` expected, ends with a bundle that says passed.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
 `--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,

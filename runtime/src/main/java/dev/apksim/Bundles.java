@@ -76,6 +76,10 @@ public final class Bundles {
   private static boolean writtenFull;
   /** It was written for a body that returned (--bundles-on all): a later failure (@After, a rule) still rewrites it. */
   private static boolean writtenPassed;
+  /** The exception the current bundle describes (null: a test that passed). */
+  private static Throwable writtenFor;
+  /** What Espresso's handler threw for it (its own, friendlier exception): the same failure when it leaves the body. */
+  private static volatile Throwable writtenAlias;
   private static int full;
   /** Parts that ran past their deadline once: skipped in later bundles of this process. */
   private static final java.util.Set<String> TIMED_OUT = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -139,7 +143,13 @@ public final class Bundles {
         } catch (org.junit.internal.AssumptionViolatedException e) {
           throw e;
         } catch (Throwable t) {
-          if (written == null) locked("test body", t, false);  // else Espresso's failure handler already captured it
+          if (written == null) {
+            locked("test body", t, false);
+          } else if (!sameFailure(t, writtenFor) && !sameFailure(t, writtenAlias)) {
+            // Espresso's handler captured a failure the test then handled (caught, or its own handler swallowed it),
+            // and a different one ended the body: the bundle describes this one, with a new screen if there still is one.
+            refresh("test body (an earlier failure was handled)", t, true);
+          }
           throw t;
         }
         if (ALL) locked("test body (passed)", null, true);
@@ -148,26 +158,50 @@ public final class Bundles {
   }
 
   /**
-   * A test that ends well loses a bundle written along the way: a test that expects an Espresso failure and catches it
-   * passes, though the failure handler captured it. (Not with --bundles-on all.)
+   * The test's outcome settles its bundle. Without --bundles-on all, a test that did not fail loses a bundle written
+   * along the way (one that expects an Espresso failure and catches it passes, though the failure handler captured
+   * it; so does an ignored or assumption-skipped one). With it, a test that passed gets a bundle that says so: one it
+   * lacks (a class with its own runner bypasses the body's wrapper), or its body's capture marked passed after all
+   * (the body threw what @Test(expected) expected).
    */
-  static void testFinished(Description d, boolean passed) {
-    if (!ON || !passed || ALL) return;
+  static void testFinished(Description d, boolean passed, boolean failed) {
+    if (!ON || failed) return;
     LOCK.lock();
     try {
       Path w = written;
-      if (w == null || !d.equals(current)) return;
-      written = null;
-      if (writtenFull) full--;
-      writtenFull = false;
-      try {
-        delete(w, true);
-      } catch (IOException e) {
-        System.err.println("[apksim] could not remove the failure bundle of passing test " + d + ": " + e);
+      boolean has = w != null && d.equals(current);
+      if (!ALL || !passed) {
+        if (!has) return;
+        written = null;
+        writtenFor = null;
+        if (writtenFull) full--;
+        writtenFull = false;
+        try {
+          delete(w, true);
+        } catch (IOException e) {
+          System.err.println("[apksim] could not remove the failure bundle of test " + d + ", which did not fail: " + e);
+        }
+        return;
+      }
+      if (!d.equals(current)) return;
+      if (!has) {
+        capture("listener (passed; after the test's teardown)", null, true, true);
+        writtenPassed = true;
+      } else if (!writtenPassed) {
+        capture("listener (passed: what the body threw was expected or handled; screen and tree from then)", null, false, false);
+        writtenPassed = true;
       }
     } finally {
       LOCK.unlock();
     }
+  }
+
+  /** One failure seen twice: the same exception, or one the cause of the other (a handler that wraps what it got). */
+  private static boolean sameFailure(Throwable a, Throwable b) {
+    if (a == null || b == null) return a == b;
+    for (Throwable x = a; x != null; x = x.getCause() == x ? null : x.getCause()) if (x == b) return true;
+    for (Throwable x = b; x != null; x = x.getCause() == x ? null : x.getCause()) if (x == a) return true;
+    return false;
   }
 
   // --- Espresso ---------------------------------------------------------------------------------------------------
@@ -215,13 +249,18 @@ public final class Bundles {
                 default -> "apksim failure bundles around " + inner;
               };
             }
+            boolean captured = false;
             if (m.getName().equals("handle") && args != null && args.length > 0 && args[0] instanceof Throwable t && written == null) {
               locked("Espresso failure handler", t, false);
+              captured = true;
             }
             try {
               m.setAccessible(true);
               return m.invoke(inner, args);
             } catch (java.lang.reflect.InvocationTargetException e) {
+              // The handler throws an exception of its own (DefaultFailureHandler's friendlier one): when that leaves
+              // the body it is the failure already captured, not another.
+              if (captured) writtenAlias = e.getCause();
               throw e.getCause();
             }
           });
@@ -240,9 +279,13 @@ public final class Bundles {
     LOCK.lock();
     try {
       if (written != null && d.equals(current)) {
-        // A bundle written for a body that returned (--bundles-on all): the test failed after all, in @After or a rule.
-        // Keep the screen from the end of the body; the failure, log and threads are this failure's.
-        if (writtenPassed) capture("listener (after the test's teardown; screen and tree from the end of the body)", t, false, false);
+        // The bundle describes something else: a body that returned (--bundles-on all) or a failure the test handled,
+        // and the test failed after all (in @After, a rule, or with another exception). Keep the earlier screen; the
+        // failure, log and threads are this failure's.
+        if (writtenPassed || !sameFailure(t, writtenFor) && !sameFailure(t, writtenAlias)) {
+          capture("listener (after the test's teardown; screen and tree from the earlier capture)", t, false, false);
+          writtenPassed = false;
+        }
         return;
       }
       if (!d.equals(current)) {
@@ -287,6 +330,17 @@ public final class Bundles {
     }
   }
 
+  /** Rewrites the current bundle for a later failure, the screen too when [screen] and there are windows to draw. */
+  private static void refresh(String point, Throwable t, boolean screen) {
+    LOCK.lock();
+    try {
+      capture(point, t, screen, false);
+      writtenPassed = false;
+    } finally {
+      LOCK.unlock();
+    }
+  }
+
   /**
    * Writes the current test's bundle; LOCK is held. [fresh]: a new bundle, in a folder emptied first (an earlier
    * run's files must not pass for this one's); otherwise the current bundle's failure, log and threads are rewritten.
@@ -311,13 +365,17 @@ public final class Bundles {
       } else {
         whole = writtenFull;
       }
+      writtenFor = t;
+      writtenAlias = null;
       // failure.txt first, so that a part that hangs or kills the process still leaves it; again at the end with the parts.
       String head = failure(d, point, t);
       write(dir.resolve("failure.txt"), redact(head + "parts: (capturing)\n"));
       if (!whole) {
         parts.append("  the rest skipped: ").append(MAX).append(" full bundles already written by this process (--bundles-max)\n");
       } else {
-        if (screen) {
+        if (screen && !fresh && safeWindows().isEmpty()) {
+          parts.append("  screen.png, windows.txt, nodes.txt, looper.txt: kept from the earlier capture (no windows now)\n");
+        } else if (screen) {
           part(parts, "screen.png", () -> screen(dir.resolve("screen.png")));
           part(parts, "windows.txt", () -> write(dir.resolve("windows.txt"), windows()));
           part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact(nodes())));
@@ -355,10 +413,17 @@ public final class Bundles {
     }
     long t0 = System.nanoTime();
     Thread self = Thread.currentThread();
-    java.util.concurrent.atomic.AtomicBoolean fired = new java.util.concurrent.atomic.AtomicBoolean();
+    // done/fired change only under the gate, and the interrupt is sent inside it: once the part is marked done, no
+    // late interrupt can reach the next part or the test's teardown.
+    Object gate = new Object();
+    boolean[] doneFired = new boolean[2];
     java.util.concurrent.ScheduledFuture<?> deadline = DEADLINES.schedule(() -> {
-      fired.set(true);
-      self.interrupt();
+      synchronized (gate) {
+        if (!doneFired[0]) {
+          doneFired[1] = true;
+          self.interrupt();
+        }
+      }
     }, deadlineMs(name), java.util.concurrent.TimeUnit.MILLISECONDS);
     try {
       p.run();
@@ -367,7 +432,12 @@ public final class Bundles {
       parts.append("  ").append(name).append(" failed: ").append(e).append('\n');
     } finally {
       deadline.cancel(false);
-      if (fired.get()) {
+      boolean fired;
+      synchronized (gate) {
+        doneFired[0] = true;
+        fired = doneFired[1];
+      }
+      if (fired) {
         Thread.interrupted();
         TIMED_OUT.add(name);
         parts.append("  ").append(name).append(" ran past its ").append(deadlineMs(name)).append(" ms deadline (interrupted)\n");
@@ -506,6 +576,14 @@ public final class Bundles {
     }
     out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
     return out;
+  }
+
+  private static List<Win> safeWindows() {
+    try {
+      return visibleWindows();
+    } catch (Throwable e) {
+      return List.of();
+    }
   }
 
   private static String windows() {
@@ -689,7 +767,8 @@ public final class Bundles {
     file.toFile().setExecutable(true);
   }
 
+  /** A shell word: left bare only when it holds nothing the shell reads (no `#`: at a word's start it begins a comment). */
   private static String quote(String s) {
-    return s.matches("[A-Za-z0-9_./=:@%+,#-]+") ? s : "'" + s.replace("'", "'\\''") + "'";
+    return s.matches("[A-Za-z0-9_./=:@%+,-]+") ? s : "'" + s.replace("'", "'\\''") + "'";
   }
 }

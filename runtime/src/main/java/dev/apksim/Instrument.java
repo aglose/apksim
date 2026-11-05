@@ -403,7 +403,7 @@ final class Instrument {
 
     @Override
     public void testFinished(Description d) {
-      Bundles.testFinished(d, code != FAILURE);
+      Bundles.testFinished(d, code == OK, code == FAILURE);
       String stream = code == FAILURE ? "\nError in " + d.getMethodName() + "(" + d.getClassName() + "):\n" + trace(failure) : ".";
       status(d, code, stream, code == FAILURE || code == ASSUMPTION ? trace(failure) : null);
     }

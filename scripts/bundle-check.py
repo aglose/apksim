@@ -130,12 +130,16 @@ def main():
 
     print("--bundles-on all: a body that returned, then an @After that fails:")
     r = instrument(a, os.path.join(out, "junit-all.xml"), os.path.join(a.out, "all"), os.path.join(out, "all"),
-                   "-e", "failOnPurpose", "true", "-e", "class", PKG + "FailureBundleAfterTest", "--", "--bundles-on", "all")
+                   "-e", "failOnPurpose", "true", "-e", "class", PKG + "FailureBundleAfterTest," + PKG + "FailureBundleParameterizedTest",
+                   "--", "--bundles-on", "all")
     d = os.path.join(out, "all", folder(PKG + "FailureBundleAfterTest", "afterFails"))
     f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
     # (afterFails opens no activity: what is kept from the body is its windows.txt and tree, here empty)
-    check("status: failed" in f and "@After fails on purpose" in f and "from the end of the body" in f
+    check("status: failed" in f and "@After fails on purpose" in f and "from the earlier capture" in f
           and os.path.exists(os.path.join(d, "windows.txt")), "the bundle says failed, with the @After failure, and keeps the body's capture")
+    d = os.path.join(out, "all", folder(PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"))
+    f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
+    check("status: passed" in f, "a passing test of a class with its own runner gets a bundle that says passed")
 
     print("the watchdog's test, which ends the process (with --bundles-redact):")
     wxml = os.path.join(out, "junit-watchdog.xml")
@@ -151,6 +155,8 @@ def main():
     if "process.txt" in files:
         p_ = open(os.path.join(d, "process.txt")).read()
         check("[redacted]" in p_ and "still running" not in p_, "process.txt is redacted as apksim's own files are")
+    idx = os.path.join(out, "watchdog", "index.html")
+    check(os.path.exists(idx) and "still running" not in open(idx).read(), "index.html's previews are redacted too")
 
     if not a.apksim:
         print("a passing run prints the same with and without --bundles:")

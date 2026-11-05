@@ -250,6 +250,9 @@ public final class SimRunner extends RobolectricTestRunner {
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
       if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
+      // That replaced the log tee failure bundles read (AdbLog): put it back now, not at its watcher's next turn
+      // (250 ms), which a short test can outrun.
+      if (Bundles.ON) AdbLog.install();
       Bundle args = new Bundle();
       String prefix = "apksim.instrument.";
       for (String k : System.getProperties().stringPropertyNames()) {

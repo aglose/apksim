@@ -283,18 +283,37 @@ def clear_bundles(local):
             os.rmdir(cdir)
 
 
+def java_regex(rx):
+    """A --bundles-redact pattern (Java's syntax, which apksim compiles) for Python's re: Java's \\Q...\\E quoting
+    becomes re.escape. Other syntax must be what both read; redactions() checks that before the run starts."""
+    return re.sub(r"\\Q(.*?)(?:\\E|$)", lambda m: re.escape(m[1]), rx, flags=re.S)
+
+
 def redactions(passthrough):
-    """apksim's --bundles-redact REGEX options (after --): applied here too, to what this script writes."""
-    return [re.compile(passthrough[i + 1]) for i, o in enumerate(passthrough[:-1]) if o == "--bundles-redact"]
+    """apksim's --bundles-redact REGEX options (after --): applied here too, to what this script writes (process.txt,
+    a fallback failure.txt, index.html). Raises ValueError, before any test runs, for one Python's re cannot read."""
+    out = []
+    for i, o in enumerate(passthrough[:-1]):
+        if o == "--bundles-redact":
+            try:
+                out.append(re.compile(java_regex(passthrough[i + 1])))
+            except re.error as e:
+                raise ValueError(f"--bundles-redact {passthrough[i + 1]!r}: {e}. instrument.py applies it with Python's "
+                                 f"re as well as apksim with Java's Pattern: use syntax both read (\\Q...\\E is fine)")
+    return out
+
+
+def redact_text(text, redact):
+    for r in redact:
+        text = r.sub("[redacted]", text)
+    return text
 
 
 def collect_bundles(local, results, redact=()):
     """{(class, method): bundle folder} for the results that have one; writes the notes for tests whose process died
     (redacted as apksim redacts its own text files)."""
     def clean(text):
-        for r in redact:
-            text = r.sub("[redacted]", text)
-        return text
+        return redact_text(text, redact)
     found = {}
     for c, m, s, st, _ in results:
         if c in ("(run)", "(listing)"):
@@ -313,8 +332,9 @@ def collect_bundles(local, results, redact=()):
     return found
 
 
-def write_index(local, results, bundles):
-    """DIR/index.html: one card per bundle (screen, the failure's first lines, the files), in one self-contained page."""
+def write_index(local, results, bundles, redact=()):
+    """DIR/index.html: one card per bundle (screen, the failure's first lines, the files), in one self-contained page.
+    The previews are redacted as the bundles' own text files are: the page is uploaded with them."""
     cards = []
     for c, m, s, st, _ in results:
         path = bundles.get((c, m))
@@ -328,7 +348,7 @@ def write_index(local, results, bundles):
                 captured = next((line[len("captured by: "):].strip() for line in f if line.startswith("captured by: ")), "")
         except OSError:
             pass
-        first = next((line for line in (st or "").splitlines() if line.strip()), s)
+        first = redact_text(next((line for line in (st or "").splitlines() if line.strip()), s), redact)
         img = (f'<a href="{html.escape(rel)}/screen.png"><img loading="lazy" src="{html.escape(rel)}/screen.png" alt=""></a>'
                if "screen.png" in files else '<div class="noshot">no screen</div>')
         links = " ".join(f'<a href="{html.escape(rel)}/{html.escape(n)}">{html.escape(n)}</a>' for n in files if n != "screen.png")
@@ -377,7 +397,12 @@ def main():
     p.add_argument("--bundles")
     p.add_argument("--bundles-local")
     a = p.parse_args(argv)
+    redact = []
     if a.bundles:
+        try:
+            redact = redactions(passthrough)
+        except ValueError as e:
+            p.error(str(e))
         passthrough = passthrough + ["--bundles", a.bundles]
         clear_bundles(a.bundles_local or a.bundles)
         os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
@@ -438,9 +463,9 @@ def main():
         print(f"\nFAILED {c}#{m}\n{st}", file=sys.stderr)
     counts = {s: sum(1 for r in results if r[2] == s) for s in sorted({r[2] for r in results})}
     print(f"{len(results)} tests in {time.time() - t0:.1f} s: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
-    bundles = collect_bundles(a.bundles_local or a.bundles, results, redactions(passthrough)) if a.bundles else {}
+    bundles = collect_bundles(a.bundles_local or a.bundles, results, redact) if a.bundles else {}
     if a.bundles:
-        write_index(a.bundles_local or a.bundles, results, bundles)
+        write_index(a.bundles_local or a.bundles, results, bundles, redact)
         print(f"{len(bundles)} failure bundles: {os.path.join(a.bundles_local or a.bundles, 'index.html')}", file=sys.stderr)
     if a.xml:
         xml_dir = os.path.dirname(os.path.abspath(a.xml))
