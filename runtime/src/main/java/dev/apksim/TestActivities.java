@@ -142,6 +142,15 @@ public final class TestActivities {
     if (elapsed > 0 && !RealTimeClock.requested()) main.idleFor(java.time.Duration.ofNanos(elapsed));
   }
 
+  /** The test APK's own context in a test run (SimRunner.useTestApkContext); null elsewhere. */
+  static volatile Context testApkContext;
+
+  /** Instrumentation.getContext() from translated code: the test APK's context, as on a device. */
+  public static Context instrumentationContext(Instrumentation instrumentation) {
+    Context c = testApkContext;
+    return c != null && testRun() ? c : instrumentation.getContext();
+  }
+
   private static boolean pumpsWhileSleeping() {
     return testRun() && Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
   }

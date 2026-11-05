@@ -59,6 +59,9 @@ final class Instrument {
     }
     Map<String, String> args = arguments();
     AppClasses tests = AppClasses.installTest(testApk, app);
+    // For each test's InstrumentationRegistry.getInstrumentation().getContext(): the test APK's own (SimRunner).
+    System.setProperty("apksim.testApk", testApk.toAbsolutePath().toString());
+    System.setProperty("apksim.testPackage", testPackage(testApk));
     // @RunWith(AndroidJUnit4.class) hands each class to the runner this names (it would pick Robolectric's own).
     System.setProperty("android.junit.runner", SimRunner.class.getName());
     // What Host's annotations ask for, for test classes that carry none.
@@ -131,6 +134,16 @@ final class Instrument {
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
     return r.wasSuccessful() ? 0 : 1;
+  }
+
+  /** The test APK's own package. */
+  private static String testPackage(Path testApk) throws Exception {
+    String xml;
+    try (ZipFile zip = new ZipFile(testApk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
+      xml = Axml.decode(in.readAllBytes());
+    }
+    return DocumentBuilderFactory.newInstance().newDocumentBuilder()
+        .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8))).getDocumentElement().getAttribute("package");
   }
 
   /** The test APK's {@code <instrumentation>}: its class and the package it targets. */

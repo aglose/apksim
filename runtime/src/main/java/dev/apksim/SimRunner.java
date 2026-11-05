@@ -264,10 +264,33 @@ public class SimRunner extends RobolectricTestRunner {
       }
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
       initJniConstants();
+      useTestApkContext();
       try {
         Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
       } catch (Exception e) {
         System.err.println("[apksim] gesture thresholds: " + e);
+      }
+    }
+
+    private static android.content.res.AssetManager testAssets;
+
+    /**
+     * InstrumentationRegistry.getInstrumentation().getContext() is the test APK's own on a device: its package and its
+     * assets. Robolectric's is the app's, so a suite reading its JSON fixtures from the test APK's assets got
+     * FileNotFoundException. A context over the test APK (as LiveInstrumentation gives an adb-started one), which test
+     * code's Instrumentation.getContext() returns (MethodTranslator; RoboMonitoringInstrumentation's returns the app).
+     */
+    private static void useTestApkContext() {
+      String apk = System.getProperty("apksim.testApk");
+      if (apk == null) return;
+      try {
+        if (testAssets == null) testAssets = LiveInstrumentation.assets(java.nio.file.Path.of(apk));
+        android.app.Application app = RuntimeEnvironment.getApplication();
+        android.content.Context ctx = new LiveInstrumentation.PackageContext(app, System.getProperty("apksim.testPackage"),
+            app.getClassLoader(), testAssets);
+        TestActivities.testApkContext = ctx;
+      } catch (Exception e) {
+        System.err.println("[apksim] test APK context: " + e);
       }
     }
 

@@ -150,7 +150,7 @@ final class LiveInstrumentation {
   }
 
   /** The instrumentation APK's assets, as its own context would have them (the Android CLI reads its VERSION). */
-  private static AssetManager assets(java.nio.file.Path apk) throws Exception {
+  static AssetManager assets(java.nio.file.Path apk) throws Exception {
     AssetManager am = AssetManager.class.getDeclaredConstructor().newInstance();
     Method add = AssetManager.class.getDeclaredMethod("addAssetPath", String.class);
     add.setAccessible(true);

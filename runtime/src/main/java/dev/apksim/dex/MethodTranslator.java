@@ -2535,6 +2535,13 @@ final class MethodTranslator implements Opcodes {
       // Compose's caret blinks unless made with animate=false; --snapshot holds it (dev.apksim.Snapshot).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Snapshot", "cursorBlink", "(Z)Z", false);
     }
+    if (opcode == INVOKEVIRTUAL && "android/app/Instrumentation".equals(ownerName) && "getContext".equals(m.name())
+        && "()Landroid/content/Context;".equals(m.descriptor())) {
+      // The test APK's own context, as on a device (Robolectric's instrumentation returns the app's).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "instrumentationContext",
+          "(Landroid/app/Instrumentation;)Landroid/content/Context;", false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())
         && ("(Ljava/lang/Object;J)V".equals(m.descriptor()) || "(J)V".equals(m.descriptor()))) {
       // runBlocking's event loop parks here; on the main thread in a test run, the main queue runs meanwhile.
