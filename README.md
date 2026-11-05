@@ -322,13 +322,13 @@ scripts/instrument.py app-debug.apk app-debug-androidTest.apk --xml out/junit.xm
 ```
 
 Every failing test leaves `out/bundles/<class>/<method>-<hash>/`:
-- `screen.png` and `nodes.txt`: the screen and its accessibility tree when the test failed, captured before the test's teardown closed the activity (in the test body, or in Espresso's failure handler);
+- `screen.png` and `nodes.txt`: the screen and its accessibility tree when the test failed, for a failure in the test body or in Espresso's failure handler, which are captured before the test's teardown closes the activity. A failure in `@After`, a rule or a class with its own runner is captured after teardown, so its screen may be gone, and a test the timeout watchdog ends has no screen at all. `failure.txt` says which capture point wrote the bundle;
 - `failure.txt`: the stack trace, the device and settings, and how many tests ran before it in the same process;
 - `logcat.txt`: the app's log during that test only. `threads.txt`, `looper.txt`: every thread, and what the main thread still had queued;
 - `repro.sh`: reruns that one test with the same options;
 - `process.txt`: when the process died during the test, its exit status and the end of its stderr.
 
-`out/bundles/index.html` shows every bundle with its screenshot, and the JUnit XML links each test to its folder (GitLab and Jenkins show the screenshot with the test). Capturing costs nothing until a test fails, and its time never counts against a test's timeout. A bundle holds what the app logged and showed, so `-- --bundles-redact REGEX` blanks matches in its text files. Reading one: [docs/ci-testbed.md](docs/ci-testbed.md#failure-bundles).
+`out/bundles/index.html` shows every bundle with its screenshot, and the JUnit XML links each test to its folder (GitLab and Jenkins show the screenshot with the test). Capturing costs nothing until a test fails, and its time never counts against a test's timeout. A bundle holds what the app logged and showed, and secrets can end up in it. `-- --bundles-redact REGEX` blanks matches in `logcat.txt`, `nodes.txt`, `failure.txt`, `process.txt` and the index page's previews, but not in `repro.sh` (it keeps the run's arguments), `threads.txt`, `looper.txt`, `windows.txt` or the screenshots. Check those before uploading bundles anywhere public. Reading one: [docs/ci-testbed.md](docs/ci-testbed.md#failure-bundles).
 
 ### Affected tests and balanced shards
 
