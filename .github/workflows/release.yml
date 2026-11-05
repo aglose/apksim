@@ -30,6 +30,7 @@ on:
       - scripts/docker-build.sh
       - scripts/instrument.py
       - scripts/snapshot.py
+      - scripts/affected.py
       - .github/actions/linux-build/**
   workflow_dispatch:
 
