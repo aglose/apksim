@@ -241,6 +241,7 @@ public final class SimRunner extends RobolectricTestRunner {
       }
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
       initJniConstants();
+      NetConnectivity.install();  // --network-profile offline: each test's ConnectivityManager starts with none
       try {
         Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
       } catch (Exception e) {

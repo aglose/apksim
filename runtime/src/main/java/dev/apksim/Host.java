@@ -115,6 +115,7 @@ public class Host {
     Timing.detail("got-application");
     useDeviceGestureThresholds(app);
     HostNetworks.install(app);
+    NetConnectivity.install();  // --network-profile offline: no networks from the start
     dev.apksim.video.ShadowSimMediaCodec.install();
     w = app.getResources().getDisplayMetrics().widthPixels;
     h = app.getResources().getDisplayMetrics().heightPixels;

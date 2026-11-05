@@ -97,10 +97,27 @@ while [[ $# -gt 1 ]]; do
     # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
     --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
     --no-network) NO_NET=1; shift ;;
+    # Record and replay the app's HTTP(S), and network conditions (docs/network.md).
+    --network)
+      [[ "$2" == record || "$2" == replay ]] || { echo "--network takes record FILE or replay FILE" >&2; exit 2; }
+      NET_FILE="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")" || exit 2
+      [[ "$2" == replay && ! -f "$NET_FILE" ]] && { echo "no recording at $3" >&2; exit 2; }
+      [[ "$2" == record ]] && NET_RECORD_DIR="$(dirname "$NET_FILE")"
+      EXTRA+=("-Dapksim.network=$2:$NET_FILE"); shift 3 ;;
+    --network-profile) EXTRA+=("-Dapksim.networkProfile=$2"); shift 2 ;;
+    --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
+    --network-match) EXTRA+=("-Dapksim.networkMatch=$2"); shift 2 ;;
+    --network-ignore-query) EXTRA+=("-Dapksim.networkIgnoreQuery=$2"); shift 2 ;;
+    --network-ignore-header) EXTRA+=("-Dapksim.networkIgnoreHeader=$2"); shift 2 ;;
+    --network-unmatched) EXTRA+=("-Dapksim.networkUnmatched=$2"); shift 2 ;;
+    --network-replay-timing) EXTRA+=("-Dapksim.networkReplayTiming=$2"); shift 2 ;;
+    --network-host) NET_HOSTS="${NET_HOSTS:+$NET_HOSTS,}$2"; shift 2 ;;
+    --network-trust) EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+[[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}"
@@ -117,6 +134,10 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
+      # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
+      -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
+      -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
+      -Dapksim.networkReplayTiming=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*) ;;
       *) WARM_OK="" ;;
     esac
   done
@@ -183,7 +204,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   export APKSIM_SANDBOXED=1
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
-(allow file-write* (subpath \"$STATE\"))
+(allow file-write* (subpath \"$STATE\"))${NET_RECORD_DIR:+
+(allow file-write* (subpath \"$NET_RECORD_DIR\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"

@@ -35,11 +35,16 @@ final class HostNetworks {
     for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
       if (!ni.isUp() || ni.isLoopback() || !hasIpv4(ni)) continue;
       boolean tunnel = ni.getName().startsWith("utun") || ni.isPointToPoint();
-      if (!tunnel && !ni.getName().startsWith("en")) continue;  // Bridges and virtual adapters: not the way out.
+      // Bridges and virtual adapters are not the way out. Ethernet is en* on macOS and eth* on Linux (a container's
+      // eth0: without it the app saw no network at all there).
+      if (!tunnel && !ni.getName().startsWith("en") && !ni.getName().startsWith("eth")) continue;
       int type = tunnel ? ConnectivityManager.TYPE_VPN : ConnectivityManager.TYPE_WIFI;
       NetworkInfo info = ShadowNetworkInfo.newInstance(
           NetworkInfo.DetailedState.CONNECTED, type, 0, true, NetworkInfo.State.CONNECTED);
-      Network network = ShadowNetwork.newInstance(netId++);
+      // Robolectric finds the active network by its type (getActiveNetwork looks netId TYPE_WIFI up), so the default
+      // one gets that netId; otherwise the app was handed Robolectric's own stand-in, which has no capabilities but a
+      // transport (no NET_CAPABILITY_INTERNET or VALIDATED, which apps check before going online).
+      Network network = ShadowNetwork.newInstance(active == null && !tunnel ? type : netId++);
       shadow.addNetwork(network, info);
 
       NetworkCapabilities caps = ShadowNetworkCapabilities.newInstance();

@@ -87,6 +87,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
+  - `net/`: the app's network recorded, replayed and shaped (`Net`, `NetEngine`, `FakeTlsSocket`, `NetResolver`,
+    `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
@@ -121,13 +123,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
   an APK: time per pass and a hash per class, to profile the translator and check a change leaves output identical),
-  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `package-release.sh` (see
+  `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
+  `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `ios-simulator-parity.md` (feature gaps and status), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
-  suites side by side, fleets, what limits them), `plan.md` (remaining work, in order).
+  suites side by side, fleets, what limits them), `network.md` (record, replay and network conditions: the spec, where
+  it hooks and why, what each client gets), `plan.md` (remaining work, in order).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
@@ -171,6 +175,7 @@ also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `rec
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
+`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `recreate` (as a configuration change: ViewModels kept),
 `process-death` (state saved, activities destroyed and rebuilt from it; statics and the Application survive, so this
 tests state saving, not a cold start), `debug layout on|off|toggle` (Show layout bounds, Views and Compose; minified
@@ -221,7 +226,7 @@ Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R), De
 Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
-Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
+Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
 Accessibility Audit). Permission requests
 and biometric prompts show as sheets on the window; notifications as a banner (click opens it).
@@ -244,7 +249,42 @@ Pick file/Choose trip (in-app result)/Share/Background/Keystore/Bind buttons for
 binding to .NullBindingService"), and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
 plays through); Trips has a "Trip note" field with
-imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links.
+imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
+`NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+
+## Network (record, replay, conditions)
+docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
+timings, each host's certificate chain; Authorization, Proxy-Authorization, Cookie and Set-Cookie redacted, more with
+`--network-redact`), `--network replay FILE` answers from it with nothing leaving the process (match on method, URL,
+body hash, optionally headers; `--network-ignore-query/-header`; an unmatched request gets a 599 with the closest entry
+in the log, and in a test run fails the test it happened in unless it ran `apksim network unmatched clear`),
+`--network-profile` and the `network` command set conditions (offline, 3g, lossy, latency, bandwidth), and
+`--network-host H=ADDR:PORT` points an address compiled into the app at a fixture server (`--network-trust CERT` for
+its certificate). Any option turns it on; without one, the hooks cost one static read.
+- Where it hooks (measured: the owner's R8 build has no `okhttp3/OkHttpClient$Builder`, R8 renamed OkHttp): the
+  translator sends app calls to JDK APIs, which R8 never renames, to `dev.apksim.net.Net` (`MethodTranslator.NET_HOOKS`):
+  `Socket.connect`, `SocketFactory`/`SSLSocketFactory.createSocket(host, port)`, `SSLSocketFactory.createSocket(socket,
+  host, port, autoClose)` and `URL.openConnection`/`openStream`. A connection to a non-loopback address goes to
+  `NetEngine` on a loopback port instead (a first line says where it was going; the engine answers with the real
+  connect's result). Recording or replaying, TLS on such a socket is a `FakeTlsSocket`: its handshake gets the
+  server's certificates from the engine (the real chain, so hostname checks and pins pass) and the bytes stay plain
+  text, so HTTP/1.1 is readable. The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
+  `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
+  placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched.
+- Code that runs for every app references only JDK types (no OkHttp), as for org.webrtc ("Video").
+- Offline also drops the engine's open connections, flushes the JDK's lookup cache (`InetAddress.cache`, as Android
+  flushes its resolver's) and takes ConnectivityManager's default network away (`NetConnectivity`). Robolectric finds
+  the active network by its type (`getActiveNetwork` looks up netId TYPE_WIFI), so `HostNetworks` gives the default
+  network that netId: before, apps got Robolectric's stand-in (no INTERNET or VALIDATED capability). On Linux the
+  container's `eth0` counts as Ethernet; before, ConnectivityManager had no network there at all.
+  `setDefaultNetworkActive(true)` with an active network calls onAvailable itself, so NetConnectivity sets it first.
+- In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`); a test
+  changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
+  allow writing the file's folder); replay and conditions launch warm.
+- Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
+  (docs/network.md says what it would need), WebSocket replay (relayed while recording). Checks:
+  `scripts/network-check.sh APK OUT [IMAGE]` (CI runs it in the image from `ci-smoke.sh`) and `NetworkReplayTest`
+  (`-e networkReplay true` with `--network replay testapks/composeapp/app/src/androidTest/network/greeting.har`).
 
 ## Video
 WebRTC (libwebrtc in the APK) works end to end: `bionic_net.c` translates sockets and emulates the netlink
@@ -692,6 +732,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   renderer for all layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay
   on the CPU.
 - No Health Connect service, so apps hide what they would show from it.
+- Network record/replay (docs/network.md) covers OkHttp (minified too) and HttpURLConnection; Cronet's native stack,
+  Ktor CIO (NIO) and WebSocket replay are not covered.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
 - Real mouse and keyboard in the window were first used by the owner on 2026-11-02. Scripted input goes through
   `--control` instead.

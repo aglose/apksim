@@ -118,7 +118,7 @@ final class Instrument {
     core.addListener(raw);
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
-    return r.wasSuccessful() ? 0 : 1;
+    return r.wasSuccessful() && raw.networkFailures.isEmpty() ? 0 : 1;
   }
 
   /** The test APK's {@code <instrumentation>}: its class and the package it targets. */
@@ -346,6 +346,8 @@ final class Instrument {
     private int code;
     private Failure failure;
     private String lastClass;
+    /** Tests that passed but made replay requests the recording had no answer for (docs/network.md). */
+    final List<Failure> networkFailures = new ArrayList<>();
 
     RawListener(PrintStream out, String instrumentation) {
       this.out = out;
@@ -362,6 +364,7 @@ final class Instrument {
       current++;
       code = OK;
       failure = null;
+      dev.apksim.net.Net.testStarted();
       String stream = "";
       if (!d.getClassName().equals(lastClass)) {
         stream = "\n" + d.getClassName() + ":";
@@ -399,6 +402,13 @@ final class Instrument {
 
     @Override
     public void testFinished(Description d) {
+      List<String> unmatched = dev.apksim.net.Net.takeUnmatchedFailures();
+      if (!unmatched.isEmpty() && code == OK) {
+        code = FAILURE;
+        failure = new Failure(d, new AssertionError(unmatched.size() + " request" + (unmatched.size() == 1 ? "" : "s")
+            + " the network recording has no answer for (apksim --network replay):\n  " + String.join("\n  ", unmatched)));
+        networkFailures.add(failure);
+      }
       String stream = code == FAILURE ? "\nError in " + d.getMethodName() + "(" + d.getClassName() + "):\n" + trace(failure) : ".";
       status(d, code, stream, code == FAILURE || code == ASSUMPTION ? trace(failure) : null);
     }
@@ -423,13 +433,15 @@ final class Instrument {
 
     void finish(Result r, long ms) {
       StringBuilder s = new StringBuilder("\n\nTime: ").append(ms / 1000.0).append("\n");
-      if (r.wasSuccessful()) {
+      List<Failure> failures = new ArrayList<>(r.getFailures());
+      failures.addAll(networkFailures);
+      if (failures.isEmpty()) {
         s.append("\nOK (").append(r.getRunCount()).append(" test").append(r.getRunCount() == 1 ? "" : "s").append(")\n");
       } else {
-        s.append("There ").append(r.getFailureCount() == 1 ? "was 1 failure:" : "were " + r.getFailureCount() + " failures:");
+        s.append("There ").append(failures.size() == 1 ? "was 1 failure:" : "were " + failures.size() + " failures:");
         int i = 1;
-        for (Failure f : r.getFailures()) s.append("\n").append(i++).append(") ").append(f.getTestHeader()).append("\n").append(trace(f));
-        s.append("\nFAILURES!!!\nTests run: ").append(r.getRunCount()).append(",  Failures: ").append(r.getFailureCount()).append("\n");
+        for (Failure f : failures) s.append("\n").append(i++).append(") ").append(f.getTestHeader()).append("\n").append(trace(f));
+        s.append("\nFAILURES!!!\nTests run: ").append(r.getRunCount()).append(",  Failures: ").append(failures.size()).append("\n");
       }
       out.println("INSTRUMENTATION_RESULT: stream=" + s);
       out.println("INSTRUMENTATION_CODE: -1");

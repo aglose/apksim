@@ -1,0 +1,806 @@
+package dev.apksim.net;
+
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
+
+/**
+ * apksim's in-process network: the connections Net redirects arrive here on a loopback port, each saying where it
+ * was going ("APKSIM host port timeout"), or as an HTTP proxy request (the JDK's HttpURLConnection). Recording, it
+ * makes the real connection and relays each HTTP/1.1 exchange while capturing it; replaying, it answers from the
+ * recording; otherwise it relays bytes, shaped by Net.conditions (docs/network.md).
+ */
+final class NetEngine {
+  /** Bodies bigger than this are relayed but not recorded. */
+  private static final int MAX_BODY = 32 << 20;
+  private ServerSocket server;
+  private final Set<Socket> open = ConcurrentHashMap.newKeySet();
+  final AtomicInteger recorded = new AtomicInteger(), replayed = new AtomicInteger(), missed = new AtomicInteger(),
+      relayed = new AtomicInteger();
+  private SSLSocketFactory upstreamTls;
+  private volatile boolean dirty;
+  private volatile boolean flushPending;
+
+  void start() throws IOException {
+    server = new ServerSocket(0, 128, InetAddress.getLoopbackAddress());
+    Thread t = new Thread(this::accept, "apksim-net");
+    t.setDaemon(true);
+    t.start();
+  }
+
+  InetSocketAddress address() {
+    return new InetSocketAddress(InetAddress.getLoopbackAddress(), server.getLocalPort());
+  }
+
+  private void accept() {
+    while (true) {
+      try {
+        Socket s = server.accept();
+        s.setTcpNoDelay(true);
+        Thread.ofVirtual().name("apksim-net-conn").start(() -> serve(s));
+      } catch (IOException e) {
+        if (server.isClosed()) return;
+      }
+    }
+  }
+
+  private void serve(Socket client) {
+    open.add(client);
+    Conn c = new Conn(client);
+    try {
+      c.run();
+    } catch (IOException e) {
+      if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network: " + c.host + ":" + c.port + " " + e);
+    } catch (RuntimeException e) {
+      Net.log("network: " + c.host + ":" + c.port + " failed: " + e);
+    } finally {
+      open.remove(client);
+      c.close();
+    }
+  }
+
+  /** Going offline: every connection drops, as when Wi-Fi goes away. */
+  void closeAll() {
+    for (Socket s : open) {
+      try {
+        s.close();
+      } catch (IOException ignored) {
+      }
+    }
+  }
+
+  String counts() {
+    return switch (Net.mode) {
+      case RECORD -> recorded.get() + " recorded";
+      case REPLAY -> replayed.get() + " replayed, " + missed.get() + " unmatched";
+      case SHAPE -> relayed.get() + " connections relayed";
+    };
+  }
+
+  // ------------------------------------------------------------------ saving
+
+  private void changed() {
+    dirty = true;
+    if (flushPending) return;
+    flushPending = true;
+    Thread.ofVirtual().start(() -> {
+      Conditions.sleep(300);
+      flushPending = false;
+      flushNow();
+    });
+  }
+
+  synchronized void flushNow() {
+    if (Net.mode != Net.Mode.RECORD) return;
+    try {
+      if (dirty || !Files.exists(Net.recording.path)) {
+        dirty = false;
+        Net.recording.save();
+      }
+    } catch (IOException e) {
+      Net.log("network record: cannot write " + Net.recording.path + ": " + e);
+    }
+  }
+
+  // ------------------------------------------------------------------ upstream
+
+  private synchronized SSLSocketFactory upstreamTls() throws Exception {
+    if (upstreamTls != null) return upstreamTls;
+    SSLContext ctx;
+    try {
+      ctx = SSLContext.getInstance("TLS", "SunJSSE");
+    } catch (Exception e) {
+      ctx = SSLContext.getInstance("TLS");
+    }
+    if (Net.trust == null) {
+      ctx.init(null, null, null);
+    } else {
+      KeyStore ks = KeyStore.getInstance(java.nio.file.Path.of(System.getProperty("java.home"), "lib", "security", "cacerts").toFile(), (char[]) null);
+      int n = 0;
+      try (InputStream in = Files.newInputStream(Net.trust)) {
+        for (Certificate c : CertificateFactory.getInstance("X.509").generateCertificates(in)) ks.setCertificateEntry("apksim-trust-" + n++, c);
+      }
+      TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      tmf.init(ks);
+      ctx.init(null, tmf.getTrustManagers(), null);
+    }
+    upstreamTls = ctx.getSocketFactory();
+    return upstreamTls;
+  }
+
+  static InetSocketAddress target(String host, int port) {
+    InetSocketAddress m = Net.hostMap.get(host.toLowerCase(Locale.ROOT));
+    if (m != null) return new InetSocketAddress(m.getHostString(), m.getPort() > 0 ? m.getPort() : port);
+    return new InetSocketAddress(host, port);
+  }
+
+  // ------------------------------------------------------------------ one client connection
+
+  private final class Conn {
+    final Socket client;
+    InputStream cin;
+    OutputStream cout;
+    String host = "?";
+    int port;
+    int timeout = 10_000;
+    boolean tls;
+    Socket up;
+    InputStream uin;
+    OutputStream uout;
+    long connectMs = -1;
+    int exchanges;
+
+    Conn(Socket client) {
+      this.client = client;
+    }
+
+    void close() {
+      try {
+        client.close();
+      } catch (IOException ignored) {
+      }
+      closeUpstream();
+    }
+
+    void closeUpstream() {
+      if (up == null) return;
+      try {
+        up.close();
+      } catch (IOException ignored) {
+      }
+      up = null;
+    }
+
+    void run() throws IOException {
+      cin = new BufferedInputStream(client.getInputStream());
+      cout = client.getOutputStream();
+      byte[] firstBytes = readLineBytes(cin);
+      if (firstBytes == null) return;
+      String first = trimEol(firstBytes);
+      byte[] pending = null;  // a request line already read
+      boolean proxied = false;
+      if (first.startsWith("APKSIM ")) {
+        String[] p = first.split(" ");
+        host = p[1];
+        port = Integer.parseInt(p[2]);
+        if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
+        String err = connectUpstream();
+        cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+        if (err != null) return;
+      } else if (first.startsWith("CONNECT ")) {
+        Conditions.sleep(Net.conditions.rtt());  // the TCP handshake Net.connect would have waited for
+        String hp = first.split(" ")[1];
+        int colon = hp.lastIndexOf(':');
+        host = hp.substring(0, colon);
+        port = Integer.parseInt(hp.substring(colon + 1));
+        while (true) {
+          String h = Net.readLine(cin);
+          if (h == null || h.isEmpty()) break;
+        }
+        String err = connectUpstream();
+        cout.write((err != null ? "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n"
+            : "HTTP/1.1 200 Connection established\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+        if (err != null) return;
+      } else {
+        // An HTTP proxy request, absolute form: GET http://host:port/path HTTP/1.1.
+        String[] p = first.split(" ");
+        if (p.length < 3 || !p[1].startsWith("http://")) return;
+        URI u = URI.create(p[1]);
+        host = u.getHost();
+        port = u.getPort() > 0 ? u.getPort() : 80;
+        pending = firstBytes;
+        proxied = true;
+        Conditions.sleep(Net.conditions.rtt());
+        if (Net.mode != Net.Mode.REPLAY) {
+          String err = connectUpstream();
+          if (err != null) {
+            cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
+                .getBytes(StandardCharsets.ISO_8859_1));
+            return;
+          }
+        }
+      }
+
+      if (Net.mode == Net.Mode.SHAPE) {
+        relayed.incrementAndGet();
+        if (pending != null) uout.write(originForm(pending));
+        relay(cin, cout, uin, uout, client, up);
+        return;
+      }
+
+      if (pending == null) {
+        // Next: a TLS hello from FakeTlsSocket, or the first request. A protocol where the server speaks first sends
+        // nothing: after a while, relay it (recording) or give up on it (replaying).
+        client.setSoTimeout(1500);
+        try {
+          pending = readLineBytes(cin);
+        } catch (SocketTimeoutException e) {
+          pending = new byte[0];
+        }
+        client.setSoTimeout(0);
+        if (pending == null) return;
+        String l = trimEol(pending);
+        if (l.startsWith("APKSIM-TLS")) {
+          tls = true;
+          String reply = handshake();
+          cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
+          cout.flush();
+          if (reply.startsWith("ERR")) return;
+          client.setSoTimeout(1500);
+          try {
+            pending = readLineBytes(cin);
+          } catch (SocketTimeoutException e) {
+            pending = new byte[0];
+          }
+          client.setSoTimeout(0);
+          if (pending == null) return;
+        }
+      }
+      exchanges(pending, proxied);
+    }
+
+    /** Connects to where the client was going (not when replaying); an "ERR ..." reply on failure, else null. */
+    String connectUpstream() {
+      if (Net.mode == Net.Mode.REPLAY) return null;
+      long t0 = System.nanoTime();
+      try {
+        Socket s = new Socket();
+        s.setTcpNoDelay(true);
+        s.connect(target(host, port), timeout);
+        up = s;
+        uin = new BufferedInputStream(s.getInputStream());
+        uout = s.getOutputStream();
+        connectMs = (System.nanoTime() - t0) / 1_000_000;
+        return null;
+      } catch (IOException e) {
+        return Net.errorReply(e);
+      }
+    }
+
+    /** FakeTlsSocket's handshake: the server's certificates, from the real server or the recording. */
+    String handshake() {
+      Conditions c = Net.conditions;
+      Conditions.sleep(c.rtt());
+      if (Net.mode == Net.Mode.REPLAY) {
+        List<String> chain = Net.recording.certificates(host);
+        return "OK " + (chain == null ? "" : String.join(",", chain)) + "\r\n";
+      }
+      try {
+        List<String> chain = upgradeUpstream();
+        Net.recording.certificates(host, chain);
+        return "OK " + String.join(",", chain) + "\r\n";
+      } catch (Exception e) {
+        Net.log("network record: TLS to " + host + ":" + port + " failed: " + e.getMessage());
+        return Net.errorReply(e);
+      }
+    }
+
+    List<String> upgradeUpstream() throws Exception {
+      SSLSocket s = (SSLSocket) upstreamTls().createSocket(up, host, port, true);
+      SSLParameters params = s.getSSLParameters();
+      params.setEndpointIdentificationAlgorithm("HTTPS");
+      s.setSSLParameters(params);
+      s.startHandshake();
+      up = s;
+      uin = new BufferedInputStream(s.getInputStream());
+      uout = s.getOutputStream();
+      List<String> chain = new ArrayList<>();
+      for (Certificate cert : s.getSession().getPeerCertificates()) chain.add(Base64.getEncoder().encodeToString(cert.getEncoded()));
+      return chain;
+    }
+
+    void reconnect() throws Exception {
+      closeUpstream();
+      String err = connectUpstream();
+      if (err != null) throw Net.exception(err.substring(4).trim(), false);
+      if (tls) upgradeUpstream();
+    }
+
+    // -------------------------------------------------------------- HTTP
+
+    void exchanges(byte[] line, boolean proxied) throws IOException {
+      while (line != null) {
+        String l = trimEol(line);
+        if (l.isEmpty() && line.length > 0) {
+          line = readLineBytes(cin);
+          continue;
+        }
+        String[] p = l.split(" ");
+        if (line.length == 0 || p.length != 3 || !p[2].startsWith("HTTP/1.")) {
+          nonHttp(line);
+          return;
+        }
+        Request req = new Request();
+        req.method = p[0];
+        req.target = p[1];
+        req.version = p[2];
+        while (true) {
+          String h = Net.readLine(cin);
+          if (h == null) return;
+          if (h.isEmpty()) break;
+          int colon = h.indexOf(':');
+          if (colon <= 0) continue;
+          req.headers.add(new String[] {h.substring(0, colon).trim(), h.substring(colon + 1).trim()});
+        }
+        if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
+          cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+          cout.flush();
+        }
+        readRequestBody(req);
+        String authority = req.header("Host");
+        if (authority == null) authority = host + (port == (tls ? 443 : 80) ? "" : ":" + port);
+        req.url = proxied ? req.target : (tls ? "https://" : "http://") + authority + req.target;
+        if (proxied) req.target = URI.create(req.target).getRawPath() + (URI.create(req.target).getRawQuery() == null ? "" : "?" + URI.create(req.target).getRawQuery());
+        Conditions c = Net.conditions;
+        if (c.offline()) return;
+        if (c.reset()) {
+          Net.log("network: reset " + req.method + " " + req.url + " (" + c.name() + ")");
+          return;
+        }
+        boolean keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        exchanges++;
+        if (!keep || "close".equalsIgnoreCase(req.header("Connection"))) return;
+        line = readLineBytes(cin);
+      }
+    }
+
+    void readRequestBody(Request req) throws IOException {
+      String te = req.header("Transfer-Encoding");
+      String cl = req.header("Content-Length");
+      int up = Net.conditions.upKbps();
+      if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
+        ByteArrayOutputStream raw = new ByteArrayOutputStream(), body = new ByteArrayOutputStream();
+        copyChunked(cin, raw, body, Integer.MAX_VALUE);
+        req.rawBody = raw.toByteArray();
+        req.body = body.toByteArray();
+      } else if (cl != null && Long.parseLong(cl.trim()) > 0) {
+        req.body = cin.readNBytes(Integer.parseInt(cl.trim()));
+        req.rawBody = req.body;
+      }
+      if (req.body != null) Conditions.pace(req.body.length, up);
+    }
+
+    boolean record(Request req) throws IOException {
+      long t0 = System.nanoTime();
+      long sent = t0;
+      byte[] head = requestHead(req);
+      byte[] statusLine = null;
+      for (int attempt = 0; attempt < 2 && statusLine == null; attempt++) {
+        try {
+          if (up == null || up.isClosed()) reconnect();
+          uout.write(head);
+          if (req.rawBody != null) uout.write(req.rawBody);
+          uout.flush();
+          sent = System.nanoTime();
+          statusLine = readLineBytes(uin);
+        } catch (Exception e) {
+          if (attempt == 1 || exchanges == 0) {
+            Net.log("network record: " + req.method + " " + req.url + " failed: " + e);
+            return false;
+          }
+        }
+        if (statusLine == null && exchanges > 0 && attempt == 0) {
+          closeUpstream();  // the server closed a kept-alive connection: once more on a new one
+          continue;
+        }
+        if (statusLine == null) return false;
+      }
+      Response resp = readResponseHead(statusLine);
+      while (resp.status >= 100 && resp.status < 200 && resp.status != 101) {
+        cout.write(resp.head);
+        resp = readResponseHead(readLineBytes(uin));
+      }
+      long waited = System.nanoTime();
+      Conditions.sleep(Net.conditions.rtt());
+      cout.write(resp.head);
+      cout.flush();
+
+      Recording.Entry e = new Recording.Entry();
+      e.method = req.method;
+      e.url = req.url;
+      e.httpVersion = req.version;
+      e.reqHeaders = redacted(req.headers);
+      e.reqBody = req.body;
+      e.status = resp.status;
+      e.statusText = resp.text;
+      e.respHeaders = redacted(resp.headers);
+      e.connect = exchanges == 0 ? connectMs : -1;
+      boolean keep = true;
+      if (resp.status == 101) {
+        e.timeMs = (waited - t0) / 1_000_000;
+        add(e);
+        Net.log("network record: " + req.url + " switched protocols: relayed from here on, not recorded");
+        relay(cin, cout, uin, uout, client, up);
+        return false;
+      }
+      ByteArrayOutputStream body = new ByteArrayOutputStream();
+      String te = resp.header("Transfer-Encoding");
+      String cl = resp.header("Content-Length");
+      boolean none = req.method.equals("HEAD") || resp.status == 204 || resp.status == 304;
+      if (none) {
+        // no body
+      } else if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
+        copyChunked(uin, new Paced(cout), body, MAX_BODY);
+      } else if (cl != null) {
+        copy(uin, new Paced(cout), body, Long.parseLong(cl.trim()));
+      } else {
+        copy(uin, new Paced(cout), body, Long.MAX_VALUE);
+        keep = false;
+      }
+      cout.flush();
+      long done = System.nanoTime();
+      byte[] bytes = body.toByteArray();
+      e.truncated = body.size() >= MAX_BODY;
+      if ("gzip".equalsIgnoreCase(resp.header("Content-Encoding")) && !e.truncated) {
+        try (InputStream gz = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
+          bytes = gz.readAllBytes();
+          e.gzip = true;
+        } catch (IOException notGzip) {
+          // stored as sent
+        }
+      }
+      e.respBody = e.truncated ? new byte[0] : bytes;
+      e.send = (sent - t0) / 1_000_000;
+      e.wait = (waited - sent) / 1_000_000;
+      e.receive = (done - waited) / 1_000_000;
+      e.timeMs = (done - t0) / 1_000_000;
+      add(e);
+      if ("close".equalsIgnoreCase(resp.header("Connection"))) keep = false;
+      return keep;
+    }
+
+    void add(Recording.Entry e) {
+      Net.recording.add(e);
+      recorded.incrementAndGet();
+      if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network record: " + e.status + " " + e.method + " " + e.url);
+      changed();
+    }
+
+    boolean replay(Request req) throws IOException {
+      Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.body);
+      Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
+      if (e == null) {
+        missed.incrementAndGet();
+        String closest = Net.recording.closest(req.method, req.url, req.headers, req.body);
+        String msg = "network replay: no recorded response for " + req.method + " " + req.url
+            + (closest == null ? "" : "\n         closest: " + closest);
+        Net.log(msg);
+        Net.unmatched.add(msg.replace("\n         ", "; "));
+        byte[] body = (msg + "\n").getBytes(StandardCharsets.UTF_8);
+        String head = "HTTP/1.1 599 No Recorded Response\r\nX-Apksim-Replay: unmatched\r\nContent-Type: text/plain; charset=utf-8\r\n"
+            + "Content-Length: " + body.length + "\r\n\r\n";
+        cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
+        if (!req.method.equals("HEAD")) cout.write(body);
+        cout.flush();
+        return true;
+      }
+      replayed.incrementAndGet();
+      if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network replay: " + e.status + " " + e.method + " " + e.url);
+      byte[] body = e.respBody;
+      String accept = req.header("Accept-Encoding");
+      boolean gzip = e.gzip && accept != null && accept.toLowerCase(Locale.ROOT).contains("gzip");
+      if (gzip) {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        try (GZIPOutputStream gz = new GZIPOutputStream(b)) {
+          gz.write(body);
+        }
+        body = b.toByteArray();
+      }
+      StringBuilder h = new StringBuilder("HTTP/1.1 ").append(e.status).append(' ')
+          .append(e.statusText.isEmpty() ? Net.statusText(e.status) : e.statusText).append("\r\n");
+      for (String[] x : e.respHeaders) {
+        String n = x[0].toLowerCase(Locale.ROOT);
+        if (n.equals("content-length") || n.equals("transfer-encoding") || n.equals("connection")
+            || n.equals("content-encoding") || n.equals("keep-alive") || x[1].equals(Recording.REDACTED)) {
+          continue;
+        }
+        h.append(x[0]).append(": ").append(x[1]).append("\r\n");
+      }
+      if (gzip) h.append("Content-Encoding: gzip\r\n");
+      boolean none = e.status == 204 || e.status == 304 || (e.status >= 100 && e.status < 200);
+      if (!none) h.append("Content-Length: ").append(body.length).append("\r\n");
+      h.append("X-Apksim-Replay: recorded\r\n\r\n");
+      cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
+      if (!none && !req.method.equals("HEAD")) new Paced(cout).write(body, 0, body.length);
+      cout.flush();
+      return true;
+    }
+
+    void nonHttp(byte[] consumed) throws IOException {
+      if (Net.mode == Net.Mode.REPLAY) {
+        String msg = "network replay: no recorded response for a non-HTTP connection to " + host + ":" + port;
+        missed.incrementAndGet();
+        Net.log(msg);
+        Net.unmatched.add(msg);
+        return;
+      }
+      Net.log("network record: " + host + ":" + port + " is not HTTP/1.1: relayed, not recorded");
+      if (consumed.length > 0) uout.write(consumed);
+      relay(cin, cout, uin, uout, client, up);
+    }
+
+    List<String[]> redacted(List<String[]> hs) {
+      List<String[]> out = new ArrayList<>();
+      for (String[] h : hs) {
+        out.add(Net.redact.contains(h[0].toLowerCase(Locale.ROOT)) ? new String[] {h[0], Recording.REDACTED} : h);
+      }
+      return out;
+    }
+
+    Response readResponseHead(byte[] statusLine) throws IOException {
+      if (statusLine == null) throw new IOException("server closed the connection before answering");
+      ByteArrayOutputStream head = new ByteArrayOutputStream();
+      head.write(statusLine);
+      Response r = new Response();
+      String[] p = trimEol(statusLine).split(" ", 3);
+      r.status = Integer.parseInt(p[1]);
+      r.text = p.length > 2 ? p[2] : "";
+      while (true) {
+        byte[] lb = readLineBytes(uin);
+        if (lb == null) throw new IOException("server closed the connection in its headers");
+        head.write(lb);
+        String h = trimEol(lb);
+        if (h.isEmpty()) break;
+        int colon = h.indexOf(':');
+        if (colon > 0) r.headers.add(new String[] {h.substring(0, colon).trim(), h.substring(colon + 1).trim()});
+      }
+      r.head = head.toByteArray();
+      return r;
+    }
+  }
+
+  static final class Request {
+    String method, target, version, url;
+    final List<String[]> headers = new ArrayList<>();
+    byte[] body, rawBody;
+
+    String header(String name) {
+      for (String[] h : headers) if (h[0].equalsIgnoreCase(name)) return h[1];
+      return null;
+    }
+  }
+
+  static final class Response {
+    int status;
+    String text;
+    final List<String[]> headers = new ArrayList<>();
+    byte[] head;
+
+    String header(String name) {
+      for (String[] h : headers) if (h[0].equalsIgnoreCase(name)) return h[1];
+      return null;
+    }
+  }
+
+  /** The request as the server gets it: origin-form target, no proxy headers. */
+  static byte[] requestHead(Request req) {
+    StringBuilder b = new StringBuilder(req.method).append(' ').append(req.target).append(' ').append(req.version).append("\r\n");
+    for (String[] h : req.headers) {
+      if (h[0].equalsIgnoreCase("Proxy-Connection") || h[0].equalsIgnoreCase("Expect")) continue;
+      b.append(h[0]).append(": ").append(h[1]).append("\r\n");
+    }
+    return b.append("\r\n").toString().getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  /** An absolute-form request line in origin form, for relaying a proxy request. */
+  static byte[] originForm(byte[] line) {
+    String[] p = trimEol(line).split(" ");
+    URI u = URI.create(p[1]);
+    String target = (u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath()) + (u.getRawQuery() == null ? "" : "?" + u.getRawQuery());
+    return (p[0] + " " + target + " " + p[2] + "\r\n").getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  static String trimEol(byte[] b) {
+    int n = b.length;
+    while (n > 0 && (b[n - 1] == '\n' || b[n - 1] == '\r')) n--;
+    return new String(b, 0, n, StandardCharsets.ISO_8859_1);
+  }
+
+  /** One line with its terminator; null at end of stream. */
+  static byte[] readLineBytes(InputStream in) throws IOException {
+    ByteArrayOutputStream b = new ByteArrayOutputStream(128);
+    int c;
+    while ((c = in.read()) != -1) {
+      b.write(c);
+      if (c == '\n') break;
+      if (b.size() > 64 * 1024) break;
+    }
+    return b.size() == 0 ? null : b.toByteArray();
+  }
+
+  /** Copies n bytes (or to end of stream), capturing up to MAX_BODY. */
+  static void copy(InputStream in, OutputStream out, ByteArrayOutputStream capture, long n) throws IOException {
+    byte[] buf = new byte[16 * 1024];
+    while (n > 0) {
+      int r = in.read(buf, 0, (int) Math.min(buf.length, n));
+      if (r < 0) break;
+      out.write(buf, 0, r);
+      if (capture.size() < MAX_BODY) capture.write(buf, 0, Math.min(r, MAX_BODY - capture.size()));
+      n -= r;
+    }
+  }
+
+  /** Copies a chunked body as sent, capturing its decoded data. */
+  static void copyChunked(InputStream in, OutputStream out, ByteArrayOutputStream capture, int max) throws IOException {
+    while (true) {
+      byte[] sizeLine = readLineBytes(in);
+      if (sizeLine == null) throw new IOException("chunked body ended early");
+      out.write(sizeLine);
+      String s = trimEol(sizeLine);
+      int semi = s.indexOf(';');
+      int size = Integer.parseInt((semi < 0 ? s : s.substring(0, semi)).trim(), 16);
+      if (size == 0) {
+        while (true) {  // trailers, then the blank line
+          byte[] t = readLineBytes(in);
+          if (t == null) return;
+          out.write(t);
+          if (trimEol(t).isEmpty()) return;
+        }
+      }
+      ByteArrayOutputStream chunk = new ByteArrayOutputStream();
+      copy(in, out, chunk, size);
+      if (capture.size() + chunk.size() <= max) chunk.writeTo(capture);
+      byte[] crlf = readLineBytes(in);
+      if (crlf != null) out.write(crlf);
+    }
+  }
+
+  /** Writes at the current download bandwidth. */
+  static final class Paced extends OutputStream {
+    private final OutputStream out;
+
+    Paced(OutputStream out) {
+      this.out = out;
+    }
+
+    @Override
+    public void write(int b) throws IOException {
+      write(new byte[] {(byte) b}, 0, 1);
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) throws IOException {
+      while (len > 0) {
+        int kbps = Net.conditions.downKbps();
+        int n = kbps <= 0 ? len : Math.min(len, Math.max(512, kbps * 16));  // ~1/8 s per slice
+        out.write(b, off, n);
+        out.flush();
+        Conditions.pace(n, kbps);
+        off += n;
+        len -= n;
+      }
+    }
+
+    @Override
+    public void flush() throws IOException {
+      out.flush();
+    }
+  }
+
+  // ------------------------------------------------------------------ shaped relay
+
+  /** Relays both ways until both ends are done, delaying and pacing by Net.conditions. */
+  static void relay(InputStream cin, OutputStream cout, InputStream uin, OutputStream uout, Socket client, Socket up) {
+    boolean cut = Net.conditions.reset();
+    long cutAfter = cut ? 1 + java.util.concurrent.ThreadLocalRandom.current().nextInt(64 * 1024) : Long.MAX_VALUE;
+    Thread upstream = Thread.ofVirtual().start(() -> pump(cin, uout, false, Long.MAX_VALUE, up));
+    pump(uin, cout, true, cutAfter, client);
+    if (cut) {
+      try {
+        client.close();
+        up.close();
+      } catch (IOException ignored) {
+      }
+    }
+    try {
+      upstream.join();
+    } catch (InterruptedException ignored) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private record Chunk(long at, byte[] data) {}
+
+  private static final Chunk END = new Chunk(0, null);
+
+  private static void pump(InputStream in, OutputStream out, boolean down, long cutAfter, Socket outSocket) {
+    LinkedBlockingQueue<Chunk> line = new LinkedBlockingQueue<>();
+    Thread writer = Thread.ofVirtual().start(() -> {
+      try {
+        while (true) {
+          Chunk c = line.take();
+          if (c == END) break;
+          Conditions cond = Net.conditions;
+          long due = c.at + cond.rtt() / 2;  // one way: half the round trip
+          Conditions.sleep(due - System.currentTimeMillis());
+          int kbps = down ? cond.downKbps() : cond.upKbps();
+          int off = 0;
+          while (off < c.data.length) {
+            int n = kbps <= 0 ? c.data.length - off : Math.min(c.data.length - off, Math.max(512, kbps * 16));
+            out.write(c.data, off, n);
+            out.flush();
+            Conditions.pace(n, kbps);
+            off += n;
+          }
+        }
+        if (outSocket != null && !(outSocket instanceof SSLSocket) && !outSocket.isClosed()) outSocket.shutdownOutput();
+      } catch (IOException | InterruptedException ignored) {
+        try {
+          if (outSocket != null) outSocket.close();
+        } catch (IOException e) {
+          // closing anyway
+        }
+      }
+    });
+    long total = 0;
+    byte[] buf = new byte[16 * 1024];
+    try {
+      int r;
+      while ((r = in.read(buf)) >= 0) {
+        int n = (int) Math.min(r, cutAfter - total);
+        line.add(new Chunk(System.currentTimeMillis(), java.util.Arrays.copyOf(buf, n)));
+        total += n;
+        if (total >= cutAfter) break;
+      }
+    } catch (IOException ignored) {
+      // the other side went away
+    }
+    line.add(END);
+    try {
+      writer.join();
+    } catch (InterruptedException ignored) {
+      Thread.currentThread().interrupt();
+    }
+  }
+}

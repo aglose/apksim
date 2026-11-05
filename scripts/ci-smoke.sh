@@ -2,7 +2,7 @@
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
 # channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
-# (scripts/adb-check.py). Screens and logs go to OUT.
+# (scripts/adb-check.py). Then the network check (scripts/network-check.sh). Screens and logs go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,4 +46,6 @@ if [[ -n "$UISERVER" ]]; then
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
 drive quit >/dev/null || true
+# The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
+NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
 echo "smoke test passed"

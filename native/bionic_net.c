@@ -288,10 +288,27 @@ static int net_bind(int fd, const void *a, socklen_t alen) {
   return bind(fd, (struct sockaddr *)&m, mlen);
 }
 
+// `network offline` (dev.apksim.net.Net, set through ElfLoader.nativeSetOffline): native code's connections to
+// anything but loopback fail as with no network, and names do not resolve, as Java's do.
+volatile int net_offline;
+
+static int loopback_m(const struct sockaddr_storage *m) {
+  if (m->ss_family == AF_INET) return (ntohl(((const struct sockaddr_in *)m)->sin_addr.s_addr) >> 24) == 127;
+  if (m->ss_family == AF_INET6) {
+    const struct in6_addr *a = &((const struct sockaddr_in6 *)m)->sin6_addr;
+    return IN6_IS_ADDR_LOOPBACK(a) || (IN6_IS_ADDR_V4MAPPED(a) && a->s6_addr[12] == 127);
+  }
+  return 1;  // not an internet address (Unix sockets)
+}
+
 static int net_connect(int fd, const void *a, socklen_t alen) {
   struct sockaddr_storage m;
   socklen_t mlen;
   if (addr_a2m(a, alen, &m, &mlen) < 0) return -1;
+  if (net_offline && !loopback_m(&m)) {
+    errno = ENETUNREACH;
+    return -1;
+  }
   return connect(fd, (struct sockaddr *)&m, mlen);
 }
 
@@ -451,6 +468,10 @@ static const char *net_inet_ntop(int af, const void *src, char *dst, socklen_t s
 // Android's addrinfo has the BSD field order, so only the family and the address inside need converting.
 static int net_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
   struct addrinfo h, *list = NULL;
+  if (net_offline && node && strcmp(node, "localhost") != 0) {
+    unsigned char buf[sizeof(struct in6_addr)];
+    if (inet_pton(AF_INET, node, buf) != 1 && inet_pton(AF_INET6, node, buf) != 1) return EAI_NONAME;
+  }
   if (hints) {
     h = *hints;
     h.ai_family = af_a2m(hints->ai_family);
