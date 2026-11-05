@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 PKG = "dev.apksim.composeapp."
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 FAIL = [PKG + c for c in ("FailureBundleTest", "FailureBundleEspressoTest", "FailureBundleAfterTest", "FailureBundleParameterizedTest",
-                          "FailureBundleCustomHandlerTest")]
+                          "FailureBundleCustomHandlerTest", "FailureBundleExpectedTest")]
 problems = []
 
 
@@ -75,7 +75,7 @@ def main():
     os.makedirs(outside)
     open(os.path.join(outside, "failure.txt"), "w").write("not this run's\n")
     os.symlink(os.path.abspath(os.path.dirname(outside)), os.path.join(local, "linked.Class"))
-    r = instrument(a, xml, bdir, local, "-e", "failOnPurpose", "true", "-e", "class", ",".join(FAIL))
+    r = instrument(a, xml, bdir, local, "-e", "failOnPurpose", "true", "-e", "class", ",".join(FAIL), "-e", "bundleDir", bdir)
     check(r.returncode == 1, f"the run fails (exit {r.returncode})")
     expect = {  # (class, method): (captured by, screen and tree expected, text the tree must hold)
         (PKG + "FailureBundleTest", "b_composeAssertionFails"): ("test body", True, "FAB clicks: 0"),
@@ -112,11 +112,14 @@ def main():
         check(len(w.strip().splitlines()) == 2, "the dialog test's windows.txt lists two windows")
     check(os.path.exists(os.path.join(outside, "failure.txt")), "the cleanup does not follow a link out of DIR")
     for c, m in ((PKG + "FailureBundleTest", "a_passes"), (PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"),
-                 (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides")):
+                 (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"), (PKG + "FailureBundleExpectedTest", "expectedThrows")):
         check(not os.path.exists(os.path.join(local, folder(c, m))), f"no bundle for passing {m}")
     cases = {(t.get("classname"), t.get("name")): t for t in ET.parse(xml).iter("testcase")}
     own = cases.get((PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"))
     check(own is not None and own.find("failure") is None, "a test's own Espresso failure handler still decides (it passed)")
+    exp = cases.get((PKG + "FailureBundleExpectedTest", "expectedThrows"))
+    check(exp is not None and exp.find("failure") is None and exp.find("skipped") is None,
+          "@Test(expected) passes, with no bundle started for it (its @After checks before the test's end)")
     for key in expect:
         t = cases.get(key)
         prop = t is not None and t.find("properties/property[@name='apksim.bundle']")
@@ -136,7 +139,8 @@ def main():
 
     print("--bundles-on all: a body that returned, then an @After that fails:")
     r = instrument(a, os.path.join(out, "junit-all.xml"), os.path.join(a.out, "all"), os.path.join(out, "all"),
-                   "-e", "failOnPurpose", "true", "-e", "class", PKG + "FailureBundleAfterTest," + PKG + "FailureBundleParameterizedTest",
+                   "-e", "failOnPurpose", "true", "-e", "bundlesAll", "true", "-e", "class",
+                   ",".join(PKG + c for c in ("FailureBundleAfterTest", "FailureBundleParameterizedTest", "FailureBundleExpectedTest")),
                    "--", "--bundles-on", "all")
     d = os.path.join(out, "all", folder(PKG + "FailureBundleAfterTest", "afterFails"))
     f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
@@ -146,6 +150,9 @@ def main():
     d = os.path.join(out, "all", folder(PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"))
     f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
     check("status: passed" in f, "a passing test of a class with its own runner gets a bundle that says passed")
+    d = os.path.join(out, "all", folder(PKG + "FailureBundleExpectedTest", "expectedThrows"))
+    f = open(os.path.join(d, "failure.txt")).read() if os.path.exists(os.path.join(d, "failure.txt")) else ""
+    check("status: passed" in f, "@Test(expected) with --bundles-on all ends with a bundle that says passed")
 
     print("the watchdog's test, which ends the process (with --bundles-redact):")
     wxml = os.path.join(out, "junit-watchdog.xml")
