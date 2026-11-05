@@ -51,14 +51,18 @@ public final class SimParameterized extends Suite {
   @Override
   protected void runChild(Runner child, org.junit.runner.notification.RunNotifier notifier) {
     Object[] values = child instanceof ForParameters p ? p.values : new Object[0];
+    // As JUnit's RunAfterParams wraps RunBeforeParams: @AfterParam runs even when @BeforeParam fails (the set's tests
+    // are then not run), so a failed setup still gets its cleanup.
     try {
-      callbacks(Parameterized.BeforeParam.class, values);
-    } catch (Throwable t) {
-      notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
-      return;
-    }
-    try {
-      super.runChild(child, notifier);
+      boolean setUp;
+      try {
+        callbacks(Parameterized.BeforeParam.class, values);
+        setUp = true;
+      } catch (Throwable t) {
+        notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+        setUp = false;
+      }
+      if (setUp) super.runChild(child, notifier);
     } finally {
       try {
         callbacks(Parameterized.AfterParam.class, values);
