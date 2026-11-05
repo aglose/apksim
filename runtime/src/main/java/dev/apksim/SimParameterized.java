@@ -112,6 +112,12 @@ public final class SimParameterized extends Suite {
           }
 
           @Override
+          protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
+            // Failure bundles capture in the test body here too, before teardown (SimRunner.bundled).
+            return SimRunner.bundled(method, super.methodInvoker(method, test));
+          }
+
+          @Override
           protected void validateConstructor(List<Throwable> errors) {
             validateOnlyOneConstructor(errors);
           }

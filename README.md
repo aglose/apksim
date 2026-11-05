@@ -150,6 +150,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Testing | `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
 | | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
 | | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
+| | `--start-activities` | In test runs, an activity the app starts comes up, as on a device, instead of only being recorded |
 | | `--bundles DIR` | In test runs, a [failure bundle](#failure-bundles) in DIR for each failing test. `--bundles-on all` for passing tests too, `--bundles-max N` (default 50 a process), `--bundles-redact REGEX` |
 | | `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
 | | `--snapshot` | Deterministic drawing for [screenshot tests](#screenshot-tests): CPU only, carets that don't blink |
@@ -291,6 +292,7 @@ library's device-test APK, such as a KMP `androidDeviceTest`, instruments itself
 - **Runner and rules:** a custom runner's `newApplication`, and JUnit's `Timeout` rule.
 - **Shell commands:** UiAutomation shell commands: `settings` (animation scales included), `getprop`, `logcat -c`/`-d`, `touch`, `ls`, `am broadcast`.
 - **Rendering:** offscreen GLES20/30 and EGL14 on a real GLES 3 (ANGLE on Metal, Mesa in the Linux image).
+- **Device behaviour suites rely on:** before the app starts, an `ANDROID_ID`, normal permissions granted and content providers created (AndroidX Startup runs); a connected, validated network; the test APK's own context and assets; `Parameterized` inside the test environment; views drawn after each layout, dialogs taking the window focus, and Espresso waiting for Compose; `--start-activities` for flows that go through a second activity.
 - **Running on the main thread:** tests run as Robolectric runs them: the test body on the main thread, with a simulated clock that skips idle time. `--realtime-clock` makes the clock follow real time instead, for suites whose timed UI must last, such as a banner that closes itself after a few seconds. `--timezone` and `--device tablet` match a CI emulator's configuration.
 
 On a large app's suite, the same APKs its CI runs on two API 34 emulators, the results were:

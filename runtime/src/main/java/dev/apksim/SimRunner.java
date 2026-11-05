@@ -88,10 +88,15 @@ public class SimRunner extends RobolectricTestRunner {
     return new HelperTestRunner(bootstrapped) {
       @Override
       protected org.junit.runners.model.Statement methodInvoker(FrameworkMethod method, Object test) {
-        org.junit.Test t = method.getAnnotation(org.junit.Test.class);
-        return Bundles.wrap(super.methodInvoker(method, test), t == null ? org.junit.Test.None.class : t.expected());
+        return bundled(method, super.methodInvoker(method, test));
       }
     };
+  }
+
+  /** A test method's statement with its failure bundle hook (Bundles.wrap); every helper runner here uses it. */
+  static org.junit.runners.model.Statement bundled(FrameworkMethod method, org.junit.runners.model.Statement s) {
+    org.junit.Test t = method.getAnnotation(org.junit.Test.class);
+    return Bundles.wrap(s, t == null ? org.junit.Test.None.class : t.expected());
   }
 
   /** Robolectric's interceptors, with the framework's wall clock replaced by the real one ({@link WallClock}). */

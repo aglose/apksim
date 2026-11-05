@@ -615,8 +615,29 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
-Not supported yet: `adb shell am instrument` of a test APK (only of a self-targeting instrumentation, see "adb device"), the test APK's own resources/context (`getInstrumentation().context`
-is the app's), shell commands that need another process or the Host loop (input, screencap, `am instrument`), and
+- Before Application.onCreate, as installing and ActivityThread do (`InstallState`): `Settings.Secure.ANDROID_ID` is set
+  (Robolectric leaves it null), every requested permission of protection level normal is granted (all requested ones
+  with `--permissions grant`), and the app's content providers are created, highest initOrder first (AndroidX
+  Startup's initializers run). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
+- `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
+  the translator (`TestActivities.instrumentationContext`).
+- JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child
+  (`SimParameterized`), so a constructor can read the instrumentation's arguments.
+- bindService to a service no installed app has returns false and never calls back (Robolectric called back with
+  nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
+- Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
+  View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
+  focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
+  loopMainThreadUntilIdle also waits for the Compose rule's idling resource, as it is registered on a device.
+- `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
+  one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
+  finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
+- In app code everywhere (the translator): `KeyStore.getDefaultType()` is "BKS", Android's, with Bouncy Castle added
+  after the JDK's providers (`KeyStores`), and AES/GCM set up again with the same key and IV is allowed, as Android's
+  provider allows it (`Ciphers`: unsafe, but what the app gets on a device); `android.net.ssl.SSLSockets` supports
+  the JDK's TLS sockets, so OkHttp's Android platform sets ALPN and offers HTTP/2 (`ShadowSimSSLSockets`).
+Not supported yet: `adb shell am instrument` of a test APK (only of a self-targeting instrumentation, see "adb device"), shell commands that need another process or the Host loop (input, screencap, `am instrument`), and
 test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
 `--no-network` keeps only localhost (127.0.0.1 and ::1).
