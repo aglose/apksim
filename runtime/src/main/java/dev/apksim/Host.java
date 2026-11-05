@@ -606,6 +606,15 @@ public class Host {
     }
   }
 
+  /**
+   * A control command from code already on the main thread (UiAutomation.executeShellCommand from a test or app
+   * callback), which cannot wait for the loop to take it from Control.QUEUE. Null when no Host is running.
+   */
+  static String runOnMain(String[] a) throws Exception {
+    Host h = current;
+    return h == null ? null : h.runCommand(a);
+  }
+
   private String runCommand(String[] a) throws Exception {
     switch (a[0]) {
       case "tap" -> {
