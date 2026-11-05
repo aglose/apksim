@@ -135,6 +135,8 @@ SCENARIOS = {
     "balanced-big": (0, 5, 3000, []),
     # --affected-by: a change to C000.kt runs C000's tests and C002's, which the deps file has no record of.
     "affected": (0, 2, 6, []),
+    # The same 6 tests over 8 shards, running shard 7 only: an empty job of a CI matrix passes, after the listing.
+    "affected-empty-shard": (0, 1, 0, []),
 }
 SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2}
 
@@ -147,14 +149,15 @@ def extra_args(sc, d):
             f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
         return ["--timings", xml]
-    if sc == "affected":
+    if sc.startswith("affected"):
         deps = os.path.join(d, "deps.json.gz")
         doc = {"version": 1, "apks": [], "packages": ["p/"], "named": 1.0, "classes": ["p/C000", "p/C001"],
                "sources": {"p/C000.kt": [0], "p/C001.kt": [1]},
                "tests": {f"p.C00{c}#m{m}": [c] for c in range(2) for m in range(3)}}
         with gzip.open(deps, "wt") as f:
             json.dump(doc, f)
-        return ["--affected-by", deps, "--changed", "app/src/main/kotlin/p/C000.kt"]
+        return (["--affected-by", deps, "--changed", "app/src/main/kotlin/p/C000.kt"]
+                + (["--shards", "8", "--shard", "7"] if sc == "affected-empty-shard" else []))
     return []
 
 

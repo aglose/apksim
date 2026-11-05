@@ -342,8 +342,8 @@ final class Instrument {
    * lines on stdout between am instrument's status blocks, which instrument.py takes out of the output:
    * {@code INSTRUMENTATION_APKSIM_DEPS: P <packages>} lists the probed packages, {@code ... C <id> <class>} names a class the first time it appears,
    * {@code ... T <class> <method> <ids>} lists a finished test's classes, and {@code ... G <class> <ids>} classes that ran
-   * between tests (@BeforeClass/@AfterClass, the runner's setup), which count for every test of the class before and
-   * after them. Fields are tab-separated, with tab, newline and backslash escaped. A test that never finishes (the
+   * between tests (@BeforeClass/@AfterClass), which count for every test of the class before and after them; the class
+   * {@code *} stands for every test (what ran before the first: the runners' construction, the runner's setup). Fields are tab-separated, with tab, newline and backslash escaped. A test that never finishes (the
    * process died) has no line, and instrument.py selects such tests always.
    */
   private static final class DepsListener extends RunListener {
@@ -359,6 +359,9 @@ final class Instrument {
     @Override
     public void testRunStarted(Description d) {
       out.println(PREFIX + "P\t" + dev.apksim.dex.Probes.packages());
+      // Before the first test: building the runners (a Parameterized class's @Parameters), the runner's
+      // newApplication probe. Any class's tests may depend on that, so "*" puts it on every test.
+      line("G", "*", null, dev.apksim.dex.Probes.mark());
     }
 
     @Override

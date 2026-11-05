@@ -169,7 +169,7 @@ def write_deps(path, processes, apks):
         for k, v in g.items():
             gaps.setdefault(k, set()).update(v)
     for (c, _), reached in tests.items():
-        reached |= gaps.get(c, set())
+        reached |= gaps.get(c, set()) | gaps.get("*", set())  # "*": before the first test, for every test
     try:
         sources = source_map(apks, sorted(packages))
     except OSError as e:
@@ -388,7 +388,9 @@ def balance(tests, timings, shards):
     (tests without a time count as the median of those with one). Returns (lists, their predicted seconds)."""
     known = sorted(v for t, v in timings.items())
     default = known[len(known) // 2] if known else 1.0
-    cost = {t: timings.get(t, default) for t in tests}
+    # A test the XML timed at 0.000 s (it rounds to ms) still costs something: with no cost at all, every such test
+    # would go to the first shard.
+    cost = {t: max(timings.get(t, default), 0.001) for t in tests}
     order = sorted(tests, key=lambda t: (-cost[t], t))
     lists, totals = [[] for _ in range(shards)], [0.0] * shards
     for t in order:

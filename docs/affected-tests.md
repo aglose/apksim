@@ -67,7 +67,9 @@ so test N sees only what no earlier test loaded. Three ways around it were weigh
    `Probes.mark()` moves the epoch on at every test boundary, so each class reports again the first time its code
    runs in the next test, however long ago it was loaded: two static reads and a compare per method call otherwise.
    Interfaces cannot have a static field that is not final, so their default and static methods call
-   `Probes.hitInterface`, which keeps the epoch in a ClassValue. The probe goes in after `Peephole`, into the
+   `Probes.hitInterface`, which keeps the epoch in a ClassValue. The epoch is volatile, so a worker thread's probes
+   see a new test begin (a plain field could stay in a register or be hoisted out of a loop by the JIT); on arm64 that
+   read is a load-acquire. The probe goes in after `Peephole`, into the
    buffered method, so nothing else in the translator changes; probed classes have their own class cache
    (`work/cache/classes/<hash>-deps<packages>`). With recording off the translator's output is byte-identical
    (`scripts/translate-all.java`, below).
@@ -94,8 +96,9 @@ runs the whole suite.
 
 `Instrument` adds a JUnit listener (`DepsListener`) when recording. A test's classes are those reached between its
 `testStarted` and `testFinished`: Robolectric's per-test setup (the Application and its `onCreate`), the test body and
-its rules, and the reset after it. Code that runs between tests (`@BeforeClass`, `@AfterClass`, the runner's own
-setup before the first test) counts for every test of the class before and after that gap. Work a test leaves running
+its rules, and the reset after it. Code that runs between tests (`@BeforeClass`, `@AfterClass`) counts for every test
+of the class before and after that gap; what runs before the first test (building every class's runner, such as a
+Parameterized class's `@Parameters`, and the instrumentation's `newApplication`) counts for every test of the run. Work a test leaves running
 on another thread and that runs after the test ends counts for the next test; nothing is lost from the union, but it
 may be put on the wrong test. A test whose process dies while it runs has no record; selection then always runs it.
 
@@ -163,7 +166,9 @@ AndroidJUnitRunner's hash sharding gives shards equal numbers of tests, not equa
 shard twice as long as the rest. With `--timings` (JUnit XML from an earlier `instrument.py --xml`, as many files as
 needed; a test's last time wins) the tests are sorted longest first and each goes to the shard with the least time so
 far (greedy LPT, within 4/3 of the best split and in practice much closer). Tests with no time count as the median of
-those with one. Each shard then runs its tests in the suite's order, named with `-e class` through `narrow()`, so its
+those with one, and none counts as less than 1 ms (the XML rounds to ms: tests timed at 0.000 s would otherwise all go
+to the first shard). A shard can be empty (more shards than tests, or a selection smaller than a CI matrix); an empty
+shard's run passes, while a run without shards that finds no tests still fails. Each shard then runs its tests in the suite's order, named with `-e class` through `narrow()`, so its
 crash recovery works as for one process. The predicted time of each shard is printed before the run.
 
 The split needs the suite's list, so a balanced run starts with a listing process (a few seconds); hash sharding needs
@@ -245,6 +250,9 @@ The app of [ci-testbed.md](ci-testbed.md) (Kotlin Multiplatform, about a dozen m
 | another feature module | 461 | 6.2, 4.1 s | 5.5, 4.2 s | 108 KB | 22 |
 | app module, UI tests | 156 | 14.3, 11.3 s | 14.3, 10.4 s | 179 KB | 230 |
 | whole-app journeys | 76 | | 77 s | 191 KB | 1,991 |
+
+Measured with a plain epoch field; with the volatile one (above), the shared module again: 44.8 and 38.9 s plain,
+42.7 and 41.9 s recording, within the runs' own spread.
 
 Of the classes the deps files hold (8,000-14,400 per APK), 99.9% are placed by the source map once D8's synthetic
 classes take their outer class's file (95-97% without).

@@ -445,7 +445,9 @@ def main():
     if selected is not None and not selected:
         print("no test is affected by the change", file=sys.stderr)
         sys.exit(0)
-    sys.exit(1 if failed or not results else 0)
+    # No results at all fails a run (no tests found), except for a shard, which can be empty by design (more shards
+    # than tests, a selection smaller than the CI matrix): a process that did not finish has a "(run)" entry anyway.
+    sys.exit(1 if failed or (not results and a.shards == 1) else 0)
 
 
 main()

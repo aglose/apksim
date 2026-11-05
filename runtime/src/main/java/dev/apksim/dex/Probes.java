@@ -22,8 +22,12 @@ public final class Probes {
   /** -Dapksim.deps=true: Instrument reports what each test reached, on stdout (see Instrument.DepsListener). */
   public static final boolean ON = Boolean.getBoolean("apksim.deps");
 
-  /** Read by every probed method. Moved on by {@link #mark}, on the main thread, between tests. */
-  public static int epoch = 1;
+  /**
+   * Read by every probed method. Moved on by {@link #mark}, on the main thread, between tests. Volatile so a worker
+   * thread's probes see a new test begin (a plain read could be kept in a register or hoisted out of a loop by the JIT);
+   * on arm64 that is a load-acquire, and costs nothing measurable here (docs/affected-tests.md).
+   */
+  public static volatile int epoch = 1;
 
   private static final Object LOCK = new Object();
   private static Set<String> current = new HashSet<>();
