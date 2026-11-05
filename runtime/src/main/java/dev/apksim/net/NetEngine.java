@@ -272,7 +272,8 @@ final class NetEngine {
       if (Net.mode == Net.Mode.SHAPE) {
         relayed.incrementAndGet();
         if (pending != null) uout.write(originForm(pending));
-        relay(cin, cout, uin, uout, client, up);
+        watching = false;
+      relay(cin, cout, uin, uout, client, up);
         return;
       }
 
@@ -342,25 +343,59 @@ final class NetEngine {
       return b.size() == 0 ? null : b.toByteArray();
     }
 
+    /** How often a read from the server that is waiting checks whether the client is still there. */
+    static final int WATCH_MS = 500;
+    /** Off while relaying: the relay's other thread reads the client then, and clientGone would race it. */
+    volatile boolean watching = true;
+    /** upstreamPeek's own short timeout, which must reach it. */
+    boolean peeking;
+
     /**
-     * Waits for the server's answer to begin, giving up if the client goes away meanwhile (its timeout closed the
-     * connection): otherwise a server that never answers kept this worker and its connection for good.
+     * The server's stream: every read that waits (for the answer to begin, or in the middle of a body) gives up once
+     * the client has gone away, for instance closed by its own timeout. Otherwise a server that stalls kept this worker
+     * and both its connections for good.
      */
-    void awaitUpstream() throws IOException {
-      up.setSoTimeout(500);
-      try {
+    final class Watched extends InputStream {
+      private final InputStream in;
+
+      Watched(InputStream in) {
+        this.in = in;
+      }
+
+      @Override
+      public int read() throws IOException {
+        byte[] b = new byte[1];
+        int n = read(b, 0, 1);
+        return n < 0 ? -1 : b[0] & 0xff;
+      }
+
+      @Override
+      public int read(byte[] b, int off, int len) throws IOException {
         while (true) {
           try {
-            uin.mark(1);
-            if (uin.read() >= 0) uin.reset();
-            return;
-          } catch (java.net.SocketTimeoutException e) {
-            if (clientGone()) throw new IOException("the client went away while the server was still to answer");
+            return in.read(b, off, len);
+          } catch (SocketTimeoutException e) {
+            if (peeking) throw e;
+            if (closed || watching && clientGone()) throw new IOException("the client went away while the server was still to answer");
           }
         }
-      } finally {
-        if (up != null && !up.isClosed()) up.setSoTimeout(0);
       }
+
+      @Override
+      public int available() throws IOException {
+        return in.available();
+      }
+
+      @Override
+      public void close() throws IOException {
+        in.close();
+      }
+    }
+
+    void watch(Socket s) throws IOException {
+      s.setSoTimeout(WATCH_MS);
+      uin = new BufferedInputStream(new Watched(s.getInputStream()));
+      uout = s.getOutputStream();
     }
 
     /** Without blocking: whether the client has closed its connection (bytes it sent stay to be read). */
@@ -383,6 +418,7 @@ final class NetEngine {
     int upstreamPeek() throws IOException {
       if (up == null || up.isClosed()) return -1;
       up.setSoTimeout(1);
+      peeking = true;
       try {
         uin.mark(1);
         if (uin.read() < 0) return -1;
@@ -391,7 +427,8 @@ final class NetEngine {
       } catch (SocketTimeoutException e) {
         return 0;
       } finally {
-        if (!up.isClosed()) up.setSoTimeout(0);
+        peeking = false;
+        if (!up.isClosed()) up.setSoTimeout(WATCH_MS);
       }
     }
 
@@ -406,8 +443,7 @@ final class NetEngine {
         s.setTcpNoDelay(true);
         s.connect(target(host, address, port), timeout);
         adopt(s);
-        uin = new BufferedInputStream(s.getInputStream());
-        uout = s.getOutputStream();
+        watch(s);
         connectMs = (System.nanoTime() - t0) / 1_000_000;
         return null;
       } catch (IOException e) {
@@ -434,14 +470,14 @@ final class NetEngine {
     }
 
     List<String> upgradeUpstream() throws Exception {
+      up.setSoTimeout(timeout);  // the handshake gets the app's connect timeout; the watch starts after it
       SSLSocket s = (SSLSocket) upstreamTls().createSocket(up, tlsHost, port, true);
       SSLParameters params = s.getSSLParameters();
       params.setEndpointIdentificationAlgorithm("HTTPS");
       s.setSSLParameters(params);
       s.startHandshake();
       adopt(s);
-      uin = new BufferedInputStream(s.getInputStream());
-      uout = s.getOutputStream();
+      watch(s);
       List<String> chain = new ArrayList<>();
       for (Certificate cert : s.getSession().getPeerCertificates()) chain.add(Base64.getEncoder().encodeToString(cert.getEncoded()));
       return chain;
@@ -536,7 +572,6 @@ final class NetEngine {
         streamRequestBody(req, uout);
         uout.flush();
         sent = System.nanoTime();
-        awaitUpstream();
         statusLine = readLineBytes(uin);
       } catch (Exception e) {
         Net.log("network record: " + req.method + " " + req.url + " failed: " + e);
@@ -572,7 +607,8 @@ final class NetEngine {
       if (resp.status == 101) {
         // Not added: what follows is not recorded, so a replay could not answer it; replaying, it is unmatched.
         Net.log("network record: " + req.url + " switched protocols: relayed from here on, not recorded");
-        relay(cin, cout, uin, uout, client, up);
+        watching = false;
+      relay(cin, cout, uin, uout, client, up);
         return false;
       }
       Capture body = new Capture(MAX_BODY);
@@ -693,6 +729,7 @@ final class NetEngine {
       }
       Net.log("network record: " + host + ":" + port + " is not HTTP/1.1: relayed, not recorded");
       if (consumed.length > 0) uout.write(consumed);
+      watching = false;
       relay(cin, cout, uin, uout, client, up);
     }
 

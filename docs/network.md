@@ -144,8 +144,10 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name.
 - `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
   request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
-- While the engine waits for a server's answer it watches the client: an app that times out and closes its
-  connection ends the server's too, so a server that never answers does not keep a worker and a socket for good.
+- Every read from a server that waits (for the answer to begin, or in the middle of a body) checks every 500 ms
+  whether the client is still there: an app that times out and closes its connection ends the server's too, so a
+  server that stalls does not keep a worker and both sockets for good. A TLS handshake with the server gets the app's
+  connect timeout.
 - The recording is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
   (Ctrl-C, the app's `System.exit`).
 - Offline, `URL.openConnection` returns a connection that fails when used (UnknownHostException for a name,
