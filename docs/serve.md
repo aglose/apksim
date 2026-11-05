@@ -33,12 +33,17 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 
 - One session is one browser tab and one apksim instance: the APK, the device (phone, foldable, tablet, desktop,
   TV), appearance, locale and font scale the tab asked for, and optionally a deep link opened once the app is up.
-- The instance is a normal launch: `apksim --headless --fresh --no-autofill --control auto [options] APK`
-  (`--no-autofill`: never the owner's saved sign-ins from `work/autofill`, which would sign a visitor in as them). On the Mac it is taken
+- The instance is a normal launch: `apksim --headless --fresh --no-autofill --data-slots serve --control auto
+  [options] APK` (`--no-autofill`: never the owner's saved sign-ins from `work/autofill`, which would sign a visitor
+  in as them; `--data-slots serve`: app data in `serve-0`, `serve-1`..., never the `default`/`instance-N` slots an
+  ordinary launch keeps, which `--fresh` would otherwise empty). On the Mac it is taken
   by the warm-launch standby when one is ready (serve starts one at its own start, and each instance starts the next
   after its first frame); on Linux there are no standbys, so each session is a cold launch.
-- Each instance takes its own app data slot (`default`, `instance-N`), emptied first (`--fresh`), and serve deletes
-  the slot's contents when the session ends, so one session never sees another's data through the app.
+- Each instance takes its own app data slot (`serve-N`), emptied first (`--fresh`), and serve deletes the slot's
+  contents when the session ends (the instance prints the slot as soon as it takes it, so this holds even for an app
+  that never finishes starting), so one session never sees another's data through the app.
+- Closing the tab while the APK downloads or the app launches ends the session too, and a stopping session counts
+  against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
 

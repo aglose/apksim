@@ -57,8 +57,11 @@ dd { margin: 0; text-align: right; }
 #linkbox[hidden] { display: none; }
 .hint { color: var(--muted); font-size: 12px; }
 @media (max-width: 760px) {
-  main { flex-direction: column; padding: 16px; }
-  aside { width: auto; }
+  /* The page scrolls instead: the screen keeps most of the viewport, the controls come below it. */
+  html, body { height: auto; }
+  main { flex-direction: column; padding: 16px; flex: none; }
+  #stage { flex: none; height: 78vh; min-height: 320px; }
+  aside { width: auto; overflow: visible; }
   header { padding: 8px 16px; }
 }
 </style>
@@ -191,7 +194,7 @@ $("file").onchange = () => {
   if (!f) return;
   const x = new XMLHttpRequest();
   x.open("POST", "/api/upload");
-  x.setRequestHeader("X-Filename", f.name);
+  x.setRequestHeader("X-Filename", encodeURIComponent(f.name));  // a header value must be Latin-1
   x.upload.onprogress = e => { if (e.lengthComputable) $("uploadBtn").textContent = "Uploading " + Math.round(100 * e.loaded / e.total) + "%"; };
   x.onload = () => {
     $("uploadBtn").textContent = "Upload APK…";
@@ -222,7 +225,7 @@ function start() {
   // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
   // closing (or delivering) when Start opens the next.
   sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
-  sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data); };
+  sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
     if (sock !== ws) return;
     if (!ended) overlay("Disconnected from the server.", "Start again", start);
@@ -264,12 +267,14 @@ let clockOffset = 0, bestRtt = Infinity;
 function syncClock() { send("t " + now()); }
 function push(a, v, n) { a.push(v); if (a.length > n) a.shift(); }
 function median(a) { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; }
-function onFrame(buf) {
+function onFrame(buf, sock) {
   const dv = new DataView(buf);
   const w = dv.getInt32(0), h = dv.getInt32(4), encode = dv.getInt32(16) / 1000;
   const presented = Number(dv.getBigInt64(8)) / 1000 - clockOffset;  // in this machine's time
   const jpeg = new Blob([new Uint8Array(buf, 20)], { type: "image/jpeg" });
   chain = chain.then(() => createImageBitmap(jpeg)).then(bmp => {
+    // Decoding takes a moment: by now Stop or a new session may have replaced this frame's socket.
+    if (sock !== ws || ended) { bmp.close(); return; }
     if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); }
     ctx.drawImage(bmp, 0, 0);
     bmp.close();
@@ -280,7 +285,7 @@ function onFrame(buf) {
     // The first new frame after an input, if it comes within a second (an input that changes nothing on screen is
     // not answered by the next caret blink).
     if (pendingInput && presented > pendingInput) { if (t - pendingInput < 1000) push(inputLat, t - pendingInput, 30); pendingInput = 0; }
-  }).catch(() => send("ack"));
+  }).catch(() => { if (sock === ws) send("ack"); });
 }
 setInterval(syncClock, 10000);
 setInterval(() => {
@@ -299,7 +304,7 @@ window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length,
   width: frameW, height: frameH });
 function fit() {
   const stage = $("stage"), w = frameW || canvas.width, h = frameH || canvas.height;
-  const s = Math.min((stage.clientWidth - 20) / w, (stage.clientHeight - 20) / h, 1 / Math.max(1, devicePixelRatio));
+  const s = Math.max(0.05, Math.min((stage.clientWidth - 20) / w, (stage.clientHeight - 20) / h, 1 / Math.max(1, devicePixelRatio)));
   canvas.style.width = Math.floor(w * s) + "px";
   canvas.style.height = Math.floor(h * s) + "px";
 }

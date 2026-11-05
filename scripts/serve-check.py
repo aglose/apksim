@@ -13,6 +13,7 @@ same machine, or a container's clock) and the session's memory. Exits 1 on any f
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import socket
@@ -20,7 +21,9 @@ import struct
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 
 FAILED = []
 
@@ -189,6 +192,14 @@ def main():
         reply = s.recv(200)
         check(b" 413 " in reply, "an upload over the limit is refused: " + reply.split(b"\r\n")[0].decode())
         s.close()
+    # A name outside Latin-1 travels URL-encoded (as the page sends it) and is kept in a plain-ASCII form.
+    tiny = io.BytesIO()
+    with zipfile.ZipFile(tiny, "w") as z:
+        z.writestr("AndroidManifest.xml", b"")
+    status, body = http(url, "/api/upload", token, data=tiny.getvalue(),
+                        headers={"X-Filename": urllib.parse.quote("测试 build.apk")})
+    check(status == 200 and json.loads(body).get("name", "").endswith(" build.apk"),
+          f"an upload named outside Latin-1 is stored ({status} {body[:60]!r})")
     status, _ = http(url, "/api/upload", token, data=b"not a zip file", headers={"X-Filename": "x.apk"})
     check(status == 400, f"an upload that is not an APK is refused ({status})")
 

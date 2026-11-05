@@ -270,6 +270,11 @@ public class Host {
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
     if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
     dataDir = data;
+    // apksim serve learns the slot from here (not from `stats`, which waits for the activity to start): it empties the
+    // slot when the session ends, even if the app never got that far.
+    if (System.getProperty("apksim.dataSlots") != null) {
+      System.err.println("[apksim] data slot " + data + " pid " + ProcessHandle.current().pid());
+    }
     Path link = RuntimeEnvironment.getTempDirectory().getBasePath().resolve(pkg + "-dataDir");
     Storage.deleteTree(link);
     Files.createSymbolicLink(link, data);

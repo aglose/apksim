@@ -28,6 +28,8 @@ final class Catalog {
   record App(String id, String name, Path path, String url, boolean uploaded) {}
 
   private static final SecureRandom RANDOM = new SecureRandom();
+  /** Publishing an upload (its APK and its id), renewing an id, and sweeping take this, so a sweep never sees half. */
+  private final Object uploadsLock = new Object();
   private final Map<String, App> configured = new LinkedHashMap<>();
   private final Path uploads;
   private final Path downloads;
@@ -82,10 +84,13 @@ final class Catalog {
     if (!id.matches("u[0-9a-f]{32}")) return null;
     Path ref = uploads.resolve(id + ".ref");
     if (!Files.isRegularFile(ref)) return null;
-    List<String> lines = Files.readAllLines(ref);
-    if (lines.size() < 2 || !lines.get(0).matches("[0-9a-f]{64}\\.apk")) return null;
-    Files.setLastModifiedTime(ref, FileTime.fromMillis(System.currentTimeMillis()));  // in use: keep it
-    return new App(id, lines.get(1), uploads.resolve(lines.get(0)), null, true);
+    synchronized (uploadsLock) {
+      if (!Files.isRegularFile(ref)) return null;
+      List<String> lines = Files.readAllLines(ref);
+      if (lines.size() < 2 || !lines.get(0).matches("[0-9a-f]{64}\\.apk")) return null;
+      Files.setLastModifiedTime(ref, FileTime.fromMillis(System.currentTimeMillis()));  // in use: keep it
+      return new App(id, lines.get(1), uploads.resolve(lines.get(0)), null, true);
+    }
   }
 
   /** The APK file to launch, downloading a configured URL the first time. */
@@ -122,14 +127,17 @@ final class Catalog {
       throw new IllegalStateException(e);
     }
     Path apk = uploads.resolve(sha + ".apk");
-    if (Files.exists(apk)) Files.delete(tmp);
-    else Files.move(tmp, apk);
     byte[] idBytes = new byte[16];
     RANDOM.nextBytes(idBytes);
     String id = "u" + HexFormat.of().formatHex(idBytes);
     String clean = name == null || name.isBlank() ? "upload.apk" : name.replaceAll("[^A-Za-z0-9._ -]", "_");
     if (clean.length() > 80) clean = clean.substring(0, 80);
-    Files.writeString(uploads.resolve(id + ".ref"), sha + ".apk\n" + clean + "\n");
+    synchronized (uploadsLock) {
+      // The same APK stored already (or by an upload a moment ago): share it.
+      if (Files.exists(apk)) Files.delete(tmp);
+      else Files.move(tmp, apk);
+      Files.writeString(uploads.resolve(id + ".ref"), sha + ".apk\n" + clean + "\n");
+    }
     return new App(id, clean, apk, null, true);
   }
 
@@ -166,6 +174,12 @@ final class Catalog {
 
   /** Deletes uploads not used for this long, and stored APKs no upload refers to any more. */
   void sweep(long maxAgeMillis) {
+    synchronized (uploadsLock) {
+      sweepLocked(maxAgeMillis);
+    }
+  }
+
+  private void sweepLocked(long maxAgeMillis) {
     long cutoff = System.currentTimeMillis() - maxAgeMillis;
     try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads)) {
       List<Path> all = new ArrayList<>();
@@ -181,10 +195,11 @@ final class Catalog {
       for (Path p : all) {
         String n = p.getFileName().toString();
         if (!n.endsWith(".apk") && !n.endsWith(".part")) continue;  // ids: handled above (and maybe deleted)
-        // (Not one stored in the last hour: its id may be being written right now.)
-        boolean old = Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L;
-        boolean staleApk = n.endsWith(".apk") && !used.contains(n) && old;
-        boolean stalePart = n.endsWith(".part") && old;
+        // An APK no id names (ids and APKs are published together, under the lock this holds); an upload's
+        // partial file only once it is an hour old (it may still be arriving: uploads are received without the lock).
+        boolean staleApk = n.endsWith(".apk") && !used.contains(n);
+        boolean stalePart = n.endsWith(".part")
+            && Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L;
         if (staleApk || stalePart) Files.deleteIfExists(p);
       }
     } catch (IOException | RuntimeException e) {

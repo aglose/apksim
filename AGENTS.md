@@ -405,7 +405,9 @@ flight per tab (the page acknowledges each one drawn), and passes on only input 
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
 non-loopback `Host` header (DNS rebinding). Instances are never given `--adb` or `--control-bind`. A session ends when
 its tab closes, after `--idle` seconds without input, or when the app exits; its data slot is then emptied. Instances
-run with `--no-autofill` (never the owner's saved sign-ins), and the control log shows typed text only as its length.
+run with `--no-autofill` (never the owner's saved sign-ins) and `--data-slots serve` (`Storage.dataDir`: slots
+`serve-N`, so `--fresh` never empties an ordinary launch's `default`), and the control log shows typed text only as its
+length.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

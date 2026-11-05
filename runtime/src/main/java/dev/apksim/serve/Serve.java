@@ -251,7 +251,14 @@ public final class Serve {
       return;
     }
     try {
-      Catalog.App a = catalog.upload(r.body(), length, r.header("x-filename"));
+      // The page sends the name URL-encoded (a header carries only Latin-1); Catalog keeps a plain-ASCII form of it.
+      String name = r.header("x-filename");
+      try {
+        name = name == null ? null : java.net.URLDecoder.decode(name, StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException e) {
+        name = null;
+      }
+      Catalog.App a = catalog.upload(r.body(), length, name);
       System.err.printf("[serve] upload %s (%d MB)%n", a.name(), length >> 20);
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + "}");
     } catch (IOException e) {

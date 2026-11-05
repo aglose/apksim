@@ -35,6 +35,7 @@ import java.util.stream.Stream;
  */
 final class Session {
   private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
+  private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final String NUM = "-?\\d{1,5}(\\.\\d{1,3})?";
   private static final int MAX_IN_FLIGHT = 2;
@@ -79,27 +80,42 @@ final class Session {
 
   /** Runs the session until the tab closes, the app exits or it times out. */
   void run() {
+    // The tab is watched from the start: closing it while the app downloads or launches ends the session too.
+    Thread tab = Thread.ofVirtual().name("serve-tab-" + id).start(() -> {
+      ws.readLoop(this::onMessage);
+      stop(null);
+    });
+    Thread reader = null;
+    Thread sender = null;
     try {
       start();
-      Thread reader = Thread.ofVirtual().name("serve-frames-" + id).start(this::readFrames);
-      Thread sender = Thread.ofVirtual().name("serve-send-" + id).start(this::sendFrames);
-      ws.readLoop(this::onMessage);
-      reader.interrupt();
-      sender.interrupt();
+      if (!ended) {
+        reader = Thread.ofVirtual().name("serve-frames-" + id).start(this::readFrames);
+        sender = Thread.ofVirtual().name("serve-send-" + id).start(this::sendFrames);
+      }
     } catch (Exception e) {
-      if (!ended) ws.sendText("x could not start: " + e.getMessage());
       logLine("[serve] " + e);
-    } finally {
-      stop(null);
+      if (!ended) stop("could not start: " + e.getMessage());
     }
+    try {
+      tab.join();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    if (reader != null) reader.interrupt();
+    if (sender != null) sender.interrupt();
+    stop(null);
   }
 
   private void start() throws Exception {
     Path apk = serve.catalog.file(app);
+    if (ended) return;  // the tab left while the APK downloaded
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
-    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--control", "auto"));
+    // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
+    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill",
+        "--data-slots", "serve", "--control", "auto"));
     cmd.addAll(List.of("--device", device));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -151,6 +167,11 @@ final class Session {
         logLine(line);
         Matcher m = CONTROL_PORT.matcher(line);
         if (m.find()) port.complete(Integer.parseInt(m.group(1)));
+        m = DATA_SLOT.matcher(line);
+        if (m.find()) {
+          dataDir = Path.of(m.group(1));
+          pid = Long.parseLong(m.group(2));
+        }
         m = PERMISSION.matcher(line);
         if (m.find()) ws.sendText("q " + m.group(1));
       }
@@ -313,7 +334,6 @@ final class Session {
         switch (k) {
           case "heapUsedMb" -> heapMb = Integer.parseInt(v);
           case "pid" -> pid = Long.parseLong(v);
-          case "data" -> dataDir = v.equals("null") ? null : Path.of(v);
           default -> {
           }
         }
@@ -352,7 +372,7 @@ final class Session {
     return "{\"id\":" + Http.q(id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(device)
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
-        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20) + "}";
+        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20) + "}";
   }
 
   // ---------------------------------------------------------------- the end
@@ -364,7 +384,6 @@ final class Session {
       ended = true;
       notifyAll();
     }
-    serve.ended(this);
     synchronized (replies) {
       if (controlOut != null) controlOut.println("quit");
     }
@@ -395,6 +414,8 @@ final class Session {
     closeQuietly(control);
     closeQuietly(stream);
     eraseData();
+    // Only now, with the instance gone: a stopping session still counts against --max.
+    serve.ended(this);
     // Last: telling the tab can block on one that stopped reading (close gives up after a second).
     if (why != null) {
       Thread.ofVirtual().start(() -> {
@@ -418,7 +439,9 @@ final class Session {
   private void eraseData() {
     if (dataDir == null) return;
     Path dir = dataDir.toAbsolutePath().normalize();
-    if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())) return;
+    // Only a slot of serve's own (serve-N, under the state folder's app data).
+    if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
+        || !dir.getFileName().toString().startsWith("serve-")) return;
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l = ch.tryLock();
