@@ -180,6 +180,7 @@ final class Catalog {
       }
       for (Path p : all) {
         String n = p.getFileName().toString();
+        if (!n.endsWith(".apk") && !n.endsWith(".part")) continue;  // ids: handled above (and maybe deleted)
         // (Not one stored in the last hour: its id may be being written right now.)
         boolean old = Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L;
         boolean staleApk = n.endsWith(".apk") && !used.contains(n) && old;

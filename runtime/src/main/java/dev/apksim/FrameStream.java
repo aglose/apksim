@@ -88,6 +88,8 @@ final class FrameStream {
 
   private static int quality = 80;
   private static byte[] lastEncoded;  // raw pixels of the last frame encoded, guarded by LOCK
+  private static int lastW;
+  private static int lastH;
 
   private static synchronized void startEncoder() {
     if (encoder != null) return;
@@ -114,7 +116,8 @@ final class FrameStream {
           }
         }
         fresh = false;
-        if (lastEncoded != null && Arrays.equals(lastEncoded, latest)) continue;  // presented again, unchanged
+        // Presented again, unchanged (same size too: a rotated solid screen has the same bytes).
+        if (lastEncoded != null && latestW == lastW && latestH == lastH && Arrays.equals(lastEncoded, latest)) continue;
         if (raw == null || raw.length != latest.length) raw = new byte[latest.length];
         System.arraycopy(latest, 0, raw, 0, latest.length);
         w = latestW;
@@ -138,6 +141,8 @@ final class FrameStream {
         byte[] previous = lastEncoded;
         lastEncoded = raw;
         raw = previous;
+        lastW = w;
+        lastH = h;
       }
       for (Subscriber s : SUBSCRIBERS) s.offer(f);
     }

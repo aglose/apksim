@@ -12,6 +12,7 @@ same machine, or a container's clock) and the session's memory. Exits 1 on any f
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -100,7 +101,7 @@ class Session:
         if token:
             hdr["Cookie"] = "apksim_token=" + token
         self.ws = WS(url, f"/ws?app={app}&device={device}", hdr)
-        self.frames = []  # (arrived, present_ms in this machine's time, encode_ms, size, w, h)
+        self.frames = []  # (arrived, present_ms in this machine's time, encode_ms, size, w, h, jpeg digest)
         self.offset, self.best_rtt = 0.0, float("inf")  # the server's clock minus this one's
         self.texts = []
         self.stats = {}
@@ -115,7 +116,8 @@ class Session:
             op, p = m
             if op == 2:
                 w, h, present_us, encode_us = struct.unpack(">iiqi", p[:20])
-                self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h))
+                self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
+                                    hashlib.sha1(p[20:]).hexdigest()))
                 self.ws.send("ack")
             elif op == 1:
                 t = p.decode()
@@ -247,7 +249,16 @@ def main():
     # Trips tab, then its note field: typing changes the screen.
     check(len(s.after(["touch down 350 1690", "touch up 350 1690"], 2.0)) > 0, "a frame after switching to Trips")
     s.pump(1)
-    check(len(s.after(["type hi there", "key SPACE", "key DEL 1"], 1.0)) >= 0, "typing accepted")
+    # Trips' note field (bottom left of the phone screen). Once focused its caret blinks, so frames keep coming; typing
+    # must bring a screen that never showed before it.
+    n0 = len(s.frames)
+    s.after(["touch down 300 1490", "touch up 300 1490"], 1.5)
+    before = {f[6] for f in s.frames[n0:]}
+    typed = s.after(["type hi", "key SPACE", "type there"], 1.5)
+    check(len(before) > 0 and any(f[6] not in before for f in typed), "typing in the note field changes the screen")
+    # Backspace mid-text ("hi there" -> "hithere"): erasing from the end would bring back a screen seen while typing.
+    erased = s.after(["key MOVE_HOME", "key DPAD_RIGHT 3", "key DEL"], 1.5)
+    check(any(f[6] not in before and f[6] not in {g[6] for g in typed} for f in erased), "Backspace changes it again")
     check(len(s.after(["appearance dark"], 2.5)) > 0, "a frame after dark mode")
     check(len(s.after(["rotate right"], 3.0)) > 0 and s.frames[-1][4] > s.frames[-1][5], "landscape frames after rotating")
     s.after(["rotate left", "appearance light"], 2.5)

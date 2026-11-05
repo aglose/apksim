@@ -94,6 +94,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --window) WINDOW_MODE="$2"; shift 2 ;;
     # Erase the app's data first, so it starts as just installed (reproducible runs).
     --fresh) EXTRA+=("-Dapksim.fresh=true"); shift ;;
+    # Never fill a sign-in form from work/autofill (apksim serve's instances: other people use them).
+    --no-autofill) EXTRA+=("-Dapksim.noAutofill=true"); shift ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
     --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); TEST_RUN=1; shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
@@ -117,7 +119,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
-      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       *) WARM_OK="" ;;

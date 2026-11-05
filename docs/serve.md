@@ -33,7 +33,8 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 
 - One session is one browser tab and one apksim instance: the APK, the device (phone, foldable, tablet, desktop,
   TV), appearance, locale and font scale the tab asked for, and optionally a deep link opened once the app is up.
-- The instance is a normal launch: `apksim --headless --fresh --control auto [options] APK`. On the Mac it is taken
+- The instance is a normal launch: `apksim --headless --fresh --no-autofill --control auto [options] APK`
+  (`--no-autofill`: never the owner's saved sign-ins from `work/autofill`, which would sign a visitor in as them). On the Mac it is taken
   by the warm-launch standby when one is ready (serve starts one at its own start, and each instance starts the next
   after its first frame); on Linux there are no standbys, so each session is a cold launch.
 - Each instance takes its own app data slot (`default`, `instance-N`), emptied first (`--fresh`), and serve deletes
@@ -61,9 +62,10 @@ The tab sends commands in the control channel's own words, and serve passes on o
 |---|---|
 | pointer down / drag / up / cancel (mouse, pen, touch) | `touch down\|move\|up\|cancel X Y` (moves at most one per animation frame) |
 | wheel, trackpad scroll | `wheel X Y AMOUNT` (summed per animation frame) |
-| printable keys, paste | `type TEXT`, `key SPACE` |
+| printable keys, paste, phone keyboards (through a hidden text field: IME, dictation) | `type TEXT`, `key SPACE` |
+| a phone keyboard's delete or return (input events with no key) | `key DEL`, `key FORWARD_DEL`, `key ENTER` |
 | Backspace, Delete, Enter, Tab, arrows, Home/End, Page Up/Down; Ctrl/Cmd and Shift with them | `key NAME 1 [ctrl] [shift] [alt]` |
-| Escape, Back button | `back` |
+| Escape, Back button | `back` (Shift+Esc instead returns the keyboard to the page's own controls) |
 | Home button / click on the home screen | `home` / `resume` |
 | Rotate buttons | `rotate left\|right` |
 | Dark mode toggle | `appearance dark\|light` |
@@ -90,6 +92,9 @@ that no deep link names, data entered).
   `Authorization: Bearer`, or the one-time `?token=` link).
 - Instances' control channels stay on loopback, and serve never starts them with `--adb` (the adb device has no AUTH).
   In a container, only serve's port is published.
+- The page cannot be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`): no clickjacking of
+  its controls.
+- What a visitor types is not kept: the instance logs `type (N characters)`, not the text (passwords, pasted tokens).
 - WebSocket upgrades and POSTs must come from serve's own page: an `Origin` other than serve's own is refused (a web
   page elsewhere cannot drive a local session), and on a loopback bind the `Host` header must name a loopback address
   (DNS rebinding).

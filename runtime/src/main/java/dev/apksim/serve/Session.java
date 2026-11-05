@@ -98,7 +98,8 @@ final class Session {
     Path apk = serve.catalog.file(app);
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
-    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--control", "auto"));
+    // Never the owner's saved sign-ins (work/autofill): other people use this instance.
+    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--control", "auto"));
     cmd.addAll(List.of("--device", device));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -114,13 +115,16 @@ final class Session {
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
     pb.directory(serve.logs.toFile());
-    process = pb.start();
+    // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
+    // process it never saw.
+    synchronized (this) {
+      if (ended) throw new IOException("the session ended before the app started");
+      process = pb.start();
+    }
     Thread.ofVirtual().name("serve-log-" + id).start(this::readLog);
-    process.onExit().thenRun(() -> {
-      if (!ended) {
-        ws.sendText("x the app exited (status " + process.exitValue() + ")");
-        ws.close("app exited");
-      }
+    Process started = process;
+    started.onExit().thenRun(() -> {
+      if (!ended) Thread.ofVirtual().start(() -> stop("the app exited (status " + started.exitValue() + ")"));
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
@@ -321,16 +325,26 @@ final class Session {
     ws.sendText("s " + json());
   }
 
-  /** Called every few seconds: stats, and the idle timeout. */
+  private final java.util.concurrent.atomic.AtomicBoolean ticking = new java.util.concurrent.atomic.AtomicBoolean();
+
+  /**
+   * Called every few seconds from serve's one timer: stats, and the idle timeout. The work runs on a thread of this
+   * session's own, as anything written to a tab may block (a tab that stopped reading) and the timer serves them all.
+   */
   void tick() {
-    if (ended) return;
-    long idle = System.currentTimeMillis() - lastInput;
-    if (idle > serve.idleSeconds * 1000L) {
-      ws.sendText("x stopped after " + serve.idleSeconds + " s without input");
-      Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("idle"));  // not on the timer: it waits for the app
-      return;
-    }
-    send("stats", this::onStats);
+    if (ended || !ticking.compareAndSet(false, true)) return;
+    Thread.ofVirtual().name("serve-tick-" + id).start(() -> {
+      try {
+        long idle = System.currentTimeMillis() - lastInput;
+        if (idle > serve.idleSeconds * 1000L) {
+          stop("stopped after " + serve.idleSeconds + " s without input");
+        } else {
+          send("stats", this::onStats);
+        }
+      } finally {
+        ticking.set(false);
+      }
+    });
   }
 
   String json() {
@@ -350,15 +364,18 @@ final class Session {
       ended = true;
       notifyAll();
     }
-    if (why != null) ws.close(why);
     serve.ended(this);
     synchronized (replies) {
       if (controlOut != null) controlOut.println("quit");
     }
+    Process p;
+    synchronized (this) {
+      p = process;
+    }
     try {
-      if (process != null && !process.waitFor(5, TimeUnit.SECONDS)) {
-        process.destroy();
-        if (!process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly();
+      if (p != null && !p.waitFor(5, TimeUnit.SECONDS)) {
+        p.destroy();
+        if (!p.waitFor(3, TimeUnit.SECONDS)) p.destroyForcibly();
       }
       // A warm launch runs in the standby's JVM, outside our child's process tree: make sure it has gone too.
       if (pid > 0) {
@@ -378,6 +395,13 @@ final class Session {
     closeQuietly(control);
     closeQuietly(stream);
     eraseData();
+    // Last: telling the tab can block on one that stopped reading (close gives up after a second).
+    if (why != null) {
+      Thread.ofVirtual().start(() -> {
+        ws.sendText("x " + why);
+        ws.close(why.length() > 60 ? why.substring(0, 60) : why);
+      });
+    }
     logLine("[serve] session ended" + (why == null ? "" : ": " + why));
     synchronized (this) {
       try {

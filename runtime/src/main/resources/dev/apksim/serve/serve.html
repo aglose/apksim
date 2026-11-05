@@ -128,7 +128,8 @@ dd { margin: 0; text-align: right; }
       </dl>
       <div id="log"></div>
     </div>
-    <div class="hint">Keyboard: click the screen, then type. Esc is Back; Ctrl or ⌘ shortcuts reach the app as Ctrl.</div>
+    <div class="hint">Keyboard: click the screen, then type. Esc is Back; Ctrl or ⌘ shortcuts reach the app as Ctrl;
+      Shift+Esc returns the keyboard to this page.</div>
   </aside>
 </main>
 <script>
@@ -215,12 +216,19 @@ function start() {
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?" + q);
-  ws.binaryType = "arraybuffer";
+  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?" + q);
+  sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
-  ws.onopen = () => { refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
-  ws.onmessage = e => typeof e.data === "string" ? onText(e.data) : onFrame(e.data);
-  ws.onclose = () => { if (!ended) overlay("Disconnected from the server.", "Start again", start); ended = true; refresh(); };
+  // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
+  // closing (or delivering) when Start opens the next.
+  sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
+  sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data); };
+  sock.onclose = () => {
+    if (sock !== ws) return;
+    if (!ended) overlay("Disconnected from the server.", "Start again", start);
+    ended = true;
+    refresh();
+  };
   fit();
 }
 function stop() { if (ws) { ended = true; ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
@@ -344,8 +352,12 @@ canvas.addEventListener("wheel", e => {
 canvas.addEventListener("contextmenu", e => e.preventDefault());
 // Keyboard: a hidden text field holds the focus. Keys with no text (Backspace, arrows, Enter, shortcuts) are sent from
 // keydown; text arrives as input events, which also covers IME composition, paste, dictation and phones' keyboards.
-const keys = $("keys");
-keys.addEventListener("focus", () => $("bezel").classList.add("typing"));
+// The field always holds one invisible character, so a phone keyboard's Backspace (often only a deletion input, with
+// key "Unidentified") has something to delete and reaches beforeinput below.
+const keys = $("keys"), SENTINEL = "\u200b";
+function resetKeys() { keys.value = SENTINEL; keys.setSelectionRange(1, 1); }
+resetKeys();
+keys.addEventListener("focus", () => { $("bezel").classList.add("typing"); resetKeys(); });
 keys.addEventListener("blur", () => $("bezel").classList.remove("typing"));
 keys.addEventListener("keydown", e => {
   if (e.isComposing) return;
@@ -353,6 +365,8 @@ keys.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey) mods.push("ctrl");
   if (e.shiftKey) mods.push("shift");
   if (e.altKey) mods.push("alt");
+  // Shift+Esc leaves the screen for the page's own controls (Tab and Esc otherwise go to the app).
+  if (e.key === "Escape" && e.shiftKey) { e.preventDefault(); keys.blur(); $("stop").focus(); return; }
   if (e.key === "Escape") { send("back"); markInput(); e.preventDefault(); return; }
   if (KEYS[e.key]) { send("key " + KEYS[e.key] + " 1" + (mods.length ? " " + mods.join(" ") : "")); markInput(); e.preventDefault(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.length === 1 && e.key.toLowerCase() !== "v" && /^[a-z0-9]$/i.test(e.key)) {
@@ -368,9 +382,20 @@ function sendText(text) {
 }
 function takeText(e) {
   if (e && e.isComposing) return;
-  if (keys.value) sendText(keys.value);
-  keys.value = "";
+  const text = keys.value.split(SENTINEL).join("");
+  if (text) sendText(text);
+  resetKeys();
 }
+// Deletions and line breaks that came without a keydown the handler above took (desktop keydowns are prevented, so
+// they never get here): phone keyboards.
+keys.addEventListener("beforeinput", e => {
+  const key = { deleteContentBackward: "DEL", deleteWordBackward: "DEL", deleteContentForward: "FORWARD_DEL",
+    insertLineBreak: "ENTER", insertParagraph: "ENTER" }[e.inputType];
+  if (!key || e.isComposing) return;
+  e.preventDefault();
+  send("key " + key);
+  markInput();
+});
 keys.addEventListener("input", takeText);
 keys.addEventListener("compositionend", () => setTimeout(takeText, 0));
 

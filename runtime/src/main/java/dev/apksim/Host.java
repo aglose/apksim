@@ -130,7 +130,9 @@ public class Host {
         .setComponent(new ComponentName(System.getProperty("apksim.package"), launcher));
     start(launcher, intent);
     Timing.mark("activity-resumed");
-    Autofill autofill = Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
+    // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
+    Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
+        : Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
 
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
     long lastInput = 0;
@@ -164,9 +166,10 @@ public class Host {
       controls.tick();
       Control.Pending cmd;
       while ((cmd = Control.QUEUE.poll()) != null) {
-        // Logged so a scripted session can be followed afterwards. Pasted text is not in the command. Not each move of
-        // a drag (a browser sends one per frame) or the redraws a stream asks for.
-        if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), String.join(" ", cmd.args));
+        // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
+        // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
+        String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
+        if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
         String reply;
         try {
           reply = runCommand(cmd.args);

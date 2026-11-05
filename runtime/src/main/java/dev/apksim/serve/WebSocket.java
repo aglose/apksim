@@ -24,7 +24,9 @@ final class WebSocket {
   private final InputStream in;
   private final OutputStream out;
   private volatile boolean closed;
-  private boolean closeSent;  // guarded by out: a second close frame is a protocol error to the browser
+  private boolean closeSent;  // guarded by writing: a second close frame is a protocol error to the browser
+  /** Held while a frame is written. A tab that stops reading blocks a write; closing then gives up on the lock. */
+  private final java.util.concurrent.locks.ReentrantLock writing = new java.util.concurrent.locks.ReentrantLock();
 
   WebSocket(java.net.Socket socket, InputStream in, OutputStream out) {
     this.socket = socket;
@@ -115,12 +117,15 @@ final class WebSocket {
 
   /** One binary message made of a header and a body, without copying them together. */
   void sendBinary(byte[] header, byte[] body, int bodyOffset, int bodyLength) throws IOException {
-    synchronized (out) {
+    writing.lock();
+    try {
       if (closeSent) throw new IOException("closed");
       writeHeader(0x2, header.length + bodyLength);
       out.write(header);
       out.write(body, bodyOffset, bodyLength);
       out.flush();
+    } finally {
+      writing.unlock();
     }
   }
 
@@ -132,29 +137,46 @@ final class WebSocket {
     p[1] = (byte) (1000 & 0xff);
     System.arraycopy(r, 0, p, 2, p.length - 2);
     try {
-      sendClose(p, p.length);
-      // The reader stops now rather than when (if) the other end answers.
-      socket.shutdownInput();
+      // A tab that stopped reading holds the lock in a blocked write: then just drop the connection.
+      if (writing.tryLock(1, java.util.concurrent.TimeUnit.SECONDS)) {
+        try {
+          sendClose(p, p.length);
+        } finally {
+          writing.unlock();
+        }
+        // The reader stops now rather than when (if) the other end answers.
+        socket.shutdownInput();
+      } else {
+        socket.close();
+      }
     } catch (IOException e) {
       // gone already
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
     closed = true;
   }
 
   private void sendClose(byte[] payload, int len) throws IOException {
-    synchronized (out) {
+    writing.lock();
+    try {
       if (closeSent) return;
       closeSent = true;
       sendFrame(0x8, payload, 0, len);
+    } finally {
+      writing.unlock();
     }
   }
 
   private void sendFrame(int op, byte[] b, int off, int len) throws IOException {
-    synchronized (out) {
+    writing.lock();
+    try {
       if (closeSent && op != 0x8) return;  // nothing after a close
       writeHeader(op, len);
       out.write(b, off, len);
       out.flush();
+    } finally {
+      writing.unlock();
     }
   }
 

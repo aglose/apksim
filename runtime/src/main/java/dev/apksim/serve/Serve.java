@@ -221,7 +221,9 @@ public final class Serve {
     }
     switch (r.method() + " " + r.path()) {
       case "GET /" -> Http.respond(out, 200, "text/html; charset=utf-8", page,
-          "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:");
+          "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:; "
+              + "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+          "X-Frame-Options: DENY");
       case "GET /api/health" -> Http.text(out, 200, "ok");
       case "GET /api/apps" -> {
         StringBuilder b = new StringBuilder("[");
