@@ -42,6 +42,8 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - Each instance takes its own app data slot (`serve-N`), emptied first (`--fresh`), and serve deletes the slot's
   contents when the session ends (the instance prints the slot as soon as it takes it, so this holds even for an app
   that never finishes starting), so one session never sees another's data through the app.
+- Settings and input a tab sends before its instance is up (while the APK downloads or the app launches) are kept,
+  in order, and sent once it is.
 - Closing the tab while the APK downloads or the app launches ends the session too, and a stopping session counts
   against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last

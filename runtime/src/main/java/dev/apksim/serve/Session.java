@@ -48,6 +48,8 @@ final class Session {
   private final Serve serve;
   private final WebSocket ws;
   private Process process;
+  /** Reads the instance's output, where the data slot is announced: cleanup waits for it to reach the end. */
+  private volatile Thread logReader;
   private Writer log;
   private Socket control;
   private PrintWriter controlOut;
@@ -137,15 +139,22 @@ final class Session {
       if (ended) throw new IOException("the session ended before the app started");
       process = pb.start();
     }
-    Thread.ofVirtual().name("serve-log-" + id).start(this::readLog);
+    logReader = Thread.ofVirtual().name("serve-log-" + id).start(this::readLog);
     Process started = process;
     started.onExit().thenRun(() -> {
       if (!ended) Thread.ofVirtual().start(() -> stop("the app exited (status " + started.exitValue() + ")"));
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
-    controlOut = new PrintWriter(new java.io.OutputStreamWriter(control.getOutputStream(), StandardCharsets.UTF_8), true);
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
+    synchronized (replies) {
+      controlOut = new PrintWriter(new java.io.OutputStreamWriter(control.getOutputStream(), StandardCharsets.UTF_8), true);
+      for (Map.Entry<String, Consumer<String>> e : early) {
+        replies.add(e.getValue());
+        controlOut.println(e.getKey());
+      }
+      early.clear();
+    }
     stream = connect(p);
     stream.getOutputStream().write(("stream " + serve.quality + "\n").getBytes(StandardCharsets.US_ASCII));
     send("stats", this::onStats);
@@ -173,7 +182,11 @@ final class Session {
           pid = Long.parseLong(m.group(2));
         }
         m = PERMISSION.matcher(line);
-        if (m.find()) ws.sendText("q " + m.group(1));
+        if (m.find()) {
+          String perms = m.group(1);
+          // Not on this thread: a tab that stopped reading must not stop the log (and the data slot) being read.
+          Thread.ofVirtual().start(() -> ws.sendText("q " + perms));
+        }
       }
     } catch (IOException e) {
       // the process ended
@@ -304,11 +317,21 @@ final class Session {
 
   private void send(String cmd, Consumer<String> onReply) {
     synchronized (replies) {
-      if (controlOut == null || ended) return;
-      replies.add(onReply == null ? r -> {} : onReply);
+      if (ended) return;
+      Consumer<String> c = onReply == null ? r -> {} : onReply;
+      if (controlOut == null) {
+        // Before the instance is up (the APK downloading, the app launching): kept, in order, and sent once it is, so
+        // a setting changed meanwhile (dark mode, locale, device) is not lost. Bounded: a tab cannot queue without end.
+        if (early.size() < 200) early.add(Map.entry(cmd, c));
+        return;
+      }
+      replies.add(c);
       controlOut.println(cmd);
     }
   }
+
+  /** Commands the tab sent before the control connection was open. Guarded by replies. */
+  private final List<Map.Entry<String, Consumer<String>>> early = new ArrayList<>();
 
   private void readReplies() {
     try (BufferedReader r = new BufferedReader(new InputStreamReader(control.getInputStream(), StandardCharsets.UTF_8))) {
@@ -417,6 +440,16 @@ final class Session {
     }
     closeQuietly(control);
     closeQuietly(stream);
+    // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
+    // before erasing, or an app that died just after taking its slot would leave it behind.
+    Thread reading = logReader;
+    if (reading != null) {
+      try {
+        reading.join(5000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
     eraseData();
     // Only now, with the instance gone: a stopping session still counts against --max.
     serve.ended(this);
