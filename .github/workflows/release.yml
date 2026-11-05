@@ -29,6 +29,7 @@ on:
       - docker/**
       - scripts/docker-build.sh
       - scripts/instrument.py
+      - scripts/snapshot.py
       - .github/actions/linux-build/**
   workflow_dispatch:
 

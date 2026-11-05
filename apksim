@@ -80,6 +80,10 @@ while [[ $# -gt 1 ]]; do
     --appearance) EXTRA+=("-Dapksim.appearance=$2"); shift 2 ;;
     --locale) EXTRA+=("-Dapksim.locale=$2"); shift 2 ;;
     --timezone) EXTRA+=("-Dapksim.timezone=$2"); shift 2 ;;
+    # The wall clock the app sees starts at this instant (ISO 8601 or epoch ms) and runs on from it.
+    --clock) EXTRA+=("-Dapksim.clock=$2"); shift 2 ;;
+    # Screenshot tests (docs/snapshots.md): CPU-only drawing and carets that do not blink, for the same pixels each run.
+    --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
@@ -113,7 +117,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
-      -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*) ;;
+      -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;

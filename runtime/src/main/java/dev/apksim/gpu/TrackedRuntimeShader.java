@@ -100,7 +100,7 @@ public class TrackedRuntimeShader extends RuntimeShader {
   private static synchronized Compiled compile(String source) {
     Compiled c = PROGRAMS.get(source);
     if (c != null) return c;
-    if (Boolean.getBoolean("apksim.noGpu") || !dev.apksim.HostOs.MAC) {
+    if (Boolean.getBoolean("apksim.noGpu") || dev.apksim.Snapshot.ON || !dev.apksim.HostOs.MAC) {
       c = new Compiled(null, 0, "disabled", new long[3]);
     } else {
       try {

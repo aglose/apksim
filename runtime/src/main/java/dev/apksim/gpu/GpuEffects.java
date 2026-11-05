@@ -15,7 +15,7 @@ public final class GpuEffects {
   private static final Map<RenderEffect, TrackedRuntimeShader.EffectProgram> GPU = Collections.synchronizedMap(new WeakHashMap<>());
 
   /** -Dapksim.cpuLayerEffects=true leaves layer-content effects to HWUI on the CPU (for A/B runs). */
-  private static final boolean CPU_LAYER_EFFECTS = Boolean.getBoolean("apksim.cpuLayerEffects");
+  private static final boolean CPU_LAYER_EFFECTS = Boolean.getBoolean("apksim.cpuLayerEffects") || dev.apksim.Snapshot.ON;
 
   private GpuEffects() {}
 

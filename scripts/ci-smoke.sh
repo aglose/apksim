@@ -2,7 +2,8 @@
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
 # channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
-# (scripts/adb-check.py). Screens and logs go to OUT.
+# (scripts/adb-check.py). Then screenshot tests on a small matrix (scripts/snapshot.py): goldens recorded, matched on a
+# rerun, and a changed screen caught. Screens, logs and snapshot reports go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,4 +47,35 @@ if [[ -n "$UISERVER" ]]; then
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
 drive quit >/dev/null || true
+
+# Screenshot tests in the image (scripts/snapshot.py, docs/snapshots.md), on a small matrix: record goldens, run again
+# against them (the image must give the same pixels), then a spec whose home screen shows something else (one FAB tap)
+# must fail on exactly those captures. Reports in OUT/snapshots/*/report.html.
+SNAP="$OUT/snapshots"
+rm -rf "$SNAP" && mkdir -p "$SNAP"
+cp "$APK" "$SNAP/app.apk"
+cp "$ROOT/testapks/composeapp/snapshots/ci.json" "$SNAP/ci.json"
+python3 - "$SNAP/ci.json" "$SNAP/changed.json" <<'EOF'
+import json, sys
+spec = json.load(open(sys.argv[1]))
+for s in spec["screens"]:
+    if s["name"] == "home":
+        s["steps"] = ["tap-text Add"]
+json.dump(spec, open(sys.argv[2], "w"), indent=1)
+EOF
+snapshot() { docker run --rm --platform linux/amd64 -v "$SNAP:/work" --entrypoint snapshot.py "$IMAGE" "$@" --apk app.apk --goldens goldens; }
+snapshot ci.json --update --out record > "$SNAP/record.log" 2>&1 || { cat "$SNAP/record.log"; exit 1; }
+tail -2 "$SNAP/record.log" | head -1
+snapshot ci.json --out rerun > "$SNAP/rerun.log" 2>&1 || { cat "$SNAP/rerun.log"; echo "a rerun did not match its goldens" >&2; exit 1; }
+tail -2 "$SNAP/rerun.log" | head -1
+status=0
+snapshot changed.json --out changed > "$SNAP/changed.log" 2>&1 || status=$?
+python3 - "$SNAP/changed/results.json" "$status" <<'EOF'
+import json, sys
+results = json.load(open(sys.argv[1]))["results"]
+failed = sorted({r["screen"] for r in results if r["status"] != "match"})
+assert sys.argv[2] == "1", f"a changed screen should exit 1, not {sys.argv[2]}"
+assert failed == ["home"], f"only the changed screen should fail: {failed}"
+print(f"changed screen caught: {sum(r['screen'] == 'home' for r in results)} home captures differ, the rest match")
+EOF
 echo "smoke test passed"

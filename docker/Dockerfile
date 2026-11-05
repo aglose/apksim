@@ -25,8 +25,8 @@ LABEL org.opencontainers.image.source=https://github.com/aglose/apksim \
       org.opencontainers.image.description="apksim: run Android APKs and their instrumented tests headless, no emulator" \
       org.opencontainers.image.licenses=Apache-2.0
 # GLES for test runs that render offscreen (dev.apksim.gl): Mesa's software EGL and GLES, on EGL's surfaceless platform
-# (no display server), where pbuffers work. Python for scripts/instrument.py (a whole suite in one container) and
-# drive.py.
+# (no display server), where pbuffers work. Python for scripts/instrument.py (a whole suite in one container),
+# snapshot.py (screenshot tests, docs/snapshots.md) and drive.py.
 RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 && \
     rm -rf /var/lib/apt/lists/*
 ENV EGL_PLATFORM=surfaceless
@@ -34,7 +34,7 @@ ENV EGL_PLATFORM=surfaceless
 ENV APKSIM_HOME=/opt/apksim/work
 COPY --from=build /opt/apksim /opt/apksim
 COPY apksim /opt/apksim/apksim
-COPY train.sh instrument.py drive.py /opt/apksim/scripts/
+COPY train.sh instrument.py snapshot.py drive.py /opt/apksim/scripts/
 COPY apksim.jar /opt/apksim/work/apksim.jar
 # The JVM's ahead-of-time cache holds the framework for any APK; it must be built by this JVM, in this folder.
 ARG TRAIN=1
