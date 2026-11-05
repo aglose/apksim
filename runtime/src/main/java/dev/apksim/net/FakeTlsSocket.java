@@ -45,6 +45,8 @@ final class FakeTlsSocket extends SSLSocket {
   private final List<HandshakeCompletedListener> listeners = new CopyOnWriteArrayList<>();
   private String[] suites;
   private String[] protocols = PROTOCOLS.clone();
+  /** Whether the app narrowed them: only then do they go to the real handshake (else the factory's defaults hold). */
+  private boolean suitesSet, protocolsSet;
   private boolean clientMode = true;
   private boolean need, want, create = true;
   private volatile Session session;
@@ -63,7 +65,21 @@ final class FakeTlsSocket extends SSLSocket {
     this.host = host;
     this.port = port;
     this.autoClose = autoClose;
-    this.suites = supported();
+    this.suites = enabledByDefault();
+  }
+
+  private static String[] enabledDefault;
+
+  /** The suites a JDK socket starts with enabled (the supported list also holds ones it leaves off: NULL, anon). */
+  private static synchronized String[] enabledByDefault() {
+    if (enabledDefault == null) {
+      try {
+        enabledDefault = SSLContext.getDefault().getDefaultSSLParameters().getCipherSuites();
+      } catch (Exception e) {
+        enabledDefault = supported();
+      }
+    }
+    return enabledDefault.clone();
   }
 
   private static synchronized String[] supported() {
@@ -83,9 +99,11 @@ final class FakeTlsSocket extends SSLSocket {
     if (session != null) return;
     if (closed) throw new SocketException("Socket is closed");
     OutputStream out = raw.getOutputStream();
-    // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server.
-    String token = appTls == null ? "" : " " + Net.lendTls(appTls);
-    out.write(("APKSIM-TLS " + host + token + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+    // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server, and
+    // the protocols and cipher suites the app enabled on this socket go along, to hold there too.
+    String token = appTls == null ? "-" : Net.lendTls(appTls);
+    out.write(("APKSIM-TLS " + host + " " + token + " " + (protocolsSet ? String.join(",", protocols) : "-") + " "
+        + (suitesSet ? String.join(",", suites) : "-") + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
     String reply = Net.readLine(raw.getInputStream());
     if (reply == null) throw new SSLHandshakeException("Connection closed by peer");
@@ -94,7 +112,15 @@ final class FakeTlsSocket extends SSLSocket {
       throw e instanceof javax.net.ssl.SSLException ? e : new SSLHandshakeException(e.getMessage());
     }
     List<X509Certificate> chain = new ArrayList<>();
-    String certs = reply.length() > 3 ? reply.substring(3).trim() : "";
+    // "OK p=PROTOCOL c=SUITE CERT,CERT...": what was negotiated (with the server, or as replaying would have), then
+    // the server's chain.
+    String certs = "";
+    String protocol = "TLSv1.3", suite = "TLS_AES_128_GCM_SHA256";
+    for (String part : reply.substring(2).trim().split(" ")) {
+      if (part.startsWith("p=")) protocol = part.substring(2);
+      else if (part.startsWith("c=")) suite = part.substring(2);
+      else if (!part.isEmpty()) certs = part;
+    }
     if (!certs.isEmpty()) {
       try {
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
@@ -106,7 +132,7 @@ final class FakeTlsSocket extends SSLSocket {
       }
     }
     if (chain.isEmpty()) chain.add(new PlaceholderCertificate(host));
-    session = new Session(chain.toArray(new X509Certificate[0]));
+    session = new Session(chain.toArray(new X509Certificate[0]), protocol, suite);
     HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
   }
@@ -152,10 +178,10 @@ final class FakeTlsSocket extends SSLSocket {
 
   @Override public String[] getSupportedCipherSuites() { return supported(); }
   @Override public String[] getEnabledCipherSuites() { return suites.clone(); }
-  @Override public void setEnabledCipherSuites(String[] s) { suites = s.clone(); }
+  @Override public void setEnabledCipherSuites(String[] s) { suites = s.clone(); suitesSet = true; }
   @Override public String[] getSupportedProtocols() { return PROTOCOLS.clone(); }
   @Override public String[] getEnabledProtocols() { return protocols.clone(); }
-  @Override public void setEnabledProtocols(String[] p) { protocols = p.clone(); }
+  @Override public void setEnabledProtocols(String[] p) { protocols = p.clone(); protocolsSet = true; }
   @Override public void addHandshakeCompletedListener(HandshakeCompletedListener l) { listeners.add(l); }
   @Override public void removeHandshakeCompletedListener(HandshakeCompletedListener l) { listeners.remove(l); }
   @Override public void setUseClientMode(boolean m) { clientMode = m; }
@@ -254,11 +280,18 @@ final class FakeTlsSocket extends SSLSocket {
 
   private final class Session implements SSLSession {
     private final X509Certificate[] chain;
+    private final String protocol, suite;
     private final long created = System.currentTimeMillis();
     private final Map<String, Object> values = new HashMap<>();
 
     Session(X509Certificate[] chain) {
+      this(chain, "TLSv1.3", "TLS_AES_128_GCM_SHA256");
+    }
+
+    Session(X509Certificate[] chain, String protocol, String suite) {
       this.chain = chain;
+      this.protocol = protocol;
+      this.suite = suite;
     }
 
     @Override public byte[] getId() { return new byte[32]; }
@@ -287,8 +320,8 @@ final class FakeTlsSocket extends SSLSocket {
     }
 
     @Override public Principal getLocalPrincipal() { return null; }
-    @Override public String getCipherSuite() { return "TLS_AES_128_GCM_SHA256"; }
-    @Override public String getProtocol() { return "TLSv1.3"; }
+    @Override public String getCipherSuite() { return suite; }
+    @Override public String getProtocol() { return protocol; }
     @Override public String getPeerHost() { return host; }
     @Override public int getPeerPort() { return port; }
     @Override public int getPacketBufferSize() { return 16709; }

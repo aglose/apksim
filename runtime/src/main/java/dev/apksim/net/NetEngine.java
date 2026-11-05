@@ -343,7 +343,9 @@ final class NetEngine {
           // The name the client's TLS checks: not the TCP destination, which may be an address.
           String[] p = l.split(" ");
           if (p.length > 1 && !p[1].isEmpty()) tlsHost = p[1];
-          appTls = Net.takeTls(p.length > 2 ? p[2] : null);
+          appTls = Net.takeTls(p.length > 2 && !p[2].equals("-") ? p[2] : null);
+          appProtocols = p.length > 3 && !p[3].isEmpty() && !p[3].equals("-") ? p[3].split(",") : null;
+          appSuites = p.length > 4 && !p[4].isEmpty() && !p[4].equals("-") ? p[4].split(",") : null;
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
@@ -513,13 +515,27 @@ final class NetEngine {
       Conditions c = Net.conditions;
       Conditions.sleep(c.rtt());
       if (Net.mode == Net.Mode.REPLAY) {
+        // No server: what one would have negotiated within what the app enabled, or the refusal it would have met.
+        // TLS 1.3 and 1.2 only, as the JDK enables by default (servers refuse older ones too).
+        String protocol = first(appProtocols, "TLSv1.3", "TLSv1.2");
+        if (protocol == null) return "ERR SSLHandshakeException No appropriate protocol (the app enabled " + String.join(",", appProtocols) + ")\r\n";
+        String suite = null;
+        String[] offered = appSuites != null ? appSuites : new String[] {"TLS_AES_128_GCM_SHA256", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"};
+        for (String s : offered) {
+          boolean v13 = s.startsWith("TLS_AES_") || s.startsWith("TLS_CHACHA20_");
+          if (v13 == protocol.equals("TLSv1.3") && !s.startsWith("TLS_EMPTY")) {
+            suite = s;
+            break;
+          }
+        }
+        if (suite == null) return "ERR SSLHandshakeException No appropriate cipher suite for " + protocol + "\r\n";
         List<String> chain = Net.recording.certificates(tlsHost);
-        return "OK " + (chain == null ? "" : String.join(",", chain)) + "\r\n";
+        return "OK p=" + protocol + " c=" + suite + " " + (chain == null ? "" : String.join(",", chain)) + "\r\n";
       }
       try {
         List<String> chain = upgradeUpstream();
         Net.recording.certificates(tlsHost, chain);
-        return "OK " + String.join(",", chain) + "\r\n";
+        return "OK p=" + negotiated[0] + " c=" + negotiated[1] + " " + String.join(",", chain) + "\r\n";
       } catch (Exception e) {
         Net.log("network record: TLS to " + tlsHost + ":" + port + " failed: " + e.getMessage());
         return Net.errorReply(e);
@@ -528,6 +544,25 @@ final class NetEngine {
 
     /** The app's TLS factory for this connection (FakeTlsSocket's), or null for the engine's (JDK trust + --network-trust). */
     SSLSocketFactory appTls;
+    /** The protocols and cipher suites the app enabled on its socket (null: no restriction), and what was negotiated. */
+    String[] appProtocols, appSuites;
+    final String[] negotiated = {"TLSv1.3", "TLS_AES_128_GCM_SHA256"};
+
+    /** The first of the preferred names that the app enabled (any of them when it named none). */
+    String first(String[] enabled, String... preferred) {
+      for (String p : preferred) {
+        if (enabled == null || java.util.Arrays.asList(enabled).contains(p)) return p;
+      }
+      return null;
+    }
+
+    /** What both sides support, in the app's order; an empty result fails the handshake as a real one would. */
+    static String[] common(String[] app, String[] supported, String what) throws javax.net.ssl.SSLHandshakeException {
+      List<String> s = java.util.Arrays.asList(supported);
+      String[] out = java.util.Arrays.stream(app).filter(s::contains).toArray(String[]::new);
+      if (out.length == 0) throw new javax.net.ssl.SSLHandshakeException("No appropriate " + what + " (the app enabled " + String.join(",", app) + ")");
+      return out;
+    }
     /** The app's TLS refused the server, and --network-trust vouched for it: the engine's TLS from then on. */
     boolean trustOverride;
 
@@ -562,8 +597,13 @@ final class NetEngine {
       SSLSocket s = (SSLSocket) factory.createSocket(up, tlsHost, port, true);
       SSLParameters params = s.getSSLParameters();
       params.setEndpointIdentificationAlgorithm("HTTPS");
+      // The app's restrictions on its own socket hold for the real handshake: no protocol or suite it turned off.
+      if (appProtocols != null) params.setProtocols(common(appProtocols, s.getSupportedProtocols(), "protocol"));
+      if (appSuites != null) params.setCipherSuites(common(appSuites, s.getSupportedCipherSuites(), "cipher suite"));
       s.setSSLParameters(params);
       s.startHandshake();
+      negotiated[0] = s.getSession().getProtocol();
+      negotiated[1] = s.getSession().getCipherSuite();
       adopt(s);
       watch(s);
       List<String> chain = new ArrayList<>();

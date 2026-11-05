@@ -90,13 +90,16 @@ final class Recording {
     if (match.fields.contains("url")) k.append(normalizeUrl(url, match.ignoreQuery)).append(' ');
     if (match.fields.contains("body")) k.append(bodySha == null ? EMPTY_SHA : bodySha).append(' ');
     if (match.fields.contains("headers")) {
-      TreeSet<String> hs = new TreeSet<>();
+      List<String> hs = new ArrayList<>();
       for (String[] h : headers) {
         String n = h[0].toLowerCase(Locale.ROOT);
         if (HOP.contains(n) || match.ignoreHeaders.contains(n) || match.redact.contains(n) || recordedRedactions.contains(n)) continue;
-        hs.add(n + ":" + h[1].trim());
+        String v = h[1].trim();
+        // Length-prefixed, so no value can pass for a separator (a value "1, x-b:2" is not two headers).
+        hs.add(n.length() + ":" + n + v.length() + ":" + v);
       }
-      k.append(hs);
+      java.util.Collections.sort(hs);
+      for (String h : hs) k.append(h).append(';');
     }
     return k.toString();
   }

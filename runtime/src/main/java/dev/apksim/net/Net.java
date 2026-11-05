@@ -194,29 +194,35 @@ public final class Net {
     conditions = c;
     if (c.offline()) {
       if (engine != null) engine.closeAll();
-      List<Socket> drop = new ArrayList<>();
-      synchronized (direct) {
-        // Loopback stays up offline; a socket not connected yet (one the JDK connects itself) goes too.
-        for (java.util.Iterator<Socket> it = direct.iterator(); it.hasNext(); ) {
-          Socket s = it.next();
-          InetAddress to = s.getInetAddress();
-          if (to != null && (to.isLoopbackAddress() || to.isAnyLocalAddress())) continue;
-          drop.add(s);
-          it.remove();
-        }
-      }
-      for (Socket s : drop) {
-        try {
-          s.close();
-        } catch (IOException ignored) {
-          // closing anyway
-        }
-      }
+      closeDirect();
     }
     if (was != c.offline()) {
       flushDnsCache();
       for (Consumer<Boolean> l : offlineListeners) l.accept(c.offline());
     }
+  }
+
+  /** Closes the remote connections made without the engine (loopback stays); how many. */
+  private static int closeDirect() {
+    List<Socket> drop = new ArrayList<>();
+    synchronized (direct) {
+      // Loopback stays up; a socket not connected yet (one the JDK connects itself) goes too.
+      for (java.util.Iterator<Socket> it = direct.iterator(); it.hasNext(); ) {
+        Socket s = it.next();
+        InetAddress to = s.getInetAddress();
+        if (to != null && (to.isLoopbackAddress() || to.isAnyLocalAddress())) continue;
+        drop.add(s);
+        it.remove();
+      }
+    }
+    for (Socket s : drop) {
+      try {
+        s.close();
+      } catch (IOException ignored) {
+        // closing anyway
+      }
+    }
+    return drop.size();
   }
 
   /**
@@ -267,6 +273,10 @@ public final class Net {
         // Conditions can start at any time; recording and replaying need their launch options.
         System.setProperty("apksim.networkProfile", "online");
         configure();
+        // Connections made before (directly) would carry on unshaped: they close, and the app reconnects through
+        // the engine, as after a change of network on a device.
+        int n = closeDirect();
+        if (n > 0) log("network: " + n + " connection" + (n == 1 ? "" : "s") + " made before the network layer was on closed");
       } else {
         return "network: off (no --network option); network offline|3g|lossy|latency MS|bandwidth KBPS turns it on";
       }
@@ -469,7 +479,10 @@ public final class Net {
     }
     URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
     if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
-      https.setSSLSocketFactory(FakeTlsSocket.FACTORY);
+      // The factory the connection starts with is the app's if it set a default one (setDefaultSSLSocketFactory):
+      // it does the real handshake, so its trust manager decides. The JVM's own default needs no handing on.
+      SSLSocketFactory current = https.getSSLSocketFactory();
+      https.setSSLSocketFactory(current == null || current == SSLSocketFactory.getDefault() ? FakeTlsSocket.FACTORY : fakeFor(current));
       https.setHostnameVerifier((name, session) -> true);
     }
     return c;
@@ -489,6 +502,12 @@ public final class Net {
   }
 
   private static final Map<SSLSocketFactory, TrackingFactory> trackingFactories = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final Map<SSLSocketFactory, FakeTlsSocket.Factory> fakeFactories = new java.util.concurrent.ConcurrentHashMap<>();
+
+  /** The fake transport for an app factory: one per factory, so the JDK still reuses its kept-alive connections. */
+  private static FakeTlsSocket.Factory fakeFor(SSLSocketFactory app) {
+    return fakeFactories.computeIfAbsent(app, FakeTlsSocket.Factory::new);
+  }
 
   /**
    * The app setting an HTTPS connection's socket factory (translated app code calls this). On a connection Net gave
@@ -501,7 +520,7 @@ public final class Net {
       return;
     }
     SSLSocketFactory now = c.getSSLSocketFactory();
-    if (now instanceof FakeTlsSocket.Factory) c.setSSLSocketFactory(new FakeTlsSocket.Factory(f));
+    if (now instanceof FakeTlsSocket.Factory) c.setSSLSocketFactory(fakeFor(f));
     else if (now instanceof TrackingFactory) c.setSSLSocketFactory(trackingFactories.computeIfAbsent(f, TrackingFactory::new));
     else c.setSSLSocketFactory(f);
   }
@@ -528,6 +547,12 @@ public final class Net {
     public Socket createSocket() throws IOException {
       Socket s = inner.createSocket();
       direct.add(s);
+      // Registered after `network offline` took its snapshot: closed here, before the JDK can connect it.
+      if (conditions.offline()) {
+        direct.remove(s);
+        s.close();
+        throw new ConnectException("connect failed: ENETUNREACH (Network is unreachable)");
+      }
       return s;
     }
     @Override public Socket createSocket(String h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }

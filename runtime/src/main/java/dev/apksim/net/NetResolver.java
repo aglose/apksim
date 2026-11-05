@@ -67,9 +67,12 @@ public final class NetResolver extends InetAddressResolverProvider {
     return h.equals("localhost") || h.endsWith(".localhost") || h.equals(InetAddress.getLoopbackAddress().getHostName());
   }
 
+  /** The next placeholder: 198.18.0.1 on, one per host, never two hosts on one address. */
+  private static final java.util.concurrent.atomic.AtomicInteger nextPlaceholder = new java.util.concurrent.atomic.AtomicInteger(1);
+
   private static InetAddress placeholder(String host) {
     return addressByHost.computeIfAbsent(host, h -> {
-      int n = (h.hashCode() & 0x1ffff) | 1;
+      int n = nextPlaceholder.getAndIncrement() & 0x1ffff;  // 198.18.0.0/15: 131072 addresses
       byte[] ip = {(byte) 198, (byte) (18 + (n >> 16)), (byte) (n >> 8), (byte) n};
       try {
         InetAddress a = InetAddress.getByAddress(h, ip);

@@ -82,7 +82,7 @@ file lists the names it redacted (`log._apksimRedacted`), and those count when r
 ## Matching
 
 A request's key is its method, its URL with the ignored query parameters removed and the rest sorted (repeats kept:
-`?id=1&id=1` is not `?id=1`), the SHA-256 of
+`?id=1&id=1` is not `?id=1`), with headers length-prefixed so no value passes for two headers, the SHA-256 of
 its body, and (with `--network-match ...,headers`) its request headers apart from hop-by-hop ones, redacted ones and
 ignored ones. Entries with the same key answer in recorded order; the last repeats once they run out (polling).
 
@@ -138,7 +138,8 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   way, so a slow profile pushes back on the server instead of filling the heap); TLS stays end to end.
 - DNS: a JDK `InetAddressResolverProvider` (`NetResolver`, META-INF/services), so every Java lookup, the JDK's own
   included, sees offline (UnknownHostException, as Android says "Unable to resolve host"), and a replay never needs
-  the recorded hosts to resolve (they get a placeholder address in 198.18.0.0/15, the benchmarking range).
+  the recorded hosts to resolve (they get a placeholder address in 198.18.0.0/15, the benchmarking range, one per
+  host, never shared).
 - Natives (`native/bionic_net.c`, Mac): offline only. `connect()` to a non-loopback address fails with ENETUNREACH,
   as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
@@ -157,9 +158,12 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   replayed the same way, without reading a body (several such answers to one request replay in recorded order).
 - Recording, the real TLS handshake with the server uses the app's own socket factory (the one it layered TLS with,
   handed to the engine), so its trust manager decides as it would have without apksim: a custom one, pinning done in
-  it, client certificates. The engine's own TLS (the JDK's trust store) is used for the JDK's HttpURLConnection, and
-  for a server the app refused only when `--network-trust` vouches for its chain. Replaying, no server is reached;
-  what the app's trust manager accepted when recording is what is replayed.
+  it, client certificates; the protocols and cipher suites the app enabled on its socket hold for that handshake, and
+  the session reports what it negotiated. The JDK's HttpURLConnection uses the app's default factory if it set one
+  (`setDefaultSSLSocketFactory`) or one set on the connection, else the engine's own TLS (the JDK's trust store); a
+  server the app refused gets through only when `--network-trust` vouches for its chain. Replaying, no server is
+  reached: what the app's trust manager accepted when recording is what is replayed, and the session reports what a
+  server would have negotiated within the app's protocols and suites (TLS 1.3 or 1.2), or refuses as one would.
 - `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
   request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
 - An HttpsURLConnection that does not go through the engine (the layer off, the app's own proxy) gets its socket
@@ -167,7 +171,9 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   its TLS is remembered, or the socket itself when the JDK makes it unconnected and connects it, and `network
   offline` closes it, a download in progress included. Plain http through the JDK's own HttpURLConnection is out of
   reach that way.
-- A direct connect that finishes while `network offline` is closing connections is closed as it registers.
+- A direct connect that finishes while `network offline` is closing connections is closed as it registers, and so is
+  an unconnected socket the JDK would connect itself. Turning conditions on in a running instance (`network 3g`
+  with no launch options) closes the connections made before it, so the app reconnects through the engine.
 - Every read from a server that waits (for the answer to begin, or in the middle of a body) checks every 500 ms
   whether the client is still there: an app that times out and closes its connection ends the server's too, so a
   server that stalls does not keep a worker and both sockets for good. A TLS handshake with the server gets the app's
