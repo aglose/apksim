@@ -640,6 +640,14 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
+- Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's
+  `mockito-extensions/org.mockito.plugins.MockMaker` names a maker for ART (mockito-android's, dexmaker's), whose first
+  mock threw "Plugins.registry is null" here; `AppClasses` serves that resource through MockMakers. `auto` (default)
+  swaps an ART maker for `mock-maker-subclass` (translated classes are JVM classes), `keep` leaves it, `subclass` or
+  `inline` force Mockito's, anything else is used as given. `inline` needs Byte Buddy's agent (`--jvm
+  -Djdk.attach.allowAttachSelf=true --jvm -XX:+EnableDynamicAgentLoading`) and mocks JDK types only: translated
+  classes have no stack map frames, which a retransformed class needs (VerifyError). Final classes cannot be mocked
+  (`MockitoTest`).
 - In app code everywhere (the translator): `KeyStore.getDefaultType()` is "BKS", Android's, with Bouncy Castle added
   after the JDK's providers (`KeyStores`), and AES/GCM set up again with the same key and IV is allowed, as Android's
   provider allows it (`Ciphers`: unsafe, but what the app gets on a device); `android.net.ssl.SSLSockets` supports
