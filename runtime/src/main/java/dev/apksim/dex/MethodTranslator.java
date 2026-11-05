@@ -2548,6 +2548,13 @@ final class MethodTranslator implements Opcodes {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "parkNanos", m.descriptor(), false);
       return;
     }
+    if (opcode == INVOKEVIRTUAL && "javax/crypto/Cipher".equals(ownerName) && "init".equals(m.name())
+        && ("(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V".equals(m.descriptor())
+            || "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V".equals(m.descriptor()))) {
+      // AES/GCM set up again with the same key and IV, which Android's provider allows and the JDK's refuses (Ciphers).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Ciphers", "init", "(Ljavax/crypto/Cipher;" + m.descriptor().substring(1), false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && ("loadLibrary".equals(m.name()) || "load".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Natives", m.name(), m.descriptor(), false);
       return;
