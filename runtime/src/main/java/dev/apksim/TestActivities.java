@@ -304,7 +304,52 @@ public final class TestActivities {
       java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
 
   /** Called by SimTestEnvironment before Robolectric resets the framework between two tests. */
+  private static volatile java.lang.ref.WeakReference<Object> composeIdling;
+  private static volatile java.lang.reflect.Method composeIdleNow;
+  private static volatile java.lang.reflect.Method loopUntilIdle;
+
+  /**
+   * A Compose test rule was set up in its Robolectric mode (MethodTranslator, at RobolectricIdlingStrategy's
+   * constructor): its idling resource, whose isIdleNow moves the rule's frame clock on a frame when something waits for
+   * one. On a device the rule registers that resource with Espresso, so every Espresso check waits for Compose to be
+   * idle and a Compose animation (an animated scroll to a section) runs to its end while a check polls for its result.
+   * In Robolectric mode only the rule's own calls move the clock, and the animation stood still.
+   */
+  public static void composeIdling(Object resource) {
+    composeIdling = new java.lang.ref.WeakReference<>(resource);
+  }
+
+  /**
+   * UiController.loopMainThreadUntilIdle from Espresso (MethodTranslator): Robolectric's, then, as Espresso on a device
+   * waits for the idling resources too, until the Compose rule's resource (composeIdling) is idle, for at most 2,000
+   * frames, with the main queue run between them.
+   */
+  public static void espressoLoopMainThreadUntilIdle(Object controller) throws Throwable {
+    java.lang.reflect.Method loop = loopUntilIdle;
+    if (loop == null || loop.getDeclaringClass() != controller.getClass()) {
+      loop = controller.getClass().getMethod("loopMainThreadUntilIdle");
+      loop.setAccessible(true);
+      loopUntilIdle = loop;
+    }
+    try {
+      loop.invoke(controller);
+      java.lang.ref.WeakReference<Object> ref = composeIdling;
+      Object resource = ref == null ? null : ref.get();
+      if (resource == null || !testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
+      java.lang.reflect.Method idleNow = composeIdleNow;
+      if (idleNow == null || idleNow.getDeclaringClass() != resource.getClass()) {
+        idleNow = resource.getClass().getMethod("isIdleNow");
+        idleNow.setAccessible(true);
+        composeIdleNow = idleNow;
+      }
+      for (int i = 0; i < 2000 && !(Boolean) idleNow.invoke(resource); i++) loop.invoke(controller);
+    } catch (java.lang.reflect.InvocationTargetException e) {
+      throw e.getCause();
+    }
+  }
+
   static void beforeReset() {
+    composeIdling = null;
     try {
       Object si = Shadow.extract(ShadowInstrumentation.getInstrumentation());
       List<?> wrappers = ReflectionHelpers.callInstanceMethod(si, "getRegisteredReceivers");

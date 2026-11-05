@@ -2523,6 +2523,19 @@ final class MethodTranslator implements Opcodes {
       // a Robolectric test on the main thread would run it at once. Let the queue go first (dev.apksim.TestActivities).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "beforeUiThreadAction", "()V", false);
     }
+    if (opcode == INVOKESPECIAL && "androidx/compose/ui/test/RobolectricIdlingStrategy".equals(ownerName) && "<init>".equals(m.name())
+        && "(Landroidx/compose/ui/test/ComposeRootRegistry;Landroidx/compose/ui/test/ComposeIdlingResource;)V".equals(m.descriptor())) {
+      // A Compose test rule in Robolectric mode: note its idling resource, which Espresso's waits then wait for, as on a
+      // device (dev.apksim.TestActivities.composeIdling). The resource is on top of the stack, the strategy below it.
+      mv.visitInsn(DUP);
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "composeIdling", "(Ljava/lang/Object;)V", false);
+    }
+    if ((opcode == INVOKEINTERFACE || opcode == INVOKEVIRTUAL) && "loopMainThreadUntilIdle".equals(m.name())
+        && "()V".equals(m.descriptor()) && ownerName.startsWith("androidx/test/espresso/")) {
+      // Espresso's wait for the main thread: on a device it also waits for Compose (dev.apksim.TestActivities).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "espressoLoopMainThreadUntilIdle", "(Ljava/lang/Object;)V", false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/lang/Thread".equals(ownerName) && "sleep".equals(m.name())
         && ("(J)V".equals(m.descriptor()) || "(JI)V".equals(m.descriptor()))) {
       // A test sleeping on the main thread lets the main queue run meanwhile, as a device's own main thread would.
