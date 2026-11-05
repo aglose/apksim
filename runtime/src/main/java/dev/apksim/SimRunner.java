@@ -229,6 +229,7 @@ public final class SimRunner extends RobolectricTestRunner {
       applyTimeZone();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
+      if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
@@ -273,6 +274,7 @@ public final class SimRunner extends RobolectricTestRunner {
     /** As AndroidTestEnvironment.resetState, but with a tracker this process can answer. */
     @Override
     public void resetState() {
+      RealTimeClock.endTest();
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));
       FakeMediaProvider media = ReflectionHelpers.getField(this, "fakeMediaProvider");
@@ -302,6 +304,15 @@ public final class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected Class<?>[] getExtraShadows(FrameworkMethod method) {
+    Class<?>[] shadows = baseShadows();
+    if (!RealTimeClock.requested()) return shadows;
+    Class<?>[] more = java.util.Arrays.copyOf(shadows, shadows.length + 2);  // --realtime-clock
+    more[shadows.length] = RealTimeClock.ShadowRealTimeSystemClock.class;
+    more[shadows.length + 1] = RealTimeClock.ShadowRealTimeDisplayEventReceiver.class;
+    return more;
+  }
+
+  private static Class<?>[] baseShadows() {
     return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class};
   }
 
