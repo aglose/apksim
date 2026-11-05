@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apksim</title>
+<style>
+:root {
+  --bg: #f4f4f2; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #dcdcd8; --accent: #2f6fde;
+  --accent-ink: #ffffff; --bezel: #111214; --warn: #b3261e; --ok: #1e7b34;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161618; --panel: #202023; --ink: #ececee; --muted: #9a9aa0; --line: #34343a; --accent: #6b9cff;
+    --accent-ink: #0b0b0c; --bezel: #000000; --warn: #ff8a80; --ok: #7bd88f; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--line); }
+header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .02em; }
+select, input[type=text], button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-height: 30px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.spacer { flex: 1; }
+main { flex: 1; display: flex; min-height: 0; gap: 16px; padding: 16px; }
+#stage { flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+#bezel { background: var(--bezel); padding: 10px; border-radius: 22px; box-shadow: 0 6px 30px rgba(0,0,0,.25); position: relative;
+  line-height: 0; }
+#screen { display: block; border-radius: 12px; background: #000; touch-action: none; outline: none; cursor: default; }
+#bezel.typing { box-shadow: 0 0 0 2px var(--accent), 0 6px 30px rgba(0,0,0,.25); }
+#keys { position: absolute; left: 10px; top: 10px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none;
+  pointer-events: none; }
+#overlay { position: absolute; inset: 10px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; align-items: center;
+  justify-content: center; text-align: center; padding: 24px; background: rgba(0,0,0,.62); color: #fff; line-height: 1.4; font-size: 14px; }
+#overlay[hidden] { display: none; }
+#overlay button { background: #fff; color: #111; border: 0; }
+#empty { color: var(--muted); max-width: 360px; text-align: center; line-height: 1.5; }
+aside { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.card h2 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.row > * { flex: 1; }
+.row > input[type=text] { min-width: 0; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-variant-numeric: tabular-nums; }
+dt { color: var(--muted); }
+dd { margin: 0; text-align: right; }
+#log { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); max-height: 140px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all; }
+#permission { border-color: var(--accent); }
+#permission[hidden] { display: none; }
+#linkbox[hidden] { display: none; }
+.hint { color: var(--muted); font-size: 12px; }
+@media (max-width: 760px) {
+  /* The page scrolls instead: the screen keeps most of the viewport, the controls come below it. */
+  html, body { height: auto; }
+  main { flex-direction: column; padding: 16px; flex: none; }
+  #stage { flex: none; height: 78vh; min-height: 320px; }
+  aside { width: auto; overflow: visible; }
+  header { padding: 8px 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>apksim</h1>
+  <select id="app" aria-label="App"><option value="">Choose an app…</option></select>
+  <button id="uploadBtn" title="Upload an APK">Upload APK…</button>
+  <input id="file" type="file" accept=".apk,application/vnd.android.package-archive" hidden>
+  <select id="device" aria-label="Device">
+    <option value="phone">Phone</option><option value="foldable">Foldable</option><option value="tablet">Tablet</option>
+    <option value="desktop">Desktop</option><option value="tv">TV</option>
+  </select>
+  <label><input id="dark" type="checkbox"> Dark</label>
+  <span class="spacer"></span>
+  <button id="start" class="primary" disabled>Start</button>
+  <button id="stop" disabled>Stop</button>
+</header>
+<main>
+  <div id="stage">
+    <div id="empty">Choose an app or upload an APK, then Start. The app runs on this server; this page shows its screen and sends
+      your clicks, drags, scrolls and typing.</div>
+    <div id="bezel" hidden>
+      <canvas id="screen" width="822" height="1782"></canvas>
+      <textarea id="keys" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Keyboard input to the app"></textarea>
+      <div id="overlay" hidden><div id="overlayText"></div><button id="overlayBtn" hidden></button></div>
+    </div>
+  </div>
+  <aside>
+    <div class="card" id="permission" hidden>
+      <h2>Permission request</h2>
+      <div id="permText"></div>
+      <div class="row"><button id="permAllow" class="primary">Allow</button><button id="permDeny">Don't allow</button></div>
+    </div>
+    <div class="card">
+      <h2>Device</h2>
+      <div class="row"><button id="back" title="Back (Esc)">◁ Back</button><button id="home" title="Home">○ Home</button></div>
+      <div class="row"><button id="rotl" title="Rotate left">⟲ Rotate</button><button id="rotr" title="Rotate right">Rotate ⟳</button></div>
+      <div class="row">
+        <select id="fontscale" aria-label="Text size">
+          <option value="0.85">Text 85%</option><option value="1" selected>Text 100%</option><option value="1.15">Text 115%</option>
+          <option value="1.3">Text 130%</option><option value="1.5">Text 150%</option><option value="2">Text 200%</option>
+        </select>
+        <input id="locale" type="text" placeholder="Locale, e.g. fr-FR" aria-label="Locale">
+      </div>
+      <div class="row"><input id="url" type="text" placeholder="Deep link, e.g. myapp://screen" aria-label="Deep link"><button id="go" style="flex:0">Open</button></div>
+      <div class="row"><button id="copy">Copy link to this state</button></div>
+      <div class="row" id="linkbox" hidden><input id="link" type="text" readonly aria-label="Link"></div>
+    </div>
+    <div class="card">
+      <h2>Stream</h2>
+      <dl>
+        <dt>Frames/s</dt><dd id="fps">–</dd>
+        <dt>Input → screen</dt><dd id="inLat">–</dd>
+        <dt>Frame → screen</dt><dd id="frLat">–</dd>
+        <dt>Encode</dt><dd id="enc">–</dd>
+        <dt>Frame size</dt><dd id="kb">–</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Session</h2>
+      <dl>
+        <dt>Started in</dt><dd id="ff">–</dd>
+        <dt>Memory</dt><dd id="mem">–</dd>
+        <dt>Stops if idle</dt><dd id="idle">–</dd>
+      </dl>
+      <div id="log"></div>
+    </div>
+    <div class="hint">Keyboard: click the screen, then type. Esc is Back; Ctrl or ⌘ shortcuts reach the app as Ctrl;
+      Shift+Esc returns the keyboard to this page.</div>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("screen"), ctx = canvas.getContext("2d");
+const KEYS = { Backspace: "DEL", Delete: "FORWARD_DEL", Enter: "ENTER", Tab: "TAB", ArrowLeft: "DPAD_LEFT", ArrowRight: "DPAD_RIGHT",
+  ArrowUp: "DPAD_UP", ArrowDown: "DPAD_DOWN", Home: "MOVE_HOME", End: "MOVE_END", PageUp: "PAGE_UP", PageDown: "PAGE_DOWN" };
+const params = new URLSearchParams(location.search);
+const state = { app: params.get("app") || "", device: params.get("device") || "phone", appearance: params.get("appearance") || "light",
+  locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
+  orientation: params.get("orientation") || "" };
+let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
+const now = () => performance.timeOrigin + performance.now();
+
+// ---------------------------------------------------------------- setup
+function log(line) {
+  const el = $("log");
+  el.textContent += (el.textContent ? "\n" : "") + line;
+  el.scrollTop = el.scrollHeight;
+}
+function overlay(text, button, action) {
+  $("overlay").hidden = !text;
+  $("overlayText").textContent = text || "";
+  $("overlayBtn").hidden = !button;
+  $("overlayBtn").textContent = button || "";
+  $("overlayBtn").onclick = action || null;
+}
+function addApp(id, name) {
+  if ([...$("app").options].some(o => o.value === id)) return;
+  const o = document.createElement("option");
+  o.value = id; o.textContent = name;
+  $("app").appendChild(o);
+}
+async function loadApps() {
+  try {
+    const r = await fetch("/api/apps");
+    for (const a of await r.json()) addApp(a.id, a.name);
+  } catch (e) { log("could not list apps: " + e); }
+  if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
+  $("device").value = state.device;
+  $("dark").checked = state.appearance === "dark";
+  if (state.fontscale) $("fontscale").value = state.fontscale;
+  $("locale").value = state.locale;
+  $("url").value = state.open;
+  refresh();
+  if (state.app) start();
+}
+function refresh() {
+  const running = ws && ws.readyState <= 1 && !ended;
+  $("start").disabled = !$("app").value || running;
+  $("stop").disabled = !running;
+  for (const id of ["back", "home", "rotl", "rotr", "go", "copy"]) $(id).disabled = !running;
+}
+$("app").onchange = () => { state.app = $("app").value; refresh(); };
+$("uploadBtn").onclick = () => $("file").click();
+$("file").onchange = () => {
+  const f = $("file").files[0];
+  if (!f) return;
+  const x = new XMLHttpRequest();
+  x.open("POST", "/api/upload");
+  x.setRequestHeader("X-Filename", encodeURIComponent(f.name));  // a header value must be Latin-1
+  x.upload.onprogress = e => { if (e.lengthComputable) $("uploadBtn").textContent = "Uploading " + Math.round(100 * e.loaded / e.total) + "%"; };
+  x.onload = () => {
+    $("uploadBtn").textContent = "Upload APK…";
+    if (x.status !== 200) { log("upload refused: " + x.responseText.trim()); return; }
+    const a = JSON.parse(x.responseText);
+    addApp(a.id, a.name + " (uploaded)");
+    $("app").value = state.app = a.id;
+    log("uploaded " + a.name);
+    refresh();
+  };
+  x.onerror = () => { $("uploadBtn").textContent = "Upload APK…"; log("upload failed"); };
+  x.send(f);
+  $("file").value = "";
+};
+
+// ---------------------------------------------------------------- session
+function start() {
+  if (!state.app) return;
+  if (ws) ws.close();
+  ended = false; onHome = false; frameW = frameH = 0;
+  const q = new URLSearchParams({ app: state.app, device: state.device, appearance: state.appearance });
+  for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
+  $("empty").hidden = true; $("bezel").hidden = false;
+  overlay("Starting…");
+  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?" + q);
+  sock.binaryType = "arraybuffer";
+  bestRtt = Infinity; clockOffset = 0;
+  // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
+  // closing (or delivering) when Start opens the next.
+  sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
+  sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
+  sock.onclose = () => {
+    if (sock !== ws) return;
+    if (!ended) overlay("Disconnected from the server.", "Start again", start);
+    ended = true;
+    refresh();
+  };
+  fit();
+}
+function stop() { if (ws) { ended = true; ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
+$("start").onclick = start;
+$("stop").onclick = stop;
+function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
+function onText(t) {
+  const kind = t[0], body = t.slice(2);
+  if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
+  else if (kind === "i") { const i = JSON.parse(body); log("session " + i.id + ": " + i.app); }
+  else if (kind === "s") stats(JSON.parse(body));
+  else if (kind === "r") log(body);
+  else if (kind === "t") {
+    const [sent, server] = body.split(" ").map(Number), rtt = now() - sent;
+    if (rtt < bestRtt) { bestRtt = rtt; clockOffset = server - (sent + rtt / 2); }
+  }
+  else if (kind === "q") { $("permission").hidden = false; $("permText").textContent = "The app asks for: " + body; }
+  else if (kind === "x") { ended = true; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
+}
+function stats(s) {
+  if (s.firstFrameMs >= 0) $("ff").textContent = (s.firstFrameMs / 1000).toFixed(2) + " s";
+  $("mem").textContent = s.rssMb > 0 ? s.rssMb + " MB (heap " + s.heapMb + ")" : "–";
+  const left = Math.max(0, s.idleLimitS - s.idleS);
+  $("idle").textContent = left > 120 ? Math.round(left / 60) + " min" : left + " s";
+}
+
+// ---------------------------------------------------------------- frames
+let chain = Promise.resolve();
+const drawnAt = [], frameLat = [], encodes = [], sizes = [], inputLat = [];
+let pendingInput = 0;
+// The server's clock minus this one's (frames carry the server's time): from the quickest of a few round trips.
+let clockOffset = 0, bestRtt = Infinity;
+function syncClock() { send("t " + now()); }
+function push(a, v, n) { a.push(v); if (a.length > n) a.shift(); }
+function median(a) { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; }
+function onFrame(buf, sock) {
+  const dv = new DataView(buf);
+  const w = dv.getInt32(0), h = dv.getInt32(4), encode = dv.getInt32(16) / 1000;
+  const presented = Number(dv.getBigInt64(8)) / 1000 - clockOffset;  // in this machine's time
+  const jpeg = new Blob([new Uint8Array(buf, 20)], { type: "image/jpeg" });
+  chain = chain.then(() => createImageBitmap(jpeg)).then(bmp => {
+    // Decoding takes a moment: by now Stop or a new session may have replaced this frame's socket.
+    if (sock !== ws || ended) { bmp.close(); return; }
+    if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+    if (!onHome) overlay(null);
+    const t = now();
+    send("ack");
+    push(drawnAt, t, 240); push(frameLat, t - presented, 60); push(encodes, encode, 60); push(sizes, buf.byteLength, 60);
+    // The first new frame after an input, if it comes within a second (an input that changes nothing on screen is
+    // not answered by the next caret blink).
+    if (pendingInput && presented > pendingInput) { if (t - pendingInput < 1000) push(inputLat, t - pendingInput, 30); pendingInput = 0; }
+  }).catch(() => { if (sock === ws) send("ack"); });
+}
+setInterval(syncClock, 10000);
+setInterval(() => {
+  const t = now();
+  const recent = drawnAt.filter(x => x > t - 1000).length;
+  $("fps").textContent = drawnAt.length ? String(recent) : "–";
+  const f = n => isNaN(n) ? "–" : Math.round(n) + " ms";
+  $("inLat").textContent = f(median(inputLat));
+  $("frLat").textContent = f(median(frameLat));
+  $("enc").textContent = isNaN(median(encodes)) ? "–" : median(encodes).toFixed(1) + " ms";
+  $("kb").textContent = sizes.length ? Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024) + " KB" : "–";
+}, 500);
+// The latency figures for scripts (and the end-to-end check): medians of the last few.
+window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length, inputMs: median(inputLat), frameMs: median(frameLat),
+  encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN, frames: drawnAt.length,
+  width: frameW, height: frameH });
+function fit() {
+  const stage = $("stage"), w = frameW || canvas.width, h = frameH || canvas.height;
+  const s = Math.max(0.05, Math.min((stage.clientWidth - 20) / w, (stage.clientHeight - 20) / h, 1 / Math.max(1, devicePixelRatio)));
+  canvas.style.width = Math.floor(w * s) + "px";
+  canvas.style.height = Math.floor(h * s) + "px";
+}
+addEventListener("resize", fit);
+
+// ---------------------------------------------------------------- input
+function at(e) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(canvas.width - 1, (e.clientX - r.left) * canvas.width / r.width));
+  const y = Math.max(0, Math.min(canvas.height - 1, (e.clientY - r.top) * canvas.height / r.height));
+  return x.toFixed(1) + " " + y.toFixed(1);
+}
+function markInput() { if (!pendingInput) pendingInput = now(); }
+let down = false, move = null, wheel = 0, wheelAt = null, scheduled = false;
+function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(flush); } }
+function flush() {
+  scheduled = false;
+  if (move && down) { send("touch move " + move); move = null; }
+  if (wheelAt && Math.abs(wheel) >= 1) {
+    const amount = Math.max(-50, Math.min(50, -wheel / 100));
+    send("wheel " + wheelAt + " " + amount.toFixed(2));
+    markInput();
+    wheel = 0;
+  }
+}
+canvas.addEventListener("pointerdown", e => {
+  if (!e.isPrimary || e.button > 0) return;
+  e.preventDefault();
+  keys.focus({ preventScroll: true });
+  if (onHome) { onHome = false; send("resume"); overlay(null); return; }
+  canvas.setPointerCapture(e.pointerId);
+  down = true; move = null;
+  send("touch down " + at(e));
+  markInput();
+});
+canvas.addEventListener("pointermove", e => { if (down && e.isPrimary) { move = at(e); schedule(); } });
+canvas.addEventListener("pointerup", e => {
+  if (!down || !e.isPrimary) return;
+  if (move) { send("touch move " + move); move = null; }
+  send("touch up " + at(e));
+  down = false;
+});
+canvas.addEventListener("pointercancel", e => { if (down) { send("touch cancel " + at(e)); down = false; } });
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  wheel += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+  wheelAt = at(e);
+  schedule();
+}, { passive: false });
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+// Keyboard: a hidden text field holds the focus. Keys with no text (Backspace, arrows, Enter, shortcuts) are sent from
+// keydown; text arrives as input events, which also covers IME composition, paste, dictation and phones' keyboards.
+// The field always holds one invisible character, so a phone keyboard's Backspace (often only a deletion input, with
+// key "Unidentified") has something to delete and reaches beforeinput below.
+const keys = $("keys"), SENTINEL = "\u200b";
+function resetKeys() { keys.value = SENTINEL; keys.setSelectionRange(1, 1); }
+resetKeys();
+keys.addEventListener("focus", () => { $("bezel").classList.add("typing"); resetKeys(); });
+keys.addEventListener("blur", () => $("bezel").classList.remove("typing"));
+keys.addEventListener("keydown", e => {
+  if (e.isComposing) return;
+  const mods = [];
+  if (e.ctrlKey || e.metaKey) mods.push("ctrl");
+  if (e.shiftKey) mods.push("shift");
+  if (e.altKey) mods.push("alt");
+  // Shift+Esc leaves the screen for the page's own controls (Tab and Esc otherwise go to the app).
+  if (e.key === "Escape" && e.shiftKey) { e.preventDefault(); keys.blur(); $("stop").focus(); return; }
+  if (e.key === "Escape") { send("back"); markInput(); e.preventDefault(); return; }
+  if (KEYS[e.key]) { send("key " + KEYS[e.key] + " 1" + (mods.length ? " " + mods.join(" ") : "")); markInput(); e.preventDefault(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.length === 1 && e.key.toLowerCase() !== "v" && /^[a-z0-9]$/i.test(e.key)) {
+    send("key " + e.key.toUpperCase() + " 1 " + mods.join(" "));
+    e.preventDefault();
+  }
+});
+function sendText(text) {
+  // Control commands are split on spaces, so a space is its own key.
+  const parts = text.replace(/[\r\n]+/g, " ").split(/( )/);
+  for (const p of parts) {
+    if (p === " ") { send("key SPACE"); continue; }
+    // The server takes commands up to 4,000 characters: long runs go in pieces, split between characters (not
+    // inside a surrogate pair).
+    const chars = Array.from(p);
+    for (let i = 0; i < chars.length; i += 1000) send("type " + chars.slice(i, i + 1000).join(""));
+  }
+  markInput();
+}
+function takeText(e) {
+  if (e && e.isComposing) return;
+  const text = keys.value.split(SENTINEL).join("");
+  if (text) sendText(text);
+  resetKeys();
+}
+// Deletions and line breaks that came without a keydown the handler above took (desktop keydowns are prevented, so
+// they never get here): phone keyboards.
+keys.addEventListener("beforeinput", e => {
+  const key = { deleteContentBackward: "DEL", deleteWordBackward: "DEL", deleteContentForward: "FORWARD_DEL",
+    insertLineBreak: "ENTER", insertParagraph: "ENTER" }[e.inputType];
+  if (!key || e.isComposing) return;
+  e.preventDefault();
+  send("key " + key);
+  markInput();
+});
+keys.addEventListener("input", takeText);
+keys.addEventListener("compositionend", () => setTimeout(takeText, 0));
+
+// ---------------------------------------------------------------- device controls
+$("back").onclick = () => { send("back"); markInput(); };
+$("home").onclick = () => { send("home"); onHome = true; overlay("Home screen. Click to return to the app."); };
+$("overlay").addEventListener("pointerdown", () => { if (onHome) { onHome = false; send("resume"); overlay(null); keys.focus(); } });
+$("rotl").onclick = () => send("rotate left");
+$("rotr").onclick = () => send("rotate right");
+$("device").onchange = () => { state.device = $("device").value; send("device " + state.device); };
+$("dark").onchange = () => { state.appearance = $("dark").checked ? "dark" : "light"; send("appearance " + state.appearance); };
+$("fontscale").onchange = () => { state.fontscale = $("fontscale").value === "1" ? "" : $("fontscale").value; send("fontscale " + $("fontscale").value); };
+$("locale").onchange = () => {
+  const v = $("locale").value.trim();
+  if (v && !/^[a-z]{2,3}(-[A-Z]{2})?$/.test(v)) { log("locale: use a form such as fr or fr-FR"); return; }
+  state.locale = v;
+  send("locale " + (v || "en-US"));
+};
+$("go").onclick = () => { const u = $("url").value.trim(); if (u) { state.open = u; send("open " + u); } };
+$("url").onkeydown = e => { if (e.key === "Enter") $("go").click(); };
+$("permAllow").onclick = () => { send("permission allow"); $("permission").hidden = true; };
+$("permDeny").onclick = () => { send("permission deny"); $("permission").hidden = true; };
+$("copy").onclick = async () => {
+  const q = new URLSearchParams({ app: state.app, device: state.device });
+  if (state.appearance === "dark") q.set("appearance", "dark");
+  for (const k of ["locale", "fontscale", "open"]) if (state[k]) q.set(k, state[k]);
+  // Always the screen's current orientation: some devices start in landscape (foldable, tablet), others in portrait.
+  if (frameW && frameH) q.set("orientation", frameW > frameH ? "landscape" : "portrait");
+  const link = location.origin + "/?" + q;
+  $("link").value = link;
+  try { await navigator.clipboard.writeText(link); log("link copied (people without the token cookie need the token link once)"); }
+  catch (e) { $("linkbox").hidden = false; $("link").select(); log("copy the link from the box"); }
+};
+addEventListener("beforeunload", () => { if (ws) ws.close(); });
+loadApps();
+</script>
+</body>
+</html>
