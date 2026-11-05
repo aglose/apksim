@@ -379,20 +379,26 @@ final class Session {
    * session's own, as anything written to a tab may block (a tab that stopped reading) and the timer serves them all.
    */
   void tick() {
-    if (ended || !ticking.compareAndSet(false, true)) return;
+    if (ended) return;
+    // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
+    // must not keep the session alive.
+    if (System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
+      if (idleStop.compareAndSet(false, true)) {
+        Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("stopped after " + serve.idleSeconds + " s without input"));
+      }
+      return;
+    }
+    if (!ticking.compareAndSet(false, true)) return;
     Thread.ofVirtual().name("serve-tick-" + id).start(() -> {
       try {
-        long idle = System.currentTimeMillis() - lastInput;
-        if (idle > serve.idleSeconds * 1000L) {
-          stop("stopped after " + serve.idleSeconds + " s without input");
-        } else {
-          send("stats", this::onStats);
-        }
+        send("stats", this::onStats);
       } finally {
         ticking.set(false);
       }
     });
   }
+
+  private final java.util.concurrent.atomic.AtomicBoolean idleStop = new java.util.concurrent.atomic.AtomicBoolean();
 
   String json() {
     long idle = (System.currentTimeMillis() - lastInput) / 1000;
@@ -411,6 +417,40 @@ final class Session {
       ended = true;
       notifyAll();
     }
+    try {
+      endInstance();
+    } finally {
+      // Only now, with the instance gone: a stopping session still counts against --max.
+      serve.ended(this);
+    }
+    // Last: tell the tab. That can block on a tab that stopped reading (a frame write holding the socket): give it two
+    // seconds, then drop the connection, which frees the write, the session's thread and its connection permit.
+    if (why != null) {
+      Thread notice = Thread.ofVirtual().start(() -> {
+        ws.sendText("x " + why);
+        ws.close(why.length() > 60 ? why.substring(0, 60) : why);
+      });
+      try {
+        if (!notice.join(java.time.Duration.ofSeconds(2))) ws.abort();
+      } catch (InterruptedException e) {
+        ws.abort();
+        Thread.currentThread().interrupt();
+      }
+    }
+    logLine("[serve] session ended" + (why == null ? "" : ": " + why));
+    synchronized (this) {
+      try {
+        if (log != null) log.close();
+      } catch (IOException e) {
+        // nothing to do
+      }
+      log = null;
+    }
+    System.err.printf("[serve] session %s ended%s%n", id, why == null ? "" : " (" + why + ")");
+  }
+
+  /** Quit, then kill after 5 s; then close the connections and erase the data slot. */
+  private void endInstance() {
     // Best effort, on its own thread: an app whose main thread hangs stops reading commands, and a write to its full
     // socket would block. Ending the process below does not wait for it, and closing the socket frees that write.
     Thread.ofVirtual().name("serve-quit-" + id).start(() -> {
@@ -455,25 +495,6 @@ final class Session {
       }
     }
     eraseData();
-    // Only now, with the instance gone: a stopping session still counts against --max.
-    serve.ended(this);
-    // Last: telling the tab can block on one that stopped reading (close gives up after a second).
-    if (why != null) {
-      Thread.ofVirtual().start(() -> {
-        ws.sendText("x " + why);
-        ws.close(why.length() > 60 ? why.substring(0, 60) : why);
-      });
-    }
-    logLine("[serve] session ended" + (why == null ? "" : ": " + why));
-    synchronized (this) {
-      try {
-        if (log != null) log.close();
-      } catch (IOException e) {
-        // nothing to do
-      }
-      log = null;
-    }
-    System.err.printf("[serve] session %s ended%s%n", id, why == null ? "" : " (" + why + ")");
   }
 
   /** Empties the data slot the instance held, once nothing holds its lock (Storage.dataDir), within the state folder. */
@@ -485,15 +506,20 @@ final class Session {
         || !dir.getFileName().toString().startsWith("serve-")) return;
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
-      FileLock l = ch.tryLock();
-      if (l == null) return;  // another instance took the slot already, with --fresh
+      FileLock l;
+      try {
+        l = ch.tryLock();
+      } catch (java.nio.channels.OverlappingFileLockException e) {
+        l = null;  // another session's cleanup in this process holds it
+      }
+      if (l == null) return;  // another instance took the slot already (with --fresh), or is erasing it
       try (Stream<Path> all = Files.walk(dir)) {
         for (Path p : all.filter(p -> !p.equals(dir) && !p.equals(lockFile)).sorted(Comparator.reverseOrder()).toList()) {
           Files.deleteIfExists(p);
         }
       }
       l.release();
-    } catch (IOException e) {
+    } catch (IOException | RuntimeException e) {
       logLine("[serve] could not erase " + dir + ": " + e);
     }
   }

@@ -382,7 +382,13 @@ keys.addEventListener("keydown", e => {
 function sendText(text) {
   // Control commands are split on spaces, so a space is its own key.
   const parts = text.replace(/[\r\n]+/g, " ").split(/( )/);
-  for (const p of parts) if (p === " ") send("key SPACE"); else if (p) send("type " + p);
+  for (const p of parts) {
+    if (p === " ") { send("key SPACE"); continue; }
+    // The server takes commands up to 4,000 characters: long runs go in pieces, split between characters (not
+    // inside a surrogate pair).
+    const chars = Array.from(p);
+    for (let i = 0; i < chars.length; i += 1000) send("type " + chars.slice(i, i + 1000).join(""));
+  }
   markInput();
 }
 function takeText(e) {

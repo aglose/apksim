@@ -129,6 +129,16 @@ final class WebSocket {
     }
   }
 
+  /** Drops the connection without a close frame and without waiting for a write in progress (which it ends). */
+  void abort() {
+    closed = true;
+    try {
+      socket.close();
+    } catch (IOException e) {
+      // gone already
+    }
+  }
+
   void close(String reason) {
     if (closed) return;
     byte[] r = reason.getBytes(StandardCharsets.UTF_8);
