@@ -362,7 +362,14 @@ test manifest, finds the test classes (library packages are not searched), and r
 (`@RunWith(AndroidJUnit4)` is pointed there by `android.junit.runner`). Tests run the Robolectric way, not the device
 way: the test body on the main thread, Espresso/ActivityScenario through Robolectric's in-process `LocalUiController`
 and `LocalActivityInvoker`, a simulated clock that jumps over idle time, and no window or Host loop. The
-instrumentation class itself (AndroidJUnitRunner or a subclass such as a custom `newApplication`) is not run.
+instrumentation class itself (AndroidJUnitRunner or a subclass) is not run, except its `newApplication`: when it is
+not plain AndroidJUnitRunner, `RunnerApplication` first runs a probe test (with a plain Application, so the app's
+onCreate does not run) that creates the runner and calls its newApplication with the manifest's class; the
+Instrumentation shadow records the class it hands on to Instrumentation.newApplication and stops there, and every test
+then gets that Application (`SimTestEnvironment` sets `Config.application`; Robolectric's global config is fixed
+before the probe). If the runner's newApplication fails with the probe's context, the manifest's is kept, with a
+line in the log; `--jvm -Dapksim.runnerApplication=false` skips the probe. The test app's `HarnessRunner` swaps in
+`HarnessTestApplication` (`RunnerApplicationTest`). The runner's listeners and other runner arguments are not run.
 `-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work, and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over

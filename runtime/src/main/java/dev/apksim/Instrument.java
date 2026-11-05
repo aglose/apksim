@@ -74,6 +74,8 @@ final class Instrument {
     List<Class<?>> classes = testClasses(tests, args);
     System.err.printf("[apksim] instrumentation %s: %d test classes found in %d ms%n", instr[0], classes.size(),
         (System.nanoTime() - t0) / 1_000_000);
+    // Before the runners are made: they take the Application the instrumentation's newApplication asks for.
+    RunnerApplication.probe(instr[0]);
     List<Runner> runners = new ArrayList<>();
     for (Class<?> c : classes) {
       // A class without @RunWith gets what AndroidJUnitRunner would give it, an Android runner: here, Robolectric's.
