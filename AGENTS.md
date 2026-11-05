@@ -399,7 +399,8 @@ within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
 process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
-(a test's shard is `abs(description.hashCode()) % N`; an empty shard is a run of no tests). Test runs stop the JIT at
+(a test's shard is `abs(description.hashCode() % N)`, AndroidJUnitRunner's `abs(hash) % N` except for a hash of
+`Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests). Test runs stop the JIT at
 C1 (the launcher adds `-XX:TieredStopAtLevel=1` for `--instrument`, before `--jvm` options): ~40% less CPU at the same
 wall time on a large app's suites, and no cliff when more processes run than there are cores (docs/parallel.md). Without it, a process that ends before every test has a result (a native crash or abort, or
 the Timeout watchdog below) does not end the run: the test that was running is reported failed with the exit status

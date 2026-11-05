@@ -8,7 +8,7 @@ log true and numShards/shardIndex as apksim does, and counts its calls in CHECK_
 started, and the JUnit XML (one entry per test, the failures expected). The real thing is ProcessDeathTest, run with
 `-e crashOnPurpose true` (CI's linux-smoke job).
 """
-import os, re, subprocess, sys, tempfile
+import math, os, re, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -62,9 +62,9 @@ def fake():
     keep, drop = selectors(e.get("class", "")), selectors(e.get("notClass", ""))
     tests = [(c, m) for c, m in universe
              if c not in drop and f"{c}#{m}" not in drop and (not keep or c in keep or f"{c}#{m}" in keep)]
-    if "numShards" in e:  # AndroidJUnitRunner's ShardingFilter: abs(description.hashCode()) % numShards
+    if "numShards" in e:  # Instrument's shard: abs(description.hashCode() % numShards), Java's sign-of-dividend remainder
         n, i = int(e["numShards"]), int(e["shardIndex"])
-        tests = [(c, m) for c, m in tests if abs(java_hash(f"{m}({c})")) % n == i]
+        tests = [(c, m) for c, m in tests if abs(int(math.fmod(java_hash(f"{m}({c})"), n))) == i]
 
     def block(c, m, n, code, stack=None):
         print(f"INSTRUMENTATION_STATUS: class={c}\nINSTRUMENTATION_STATUS: current={n}\n"

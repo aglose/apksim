@@ -38,7 +38,7 @@ import org.w3c.dom.NodeList;
  * instrumentation class (AndroidJUnitRunner or a subclass) is read from its manifest but not run; each test class
  * runs under {@link SimRunner}. Arguments are am instrument's {@code -e} ones: class, notClass, package, notPackage
  * and log (list the tests without running them), and numShards/shardIndex (AndroidJUnitRunner's sharding: a test runs in
- * shard {@code abs(description.hashCode()) % numShards}, so N processes given 0..N-1 run every test exactly once).
+ * shard {@code abs(description.hashCode() % numShards)}, so N processes given 0..N-1 run every test exactly once).
  */
 final class Instrument {
   /** Library code a test APK carries, never searched for tests (AndroidJUnitRunner skips most of these too). */
@@ -311,7 +311,9 @@ final class Instrument {
     return new Filter() {
       @Override
       public boolean shouldRun(Description d) {
-        if (d.isTest()) return (Math.abs(d.hashCode()) % n) == i;
+        // abs(hash % n), not AndroidJUnitRunner's abs(hash) % n: the same shard for every hash but Integer.MIN_VALUE,
+        // whose abs is negative, so that test would have matched no shard and run nowhere.
+        if (d.isTest()) return Math.abs(d.hashCode() % n) == i;
         for (Description child : d.getChildren()) {
           if (shouldRun(child)) return true;
         }
