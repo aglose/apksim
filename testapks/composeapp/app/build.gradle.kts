@@ -85,6 +85,7 @@ dependencies {
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
   androidTestImplementation(libs.androidx.test.uiautomator)
+  androidTestImplementation(libs.mockito.android)
 
   // Navigation
   

@@ -348,7 +348,11 @@ final class AppClasses {
       if (b != null) return new ByteArrayInputStream(b);
     } else {
       ZipEntry z = zip.getEntry(path);
-      if (z != null) return zip.getInputStream(z);
+      if (z != null) {
+        // Mockito's mock maker: a JVM one for the ART makers test APKs name (MockMakers, --mock-maker).
+        if (path.equals(MockMakers.RESOURCE)) return MockMakers.serve(zip.getInputStream(z));
+        return zip.getInputStream(z);
+      }
     }
     throw NOT_FOUND;
   }
