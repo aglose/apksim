@@ -74,6 +74,9 @@ final class Instrument {
     List<Class<?>> classes = testClasses(tests, args);
     System.err.printf("[apksim] instrumentation %s: %d test classes found in %d ms%n", instr[0], classes.size(),
         (System.nanoTime() - t0) / 1_000_000);
+    // The Application the instrumentation's newApplication asks for, which every test then gets. Not when only listing
+    // the tests (-e log true, as instrument.py --isolate does to find them): nothing runs, so it would be wasted.
+    if (!Boolean.parseBoolean(args.get("log"))) RunnerApplication.probe(instr[0]);
     List<Runner> runners = new ArrayList<>();
     for (Class<?> c : classes) {
       // A class without @RunWith gets what AndroidJUnitRunner would give it, an Android runner: here, Robolectric's.
