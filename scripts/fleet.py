@@ -47,6 +47,16 @@ def rss_mb(pids):
     return total / 1024
 
 
+def end(proc, grace=10):
+    """Ends a child that would not quit: SIGTERM, then SIGKILL after [grace] seconds, and reaps it either way."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 class Closed(Exception):
     """The instance closed its control connection: it exited or crashed."""
 
@@ -105,7 +115,7 @@ class Instance:
         try:
             code = self.proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            self.proc.terminate()
+            end(self.proc)
             return "'quit': the process did not exit within 30 s"
         return None if code == 0 else f"'quit': the process exited with status {code}"
 
@@ -123,9 +133,15 @@ class Instance:
                 return self.stop()
             elif word == "until":
                 ms, _, text = rest.partition(" ")
-                end = time.time() + int(ms) / 1000
-                while text not in (last := self.send("nodes")):
-                    if time.time() > end:
+                deadline = time.time() + int(ms) / 1000
+                while True:
+                    # A reply shows the screen when its request arrived: a match counts only if it was asked for in
+                    # time (one sent after the deadline would hide a timeout under load).
+                    asked = time.time()
+                    last = self.send("nodes")
+                    if text in last and asked <= deadline:
+                        break
+                    if time.time() > deadline:
                         return f"{raw!r}: not on screen after {ms} ms: {last[:300]!r}"
                     time.sleep(0.1)
             else:
@@ -204,7 +220,7 @@ def main():
             return
         if inst.file is None:  # never connected: it has failed already
             if inst.proc.poll() is None:
-                inst.proc.terminate()
+                end(inst.proc)
             return
         if inst.proc.poll() is None:
             why = inst.stop()
@@ -221,6 +237,11 @@ def main():
             t.start()
         for t in stoppers:
             t.join()
+    else:  # left running, but one that has already ended with an error still fails (a crash during a final `wait`)
+        for inst in insts:
+            code = inst.proc.poll()
+            if code not in (None, 0) and not inst.quit and not inst.failure:
+                inst.failure = f"the process exited with status {code} after its script"
 
     for inst in insts:
         ready = f"ready {inst.ready:5.1f} s" if inst.ready is not None else "never ready"
