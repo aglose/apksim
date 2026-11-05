@@ -87,14 +87,20 @@ final class Instrument {
     Filter filter = methodFilter(args.get("class"), args.get("notClass"));
     if (filter != null) request = request.filterWith(filter);
     Filter shard = shardFilter(args.get("numShards"), args.get("shardIndex"));
+    boolean emptyShard = false;
     if (shard != null) {
-      // A shard can be empty (more shards than tests): that is a run of no tests, not JUnit's "No tests found".
-      boolean any = leaves(request.getRunner().getDescription(), new ArrayList<>()).stream().anyMatch(shard::shouldRun);
-      request = any ? request.filterWith(shard) : Request.runner(new org.junit.runners.Suite((Class<?>) null, List.of()) {});
+      emptyShard = leaves(request.getRunner().getDescription(), new ArrayList<>()).stream().noneMatch(shard::shouldRun);
+      if (!emptyShard) request = request.filterWith(shard);
     }
 
     PrintStream out = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8);
     RawListener raw = new RawListener(out, instr[0]);
+    if (emptyShard) {
+      // A shard can be empty (more shards than tests): a run, or a listing, of no tests, not JUnit's "No tests found"
+      // (and not an empty suite either, whose childless description JUnit counts as one test).
+      raw.finish(new Result(), 0);
+      return 0;
+    }
     if (Boolean.parseBoolean(args.get("log"))) {
       // "-e log true": report every test as passed without running it (how tools list a suite).
       Description all = request.getRunner().getDescription();
