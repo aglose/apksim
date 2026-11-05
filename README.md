@@ -248,7 +248,7 @@ library's device-test APK, such as a KMP `androidDeviceTest`, instruments itself
 `scripts/instrument.py` wraps it for CI:
 - **Output:** it writes JUnit XML and exits 1 if any test failed.
 - **`--isolate`:** gives each test a fresh process, N at a time, as the AndroidX Test Orchestrator with `clearPackageData` does.
-- **`--shards N`:** splits the suite over N processes at once, with AndroidJUnitRunner's `-e numShards`/`shardIndex` (which `--instrument` takes too), into one report. Prefer it, and running suites side by side, to `--isolate`: every process pays a JVM and app start. On a large app's 4,134 tests, the whole set went from 167 s to 58 s on a Mac and from 670 s to about 135 s on 4 CPUs in the Linux image ([docs/parallel.md](docs/parallel.md)).
+- **`--shards N`:** splits the suite over N processes at once, with AndroidJUnitRunner's `-e numShards`/`shardIndex` (which `--instrument` takes too), into one report. Prefer it, and running suites side by side, to `--isolate`: every process pays a JVM and app start. On a large app's 4,134 tests, the whole set went from 167 s to 58 s on a Mac and from 670 s to about 135 s on 4 CPUs in the Linux image; in the app's own CI, on a GitHub runner, from a median 310 s to 140 s ([docs/parallel.md](docs/parallel.md)).
 - **Crash recovery:** without `--isolate`, if the process dies mid-run (a native crash, or a test that ignores its timeout), the test that was running is reported failed and the rest run in a new process.
 - **Arguments:** `-e` passes instrumentation arguments: `class`, `notClass`, `package`, `notPackage`, `log`, and anything your tests read. Options after `--` go to apksim.
 
