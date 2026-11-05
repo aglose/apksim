@@ -66,6 +66,20 @@ public final class Net {
    * must drop as well: the engine never saw them.
    */
   private static final Set<Socket> direct = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+  /** App TLS factories on their way to the engine (FakeTlsSocket's hello names one by its token). */
+  private static final Map<String, SSLSocketFactory> lentTls = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final java.util.concurrent.atomic.AtomicLong tlsTokens = new java.util.concurrent.atomic.AtomicLong();
+
+  static String lendTls(SSLSocketFactory f) {
+    String token = "t" + tlsTokens.incrementAndGet();
+    lentTls.put(token, f);
+    return token;
+  }
+
+  static SSLSocketFactory takeTls(String token) {
+    return token == null ? null : lentTls.remove(token);
+  }
+
   /** Unmatched replay requests since launch or the current test started (docs/network.md "Matching"). */
   static final List<String> unmatched = new CopyOnWriteArrayList<>();
   private static final List<Consumer<Boolean>> offlineListeners = new CopyOnWriteArrayList<>();
@@ -180,10 +194,16 @@ public final class Net {
     conditions = c;
     if (c.offline()) {
       if (engine != null) engine.closeAll();
-      List<Socket> drop;
+      List<Socket> drop = new ArrayList<>();
       synchronized (direct) {
-        drop = new ArrayList<>(direct);
-        direct.clear();
+        // Loopback stays up offline; a socket not connected yet (one the JDK connects itself) goes too.
+        for (java.util.Iterator<Socket> it = direct.iterator(); it.hasNext(); ) {
+          Socket s = it.next();
+          InetAddress to = s.getInetAddress();
+          if (to != null && (to.isLoopbackAddress() || to.isAnyLocalAddress())) continue;
+          drop.add(s);
+          it.remove();
+        }
       }
       for (Socket s : drop) {
         try {
@@ -414,7 +434,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SSLSocketFactory f, Socket s, String host, int port, boolean autoClose) throws IOException {
-    if (active && mode != Mode.SHAPE && redirected.contains(s)) return new FakeTlsSocket(s, host, port, autoClose);
+    if (active && mode != Mode.SHAPE && redirected.contains(s)) return new FakeTlsSocket(s, host, port, autoClose, f);
     return f.createSocket(s, host, port, autoClose);
   }
 
@@ -440,7 +460,7 @@ public final class Net {
     if (!active) return trackedTls(p == null ? u.openConnection() : u.openConnection(p));
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
     // (no lookup to fail) would otherwise still reach the server.
-    if (conditions.offline()) return OfflineConnection.of(u);
+    if (conditions.offline()) return OfflineConnection.of(u, p);
     if (p != null && p.type() != Proxy.Type.DIRECT && mode != Mode.REPLAY) {
       // The app's own proxy is its route out: kept, so the request goes through it as it would have (not recorded or
       // shaped). Replaying, nothing goes out, so the engine answers as for any other request.
@@ -462,10 +482,13 @@ public final class Net {
    */
   private static URLConnection trackedTls(URLConnection c) {
     if (c instanceof HttpsURLConnection https && !(https.getSSLSocketFactory() instanceof TrackingFactory)) {
-      https.setSSLSocketFactory(new TrackingFactory(https.getSSLSocketFactory()));
+      // One wrapper per factory, kept: the JDK reuses a kept-alive HTTPS connection only for the same factory.
+      https.setSSLSocketFactory(trackingFactories.computeIfAbsent(https.getSSLSocketFactory(), TrackingFactory::new));
     }
     return c;
   }
+
+  private static final Map<SSLSocketFactory, TrackingFactory> trackingFactories = new java.util.concurrent.ConcurrentHashMap<>();
 
   /** Remembers each socket its TLS is layered on (or opened by it), as Net.connect does for app sockets. */
   static final class TrackingFactory extends SSLSocketFactory {
@@ -484,7 +507,13 @@ public final class Net {
       return inner.createSocket(s, host, port, autoClose);
     }
 
-    @Override public Socket createSocket() throws IOException { return inner.createSocket(); }
+    /** Not connected yet (the JDK connects it itself): remembered now, and going offline closes it either way. */
+    @Override
+    public Socket createSocket() throws IOException {
+      Socket s = inner.createSocket();
+      direct.add(s);
+      return s;
+    }
     @Override public Socket createSocket(String h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }
     @Override public Socket createSocket(String h, int p, InetAddress l, int lp) throws IOException { return tracked(inner.createSocket(h, p, l, lp)); }
     @Override public Socket createSocket(InetAddress h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }

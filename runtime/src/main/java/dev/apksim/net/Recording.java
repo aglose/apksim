@@ -156,15 +156,20 @@ final class Recording {
 
   /** A recorded answer given before the body (Expect: 100-continue) to this request, or null. */
   synchronized Entry findExpectAnswered(String method, String url, List<String[]> headers) {
+    // The entry find would serve next for an empty body (recorded order, the last repeating), but only if it was
+    // answered before its body: otherwise the body is read and matched as for any request.
     List<Entry> list = byKey.get(key(method, url, headers, EMPTY_SHA));
     if (list == null) return null;
+    Entry next = list.get(list.size() - 1);
     for (Entry e : list) {
-      if (e.expectAnswered) {
-        e.served++;
-        return e;
+      if (e.served == 0) {
+        next = e;
+        break;
       }
     }
-    return null;
+    if (!next.expectAnswered) return null;
+    next.served++;
+    return next;
   }
 
   /** The recorded entry most like a request that matched none, and what differs; null if nothing is close. */

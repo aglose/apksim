@@ -50,7 +50,15 @@ final class FakeTlsSocket extends SSLSocket {
   private volatile Session session;
   private volatile boolean closed;
 
+  /** The app's own TLS (its factory: its trust manager, pins in it, client certificates), for the real handshake. */
+  private final SSLSocketFactory appTls;
+
   FakeTlsSocket(java.net.Socket raw, String host, int port, boolean autoClose) {
+    this(raw, host, port, autoClose, null);
+  }
+
+  FakeTlsSocket(java.net.Socket raw, String host, int port, boolean autoClose, SSLSocketFactory appTls) {
+    this.appTls = appTls;
     this.raw = raw;
     this.host = host;
     this.port = port;
@@ -75,7 +83,9 @@ final class FakeTlsSocket extends SSLSocket {
     if (session != null) return;
     if (closed) throw new SocketException("Socket is closed");
     OutputStream out = raw.getOutputStream();
-    out.write(("APKSIM-TLS " + host + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+    // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server.
+    String token = appTls == null ? "" : " " + Net.lendTls(appTls);
+    out.write(("APKSIM-TLS " + host + token + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
     String reply = Net.readLine(raw.getInputStream());
     if (reply == null) throw new SSLHandshakeException("Connection closed by peer");

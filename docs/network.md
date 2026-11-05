@@ -24,7 +24,8 @@ remote route answered the same way every run, and its offline and slow paths tes
 --network-host H=ADDR[:PORT] send connections for host H to ADDR (and PORT) instead: a fixture server for an address
                              compiled into the app (repeatable, comma-separated; IPv6 as [::1] or [::1]:8443)
 --network-trust FILE         also trust this PEM/DER certificate on the way out (recording against a local HTTPS
-                             server with a self-signed certificate)
+                             server with a self-signed certificate): a server the app's own TLS refuses is let
+                             through only if its chain holds, or was issued by, one of these, and that is logged
 ```
 
 Any of these turns the network layer on; without them nothing changes (one static check per hooked call). Replay
@@ -151,12 +152,19 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   413, then closes) is heard and relayed; the rest of the body is read from the app and hashed but not sent.
   `Expect: 100-continue` is passed on: the body waits for the server's 100 or its final answer, or until the app
   sends it anyway. A final answer before the body is recorded as such (`request._apksimExpectAnswered`) and
-  replayed the same way, without reading a body.
+  replayed the same way, without reading a body (several such answers to one request replay in recorded order).
+- Recording, the real TLS handshake with the server uses the app's own socket factory (the one it layered TLS with,
+  handed to the engine), so its trust manager decides as it would have without apksim: a custom one, pinning done in
+  it, client certificates. The engine's own TLS (the JDK's trust store) is used for the JDK's HttpURLConnection, and
+  for a server the app refused only when `--network-trust` vouches for its chain. Replaying, no server is reached;
+  what the app's trust manager accepted when recording is what is replayed.
 - `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
   request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
 - An HttpsURLConnection that does not go through the engine (the layer off, the app's own proxy) gets its socket
-  factory wrapped, so the socket under its TLS is remembered and `network offline` closes it, a download in progress
-  included. Plain http through the JDK's own HttpURLConnection is out of reach that way.
+  factory wrapped (one wrapper per factory, so the JDK still reuses its kept-alive connections), so the socket under
+  its TLS is remembered, or the socket itself when the JDK makes it unconnected and connects it, and `network
+  offline` closes it, a download in progress included. Plain http through the JDK's own HttpURLConnection is out of
+  reach that way.
 - A direct connect that finishes while `network offline` is closing connections is closed as it registers.
 - Every read from a server that waits (for the answer to begin, or in the middle of a body) checks every 500 ms
   whether the client is still there: an app that times out and closes its connection ends the server's too, so a
@@ -165,9 +173,10 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
 - The recording is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
   (Ctrl-C, the app's `System.exit`). The last save waits up to 2 s for exchanges whose answer has reached the app but
   is still being written down (a large gzip body decodes after it is relayed). A save that fails is retried.
-- Offline, `URL.openConnection` returns a connection that fails when used (UnknownHostException for a name,
-  ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive sockets could otherwise still carry a
-  request. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
+- Offline, `URL.openConnection` returns a connection that decides when it is first used: still offline, it fails
+  (UnknownHostException for a name, ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive
+  sockets could otherwise still carry a request; online again by then, it opens the real connection with everything
+  the app set on it (method, headers, timeouts, streaming mode, its TLS factory and hostname verifier) and goes on. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
   out after 100 ms). A socket factory that makes only connected sockets cannot go through the engine: replaying, its
   connect fails and counts as unmatched; recording, it connects directly, unrecorded.
 - Offline also closes the engine's connections on both sides (a worker waiting on a silent server wakes), the

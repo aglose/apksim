@@ -177,6 +177,34 @@ final class NetEngine {
   }
 
   /** Where to connect: --network-host's mapping first, then the address the app chose, else host looked up here. */
+  /** Whether a chain (base64 DER) holds one of --network-trust's certificates, or one issued by one of them. */
+  static boolean issuedByTrust(List<String> chain) {
+    try {
+      CertificateFactory cf = CertificateFactory.getInstance("X.509");
+      List<java.security.cert.X509Certificate> trusted = new ArrayList<>();
+      try (InputStream in = Files.newInputStream(Net.trust)) {
+        for (Certificate c : cf.generateCertificates(in)) trusted.add((java.security.cert.X509Certificate) c);
+      }
+      for (String b64 : chain) {
+        var c = (java.security.cert.X509Certificate) cf.generateCertificate(new ByteArrayInputStream(Base64.getDecoder().decode(b64)));
+        for (var t : trusted) {
+          if (c.equals(t)) return true;
+          if (c.getIssuerX500Principal().equals(t.getSubjectX500Principal())) {
+            try {
+              c.verify(t.getPublicKey());
+              return true;
+            } catch (Exception notIssued) {
+              // another key under the same name
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      Net.log("network record: cannot read --network-trust " + Net.trust + ": " + e);
+    }
+    return false;
+  }
+
   static InetSocketAddress target(String host, String address, int port) throws IOException {
     InetSocketAddress m = Net.hostMap.get(host.toLowerCase(Locale.ROOT));
     if (m != null) return new InetSocketAddress(m.getHostString(), m.getPort() > 0 ? m.getPort() : port);
@@ -315,6 +343,7 @@ final class NetEngine {
           // The name the client's TLS checks: not the TCP destination, which may be an address.
           String[] p = l.split(" ");
           if (p.length > 1 && !p[1].isEmpty()) tlsHost = p[1];
+          appTls = Net.takeTls(p.length > 2 ? p[2] : null);
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
@@ -497,9 +526,40 @@ final class NetEngine {
       }
     }
 
+    /** The app's TLS factory for this connection (FakeTlsSocket's), or null for the engine's (JDK trust + --network-trust). */
+    SSLSocketFactory appTls;
+    /** The app's TLS refused the server, and --network-trust vouched for it: the engine's TLS from then on. */
+    boolean trustOverride;
+
+    /**
+     * The real handshake with the server, with the app's own TLS when it has one: its trust manager decides, as it would
+     * have without apksim (a custom one, pinning inside it). Only a server the app refuses whose chain is one of
+     * --network-trust's certificates, or issued by one, is let through with the engine's TLS: that is what the option
+     * is for (a fixture server with a throwaway certificate), and it is logged.
+     */
     List<String> upgradeUpstream() throws Exception {
+      if (appTls == null || trustOverride) return upgradeUpstream(upstreamTls());
+      try {
+        return upgradeUpstream(appTls);
+      } catch (javax.net.ssl.SSLException refused) {
+        if (Net.trust == null) throw refused;
+        closeUpstream();
+        String err = connectUpstream();
+        if (err != null) throw refused;
+        List<String> chain = upgradeUpstream(upstreamTls());
+        if (!issuedByTrust(chain)) {
+          closeUpstream();
+          throw refused;
+        }
+        trustOverride = true;
+        Net.log("network record: " + tlsHost + " refused by the app's TLS (" + refused.getMessage() + "), accepted for --network-trust");
+        return chain;
+      }
+    }
+
+    List<String> upgradeUpstream(SSLSocketFactory factory) throws Exception {
       up.setSoTimeout(timeout);  // the handshake gets the app's connect timeout; the watch starts after it
-      SSLSocket s = (SSLSocket) upstreamTls().createSocket(up, tlsHost, port, true);
+      SSLSocket s = (SSLSocket) factory.createSocket(up, tlsHost, port, true);
       SSLParameters params = s.getSSLParameters();
       params.setEndpointIdentificationAlgorithm("HTTPS");
       s.setSSLParameters(params);
