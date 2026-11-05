@@ -68,7 +68,24 @@ final class AdbLog {
     ring.clear();
   }
 
+  /** Failure bundles: the first lines from a mark on, kept whatever the ring drops (keepHead, head). */
+  private static long headFrom = Long.MAX_VALUE;
+  private static int headCap;
+  private static final List<Line> head = new ArrayList<>();
+
+  /** Keeps the first [cap] lines from sequence number [from] on (one mark at a time: a new one replaces it). */
+  static synchronized void keepHead(long from, int cap) {
+    headFrom = from;
+    headCap = cap;
+    head.clear();
+  }
+
+  static synchronized List<Line> head() {
+    return new ArrayList<>(head);
+  }
+
   private static synchronized void add(Line line) {
+    if (seq >= headFrom && head.size() < headCap) head.add(line);
     ring.addLast(line);
     seq++;
     if (ring.size() > CAPACITY) ring.removeFirst();
