@@ -344,17 +344,22 @@ and docs/ci-testbed.md says how to read one. Size: medium, 3-4 days. Later: a fi
 injected input, the last 20 kept) to show what the test did before it failed. Video does not fit test runs: there is
 no frame loop, and the clock skips idle time.
 
-## Phase 6: more features for teams (started 2026-11-05, each in its own session and branch)
+## Phase 6: more features for teams (built 2026-11-05, each in its own session and branch)
 
-Each has its own spec in its own doc, so the branches do not conflict in this file:
-- **Affected tests and balanced shards** (docs/affected-tests.md): record which classes each test loads, run only the
-  tests a diff can reach, and split shards by measured time.
-- **Screenshot tests across devices and settings** (docs/snapshots.md): golden screenshots across devices, dark mode,
-  locales and font scales, with a diff report.
-- **Hermetic network** (docs/network.md): record and replay an app's HTTP(S) traffic, plus latency, loss and offline
-  profiles.
-- **Browser previews of builds** (docs/serve.md): `apksim serve`, a pool of standbys streaming instances to a browser
-  tab per build.
+All four are merged, each with its spec, checks and measurements in its own doc:
+- **Affected tests and balanced shards** (docs/affected-tests.md, PR #39): record which classes each test reaches,
+  run only the tests a diff can reach, and split shards by measured time. Recording costs nothing measurable on a
+  large app's suites; `scripts/affected-check.py` is a CI step.
+- **Screenshot tests across devices and settings** (docs/snapshots.md, PR #42): `scripts/snapshot.py`, golden
+  screenshots across devices, dark mode, locales and font scales, with a diff report. 80 captures byte-identical over
+  five runs on the Mac and in the image; goldens are made in the image.
+- **Hermetic network** (docs/network.md, PR #41): HAR record and replay of an app's HTTP(S) (OkHttp,
+  HttpURLConnection and what is built on them), and offline, 3G, lossy, latency and bandwidth conditions. Not covered:
+  Cronet and Ktor CIO (their own TLS), raw sockets.
+- **Browser previews of builds** (docs/serve.md, PR #40): `apksim serve`, an instance per browser tab streaming
+  JPEG frames, with touch, keys and device controls; loopback unless a token is set.
+
+Failure bundles (phase 5, PRs #38 and #43) shipped with them; all five are in 0.9.0.
 
 ## Not planned
 
@@ -385,7 +390,7 @@ Each has its own spec in its own doc, so the branches do not conflict in this fi
 | 10 Health Connect | medium | - |
 | 11 GLES/native audio | large | an app that needs them |
 | 12 Failure bundles | built; the owner's suites' cost check left | - |
-| Phase 6 features | medium-large each | their own sessions |
+| Phase 6 features | built (0.9.0) | - |
 
 4 and 7 both touch `gpu/` and should not run in parallel. What is left without the owner: 0h, and 0f/0g/9-11 when
 an app needs them. 0a's CI job and 0c's patches are changes to the owner's app.
