@@ -2548,6 +2548,11 @@ final class MethodTranslator implements Opcodes {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "parkNanos", m.descriptor(), false);
       return;
     }
+    if (opcode == INVOKESTATIC && "java/security/KeyStore".equals(ownerName) && "getDefaultType".equals(m.name())) {
+      // Android's default keystore type, BKS, with Bouncy Castle to read it (KeyStores).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/KeyStores", "getDefaultType", "()Ljava/lang/String;", false);
+      return;
+    }
     if (opcode == INVOKEVIRTUAL && "javax/crypto/Cipher".equals(ownerName) && "init".equals(m.name())
         && ("(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V".equals(m.descriptor())
             || "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V".equals(m.descriptor()))) {
