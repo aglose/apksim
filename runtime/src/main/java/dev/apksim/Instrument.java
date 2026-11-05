@@ -90,6 +90,9 @@ final class Instrument {
       if (with != null && with.value() == org.junit.runners.Parameterized.class && !c.isAnnotationPresent(org.junit.Ignore.class)) {
         try {
           runners.add(new SimParameterized(c));
+        } catch (org.junit.internal.AssumptionViolatedException a) {
+          // An assumption in @Parameters skips the class, as JUnit's Parameterized reports it, rather than failing it.
+          runners.add(SimParameterized.assumptionFailed(c, a));
         } catch (Throwable t) {
           runners.add(new org.junit.internal.runners.ErrorReportingRunner(c, t));
         }

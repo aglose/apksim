@@ -361,6 +361,9 @@ public final class TestActivities {
   static void beforeReset() {
     composeIdling = null;
     parkCarryNanos = 0;
+    // Until the next test publishes its own (SimRunner.useTestApkContext, after its Application starts), calls fall
+    // back to the current instrumentation rather than a context over the previous test's Application.
+    testApkContext = null;
     try {
       Object si = Shadow.extract(ShadowInstrumentation.getInstrumentation());
       List<?> wrappers = ReflectionHelpers.callInstanceMethod(si, "getRegisteredReceivers");
@@ -648,7 +651,9 @@ public final class TestActivities {
         return;
       }
       Activity existing = null;
-      for (Activity a : running) if (a.getClass().getName().equals(info.name)) existing = a;
+      // Started through an activity-alias, the running instance's class is the alias's targetActivity.
+      String className = info.targetActivity != null ? info.targetActivity : info.name;
+      for (Activity a : running) if (a.getClass().getName().equals(className)) existing = a;
       boolean onTop = existing != null && running.get(running.size() - 1) == existing;
       boolean reuse = existing != null && (info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK
           || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE

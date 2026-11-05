@@ -640,6 +640,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
+  Not yet: a start for a result (startActivityForResult, ActivityResultContracts) is still only recorded, so a flow
+  that waits for the started activity's result needs the test to supply it, as with Robolectric.
 - Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's
   `mockito-extensions/org.mockito.plugins.MockMaker` names a maker for ART (mockito-android's, dexmaker's), whose first
   mock threw "Plugins.registry is null" here; `AppClasses` serves that resource through MockMakers. `auto` (default)

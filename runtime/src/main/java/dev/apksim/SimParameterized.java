@@ -58,24 +58,52 @@ public final class SimParameterized extends Suite {
       try {
         callbacks(Parameterized.BeforeParam.class, values);
         setUp = true;
+      } catch (org.junit.internal.AssumptionViolatedException a) {
+        // An assumption skips the set, as JUnit's Parameterized does; its cleanup still runs (finally).
+        notifier.fireTestAssumptionFailed(new org.junit.runner.notification.Failure(child.getDescription(), a));
+        setUp = false;
       } catch (Throwable t) {
         notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
         setUp = false;
       }
       if (setUp) super.runChild(child, notifier);
     } finally {
-      try {
-        callbacks(Parameterized.AfterParam.class, values);
-      } catch (Throwable t) {
-        notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+      // Every @AfterParam runs, each failure reported, as JUnit collects them: one failing cleanup does not skip the rest.
+      for (FrameworkMethod m : getTestClass().getAnnotatedMethods(Parameterized.AfterParam.class)) {
+        try {
+          invoke(m, values);
+        } catch (Throwable t) {
+          notifier.fireTestFailure(new org.junit.runner.notification.Failure(child.getDescription(), t));
+        }
       }
     }
   }
 
+  /** The @BeforeParam methods, in order; the first that throws ends them (as JUnit's RunBeforeParams). */
   private void callbacks(Class<? extends java.lang.annotation.Annotation> kind, Object[] values) throws Throwable {
-    for (FrameworkMethod m : getTestClass().getAnnotatedMethods(kind)) {
-      m.invokeExplosively(null, m.getMethod().getParameterCount() == 0 ? new Object[0] : values);
-    }
+    for (FrameworkMethod m : getTestClass().getAnnotatedMethods(kind)) invoke(m, values);
+  }
+
+  private static void invoke(FrameworkMethod m, Object[] values) throws Throwable {
+    m.invokeExplosively(null, m.getMethod().getParameterCount() == 0 ? new Object[0] : values);
+  }
+
+  /** A class whose @Parameters made an assumption that failed: reported skipped, as JUnit's Parameterized does. */
+  static Runner assumptionFailed(Class<?> klass, org.junit.internal.AssumptionViolatedException a) {
+    org.junit.runner.Description d = org.junit.runner.Description.createTestDescription(klass, "parameters");
+    return new Runner() {
+      @Override
+      public org.junit.runner.Description getDescription() {
+        return d;
+      }
+
+      @Override
+      public void run(org.junit.runner.notification.RunNotifier notifier) {
+        notifier.fireTestStarted(d);
+        notifier.fireTestAssumptionFailed(new org.junit.runner.notification.Failure(d, a));
+        notifier.fireTestFinished(d);
+      }
+    };
   }
 
   /**
