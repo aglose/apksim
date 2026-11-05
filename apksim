@@ -91,6 +91,8 @@ while [[ $# -gt 1 ]]; do
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
     --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
+    # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
+    --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
     --no-network) NO_NET=1; shift ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;

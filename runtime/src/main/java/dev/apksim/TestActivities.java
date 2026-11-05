@@ -340,6 +340,43 @@ public final class TestActivities {
       else original("finish", resultCode, results);
     }
 
+    /**
+     * While RunnerApplication probes the test APK's runner: records the class its newApplication asks for and stops
+     * there, so no Application is made. Otherwise Instrumentation's own.
+     */
+    @Implementation
+    protected android.app.Application newApplication(ClassLoader cl, String className, Context context)
+        throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+      if (RunnerApplication.recording) throw new RunnerApplication.Recorded(className);
+      return (android.app.Application) originalNewApplication(self, new Class<?>[] {ClassLoader.class, String.class, Context.class},
+          cl, className, context);
+    }
+
+    /** The static form a runner may call with a class instead of a name; recorded the same way. */
+    @Implementation
+    protected static android.app.Application newApplication(Class<?> clazz, Context context)
+        throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+      if (RunnerApplication.recording) throw new RunnerApplication.Recorded(clazz.getName());
+      return (android.app.Application) originalNewApplication(null, new Class<?>[] {Class.class, Context.class}, clazz, context);
+    }
+
+    private static Object originalNewApplication(Instrumentation self, Class<?>[] types, Object... args)
+        throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+      try {
+        java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod("$$robo$$android_app_Instrumentation$newApplication", types);
+        m.setAccessible(true);
+        return m.invoke(self, args);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        if (e.getCause() instanceof InstantiationException x) throw x;
+        if (e.getCause() instanceof IllegalAccessException x) throw x;
+        if (e.getCause() instanceof ClassNotFoundException x) throw x;
+        if (e.getCause() instanceof RuntimeException r) throw r;
+        throw new IllegalStateException(e.getCause());
+      } catch (NoSuchMethodException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
     private void original(String name, int code, Bundle results) {
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod("$$robo$$android_app_Instrumentation$" + name, int.class, Bundle.class);
