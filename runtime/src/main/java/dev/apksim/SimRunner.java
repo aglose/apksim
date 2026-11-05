@@ -248,6 +248,8 @@ public class SimRunner extends RobolectricTestRunner {
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
       SimClock.applyLaunchOption();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
+      // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
+      NetConnectivity.beforeApplication();
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");

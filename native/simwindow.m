@@ -69,7 +69,8 @@ enum {
   TAG_VOLUME_UP, TAG_VOLUME_DOWN, TAG_BACK, TAG_LOCALE, TAG_NOTIFICATION, TAG_LOCATION_CUSTOM, TAG_LOCATION_RUN,
   TAG_LOCATION_BIKE, TAG_LOCATION_DRIVE, TAG_LOCATION_NONE, TAG_BIOMETRICS_ENROLLED, TAG_BIOMETRICS_MATCH,
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
-  TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV,
+  TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
+  TAG_NETWORK_LOSSY,
 };
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
@@ -252,6 +253,15 @@ static void buildMenus(NSMenu *bar) {
   addItem(bio, @"Non-matching Finger", TAG_BIOMETRICS_NOMATCH, @"n", cmd | opt);
   bioItem.submenu = bio;
   [features addItem:bioItem];
+  NSMenuItem *netItem = [[NSMenuItem alloc] initWithTitle:@"Network" action:nil keyEquivalent:@""];
+  NSMenu *net = [[NSMenu alloc] initWithTitle:@"Network"];
+  net.autoenablesItems = NO;
+  addItem(net, @"Online", TAG_NETWORK_ONLINE, nil, 0);
+  addItem(net, @"Offline", TAG_NETWORK_OFFLINE, nil, 0);
+  addItem(net, @"3G", TAG_NETWORK_3G, nil, 0);
+  addItem(net, @"Lossy", TAG_NETWORK_LOSSY, nil, 0);
+  netItem.submenu = net;
+  [features addItem:netItem];
   [features addItem:[NSMenuItem separatorItem]];
   addItem(features, @"Open URL…", TAG_OPEN_URL, @"o", cmd | shift);
   NSMenu *window = submenu(bar, @"Window");

@@ -1534,6 +1534,9 @@ final class AdbShell {
         RuntimeEnvironment.setFontScale(Float.parseFloat(a[1]));
         return "ok";
       }
+      case "network" -> {
+        return dev.apksim.net.Net.command(a);
+      }
       default -> {
         return "error: " + a[0] + " is not available in a test run";
       }
