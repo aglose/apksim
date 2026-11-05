@@ -147,21 +147,25 @@ final class Session {
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
+    // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
+    // rotation or deep link chosen during startup comes after the link's and stays.
+    List<Map.Entry<String, Consumer<String>>> first = new ArrayList<>();
+    first.add(Map.entry("stats", this::onStats));
+    String open = options.get("open");
+    if (open != null && check("open " + open) != null) first.add(Map.entry("open " + open, r -> ws.sendText("r open: " + r)));
+    String orientation = options.get("orientation");
+    if ("landscape".equals(orientation) || "portrait".equals(orientation)) first.add(Map.entry("rotate " + orientation, r -> {}));
     synchronized (replies) {
       controlOut = new PrintWriter(new java.io.OutputStreamWriter(control.getOutputStream(), StandardCharsets.UTF_8), true);
-      for (Map.Entry<String, Consumer<String>> e : early) {
+      first.addAll(early);
+      early.clear();
+      for (Map.Entry<String, Consumer<String>> e : first) {
         replies.add(e.getValue());
         controlOut.println(e.getKey());
       }
-      early.clear();
     }
     stream = connect(p);
     stream.getOutputStream().write(("stream " + serve.quality + "\n").getBytes(StandardCharsets.US_ASCII));
-    send("stats", this::onStats);
-    String open = options.get("open");
-    if (open != null && check("open " + open) != null) send("open " + open, r -> ws.sendText("r open: " + r));
-    String orientation = options.get("orientation");
-    if ("landscape".equals(orientation) || "portrait".equals(orientation)) send("rotate " + orientation, r -> {});
   }
 
   private static Socket connect(int port) throws IOException {
