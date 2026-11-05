@@ -70,6 +70,11 @@ def main():
     stale = os.path.join(local, folder(PKG + "FailureBundleTest", "a_passes"))
     os.makedirs(stale)
     open(os.path.join(stale, "failure.txt"), "w").write("an earlier run's failure\n")
+    # A link in DIR to a folder outside it, holding something bundle-shaped: the cleanup must not follow it.
+    outside = os.path.join(out, "outside", "case")
+    os.makedirs(outside)
+    open(os.path.join(outside, "failure.txt"), "w").write("not this run's\n")
+    os.symlink(os.path.abspath(os.path.dirname(outside)), os.path.join(local, "linked.Class"))
     r = instrument(a, xml, bdir, local, "-e", "failOnPurpose", "true", "-e", "class", ",".join(FAIL))
     check(r.returncode == 1, f"the run fails (exit {r.returncode})")
     expect = {  # (class, method): (captured by, screen and tree expected, text the tree must hold)
@@ -105,6 +110,7 @@ def main():
     if (PKG + "FailureBundleTest", "c_failsWithDialogOpen") in expect:
         w = open(os.path.join(local, folder(PKG + "FailureBundleTest", "c_failsWithDialogOpen"), "windows.txt")).read()
         check(len(w.strip().splitlines()) == 2, "the dialog test's windows.txt lists two windows")
+    check(os.path.exists(os.path.join(outside, "failure.txt")), "the cleanup does not follow a link out of DIR")
     for c, m in ((PKG + "FailureBundleTest", "a_passes"), (PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"),
                  (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides")):
         check(not os.path.exists(os.path.join(local, folder(c, m))), f"no bundle for passing {m}")
@@ -157,6 +163,13 @@ def main():
         check("[redacted]" in p_ and "still running" not in p_, "process.txt is redacted as apksim's own files are")
     idx = os.path.join(out, "watchdog", "index.html")
     check(os.path.exists(idx) and "still running" not in open(idx).read(), "index.html's previews are redacted too")
+
+    if not a.apksim:
+        print("a run that only lists the suite writes no bundles, even with --bundles-on all:")
+        listing = os.path.join(out, "listing")
+        subprocess.run([os.path.join(ROOT, "apksim"), "--instrument", a.test, "-e", "log", "true", "-e", "failOnPurpose", "true",
+                        "--bundles", listing, "--bundles-on", "all", a.app], capture_output=True, text=True)
+        check(not os.listdir(listing), "no bundles from -e log true")
 
     if not a.apksim:
         print("a passing run prints the same with and without --bundles:")

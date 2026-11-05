@@ -291,11 +291,11 @@ def clear_bundles(local):
         os.remove(os.path.join(local, "index.html"))
     for c in os.listdir(local):
         cdir = os.path.join(local, c)
-        if not os.path.isdir(cdir):
+        if os.path.islink(cdir) or not os.path.isdir(cdir):  # (a link may lead out of DIR: never followed)
             continue
         for b in os.listdir(cdir):
             bdir = os.path.join(cdir, b)
-            if os.path.isdir(bdir) and {"failure.txt", "process.txt"} & set(os.listdir(bdir)):
+            if not os.path.islink(bdir) and os.path.isdir(bdir) and {"failure.txt", "process.txt"} & set(os.listdir(bdir)):
                 shutil.rmtree(bdir)
         if not os.listdir(cdir):
             os.rmdir(cdir)

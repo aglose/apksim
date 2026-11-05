@@ -52,8 +52,13 @@ public final class Bundles {
   private Bundles() {}
 
   private static final String ROOT = System.getProperty("apksim.bundles");
-  /** Bundles are being written (a test run with --bundles). */
-  static final boolean ON = ROOT != null && TestActivities.testRun();
+  /**
+   * Bundles are being written (a test run with --bundles). Not in a run that only lists the suite (-e log true, as
+   * instrument.py does to rerun what a crashed process left): its tests "pass" without running, and with
+   * --bundles-on all they would overwrite the crashed process's bundles.
+   */
+  static final boolean ON = ROOT != null && TestActivities.testRun()
+      && !Boolean.parseBoolean(System.getProperty("apksim.instrument.log"));
   /** --bundles-on all: passing tests get a bundle too (for debugging a test that passes). */
   private static final boolean ALL = "all".equals(System.getProperty("apksim.bundles.on"));
   /** Full bundles per process; later failures get failure.txt only (a broken build failing thousands of tests). */
@@ -152,7 +157,19 @@ public final class Bundles {
           }
           throw t;
         }
-        if (ALL) locked("test body (passed)", null, true);
+        if (ALL && written == null) {
+          locked("test body (passed)", null, true);
+        } else if (ALL) {
+          // A bundle from a failure the test handled (Espresso's handler): rewrite it in its slot rather than take
+          // another; the screen is the body's end.
+          LOCK.lock();
+          try {
+            capture("test body (passed; an earlier failure was handled)", null, true, false);
+            writtenPassed = true;
+          } finally {
+            LOCK.unlock();
+          }
+        }
       }
     };
   }
@@ -341,6 +358,16 @@ public final class Bundles {
     }
   }
 
+  /** Time spent capturing, in all: a test's timeout does not count it (FailOnTimeout's watchdog reads pausedNanos). */
+  private static volatile long captureNanos;
+  private static volatile long captureSince;
+
+  /** Nanoseconds spent capturing so far, the capture in progress included. */
+  public static long pausedNanos() {
+    long since = captureSince;
+    return captureNanos + (since == 0 ? 0 : System.nanoTime() - since);
+  }
+
   /**
    * Writes the current test's bundle; LOCK is held. [fresh]: a new bundle, in a folder emptied first (an earlier
    * run's files must not pass for this one's); otherwise the current bundle's failure, log and threads are rewritten.
@@ -349,6 +376,7 @@ public final class Bundles {
     Description d = current;
     if (d == null) return;
     long t0 = System.nanoTime();
+    captureSince = t0;
     StringBuilder parts = new StringBuilder();
     try {
       Path dir = Path.of(ROOT).resolve(d.getClassName()).resolve(folder(d.getClassName(), d.getMethodName()));
@@ -389,6 +417,9 @@ public final class Bundles {
       write(dir.resolve("failure.txt"), redact(head + "parts:\n" + parts));
     } catch (Throwable e) {
       System.err.println("[apksim] failure bundle for " + d + " not written: " + e);
+    } finally {
+      captureNanos += System.nanoTime() - t0;
+      captureSince = 0;
     }
   }
 
