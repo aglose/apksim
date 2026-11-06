@@ -523,8 +523,12 @@ public class Host {
     return intent.setComponent(new ComponentName(pkg, System.getProperty("apksim.startActivity")));
   }
 
-  /** Starts the app's activity component NAME (an alias makes its targetActivity, the intent keeps the alias). */
+  /**
+   * Starts the app's activity component NAME (an alias makes its targetActivity, the intent keeps the alias). An
+   * implicit intent gets the component it resolved to, on a copy, as a device's activity gets it (TestActivities.launch).
+   */
   private void start(String name, Intent intent) throws Exception {
+    if (intent.getComponent() == null) intent = new Intent(intent).setComponent(new ComponentName(System.getProperty("apksim.package"), name));
     String className = AppInfo.activityClass(name);
     Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
     ActivityController<? extends Activity> top = stack.peek();
