@@ -69,6 +69,9 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
   implementation(libs.okhttp)
+  // Time zones: Joda-Time up to 2.10 reads user.timezone before the JDK's default (apksim://timezone, WallClockTest;
+  // issue 91). 2.12 reads a property of its own instead, so this stays on 2.10.
+  implementation(libs.joda.time)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

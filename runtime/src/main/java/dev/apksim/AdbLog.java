@@ -163,6 +163,7 @@ final class AdbLog {
       }
       String stamp;
       synchronized (time) {
+        time.setTimeZone(java.util.TimeZone.getDefault());  // the device's zone, as a device's logcat (--timezone)
         stamp = time.format(new Date());
       }
       long tid = Thread.currentThread().getId();

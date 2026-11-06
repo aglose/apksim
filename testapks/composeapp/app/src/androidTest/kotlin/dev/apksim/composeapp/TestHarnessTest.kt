@@ -175,5 +175,35 @@ class WallClockTest {
     assumeTrue(zone != null)
     assertEquals(zone, TimeZone.getDefault().id)
     assertEquals(zone, android.icu.util.TimeZone.getDefault().id)
+    // Joda-Time (up to 2.10) reads user.timezone before the JDK's default: apksim left it unset here and at the host's
+    // zone in warm launches, where a day-off Joda date showed (issue 91). A device may leave it empty; apksim sets it.
+    assertEquals(zone, System.getProperty("user.timezone"))
+    assertEquals(zone, org.joda.time.DateTimeZone.getDefault().id)
+    assertEquals(java.time.LocalDate.now(), org.joda.time.LocalDate.now().let { java.time.LocalDate.of(it.year, it.monthOfYear, it.dayOfMonth) })
+  }
+
+  /** `apksim timezone ZONE` changes every zone source and broadcasts ACTION_TIMEZONE_CHANGED, as a device does. */
+  @Test
+  fun timezoneCommandChangesTheZoneAndBroadcastsIt() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val heard = mutableListOf<String?>()
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, intent: Intent) {
+        heard += intent.getStringExtra(Intent.EXTRA_TIMEZONE)
+      }
+    }
+    context.registerReceiver(receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED), Context.RECEIVER_EXPORTED)
+    try {
+      val zone = if (TimeZone.getDefault().id == "Asia/Tokyo") "Europe/Paris" else "Asia/Tokyo"
+      val pfd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("apksim timezone $zone")
+      assertEquals(zone, ParcelFileDescriptor.AutoCloseInputStream(pfd).use { it.readBytes().decodeToString() }.trim())
+      androidx.test.espresso.Espresso.onIdle()
+      assertEquals(listOf<String?>(zone), heard)
+      assertEquals(zone, TimeZone.getDefault().id)
+      assertEquals(zone, android.icu.util.TimeZone.getDefault().id)
+      assertEquals(zone, System.getProperty("user.timezone"))
+    } finally {
+      context.unregisterReceiver(receiver)
+    }
   }
 }

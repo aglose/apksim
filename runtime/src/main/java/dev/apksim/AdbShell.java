@@ -1573,6 +1573,9 @@ final class AdbShell {
       case "bars" -> {
         return SystemBars.command(a);
       }
+      case "timezone" -> {
+        return a.length < 2 ? TimeZones.describe() : TimeZones.change(app(), a[1]);  // until the next test's setup
+      }
       default -> {
         return "error: " + a[0] + " is not available in a test run";
       }
