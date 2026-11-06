@@ -96,6 +96,15 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
+        <!-- apksim://dialogs: full-screen, modal and non-modal dialogs over an activity (issue 97). -->
+        <activity android:name=".DialogsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="dialogs" />
+            </intent-filter>
+        </activity>
         <!-- apksim://timezone: every zone source an app reads, Joda-Time's included, and zone-change broadcasts (issue 91). -->
         <activity android:name=".TimeZoneActivity" android:exported="true">
             <intent-filter>
