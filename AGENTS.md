@@ -126,13 +126,15 @@ Read README.md for results and limits; this file covers how to work on the code.
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot
     before Application.onCreate (warm or cold): `sdcard/` is external storage (`/sdcard`, its public folders such as
-    Download inside it, mounted; Robolectric's was two temp folders per process, "removed"), and `settings.properties`
+    Download inside it, mounted; Robolectric's was two temp folders per process, "removed"; the File overloads too:
+    `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder), and `settings.properties`
     the Settings.Global/Secure/System values that differ from the defaults (by the app or `adb shell settings put`;
     Robolectric's static maps, read every 250 ms from Host's loop and on exit, as no write hook exists; not
     animator_duration_scale or font_scale, which `animscale`/`fontscale` own). Apps keep a device id in /sdcard and a
     setup-done flag in Settings.Global on purpose; before, every launch lost them. `--fresh`, `ctl.py erase` and serve's
     cleanup clear it with the slot; `--setting NS:KEY=VALUE` (repeatable) sets a value before onCreate, kept like a
-    `settings put`, and in test runs at each test's setup. Test runs otherwise start each test from a clean device.
+    `settings put`, and in test runs at each test's setup (one for animator_duration_scale or font_scale runs the
+    control's code, `setAnimatorScale`/`setFontScale`, and is not kept). Test runs otherwise start each test from a clean device.
     `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").

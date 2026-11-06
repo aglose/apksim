@@ -16,6 +16,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeMap;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowEnvironment;
 import org.robolectric.shadows.ShadowSettings;
 import org.robolectric.util.ReflectionHelpers;
@@ -32,7 +33,8 @@ import org.robolectric.util.ReflectionHelpers;
  * <p>Settings live in Robolectric's shadows' static maps, which have no write hook, so the values that differ from the
  * defaults the slot was taken with are written when they change (checked from Host's loop every 250 ms, as a device's
  * settings provider writes its file a moment after a change) and on the way out. animator_duration_scale and font_scale
- * are not kept: they are apksim's device controls (animscale, fontscale, --font-scale), which set more than the value.
+ * are not kept: they are apksim's device controls (animscale, fontscale, --font-scale), which set more than the value;
+ * a --setting of one goes through that control's code instead.
  */
 final class SlotDevice {
   private static final String SETTINGS = "settings.properties";
@@ -57,7 +59,7 @@ final class SlotDevice {
   }
 
   /** Before Application.onCreate (Host.usePersistentDataDir): external storage and settings from the slot. */
-  static synchronized void take(Path slot, boolean fresh) throws IOException {
+  static synchronized void take(Path slot, boolean fresh, android.app.Application app) throws IOException {
     Path d = dirFor(slot);
     if (fresh && Files.isDirectory(d)) Storage.clearDataDir(d);
     Path sd = d.resolve("sdcard");
@@ -68,11 +70,19 @@ final class SlotDevice {
     ShadowEnvironment.setExternalStoragePublicDirectory(sd);
     ShadowEnvironment.setExternalStorageState(Environment.MEDIA_MOUNTED);
     ShadowEnvironment.setIsExternalStorageEmulated(true);
+    // The File overloads (getExternalStorageState(File) and the rest) read their own tables: a state covers a folder's
+    // children, emulated and removable only the folder named, so the app's own external folder is named too.
+    ShadowEnvironment.setExternalStorageState(sd.toFile(), Environment.MEDIA_MOUNTED);
+    String pkg = System.getProperty("apksim.package");
+    for (Path p : pkg == null ? java.util.List.of(sd) : java.util.List.of(sd, sd.resolve("Android/data/" + pkg))) {
+      ShadowEnvironment.setExternalStorageEmulated(p.toFile(), true);
+      ShadowEnvironment.setExternalStorageRemovable(p.toFile(), false);
+    }
 
     defaults = snapshot();
     Map<String, String> stored = read(d.resolve(SETTINGS));
     stored.forEach(SlotDevice::apply);
-    applySeeds();
+    applySeeds(app);
     dir = d;
     saved = stored;
     flush();
@@ -83,7 +93,7 @@ final class SlotDevice {
    * settings put} before its first launch would. In a running instance they are kept with the slot's other settings;
    * in a test run each test's setup applies them again (InstallState).
    */
-  static void applySeeds() {
+  static void applySeeds(android.app.Application app) {
     for (int i = 0; ; i++) {
       String s = System.getProperty("apksim.setting." + i);
       if (s == null) return;
@@ -94,7 +104,32 @@ final class SlotDevice {
         System.err.println("[apksim] --setting " + s + ": expected global|secure|system:KEY=VALUE");
         continue;
       }
-      apply(ns + "/" + s.substring(colon + 1, eq), s.substring(eq + 1));
+      String key = ns + "/" + s.substring(colon + 1, eq);
+      String value = s.substring(eq + 1);
+      if (NOT_KEPT.contains(key)) deviceControl(app, s, key, value);
+      else apply(key, value);
+    }
+  }
+
+  /**
+   * A seed for a key a device control owns goes through that control's code, as `settings put` of it does (AdbShell):
+   * setting the value alone would leave ValueAnimator's scale or the configuration's font scale as they were. Not kept
+   * in the file; given again at the next launch, it applies again.
+   */
+  private static void deviceControl(android.app.Application app, String seed, String key, String value) {
+    float f;
+    try {
+      f = Float.parseFloat(value);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("--setting " + seed + ": not a number (or use "
+          + (key.endsWith("font_scale") ? "--font-scale" : "the animscale command") + ")");
+    }
+    if (key.equals("global/animator_duration_scale")) {
+      DeviceControls.setAnimatorScale(app, f);  // = `animscale F`
+    } else {
+      RuntimeEnvironment.setFontScale(f);  // = `fontscale F`
+      // Host.run sets the qualifiers after onCreate, which resets the font scale; --font-scale is applied after that.
+      if (System.getProperty("apksim.fontScale") == null) System.setProperty("apksim.fontScale", value);
     }
   }
 

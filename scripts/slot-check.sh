@@ -2,7 +2,8 @@
 # What a data slot keeps of the device across launches (SlotDevice.java, issues 82 and 84), against the test app's
 # apksim://slot: a first --fresh launch with --setting sees the seeded Settings value and nothing else from
 # Application.onCreate on, writes a Settings.Global value and a /sdcard file; the next launch of the slot sees both
-# (and the seed) in onCreate; a --fresh launch sees none of them. Uses its own data slots (--data-slots slotcheck), never
+# (and the seed) in onCreate, but not a seeded font_scale (fontscale's, applied at its launch only); a --fresh launch
+# sees none of them. Uses its own data slots (--data-slots slotcheck), never
 # the app's default one.
 #   scripts/slot-check.sh APK OUT [IMAGE]
 # Without IMAGE: ./apksim on this Mac (warm launches when a standby is ready). With IMAGE: the Linux image, a container
@@ -73,9 +74,11 @@ stop() {
 }
 
 echo "== a fresh slot, seeded"
-start fresh.log --fresh --setting global:apksim_slot_seed=seeded
+start fresh.log --fresh --setting global:apksim_slot_seed=seeded --setting system:font_scale=1.3
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=null seed=seeded sdcard=missing$'
-expect "external storage" "$(text 'storage:')" '^storage: mounted, Download inside /sdcard$'
+expect "external storage" "$(text 'storage:')" '^storage: mounted, Download inside /sdcard, app folder mounted emulated$'
+# A seed of a key a device control owns does what the control does (fontscale), and is not kept for the next launch.
+expect "seeded font scale" "$(text 'font scale:')" '^font scale: 1.3$'
 tap_text Write
 sleep 1
 expect "written" "$(text 'now:')" '^now: setting=written seed=seeded sdcard=written$'
@@ -84,6 +87,7 @@ stop fresh
 echo "== the same slot again"
 start again.log
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=written seed=seeded sdcard=written$'
+expect "font scale" "$(text 'font scale:')" '^font scale: 1.0$'
 stop again
 
 echo "== --fresh"

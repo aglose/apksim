@@ -12,7 +12,7 @@ final class InstallState {
 
   static void beforeApplicationOnCreate(Application app) {
     seedAndroidId(app);
-    SlotDevice.applySeeds();  // --setting, at each test's setup: Robolectric resets the settings between tests
+    SlotDevice.applySeeds(app);  // --setting, at each test's setup: Robolectric resets the settings between tests
     grantInstallPermissions(app);
     hostNetworks(app);
     installProviders(app);

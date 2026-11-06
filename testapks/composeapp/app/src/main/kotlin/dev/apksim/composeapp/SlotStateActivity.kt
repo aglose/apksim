@@ -42,6 +42,7 @@ class SlotStateActivity : ComponentActivity() {
       Text("at app start: ${ComposeApp.slotAtCreate}")
       Text("now: $now")
       Text("storage: ${storage()}")
+      Text("font scale: ${resources.configuration.fontScale}")
       Button(onClick = {
         // A device refuses an ordinary app WRITE_SECURE_SETTINGS (SecurityException); apksim allows it.
         try {
@@ -59,12 +60,20 @@ class SlotStateActivity : ComponentActivity() {
     }
   }
 
-  /** External storage as a device shows it: mounted, its public folders inside /sdcard. */
+  /**
+   * External storage as a device shows it: mounted, its public folders inside /sdcard, and the app's own external
+   * folder mounted and emulated too (the File overloads, which an app checks before writing there).
+   */
   private fun storage(): String {
     val root = Environment.getExternalStorageDirectory()
     val download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     val inside = download.path == File(root, Environment.DIRECTORY_DOWNLOADS).path
-    return "${Environment.getExternalStorageState()}, Download ${if (inside) "inside" else "outside"} /sdcard"
+    val own = getExternalFilesDir(null)
+    val ownState = own?.let {
+      Environment.getExternalStorageState(it) + if (Environment.isExternalStorageEmulated(it)) " emulated" else ""
+    }
+    return "${Environment.getExternalStorageState()}, Download ${if (inside) "inside" else "outside"} /sdcard, " +
+        "app folder $ownState"
   }
 
   companion object {

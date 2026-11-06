@@ -106,13 +106,13 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest,dev.apksim.composeapp.SlotStateTest \
             -e serial R5CT20ABCDE -e feature android.hardware.camera.any -e model SimPhone9 -e settingSeed seeded \
-            -- --serial R5CT20ABCDE --feature android.hardware.camera.any --build MODEL=SimPhone9 \
-            --setting global:apksim_slot_seed=seeded
+            -e animSeed 0.5 -- --serial R5CT20ABCDE --feature android.hardware.camera.any --build MODEL=SimPhone9 \
+            --setting global:apksim_slot_seed=seeded --setting global:animator_duration_scale=0.5
           python3 - tests/junit-identity.xml <<'EOF'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).iter("testcase"))
           skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
-          assert len(cases) == 6 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
+          assert len(cases) == 7 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity and setting tests")
           EOF
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
