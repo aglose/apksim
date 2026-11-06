@@ -1004,6 +1004,8 @@ void *bionic_lookup(const char *name) {
   if (!a_ctype['a' + 1]) init_ctype();
   void *net = net_lookup(name);
   if (net) return net;
+  void *graphics = jnigraphics_lookup(name);
+  if (graphics) return graphics;
   for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
     if (!strcmp(table[i].name, name)) return table[i].fn;
   }

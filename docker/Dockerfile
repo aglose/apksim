@@ -9,7 +9,7 @@ COPY lib /opt/apksim/work/lib
 # Natives: the ELF loader and bionic shim (the window, Metal and VideoToolbox parts are macOS-only).
 RUN mkdir -p /opt/apksim/work/runtime/icu && \
     gcc -O2 -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-      -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c -ldl -lpthread
+      -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c native/jnigraphics.c -ldl -lpthread
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 # The newest of each, should an older one be left in work/lib; the others go.
 RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \
