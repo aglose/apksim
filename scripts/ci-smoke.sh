@@ -10,15 +10,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="$1" APK="$2" OUT="$(mkdir -p "$3" && cd "$3" && pwd)" UISERVER="${4:-}"
 PORT=7400 ADB_PORT=7401 NAME=apksim-smoke-$$
+# The image's own platform (linux/amd64 or linux/arm64), so Docker never pulls or emulates another.
+PLATFORM="linux/$(docker image inspect -f '{{.Architecture}}' "$IMAGE")"
 cp "$APK" "$OUT/app.apk"
 drive() { python3 "$ROOT/scripts/drive.py" "$PORT" "$@"; }
 
-docker run --rm --platform linux/amd64 -v "$OUT:/work" "$IMAGE" --exit-after-first-frame --shot first.png app.apk \
+docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-first-frame --shot first.png app.apk \
   > "$OUT/first.log" 2>&1 || { cat "$OUT/first.log"; exit 1; }
 grep first-frame "$OUT/first.log"
 test -s "$OUT/first.png" || { echo "no screenshot after the first frame" >&2; exit 1; }
 
-docker run -d --name "$NAME" --platform linux/amd64 -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
+docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
   -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 # Docker's port proxy accepts before the app listens, so wait for an answer rather than a connection.
@@ -81,7 +83,7 @@ for s in spec["screens"]:
         s["steps"] = ["tap-text Add"]
 json.dump(spec, open(sys.argv[2], "w"), indent=1)
 EOF
-snapshot() { docker run --rm --platform linux/amd64 -v "$SNAP:/work" --entrypoint snapshot.py "$IMAGE" "$@" --apk app.apk --goldens goldens; }
+snapshot() { docker run --rm --platform "$PLATFORM" -v "$SNAP:/work" --entrypoint snapshot.py "$IMAGE" "$@" --apk app.apk --goldens goldens; }
 snapshot ci.json --update --out record > "$SNAP/record.log" 2>&1 || { cat "$SNAP/record.log"; exit 1; }
 tail -2 "$SNAP/record.log" | head -1
 snapshot ci.json --out rerun > "$SNAP/rerun.log" 2>&1 || { cat "$SNAP/rerun.log"; echo "a rerun did not match its goldens" >&2; exit 1; }
@@ -104,7 +106,7 @@ EOF
 # apksim serve: a token (any address but loopback needs one), only serve's port published, the test app listed.
 SERVE_NAME=apksim-serve-smoke-$$ SERVE_PORT=7402
 head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$OUT/serve.token"
-docker run -d --name "$SERVE_NAME" --platform linux/amd64 -p "127.0.0.1:$SERVE_PORT:8080" -v "$OUT:/work" "$IMAGE" \
+docker run -d --name "$SERVE_NAME" --platform "$PLATFORM" -p "127.0.0.1:$SERVE_PORT:8080" -v "$OUT:/work" "$IMAGE" \
   serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --max-upload 64 >/dev/null
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker logs "$SERVE_NAME" > "$OUT/serve.log" 2>&1 || true; docker rm -f "$SERVE_NAME" >/dev/null 2>&1 || true' EXIT

@@ -801,14 +801,21 @@ only with current Command Line Tools ("CLT does not support macOS 26" stopped it
 flag, since the release is not notarized. Homebrew 7 deprecates cask `postflight` blocks for `postflight_steps`.
 
 ## Linux / Docker
-`docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
-`HostOs` picks `.so` vs `.dylib` and the APK ABI (`x86_64` on Linux); on Linux the window, Metal and VideoToolbox
-are skipped (headless, CPU shaders). `native/linux/` holds the bionic→glibc shim and a JNI bridge; `elfloader.c` is
-shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
+`docker/Dockerfile` builds a headless image for linux/amd64 (`scripts/docker-build.sh`; Colima with Rosetta on this
+Mac) or linux/arm64 (`scripts/docker-build.sh TAG --platform linux/arm64`: native in Colima here, no Rosetta).
+`HostOs` picks `.so` vs `.dylib` and the APK ABI (`x86_64` on x86_64 Linux, `arm64-v8a` on the Mac and arm64 Linux);
+on Linux the window, Metal and VideoToolbox are skipped (headless, CPU shaders). `native/linux/` holds the
+bionic→glibc shim and a JNI bridge; `elfloader.c` is shared, with `#ifdef`s. On arm64 Linux, glibc owns TPIDR_EL0, so
+the loader rewrites Android code's `mrs xN, tpidr_el0` into `adrp` of a read-only page after each module (stack guard at
++0x28, TLSDESC offsets from it), and the shim boxes `pthread_mutex_t`/`pthread_attr_t` (glibc's are bigger there).
+Robolectric's Android 15+ runtime is android-all's `libandroid_runtime`; our android-all build has none for
+linux/aarch64, so arm64 images take it from its respin (`gradle linuxArm64Runtime` into `work/linux-arm64`, see
+`build.gradle.kts`). Google's Android build tools are x86_64-only on Linux: arm64 CI jobs get the test APKs from an
+x86_64 job, and have no adb. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
 /private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
-(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION` (`release.yml`'s `image`
-job; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
+(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION`, both architectures under one tag (`release.yml`'s
+`image` and `image-arm64` jobs push `VERSION-amd64` and `VERSION-arm64`; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
 repositories' CI (`--entrypoint instrument.py`, `--entrypoint snapshot.py`). `.github/actions/linux-build` is the Linux build both workflows share.
 
 ## Debugging app code

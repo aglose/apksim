@@ -2,6 +2,7 @@
 # device check of scripts/adb-check.py, the network check of scripts/network-check.sh and screenshot tests of
 # scripts/snapshot.py) and its androidTest suite with --instrument (JUnit XML in the artifact), checks the DEX
 # translator on an R8 fixture, and checks test-impact selection and balanced shards (scripts/affected-check.py).
+# `linux-smoke-arm64` builds the arm64 image on an arm64 runner and runs the smoke test and the suite in it.
 # The Mac-only parts (window, Metal, VideoToolbox) are not covered here. `startup-gate` times launches on an Apple
 # Silicon runner against a fixed anchor release and fails when startup gets slower than its budget
 # (docs/startup-gate.md).
@@ -196,6 +197,64 @@ jobs:
             tests/junit-crash.xml
             tests/junit-sharded.xml
             tests/bundle-check
+
+  # The arm64 image (linux/arm64: the APK's arm64-v8a libraries, no Rosetta on Apple Silicon) on an arm64 runner. Google's
+  # Android build tools are x86_64-only on Linux, so the test app's APKs come from `testapp`. No adb on arm64 Linux
+  # either (platform-tools are x86_64), so the smoke test leaves out the adb device check that linux-smoke runs.
+  testapp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build the test app
+        working-directory: testapks/composeapp
+        run: ./gradlew -q :app:assembleDebug :app:assembleDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testapp
+          path: testapks/composeapp/app/build/outputs/apk
+          retention-days: 1
+
+  linux-smoke-arm64:
+    needs: testapp
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: testapp
+          path: testapks/composeapp/app/build/outputs/apk
+      - name: Build the runtime
+        uses: ./.github/actions/linux-build
+        with:
+          test-app: 'false'
+      - name: Build the image
+        run: scripts/docker-build.sh apksim:ci --platform linux/arm64
+      - name: Smoke test
+        run: scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+      - name: Test run (androidTest suite, GLES on Mesa)
+        run: |
+          mkdir -p tests
+          cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
+          cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit.xml -e timezone America/New_York -- --timezone America/New_York --test-outputs /work/outputs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-arm64
+          path: |
+            smoke/*.png
+            smoke/*.log
+            smoke/network/*.log
+            smoke/snapshots/*/report.html
+            smoke/snapshots/*/results.json
+            tests/junit.xml
 
   # Launch times of this commit against the anchor release named in scripts/startup-gate.json, on the same runner,
   # interleaved: the gate judges only the ratio, since runners differ by tens of percent (docs/startup-gate.md). Both
