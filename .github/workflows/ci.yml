@@ -2,13 +2,19 @@
 # device check of scripts/adb-check.py, the network check of scripts/network-check.sh and screenshot tests of
 # scripts/snapshot.py) and its androidTest suite with --instrument (JUnit XML in the artifact), checks the DEX
 # translator on an R8 fixture, and checks test-impact selection and balanced shards (scripts/affected-check.py).
-# The Mac-only parts (window, Metal, VideoToolbox, AOT timings) are not covered here.
+# The Mac-only parts (window, Metal, VideoToolbox) are not covered here. `startup-gate` times launches on an Apple
+# Silicon runner against a fixed anchor release and fails when startup gets slower than its budget
+# (docs/startup-gate.md).
 name: ci
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      startup_anchor:
+        description: Release tag startup-gate measures against (default scripts/startup-gate.json's anchor)
+        required: false
 
 # A new push to a pull request cancels its older run; runs on main always finish.
 concurrency:
@@ -183,3 +189,53 @@ jobs:
             tests/junit-crash.xml
             tests/junit-sharded.xml
             tests/bundle-check
+
+  # Launch times of this commit against the anchor release named in scripts/startup-gate.json, on the same runner,
+  # interleaved: the gate judges only the ratio, since runners differ by tens of percent (docs/startup-gate.md). Both
+  # sides are packaged releases trained the same way, and both launch the anchor's own test app.
+  startup-gate:
+    runs-on: macos-15  # Apple Silicon: warm launches (standbys) and the startup cache are Mac-only
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      # Spotlight indexes what the build writes and competes with the launches being timed.
+      - name: Quiet the runner
+        run: sudo mdutil -a -i off || true
+      - name: Fetch the anchor release
+        env:
+          ANCHOR_INPUT: ${{ inputs.startup_anchor }}
+        run: |
+          ANCHOR="${ANCHOR_INPUT:-$(python3 -c 'import json; print(json.load(open("scripts/startup-gate.json"))["anchor"])')}"
+          V="${ANCHOR#v}"
+          D="$RUNNER_TEMP/anchor"
+          mkdir -p "$D" "$RUNNER_TEMP/inst"
+          gh release download "$ANCHOR" -R "$GITHUB_REPOSITORY" -D "$D" \
+            -p "apksim-$V-macos-arm64.tar.gz" -p "apksim-testapp-$V.apk" -p SHA256SUMS
+          (cd "$D" && shasum -a 256 -c SHA256SUMS)
+          tar -xzf "$D/apksim-$V-macos-arm64.tar.gz" -C "$RUNNER_TEMP/inst"
+          { echo "ANCHOR=$ANCHOR"; echo "ANCHOR_DIR=$RUNNER_TEMP/inst/apksim-$V-macos-arm64"
+            echo "BENCH_APK=$D/apksim-testapp-$V.apk"; } >> "$GITHUB_ENV"
+      # As release.yml's package job: no training here, both sides train below the same way.
+      - name: Build this commit
+        run: scripts/setup.sh --no-train
+      - name: Package this commit
+        run: |
+          scripts/package-release.sh 0.0.0-gate "$RUNNER_TEMP/dist"
+          tar -xzf "$RUNNER_TEMP/dist/apksim-0.0.0-gate-macos-arm64.tar.gz" -C "$RUNNER_TEMP/inst"
+          echo "HEAD_DIR=$RUNNER_TEMP/inst/apksim-0.0.0-gate-macos-arm64" >> "$GITHUB_ENV"
+      - name: Train both startup caches
+        run: |
+          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-anchor" "$ANCHOR_DIR/apksim" --train --headless
+          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-head" "$HEAD_DIR/apksim" --train --headless
+      - name: Startup gate
+        run: |
+          python3 scripts/startup-gate.py --base "$ANCHOR_DIR" --base-home "$RUNNER_TEMP/state-anchor" \
+            --head "$HEAD_DIR" --head-home "$RUNNER_TEMP/state-head" --apk "$BENCH_APK" --base-name "$ANCHOR" \
+            --head-name "${GITHUB_SHA::7}" --json startup-gate.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-gate
+          path: startup-gate.json
