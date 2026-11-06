@@ -49,6 +49,28 @@ class UiAutomatorTest {
     }
   }
 
+  /**
+   * UiDevice.swipe (and drag, UiObject.swipe*, UiScrollable) waits for a Choreographer frame after every step: it
+   * posts to the main looper and blocks on a latch. A test body runs on the main thread here, where that wait used to
+   * time out after 5 s a step ("Timed out waiting for VSync frame."): 20 steps took 100 s.
+   */
+  @Test
+  fun swipeScrollsTheListWithoutWaitingForFrames() {
+    ActivityScenario.launch(MainActivity::class.java).use {
+      val item = Pattern.compile("Item (\\d+)")
+      assertNotNull(device.wait(Until.findObject(By.text("Item 1")), 5_000))
+      val start = System.nanoTime()
+      val x = device.displayWidth / 2
+      assertTrue(device.swipe(x, device.displayHeight * 3 / 4, x, device.displayHeight / 4, 20))
+      device.waitForIdle()
+      val ms = (System.nanoTime() - start) / 1_000_000
+      assertTrue("swipe took $ms ms", ms < 5_000)
+      // The list moved: the first item on screen is further down it.
+      val first = device.findObjects(By.text(item)).minOf { item.matcher(it.text).also { m -> m.find() }.group(1).toInt() }
+      assertTrue("first item on screen: $first", first > 3)
+    }
+  }
+
   @Test
   fun rotationTurnsTheDisplayAndTheApp() {
     ActivityScenario.launch(MainActivity::class.java).use {
