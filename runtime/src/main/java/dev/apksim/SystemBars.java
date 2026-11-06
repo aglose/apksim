@@ -191,9 +191,17 @@ final class SystemBars {
     return t;
   }
 
+  /**
+   * The window that controls the bars: the top visible one that can take focus, as the system gives the bars' control
+   * to the focused window (a non-focusable popup or tooltip on top does not get it).
+   */
   private static View topRoot(List<View> roots) {
     for (int i = roots.size() - 1; i >= 0; i--) {
-      if (roots.get(i).getVisibility() == View.VISIBLE) return roots.get(i);
+      View r = roots.get(i);
+      if (r.getVisibility() != View.VISIBLE) continue;
+      if (r.getLayoutParams() instanceof android.view.WindowManager.LayoutParams lp
+          && (lp.flags & android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0) continue;
+      return r;
     }
     return null;
   }
