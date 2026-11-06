@@ -1,0 +1,9 @@
+{
+  "anchor": "v0.11.0",
+  "runs": 12,
+  "alpha": 0.01,
+  "metrics": {
+    "warm first frame": {"mode": "warm", "mark": "first-frame", "max_slower": 0.10, "slack_ms": 15},
+    "cold first frame": {"mode": "cold", "mark": "first-frame", "max_slower": 0.10, "slack_ms": 40}
+  }
+}
