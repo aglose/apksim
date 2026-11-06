@@ -88,17 +88,28 @@ final class SystemBars {
   /** {@code bars [status on|off|toggle] [nav gesture|off|toggle]}: changes take effect in every window at once. */
   static String command(String[] a) {
     Device d = Device.current();
+    String usage = "usage: bars [status on|off|toggle] [nav gesture|off|toggle]";
+    if (a.length % 2 == 0) return usage;
+    // Every argument is checked before either bar changes, so a rejected command leaves bars and insets as they were.
+    Boolean newStatus = status;
+    Boolean newNav = nav;
     for (int i = 1; i + 1 < a.length; i += 2) {
       String v = a[i + 1];
-      switch (a[i]) {
-        case "status" -> status = v.equals("toggle") ? !statusBar(d) : parse(v, "on");
-        case "nav" -> nav = v.equals("toggle") ? !navBar(d) : parse(v, "gesture");
-        default -> {
-          return "usage: bars [status on|off|toggle] [nav gesture|off|toggle]";
+      try {
+        switch (a[i]) {
+          case "status" -> newStatus = v.equals("toggle") ? !statusBar(d) : parse(v, "on");
+          case "nav" -> newNav = v.equals("toggle") ? !navBar(d) : parse(v, "gesture");
+          default -> {
+            return usage;
+          }
         }
+      } catch (IllegalArgumentException e) {
+        return usage;
       }
+      if ((a[i].equals("status") ? newStatus : newNav) == null) return usage;
     }
-    if (a.length % 2 == 0) return "usage: bars [status on|off|toggle] [nav gesture|off|toggle]";
+    status = newStatus;
+    nav = newNav;
     if (a.length > 1) {
       apply(d);
       notifyWindows();
@@ -150,8 +161,9 @@ final class SystemBars {
         c.show(hidden);
         return;
       }
-      if (y < band) swipeEdge = 1;
-      else if (y >= displayH - band) swipeEdge = 2;
+      // Only an edge where the device has a bar: SystemUI listens for swipes from its bars.
+      if (y < band && statusBar(d)) swipeEdge = 1;
+      else if (y >= displayH - band && navBar(d)) swipeEdge = 2;
       swipeStartY = y;
       return;
     }

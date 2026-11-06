@@ -769,6 +769,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env
       barsLayer.geometryFlipped = NO;  // the parent layer is already top-down
       barsLayer.zPosition = 10;
       [frameLayer addSublayer:barsLayer];
+      barsStatus = barsNav = -1;  // new layers (first call, or after a zoom rebuilt them): lay them out below
       CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
       statusLayer = [CALayer layer];
       [barsLayer addSublayer:statusLayer];
