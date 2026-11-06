@@ -23,7 +23,8 @@ open class ComposeApp : Application() {
     androidIdAtCreate = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
     vibrateAtCreate = checkSelfPermission(Manifest.permission.VIBRATE)
     providerBeforeCreate = StartupProvider.created
-    serialAtCreate = Build.getSerial()
+    // A device or emulator refuses an app without privileged access (SecurityException); apksim answers.
+    serialAtCreate = try { Build.getSerial() } catch (e: SecurityException) { null }
     cameraAnyAtCreate = packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
     modelAtCreate = Build.MODEL
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +

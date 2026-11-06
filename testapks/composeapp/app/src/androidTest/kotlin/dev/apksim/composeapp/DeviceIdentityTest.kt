@@ -8,18 +8,25 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * The device's serial, system features and Build fields, set before Application.onCreate (apksim's --serial,
  * --feature, --build). Without them the serial is a device-like default; with them (CI runs this class with
- * `-e serial S -e feature F -e model M` and the same launch options) the app sees exactly what was given.
+ * `-e serial S -e feature F -e model M` and the same launch options) the app sees exactly what was given. apksim
+ * only: a device or emulator refuses Build.getSerial() to an app without privileged access.
  */
 @RunWith(AndroidJUnit4::class)
 @SuppressLint("HardwareIds", "MissingPermission")
 class DeviceIdentityTest {
   private val args = InstrumentationRegistry.getArguments()
+
+  @Before
+  fun onApksimOnly() {
+    assumeTrue("apksim's device identity", Build.FINGERPRINT == "robolectric")
+  }
 
   @Test
   fun theSerialLooksLikeADevicesAndIsThereBeforeTheApplicationStarts() {
