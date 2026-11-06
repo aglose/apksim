@@ -149,6 +149,7 @@ public class Host {
       // gesture detectors see no movement. Real mouse input rarely hits this limit.
       if (start - lastInput >= 8_000_000L) {
         SimWindow.Event e = nextInput(start);
+        if (e != null) inputSteps++;
         if (e != null) {
           lastInput = start;
           if (e.type() == SimWindow.COMMAND) {
@@ -291,16 +292,20 @@ public class Host {
     return dispatched + pendingScript.size() + (drag != null ? 1 : 0);
   }
 
-  /**
-   * Scripted events taken from pendingScript so far (dispatched, or dropped by a clear). Written on the main thread;
-   * read by adb's input commands to tell slow progress from none ({@link #dispatchedCount}).
-   */
-  private volatile long dispatched;
+  /** Scripted events taken from pendingScript so far (dispatched, or dropped by a clear). Main thread only. */
+  private long dispatched;
 
-  /** How many scripted events the running Host has dispatched, or -1 when none runs. Any thread. */
-  static long dispatchedCount() {
+  /**
+   * Input events dispatched so far, each step of a timed drag included (a drag counts in {@link #dispatched} only once
+   * it lifts, so a 60 s hold would look like no progress). Written on the main thread; read by adb's input commands to
+   * tell slow progress from none ({@link #inputProgress}).
+   */
+  private volatile long inputSteps;
+
+  /** A count that moves whenever the running Host dispatches input, or -1 when none runs. Any thread. */
+  static long inputProgress() {
     Host h = current;
-    return h == null ? -1 : h.dispatched;
+    return h == null ? -1 : h.inputSteps;
   }
 
   /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */

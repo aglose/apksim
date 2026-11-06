@@ -550,13 +550,13 @@ final class AdbShell {
   private static String controlDispatched(long ms, String... args) throws Exception {
     if (TestActivities.testRun() || Looper.getMainLooper().isCurrentThread()) return control(args);
     Control.Pending p = new Control.Pending(args, true);
-    long seen = Host.dispatchedCount();
+    long seen = Host.inputProgress();
     Control.QUEUE.add(p);
     long wait = ms + 10_000L;
     while (true) {
       String r = p.await(wait);
       if (r != null) return r;
-      long now = Host.dispatchedCount();
+      long now = Host.inputProgress();
       if (now == seen) return "error: input stopped being dispatched (nothing for 10 s)";
       seen = now;
       wait = 10_000L;
