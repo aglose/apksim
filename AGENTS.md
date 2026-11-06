@@ -377,7 +377,7 @@ NAME[=false]` (repeatable, after the defaults: `=false` takes one away, a defaul
 see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
 checks them (CI runs it with the options). `--setting global|secure|system:KEY=VALUE` (repeatable) puts a Settings value
 before onCreate, as `adb shell settings put` before a first launch would (`SlotDevice`; kept with the slot, and in test
-runs set at each test's setup: `SlotStateTest`). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
+runs set at each test's setup: `SlotStateTest`). `global:bluetooth_on` is refused (use `--bluetooth on|off`) and not kept per slot: the adapter's state follows the launch. A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
 before onCreate, not in `Host.run` after it), so what onCreate writes is kept, it finds the slot's /sdcard and Settings
 values (`SlotDevice`, with the --setting seeds over them), and `APKSIM_LOGCAT` shows its log.
 Then, as in test runs, what installing gives the app (`InstallState`, see "Instrumentation tests"): normal permissions

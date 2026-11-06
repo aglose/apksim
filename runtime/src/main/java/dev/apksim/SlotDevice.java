@@ -34,12 +34,14 @@ import org.robolectric.util.ReflectionHelpers;
  * defaults the slot was taken with are written when they change (checked from Host's loop every 250 ms, as a device's
  * settings provider writes its file a moment after a change) and on the way out. animator_duration_scale and font_scale
  * are not kept: they are apksim's device controls (animscale, fontscale, --font-scale), which set more than the value;
- * a --setting of one goes through that control's code instead.
+ * a --setting of one goes through that control's code instead. bluetooth_on is not kept either: the adapter's state
+ * follows --bluetooth (default on) at every launch, and a --setting of it is refused with a pointer there.
  */
 final class SlotDevice {
   private static final String SETTINGS = "settings.properties";
   /** Keys that the device controls own. */
-  private static final Set<String> NOT_KEPT = Set.of("global/animator_duration_scale", "system/font_scale");
+  private static final Set<String> NOT_KEPT =
+      Set.of("global/animator_duration_scale", "system/font_scale", "global/bluetooth_on");
   /** A key the defaults had and the app deleted is kept as this prefix plus the key. */
   private static final String DELETED = "!";
   private static final long CHECK_NANOS = 250_000_000L;
@@ -109,6 +111,11 @@ final class SlotDevice {
       }
       String key = ns + "/" + s.substring(colon + 1, eq);
       String value = s.substring(eq + 1);
+      if (key.equals("global/bluetooth_on")) {
+        // The adapter owns it (Bluetooth: --bluetooth, the bluetooth command, svc, settings put), and Bluetooth's
+        // setup writes it from the launch state before onCreate, so a seed alone would disagree with the adapter.
+        throw new IllegalArgumentException("--setting " + s + ": Bluetooth is set with --bluetooth on|off");
+      }
       if (NOT_KEPT.contains(key)) deviceControl(app, s, key, value);
       else apply(key, value);
     }
