@@ -456,6 +456,8 @@ public class Host {
    * large app 4 activities deep drew at 3 fps.
    */
   static void setWindowVisible(Activity a, boolean visible) {
+    // Shown only if the app has not hidden it itself (Activity.setVisible(false)), as updateVisibility checks.
+    if (visible && !(boolean) org.robolectric.util.ReflectionHelpers.getField(a, "mVisibleFromClient")) return;
     android.view.Window w = a.getWindow();
     View decor = w == null ? null : w.peekDecorView();
     if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);

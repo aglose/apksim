@@ -506,8 +506,8 @@ public final class TestActivities {
       if (!testRun() || activity.getWindow() == null) return;
       View decor = activity.getWindow().peekDecorView();
       if (decor == null || decor.getVisibility() == View.VISIBLE) return;
-      decor.setVisibility(View.VISIBLE);
-      ShadowSimWindowManagerImpl.focusTop();
+      Host.setWindowVisible(activity, true);  // unless the app hid it (setVisible(false))
+      if (decor.getVisibility() == View.VISIBLE) ShadowSimWindowManagerImpl.focusTop();
     }
 
     @org.robolectric.util.reflector.ForType(Instrumentation.class)
