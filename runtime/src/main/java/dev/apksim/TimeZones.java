@@ -16,15 +16,19 @@ import java.util.TimeZone;
 final class TimeZones {
   private TimeZones() {}
 
-  /** The zone and `user.timezone` the JVM had before any change, for a test after one whose `timezone` changed it. */
-  private static String hostZone, hostProperty;
+  /**
+   * The zone and `user.timezone` the JVM had before any change, for a test after one whose `timezone` changed it. The
+   * zone itself, not its ID: the JVM takes legacy IDs (`-Duser.timezone=PST`) that ZoneId.of rejects.
+   */
+  private static TimeZone hostZone;
+  private static String hostProperty;
   private static boolean changed;
 
   /** At each setup: the launch's zone; with no --timezone, the host's again only if a test's command changed it. */
   static synchronized void applyLaunchZone() {
     String zone = System.getProperty("apksim.timezone");
     if (zone != null) {
-      set(zone);
+      set(parse(zone));
     } else if (changed) {
       set(hostZone);
       if (hostProperty == null) System.clearProperty("user.timezone");
@@ -33,9 +37,19 @@ final class TimeZones {
     changed = false;
   }
 
+  /**
+   * A zone named by the user (`--timezone`, `timezone ZONE`): any ID the JDK knows, legacy short ones (PST, EST)
+   * included, and an unknown one is an error, where TimeZone.getTimeZone would quietly give GMT.
+   */
+  static TimeZone parse(String id) {
+    ZoneId zone = ZoneId.of(id, ZoneId.SHORT_IDS);  // throws for an unknown ID
+    TimeZone tz = TimeZone.getTimeZone(id);
+    return tz.getID().equals(id) ? tz : TimeZone.getTimeZone(zone);
+  }
+
   /** `timezone ZONE` while the app runs (or in a test): the new zone, and the broadcast a device sends for it. */
   static synchronized String change(Context app, String zone) {
-    set(zone);
+    set(parse(zone));
     changed = true;
     if (app != null) {
       app.sendBroadcast(new Intent(Intent.ACTION_TIMEZONE_CHANGED).putExtra(Intent.EXTRA_TIMEZONE, zone)
@@ -56,13 +70,11 @@ final class TimeZones {
    * its cached zone is dropped too and taken again from the JDK's. Called inside the sandbox: ICU's classes are
    * framework classes.
    */
-  private static void set(String zone) {
+  private static void set(TimeZone tz) {
     if (hostZone == null) {
-      hostZone = TimeZone.getDefault().getID();
+      hostZone = TimeZone.getDefault();  // a copy
       hostProperty = System.getProperty("user.timezone");
     }
-    // ZoneId.of rejects an unknown name, which TimeZone.getTimeZone would quietly turn into GMT.
-    TimeZone tz = TimeZone.getTimeZone(ZoneId.of(zone));
     TimeZone.setDefault(tz);
     System.setProperty("user.timezone", tz.getID());
     android.icu.util.TimeZone.setICUDefault(null);

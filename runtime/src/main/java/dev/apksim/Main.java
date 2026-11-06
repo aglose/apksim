@@ -26,7 +26,7 @@ public final class Main {
     }
     dev.apksim.net.Net.configure();  // --network options: before any app code makes a connection
     String zone = System.getProperty("apksim.timezone");
-    if (zone != null) java.time.ZoneId.of(zone);  // an unknown zone stops the launch here (SimRunner applies it)
+    if (zone != null) TimeZones.parse(zone);  // an unknown zone stops the launch here (TimeZones applies it)
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");
