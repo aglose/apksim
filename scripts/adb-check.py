@@ -7,7 +7,8 @@ then finish and uninstall. The server is the test app project's `uiserver` modul
   scripts/adb-check.py SERIAL UISERVER_APK      (SERIAL: localhost:PORT, an instance started with --adb PORT)
 
 Runs against the test app (phone device): it opens the Home tab, reads it with `uiautomator dump` (to /sdcard and to
-/dev/tty, full and --compressed), taps the FAB, then presses and holds it with `input swipe`. Exits non-zero with the
+/dev/tty, full and --compressed), taps the FAB, then presses and holds it with `input swipe`, then opens dialogs from
+`apksim://dialogs` and checks which windows UiAutomation, `uiautomator dump --windows` and `nodes` report. Exits non-zero with the
 reason on
 the first failure. adb comes from PATH, or $ADB.
 """
@@ -122,6 +123,51 @@ def uiautomator_dump(serial):
         fail(f"uiautomator dump to a missing folder said {out!r}")
 
 
+def covered_windows(serial, port):
+    """Windows a dialog covers are not reported, as on a device (issue 97): to UiAutomation.getWindows (the server's
+    `texts`), `uiautomator dump --windows` and `apksim nodes`; a FLAG_NOT_TOUCH_MODAL dialog leaves the activity in."""
+    def dialog(which, title):
+        adb(serial, "shell", f"am start -W -a android.intent.action.VIEW -d 'apksim://dialogs?open={which}'")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            texts = request(port, "texts")
+            if title in texts:
+                return texts
+            time.sleep(0.3)
+        fail(f"the {which} dialog did not open: {texts}")
+
+    def app_windows():
+        adb(serial, "shell", "uiautomator", "dump", "--windows", "/sdcard/windows.xml")
+        root = ET.fromstring(adb(serial, "shell", "cat", "/sdcard/windows.xml"))
+        return [w for w in root.iter("window") if w.get("type") == "TYPE_APPLICATION"]
+
+    def close():
+        adb(serial, "shell", "input", "keyevent", "BACK")  # the dialog
+        adb(serial, "shell", "input", "keyevent", "BACK")  # the activity under it
+        time.sleep(0.5)
+
+    behind = "Behind the dialogs"
+    for which, title in (("full", "Full-screen dialog open"), ("modal", "Small modal dialog open")):
+        texts = dialog(which, title)
+        if behind in texts:
+            fail(f"UiAutomation reported the activity under the {which} dialog: {texts}")
+        wins = app_windows()
+        if len(wins) != 1 or not any(n.get("text") == title for n in wins[0].iter("node")):
+            fail(f"uiautomator dump --windows under the {which} dialog: {[(w.get('title'), w.get('bounds')) for w in wins]}")
+        if behind in adb(serial, "shell", "apksim", "nodes"):
+            fail(f"`nodes` listed the activity under the {which} dialog")
+        if behind not in adb(serial, "shell", "apksim", "nodes", "all"):
+            fail(f"`nodes all` left out the activity under the {which} dialog")
+        close()
+    texts = dialog("nonmodal", "Small non-modal dialog open")
+    if behind not in texts:
+        fail(f"UiAutomation left out the activity under a non-modal dialog: {texts}")
+    wins = app_windows()
+    if len(wins) != 2:
+        fail(f"uiautomator dump --windows under a non-modal dialog: {[(w.get('title'), w.get('bounds')) for w in wins]}")
+    close()
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -198,6 +244,7 @@ def main():
             time.sleep(0.1)
         else:
             fail(f"the hold had not lifted 5 s after input swipe returned (wanted {want!r}): {texts}")
+        covered_windows(serial, port)
         if request(port, "finish") != "ok":
             fail("finish was not answered")
     finally:
@@ -207,7 +254,7 @@ def main():
     if "Success" not in adb(serial, "uninstall", PKG, check=False):
         fail("adb uninstall failed")
     print("adb check passed: uiautomator dump, install, am instrument, am broadcast, forward to a local socket,"
-          " UiAutomation read and tap, input swipe hold")
+          " UiAutomation read and tap, input swipe hold, windows covered by dialogs")
 
 
 if __name__ == "__main__":

@@ -627,14 +627,17 @@ public final class Bundles {
     StringBuilder b = new StringBuilder();
     List<Win> wins = visibleWindows();
     if (wins.isEmpty()) b.append("no visible windows\n");
+    boolean[] reported = reported(wins);
     int[] at = new int[2];
-    for (Win w : wins) {
+    for (int i = 0; i < wins.size(); i++) {
+      Win w = wins.get(i);
       w.view.getLocationOnScreen(at);
       Activity a = TestActivities.activityOf(w.view);
       b.append("type ").append(w.params.type).append(" \"").append(w.params.getTitle()).append("\" ")
           .append(a == null ? "(no activity)" : a.getClass().getName() + (a.isFinishing() ? " finishing" : ""))
           .append(" [").append(at[0]).append(',').append(at[1]).append(',').append(at[0] + w.view.getWidth()).append(',')
-          .append(at[1] + w.view.getHeight()).append("]").append(w.view.hasWindowFocus() ? " focused" : "").append('\n');
+          .append(at[1] + w.view.getHeight()).append("]").append(w.view.hasWindowFocus() ? " focused" : "")
+          .append(reported[i] ? "" : " covered (not reported to accessibility)").append('\n');
     }
     return b.toString();
   }
@@ -689,9 +692,23 @@ public final class Bundles {
     }
   }
 
+  /** Which windows accessibility reports: those a touch-modal or full-screen window above covers are not. */
+  private static boolean[] reported(List<Win> wins) {
+    List<View> views = new ArrayList<>();
+    List<WindowManager.LayoutParams> params = new ArrayList<>();
+    for (Win w : wins) {
+      views.add(w.view);
+      params.add(w.params);
+    }
+    return AccessibleWindows.reported(views, params);
+  }
+
+  /** What UiAutomator could reach: the nodes of the windows accessibility reports (windows.txt lists every one). */
   private static String nodes() {
+    List<Win> wins = visibleWindows();
+    boolean[] reported = reported(wins);
     List<View> roots = new ArrayList<>();
-    for (Win w : visibleWindows()) roots.add(w.view);
+    for (int i = 0; i < wins.size(); i++) if (reported[i]) roots.add(wins.get(i).view);
     String s = Nodes.dump(roots).replace("; ", "\n");
     return s.isEmpty() ? "no nodes with text, a description or an action\n" : s;
   }

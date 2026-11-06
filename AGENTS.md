@@ -113,6 +113,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
+    `AccessibleWindows`: which windows accessibility reports (UiAutomation, `uiautomator dump`, `nodes`, bundles'
+    nodes.txt), as the window manager computes them: top down, a window is left out once touch-modal windows above it
+    (any Dialog, a dialog-themed activity, a focusable popup: their touchable region is the whole task) or their frames
+    leave none of it uncovered, unless it has the focus. AOSP's `AccessibilityController.computeWindowsForAccessibility`
+    (Android SDK sources, `android-33/com/android/server/wm`). Touch input does not use it (`Host.isTouchThrough`).
   - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
     blinking, the top window focused), `SimClock` (`clock`, `--clock`), `ImageDiff` (`diff`), and in `Host` the
     `settle` idle signal and `restart`.
@@ -352,6 +357,9 @@ PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://dialogs[?open=full|modal|nonmodal]` opens `DialogsActivity`: a full-screen dialog, a small (touch-modal)
+one and a small FLAG_NOT_TOUCH_MODAL one over it; under the first two accessibility reports only the dialog, under the
+third the activity too (`CoveredWindowsTest`, `adb-check.py`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
@@ -441,7 +449,8 @@ view to draw to), `webrtclog [info|verbose]`,
 another thread is blocked writing to it returns the write (`ShadowSimAudioTrack` frees the stream only once no native
 call on it is in progress: before, the writer read the freed stream); `scripts/make-media.sh` writes 2 s
 clips to `work/media`), `nodes` (accessibility tree: text, hints,
-fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
+fields, clickables with bounds, of the windows accessibility reports, so not what a dialog covers; `nodes all`: every
+window; `tap-text` looks there too), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
 arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed. Variadic libc
 functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fall through to libSystem, which reads
@@ -510,7 +519,8 @@ back/home/lock/unlock; key codes by number too), `input tap|swipe` return once t
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell uiautomator dump [--compressed] [--windows] [FILE]` (`UiDump`: the stock tool's XML and its "UI hierchary
 dumped to: FILE" line, AOSP's AccessibilityNodeInfoDumper attribute for attribute, NAF included, from the active
-window's tree as UiAutomation reads it here, so Compose nodes and testTagsAsResourceId ids show; default
+window's tree as UiAutomation reads it here (`--windows`: every window it reports, so none a dialog covers), so
+Compose nodes and testTagsAsResourceId ids show; default
 /sdcard/window_dump.xml, `/dev/tty` prints it, so `adb exec-out uiautomator dump /dev/tty`; `--compressed` drops views
 not important for accessibility, lifting their children; it waits up to 1 s for the main thread to go idle first),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
@@ -624,7 +634,8 @@ the process, one ignores interrupts past its timeout, and the tests after each s
 **Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
 failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
 which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot
-is), `windows.txt`, `nodes.txt` (as the `nodes` command), `logcat.txt` (that test's lines only: `AdbLog` is installed
+is), `windows.txt` (every window, those accessibility leaves out marked `covered`), `nodes.txt` (as the `nodes`
+command: what UiAutomator could reach), `logcat.txt` (that test's lines only: `AdbLog` is installed
 for the run), `threads.txt`, `looper.txt` (the main queue and androidx.test's activity stages) and `repro.sh` (the
 launch narrowed to `-e class` that test, from `-Dapksim.argv`). Where it captures matters: listeners hear of a
 failure after `@After` and rules have closed the activity, so `SimRunner`'s helper runner wraps `methodInvoker`
@@ -664,7 +675,11 @@ regression check is `scripts/check-translator.sh` (CI too): `testapks/translator
 miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
 a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
 `.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
-UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
+UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
+Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
+accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
+equals/hashCode include it, and without it every window's root was equal to every other's, so UiDevice (which keeps
+the roots in a set) searched only the active window. Each window's root node is linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the

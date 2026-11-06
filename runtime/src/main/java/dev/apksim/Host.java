@@ -1024,6 +1024,18 @@ public class Host {
   }
 
   /**
+   * A window's top left on the screen: where Host places it in a running instance (its views' getLocationOnScreen
+   * reads 0,0 there), else where the window manager put it (test runs). Main thread.
+   */
+  static int[] screenPosition(View root) {
+    Host h = current;
+    if (h != null) return h.position(root);
+    int[] at = new int[2];
+    root.getLocationOnScreen(at);
+    return at;
+  }
+
+  /**
    * A control command from code already on the main thread (UiAutomation.executeShellCommand from a test or app
    * callback), which cannot wait for the loop to take it from Control.QUEUE. Null when no Host is running.
    */
@@ -1168,14 +1180,15 @@ public class Host {
       case "tap-text" -> {
         // tap-text TEXT: a tap at the centre of the first element showing TEXT (or described by it).
         String text = String.join(" ", java.util.Arrays.copyOfRange(a, 1, a.length));
-        int[] at = Nodes.centreOf(rootViews(), text);
+        int[] at = Nodes.centreOf(AccessibleWindows.reported(rootViews()), text);
         if (at == null) return "not found: " + text;
         pendingScript.add(new SimWindow.Event(SimWindow.DOWN, at[0], at[1], 0));
         pendingScript.add(new SimWindow.Event(SimWindow.UP, at[0], at[1], 0));
         return "tapped " + at[0] + "," + at[1];
       }
       case "nodes" -> {
-        return Nodes.dump(rootViews());
+        // The windows accessibility reports (none a touch-modal or full-screen window covers); `nodes all`: every one.
+        return Nodes.dump(a.length > 1 && a[1].equals("all") ? rootViews() : AccessibleWindows.reported(rootViews()));
       }
       case "logcat" -> {
         // logcat on|off: the app's android.util.Log output to this process's stderr (Robolectric drops it otherwise).
