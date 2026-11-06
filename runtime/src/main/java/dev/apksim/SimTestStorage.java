@@ -101,7 +101,7 @@ public final class SimTestStorage extends ContentProvider {
     Path file = base.resolve(path).normalize();
     if (!file.startsWith(base)) throw new FileNotFoundException(uri + ": outside the test storage");
     int m = ParcelFileDescriptor.parseMode(mode);
-    if ((m & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0 || (m & ParcelFileDescriptor.MODE_READ_WRITE) != 0) {
+    if ((m & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0) {  // set in "w" and "rw"; MODE_READ_WRITE has the read bit too
       try {
         Files.createDirectories(file.getParent());
       } catch (IOException e) {

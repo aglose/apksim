@@ -14,6 +14,7 @@ import androidx.test.runner.AndroidJUnitRunner
  */
 class HarnessRunner : AndroidJUnitRunner() {
   override fun onCreate(arguments: Bundle) {
+    onCreateTargetPackage = targetContext?.packageName  // set up before onCreate, as on a device
     val listeners = arguments.getString("listener")
     arguments.putString(
       "listener", listOfNotNull(listeners, RecordingListener::class.java.name).joinToString(","))
@@ -24,6 +25,9 @@ class HarnessRunner : AndroidJUnitRunner() {
     super.newApplication(
       cl, if (className == ComposeApp::class.java.name) HarnessTestApplication::class.java.name else className, context)
 }
+
+/** What HarnessRunner.onCreate saw (RunnerListenersTest). */
+@Volatile var onCreateTargetPackage: String? = null
 
 /** The test Application HarnessRunner asks for: the app's own, with a test's additions. */
 class HarnessTestApplication : ComposeApp() {

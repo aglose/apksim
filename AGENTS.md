@@ -492,7 +492,11 @@ test's setup (`TestRunnerSetup`): up to its `super.onCreate(arguments)`, which t
 `TestRunnerSetup.superOnCreate` so it keeps the arguments the runner passes on instead of starting a run. The
 listeners those arguments name (`listener`, which a report library's runner adds to) and any `-e listener` hear the
 run through `TestRunnerSetup.LISTENERS`, as AndroidJUnitRunner registers them; they join at the first test, which
-they hear started. Robolectric resets its providers before JUnit reports a test's end, so the Test Storage provider
+they hear started (tests ignored before it are replayed to them), and the arguments the runner passed on are the run's
+from then on. Only a runner's own onCreate runs (AndroidJUnitRunner's would start a run), after `Instrumentation.init`
+with the test APK's and the target's contexts. A listener that throws stops hearing the run and the run fails (exit
+status), as JUnit drops a failing listener. A suite whose every test is ignored reaches no test setup, so its runner
+and listeners are not set up. Robolectric resets its providers before JUnit reports a test's end, so the Test Storage provider
 (`SimTestStorage`: test_outputfiles, test_runfiles, internal_use and testargs, files under `--test-outputs DIR`,
 default `cache/test-outputs` in the state folder) is registered again before each listener call. The test app's
 `HarnessRunner` adds `RecordingListener` (`RunnerListenersTest`).

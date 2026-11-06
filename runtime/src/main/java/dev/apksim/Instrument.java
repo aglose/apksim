@@ -140,7 +140,10 @@ final class Instrument {
     core.addListener(TestRunnerSetup.LISTENERS);
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
-    return r.wasSuccessful() && raw.networkFailures.isEmpty() ? 0 : 1;
+    if (!TestRunnerSetup.LISTENERS.failures.isEmpty()) {
+      System.err.println("[apksim] " + TestRunnerSetup.LISTENERS.failures.size() + " runner listener failure(s): the run fails");
+    }
+    return r.wasSuccessful() && raw.networkFailures.isEmpty() && TestRunnerSetup.LISTENERS.failures.isEmpty() ? 0 : 1;
   }
 
   /** The test APK's own package. */

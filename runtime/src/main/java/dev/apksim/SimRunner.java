@@ -269,7 +269,8 @@ public class SimRunner extends RobolectricTestRunner {
       for (String k : System.getProperties().stringPropertyNames()) {
         if (k.startsWith(prefix)) args.putString(k.substring(prefix.length()), System.getProperty(k));
       }
-      InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
+      // The arguments the suite's runner passed on, once its onCreate has run (TestRunnerSetup), as on a device.
+      InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), TestRunnerSetup.arguments(args));
       initJniConstants();
       useTestApkContext();
       SimTestStorage.install();
