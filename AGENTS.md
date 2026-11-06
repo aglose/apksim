@@ -138,6 +138,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
+  - `jnigraphics.c` (Mac and Linux): libjnigraphics' `AndroidBitmap_*` for ELF code, through `NativeBitmaps` (see "Video").
   - `gpushader.m`: Metal pipelines for translated AGSL.
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
   - `loopback.c`: under `--no-network` only (`DYLD_INSERT_LIBRARIES`, set through `/usr/bin/env` after
@@ -477,6 +478,15 @@ then gives no signature; reading it crashed short test runs' exits while WebRTC'
 and futex WAIT/WAKE (on `os_sync_wait_on_address`); everything else is ENOSYS. libc++abi's guard for function-local
 statics needs the first two: with gettid -1 on every thread, two threads meeting at one static aborted an app now
 and then at WebRTC start ("__cxa_guard_acquire detected recursive initialization", which it logged via syslog).
+libjnigraphics (`native/jnigraphics.c`, the same file in the Linux build; `NativeBitmaps` for the Java side):
+`AndroidBitmap_getInfo`, `lockPixels`, `unlockPixels`, `getDataSpace`, `compress`, and `getHardwareBuffer` (always
+BAD_PARAMETER: no hardware bitmaps). They were unresolved stubs, so Fresco's postprocessed images (`nativeCopyBitmap`
+locks two bitmaps) never loaded. Robolectric gives no pixel address, so the first lock of a Bitmap copies its pixels
+(`copyPixelsToBuffer`) into memory of ours, ARGB_8888 turned from the Mac's BGRA into Android's RGBA; locks nest and
+are shared across threads (one copy per Bitmap); the last unlock turns it back and, if it changed, copies it in
+(`copyPixelsFromBuffer`, which bumps the generation ID GpuBitmaps keys its copies by). Java writes made while native
+code holds a lock are not seen by it. Checked by `NativeBitmapTest` in the suite with `testapks/bitmap-fixture` (an NDK
+library, built by its `build.sh` into the test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed).
 Recorded HLS clips (4K H.264 at 20-25 fps plus 8 kHz AAC, checked 2026-11-03) play at their frame rate, in step
 with the audio clock, and seek. Drops with sound on (0-7%) came from the stream: its audio timestamps jump ~240 ms at
 segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match.

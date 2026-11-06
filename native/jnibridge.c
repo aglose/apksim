@@ -326,6 +326,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_ElfLoader_nativeSetOffline(JNIEnv *env, j
 
 JNIEXPORT jlong JNICALL Java_dev_apksim_ElfLoader_nativeLoad(JNIEnv *env, jclass c, jstring jpath, jstring jdir) {
   install_table(env);
+  jnigraphics_init(env);
   const char *dir = (*env)->GetStringUTFChars(env, jdir, NULL);
   strlcpy(search, dir, sizeof search);
   elf_set_search_dir(dir);
