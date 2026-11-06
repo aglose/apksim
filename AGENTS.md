@@ -427,8 +427,12 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   under way delivers it after the current announcement), so offline and online before a registration's post give
   available, lost, available. A default callback or a request hears onLost only when its network disconnected or
   nothing replaces it: a switch to another network is just onAvailable, as Android reassigns (a listen hears every
-  loss; `NetConnectivity.switchDefaultToEthernetForTest` is SystemSourcesTest's hook for it). A callback registered in Application.onCreate hears of the host's networks when Host
-  installs them after it. HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED,
+  loss; `NetConnectivity.switchDefaultToEthernetForTest` is SystemSourcesTest's hook for it). Only connected networks
+  are offered. requestNetwork with a timeout that nothing satisfies by then hears onUnavailable on its handler (the
+  uptime clock) and is released; satisfied or unregistered first, the timeout is cancelled. The host's networks are
+  installed before Application.onCreate in running instances too (InstallState), so a monitor registered there hears
+  connected first (apksim://system-sources' "startup heard": it heard Wi-Fi down and its default network lost before
+  that when Host installed them after onCreate). HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED,
   NOT_METERED..., which a default NetworkRequest asks for). `SystemBroadcasts.ShadowSimAudioManager` sends
   VOLUME_CHANGED_ACTION (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream.
   Robolectric prints every broadcast it sends to stderr, so a sticky nobody listens for yet is only kept.

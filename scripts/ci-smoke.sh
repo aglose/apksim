@@ -80,7 +80,7 @@ drive back 'wait 1000' >/dev/null
 drive 'open apksim://system-sources' 'wait 5000' >/dev/null
 sources="$(drive nodes | grep -oE 'text="[a-z ]+: [^"]*"' | grep -v 'bluetooth profile' || true)"
 echo "System sources: $(echo "$sources" | wc -l | tr -d ' ') answered or timed out"
-if [[ "$(echo "$sources" | grep -c ': ')" -lt 11 ]] || echo "$sources" | grep -qE 'timed out|: error'; then
+if [[ "$(echo "$sources" | grep -c ': ')" -lt 12 ]] || echo "$sources" | grep -qE 'timed out|: error'; then
   echo "$sources"; echo "a system source never answered" >&2; exit 1
 fi
 drive back 'wait 1000' >/dev/null
