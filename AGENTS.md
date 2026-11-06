@@ -618,8 +618,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
-  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
-  `runBlocking { delay() }` is not covered: kotlinx parks the thread itself, and the main queue waits.
+  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`). Work Compose's
+  test library hands to `runOnUiThread` (its clock's frames, runOnIdle) counts as a dispatch, as it is a main-thread
+  message on a device: a composable's `runBlocking` in a frame the clock stepped ran a window frame from inside the
+  measure, which Compose refused ("performMeasureAndLayout called during measure layout", `ComposeBlockingReadTest`).
 - JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
   Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
@@ -673,7 +675,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back (Robolectric called back with
   nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
-  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
