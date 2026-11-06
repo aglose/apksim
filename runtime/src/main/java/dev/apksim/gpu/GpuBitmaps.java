@@ -15,11 +15,12 @@ import java.util.Map;
  * full-screen ImageView or BitmapDrawable background on a 2560x1600 tablet ~20 ms. Here a draw of a bitmap scaled to
  * w x h device pixels gets a copy already that size, made once on the GPU with the same bilinear sampling, which HWUI
  * then draws 1:1 as a plain blit. Every recorded drawBitmap reaches it ({@link ShadowGpuRecordingCanvas}: framework
- * Views and app code alike). Copies are kept while they are drawn. One is made the first time a bitmap is drawn (a
- * View records its background once and HWUI redraws that recording every frame, so there is no second ask), and
- * after that only for a size and content asked for again within a few frames, so a zoom (a new size every frame) or
- * video (new pixels) stays on the CPU after its first frame. (Tiles placed on rounded edges alternate between two widths as they move, so "again" cannot
- * mean the very next frame.)
+ * Views and app code alike). Copies are kept while they are drawn. They are made for every size asked for in the
+ * frame a bitmap is first drawn (a View records its background once and HWUI redraws that recording every frame, so
+ * there is no second ask), and after that only for a size and content asked for again within a few frames, so a zoom
+ * (a new size every frame) or video (new pixels) stays on the CPU after its first frame. (Tiles placed on rounded
+ * edges alternate between two widths as they move, so "again" cannot mean the very next frame.) Only sRGB
+ * ARGB_8888 bitmaps: the copy is sRGB.
  *
  * <p>Main thread only (where Views and Compose record). A node scaled again by HWUI (a graphicsLayer scale) samples
  * the copy a second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
@@ -65,11 +66,14 @@ final class GpuBitmaps {
   /** Sizes asked for and not made yet, with the frame they were last asked for. */
   private static final Map<Key, Long> SEEN = new HashMap<>();
   /**
-   * Every bitmap asked for, with the frame it was last asked for (at any size or content), kept as long as copies:
-   * a player's pool of pictures each drawn every few frames with new pixels must not count as new bitmaps.
+   * Every bitmap asked for: {the frame it was first asked for, the frame it was last asked for} (at any size or
+   * content), kept as long as copies. A player's pool of pictures each drawn every few frames with new pixels must
+   * not count as new bitmaps; but every size asked for in a bitmap's first frame gets a copy, since two static Views
+   * sharing one bitmap at different sizes are each recorded only once.
    */
-  private static final Map<Bitmap, Long> DRAWN = new IdentityHashMap<>();
+  private static final Map<Bitmap, long[]> DRAWN = new IdentityHashMap<>();
   private static final Map<Bitmap, Source> SOURCES = new IdentityHashMap<>();
+  private static final android.graphics.ColorSpace SRGB = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB);
   private static ByteBuffer scratch = ByteBuffer.allocateDirect(1 << 20).order(ByteOrder.nativeOrder());
   private static long frame;
   private static long bytes;
@@ -96,13 +100,21 @@ final class GpuBitmaps {
       CONFIGS.merge(String.valueOf(b.getConfig()), 1L, Long::sum);
       return null;
     }
+    // The copy is sRGB: a Display P3 (or any other) image would lose its colours. Left to HWUI.
+    android.graphics.ColorSpace cs = b.getColorSpace();
+    if (cs != null && cs != SRGB && !SRGB.equals(cs)) {
+      CONFIGS.merge("ARGB_8888/" + cs.getName().replace(' ', '_'), 1L, Long::sum);
+      return null;
+    }
     int sl = src == null ? 0 : src.left;
     int st = src == null ? 0 : src.top;
     int sr = src == null ? b.getWidth() : src.right;
     int sb = src == null ? b.getHeight() : src.bottom;
     if (sr - sl == w && sb - st == h || sr <= sl || sb <= st) return null;
     Key key = new Key(b, b.getGenerationId(), sl, st, sr, sb, w, h);
-    Long drawn = DRAWN.put(b, frame);
+    long[] drawn = DRAWN.get(b);
+    if (drawn == null) DRAWN.put(b, drawn = new long[] {frame, frame});
+    drawn[1] = frame;
     Entry e = SCALED.get(key);
     if (e != null) {
       e.used = frame;
@@ -110,7 +122,7 @@ final class GpuBitmaps {
       return e.scaled;
     }
     Long seen = SEEN.put(key, frame);
-    boolean firstOfBitmap = drawn == null;
+    boolean firstOfBitmap = drawn[0] == frame;
     if (!firstOfBitmap && (seen == null || seen < frame - REPEAT_FRAMES)) {
       passed[1]++;
       return null;
@@ -207,7 +219,7 @@ final class GpuBitmaps {
       }
     }
     SEEN.values().removeIf(f -> f < frame - REPEAT_FRAMES);
-    DRAWN.values().removeIf(f -> f < stale);
+    DRAWN.values().removeIf(f -> f[1] < stale);
     for (Iterator<Source> i = SOURCES.values().iterator(); i.hasNext(); ) {
       Source s = i.next();
       if (s.used < stale) {

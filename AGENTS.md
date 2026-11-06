@@ -84,9 +84,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     pixels (canvas and Matrix scale+translate only) gets a copy already that size, resampled once on Metal (bilinear in
     float, as Skia), which HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame, and of a 2560x1600
     tablet screen with a full-screen background (raster ~36 → ~2.3 ms, test app `apksim://bitmaps`). Copies are cached
-    (96 MB, LRU). One is made the first time a bitmap is drawn (a View records its background once and HWUI redraws
-    that recording every frame, so it is never asked for twice), then only for a size asked for again within 8
-    frames, so zooms and per-frame content (video) stay on the CPU after their first frame. A copy dropped from the
+    (96 MB, LRU). They are made for every size asked for in the frame a bitmap is first drawn (a View records its
+    background once and HWUI redraws that recording every frame, so it is never asked for twice), then only for a
+    size asked for again within 8 frames, so zooms and per-frame content (video) stay on the CPU after their first
+    frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A copy dropped from the
     cache stays alive in display lists still drawing it. `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows
     hits and why draws went to HWUI (`small`, `config` by Bitmap.Config, `new`, `budget`, `unaligned`). Metal targets
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
@@ -355,7 +356,8 @@ end-of-stream buffer (`selftest clip.h264` checks every frame arrives). Other in
 with API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
 reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true), converted
 by VideoToolbox at the view's size, up or down (3 pooled Bitmaps of that size per codec), so the raster thread blits it
-1:1: a 640x360 clip in a 1600x900 view had Skia's upscale at ~40% of raster time (raster 9.4 → 5.9 ms on average,
+1:1 (a new view size is taken once it has held for 10 pictures, so a window drag does not replace the pool on
+every picture): a 640x360 clip in a 1600x900 view had Skia's upscale at ~40% of raster time (raster 9.4 → 5.9 ms on average,
 `apksim://bitmaps?video=1` on `--device tablet`; `-Dapksim.videoAtViewSize=false` keeps the picture's size when
 smaller); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output

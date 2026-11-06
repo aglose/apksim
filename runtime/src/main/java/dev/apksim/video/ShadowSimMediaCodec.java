@@ -323,6 +323,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private ByteBuffer rgba;
     private final Bitmap[] pool = new Bitmap[3];
     private static final boolean AT_VIEW_SIZE = !"false".equals(System.getProperty("apksim.videoAtViewSize"));
+    private static final int STEADY_PICTURES = 10;
+    private int outW;
+    private int outH;
+    private int seenW;
+    private int seenH;
+    private int steady;
     private int next;
     private final Set<Long> pictures = new HashSet<>();
 
@@ -470,8 +476,22 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       if (view != null && AT_VIEW_SIZE) {
         // Converted at the view's size, which the view draws 1:1: scaling on the raster thread every frame (a 4K
         // picture down, or a small one up into a large view) is far slower than in VideoToolbox's transfer here.
-        w = view[0];
-        h = view[1];
+        // While the view resizes (a window drag) the size in use is kept, the view stretching it, until the new one
+        // has held for STEADY_PICTURES: each new size would otherwise replace the pooled Bitmaps (and grow the
+        // buffer) on every picture.
+        if (view[0] != seenW || view[1] != seenH) {
+          seenW = view[0];
+          seenH = view[1];
+          steady = 0;
+        } else if (steady < STEADY_PICTURES) {
+          steady++;
+        }
+        if (outW <= 0 || steady >= STEADY_PICTURES) {
+          outW = seenW;
+          outH = seenH;
+        }
+        w = outW;
+        h = outH;
       } else if (view != null) {
         w = Math.min(w, view[0]);
         h = Math.min(h, view[1]);
