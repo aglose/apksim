@@ -158,6 +158,8 @@ class ShellCommandTest {
 
 @RunWith(AndroidJUnit4::class)
 class WallClockTest {
+  private val onApksim = Build.FINGERPRINT == "robolectric"
+
   @Test
   fun frameworkAndAppAgreeOnTheTime() {
     val now = System.currentTimeMillis()
@@ -176,8 +178,8 @@ class WallClockTest {
     assertEquals(zone, TimeZone.getDefault().id)
     assertEquals(zone, android.icu.util.TimeZone.getDefault().id)
     // Joda-Time (up to 2.10) reads user.timezone before the JDK's default: apksim left it unset here and at the host's
-    // zone in warm launches, where a day-off Joda date showed (issue 91). A device may leave it empty; apksim sets it.
-    assertEquals(zone, System.getProperty("user.timezone"))
+    // zone in warm launches, where a day-off Joda date showed (issue 91). A device may leave it unset; apksim sets it.
+    if (onApksim) assertEquals(zone, System.getProperty("user.timezone"))
     assertEquals(zone, org.joda.time.DateTimeZone.getDefault().id)
     assertEquals(java.time.LocalDate.now(), org.joda.time.LocalDate.now().let { java.time.LocalDate.of(it.year, it.monthOfYear, it.dayOfMonth) })
   }
@@ -185,6 +187,7 @@ class WallClockTest {
   /** `apksim timezone ZONE` changes every zone source and broadcasts ACTION_TIMEZONE_CHANGED, as a device does. */
   @Test
   fun timezoneCommandChangesTheZoneAndBroadcastsIt() {
+    assumeTrue("the zone is changed with apksim's `timezone` command", onApksim)
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val heard = mutableListOf<String?>()
     val receiver = object : BroadcastReceiver() {
