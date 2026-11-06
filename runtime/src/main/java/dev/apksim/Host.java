@@ -117,7 +117,6 @@ public class Host {
     app = RuntimeEnvironment.getApplication();
     Timing.detail("got-application");
     useDeviceGestureThresholds(app);
-    DeviceControls.applyAnimScaleOption(app);
     HostNetworks.install(app);
     NetConnectivity.networksReplaced();  // --network-profile offline: the host's networks stay away until online
     dev.apksim.video.ShadowSimMediaCodec.install();

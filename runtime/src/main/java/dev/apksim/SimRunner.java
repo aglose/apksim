@@ -283,7 +283,6 @@ public class SimRunner extends RobolectricTestRunner {
       } catch (Exception e) {
         System.err.println("[apksim] gesture thresholds: " + e);
       }
-      DeviceControls.applyAnimScaleOption(RuntimeEnvironment.getApplication());  // --anim-scale, as Host does
     }
 
     /**
