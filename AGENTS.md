@@ -275,7 +275,16 @@ app opens outside itself go to the Mac's browser/mail app. The keyboard sends Co
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
-`APKSIM_WINDOW`). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+`APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
+warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
+digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
+the `default` slot's: Robolectric's `unknown` failed a backend's format check), `--feature NAME[=false]` (repeatable,
+ShadowPackageManager.setSystemFeature: Robolectric reports no hardware features, FEATURE_CAMERA_ANY included) and
+`--build FIELD=VALUE` (repeatable: any public static Build or Build.VERSION field, `MODEL=Pixel 9`,
+`VERSION.SECURITY_PATCH=...`, typed by the field; not VERSION.SDK_INT, and leave FINGERPRINT alone in test runs,
+see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
+checks them (CI runs it with the options). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
+before onCreate, not in `Host.run` after it), so what onCreate writes is kept and `APKSIM_LOGCAT` shows its log. Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
@@ -847,6 +856,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   display list in HWUI and draws nothing until recorded again. `GpuRenderNode` closes a content raster only a frame
   after the content is drawn in the screen's tree again; destroying a HardwareRenderer also deletes the display lists
   of everything it draws, so it empties its root first.
+- Nothing may change the process locale once the JVM runs threads: macOS's `setlocale` swaps the global locale under
+  any thread in `vsnprintf` (a JIT compiler thread crashed in `localeconv_l` while a standby booted, under load). The
+  launcher sets `LC_NUMERIC=en_US.UTF-8` on macOS, the value libandroid_runtime's `JNI_OnLoad` sets, so its
+  `setlocale` changes nothing. Check new native libraries for `setlocale` imports (`nm -u`).
 - zsh is the shell: `==` and unquoted globs (`--include=*.kt`) break one-liners. Quote them, or use bash/python.
 
 ## Test APKs

@@ -211,6 +211,21 @@ static void init_ctype(void) {
     a_ctype[c + 1] = v;
   }
 }
+// Bionic's setlocale: Android has only "C" and "C.UTF-8", and setting one changes nothing else. Passing it on would
+// change this process's locale under the JVM's threads (macOS's setlocale is not safe against a thread formatting a
+// string: see the launcher's LC_NUMERIC), and would give native code the host's decimal point.
+static int b_locale_utf8 = 1;
+static char *s_setlocale(int category, const char *name) {
+  if (category < 0 || category > 12) { errno = EINVAL; return NULL; }  // LC_CTYPE..LC_IDENTIFICATION, LC_ALL is 6
+  if (name) {
+    if (*name && strcmp(name, "C") && strcmp(name, "C.UTF-8") && strcmp(name, "en_US.UTF-8") && strcmp(name, "POSIX")) {
+      errno = ENOENT;
+      return NULL;
+    }
+    b_locale_utf8 = !*name || strstr(name, "UTF-8") != NULL;
+  }
+  return b_locale_utf8 ? "C.UTF-8" : "C";
+}
 static void *s_newlocale(int mask, const char *name, void *base) { return newlocale(LC_ALL_MASK, name, base); }
 
 // Fortify checks glibc does not have.
@@ -323,7 +338,7 @@ static const Entry table[] = {
     E("sigaction", s_sigaction), E("signal", s_signal), E("bsd_signal", s_signal), E("sigemptyset", s_sigemptyset),
     E("sigfillset", s_sigfillset), E("sigaddset", s_sigaddset), E("sigdelset", s_sigdelset), E("sigismember", s_sigismember),
     E("sigprocmask", s_sigprocmask), E("pthread_sigmask", s_sigprocmask),
-    E("newlocale", s_newlocale), E("gettid", s_gettid),
+    E("newlocale", s_newlocale), E("setlocale", s_setlocale), E("gettid", s_gettid),
     E("__strlen_chk", s_strlen_chk), E("__strchr_chk", s_strchr_chk), E("__strrchr_chk", s_strrchr_chk),
     E("__strlcpy_chk", s_strlcpy_chk), E("__strlcat_chk", s_strlcat_chk), E("strlcpy", s_strlcpy), E("strlcat", s_strlcat),
     E("__FD_SET_chk", s_fd_set_chk), E("__FD_CLR_chk", s_fd_clr_chk), E("__FD_ISSET_chk", s_fd_isset_chk),
