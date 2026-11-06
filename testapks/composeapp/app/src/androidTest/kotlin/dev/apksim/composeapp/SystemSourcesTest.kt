@@ -52,11 +52,21 @@ class SystemSourcesTest {
     @Suppress("DEPRECATION") val info = wm.connectionInfo
     assertEquals("connected RSSI", -50, info.rssi)
     assertTrue("frequency ${info.frequency}", info.frequency > 0)
-    assertEquals("SSID without location permission", WifiManager.UNKNOWN_SSID, info.ssid)
-    assertEquals("BSSID without location permission", "02:00:00:00:00:00", info.bssid)
-    val cm = context.getSystemService(ConnectivityManager::class.java)
-    val transport = cm.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
-    assertEquals("the network capabilities' WifiInfo BSSID", "02:00:00:00:00:00", transport?.bssid)
+    // A device shows the SSID, BSSID and network id only to an app with ACCESS_FINE_LOCATION (--permissions grant).
+    val located = context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+      android.content.pm.PackageManager.PERMISSION_GRANTED
+    if (located) {
+      assertEquals("SSID with location permission", "\"AndroidWifi\"", info.ssid)
+      assertTrue("BSSID with location permission: ${info.bssid}", info.bssid != null && info.bssid != "02:00:00:00:00:00")
+      assertTrue("network id with location permission", info.networkId >= 0)
+    } else {
+      assertEquals("SSID without location permission", WifiManager.UNKNOWN_SSID, info.ssid)
+      assertEquals("BSSID without location permission", "02:00:00:00:00:00", info.bssid)
+      assertEquals("network id without location permission", -1, info.networkId)
+      val cm = context.getSystemService(ConnectivityManager::class.java)
+      val transport = cm.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
+      assertEquals("the network capabilities' WifiInfo BSSID", "02:00:00:00:00:00", transport?.bssid)
+    }
     val level = wm.calculateSignalLevel(info.rssi) / (wm.maxSignalLevel / 4)
     assertTrue("level $level", level in 0..4)
     assertEquals(4, wm.calculateSignalLevel(-50))
@@ -160,6 +170,29 @@ class SystemSourcesTest {
     } finally {
       cm.unregisterNetworkCallback(defaultCb)
       cm.unregisterNetworkCallback(listenCb)
+    }
+  }
+
+  /**
+   * A broad request (clearCapabilities) is told only of connected networks: a disconnected one with capabilities, as
+   * Robolectric's own Wi-Fi is before a running instance installs the host's networks, is not offered.
+   */
+  @Test
+  fun aBroadRequestHearsOnlyOfConnectedNetworks() {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val netId = Class.forName("dev.apksim.NetConnectivity").getDeclaredMethod("addDisconnectedNetworkForTest")
+      .apply { isAccessible = true }.invoke(null) as Int
+    val told = mutableListOf<String>()
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { told += n.toString() }
+    }
+    cm.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities().build(), cb)
+    try {
+      pumpMainThread()
+      assertFalse("told of the disconnected network $netId: $told", netId.toString() in told)
+      assertTrue("told of the active network ${cm.activeNetwork}: $told", cm.activeNetwork.toString() in told)
+    } finally {
+      cm.unregisterNetworkCallback(cb)
     }
   }
 

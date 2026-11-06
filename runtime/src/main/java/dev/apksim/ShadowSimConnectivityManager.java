@@ -158,14 +158,28 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     }
   }
 
+  /**
+   * A network the device would offer a callback: connected, with capabilities. Robolectric's own networks (before
+   * HostNetworks replaces them in a running instance) include a disconnected Wi-Fi, which a broad request
+   * (clearCapabilities) would otherwise have been told was available.
+   */
+  @SuppressWarnings("deprecation")
+  private static boolean offered(ConnectivityManager cm, Network n) {
+    if (n == null || cm.getNetworkCapabilities(n) == null) return false;
+    android.net.NetworkInfo info = cm.getNetworkInfo(n);
+    return info != null && info.isConnected();
+  }
+
   /** The networks this callback is entitled to now. */
   private static List<Network> entitled(Tracked t, ConnectivityManager cm) {
     Network active = cm.getActiveNetwork();
-    if (t.kind == Kind.DEFAULT) return active != null && cm.getNetworkCapabilities(active) != null ? List.of(active) : List.of();
+    if (!offered(cm, active)) active = null;
+    if (t.kind == Kind.DEFAULT) return active != null ? List.of(active) : List.of();
     List<Network> out = new ArrayList<>();
     for (Network n : cm.getAllNetworks()) {
+      if (!offered(cm, n)) continue;
       NetworkCapabilities caps = cm.getNetworkCapabilities(n);
-      if (caps == null || t.request == null || !t.request.canBeSatisfiedBy(caps)) continue;
+      if (t.request == null || !t.request.canBeSatisfiedBy(caps)) continue;
       if (t.kind == Kind.REQUEST && n.equals(active)) return List.of(n);  // the default network serves a request first
       out.add(n);
     }
@@ -185,11 +199,11 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     List<Network> now = entitled(t, cm);
     ConnectivityManager.NetworkCallback cb = t.cb;
     // Losses first: a network that disconnected is gone before its replacement is announced.
-    List<Network> connected = java.util.Arrays.asList(cm.getAllNetworks());
+    List<Network> all = java.util.Arrays.asList(cm.getAllNetworks());
     for (Network n : new ArrayList<>(t.told.keySet())) {
       if (now.contains(n)) continue;
       t.told.remove(n);
-      boolean up = connected.contains(n);
+      boolean up = all.contains(n) && offered(cm, n);
       if (t.kind == Kind.LISTEN || now.isEmpty() || !up) t.queue.add(() -> cb.onLost(n));
     }
     for (Network n : now) {

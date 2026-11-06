@@ -122,6 +122,24 @@ final class NetConnectivity {
     ShadowSimConnectivityManager.rematch();
   }
 
+  /**
+   * For SystemSourcesTest only (by reflection): a disconnected network with capabilities, as Robolectric's own Wi-Fi
+   * is before HostNetworks replaces it. Returns its netId.
+   */
+  @SuppressWarnings("deprecation")
+  static int addDisconnectedNetworkForTest() {
+    ShadowConnectivityManager shadow = new ShadowConnectivityManager();
+    int netId = 4242;
+    Network n = org.robolectric.shadows.ShadowNetwork.newInstance(netId);
+    NetworkInfo info = org.robolectric.shadows.ShadowNetworkInfo.newInstance(NetworkInfo.DetailedState.DISCONNECTED,
+        android.net.ConnectivityManager.TYPE_WIFI, 0, true, NetworkInfo.State.DISCONNECTED);
+    shadow.addNetwork(n, info);
+    NetworkCapabilities caps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance();
+    org.robolectric.Shadows.shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
+    shadow.setNetworkCapabilities(n, caps);
+    return netId;
+  }
+
   @SuppressWarnings("unchecked")
   private static <T> T staticField(String name) {
     try {
