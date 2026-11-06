@@ -23,10 +23,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * What a quick-settings panel awaits before it shows anything (issue 96), as apksim://system-sources awaits it:
- * Wi-Fi's and the network's sticky broadcasts, the battery's, network callbacks, VOLUME_CHANGED_ACTION after
- * setStreamVolume, a settings observer, a callback registered in Application.onCreate. On a device each answers at
- * once; one that never does leaves the panel empty. (Bluetooth's profile proxy connects only while Bluetooth is on, as
+ * System state apps await in coroutines (issue 96), as apksim://system-sources awaits it: Wi-Fi's and the network's
+ * sticky broadcasts, the battery's, network callbacks, VOLUME_CHANGED_ACTION after setStreamVolume, a settings
+ * observer, a callback registered in Application.onCreate. On a device each answers at once; one that never does
+ * leaves the app waiting for ever. (Bluetooth's profile proxy connects only while Bluetooth is on, as
  * on a device.) The class also runs on a device or emulator: what needs apksim (its test hooks, `apksim` shell
  * commands, its exact values) is skipped there.
  */
@@ -50,7 +50,7 @@ class SystemSourcesTest {
   }
 
   /**
-   * Wi-Fi's signal as an API 31+ device gives it (issue 96): levels 0..4, so a quick-settings library's
+   * Wi-Fi's signal as an API 31+ device gives it (issue 96): levels 0..4, so code that buckets it as
    * `calculateSignalLevel(rssi) / (maxSignalLevel / 4)` does not divide by zero; a connection with a real RSSI.
    */
   @Test

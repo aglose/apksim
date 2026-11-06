@@ -21,7 +21,7 @@ import org.robolectric.shadows.ShadowConnectivityManager;
 
 /**
  * Network callbacks as ConnectivityService runs them. Robolectric only recorded a callback, so an app that awaits the
- * first one (a callbackFlow and first(), as a Wi-Fi tile or an "am I online" check does) waited for ever (issue 96).
+ * first one (a callbackFlow and first(), as an "am I online" check does) waited for ever (issue 96).
  * Here each callback is told of the networks it is entitled to as it registers, and of every change after:
  * - a default callback: the active network;
  * - requestNetwork and registerBestMatchingNetworkCallback (one request, one network): the active network if it

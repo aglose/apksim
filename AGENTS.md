@@ -365,8 +365,8 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
-`apksim://system-sources` opens `SystemSourcesActivity`: what a quick-settings panel reads and awaits in coroutines
-(Wi-Fi's signal level as `calculateSignalLevel(rssi) / (maxSignalLevel / 4)`, Wi-Fi's, the network's and the battery's
+`apksim://system-sources` opens `SystemSourcesActivity`: system state as apps read it and await it in coroutines
+(callbackFlow + first(): Wi-Fi's signal level bucketed as `calculateSignalLevel(rssi) / (maxSignalLevel / 4)`, Wi-Fi's, the network's and the battery's
 sticky broadcasts, a default and a Wi-Fi network callback, one registered in Application.onCreate, VOLUME_CHANGED_ACTION
 after setStreamVolume, a settings observer, an A2DP profile proxy), one line each, "timed out" after 3 s or "error"
 (`ci-smoke.sh` checks none does but Bluetooth's, which connects only while Bluetooth is on; `SystemSourcesTest` in a
@@ -400,9 +400,9 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `setDefaultNetworkActive(true)` with an active network calls onAvailable itself, so NetConnectivity sets it first.
   The shadow's state is static, so NetConnectivity applies an offline launch profile before the Application exists
   (`SimTestEnvironment.setUpApplicationState`): `Application.onCreate` sees no network, in Host and in tests.
-- What a device's system server has already sent or sends at once, which Robolectric never does (issue 96: a large
-  app's quick-settings panel awaited it in a coroutine and stayed empty, no exception): `SystemBroadcasts` keeps the
-  sticky WIFI_STATE_CHANGED, Wi-Fi NETWORK_STATE_CHANGED, CONNECTIVITY_ACTION (from ConnectivityManager, again on every
+- What a device's system server has already sent or sends at once, which Robolectric never does (issue 96: an app's
+  coroutine awaiting a sticky broadcast or a network callback waited for ever, no exception): `SystemBroadcasts` keeps
+  the sticky WIFI_STATE_CHANGED, Wi-Fi NETWORK_STATE_CHANGED, CONNECTIVITY_ACTION (from ConnectivityManager, again on every
   `network offline|online` and HostNetworks install, which publishes nothing under `--network-profile offline`) and
   ACTION_BATTERY_CHANGED (full, not charging), set before Application.onCreate and the providers InstallState creates,
   in running instances and every test. `ShadowSimConnectivityManager` runs network callbacks as ConnectivityService
@@ -425,9 +425,9 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   calculateSignalLevel(rssi) on RssiUtil's default thresholds (-88/-77/-66/-55), the static
   calculateSignalLevel(rssi, n) by the classic -100..-55 formula, getConnectionInfo at -50 dBm, 5180 MHz, 866 Mbps while
   the active network is Wi-Fi (SSID "AndroidWifi", BSSID and network id only with ACCESS_FINE_LOCATION, else redacted
-  as a device does; offline: disconnected, rssi -127). Robolectric's stub IWifiManager made getMaxSignalLevel() 0, and a
-  quick-settings library's `level / (max / 4)` threw ArithmeticException in a coroutine the app swallowed, so its
-  panel never showed. HostNetworks gives the Wi-Fi network's capabilities that (redacted) WifiInfo and signal strength.
+  as a device does; offline: disconnected, rssi -127). Robolectric's stub IWifiManager made getMaxSignalLevel() 0, so code that
+  buckets the level as `level / (max / 4)` threw ArithmeticException (issue 96), which an app's coroutine may never
+  report. HostNetworks gives the Wi-Fi network's capabilities that (redacted) WifiInfo and signal strength.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must

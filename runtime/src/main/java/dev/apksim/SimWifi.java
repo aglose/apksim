@@ -22,9 +22,9 @@ import org.robolectric.shadows.ShadowWifiManager;
 /**
  * The connected Wi-Fi a device reports. HostNetworks shows the host's default interface as Wi-Fi, but WifiManager
  * still answered as no device does: getMaxSignalLevel() 0 (the stub IWifiManager's calculateSignalLevel), every
- * calculateSignalLevel 0 or a fixed fraction, and a blank WifiInfo. A quick-settings library computing
- * `calculateSignalLevel(rssi) / (maxSignalLevel / 4)` on API 31+ divided by zero, and the app swallowed the
- * ArithmeticException, so its panel never showed (issue 96).
+ * calculateSignalLevel 0 or a fixed fraction, and a blank WifiInfo. Code that buckets the level as
+ * `calculateSignalLevel(rssi) / (maxSignalLevel / 4)` on API 31+ divided by zero (issue 96), and an
+ * ArithmeticException in a coroutine may never be reported.
  * Here, as API 31+ devices: levels 0..4 from the platform's default thresholds (config_wifiRssiLevelThresholds,
  * RssiUtil), the static calculateSignalLevel(rssi, numLevels) by the classic formula (MIN_RSSI -100, MAX_RSSI -55),
  * and getConnectionInfo a connection at -50 dBm on 5 GHz while there is a network (`network offline`: disconnected,

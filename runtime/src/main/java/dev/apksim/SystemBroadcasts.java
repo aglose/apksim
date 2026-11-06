@@ -25,7 +25,7 @@ import org.robolectric.shadows.ShadowNetworkInfo;
  * The broadcasts a device's system server has sent before an app starts, and the ones it sends when the app changes
  * system state. Robolectric has no sticky broadcast but those a test sends itself, so a receiver registered for
  * Wi-Fi's state, the network's or the battery's never heard a thing: an app that awaits the first one (a callbackFlow
- * and first(), as a quick-settings panel does for its Wi-Fi tile) waited for ever, and `registerReceiver(null,
+ * and first(), as code showing Wi-Fi's state does) waited for ever (issue 96), and `registerReceiver(null,
  * ACTION_BATTERY_CHANGED)` returned null. On a device the system keeps the last of each and delivers it to every
  * receiver as it registers (Robolectric does that for the ones it has, synchronously).
  * Set before Application.onCreate (each test's too: Robolectric keeps stickies per Instrumentation), and again
@@ -124,7 +124,7 @@ final class SystemBroadcasts {
 
   /**
    * AudioService's VOLUME_CHANGED_ACTION (and STREAM_MUTE_CHANGED_ACTION) when a stream's volume (or mute) changes, as
-   * a volume tile or slider waits for after setStreamVolume: Robolectric only stored the new value. Sent after the
+   * a volume control waits for after setStreamVolume: Robolectric only stored the new value. Sent after the
    * call returns, as the system server's broadcast arrives.
    */
   @Implements(AudioManager.class)

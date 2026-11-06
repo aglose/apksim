@@ -44,13 +44,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
- * apksim://system-sources: the system state a quick-settings panel (Wi-Fi, Bluetooth, volume, brightness, battery)
- * awaits in coroutines, each as an app wraps it (callbackFlow + first(), suspendCancellableCoroutine), with a timeout.
+ * apksim://system-sources: system state (Wi-Fi, Bluetooth, volume, brightness, battery) as apps await it in
+ * coroutines, each wrapped the common way (callbackFlow + first(), suspendCancellableCoroutine), with a timeout.
  * On a device every one answers at once: sticky broadcasts are delivered to a receiver as it registers, a network
  * callback hears of the networks that match it (one registered in Application.onCreate too), a profile proxy
- * connects. One that never answers leaves a panel waiting for ever with nothing on screen, and so does one that
- * throws in a coroutine whose exception the app swallows: "wifi level" divides by getMaxSignalLevel() / 4 as a
- * quick-settings library does (issue 96). Each line reads "name: value", "name: timed out" or "name: error ...";
+ * connects. One that never answers leaves the app waiting for ever, as does one that throws in a coroutine nobody
+ * reports: "wifi level" buckets the level as `level / (getMaxSignalLevel() / 4)` (issue 96). Each line reads "name: value", "name: timed out" or "name: error ...";
  * SystemSourcesTest awaits the same sources in a test run.
  */
 class SystemSourcesActivity : ComponentActivity() {
@@ -99,8 +98,7 @@ object SystemSources {
   )
 
   /**
-   * The signal as a quick-settings library computes it on API 31+ (issue 96): levels 0..getMaxSignalLevel() cut into
-   * four. A WifiManager whose getMaxSignalLevel() is under 4 makes that a division by zero.
+   * The signal bucketed as code written for API 31+ does (issue 96): levels 0..getMaxSignalLevel() cut into four. A WifiManager whose getMaxSignalLevel() is under 4 makes that a division by zero.
    */
   fun wifiLevel(context: Context): String {
     val wm = context.getSystemService(WifiManager::class.java)
@@ -154,7 +152,7 @@ object SystemSources {
     awaitClose { am.unregisterAudioDeviceCallback(cb) }
   }
 
-  /** A volume tile: set the music volume, wait for the system's VOLUME_CHANGED_ACTION. */
+  /** A volume control: set the music volume, wait for the system's VOLUME_CHANGED_ACTION. */
   suspend fun volumeChange(context: Context): String {
     val am = context.getSystemService(AudioManager::class.java)
     val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -171,7 +169,7 @@ object SystemSources {
     return "volume ${flow.first()} of $max"
   }
 
-  /** A brightness tile: observe the setting, change it, wait for the observer. */
+  /** A brightness control: observe the setting, change it, wait for the observer. */
   suspend fun brightnessChange(context: Context): String {
     val uri = Settings.System.getUriFor(Settings.System.SCREEN_BRIGHTNESS)
     val flow = callbackFlow {
