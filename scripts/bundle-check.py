@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 PKG = "dev.apksim.composeapp."
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 FAIL = [PKG + c for c in ("FailureBundleTest", "FailureBundleEspressoTest", "FailureBundleAfterTest", "FailureBundleParameterizedTest",
-                          "FailureBundleCustomHandlerTest", "FailureBundleExpectedTest")]
+                          "FailureBundleCustomHandlerTest", "FailureBundleExpectedTest", "FailureBundleHandledTest")]
 problems = []
 
 
@@ -113,11 +113,18 @@ def main():
         check(len(w.strip().splitlines()) == 2, "the dialog test's windows.txt lists two windows")
     check(os.path.exists(os.path.join(outside, "failure.txt")), "the cleanup does not follow a link out of DIR")
     for c, m in ((PKG + "FailureBundleTest", "a_passes"), (PKG + "FailureBundleParameterizedTest", "sameNumbers[0: 1, 1]"),
-                 (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"), (PKG + "FailureBundleExpectedTest", "expectedThrows")):
+                 (PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"), (PKG + "FailureBundleExpectedTest", "expectedThrows"),
+                 (PKG + "FailureBundleHandledTest", "handledFailureLeavesTheScreenAlone")):
         check(not os.path.exists(os.path.join(local, folder(c, m))), f"no bundle for passing {m}")
     cases = {(t.get("classname"), t.get("name")): t for t in ET.parse(xml).iter("testcase")}
     own = cases.get((PKG + "FailureBundleCustomHandlerTest", "ownHandlerDecides"))
     check(own is not None and own.find("failure") is None, "a test's own Espresso failure handler still decides (it passed)")
+    handled = cases.get((PKG + "FailureBundleHandledTest", "handledFailureLeavesTheScreenAlone"))
+    check(handled is not None and handled.find("failure") is None,
+          "a failure the test handles leaves its screen alone (the tree is read only once the screen cannot matter)")
+    nodes = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingView"), "nodes.txt")
+    check(os.path.exists(nodes) and "read as MainActivity finished" in open(nodes).read(),
+          "the Espresso handler's bundle reads its tree as the scenario closes, not in the handler")
     exp = cases.get((PKG + "FailureBundleExpectedTest", "expectedThrows"))
     check(exp is not None and exp.find("failure") is None and exp.find("skipped") is None,
           "@Test(expected) passes, with no bundle started for it (its @After checks before the test's end)")

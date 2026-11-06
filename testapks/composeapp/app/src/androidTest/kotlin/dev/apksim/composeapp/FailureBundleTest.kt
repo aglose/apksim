@@ -2,12 +2,14 @@ package dev.apksim.composeapp
 
 import android.app.AlertDialog
 import android.util.Log
+import android.view.ViewGroup
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.NoMatchingViewException
 import androidx.test.espresso.base.DefaultFailureHandler
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
@@ -19,6 +21,7 @@ import java.util.concurrent.locks.LockSupport
 import org.junit.After
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
@@ -106,6 +109,45 @@ class FailureBundleCustomHandlerTest {
   fun ownHandlerDecides() {
     ActivityScenario.launch(MainActivity::class.java).use {
       onView(withText("No view has this text")).check(matches(isDisplayed()))
+    }
+  }
+}
+
+/**
+ * A failure the test handles (a poll that retries, as an `idleUntil` helper does) leaves the app as it was, with or
+ * without --bundles. Espresso's failure handler captures a bundle at the first failed poll; reading the accessibility
+ * tree then (nodes.txt) would change the screen the test goes on using: Compose's node provider adds a child view to
+ * the AndroidComposeView (its AndroidViewsHandler) and builds its accessibility caches. Runs everywhere.
+ */
+@RunWith(AndroidJUnit4::class)
+class FailureBundleHandledTest {
+  private fun composeChildren(scenario: ActivityScenario<MainActivity>): Int {
+    var n = -1
+    scenario.onActivity { a ->
+      val composeView = a.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as ViewGroup
+      n = (composeView.getChildAt(0) as ViewGroup).childCount  // the AndroidComposeView
+    }
+    return n
+  }
+
+  private fun pollUntil(attempts: Int, check: () -> Unit): Boolean {
+    repeat(attempts) {
+      try {
+        check()
+        return true
+      } catch (e: NoMatchingViewException) {
+        // not there yet: poll again
+      }
+    }
+    return false
+  }
+
+  @Test
+  fun handledFailureLeavesTheScreenAlone() {
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      val before = composeChildren(scenario)
+      assertFalse(pollUntil(3) { onView(withText("No view has this text")).check(matches(isDisplayed())) })
+      assertEquals("the AndroidComposeView's child views after a handled failure", before, composeChildren(scenario))
     }
   }
 }
