@@ -67,6 +67,8 @@ final class BoundServices {
     final Class<? extends Service> cls;
     final Map<Intent.FilterComparison, Binding> bindings = new LinkedHashMap<>();
     ServiceController<? extends Service> controller;
+    /** While its onCreate runs: Robolectric's create() runs the main looper, which may hold another binding's attach. */
+    boolean creating;
 
     Record(ComponentName name, Class<? extends Service> cls) {
       this.name = name;
@@ -186,13 +188,19 @@ final class BoundServices {
 
   /** Brings a service in line with its connections: created, bound, unbound or destroyed. */
   private void settle(Record r) {
+    if (r.creating) return;  // the settle creating it goes on with every connection attached meanwhile
     boolean autoCreate = false;
     for (Binding b : r.bindings.values()) for (Conn c : b.conns) autoCreate |= c.autoCreate;
     if (r.controller == null) {
       // Without BIND_AUTO_CREATE a binding waits for the service to be created (by another binding here). Its
       // Binding stays when it is unbound, as the device's IntentBindRecord does: onBind gets its intent later.
       if (!autoCreate) return;
-      r.controller = Robolectric.buildService(r.cls, r.bindings.values().iterator().next().intent).create();
+      r.creating = true;
+      try {
+        r.controller = Robolectric.buildService(r.cls, r.bindings.values().iterator().next().intent).create();
+      } finally {
+        r.creating = false;
+      }
     }
     Service s = r.controller.get();
     for (Binding b : r.bindings.values()) {
