@@ -74,10 +74,12 @@ stop() {
 }
 
 echo "== a fresh slot, seeded"
-start fresh.log --fresh --setting global:apksim_slot_seed=seeded --setting system:font_scale=1.3
+start fresh.log --fresh --setting global:apksim_slot_seed=seeded --setting system:font_scale=1.15 \
+  --setting system:font_scale=1.3
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=null seed=seeded sdcard=missing$'
 expect "external storage" "$(text 'storage:')" '^storage: mounted, Download inside /sdcard, app folder mounted emulated$'
-# A seed of a key a device control owns does what the control does (fontscale), and is not kept for the next launch.
+# A seed of a key a device control owns does what the control does (fontscale; the last one given wins, also after
+# Host.run's setQualifiers), and is not kept for the next launch.
 expect "seeded font scale" "$(text 'font scale:')" '^font scale: 1.3$'
 tap_text Write
 sleep 1

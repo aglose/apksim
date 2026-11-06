@@ -17,7 +17,8 @@ import org.junit.runners.MethodSorters
  * scripts/slot-check.sh); a test run does not: every test starts from a clean device, but for the values given with
  * apksim's `--setting`, which each test's setup applies before Application.onCreate (CI runs this class with
  * `-e settingSeed V` and `--setting global:apksim_slot_seed=V`, and `-e animSeed A` with
- * `--setting global:animator_duration_scale=A`). apksim only.
+ * `--setting global:animator_duration_scale=A`, and `-e fontSeed F` with two font_scale seeds, the last one F).
+ * apksim only.
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)  // the test that writes first, then one that must not see it
@@ -50,6 +51,19 @@ class SlotStateTest {
     val cr = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
     assertEquals(anim!!, android.animation.ValueAnimator.getDurationScale(), 0f)
     assertEquals(anim, Settings.Global.getFloat(cr, Settings.Global.ANIMATOR_DURATION_SCALE), 0f)
+  }
+
+  @Test
+  fun e_aSeededFontScaleReachesTheTestsActivities() {
+    // --setting system:font_scale=F (the last one given, CI: -e fontSeed F): what `fontscale F` does, and not undone
+    // by the test's own configuration set up after Application.onCreate.
+    val font = args.getString("fontSeed")?.toFloat()
+    assumeTrue("run with -e fontSeed F and --setting system:font_scale=F", font != null)
+    val app = InstrumentationRegistry.getInstrumentation().targetContext
+    assertEquals(font!!, app.resources.configuration.fontScale, 0f)
+    androidx.test.core.app.ActivityScenario.launch(SlotStateActivity::class.java).use { scenario ->
+      scenario.onActivity { assertEquals(font, it.resources.configuration.fontScale, 0f) }
+    }
   }
 
   @Test

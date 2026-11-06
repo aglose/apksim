@@ -44,7 +44,7 @@ final class SlotDevice {
   private static final String DELETED = "!";
   private static final long CHECK_NANOS = 250_000_000L;
 
-  private static Path dir;
+  private static volatile Path dir;
   /** The settings when the slot was taken, before anything stored was applied: what "differs" is measured against. */
   private static Map<String, String> defaults;
   /** What the settings file holds. */
@@ -117,20 +117,73 @@ final class SlotDevice {
    * in the file; given again at the next launch, it applies again.
    */
   private static void deviceControl(android.app.Application app, String seed, String key, String value) {
-    float f;
+    float f = number(seed, key, value);
+    if (key.equals("global/animator_duration_scale")) {
+      DeviceControls.setAnimatorScale(app, f);  // = `animscale F`
+    } else {
+      applyFontScale();  // = `fontscale F`, for the value the launch ends up with
+    }
+  }
+
+  private static float number(String seed, String key, String value) {
     try {
-      f = Float.parseFloat(value);
+      return Float.parseFloat(value);
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("--setting " + seed + ": not a number (or use "
           + (key.endsWith("font_scale") ? "--font-scale" : "the animscale command") + ")");
     }
-    if (key.equals("global/animator_duration_scale")) {
-      DeviceControls.setAnimatorScale(app, f);  // = `animscale F`
-    } else {
-      RuntimeEnvironment.setFontScale(f);  // = `fontscale F`
-      // Host.run sets the qualifiers after onCreate, which resets the font scale; --font-scale is applied after that.
-      if (System.getProperty("apksim.fontScale") == null) System.setProperty("apksim.fontScale", value);
+  }
+
+  private static final String FONT_SEED = "system:font_scale=";
+
+  /**
+   * The font scale this launch asks for: {@code --font-scale} if given (it wins over a seed), else the last
+   * {@code --setting system:font_scale=F}; null for neither. Read from the properties each time, so a test run's
+   * setup after a reset gets the same answer as onCreate did.
+   */
+  static Float launchFontScale() {
+    String explicit = System.getProperty("apksim.fontScale");
+    if (explicit != null) return Float.parseFloat(explicit);
+    Float seeded = null;
+    for (int i = 0; ; i++) {
+      String s = System.getProperty("apksim.setting." + i);
+      if (s == null) return seeded;
+      if (s.startsWith(FONT_SEED)) seeded = number(s, "system/font_scale", s.substring(FONT_SEED.length()));
     }
+  }
+
+  /**
+   * Sets the launch's font scale (launchFontScale) as `fontscale` does, if it has one. Again after anything that resets
+   * it: Host.run's and a test's setQualifiers (a full qualifier string resets the font scale).
+   */
+  static void applyFontScale() {
+    Float f = launchFontScale();
+    if (f != null) RuntimeEnvironment.setFontScale(f);
+  }
+
+  /**
+   * A test's setup, after SimRunner's setQualifiers: a seeded font scale again, for the test and its activities (only
+   * with a seed: --font-scale alone has never applied in test runs).
+   */
+  static void afterTestQualifiers() {
+    for (int i = 0; ; i++) {
+      String s = System.getProperty("apksim.setting." + i);
+      if (s == null) return;
+      if (s.startsWith(FONT_SEED)) {
+        applyFontScale();
+        return;
+      }
+    }
+  }
+
+  /**
+   * Persistence ends before Robolectric's reset after Host.run (returned or thrown), which puts the default settings
+   * back: the live values are written once more, and no later flush (the launch's client hanging up) writes again.
+   * Under the same lock as flush, so the hangup thread cannot write in between.
+   */
+  static synchronized void close() {
+    flush();
+    dir = null;
   }
 
   /** From Host's loop: writes the settings when they changed since the last check (at most every 250 ms). */
@@ -143,8 +196,8 @@ final class SlotDevice {
   }
 
   /**
-   * Writes the settings if they changed. On the way out too (Host.exit, the launch's client hanging up), but never once
-   * Host.run has returned: Robolectric's reset after the "test" puts the defaults back, which would erase the file.
+   * Writes the settings if they changed. On the way out too (Host.exit, the launch's client hanging up); nothing once
+   * close() has run (before Robolectric's reset after Host.run, which puts the defaults back).
    */
   static synchronized void flush() {
     if (dir == null) return;

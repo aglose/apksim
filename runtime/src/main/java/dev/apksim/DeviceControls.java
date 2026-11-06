@@ -111,8 +111,8 @@ final class DeviceControls {
     if (appearance != null) overlayQualifiers(nightQualifier(appearance));
     String locale = System.getProperty("apksim.locale");
     if (locale != null) applyLocale(locale);
-    String fontScale = System.getProperty("apksim.fontScale");
-    if (fontScale != null) RuntimeEnvironment.setFontScale(Float.parseFloat(fontScale));
+    // --font-scale, else the last --setting system:font_scale (set before onCreate too, and reset since by setQualifiers).
+    SlotDevice.applyFontScale();
     SystemBars.launchOptions();
   }
 
