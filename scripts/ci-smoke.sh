@@ -1,6 +1,6 @@
 #!/bin/bash
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
-# channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
+# channel (switch to Trips, rename a trip in SQLite, check the list changed), and `--activity`. With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
 # (scripts/adb-check.py). Then the network check (scripts/network-check.sh), screenshot tests on a small matrix
 # (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught, and `apksim serve` in the
@@ -65,6 +65,27 @@ if [[ -n "$UISERVER" ]]; then
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
 drive quit >/dev/null || true
+
+# --activity: a non-exported activity started instead of the launcher one, kept by restart and process-death; back on
+# it ends the app. One the manifest lacks stops the launch with exit 2 and the manifest's activities.
+ACT_PORT=7402 ACT_NAME=$NAME-activity
+docker run -d --name "$ACT_NAME" --platform "$PLATFORM" -p "127.0.0.1:$ACT_PORT:$ACT_PORT" -v "$OUT:/work" "$IMAGE" \
+  --activity .TripChooserActivity --control "$ACT_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker logs "$ACT_NAME" > "$OUT/activity.log" 2>&1 || true
+  docker rm -f "$NAME" "$ACT_NAME" >/dev/null 2>&1 || true' EXIT
+act() { python3 "$ROOT/scripts/drive.py" "$ACT_PORT" "$@"; }
+for _ in $(seq 1 120); do act ping 2>/dev/null | grep -q pong && break; sleep 1; done
+started="$(act activity restart 'wait 1500' activity process-death 'wait 1500' activity | grep -c '^activity -> dev.apksim.composeapp.TripChooserActivity$' || true)"
+act back >/dev/null || true
+for _ in $(seq 1 30); do [[ "$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")" == false ]] && break; sleep 1; done
+running="$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")"
+code=0
+docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --activity .NoSuchActivity app.apk \
+  > "$OUT/activity-missing.log" 2>&1 || code=$?
+echo "--activity: started and kept $started of 3 times, running after back: $running, missing one: exit $code"
+[[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
+  || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
+
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
 

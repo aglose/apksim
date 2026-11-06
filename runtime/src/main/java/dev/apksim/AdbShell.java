@@ -1099,11 +1099,12 @@ final class AdbShell {
       }
       case "resolve-activity" -> {
         boolean brief = a.contains("--brief");
-        if (!a.get(a.size() - 1).equals(pkg)) {
+        // The launcher activity a device resolves, not --activity's: a home-only app has none.
+        String launcher = System.getProperty("apksim.launcher");
+        if (!a.get(a.size() - 1).equals(pkg) || launcher == null) {
           print("No activity found\n");
           return 1;
         }
-        String launcher = System.getProperty("apksim.launcher");
         if (brief) print("priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n" + pkg + "/" + launcher + "\n");
         else print("Activity Resolver Table:\n  " + pkg + "/" + launcher + "\n");
         return 0;
