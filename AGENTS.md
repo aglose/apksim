@@ -29,7 +29,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
-    loop turn draw, 150-400 frames a second on a video screen. A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    loop turn draw, 150-400 frames a second on a video screen. The first frame waits for the bottom window that is
+    shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
+    never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
@@ -189,7 +191,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
-`apksim://floating` a dialog-themed `FloatingActivity`. `snapshots/` has its screenshot-test specs
+`apksim://floating` a dialog-themed `FloatingActivity`; `--feature dev.apksim.testapp.launch_overlay` has its
+Application add an empty 0x0 overlay window before any activity (`ci-smoke.sh`: the first frame still comes). `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK

@@ -116,8 +116,10 @@ final class HwRenderer {
   void draw(List<View> roots, Placer placer) {
     long t0 = System.nanoTime();
     RecordingCanvas c = rootNode.beginRecording(width, height);
-    // An opaque first window covers everything, so clearing first would only waste a full-screen fill.
-    boolean covered = !roots.isEmpty() && roots.get(0).isOpaque() && roots.get(0).getWidth() >= width && roots.get(0).getHeight() >= height;
+    // An opaque first window covers everything, so clearing first would only waste a full-screen fill. The first one
+    // drawn: hidden and unsized windows below it (an app's empty overlay, a stopped activity's) draw nothing.
+    View first = roots.stream().filter(HwRenderer::drawn).findFirst().orElse(null);
+    boolean covered = first != null && first.isOpaque() && first.getWidth() >= width && first.getHeight() >= height;
     if (!covered) c.drawColor(0xff000000);
     for (View root : roots) {
       if (!drawn(root)) continue;
