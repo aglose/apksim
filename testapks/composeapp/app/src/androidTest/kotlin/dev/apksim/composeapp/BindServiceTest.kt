@@ -40,6 +40,36 @@ class BindServiceTest {
     assertEquals(0, connection.calls)
   }
 
+  /**
+   * A connection bound to one of the app's services, then refused a bind to a service nobody has: unbinding it still
+   * ends the binding that succeeded (onUnbind, and onDestroy as no binding is left), and the refusal calls nothing.
+   */
+  @Test
+  fun unbindingAfterARefusedBindStillEndsTheBindingThatSucceeded() {
+    NullBindingService.events.clear()
+    val connection = Recording()
+    val missing = Intent("com.example.companion.ACTION_BIND").setPackage("com.example.companion.notinstalled")
+    instrumentation.runOnMainSync {
+      assertTrue(context.bindService(Intent(context, NullBindingService::class.java), connection, Context.BIND_AUTO_CREATE))
+    }
+    waitFor { connection.calls == 1 }  // onNullBinding
+    instrumentation.runOnMainSync {
+      assertFalse(context.bindService(missing, connection, Context.BIND_AUTO_CREATE))
+      context.unbindService(connection)
+    }
+    waitFor { "destroy" in NullBindingService.events }
+    assertEquals(listOf("create", "bind", "unbind", "destroy"), NullBindingService.events.toList())
+    assertEquals(1, connection.calls)
+  }
+
+  private fun waitFor(condition: () -> Boolean) {
+    for (i in 0 until 100) {
+      instrumentation.waitForIdleSync()
+      if (condition()) return
+      Thread.sleep(10)
+    }
+  }
+
   /** A device keeps a refused connection's dispatcher, so unbinding it is allowed and calls nothing back either. */
   @Test
   fun unbindingARefusedConnectionCallsNothing() {

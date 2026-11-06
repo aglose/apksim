@@ -713,8 +713,12 @@ public final class TestActivities {
 
     @Override
     protected void unbindService(android.content.ServiceConnection connection) {
+      // A refused connection may also hold a binding that succeeded (the same connection bound before or after); that
+      // one is unbound as usual. Only a connection whose every bind was refused has nothing to call back.
+      boolean wasRefused = refused.remove(connection);
       if (!BoundServices.of(RuntimeEnvironment.getApplication()).unbind(connection)) {
-        if (refused.remove(connection)) return;  // its bind returned false: nothing to call back
+        List<android.content.ServiceConnection> robolectric = ReflectionHelpers.getField(this, "boundServiceConnections");
+        if (wasRefused && !robolectric.contains(connection)) return;  // its binds returned false: nothing to call back
         super.unbindService(connection);
         return;
       }
