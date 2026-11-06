@@ -47,9 +47,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     }
   }
 
-  /** Lists the decoders with MediaCodecList and Robolectric's codec table. Run once at startup. */
+  /**
+   * Lists the decoders with MediaCodecList and Robolectric's codec table. Run once at startup. Not the video ones with
+   * --video off, nor the audio ones with --audio off (Features): the app then sees a device without them.
+   */
   public static void install() {
-    if (VideoToolbox.available()) {
+    if (VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
       video(AVC_DECODER, MediaFormat.MIMETYPE_VIDEO_AVC, AVC, MediaCodecInfo.CodecProfileLevel.AVCLevel52,
           MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
           MediaCodecInfo.CodecProfileLevel.AVCProfileMain, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
@@ -118,10 +121,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   }
 
   /** Totals across codecs, for the `video` control command. */
-  static final java.util.concurrent.atomic.AtomicLongArray STATS = new java.util.concurrent.atomic.AtomicLongArray(13);
+  static final java.util.concurrent.atomic.AtomicLongArray STATS = new java.util.concurrent.atomic.AtomicLongArray(14);
 
   static final String[] STAT_NAMES = {"inputs", "pictures", "decodeErrors", "rendered", "dropped", "noSurface", "audioInputs",
-      "audioErrors", "pcmBytes", "decodeMs", "slowDecodes", "drawMs", "maxDecodeMs"};
+      "audioErrors", "pcmBytes", "decodeMs", "slowDecodes", "drawMs", "maxDecodeMs", "blank"};
 
   private static MediaCodecInfo.CodecProfileLevel level(int profile, int level) {
     MediaCodecInfo.CodecProfileLevel l = new MediaCodecInfo.CodecProfileLevel();
@@ -143,7 +146,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       Surface s = d.surface;
       SurfaceTexture t = VideoSurfaces.textureOf(s);
       int[] view = VideoSurfaces.viewSize(t);
-      b.append(" [").append(d.hevc ? "hevc" : "avc").append(" -> ")
+      b.append(" [").append(d.hevc ? "hevc" : "avc").append(d.blank ? " blank" : "").append(" -> ")
           .append(s == null ? "no surface" : t == null ? "untracked " + ReflectionHelpers.getField(s, "mName")
               : view == null ? "view not laid out" : view[0] + "x" + view[1]).append(']');
     }
@@ -326,6 +329,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private final Set<Long> pictures = new HashSet<>();
 
     private boolean drewOne;
+    /** --video blank when configured (Features): no session; each input gives an empty output with its timestamp. */
+    volatile boolean blank;
 
     private final ShadowSimMediaCodec codec;
 
@@ -341,6 +346,11 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       codec.sizeInputs(format);
       this.surface = surface;
       close();
+      blank = dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK;
+      if (blank) {
+        System.err.println("[apksim] MediaCodec " + name + ": video blank, nothing is decoded or drawn");
+        return;
+      }
       handle = VideoToolbox.create(hevc);
       // Parameter sets come in the format (Annex B: csd-0 and csd-1 for H.264, all three in csd-0 for HEVC) rather
       // than in the stream.
@@ -364,7 +374,15 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
      * (and at end of stream, where {@link #drain} hands out what is held).
      */
     long[] queue(ByteBuffer in, long pts, int flags) {
-      if (handle != 0 && in != null && in.remaining() > 0) {
+      if (blank && in != null && in.remaining() > 0) {
+        // An empty picture (0) for every input the player will look for an output of, in presentation order as below.
+        STATS.incrementAndGet(0);
+        if ((flags & (DECODE_ONLY | MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) == 0) {
+          STATS.incrementAndGet(13);
+          if (pts < lastOut) depth = Math.min(depth + 1, MAX_DEPTH);
+          held.add(new long[] {pts, 0});
+        }
+      } else if (handle != 0 && in != null && in.remaining() > 0) {
         STATS.incrementAndGet(0);
         long t0 = System.nanoTime();
         int r = decode(in);
@@ -389,8 +407,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       long[] first = held.poll();
       nextPicture = first[1];
       lastOut = Math.max(lastOut, first[0]);
-      synchronized (pictures) {
-        pictures.add(first[1]);
+      if (first[1] != 0) {
+        synchronized (pictures) {
+          pictures.add(first[1]);
+        }
       }
       return new long[] {first[0]};
     }
@@ -404,7 +424,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       List<long[]> all = new ArrayList<>();
       while (!held.isEmpty()) all.add(held.poll());
       synchronized (pictures) {
-        for (long[] p : all) pictures.add(p[1]);
+        for (long[] p : all) if (p[1] != 0) pictures.add(p[1]);
       }
       return all;
     }

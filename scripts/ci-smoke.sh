@@ -58,6 +58,18 @@ echo "Popup and Trace: $shown-> $tapped"
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+
+# A frame rate cap (maxfps, as --max-fps): the Shader tab animates without end, and draws no faster than the cap.
+cap=20
+drive "maxfps $cap" 'tap 720 1690' 'wait 1500' frames 'wait 3000' >/dev/null
+capped="$(drive frames)"
+drive 'maxfps 120' 'tap 130 1690' 'wait 1000' >/dev/null
+echo "Capped at $cap fps: $capped"
+python3 - "$capped" "$cap" <<'EOF'
+import re, sys
+m = re.search(r"frames=(\d+) avg=([\d.]+) fps", sys.argv[1])
+assert m and int(m.group(1)) > 0 and float(m.group(2)) <= int(sys.argv[2]) + 1, f"not capped: {sys.argv[1]}"
+EOF
 if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true

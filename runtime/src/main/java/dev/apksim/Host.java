@@ -54,7 +54,10 @@ import org.robolectric.util.ReflectionHelpers;
 public class Host {
   private static final long IDLE_POLL_NANOS = 2_000_000L;
   private static final long FRAME_NANOS = 1_000_000_000L / 120;
-  private static final long VSYNC_HZ = 120;
+  /** The frame grid's rate: 120 Hz, or what --max-fps / the maxfps command cap it at (Features). */
+  private static long gridHz() {
+    return Features.maxFps();
+  }
   private static final long MAX_CATCH_UP_MS = 50;
   private static final long VSYNC_SLACK_NANOS = 300_000L;
   /**
@@ -100,6 +103,7 @@ public class Host {
     Timing.mark("framework-ready");
     SimWindow.boostThread();
     RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
+    Features.load();
     DeviceControls.applyLaunchOptions();
     // By default Robolectric's vsync fires at once and advances the clock itself, which suits tests but
     // spins forever inside the looper on any endless animation. Paused mode fires only when the clock
@@ -114,6 +118,7 @@ public class Host {
     app = RuntimeEnvironment.getApplication();
     Timing.detail("got-application");
     useDeviceGestureThresholds(app);
+    DeviceControls.applyAnimScaleOption(app);
     HostNetworks.install(app);
     NetConnectivity.networksReplaced();  // --network-profile offline: the host's networks stay away until online
     dev.apksim.video.ShadowSimMediaCodec.install();
@@ -216,7 +221,7 @@ public class Host {
           stepMs = passed > nowMs ? passed - nowMs : 0;
           // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
           // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
-          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / VSYNC_HZ + 1 - nowMs;
+          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / gridHz() + 1 - nowMs;
         }
       }
       long looperStart = System.nanoTime();
@@ -391,15 +396,35 @@ public class Host {
     if (decor != null && decor.getViewRootImpl() != null && !decor.hasWindowFocus()) top.windowFocusChanged(true);
   }
 
-  /** The last line of the 120 Hz grid at or before this time. Lines fall on 8, 16, 25, 33... ms. */
+  /**
+   * The last line of the frame grid at or before this time. Line k falls on k * 1000 / hz ms, rounded down: at 120 Hz
+   * 8, 16, 25, 33... Rounding ms * hz / 1000 down is not its inverse (8 ms gives 0.96, line 0), and the loop used to
+   * take the line it stood on for the one before it: it waited for a line already passed and spun until the next,
+   * a core busy for as long as anything animated on the grid (headless, hidden windows, under a cap).
+   */
+  static long lineAtOrBefore(long ms, long hz) {
+    long k = ms * hz / 1000;
+    if ((k + 1) * 1000 / hz <= ms) k++;
+    return k * 1000 / hz;
+  }
+
   private static long lineAtOrBefore(long ms) {
-    return (ms * VSYNC_HZ / 1000) * 1000 / VSYNC_HZ;
+    return lineAtOrBefore(ms, gridHz());
+  }
+
+  /** The first line of the frame grid after this time. */
+  static long lineAfter(long ms, long hz) {
+    long k = ms * hz / 1000 + 1;
+    if (k * 1000 / hz <= ms) k++;
+    return k * 1000 / hz;
   }
 
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced) {
     long wait = IDLE_POLL_NANOS;
-    long untilVsync = FOLLOW_DISPLAY && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
+    // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
+    long hz = gridHz();
+    long untilVsync = FOLLOW_DISPLAY && hz >= 120 && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
     if (untilVsync >= 0) {
       // Just after the vsync, so the frame is ready well before the next one, where the screen shows it.
       long now = System.nanoTime();
@@ -408,7 +433,7 @@ public class Host {
     } else if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
       frameAtNanos = 0;
       long nowMs = SystemClock.uptimeMillis();
-      long nextLine = (nowMs * VSYNC_HZ / 1000 + 1) * 1000 / VSYNC_HZ + 1;
+      long nextLine = lineAfter(nowMs, hz) + 1;
       wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
     }
     if (wait > 50_000L) LockSupport.parkNanos(wait);
@@ -1036,7 +1061,11 @@ public class Host {
         return "ok";
       }
       case "video" -> {
-        return dev.apksim.video.VideoSurfaces.report();
+        // video: decode and draw counts; video on|blank: the mode codecs configured from now on take (Features).
+        return a.length > 1 ? Features.videoCommand(a[1]) : Features.describe() + " | " + dev.apksim.video.VideoSurfaces.report();
+      }
+      case "maxfps" -> {
+        return Features.maxFpsCommand(a);
       }
       case "webrtclog" -> {
         // libwebrtc's own log (ICE, networks, codecs) to stderr: webrtclog [verbose|info|warning|error].

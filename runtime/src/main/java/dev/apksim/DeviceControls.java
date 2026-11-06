@@ -339,6 +339,24 @@ final class DeviceControls {
 
   /** Handles a control command, or returns null if it is not one of these. */
   /** The animator duration scale, as the system sets it: ValueAnimator's for Views, the global setting for Compose. */
+  /**
+   * --anim-scale N: the animator duration scale from the start (0: animations jump to their end, so they draw no
+   * frames). Host runs it before the first activity, and test runs at each test's setup (Robolectric resets the scale
+   * and the settings between tests).
+   */
+  static void applyAnimScaleOption(Application app) {
+    String v = System.getProperty("apksim.animScale");
+    if (v == null || v.isEmpty()) return;
+    float scale;
+    try {
+      scale = Float.parseFloat(v);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("anim scale: " + v + " (a number: 0 off, 1 normal, 10 slow)");
+    }
+    if (scale < 0) throw new IllegalArgumentException("anim scale: " + v + " (0 or more)");
+    setAnimatorScale(app, scale);
+  }
+
   static void setAnimatorScale(Application app, float scale) {
     ValueAnimator.setDurationScale(scale);
     Settings.Global.putFloat(app.getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, scale);
