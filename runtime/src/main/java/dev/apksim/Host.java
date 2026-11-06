@@ -236,7 +236,7 @@ public class Host {
       if (stack.isEmpty()) break;
       if (Snapshot.ON) focusTopWindow();
       List<View> roots = rootViews();
-      if (!controls.hidden() && (firstFrame ? laidOut(roots) : anyDirty(roots))) {
+      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
         render(roots);
         if (firstFrame) {
           firstFrame = false;
@@ -312,8 +312,9 @@ public class Host {
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
     if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
+    if (needsFrame(roots)) return "a window needs drawing";
     for (View r : roots) {
-      if (r.isDirty() || r.isLayoutRequested()) return "a window needs drawing (" + r.getClass().getSimpleName() + ")";
+      if (HwRenderer.drawn(r) && r.isLayoutRequested()) return "a window needs layout (" + r.getClass().getSimpleName() + ")";
     }
     if (!looper.isIdle()) return "the main looper has messages due";
     String due = dueMessage(SystemClock.uptimeMillis() + settle.horizonMs);
@@ -820,12 +821,24 @@ public class Host {
     return !roots.isEmpty() && roots.get(0).getWidth() > 0 && !roots.get(0).isLayoutRequested();
   }
 
-  private static boolean anyDirty(List<View> roots) {
+  /**
+   * Whether the screen needs a new frame: a window that is drawn has changed, or the windows drawn are not those of
+   * the last frame (one was added, removed, shown or hidden). Hidden windows do not count: HwRenderer skips them, so
+   * nothing clears their dirty flags, and a window below the top activity that was invalidated after it was hidden (a
+   * video screen's: its status bar background) made every loop turn draw a frame, 150-400 a second, no vsync waited for.
+   */
+  private boolean needsFrame(List<View> roots) {
+    int n = 0;
     for (View r : roots) {
-      if (r.isDirty()) return true;
+      if (!HwRenderer.drawn(r)) continue;
+      if (r.isDirty() || n >= lastDrawn.size() || lastDrawn.get(n) != r) return true;
+      n++;
     }
-    return false;
+    return n != lastDrawn.size();
   }
+
+  /** The windows the last frame drew, bottom to top. */
+  private List<View> lastDrawn = List.of();
 
   /** Where a window sits on screen, from its layout params (the window manager's job on a device). */
   private int[] position(View root) {
@@ -843,6 +856,7 @@ public class Host {
   }
 
   private void render(List<View> roots) {
+    lastDrawn = roots.stream().filter(HwRenderer::drawn).toList();
     hw.draw(roots, this::position);
     frames++;
   }
