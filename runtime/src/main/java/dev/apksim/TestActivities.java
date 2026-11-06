@@ -310,7 +310,10 @@ public final class TestActivities {
     Activity top = left.get(left.size() - 1);
     ActivityController<?> below = controller(top);
     if (below == null || top.isResumed()) return;
-    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) below.restart();
+    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) {
+      Host.setWindowVisible(top, true);
+      below.restart();
+    }
     below.resume();
   }
 
@@ -494,6 +497,7 @@ public final class TestActivities {
     protected void callApplicationOnCreate(android.app.Application app) {
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
+      DeviceIdentity.apply(app);  // --serial, --feature: in running instances too
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
             "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
@@ -669,7 +673,12 @@ public final class TestActivities {
       Intent start = new Intent(intent);
       if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
       org.robolectric.Robolectric.buildActivity(cls, start).setup();
-      if (below != null && !top.isFinishing() && !top.isDestroyed()) below.stop();
+      if (below != null && !top.isFinishing() && !top.isDestroyed()) {
+        below.stop();
+        // As ActivityThread (and Host): a stopped activity's window is hidden, so UiAutomator and the traversal's draw
+        // see only the top one, as on a device.
+        Host.setWindowVisible(top, false);
+      }
     } catch (ReflectiveOperationException | LinkageError e) {
       // No such class: on a device the start fails in the app's own call.
       throw new IllegalStateException("starting " + info.name + ": " + e, e);
@@ -733,7 +742,10 @@ public final class TestActivities {
         c.newIntent(intent);
         c.resume();
       } else {
-        if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) c.restart();
+        if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) {
+          Host.setWindowVisible(existing, true);
+          c.restart();
+        }
         c.newIntent(intent);
         c.resume();
       }

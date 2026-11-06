@@ -93,6 +93,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
     --mock-maker) EXTRA+=("-Dapksim.mockMaker=$2"); shift 2 ;;
+    # What the device says it is: Build.getSerial(), and PackageManager.hasSystemFeature (repeatable; NAME=false
+    # takes one away; hardware.X and software.X are short for android.hardware.X and android.software.X).
+    --serial) EXTRA+=("-Dapksim.serial=$2"); shift 2 ;;
+    --feature) FEATURES="${FEATURES:+$FEATURES,}$2"; shift 2 ;;
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
@@ -147,6 +151,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
   esac
 done
 [[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
+[[ -n "${FEATURES:-}" ]] && EXTRA+=("-Dapksim.features=$FEATURES")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
 if [[ -n "${BUNDLES:-}" ]]; then
   IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
@@ -165,7 +170,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).

@@ -136,6 +136,8 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Device state | `--permissions ask\|grant\|deny` | Runtime permission prompts; `grant` is like `adb install -g` |
 | | `--biometrics enrolled` | Start with a fingerprint enrolled |
 | | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
+| | `--serial VALUE` | What `Build.getSerial()` (and `getprop ro.serialno`) answers; otherwise `unknown`, as an ordinary app sees on a device |
+| | `--feature NAME[=false]` | Add a system feature for `PackageManager.hasSystemFeature`, or take one away; repeatable. `hardware.X` and `software.X` are short for `android.hardware.X` and `android.software.X` |
 | | `--fresh` | Erase the app's data first, as if just installed |
 | Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
@@ -205,7 +207,7 @@ state folder.
 
 | Group | Commands |
 |---|---|
-| Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste` |
+| Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste`, `drain` (answers once the input queued before it has been dispatched) |
 | Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `config` |
 | Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
@@ -213,7 +215,7 @@ state folder.
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
-| Inspection | `activity`, `windows`, `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
+| Inspection | `activity`, `windows` (each with its activity and lifecycle state), `viewtree [FILE]` (every view: class, id, position, size, visibility, alpha, translation, scale, click listener), `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video`, `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
@@ -239,9 +241,9 @@ The instance appears in `adb devices` as `apksim_phone`. It speaks adb's transpo
 tools work against it.
 
 **Supported:**
-- **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`.
+- **Input and screen:** `input tap|swipe|text|keyevent` (each returns once its events are in, as on a device: `input swipe X Y X Y 1500` is a 1.5 s press and hold), `screencap`.
 - **App control:** `am start` (including deep links), `am broadcast` (with its result), `am instrument` of an instrumentation that targets its own package, `monkey`.
-- **Packages and settings:** `pm list|path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
+- **Packages and settings:** `pm list|path|grant|revoke` (`pm list features` is what `hasSystemFeature` answers), `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
 - **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`.
 - **Logs and forwarding:** `logcat` (with filters), `adb forward` to a `LocalServerSocket`.
 - **Anything else:** `adb shell apksim CMD` runs any [control command](#automation).

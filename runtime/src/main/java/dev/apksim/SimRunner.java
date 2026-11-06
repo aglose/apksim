@@ -363,6 +363,7 @@ public class SimRunner extends RobolectricTestRunner {
   protected Class<?>[] getExtraShadows(FrameworkMethod method) {
     List<Class<?>> shadows = new ArrayList<>(java.util.Arrays.asList(baseShadows()));
     if (RealTimeClock.requested()) {  // --realtime-clock
+      shadows.remove(ShadowSimSystemClock.class);  // one shadow per class: RealTimeClock's sleeps in real time too
       shadows.add(RealTimeClock.ShadowRealTimeSystemClock.class);
       shadows.add(RealTimeClock.ShadowRealTimeDisplayEventReceiver.class);
     }
@@ -371,7 +372,7 @@ public class SimRunner extends RobolectricTestRunner {
   }
 
   private static Class<?>[] baseShadows() {
-    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimSurfaceView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class};
+    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimSurfaceView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class, ShadowSimSystemClock.class};
   }
 
   @Override

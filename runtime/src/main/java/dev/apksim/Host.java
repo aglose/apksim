@@ -184,6 +184,11 @@ public class Host {
           settle = next;
           continue;
         }
+        if (cmd.args[0].equals("drain")) {
+          // Answered from the loop once every queued scripted event has been dispatched (see drained).
+          drains.add(cmd);
+          continue;
+        }
         String reply;
         try {
           reply = runCommand(cmd.args);
@@ -245,6 +250,11 @@ public class Host {
           }
         }
       }
+      if (!drains.isEmpty() && pendingScript.isEmpty()) {
+        // The last queued event and what the looper ran for it are done, and the frame it caused drawn.
+        for (Control.Pending d : drains) d.finish("ok");
+        drains.clear();
+      }
       if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
       if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
     }
@@ -252,6 +262,12 @@ public class Host {
   }
 
   // ---------------------------------------------------------------- settle: the idle signal for screenshots
+
+  /**
+   * `drain`: commands answered once the scripted input queued before them (tap, swipe, type, key, pinch) has all been
+   * dispatched, as a device's `input` command returns only once its gesture is injected. Main thread only.
+   */
+  private final List<Control.Pending> drains = new ArrayList<>();
 
   /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */
   private Settle settle;
@@ -455,10 +471,22 @@ public class Host {
    * removed. Robolectric's controller leaves it visible, so every activity below the top was drawn each frame: a
    * large app 4 activities deep drew at 3 fps.
    */
-  private static void setWindowVisible(Activity a, boolean visible) {
+  static void setWindowVisible(Activity a, boolean visible) {
     android.view.Window w = a.getWindow();
     View decor = w == null ? null : w.peekDecorView();
     if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+  }
+
+  /**
+   * An activity coming back to the top whose window was never added: one rebuilt below the top by a configuration
+   * change (`recreate`, appearance, locale, device) or `process-death`, which Robolectric creates, starts and stops
+   * without making visible. ActivityThread adds the window on its first resume (makeVisible); here, returning to it
+   * showed nothing at all.
+   */
+  static void attachWindow(ActivityController<? extends Activity> c) {
+    android.view.Window w = c.get().getWindow();
+    View decor = w == null ? null : w.peekDecorView();
+    if (decor == null || decor.getViewRootImpl() == null) c.visible();
   }
 
   /**
@@ -515,6 +543,7 @@ public class Host {
       if (below != null) {
         setWindowVisible(below.get(), true);
         below.restart().resume();
+        attachWindow(below);
       }
     }
     // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
@@ -813,6 +842,9 @@ public class Host {
         pendingScript.add(new SimWindow.Event(SimWindow.DOWN, x, y, 0));
         pendingScript.add(new SimWindow.Event(SimWindow.UP, x, y, 0));
       }
+      case "drain" -> {
+        // From the main thread itself (runOnMain) there is no loop turn to wait for: the input runs after this returns.
+      }
       case "swipe" -> {
         float x1 = Float.parseFloat(a[1]);
         float y1 = Float.parseFloat(a[2]);
@@ -910,7 +942,8 @@ public class Host {
         StringBuilder b = new StringBuilder();
         for (View r : rootViews()) {
           int[] at = position(r);
-          b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
+          // With the owner: the activity and its lifecycle flags (a stopped or finished one's window should be hidden).
+          b.append(ViewTree.window(r)).append(" @").append(at[0]).append(',').append(at[1])
               .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "")
               .append(r.getVisibility() == View.VISIBLE ? "" : r.getVisibility() == View.INVISIBLE ? " invisible" : " gone").append("; ");
         }
@@ -941,6 +974,9 @@ public class Host {
       }
       case "nodes" -> {
         return Nodes.dump(rootViews());
+      }
+      case "viewtree" -> {
+        return ViewTree.run(rootViews(), a);
       }
       case "logcat" -> {
         // logcat on|off: the app's android.util.Log output to this process's stderr (Robolectric drops it otherwise).

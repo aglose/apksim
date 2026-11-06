@@ -110,6 +110,19 @@ def main():
             time.sleep(0.3)
         else:
             fail(f"the tap through UiAutomation did not reach the app (wanted {want!r}): {texts}")
+        # A press and hold, as `adb shell input swipe X Y X Y MS` gives one: as on a device the command returns only
+        # once the finger has lifted, so the click has happened by then (it used to return at once, mid-hold).
+        held = int(want.split(": ")[1])
+        start = time.time()
+        adb(serial, "shell", "input", "swipe", "733", "1533", "733", "1533", "1500")
+        took = time.time() - start
+        if took < 1.4:
+            fail(f"input swipe with a 1500 ms hold returned after {took:.2f} s, before the finger lifted")
+        deadline = time.time() + 3  # the click is in; its recomposition waits for the next frame (slow under Rosetta)
+        while f"FAB clicks: {held + 1}" not in (texts := request(port, "texts")) and time.time() < deadline:
+            time.sleep(0.05)
+        if f"FAB clicks: {held + 1}" not in texts:
+            fail(f"the hold had not released when input swipe returned (wanted FAB clicks: {held + 1}): {texts}")
         if request(port, "finish") != "ok":
             fail("finish was not answered")
     finally:
@@ -118,7 +131,7 @@ def main():
     time.sleep(1)
     if "Success" not in adb(serial, "uninstall", PKG, check=False):
         fail("adb uninstall failed")
-    print("adb check passed: install, am instrument, am broadcast, forward to a local socket, UiAutomation read and tap")
+    print("adb check passed: install, am instrument, am broadcast, forward to a local socket, UiAutomation read and tap, input swipe hold")
 
 
 if __name__ == "__main__":

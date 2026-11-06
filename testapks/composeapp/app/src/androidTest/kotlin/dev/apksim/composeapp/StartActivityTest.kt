@@ -1,6 +1,7 @@
 package dev.apksim.composeapp
 
 import android.content.Intent
+import android.view.View
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -28,6 +29,8 @@ class StartActivityTest {
       assertEquals("main", SecondActivity.createdWith)
       assertTrue(SecondActivity.resumed)
       assertEquals(Lifecycle.State.CREATED, scenario.state)
+      // As ActivityThread on stop: the stopped activity's window is hidden (UiAutomator and drawing skip it).
+      scenario.onActivity { assertEquals(View.INVISIBLE, it.window.decorView.visibility) }
     }
   }
 

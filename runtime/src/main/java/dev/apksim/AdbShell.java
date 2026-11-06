@@ -480,8 +480,10 @@ final class AdbShell {
     p.put("ro.product.cpu.abilist64", HostOs.apkAbi());
     p.put("ro.build.characteristics", d.characteristics());
     p.put("ro.sf.lcd_density", String.valueOf(Math.round(d.density() * 160)));
-    p.put("ro.serialno", "apksim-" + AdbServer.port);
-    p.put("ro.boot.serialno", "apksim-" + AdbServer.port);
+    // --serial: what Build.getSerial() answers, as on a device.
+    String serial = System.getProperty("apksim.serial", "");
+    p.put("ro.serialno", serial.isEmpty() ? "apksim-" + AdbServer.port : serial);
+    p.put("ro.boot.serialno", serial.isEmpty() ? "apksim-" + AdbServer.port : serial);
     p.put("ro.debuggable", "1");
     p.put("ro.secure", "0");
     p.put("ro.adb.secure", "0");
@@ -495,8 +497,19 @@ final class AdbShell {
     return p;
   }
 
-  // input tap|swipe|text|keyevent: through the control commands, so they queue with the rest of the scripted input.
+  // input tap|swipe|text|keyevent: through the control commands, so they queue with the rest of the scripted input. As
+  // a device's `input` does, it returns once its events are dispatched: `input swipe X Y X Y 1500` (a press and hold)
+  // takes its 1.5 s, and a screencap after it sees the press released.
   private int input(List<String> a) throws Exception {
+    int status = inputQueued(a);
+    if (status == 0 && !TestActivities.testRun()) {
+      String r = control("drain");
+      if (!r.equals("ok")) return reply(r, false);
+    }
+    return status;
+  }
+
+  private int inputQueued(List<String> a) throws Exception {
     int i = 0;
     if (i < a.size() && a.get(i).matches("touchscreen|touchpad|touchnavigation|mouse|keyboard|stylus|trackball|dpad|gamepad|joystick|rotaryencoder")) i++;
     if (i + 1 < a.size() && a.get(i).equals("-d")) i += 2;
@@ -933,7 +946,24 @@ final class AdbShell {
           print("Users:\n\tUserInfo{0:Owner:c13} running\n");
           return 0;
         }
-        if (what.equals("features") || what.equals("libraries") || what.equals("permissions") || what.equals("instrumentation")) return 0;
+        if (what.equals("features")) {
+          // What hasSystemFeature answers: Robolectric keeps it apart from getSystemAvailableFeatures (empty by
+          // default), in ShadowPackageManager's map that --feature sets.
+          List<String> names = onMain(() -> {
+            java.util.Set<String> out = new java.util.TreeSet<>();
+            android.content.pm.FeatureInfo[] available = app().getPackageManager().getSystemAvailableFeatures();
+            if (available != null) for (android.content.pm.FeatureInfo f : available) if (f.name != null) out.add(f.name);
+            java.util.Map<String, Boolean> set = org.robolectric.util.ReflectionHelpers.getStaticField(
+                org.robolectric.shadows.ShadowPackageManager.class, "systemFeatureList");
+            set.forEach((name, on) -> {
+              if (on) out.add(name); else out.remove(name);
+            });
+            return new ArrayList<>(out);
+          });
+          for (String n : names) print("feature:" + n + "\n");
+          return 0;
+        }
+        if (what.equals("libraries") || what.equals("permissions") || what.equals("instrumentation")) return 0;
         print("Error: unknown list type '" + what + "'\n");
         return 1;
       }

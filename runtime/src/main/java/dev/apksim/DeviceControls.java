@@ -605,6 +605,9 @@ final class DeviceControls {
     if (top == null) return "no activity";
     if (why.equals("home")) top.userLeaving();
     top.pause().stop();
+    // As ActivityThread on stop: the window is hidden, so its views see the visibility change (a SurfaceView gives up
+    // its surface, a video pauses on it). Nothing is drawn while hidden either way.
+    Host.setWindowVisible(top.get(), false);
     if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
     hiddenBy = why;
     SimWindow.present(placeholder(why));
@@ -617,7 +620,9 @@ final class DeviceControls {
     hiddenBy = null;
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) {
+      Host.setWindowVisible(top.get(), true);
       top.restart().resume();
+      Host.attachWindow(top);  // rebuilt by process-death while hidden: never shown yet
       top.get().getWindow().getDecorView().invalidate();
     }
     return "ok";

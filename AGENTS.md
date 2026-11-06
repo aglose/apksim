@@ -131,7 +131,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `clock-check.py` (timers keep
+  wall time with SystemClock.sleep polling, and every input path reaches onUserInteraction: ~2 minutes), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -176,7 +177,11 @@ repo): read it before working with that app.
 
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
-`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
+`paste`, `drain` (answers once the input queued before it has been dispatched: adb's `input` waits on it), `shot
+file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows` (each with its
+activity and lifecycle flags: resumed, stopped, finished, destroyed), `viewtree [FILE]` (every view of every window:
+class, id, screen position, size, visibility, alpha, translation, scale, click listener; one line, or with FILE one
+view per line; it found alpha-0 views and a SurfaceView inside a Compose AndroidView that `nodes` cannot show),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
@@ -202,7 +207,8 @@ window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|r
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `recreate` (as a configuration change: ViewModels kept),
 `process-death` (state saved, activities destroyed and rebuilt from it; statics and the Application survive, so this
-tests state saving, not a cold start), `debug layout on|off|toggle` (Show layout bounds, Views and Compose; minified
+tests state saving, not a cold start; activities below the top are rebuilt stopped, without a window, which `Host.attachWindow`
+adds when one comes back to the top, as recreate's are), `debug layout on|off|toggle` (Show layout bounds, Views and Compose; minified
 Compose apps need a `recreate`), `a11y [show]` (unlabeled controls, touch targets under 48 dp), `pick FILE...|cancel`
 (answers a document/photo picker). Activities started for a result now get one (`ActivityResults`): an in-app
 activity's setResult when it finishes; OPEN_DOCUMENT/GET_CONTENT/PICK/PICK_IMAGES open the Mac file panel (sheet;
@@ -261,7 +267,9 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--biometrics enrolled`, `--serial VALUE` and `--feature NAME[=false]` (repeatable: `DeviceIdentity`, before
+Application.onCreate and each test's; Build.getSerial is otherwise "unknown", as for an ordinary app on a device; `adb
+shell getprop ro.serialno` and `pm list features` follow them), `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
@@ -275,6 +283,8 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://clock?seconds=60[&sleeper=1]` opens `ClockCheckActivity`: a CountDownTimer restarted from onUserInteraction,
+with the wall time it took, and optionally a thread polling with SystemClock.sleep (`scripts/clock-check.py`).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -418,7 +428,8 @@ quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.
 `Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
 the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
-back/home/lock/unlock), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+back/home/lock/unlock; each returns once its events are dispatched (`drain`), as a device's `input` does: it returned
+at once, so `input swipe X Y X Y 1500` looked like a press that never released to whatever came next), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
@@ -577,7 +588,9 @@ setOrientation* as a real configuration change, waitForIdle advancing the simula
 UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
-to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
+to the background, finish() pauses/stops/destroys and resumes the one below (an activity
+stopped under a new one, `--start-activities`, has its window hidden until it restarts, as ActivityThread does, so
+UiAutomator sees only the top one; ActivityScenario's own moveToState is Robolectric's and leaves it shown), and a start for a running
 singleTask/singleTop activity is delivered to its onNewIntent. More of a device's behaviour that a test run needs
 (each found by a suite that passed on the emulator and failed here):
 - Compose's test clock posts to the UI thread behind what is queued there on a device; here the test is on the main
@@ -794,6 +807,11 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   `work/lib` through `$TMPDIR/apksim-<hash>`.
 - Robolectric's looper clock has **1 ms resolution and drops fractions**. Always advance by whole ms (see
   `Host.run`).
+- **Nothing but the Host loop may move the clock in a running instance.** Robolectric's SystemClock.sleep adds its time
+  to the clock at once, for any thread: a library polling with SystemClock.sleep(100) spun and ran the clock ahead of
+  real time (a 60 s CountDownTimer finished after 0 s of wall time, elapsedRealtime 4,600 s on), so a 10-minute
+  inactivity timer fired in ~30 s. `ShadowSimSystemClock` sleeps in real time outside test runs; check new shadows and
+  waits with `scripts/clock-check.py`.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
   animations.
