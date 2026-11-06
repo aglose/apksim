@@ -217,7 +217,7 @@ state folder.
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
-| Inspection | `activity`, `windows`, `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
+| Inspection | `activity`, `windows` (each window, its activity and lifecycle state), `viewtree [FILE]` (every view of every window, with ids and screen bounds), `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video`, `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
@@ -458,6 +458,7 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.classCache=false` | Don't reuse translated classes from earlier launches |
 | `-Dapksim.cpuLayerEffects=true` | Run layer shader effects on the CPU, as HWUI does (for comparisons) |
 | `-Dapksim.gpuBitmaps=false` | Resample scaled bitmaps on the CPU |
+| `-Dapksim.videoAtViewSize=false` | Keep decoded video at the picture's size when the view is bigger, instead of scaling it on VideoToolbox |
 | `-Dapksim.mute=true` | Keep audio timing, but play silence |
 | `-Dapksim.audio=false` | Turn off sound and the audio decoders |
 | `-Dapksim.runnerApplication=false` | In test runs, ignore the runner's `newApplication` |
@@ -511,7 +512,7 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
 - **One API level:** everything runs as API 36, whatever the app targets.
 - **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
-- **Test runs are Robolectric-style:** the test body runs on the main thread, so `runBlocking { delay() }` on the test thread freezes the app, and accessibility events aren't sent.
+- **Test runs are Robolectric-style:** the test body runs on the main thread. A `runBlocking` or `Thread.sleep` there runs the main queue while it waits, as the device's main thread would beside the test thread, but accessibility events aren't sent.
 - **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
 - **Security:** an APK runs as code in this process. `sandbox-exec` confines it: inside your home folder it can write only to apksim's state folder, and it can't read `~/.ssh`, `~/Documents`, `~/Desktop`, keychains, browser data or similar. Apple has deprecated `sandbox-exec`, and the sandbox is a safeguard for your own apps, not a boundary for hostile ones.
 
@@ -533,8 +534,11 @@ This needs the Xcode command-line tools (`xcode-select --install`).
 
 Changes reach `main` through pull requests, and each needs the `linux-smoke` check to pass. That check builds the
 Linux image and runs the test app headless, its androidTest suite in both clock modes, the DEX translator check and a
-privacy check. CI can't cover the Mac-only parts (the window, Metal, launch timings), so say in the PR what you
-checked locally. [AGENTS.md](AGENTS.md) is the full guide to building, running and measuring.
+privacy check; `linux-smoke-arm64` runs the smoke test and the suite in the arm64 image. On an Apple Silicon runner, `startup-gate`
+fails a pull request whose launches are slower than their budget against a fixed release
+([docs/startup-gate.md](docs/startup-gate.md)). CI can't cover the other Mac-only parts (the window, Metal,
+VideoToolbox), so say in the PR what you checked locally. [AGENTS.md](AGENTS.md) is the full guide to building,
+running and measuring.
 
 `scripts/package-release.sh VERSION` packages a release. Pushing a `v*` tag builds it and makes a draft release, and
 publishing the draft updates the Homebrew tap and the image.
