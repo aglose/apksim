@@ -342,6 +342,7 @@ public final class TestActivities {
     @Implementation
     @Override
     protected void finish() {
+      Bundles.finishing(realActivity);  // a failure bundle's tree, while this activity's windows are still there
       super.finish();
       if (testRun()) {
         Activity a = realActivity;

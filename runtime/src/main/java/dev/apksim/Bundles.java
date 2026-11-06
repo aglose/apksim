@@ -46,7 +46,8 @@ import org.robolectric.util.ReflectionHelpers;
  * runner), and the Timeout watchdog writes what it can before it ends the process ({@link #watchdog}).
  *
  * <p>A capture must not change the result or the state it shows: every part has its own try/catch, the test's own
- * Throwable is the one reported, and nothing here runs the main queue, moves the clock or asks for a frame.
+ * Throwable is the one reported, and nothing here runs the main queue, moves the clock or asks for a frame. Nor does it
+ * read the accessibility tree while the test may still go on with that screen ({@link #nodesPending}).
  */
 public final class Bundles {
   private Bundles() {}
@@ -85,6 +86,22 @@ public final class Bundles {
   private static Throwable writtenFor;
   /** What Espresso's handler threw for it (its own, friendlier exception): the same failure when it leaves the body. */
   private static volatile Throwable writtenAlias;
+  /**
+   * Its nodes.txt is still to be read ({@link #pendingNodes}): it was captured in Espresso's failure handler, and
+   * the test may handle that failure and go on. Reading the tree is not side-effect free: Compose's node provider adds
+   * a child view to the AndroidComposeView (its AndroidViewsHandler) and builds its accessibility caches, and a test
+   * that went on with that screen behaved differently (issue #73). So it is read once the screen cannot matter to the
+   * test any more: when the failure leaves the test body, as an activity finishes (its own windows), or at the end.
+   */
+  private static boolean nodesPending;
+  /**
+   * The windows the capture saw whose trees are still to be read, bottom to top. An activity finishing reads only its
+   * own (another visible below it, a dialog-themed activity over one, a --start-activities stack, stays in use), the
+   * body's end or the listener the rest; each read is appended to nodes.txt with where it came from.
+   */
+  private static final List<View> pendingRoots = new ArrayList<>();
+  /** nodes.txt holds at least one read (not the placeholder): later reads are appended. */
+  private static boolean nodesStarted;
   private static int full;
   /** Parts that ran past their deadline once: skipped in later bundles of this process. */
   private static final java.util.Set<String> TIMED_OUT = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -114,6 +131,8 @@ public final class Bundles {
     try {
       current = d;
       written = null;
+      nodesPending = false;
+      pendingRoots.clear();
       testsBefore++;
       markLog();
     } finally {
@@ -160,6 +179,9 @@ public final class Bundles {
             // Espresso's handler captured a failure the test then handled (caught, or its own handler swallowed it),
             // and a different one ended the body: the bundle describes this one, with a new screen if there still is one.
             refresh("test body (an earlier failure was handled)", t, true);
+          } else {
+            // Espresso's handler captured this failure, and it ended the body: the tree can be read now.
+            pendingNodes("as the failure left the test body", null);
           }
           throw t;
         }
@@ -197,6 +219,8 @@ public final class Bundles {
         if (!has) return;
         written = null;
         writtenFor = null;
+        nodesPending = false;
+        pendingRoots.clear();
         if (writtenFull) full--;
         writtenFull = false;
         try {
@@ -214,6 +238,7 @@ public final class Bundles {
         capture("listener (passed: what the body threw was expected or handled; screen and tree from then)", null, false, false);
         writtenPassed = true;
       }
+      pendingNodes("after the test's teardown", null);
     } finally {
       LOCK.unlock();
     }
@@ -274,7 +299,14 @@ public final class Bundles {
             }
             boolean captured = false;
             if (m.getName().equals("handle") && args != null && args.length > 0 && args[0] instanceof Throwable t && written == null) {
-              locked("Espresso failure handler", t, false);
+              // The test may handle this failure and go on (a poll that retries): the tree is read later.
+              LOCK.lock();
+              try {
+                capture("Espresso failure handler", t, true, true, false);
+                writtenPassed = false;
+              } finally {
+                LOCK.unlock();
+              }
               captured = true;
             }
             try {
@@ -309,6 +341,7 @@ public final class Bundles {
           capture("listener (after the test's teardown; screen and tree from the earlier capture)", t, false, false);
           writtenPassed = false;
         }
+        pendingNodes("after the test's teardown", null);
         return;
       }
       if (!d.equals(current)) {
@@ -379,6 +412,11 @@ public final class Bundles {
    * run's files must not pass for this one's); otherwise the current bundle's failure, log and threads are rewritten.
    */
   private static void capture(String point, Throwable t, boolean screen, boolean fresh) {
+    capture(point, t, screen, fresh, true);
+  }
+
+  /** [tree]: with [screen], read nodes.txt now; otherwise it waits ({@link #nodesPending}). */
+  private static void capture(String point, Throwable t, boolean screen, boolean fresh, boolean tree) {
     Description d = current;
     if (d == null) return;
     long t0 = System.nanoTime();
@@ -412,7 +450,20 @@ public final class Bundles {
         } else if (screen) {
           part(parts, "screen.png", () -> screen(dir.resolve("screen.png")));
           part(parts, "windows.txt", () -> write(dir.resolve("windows.txt"), windows()));
-          part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact(nodes())));
+          if (tree) {
+            nodesPending = false;
+            pendingRoots.clear();
+            part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact(nodes(rootsOf(visibleWindows())))));
+          } else {
+            pendingRoots.clear();
+            pendingRoots.addAll(rootsOf(safeWindows()));
+            nodesPending = true;
+            nodesStarted = false;
+            String later = "read later: when the failure leaves the test body, as an activity finishes, or after the test's"
+                + " teardown (reading the tree changes a Compose screen, and the test may handle this failure and go on)";
+            part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), "not read yet: " + later + "\n"));
+            parts.append("  (nodes.txt is a placeholder, ").append(later).append(")\n");
+          }
           part(parts, "looper.txt", () -> write(dir.resolve("looper.txt"), looper()));
         }
         part(parts, "logcat.txt", () -> write(dir.resolve("logcat.txt"), redact(logcat())));
@@ -689,11 +740,83 @@ public final class Bundles {
     }
   }
 
-  private static String nodes() {
+  private static List<View> rootsOf(List<Win> wins) {
     List<View> roots = new ArrayList<>();
-    for (Win w : visibleWindows()) roots.add(w.view);
+    for (Win w : wins) roots.add(w.view);
+    return roots;
+  }
+
+  /** The tree of [roots]. */
+  private static String nodes(List<View> roots) {
     String s = Nodes.dump(roots).replace("; ", "\n");
     return s.isEmpty() ? "no nodes with text, a description or an action\n" : s;
+  }
+
+  /**
+   * Reads what is left of the current bundle's pending nodes.txt ({@link #nodesPending}, {@link #pendingRoots})
+   * [when]: [finishing]'s windows, or with null every captured window still pending. Each read is appended to
+   * nodes.txt (the first replaces the placeholder) under a line saying when and from which windows, and to
+   * failure.txt's parts. A captured window no longer shown is left out. On the main thread only (the views are read);
+   * LOCK is held or taken.
+   */
+  private static void pendingNodes(String when, Activity finishing) {
+    if (!nodesPending || Looper.myLooper() != Looper.getMainLooper()) return;
+    LOCK.lock();
+    try {
+      Path dir = written;
+      if (!nodesPending || dir == null) return;
+      java.util.Set<View> shown = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      shown.addAll(rootsOf(safeWindows()));
+      List<View> mine = new ArrayList<>();
+      for (View v : pendingRoots) if (finishing == null || TestActivities.activityOf(v) == finishing) mine.add(v);
+      List<View> read = new ArrayList<>();
+      for (View v : mine) if (shown.contains(v)) read.add(v);
+      if (finishing != null && read.isEmpty()) return;  // not one of the captured windows, or not shown now
+      pendingRoots.removeAll(mine);
+      nodesPending = !pendingRoots.isEmpty();
+      String what = finishing == null ? (nodesStarted ? "the other windows" : "every window")
+          : finishing.getClass().getName() + "'s windows";
+      Path file = dir.resolve("nodes.txt");
+      boolean append = nodesStarted;
+      nodesStarted = true;
+      if (read.isEmpty()) {
+        String note = "not read: none of the " + (append ? "other " : "") + "captured windows was left " + when + "\n";
+        if (append) Files.writeString(file, "\n" + note, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        else write(file, note);
+        return;
+      }
+      long t0 = System.nanoTime();
+      captureSince = t0;
+      StringBuilder parts = new StringBuilder();
+      try {
+        // As a part, as when read at once: its deadline interrupts a provider that waits, and one that ran past it is
+        // skipped in later bundles.
+        part(parts, "nodes.txt", () -> {
+          String text = redact("read " + when + ", after the capture (Espresso's failure handler), from " + what + "\n"
+              + nodes(read));
+          if (append) Files.writeString(file, "\n" + text, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+          else write(file, text);
+        });
+      } finally {
+        captureNanos += System.nanoTime() - t0;
+        captureSince = 0;
+      }
+      // failure.txt's parts list says how the deferred read went, as it does for the others.
+      Files.writeString(dir.resolve("failure.txt"), redact("  (read " + when + ")\n" + parts),
+          StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+    } catch (Throwable e) {
+      System.err.println("[apksim] failure bundle: nodes.txt not written: " + e);
+    } finally {
+      LOCK.unlock();
+    }
+  }
+
+  /**
+   * An activity is finishing (Activity.finish: ActivityScenario's close, the app's own): a bundle's pending nodes.txt
+   * reads its windows now, while they are still there. A screen on its way out cannot change what the test does next.
+   */
+  static void finishing(Activity a) {
+    if (ON && nodesPending) pendingNodes("as " + a.getClass().getSimpleName() + " finished", a);
   }
 
   // --- the main thread and the log -------------------------------------------------------------------------------
