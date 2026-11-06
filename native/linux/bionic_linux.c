@@ -276,19 +276,22 @@ static void *s_null(void) { return NULL; }
 // sigprocmask above never changes it. glibc has no `sigsetjmp` symbol (a macro there), so that one was missing too.
 // These must be glibc's own entry points, not wrappers: setjmp returns twice into its caller's frame.
 
-#ifdef __aarch64__
-// ---------------------------------------------------------------- pthread (arm64)
+// ---------------------------------------------------------------- pthread
 // Android's pthread_mutex_t is 40 bytes and pthread_attr_t 56; glibc's are 48 and 64 on arm64 (on x86_64 they match,
-// so glibc's functions take Android's objects as they are). Each such object holds a pointer to a real glibc one,
-// made on first use, which also handles Android's all-zero static initialisers, as ../bionic.c does on macOS.
-// Condition variables are boxed the same way for alignment (below); rwlocks and barriers use 32-bit atomics in glibc
-// and stay glibc's own.
+// so glibc's functions take Android's mutexes and attributes as they are). On arm64 each such object holds a pointer
+// to a real glibc one, made on first use, which also handles Android's all-zero static initialisers, as ../bionic.c
+// does on macOS. Condition variables are boxed the same way on both, for alignment (below); rwlocks and barriers use
+// 32-bit atomics in glibc and stay glibc's own.
 typedef struct { _Atomic(void *) host; } Shell;
 
 // Android's mutexes and condition variables are only int-aligned, while an atomic pointer must be 8-byte aligned:
 // 40 bytes leave an aligned slot.
 static inline Shell *shell_of(void *object) { return (Shell *)(((uintptr_t)object + 7) & ~7UL); }
 static inline int is_static_init(void *p) { return (uintptr_t)p < 0x100000; }
+
+#ifdef __aarch64__
+
+
 
 static pthread_mutex_t *host_mutex(void *m) {
   Shell *s = shell_of(m);
@@ -328,8 +331,49 @@ static int s_mutex_unlock(void *m) { return pthread_mutex_unlock(host_mutex(m));
 static int s_mutex_timedlock(void *m, const struct timespec *t) { return pthread_mutex_timedlock(host_mutex(m), t); }
 static int s_mutex_clocklock(void *m, clockid_t c, const struct timespec *t) { return pthread_mutex_clocklock(host_mutex(m), c, t); }
 
-// pthread_cond_t is 48 bytes on both, but bionic's is only int-aligned while glibc's arm64 code uses 64-bit atomics
-// on its sequence counters: one at an address that is 4 mod 8 (after an int in a struct) would fault with SIGBUS.
+// pthread_attr_t: Android's 56 bytes hold a pointer to a glibc attribute made by pthread_attr_init (or
+// pthread_getattr_np), and freed by pthread_attr_destroy.
+static pthread_attr_t *host_attr(void *a) { return a ? atomic_load(&shell_of(a)->host) : NULL; }
+static int s_attr_init(void *a) {
+  pthread_attr_t *h = malloc(sizeof *h);
+  int r = pthread_attr_init(h);
+  atomic_store(&shell_of(a)->host, h);
+  return r;
+}
+static int s_attr_destroy(void *a) {
+  pthread_attr_t *h = atomic_exchange(&shell_of(a)->host, NULL);
+  if (h) {
+    pthread_attr_destroy(h);
+    free(h);
+  }
+  return 0;
+}
+static int s_getattr_np(pthread_t t, void *a) {
+  pthread_attr_t *h = malloc(sizeof *h);
+  int r = pthread_getattr_np(t, h);
+  if (r) {
+    free(h);
+    return r;
+  }
+  atomic_store(&shell_of(a)->host, h);
+  return 0;
+}
+static int s_pthread_create(pthread_t *t, void *a, void *(*fn)(void *), void *arg) { return pthread_create(t, host_attr(a), fn, arg); }
+#define ATTR1(name, T) static int s_attr_##name(void *a, T v) { return pthread_attr_##name(host_attr(a), v); }
+#define ATTR2(name, T, U) static int s_attr_##name(void *a, T v, U w) { return pthread_attr_##name(host_attr(a), v, w); }
+ATTR1(setdetachstate, int) ATTR1(getdetachstate, int *) ATTR1(setstacksize, size_t) ATTR1(getstacksize, size_t *)
+ATTR2(setstack, void *, size_t) ATTR2(getstack, void **, size_t *) ATTR1(setguardsize, size_t) ATTR1(getguardsize, size_t *)
+ATTR1(setschedparam, const struct sched_param *) ATTR1(getschedparam, struct sched_param *) ATTR1(setschedpolicy, int)
+ATTR1(getschedpolicy, int *) ATTR1(setinheritsched, int) ATTR1(getinheritsched, int *) ATTR1(setscope, int) ATTR1(getscope, int *)
+#endif
+
+#ifndef __aarch64__
+static inline pthread_mutex_t *host_mutex(void *m) { return m; }  // glibc's own on x86_64
+#endif
+
+// pthread_cond_t is 48 bytes on both, but bionic's is only int-aligned while glibc uses 64-bit atomics on its
+// sequence counters: one at an address that is 4 mod 8 (after an int in a struct) faults with SIGBUS on arm64, and on
+// x86_64 when the atomic straddles a cache line (Rosetta, and kernels with split-lock detection).
 // So condition variables are boxed too: a glibc one made on first use (Android's all-zero static initialiser) or
 // by pthread_cond_init with its attribute (the clock), which is glibc's own (pthread_condattr_t is 8 bytes on both).
 static pthread_cond_t *host_cond(void *c) {
@@ -368,41 +412,6 @@ static int s_cond_timedwait_monotonic(void *c, void *m, const struct timespec *t
   return pthread_cond_clockwait(host_cond(c), host_mutex(m), CLOCK_MONOTONIC, t);
 }
 
-// pthread_attr_t: Android's 56 bytes hold a pointer to a glibc attribute made by pthread_attr_init (or
-// pthread_getattr_np), and freed by pthread_attr_destroy.
-static pthread_attr_t *host_attr(void *a) { return a ? atomic_load(&shell_of(a)->host) : NULL; }
-static int s_attr_init(void *a) {
-  pthread_attr_t *h = malloc(sizeof *h);
-  int r = pthread_attr_init(h);
-  atomic_store(&shell_of(a)->host, h);
-  return r;
-}
-static int s_attr_destroy(void *a) {
-  pthread_attr_t *h = atomic_exchange(&shell_of(a)->host, NULL);
-  if (h) {
-    pthread_attr_destroy(h);
-    free(h);
-  }
-  return 0;
-}
-static int s_getattr_np(pthread_t t, void *a) {
-  pthread_attr_t *h = malloc(sizeof *h);
-  int r = pthread_getattr_np(t, h);
-  if (r) {
-    free(h);
-    return r;
-  }
-  atomic_store(&shell_of(a)->host, h);
-  return 0;
-}
-static int s_pthread_create(pthread_t *t, void *a, void *(*fn)(void *), void *arg) { return pthread_create(t, host_attr(a), fn, arg); }
-#define ATTR1(name, T) static int s_attr_##name(void *a, T v) { return pthread_attr_##name(host_attr(a), v); }
-#define ATTR2(name, T, U) static int s_attr_##name(void *a, T v, U w) { return pthread_attr_##name(host_attr(a), v, w); }
-ATTR1(setdetachstate, int) ATTR1(getdetachstate, int *) ATTR1(setstacksize, size_t) ATTR1(getstacksize, size_t *)
-ATTR2(setstack, void *, size_t) ATTR2(getstack, void **, size_t *) ATTR1(setguardsize, size_t) ATTR1(getguardsize, size_t *)
-ATTR1(setschedparam, const struct sched_param *) ATTR1(getschedparam, struct sched_param *) ATTR1(setschedpolicy, int)
-ATTR1(getschedpolicy, int *) ATTR1(setinheritsched, int) ATTR1(getinheritsched, int *) ATTR1(setscope, int) ATTR1(getscope, int *)
-#endif
 
 // Destructors registered by loaded code would run after the JVM has torn things down; skip them.
 static int s_cxa_atexit(void (*f)(void *), void *a, void *d) { return 0; }
@@ -466,15 +475,15 @@ typedef struct { const char *name; void *fn; } Entry;
 #define E(a, b) {a, (void *)b}
 static const Entry table[] = {
     E("__errno", s_errno), E("_ctype_", a_ctype), E("__sF", sF),
+    E("pthread_cond_init", s_cond_init), E("pthread_cond_destroy", s_cond_destroy), E("pthread_cond_signal", s_cond_signal),
+    E("pthread_cond_broadcast", s_cond_broadcast), E("pthread_cond_wait", s_cond_wait), E("pthread_cond_timedwait", s_cond_timedwait), E("pthread_cond_clockwait", s_cond_clockwait),
+    E("pthread_cond_timedwait_monotonic_np", s_cond_timedwait_monotonic),
 #ifdef __x86_64__
     E("__tls_get_addr", elf_tls_get_addr),
 #else
     E("pthread_mutex_init", s_mutex_init), E("pthread_mutex_destroy", s_mutex_destroy), E("pthread_mutex_lock", s_mutex_lock),
     E("pthread_mutex_trylock", s_mutex_trylock), E("pthread_mutex_unlock", s_mutex_unlock),
     E("pthread_mutex_timedlock", s_mutex_timedlock), E("pthread_mutex_clocklock", s_mutex_clocklock),
-    E("pthread_cond_init", s_cond_init), E("pthread_cond_destroy", s_cond_destroy), E("pthread_cond_signal", s_cond_signal),
-    E("pthread_cond_broadcast", s_cond_broadcast), E("pthread_cond_wait", s_cond_wait), E("pthread_cond_timedwait", s_cond_timedwait), E("pthread_cond_clockwait", s_cond_clockwait),
-    E("pthread_cond_timedwait_monotonic_np", s_cond_timedwait_monotonic),
     E("pthread_attr_init", s_attr_init), E("pthread_attr_destroy", s_attr_destroy), E("pthread_getattr_np", s_getattr_np),
     E("pthread_create", s_pthread_create),
     E("pthread_attr_setdetachstate", s_attr_setdetachstate), E("pthread_attr_getdetachstate", s_attr_getdetachstate),

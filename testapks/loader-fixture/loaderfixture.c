@@ -21,6 +21,42 @@
 static char err[256];
 #define FAIL(...) do { snprintf(err, sizeof err, __VA_ARGS__); return err; } while (0)
 
+// Workers that meet at a barrier wait at this gate first: start_threads opens it once every one of them exists, or
+// closes it if one could not be created, so the others return instead of waiting for a party that never comes.
+static pthread_mutex_t gate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gate_cond = PTHREAD_COND_INITIALIZER;
+static int gate;  // 0 shut, 1 open, -1 closed for good
+
+static void gate_set(int v) {
+  pthread_mutex_lock(&gate_lock);
+  gate = v;
+  pthread_cond_broadcast(&gate_cond);
+  pthread_mutex_unlock(&gate_lock);
+}
+
+static int gate_wait(void) {
+  pthread_mutex_lock(&gate_lock);
+  while (!gate) pthread_cond_wait(&gate_cond, &gate_lock);
+  int g = gate;
+  pthread_mutex_unlock(&gate_lock);
+  return g;
+}
+
+// Starts n threads, the i-th given arg + i * stride. If one cannot be created, the gate closes, the ones started are
+// joined (nothing is left running on the caller's stack), and it returns -1.
+static int start_threads(pthread_t *t, int n, void *(*fn)(void *), void *arg, size_t stride) {
+  gate_set(0);
+  for (int i = 0; i < n; i++) {
+    if (pthread_create(&t[i], NULL, fn, (char *)arg + i * stride)) {
+      gate_set(-1);
+      for (int j = 0; j < i; j++) pthread_join(t[j], NULL);
+      return -1;
+    }
+  }
+  gate_set(1);
+  return 0;
+}
+
 // ---------------------------------------------------------------- stack guard
 // The guard the stack protector compares: [thread pointer + 0x28] on both architectures.
 static uintptr_t guard_word(void) {
@@ -68,8 +104,7 @@ static const char *check_stack_guard(void) {
   pthread_t t[N];
   GuardRun runs[N];
   memset(runs, 0, sizeof runs);
-  for (int i = 0; i < N; i++)
-    if (pthread_create(&t[i], NULL, guard_thread, &runs[i])) FAIL("pthread_create failed");
+  if (start_threads(t, N, guard_thread, runs, sizeof runs[0])) FAIL("pthread_create failed");
   for (int i = 0; i < N; i++) pthread_join(t[i], NULL);
   for (int i = 0; i < N; i++) {
     if (runs[i].moved) FAIL("thread %d: the stack guard changed under it", i);
@@ -107,6 +142,7 @@ static _Atomic int arrived;
 
 static void *tls_thread(void *p) {
   TlsRun *r = p;
+  if (gate_wait() < 0) return NULL;
   if (tls_shared != 42) r->bad = 1;
   if (strcmp(tls_text, "fixture")) r->bad = 2;
   for (int i = 0; i < 16; i++) if (tls_zero[i]) r->bad = 3;
@@ -136,7 +172,10 @@ static const char *check_tls(void) {
   for (int i = 0; i < N; i++) {
     runs[i].id = 1000 * (i + 1);
     runs[i].barrier = &barrier;
-    if (pthread_create(&t[i], NULL, tls_thread, &runs[i])) FAIL("pthread_create failed");
+  }
+  if (start_threads(t, N, tls_thread, runs, sizeof runs[0])) {
+    pthread_barrier_destroy(&barrier);
+    FAIL("pthread_create failed");
   }
   for (int i = 0; i < N; i++) pthread_join(t[i], NULL);
   pthread_barrier_destroy(&barrier);
@@ -187,7 +226,7 @@ static const char *check_mutex(void) {
   enum { N = 4 };
   pthread_t t[N];
   counter = 0;
-  for (int i = 0; i < N; i++) pthread_create(&t[i], NULL, count_thread, STATIC_MUTEX);
+  if (start_threads(t, N, count_thread, STATIC_MUTEX, 0)) FAIL("pthread_create failed");
   for (int i = 0; i < N; i++) pthread_join(t[i], NULL);
   if (counter != N * 50000L) FAIL("statically initialised mutex: counter %ld, want %ld", counter, N * 50000L);
 
@@ -202,16 +241,16 @@ static const char *check_mutex(void) {
   if (pthread_mutex_lock(m) || pthread_mutex_lock(m)) FAIL("a recursive mutex could not be locked twice");
   void *r;
   pthread_t other;
-  pthread_create(&other, NULL, trylock_thread, m);
+  if (pthread_create(&other, NULL, trylock_thread, m)) FAIL("pthread_create failed");
   pthread_join(other, &r);
   if ((intptr_t)r != EBUSY) FAIL("another thread's trylock of a held mutex returned %d, not EBUSY", (int)(intptr_t)r);
   pthread_mutex_unlock(m);
   pthread_mutex_unlock(m);
-  pthread_create(&other, NULL, trylock_thread, m);
+  if (pthread_create(&other, NULL, trylock_thread, m)) FAIL("pthread_create failed");
   pthread_join(other, &r);
   if (r) FAIL("trylock of a released mutex returned %d", (int)(intptr_t)r);
   counter = 0;
-  for (int i = 0; i < N; i++) pthread_create(&t[i], NULL, count_thread, m);
+  if (start_threads(t, N, count_thread, m, 0)) FAIL("pthread_create failed");
   for (int i = 0; i < N; i++) pthread_join(t[i], NULL);
   if (counter != N * 50000L) FAIL("recursive mutex: counter %ld, want %ld", counter, N * 50000L);
   pthread_mutex_destroy(m);
@@ -249,7 +288,7 @@ static const char *check_cond(void) {
   // Ping-pong: 2,000 hand-overs each way on a statically initialised condition variable.
   turn = 0;
   pthread_t t;
-  pthread_create(&t, NULL, pong_thread, NULL);
+  if (pthread_create(&t, NULL, pong_thread, NULL)) FAIL("pthread_create failed");
   for (int i = 0; i < 2000; i++) {
     pthread_mutex_lock(STATIC_MUTEX);
     while (turn != 0) pthread_cond_wait(STATIC_COND, STATIC_MUTEX);
@@ -310,6 +349,44 @@ static void *attr_thread(void *p) {
   return NULL;
 }
 
+// A detached thread reports itself detached; it hands its answer over under the gate's lock, since it cannot be joined.
+static int detached_seen = -1;
+
+static void *detached_thread(void *p) {
+  (void)p;
+  pthread_attr_t a;
+  int state = -2;
+  if (!pthread_getattr_np(pthread_self(), &a)) {
+    pthread_attr_getdetachstate(&a, &state);
+    pthread_attr_destroy(&a);
+  }
+  pthread_mutex_lock(&gate_lock);
+  detached_seen = state;
+  pthread_cond_broadcast(&gate_cond);
+  pthread_mutex_unlock(&gate_lock);
+  return NULL;
+}
+
+static const char *check_detached_attr(void) {
+  pthread_attr_t a;
+  pthread_attr_init(&a);
+  pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+  pthread_mutex_lock(&gate_lock);
+  detached_seen = -1;
+  pthread_mutex_unlock(&gate_lock);
+  pthread_t t;
+  int r = pthread_create(&t, &a, detached_thread, NULL);
+  pthread_attr_destroy(&a);
+  if (r) FAIL("pthread_create of a detached thread failed");
+  pthread_mutex_lock(&gate_lock);
+  while (detached_seen == -1) pthread_cond_wait(&gate_cond, &gate_lock);
+  int state = detached_seen;
+  pthread_mutex_unlock(&gate_lock);
+  if (state == -2) FAIL("pthread_getattr_np failed in a detached thread");
+  if (state != PTHREAD_CREATE_DETACHED) FAIL("a detached thread's pthread_getattr_np reports detach state %d", state);
+  return "ok";
+}
+
 static const char *check_thread_attr(void) {
   pthread_attr_t a;
   pthread_attr_init(&a);
@@ -350,7 +427,7 @@ static const char *check_thread_attr(void) {
     FAIL("a thread given the app's own stack did not run on it");
   if (!seen.inside) FAIL("pthread_getattr_np reports another stack than the app's");
   free(stack);
-  return "ok";
+  return check_detached_attr();
 }
 
 // ---------------------------------------------------------------- barriers: reuse and teardown
@@ -361,6 +438,7 @@ static _Atomic int early;
 
 static void *round_thread(void *p) {
   (void)p;
+  if (gate_wait() < 0) return NULL;
   for (int i = 0; i < ROUNDS; i++) {
     round_arrivals[i]++;
     if (pthread_barrier_wait(&reused) == PTHREAD_BARRIER_SERIAL_THREAD) serials++;
@@ -381,7 +459,10 @@ static const char *check_barrier(void) {
   early = 0;
   if (pthread_barrier_init(&reused, NULL, PARTIES)) FAIL("pthread_barrier_init failed");
   pthread_t t[PARTIES];
-  for (int i = 0; i < PARTIES; i++) pthread_create(&t[i], NULL, round_thread, NULL);
+  if (start_threads(t, PARTIES, round_thread, NULL, 0)) {
+    pthread_barrier_destroy(&reused);
+    FAIL("pthread_create failed");
+  }
   for (int i = 0; i < PARTIES; i++) pthread_join(t[i], NULL);
   if (pthread_barrier_destroy(&reused)) FAIL("pthread_barrier_destroy failed after the rounds");
   if (early) FAIL("a reused barrier let a thread through before its round was complete");
@@ -394,7 +475,10 @@ static const char *check_barrier(void) {
     pthread_barrier_t *b = (pthread_barrier_t *)buf;
     if (pthread_barrier_init(b, NULL, 2)) FAIL("pthread_barrier_init failed (round %d)", i);
     pthread_t other;
-    pthread_create(&other, NULL, wait_once, b);
+    if (pthread_create(&other, NULL, wait_once, b)) {
+      pthread_barrier_destroy(b);
+      FAIL("pthread_create failed (round %d)", i);
+    }
     pthread_barrier_wait(b);
     if (pthread_barrier_destroy(b)) FAIL("pthread_barrier_destroy failed right after a round (round %d)", i);
     memset(buf, 0xa5, sizeof buf);

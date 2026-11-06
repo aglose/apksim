@@ -587,16 +587,59 @@ static int s_attr_getinheritsched(AAttr *a, int *p) { *p = a->inherit; return 0;
 static int s_attr_setscope(AAttr *a, int p) { a->scope = p; return 0; }
 static int s_attr_getscope(AAttr *a, int *p) { *p = a->scope; return 0; }
 
+// Which threads are detached, for pthread_getattr_np: macOS cannot report it. A thread this shim starts records its
+// state as it starts (clearing any left by an exited thread with the same pthread_t) and drops it as it exits;
+// pthread_detach records its target.
+static pthread_mutex_t detached_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t detached[512];
+static int detached_n;
+static pthread_key_t exit_key;
+static pthread_once_t exit_once = PTHREAD_ONCE_INIT;
+
+static void set_detached(pthread_t t, int on) {
+  pthread_mutex_lock(&detached_lock);
+  int i = 0;
+  while (i < detached_n && !pthread_equal(detached[i], t)) i++;
+  if (on && i == detached_n && detached_n < 512) detached[detached_n++] = t;
+  if (!on && i < detached_n) detached[i] = detached[--detached_n];
+  pthread_mutex_unlock(&detached_lock);
+}
+static int is_detached(pthread_t t) {
+  pthread_mutex_lock(&detached_lock);
+  int found = 0;
+  for (int i = 0; i < detached_n && !found; i++) found = pthread_equal(detached[i], t);
+  pthread_mutex_unlock(&detached_lock);
+  return found;
+}
+static void thread_exiting(void *unused) { set_detached(pthread_self(), 0); }
+static void make_exit_key(void) { pthread_key_create(&exit_key, thread_exiting); }
+
+typedef struct { void *(*fn)(void *); void *arg; int detached; } ThreadStart;
+static void *thread_start(void *p) {
+  ThreadStart s = *(ThreadStart *)p;
+  free(p);
+  pthread_setspecific(exit_key, (void *)1);  // so thread_exiting runs
+  set_detached(pthread_self(), s.detached);
+  return s.fn(s.arg);
+}
+static int s_pthread_detach(pthread_t t) {
+  int r = pthread_detach(t);
+  if (!r) set_detached(t, 1);
+  return d2a_errno(r);
+}
+
 // A running thread's attributes, as engines read their stack bounds (Hermes, V8): macOS gives the stack's top and
-// size; Android's attribute has its lowest address. The detach state cannot be read back on macOS: joinable.
+// size; Android's attribute has its lowest address.
 static int s_getattr_np(pthread_t t, AAttr *a) {
   s_attr_init(a);
   a->stack = pthread_get_stacksize_np(t);
   a->base = (char *)pthread_get_stackaddr_np(t) - a->stack;
+  a->detach = is_detached(t);  // Android's PTHREAD_CREATE_DETACHED is 1
   return 0;
 }
 
 static int s_pthread_create(pthread_t *t, const AAttr *a, void *(*fn)(void *), void *arg) {
+  pthread_once(&exit_once, make_exit_key);
   pthread_attr_t h;
   pthread_attr_init(&h);
   size_t stack = a && a->stack ? a->stack : 1 << 20;
@@ -611,8 +654,12 @@ static int s_pthread_create(pthread_t *t, const AAttr *a, void *(*fn)(void *), v
   } else {
     pthread_attr_setstacksize(&h, (stack + page - 1) & ~(page - 1));
   }
-  if (a && a->detach) pthread_attr_setdetachstate(&h, PTHREAD_CREATE_DETACHED);
-  int r = pthread_create(t, &h, fn, arg);
+  int detach = a && a->detach;
+  if (detach) pthread_attr_setdetachstate(&h, PTHREAD_CREATE_DETACHED);
+  ThreadStart *s = malloc(sizeof *s);
+  *s = (ThreadStart){fn, arg, detach};
+  int r = pthread_create(t, &h, thread_start, s);
+  if (r) free(s);
   pthread_attr_destroy(&h);
   return d2a_errno(r);
 }
@@ -1072,7 +1119,7 @@ static const Entry table[] = {
     E("pthread_barrier_wait", s_barrier_wait), E("pthread_barrierattr_init", s_barrierattr_init),
     E("pthread_barrierattr_destroy", s_barrierattr_destroy), E("pthread_barrierattr_setpshared", s_barrierattr_setpshared),
     E("pthread_barrierattr_getpshared", s_barrierattr_getpshared),
-    E("pthread_create", s_pthread_create), E("pthread_setname_np", s_pthread_setname), E("pthread_setschedparam", s_setschedparam),
+    E("pthread_create", s_pthread_create), E("pthread_detach", s_pthread_detach), E("pthread_setname_np", s_pthread_setname), E("pthread_setschedparam", s_setschedparam),
     E("pthread_atfork", s_atfork), E("__register_atfork", s_atfork), E("gettid", s_gettid),
     E("stat", s_stat), E("lstat", s_lstat), E("fstat", s_fstat), E("fstatat", s_fstatat), E("stat64", s_stat), E("lstat64", s_lstat), E("fstat64", s_fstat),
     E("open", s_open), E("__open_2", s_open_2), E("open64", s_open), E("openat", s_openat), E("fcntl", s_fcntl), E("ioctl", s_ioctl),
