@@ -3,8 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/work/runtime"
-ALL="$(ls "$ROOT"/work/lib/android-all-instrumented-*.jar)"
-DIST="$(ls "$ROOT"/work/lib/nativeruntime-dist-compat-*.jar)"
+ALL="$(ls "$ROOT"/work/lib/android-all-instrumented-*.jar | sort -V | tail -1)"
+DIST="$(ls "$ROOT"/work/lib/nativeruntime-dist-compat-*.jar | sort -V | tail -1)"
 rm -rf "$OUT"; mkdir -p "$OUT/icu"
 for JAR in "$ALL" "$DIST"; do
   unzip -q -o "$JAR" 'fonts/*' 'hyphen-data/*' -d "$OUT" 2>/dev/null || true

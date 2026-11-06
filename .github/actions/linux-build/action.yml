@@ -1,8 +1,14 @@
 # The Linux build the image needs, shared by ci.yml and release.yml: JDK 17 (Gradle) and 24 (the runtime), the
 # runtime's libraries (`gradle deps`), work/apksim.jar (scripts/build.sh) and the test app with its androidTest APK
-# (the image trains its startup cache on the test app; CI runs its suite).
+# (the image trains its startup cache on the test app; CI runs its suite). On an arm64 runner it also fetches
+# android-all's linux/aarch64 runtime (build.gradle.kts), and skips the test app: Google's Android build tools (aapt2)
+# exist for x86_64 Linux only, so arm64 jobs take the APKs from an x86_64 job (`test-app: false`).
 name: linux-build
 description: Fetch the libraries, compile the runtime and build the test app on a Linux runner
+inputs:
+  test-app:
+    description: Build the test app (x86_64 runners only)
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -19,14 +25,16 @@ runs:
     - name: Fetch the runtime's libraries
       shell: bash
       env:
-        JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+        JAVA_HOME: ${{ env.JAVA_HOME_17_X64 || env.JAVA_HOME_17_ARM64 }}
       run: |
         gradle -q deps --console=plain
         for a in work/lib/*.aar; do unzip -p "$a" classes.jar > "${a%.aar}.jar"; done
+        if [ "$RUNNER_ARCH" = ARM64 ]; then gradle -q linuxArm64Runtime --console=plain; fi
     - name: Compile the runtime
       shell: bash
       run: scripts/build.sh
     - name: Build the test app
+      if: inputs.test-app == 'true'
       shell: bash
       working-directory: testapks/composeapp
       env:

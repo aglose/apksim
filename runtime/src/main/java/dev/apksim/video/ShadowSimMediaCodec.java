@@ -289,6 +289,26 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   protected void native_start() {
     reserved.clear();
     super.native_start();
+    if (decoder != null || audio != null) handOutInputs();
+  }
+
+  /**
+   * In async mode Robolectric's start hands the app one input buffer, and each buffer comes back only when the output
+   * it became is released, so a player had one picture in flight: a video player holds each output until its frame
+   * is due, then waits a turn of its work loop for the input callback, so ExoPlayer decoded ~40 pictures a second
+   * and dropped most of a 60 fps clip as late. A device's codec offers several inputs at once; here every buffer but
+   * the {@link Decoder#MAX_DEPTH} that {@link #reserve} may keep for held pictures.
+   */
+  private void handOutInputs() {
+    boolean async = ReflectionHelpers.getField(this, "isAsync");
+    if (!async) return;
+    java.util.concurrent.BlockingQueue<Integer> free = ReflectionHelpers.getField(this, "inputBuffersPendingDequeue");
+    int keep = decoder != null ? Decoder.MAX_DEPTH : 0;
+    Integer next;
+    while (free.size() > keep && (next = free.poll()) != null) {
+      ReflectionHelpers.callInstanceMethod(ShadowMediaCodec.class, this, "makeInputBufferAvailable",
+          ReflectionHelpers.ClassParameter.from(int.class, next));
+    }
   }
 
   @Implementation
@@ -325,6 +345,13 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private ByteBuffer input;
     private ByteBuffer rgba;
     private final Bitmap[] pool = new Bitmap[3];
+    private static final boolean AT_VIEW_SIZE = !"false".equals(System.getProperty("apksim.videoAtViewSize"));
+    private static final int STEADY_PICTURES = 10;
+    private int outW;
+    private int outH;
+    private int seenW;
+    private int seenH;
+    private int steady;
     private int next;
     private final Set<Long> pictures = new HashSet<>();
 
@@ -486,8 +513,26 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       int w = VideoToolbox.nativePictureWidth(picture);
       int h = VideoToolbox.nativePictureHeight(picture);
       int[] view = VideoSurfaces.viewSize(target);
-      if (view != null) {
-        // Drawn at the view's size: scaling a 4K picture down on the raster thread every frame is far slower.
+      if (view != null && AT_VIEW_SIZE) {
+        // Converted at the view's size, which the view draws 1:1: scaling on the raster thread every frame (a 4K
+        // picture down, or a small one up into a large view) is far slower than in VideoToolbox's transfer here.
+        // While the view resizes (a window drag) the size in use is kept, the view stretching it, until the new one
+        // has held for STEADY_PICTURES: each new size would otherwise replace the pooled Bitmaps (and grow the
+        // buffer) on every picture.
+        if (view[0] != seenW || view[1] != seenH) {
+          seenW = view[0];
+          seenH = view[1];
+          steady = 0;
+        } else if (steady < STEADY_PICTURES) {
+          steady++;
+        }
+        if (outW <= 0 || steady >= STEADY_PICTURES) {
+          outW = seenW;
+          outH = seenH;
+        }
+        w = outW;
+        h = outH;
+      } else if (view != null) {
         w = Math.min(w, view[0]);
         h = Math.min(h, view[1]);
       }

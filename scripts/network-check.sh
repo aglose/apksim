@@ -8,6 +8,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="$1" OUT="$(mkdir -p "$2" && cd "$2" && pwd)" IMAGE="${3:-}"
+[[ -n "$IMAGE" ]] && PLATFORM="linux/$(docker image inspect -f '{{.Architecture}}' "$IMAGE")"
 PORT="${NETCHECK_PORT:-7470}" NAME="apksim-netcheck-$$"
 cp "$APK" "$OUT/app.apk"
 cp "$ROOT/scripts/network-fixture.py" "$OUT/"
@@ -83,7 +84,7 @@ start() {
     args=("${args[@]//@FPORT@/8443}")
     args=("${args[@]//@OUT@//work}")
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$NAME" --platform linux/amd64 -p "127.0.0.1:$PORT:$PORT" -v "$OUT:/work" --entrypoint bash "$IMAGE" \
+    docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -v "$OUT:/work" --entrypoint bash "$IMAGE" \
       -c "${pre}exec apksim --control $PORT --control-bind 0.0.0.0 ${args[*]} app.apk > /work/$log 2>&1" >/dev/null
   fi
   LAUNCHED=1

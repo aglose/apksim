@@ -107,6 +107,11 @@ final class HwRenderer {
     }
   }
 
+  /** Whether a frame draws this window: it is shown and has a size. */
+  static boolean drawn(View root) {
+    return root.getVisibility() == View.VISIBLE && root.getWidth() != 0;
+  }
+
   /** Records the windows bottom-to-top and starts rasterizing them; returns once HWUI has synced. */
   void draw(List<View> roots, Placer placer) {
     long t0 = System.nanoTime();
@@ -115,7 +120,7 @@ final class HwRenderer {
     boolean covered = !roots.isEmpty() && roots.get(0).isOpaque() && roots.get(0).getWidth() >= width && roots.get(0).getHeight() >= height;
     if (!covered) c.drawColor(0xff000000);
     for (View root : roots) {
-      if (root.getVisibility() != View.VISIBLE || root.getWidth() == 0) continue;
+      if (!drawn(root)) continue;
       int save = c.save();
       if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp
           && (lp.flags & WindowManager.LayoutParams.FLAG_DIM_BEHIND) != 0) {

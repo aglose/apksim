@@ -58,7 +58,7 @@ It is a fast UI and logic check, not a compatibility guarantee: system services 
 
 ## Installation
 
-**Requirements:** an Apple Silicon Mac. For CI, a Linux x86_64 host with Docker (see [Linux and Docker](#linux-and-docker)).
+**Requirements:** an Apple Silicon Mac. For CI, a Linux host with Docker, x86_64 or arm64 (see [Linux and Docker](#linux-and-docker)).
 
 ### Homebrew
 
@@ -217,7 +217,7 @@ state folder.
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
-| Inspection | `activity`, `windows`, `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
+| Inspection | `activity`, `windows` (each window, its activity and lifecycle state), `viewtree [FILE]` (every view of every window, with ids and screen bounds), `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video`, `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
@@ -318,7 +318,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.9.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.13.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -367,9 +367,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.9.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.13.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.9.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.13.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -415,14 +415,16 @@ recording but not replayed. Not recorded: Cronet's native stack and Ktor CIO, wh
 
 ## Linux and Docker
 
-Each release publishes a headless Linux x86_64 image, `ghcr.io/aglose/apksim:VERSION`, with `:latest` following
-the newest release. It's about 565 MB and holds:
+Each release publishes a headless Linux image, `ghcr.io/aglose/apksim:VERSION`, for x86_64 and arm64 under the
+one tag (Docker pulls the host's), with `:latest` following the newest release. It's about 565 MB and holds:
 - the launcher and a trained startup cache;
 - Mesa, for offscreen GLES;
 - `instrument.py`, `snapshot.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
-VideoToolbox: rendering and shaders run on the CPU. APKs need x86_64 native libraries there (4 KB-aligned ones load). There is no sandbox inside the container,
+VideoToolbox: rendering and shaders run on the CPU. APKs need native libraries for the host's CPU there: x86_64, or
+arm64-v8a on arm64 (4 KB-aligned ones load). On an Apple Silicon Mac or an arm64 runner the arm64 image runs without
+emulation, so it is the faster choice there. There is no sandbox inside the container,
 so use `docker run --network none` to keep an app off the network. Building the image and
 running it on a Mac are covered in [docs/linux-docker.md](docs/linux-docker.md).
 
@@ -456,6 +458,7 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.classCache=false` | Don't reuse translated classes from earlier launches |
 | `-Dapksim.cpuLayerEffects=true` | Run layer shader effects on the CPU, as HWUI does (for comparisons) |
 | `-Dapksim.gpuBitmaps=false` | Resample scaled bitmaps on the CPU |
+| `-Dapksim.videoAtViewSize=false` | Keep decoded video at the picture's size when the view is bigger, instead of scaling it on VideoToolbox |
 | `-Dapksim.mute=true` | Keep audio timing, but play silence |
 | `-Dapksim.audio=false` | Turn off sound and the audio decoders |
 | `-Dapksim.runnerApplication=false` | In test runs, ignore the runner's `newApplication` |
@@ -507,9 +510,9 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.
-- **Native libraries:** they must be arm64-v8a (x86_64 on Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
+- **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
-- **Test runs are Robolectric-style:** the test body runs on the main thread, so `runBlocking { delay() }` on the test thread freezes the app, and accessibility events aren't sent.
+- **Test runs are Robolectric-style:** the test body runs on the main thread. A `runBlocking` or `Thread.sleep` there runs the main queue while it waits, as the device's main thread would beside the test thread, but accessibility events aren't sent.
 - **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
 - **Security:** an APK runs as code in this process. `sandbox-exec` confines it: inside your home folder it can write only to apksim's state folder, and it can't read `~/.ssh`, `~/Documents`, `~/Desktop`, keychains, browser data or similar. Apple has deprecated `sandbox-exec`, and the sandbox is a safeguard for your own apps, not a boundary for hostile ones.
 
@@ -531,8 +534,11 @@ This needs the Xcode command-line tools (`xcode-select --install`).
 
 Changes reach `main` through pull requests, and each needs the `linux-smoke` check to pass. That check builds the
 Linux image and runs the test app headless, its androidTest suite in both clock modes, the DEX translator check and a
-privacy check. CI can't cover the Mac-only parts (the window, Metal, launch timings), so say in the PR what you
-checked locally. [AGENTS.md](AGENTS.md) is the full guide to building, running and measuring.
+privacy check; `linux-smoke-arm64` runs the smoke test and the suite in the arm64 image. On an Apple Silicon runner, `startup-gate`
+fails a pull request whose launches are slower than their budget against a fixed release
+([docs/startup-gate.md](docs/startup-gate.md)). CI can't cover the other Mac-only parts (the window, Metal,
+VideoToolbox), so say in the PR what you checked locally. [AGENTS.md](AGENTS.md) is the full guide to building,
+running and measuring.
 
 `scripts/package-release.sh VERSION` packages a release. Pushing a `v*` tag builds it and makes a draft release, and
 publishing the draft updates the Homebrew tap and the image.

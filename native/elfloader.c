@@ -1,12 +1,14 @@
-// Loads Android ELF shared objects into this process: arm64 ones on macOS, x86_64 ones on Linux. The CPU is
-// the same, so code runs natively; what needs translating is the loader, the C library (bionic.c on macOS,
-// linux/bionic_linux.c on Linux) and, on macOS, the variadic ABI.
+// Loads Android ELF shared objects into this process: arm64 ones on macOS and arm64 Linux, x86_64 ones on x86_64
+// Linux. The CPU is the same, so code runs natively; what needs translating is the loader, the C library (bionic.c
+// on macOS, linux/bionic_linux.c on Linux), the thread pointer on arm64 and, on macOS, the variadic ABI.
 #include "elfloader.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
+#elif defined(__aarch64__)
+#include <sys/random.h>
 #endif
 #include <pthread.h>
 #include <stdarg.h>
@@ -298,6 +300,32 @@ static void patch_thread_pointer(uint8_t *start, size_t size) {
     if ((code[i] & 0xffffffe0) == 0xd53bd040) code[i] = 0xd53bd060 | (code[i] & 0x1f);
   }
 }
+#elif defined(__aarch64__)
+// Android code reads its thread pointer from TPIDR_EL0: the stack protector's guard is at [tp + 0x28] (bionic's
+// TLS_SLOT_STACK_GUARD), and TLSDESC accesses add tlsdesc_resolver's result to it. On Linux that register is glibc's,
+// and [tp + 0x28] lies in its static TLS, which can change under a running function ("stack smashing detected").
+// TPIDRRO_EL0, which macOS leaves free, reads as zero for 64-bit Linux processes. So each `mrs xN, tpidr_el0` becomes
+// `adrp xN, <the module's tp page>`: the page after the module (always within ADRP's +-4 GB), read-only, holding a
+// random guard at +0x28. TLSDESC results are offsets from that page (tlsdesc_resolve_c). The page is the same for
+// every thread, which the guard allows; code that writes bionic TLS slots through it faults instead of racing.
+static uint64_t stack_guard;
+
+static void map_tp_page(Module *m, size_t page) {
+  if (!stack_guard && getrandom(&stack_guard, sizeof stack_guard, 0) != sizeof stack_guard) stack_guard = 0x5a17c0de;
+  mprotect((void *)m->tp, page, PROT_READ | PROT_WRITE);
+  ((uint64_t *)m->tp)[5] = stack_guard;
+  mprotect((void *)m->tp, page, PROT_READ);
+}
+
+static void patch_thread_pointer(Module *m, uint8_t *start, size_t size) {
+  uint32_t *code = (uint32_t *)start;
+  size_t n = size / 4;
+  for (size_t i = 0; i < n; i++) {
+    if ((code[i] & 0xffffffe0) != 0xd53bd040) continue;
+    int64_t pages = (int64_t)(m->tp >> 12) - (int64_t)((uintptr_t)&code[i] >> 12);
+    code[i] = 0x90000000 | (uint32_t)(pages & 3) << 29 | (uint32_t)((pages >> 2) & 0x7ffff) << 5 | (code[i] & 0x1f);
+  }
+}
 #endif
 
 // Copies a range's current contents into fresh anonymous memory at the same address (a file-backed range the
@@ -413,6 +441,10 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   strlcpy(m->name, base_name, sizeof m->name);
   m->base = base;
   m->size = span;
+#if !defined(__APPLE__) && defined(__aarch64__)
+  m->tp = base + span;  // the guard page arena_next leaves after every module; before relocations (TLSDESC)
+  map_tp_page(m, page);
+#endif
   m->phdr = (const void *)(base + *(uint64_t *)(file + 32) - ph[0].offset + ph[0].vaddr);
   m->phnum = phnum;
   m->phdr_copy = malloc(sizeof(Phdr) * phnum);
@@ -484,6 +516,11 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
         }
       }
 #else
+#ifdef __aarch64__
+      patch_thread_pointer(m, (uint8_t *)(base + ph[i].vaddr), ph[i].filesz);
+      // The code was copied in as data: the instruction cache must not keep stale lines for these addresses.
+      __builtin___clear_cache((char *)from, (char *)to);
+#endif
       // Linux allows writable+executable pages, so code may share a page with data (4 KB-aligned libraries).
       for (int j = 0; j < phnum; j++) {
         if (ph[j].type != PT_LOAD || !(ph[j].flags & 2)) continue;
@@ -549,6 +586,30 @@ void tlsdesc_resolver(void) {
   fprintf(stderr, "[apksim] TLSDESC relocations are not supported on x86_64\n");
   abort();
 }
+#elif !defined(__APPLE__)
+// arm64 Linux: the thread pointer the module's code reads is its tp page (patch_thread_pointer).
+__attribute__((visibility("hidden"))) int64_t tlsdesc_resolve_c(TlsDesc *d) {
+  return (int64_t)(tls_block(d->module) + d->offset) - (int64_t)d->module->tp;
+}
+
+// TLSDESC ABI: x0 points at the descriptor {resolver, arg}; the result is in x0 and every other register must survive.
+// glibc's memcpy and malloc (a thread's first access allocates its block) use any SIMD register, so all 32 are saved.
+#define TLSDESC_Q(op) \
+  "  " op " q0, q1, [sp, #0]\n  " op " q2, q3, [sp, #32]\n  " op " q4, q5, [sp, #64]\n  " op " q6, q7, [sp, #96]\n" \
+  "  " op " q8, q9, [sp, #128]\n  " op " q10, q11, [sp, #160]\n  " op " q12, q13, [sp, #192]\n  " op " q14, q15, [sp, #224]\n" \
+  "  " op " q16, q17, [sp, #256]\n  " op " q18, q19, [sp, #288]\n  " op " q20, q21, [sp, #320]\n  " op " q22, q23, [sp, #352]\n" \
+  "  " op " q24, q25, [sp, #384]\n  " op " q26, q27, [sp, #416]\n  " op " q28, q29, [sp, #448]\n  " op " q30, q31, [sp, #480]\n"
+__asm__(
+    ".text\n.globl tlsdesc_resolver\n.type tlsdesc_resolver, %function\n.p2align 2\ntlsdesc_resolver:\n"
+    "  stp x29, x30, [sp, #-16]!\n  mov x29, sp\n"
+    "  stp x1, x2, [sp, #-16]!\n  stp x3, x4, [sp, #-16]!\n  stp x5, x6, [sp, #-16]!\n  stp x7, x8, [sp, #-16]!\n"
+    "  stp x9, x10, [sp, #-16]!\n  stp x11, x12, [sp, #-16]!\n  stp x13, x14, [sp, #-16]!\n  stp x15, x16, [sp, #-16]!\n"
+    "  stp x17, x18, [sp, #-16]!\n  sub sp, sp, #512\n" TLSDESC_Q("stp")
+    "  ldr x0, [x0, #8]\n  bl tlsdesc_resolve_c\n"
+    TLSDESC_Q("ldp") "  add sp, sp, #512\n"
+    "  ldp x17, x18, [sp], #16\n  ldp x15, x16, [sp], #16\n  ldp x13, x14, [sp], #16\n  ldp x11, x12, [sp], #16\n  ldp x9, x10, [sp], #16\n"
+    "  ldp x7, x8, [sp], #16\n  ldp x5, x6, [sp], #16\n  ldp x3, x4, [sp], #16\n  ldp x1, x2, [sp], #16\n  ldp x29, x30, [sp], #16\n  ret\n"
+    ".size tlsdesc_resolver, .-tlsdesc_resolver\n");
 #else
 // Called by tlsdesc_resolver: returns the variable's address minus the thread pointer.
 int64_t tlsdesc_resolve_c(TlsDesc *d) {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- SecondActivity's views (viewtree shows id names). -->
+    <item name="stack_label" type="id" />
+    <item name="stack_tap" type="id" />
+    <item name="stack_deeper" type="id" />
+</resources>

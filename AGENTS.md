@@ -27,9 +27,23 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
+    hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
+    loop turn draw, 150-400 frames a second on a video screen. A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
+    The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
+    path that changes it ends: start, finish, `home`/`resume`, configuration changes, `recreate`, `process-death`,
+    test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
+    dialog-themed activity: the test app's `FloatingActivity`, `apksim://floating`), paused and visible; the rest
+    stopped with their windows hidden, so only what a device shows draws and takes touches. A visible activity with
+    no window (recreated or rebuilt while stopped: Robolectric's recreate leaves it detached, and resumed whatever it
+    was) gets one, windows are put in the stack's order, and in test runs the top has the focus. An activity's dialogs
+    and popups hide with it, and a hidden window is FLAG_NOT_TOUCHABLE meanwhile (Robolectric's UiAutomation injection
+    reads only that, and ranks dialogs above every activity window). Before, a rotation left the whole stack resumed,
+    and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
+    up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
+    (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
@@ -56,7 +70,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     block of its range, or at a return) typed ints and floats as references and dropped them
     (`-Dapksim.debugTypes=owner/Class.method` reports such a merge). Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
-    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
+    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` of shapes and paths → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
     `new RenderNode` → `GpuRenderNode`, wall-clock reads (`System.currentTimeMillis`, java.time `X.now()`,
     `Clock.system*`, `new Date()`, `Calendar.getInstance`) → `SimClock`, and Compose's `CursorAnimationState(animate)`
     through `Snapshot.cursorBlink`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
@@ -83,12 +97,20 @@ Read README.md for results and limits; this file covers how to work on the code.
     alone and inside a parent as scaled, rotated and nested layers. `shaders` reports `rasters` (open content
     rasters) and `discards`. Memory freed only at GC: HotSpot does not count native memory (Bitmap pixels, renderers)
     towards collecting as ART does, so free native-backed objects eagerly where the code knows they are done.
-    `GpuBitmaps`: app `drawBitmap(bitmap, src, dst, paint)` calls (Compose's drawImage) that scale a filtered bitmap
-    onto whole device pixels get a copy already that size, resampled once on Metal (bilinear in float, as Skia), which
-    HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame. Copies are cached (96 MB, LRU) and made only
-    for a size asked for again within 8 frames, so zooms stay on the CPU. `-Dapksim.gpuBitmaps=false` turns it off;
-    `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
-    a tiled texture made the CPU untile it, ~3 ms per full screen.
+    `GpuBitmaps`: every `drawBitmap` recorded into a RenderNode (`ShadowGpuRecordingCanvas`, a shadow of
+    BaseRecordingCanvas and RecordingCanvas: framework Views such as ImageView and BitmapDrawable backgrounds, Compose's
+    drawImage, app code; the src/dst Rect(F), x/y and Matrix overloads) that scales a filtered bitmap onto whole device
+    pixels (canvas and Matrix scale+translate only) gets a copy already that size, resampled once on Metal (bilinear in
+    float, as Skia), which HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame, and of a 2560x1600
+    tablet screen with a full-screen background (raster ~36 → ~2.3 ms, test app `apksim://bitmaps`). Copies are cached
+    (96 MB, LRU), and so are the uploaded originals (their own 96 MB); no table holds a Bitmap itself (copies are keyed
+    by Skia's process-wide generation ID), so an app drawing a new bitmap every frame keeps nothing alive. They are made for every size asked for in the frame a bitmap is first drawn (a View records its
+    background once and HWUI redraws that recording every frame, so it is never asked for twice), then only for a
+    size asked for again within 8 frames, so zooms and per-frame content (video) stay on the CPU after their first
+    frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A copy dropped from the
+    cache stays alive in display lists still drawing it. `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows
+    hits and why draws went to HWUI (`small`, `config` by Bitmap.Config, `new`, `budget`, `unaligned`). Metal targets
+    are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
   - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
@@ -158,13 +180,16 @@ Read README.md for results and limits; this file covers how to work on the code.
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
-- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"), and
+- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
+  `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
   `startup-gate` on an Apple Silicon runner (docs/startup-gate.md).
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
-  reads; Settings shows the wall clock in the locale's format. `snapshots/` has its screenshot-test specs
+  reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
+colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
+`apksim://floating` a dialog-themed `FloatingActivity`. `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
@@ -187,7 +212,12 @@ repo): read it before working with that app.
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
 lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
-`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
+`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
+(each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.
+`.MainActivity{stopped}`), `viewtree [FILE]` (`ViewTree`: every view of every window, indented: class, id name, screen
+position and size, and only what differs from a plain view: invisible/gone, alpha, translate, z, scale, rotation,
+click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[AndroidView]` the holders of its
+AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`,
@@ -312,6 +342,10 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
+CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
+still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
+`--device tablet`.
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
@@ -319,6 +353,8 @@ PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
+muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -374,6 +410,10 @@ codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric a
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
 (else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
 (playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).
+In async mode (Media3's default) Robolectric's start hands the app one input buffer and gives each back only when the
+output it became is released, so a player had one picture in flight and ExoPlayer decoded ~40 a second: a 1080p60
+clip showed ~9 pictures a second and dropped the rest as late. `handOutInputs` offers every buffer at start but the
+4 kept for held pictures (below), as a device's codec offers several (`apksim://video`: 60 of 60 a second).
 Its placeholders are told apart by identity, so
 each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
@@ -383,7 +423,12 @@ B-frames (decode order pts 0, 66, 33, ...) ExoPlayer dropped 58 of 90 frames as 
 (the codec owns it, as on a device); at end of stream those buffers carry the held pictures out in order, before the
 end-of-stream buffer (`selftest clip.h264` checks every frame arrives). Other inputs that give no output are passed on
 with API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
-reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true); audio ones
+reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true), converted
+by VideoToolbox at the view's size, up or down (3 pooled Bitmaps of that size per codec), so the raster thread blits it
+1:1 (a new view size is taken once it has held for 10 pictures, so a window drag does not replace the pool on
+every picture): a 640x360 clip in a 1600x900 view had Skia's upscale at ~40% of raster time (raster 9.4 → 5.9 ms on average,
+`apksim://bitmaps?video=1` on `--device tablet`; `-Dapksim.videoAtViewSize=false` keeps the picture's size when
+smaller); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
@@ -645,7 +690,7 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
 UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
-unpaused Choreographer that frame loop never let the looper idle). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+unpaused Choreographer that frame loop never let the looper idle). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue one task at a time until the frame has been drawn, checking the latch and timeout between tasks (an open Popup's frame loop never let `idle()` return) (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`, `PopupTouchTest.aSwipeWithAPopupOpenWaitsOnlyForFrames`). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
@@ -725,6 +770,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
+  The stopped activity's window is hidden until it comes back (also for back on a launcher root, which sends the task
+  to the background), so UiAutomator, UiAutomation's windows and screenshots, and failure bundles see only the top
+  one, and gets the window focus back when it returns (`StackWindowsTest`). UiDevice rotation puts the windows back
+  in the stack's order afterwards (a recreated activity's window is added last) and the focus on the top one.
+  Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were, and any resume shows a hidden
+  window again with the focus (`ShadowSimInstrumentation.callActivityOnResume`), so `moveToState(RESUMED)` after one
+  of apksim's stops brings the screen back.
   Not yet: a start for a result (startActivityForResult, ActivityResultContracts) is still only recorded, so a flow
   that waits for the started activity's result needs the test to supply it, as with Robolectric.
 - Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's
@@ -778,14 +830,21 @@ only with current Command Line Tools ("CLT does not support macOS 26" stopped it
 flag, since the release is not notarized. Homebrew 7 deprecates cask `postflight` blocks for `postflight_steps`.
 
 ## Linux / Docker
-`docker/Dockerfile` builds a headless linux/amd64 image (`scripts/docker-build.sh`; Colima with Rosetta on this Mac).
-`HostOs` picks `.so` vs `.dylib` and the APK ABI (`x86_64` on Linux); on Linux the window, Metal and VideoToolbox
-are skipped (headless, CPU shaders). `native/linux/` holds the bionic→glibc shim and a JNI bridge; `elfloader.c` is
-shared, with `#ifdef`s. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
+`docker/Dockerfile` builds a headless image for linux/amd64 (`scripts/docker-build.sh`; Colima with Rosetta on this
+Mac) or linux/arm64 (`scripts/docker-build.sh TAG --platform linux/arm64`: native in Colima here, no Rosetta).
+`HostOs` picks `.so` vs `.dylib` and the APK ABI (`x86_64` on x86_64 Linux, `arm64-v8a` on the Mac and arm64 Linux);
+on Linux the window, Metal and VideoToolbox are skipped (headless, CPU shaders). `native/linux/` holds the
+bionic→glibc shim and a JNI bridge; `elfloader.c` is shared, with `#ifdef`s. On arm64 Linux, glibc owns TPIDR_EL0, so
+the loader rewrites Android code's `mrs xN, tpidr_el0` into `adrp` of a read-only page after each module (stack guard at
++0x28, TLSDESC offsets from it), and the shim boxes `pthread_mutex_t`/`pthread_attr_t` (glibc's are bigger there).
+Robolectric's Android 15+ runtime is android-all's `libandroid_runtime`; our android-all build has none for
+linux/aarch64, so arm64 images take it from its respin (`gradle linuxArm64Runtime` into `work/linux-arm64`, see
+`build.gradle.kts`). Google's Android build tools are x86_64-only on Linux: arm64 CI jobs get the test APKs from an
+x86_64 job, and have no adb. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
 /private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
-(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION` (`release.yml`'s `image`
-job; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
+(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION`, both architectures under one tag (`release.yml`'s
+`image` and `image-arm64` jobs push `VERSION-amd64` and `VERSION-arm64`; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
 repositories' CI (`--entrypoint instrument.py`, `--entrypoint snapshot.py`). `.github/actions/linux-build` is the Linux build both workflows share.
 
 ## Debugging app code

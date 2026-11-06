@@ -2483,9 +2483,7 @@ final class MethodTranslator implements Opcodes {
       "drawRoundRect(FFFFFF" + P, "drawRoundRect(Landroid/graphics/RectF;FF" + P,
       "drawOval(FFFF" + P, "drawOval(Landroid/graphics/RectF;" + P, "drawCircle(FFF" + P,
       "drawArc(FFFFFFZ" + P, "drawArc(Landroid/graphics/RectF;FFZ" + P,
-      "drawPath(Landroid/graphics/Path;" + P, "drawPaint(" + P,
-      "drawBitmap(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/Rect;" + P,
-      "drawBitmap(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/RectF;" + P);
+      "drawPath(Landroid/graphics/Path;" + P, "drawPaint(" + P);
 
   /**
    * Framework and library classes that app code gets an apksim subclass of, wherever it creates one or extends
@@ -2600,6 +2598,14 @@ final class MethodTranslator implements Opcodes {
       // The test APK's own context, as on a device (Robolectric's instrumentation returns the app's).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "instrumentationContext",
           "(Landroid/app/Instrumentation;)Landroid/content/Context;", false);
+      return;
+    }
+    if (opcode == INVOKEVIRTUAL && "java/util/concurrent/CountDownLatch".equals(ownerName) && "await".equals(m.name())
+        && "(JLjava/util/concurrent/TimeUnit;)Z".equals(m.descriptor()) && "androidx/test/uiautomator/InteractionController".equals(owner)) {
+      // UiAutomator's wait for a frame after each gesture step; on the main thread in a test run, the main queue
+      // draws that frame meanwhile (TestActivities.awaitFrame).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "awaitFrame",
+          "(Ljava/util/concurrent/CountDownLatch;JLjava/util/concurrent/TimeUnit;)Z", false);
       return;
     }
     if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())

@@ -434,7 +434,10 @@ final class AdbShell {
       case "apksim" -> {
         // Any control command, as `ctl.py` or `drive.py` would send it: `adb shell apksim rotate left`.
         if (args.isEmpty()) return usage("apksim CONTROL-COMMAND [ARGS...] (see AGENTS.md)");
-        return reply(control(args.toArray(new String[0])), true);
+        String r = control(args.toArray(new String[0]));
+        // viewtree's lines, joined for the one-line control reply, are lines again here.
+        if (args.get(0).equals("viewtree") && args.size() == 1) r = r.replace("; ", "\n");
+        return reply(r, true);
       }
       default -> {
         print("/system/bin/sh: " + cmd + ": inaccessible or not found\n");
