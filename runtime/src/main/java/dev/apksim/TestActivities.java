@@ -311,8 +311,12 @@ public final class TestActivities {
     ActivityController<?> below = controller(top);
     if (below == null || top.isResumed()) return;
     // A stopped one shows its window again (Host.bringToFront); one only paused (under a dialog-like activity) kept it.
-    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) Host.bringToFront(below);
-    else below.resume();
+    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) {
+      Host.bringToFront(below);
+      ShadowSimWindowManagerImpl.focusTop();  // the window that had it went while this one was hidden
+    } else {
+      below.resume();
+    }
   }
 
   /** Receivers still registered when a test ended, which Robolectric's reset dropped (see ShadowSimContextImpl). */
@@ -743,6 +747,7 @@ public final class TestActivities {
         if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) {
           c.restart();
           Host.setWindowVisible(existing, true);
+          ShadowSimWindowManagerImpl.focusTop();
         }
         c.newIntent(intent);
         c.resume();

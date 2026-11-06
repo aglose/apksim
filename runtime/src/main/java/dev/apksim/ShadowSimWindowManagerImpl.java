@@ -57,6 +57,14 @@ public class ShadowSimWindowManagerImpl extends ShadowWindowManagerImpl {
     changed(view, true);
   }
 
+  /**
+   * A hidden window was shown again (TestActivities: a stopped activity back on top, after the focused window above
+   * it went while it was still hidden): the topmost visible focusable window gets the focus, if it lacks it.
+   */
+  static void focusTop() {
+    refocus(null);
+  }
+
   /** The focused window {@code gone} went: the topmost focusable window left gets the focus. */
   private static void refocus(View gone) {
     if (!TestActivities.testRun()) return;

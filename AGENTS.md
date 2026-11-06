@@ -29,7 +29,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     commands (`runCommand`). A stopped activity's window is hidden, as ActivityThread hides it, so only the top
     one draws and takes touches; one coming back to the front (`bringToFront`: its top finished, `resume`) is shown
     again, and gets a window if it was recreated or rebuilt while stopped (configuration change, `recreate`,
-    `process-death`): before, finishing the top of such a stack left nothing on screen.
+    `process-death`): before, finishing the top of such a stack left nothing on screen. Robolectric's configuration
+    change recreates an activity into the resumed state whatever it was, so one that was stopped is stopped again
+    (`stopAgain`; in test runs too, where Robolectric's instrumentation recreates ActivityScenario's activities
+    itself on `setQualifiers`): a rotation used to leave the whole stack resumed.
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows.
@@ -663,7 +666,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
   The stopped activity's window is hidden until it comes back (also for back on a launcher root, which sends the task
   to the background), so UiAutomator, UiAutomation's windows and screenshots, and failure bundles see only the top
-  one (`StackWindowsTest`). Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were.
+  one, and gets the window focus back when it returns (`StackWindowsTest`). Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were.
   Not yet: a start for a result (startActivityForResult, ActivityResultContracts) is still only recorded, so a flow
   that waits for the started activity's result needs the test to supply it, as with Robolectric.
 - Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's

@@ -12,6 +12,7 @@ import java.util.regex.Pattern
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +60,38 @@ class StackWindowsTest {
       assertNotNull("the activity below is shown again", device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
       assertEquals(Lifecycle.State.RESUMED, scenario.state)
       assertEquals(1, appWindows().size)
+      // It has the window focus again: Espresso looks in the focused window.
+      var focused = false
+      scenario.onActivity { focused = it.window.decorView.hasWindowFocus() }
+      assertTrue("the window shown again has the focus", focused)
+    }
+  }
+
+  /** Rotating with an activity stopped below the top: it gets the new configuration too, and comes back with it. */
+  @Test
+  fun aStoppedActivityFollowsARotation() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("startActivities") == "true")
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      scenario.onActivity { it.startActivity(Intent(it, SecondActivity::class.java)) }
+      assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
+      try {
+        device.setOrientationLeft()
+        assertEquals("the stopped activity stays stopped", Lifecycle.State.CREATED, scenario.state)
+        assertEquals(1, appWindows().size)
+        device.findObject(By.text(Pattern.compile("finish", Pattern.CASE_INSENSITIVE))).click()
+        // The top bar shows the window size in dp: on its side, wider than tall.
+        val size = Pattern.compile("(compact|medium|expanded) (\\d+)×(\\d+)")
+        val label = device.wait(Until.findObject(By.text(size)), 5_000).text
+        val m = size.matcher(label).also { it.find() }
+        assertTrue(label, m.group(2).toInt() > m.group(3).toInt())
+        var landscape = false
+        scenario.onActivity { landscape = it.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE }
+        assertTrue("the activity below has the new configuration", landscape)
+      } finally {
+        device.setOrientationNatural()
+        device.unfreezeRotation()
+      }
     }
   }
 }

@@ -461,6 +461,22 @@ public class Host {
     if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
   }
 
+  static boolean isStopped(Activity a) {
+    return org.robolectric.util.ReflectionHelpers.getField(a, "mStopped");
+  }
+
+  /**
+   * After a configuration change: Robolectric recreates an activity into the resumed state whatever state the old one
+   * was in, so a rotation left every activity of the stack resumed (and in test runs, the window of one ActivityScenario
+   * launched on top). One that was stopped is stopped again, its window hidden.
+   */
+  static void stopAgain(ActivityController<?> c) {
+    Activity a = c.get();
+    if (a.isResumed()) c.pause();
+    if (!isStopped(a)) c.stop();
+    setWindowVisible(a, false);
+  }
+
   /**
    * A stopped activity coming back to the front (the one above finished, or the app returns from the home screen):
    * restarted, resumed, and its window shown. An activity recreated or rebuilt while stopped (a configuration change,

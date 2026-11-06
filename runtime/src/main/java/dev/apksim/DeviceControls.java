@@ -496,8 +496,7 @@ final class DeviceControls {
         // recreate: what a configuration change does (ViewModels survive, saved state is restored). Robolectric's
         // recreate() needs window focus before the new window exists, so go through its configuration change, with a
         // change no activity handles itself (assets paths).
-        Configuration config = new Configuration(app.getResources().getConfiguration());
-        for (ActivityController<? extends Activity> c : stack) c.configurationChange(config, app.getResources().getDisplayMetrics(), 0x80000000);
+        changeConfiguration(new Configuration(app.getResources().getConfiguration()), 0x80000000);
         ActivityController<? extends Activity> top = stack.peek();
         if (top != null && hiddenBy == null && top.get().getWindow().getDecorView().getViewRootImpl() == null) top.visible();
         return "ok";
@@ -877,6 +876,18 @@ final class DeviceControls {
     return RuntimeEnvironment.getApplication();
   }
 
+  /** Every activity of the stack gets the change; those that were stopped stay stopped (Host.stopAgain). */
+  private int changeConfiguration(Configuration config, int changed) {
+    int n = 0;
+    for (ActivityController<? extends Activity> c : stack) {
+      boolean stopped = Host.isStopped(c.get());
+      c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
+      if (stopped) Host.stopAgain(c);
+      n++;
+    }
+    return n;
+  }
+
   /**
    * Delivers the new configuration to every activity: recreated, or onConfigurationChanged if it handles it.
    * setQualifiers has already updated the shared resources, so Robolectric would see no difference: say what changed.
@@ -885,11 +896,7 @@ final class DeviceControls {
     Configuration config = new Configuration(app.getResources().getConfiguration());
     int changed = before.diff(config);
     if (changed == 0) return "unchanged";
-    int n = 0;
-    for (ActivityController<? extends Activity> c : stack) {
-      c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-      n++;
-    }
+    int n = changeConfiguration(config, changed);
     // Robolectric's recreate() leaves the new activity's window detached (setup() would call visible()).
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null && hiddenBy == null && top.get().getWindow().getDecorView().getViewRootImpl() == null) top.visible();
