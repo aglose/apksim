@@ -3,7 +3,8 @@
 
 Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
-                     [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [-- APKSIM_OPTION...]
+                     [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
+                     [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
@@ -21,6 +22,10 @@ With --shards N the suite is split over N processes running at once, each given 
 process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
 suite that passes in one process passes sharded unless its tests depend on running after one another.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
+--test-timeout SEC (default 900, 0 for none): a process that goes SEC seconds without a test starting or ending is
+killed (its process group: the launcher and its JVM), and reported as a crash is: the test that was running fails with
+the reason and the tail of stderr, and the rest go on. A test hung past its own JUnit timeout (in teardown, say) held
+the whole run otherwise.
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
 for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
 test was running to put that on (it died between tests, at startup or at exit): the report then lists a failed
@@ -55,6 +60,7 @@ CODES = {0: "passed", -2: "failed", -3: "ignored", -4: "skipped"}
 
 LAUNCHER = [ROOT + "/apksim"]
 RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
+TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
 
 
 def apksim(app, test, extra_args, apksim_opts):
@@ -63,11 +69,30 @@ def apksim(app, test, extra_args, apksim_opts):
     cmd = LAUNCHER + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
-    p = subprocess.Popen(cmd + apksim_opts + [app], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Its own process group, so --test-timeout ends the JVM the launcher starts, not just the launcher.
+    p = subprocess.Popen(cmd + apksim_opts + [app], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         start_new_session=True)
     err = []
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
     lines, seconds, started, block, deps = [], {}, {}, {}, []
+    # --test-timeout: the time since the process started or a test last started or ended. A test that hangs past
+    # its own JUnit timeout (in teardown, or ignoring interrupts in a way the Timeout watchdog cannot see) otherwise
+    # held the run for as long as the CI job allowed.
+    progress, killed, done = [time.time()], [], threading.Event()
+
+    def watchdog():
+        while not done.wait(1):
+            if time.time() - progress[0] > TEST_TIMEOUT:
+                killed.append(f"instrument.py: nothing finished for {TEST_TIMEOUT} s (--test-timeout); killed the process\n")
+                try:
+                    os.killpg(p.pid, 9)
+                except ProcessLookupError:
+                    pass
+                return
+
+    if TEST_TIMEOUT > 0:
+        threading.Thread(target=watchdog, daemon=True).start()
     for line in p.stdout:
         if line.startswith(affected.PREFIX):
             deps.append(line)
@@ -77,6 +102,7 @@ def apksim(app, test, extra_args, apksim_opts):
         if m:
             block[m[1]] = m[2].rstrip("\n")
         elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            progress[0] = time.time()
             t = (block.get("class"), block.get("test"))
             if line.split(": ")[1].strip() == "1":
                 started[t] = time.time()
@@ -84,10 +110,11 @@ def apksim(app, test, extra_args, apksim_opts):
                 seconds[t] = time.time() - started.pop(t)
             block = {}
     p.wait()
+    done.set()
     reader.join()
     if deps:
         RECORDED.append(deps)
-    r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
+    r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), (err[0] if err else "") + "".join(killed))
     r.seconds = seconds
     return r
 
@@ -424,6 +451,7 @@ def run_tests(a, passthrough, listing, tests, label=""):
 
 
 def main():
+    global TEST_TIMEOUT
     argv = sys.argv[1:]
     passthrough = []
     if "--" in argv:
@@ -448,7 +476,9 @@ def main():
     p.add_argument("--ignore", action="append", default=[], metavar="GLOB")
     p.add_argument("--timings", action="append", default=[], metavar="XML")
     p.add_argument("--shard", type=int, metavar="I")
+    p.add_argument("--test-timeout", type=int, default=TEST_TIMEOUT, metavar="SEC")
     a = p.parse_args(argv)
+    TEST_TIMEOUT = a.test_timeout
     redact = []
     if a.bundles:
         try:
