@@ -376,6 +376,9 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       blank = dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK;
       if (blank) {
         System.err.println("[apksim] MediaCodec " + name + ": video blank, nothing is decoded or drawn");
+        // A picture an earlier codec (with video on) left on this surface comes off: the view stays empty.
+        SurfaceTexture t = VideoSurfaces.textureOf(surface);
+        if (t != null) VideoSurfaces.publish(t, null);
         return;
       }
       handle = VideoToolbox.create(hevc);

@@ -245,7 +245,7 @@ public class Host {
       if (stack.isEmpty()) break;
       if (Snapshot.ON) focusTopWindow();
       List<View> roots = rootViews();
-      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
+      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots) && capAllowsFrame())) {
         render(roots);
         if (firstFrame) {
           firstFrame = false;
@@ -1043,7 +1043,27 @@ public class Host {
     return new int[] {x, y};
   }
 
+  /** The clock when the last frame was drawn (ms). */
+  private long lastRenderMs;
+
+  /**
+   * Under a frame rate cap, a frame only once the clock reaches the cap's grid line after the last one. The
+   * Choreographer's frames fall on those lines already (alignFrameDelay); this holds back the rest, windows dirtied
+   * outside a traversal (a View invalidated from another handler, a TextureView's new picture), which otherwise drew
+   * on any loop turn, up to 120 a second.
+   */
+  private static boolean capAllowsFrame(long lastMs) {
+    long hz = gridHz();
+    if (hz >= 120) return true;
+    return SystemClock.uptimeMillis() >= lineAfter(lineAtOrBefore(lastMs, hz), hz);
+  }
+
+  private boolean capAllowsFrame() {
+    return capAllowsFrame(lastRenderMs);
+  }
+
   private void render(List<View> roots) {
+    lastRenderMs = SystemClock.uptimeMillis();
     lastDrawn = roots.stream().filter(HwRenderer::drawn).toList();
     hw.draw(roots, this::position);
     frames++;
