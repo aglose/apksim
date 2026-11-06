@@ -117,7 +117,8 @@ public class Host {
     app = RuntimeEnvironment.getApplication();
     Timing.detail("got-application");
     useDeviceGestureThresholds(app);
-    // The host's networks were installed before Application.onCreate (TestActivities' callApplicationOnCreate).
+    // The host's networks (HostNetworks, kept away by --network-profile offline until online), the permissions
+    // installing grants, ANDROID_ID and the app's providers are set up before Application.onCreate (InstallState).
     dev.apksim.video.ShadowSimMediaCodec.install();
     w = app.getResources().getDisplayMetrics().widthPixels;
     h = app.getResources().getDisplayMetrics().heightPixels;
