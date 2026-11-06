@@ -518,9 +518,23 @@ public final class TestActivities {
       void callActivityOnResume(Activity activity);
     }
 
-    /** In a test run, what a device has before the app starts (InstallState), then the app's onCreate. */
+    /**
+     * Who the device is (DeviceIdentity: serial, features, --build), in running instances too, and in a test run what
+     * a device has before the app starts (InstallState); then the app's onCreate.
+     */
     @Implementation
     protected void callApplicationOnCreate(android.app.Application app) {
+      // A running instance takes its data slot first (not a standby's warm-up, which has no APK yet), and with
+      // APKSIM_LOGCAT the app's log reaches stderr from onCreate on, not from Host.run (after it).
+      if (!testRun() && System.getProperty("apksim.package") != null) {
+        if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
+        try {
+          Host.usePersistentDataDir();
+        } catch (Exception e) {
+          throw new IllegalStateException("app data slot", e);
+        }
+      }
+      DeviceIdentity.beforeApplicationOnCreate(app);
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
       try {

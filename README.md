@@ -137,6 +137,9 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--biometrics enrolled` | Start with a fingerprint enrolled |
 | | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
 | | `--fresh` | Erase the app's data first, as if just installed |
+| Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
+| | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` reports, for example `android.hardware.camera.any`; `=false` takes one away. Repeatable |
+| | `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9` or `VERSION.SECURITY_PATCH=2026-10-05` (not `VERSION.SDK_INT`: the framework is API 36). Repeatable. In test runs leave `FINGERPRINT` alone: with a device's, Compose's test rule waits for draw passes that never come |
 | Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
 | | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
