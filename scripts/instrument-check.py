@@ -156,6 +156,8 @@ def fake_docker():
     something else once the container hangs: either way the container goes on running."""
     args, state = sys.argv[2:], os.environ["CHECK_DIR"]
     if args[:2] == ["rm", "-f"]:
+        if os.environ["CHECK_SCENARIO"] == "interrupt-docker-cleanup":
+            time.sleep(1)  # a slow stop, for the second SIGINT to land in
         with open(os.path.join(state, "docker-kills"), "a") as f:
             f.write(args[2] + "\n")
         os.killpg(int(args[2]), signal.SIGKILL)  # every process in the container
@@ -174,7 +176,7 @@ def fake_docker():
             if not b:
                 return
             os.write(dst, b)
-            if dst == 2 and b"hangs in a test" in b and os.environ["CHECK_SCENARIO"] == "docker-client-dies":
+            if dst == 2 and b"hangs in a test" in b and os.environ["CHECK_SCENARIO"] in ("docker-client-dies", "interrupt-docker-cleanup"):
                 threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGKILL)).start()  # (once stdout is relayed too)
     relays = [threading.Thread(target=relay, args=(child.stdout.fileno(), 1), daemon=True),
               threading.Thread(target=relay, args=(child.stderr.fileno(), 2), daemon=True)]
@@ -242,12 +244,19 @@ SCENARIOS = {
     # SIGINT comes then: on the main thread (one process), and while a shard's worker starts its listing (--shards 3).
     "interrupt-spawn": (130, 1, 0, []),
     "interrupt-parallel": (130, (3, 4), 0, []),  # (a shard may be refused its start once the stop has begun)
+    # As docker-client-dies, with INSTRUMENT_CHECK_CLEANUP_DELAY holding the main thread in that container's cleanup
+    # (in its kill lock) when the SIGINT comes, whose handler then kills the same process; and a second SIGINT while
+    # that stop's `rm -f` runs.
+    "interrupt-docker-cleanup": (130, 1, 0, []),
 }
 SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3}
 # When an interrupt-* scenario sends its SIGINT: once a process hangs, or, for these, once the process being started
 # has noted its call (its first act), well inside the spawn delay.
 INTERRUPT_WHEN = {"interrupt-spawn": lambda d: os.path.exists(os.path.join(d, "calls")),
                   "interrupt-parallel": lambda d: "list" in read(os.path.join(d, "calls"))}
+# Seconds from ready to the SIGINT, and to a second one (None: none).
+INTERRUPT_AFTER = {"interrupt-spawn": (0.1, None), "interrupt-parallel": (0.1, None),
+                   "interrupt-docker-cleanup": (1.0, 0.3)}  # (the client dies 0.5 s after the hang; cleanup holds 2 s)
 # The failure text expected of a test that timed out: the reason, and the thread dump's JUnit thread (not the other).
 TIMED_OUT = ["timed out after 2 s", "at p.C000.m1(p.C000.java:1)", "hangs in a test"]
 
@@ -285,6 +294,8 @@ def main():
             env = dict(os.environ, CHECK_SCENARIO=sc, CHECK_DIR=d)
             if sc in INTERRUPT_WHEN:
                 env["INSTRUMENT_CHECK_SPAWN_DELAY"] = "1.5"
+            if sc == "interrupt-docker-cleanup":
+                env["INSTRUMENT_CHECK_CLEANUP_DELAY"] = "2"
             launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
             if "docker" in sc:
                 os.makedirs(os.path.join(d, "bin"))
@@ -302,8 +313,13 @@ def main():
                 ready = INTERRUPT_WHEN.get(sc, lambda d: os.path.exists(os.path.join(d, "pids")))
                 while p.poll() is None and not ready(d) and time.time() - start < 20:
                     time.sleep(0.02)
-                time.sleep(0.3 if sc not in INTERRUPT_WHEN else 0.1)
+                first, second = INTERRUPT_AFTER.get(sc, (0.3, None))
+                time.sleep(first)
                 p.send_signal(signal.SIGINT)
+                if second is not None:
+                    time.sleep(second)
+                    if p.poll() is None:
+                        p.send_signal(signal.SIGINT)
             try:
                 out, err = p.communicate(timeout=60)
             except subprocess.TimeoutExpired:  # (a hang that was not killed: end what it left, and say so)

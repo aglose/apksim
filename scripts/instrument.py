@@ -73,6 +73,8 @@ LIVE_LOCK = threading.RLock()
 STOPPING = []  # the signal stopping the run, once one has: no process starts after it
 MAIN_SPAWNING = [False]  # the main thread is between starting a process and entering it in LIVE
 SPAWN_DELAY = float(os.environ.get("INSTRUMENT_CHECK_SPAWN_DELAY", 0))  # instrument-check.py: widen that window
+CLEANUP_DELAY = float(os.environ.get("INSTRUMENT_CHECK_CLEANUP_DELAY", 0))  # and the main thread's container cleanup
+IN_STOP = [False]  # stop() is under way: a second signal changes nothing
 CONTAINER_TOOLS = ("docker", "podman", "nerdctl")
 
 
@@ -111,7 +113,9 @@ def apksim(app, test, extra_args, apksim_opts):
             cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
             cidfile = os.path.join(cid_dir, "cid")
             cmd = cmd[:run + 1] + ["--cidfile", cidfile] + cmd[run + 1:]
-    cid, kill_lock = [], threading.Lock()
+    # Reentrant: the signal handler runs on the main thread, and its stop() kills this process while the main thread
+    # may be in kill_lock itself (the cleanup below). Other locks the handler takes: LIVE_LOCK, also reentrant.
+    cid, kill_lock = [], threading.RLock()
     tool = next((os.path.basename(w) for w in cmd[:run or 0] if os.path.basename(w) in CONTAINER_TOOLS), "docker")
 
     def container_id():
@@ -128,15 +132,14 @@ def apksim(app, test, extra_args, apksim_opts):
         try:
             c = container_id()
         except OSError as e:
-            sys.stderr.write(f"instrument.py: could not read the container ID from {cidfile} ({e}): a container "
-                             f"{tool} started for this process may still be running\n")
+            warn(f"instrument.py: could not read the container ID from {cidfile} ({e}): a container {tool} started "
+                 "for this process may still be running")
             return
         if c:  # (`rm -f`: it ends a container whether it started or not; one already gone is an error, ignored)
             try:
                 subprocess.run(cmd[:run] + ["rm", "-f", c], capture_output=True, timeout=60)
             except (OSError, subprocess.SubprocessError) as e:
-                sys.stderr.write(f"instrument.py: `{tool} rm -f {c}` failed ({e}): the container may still be "
-                                 "running\n")
+                warn(f"instrument.py: `{tool} rm -f {c}` failed ({e}): the container may still be running")
 
     def kill():
         with kill_lock:
@@ -225,6 +228,8 @@ def apksim(app, test, extra_args, apksim_opts):
     reader.join()
     if cidfile and p.returncode < 0 and not timed_out:
         with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
+            if CLEANUP_DELAY:
+                time.sleep(CLEANUP_DELAY)
             remove_container()
     with LIVE_LOCK:
         LIVE.pop(p, None)
@@ -243,7 +248,10 @@ def apksim(app, test, extra_args, apksim_opts):
 def interrupted(signum, frame):
     """SIGINT/SIGTERM/SIGHUP: the test processes have process groups of their own, so a Ctrl-C at the terminal no
     longer reaches them: end them (and their containers), then this script, with the signal's status. If the main
-    thread was starting a process, that is left to it, once the process is in LIVE."""
+    thread was starting a process, that is left to it, once the process is in LIVE; once a stop is under way, another
+    signal is ignored (the stop goes on to its exit)."""
+    if IN_STOP[0]:
+        return
     with LIVE_LOCK:
         STOPPING[:] = STOPPING or [signum]
         if MAIN_SPAWNING[0]:
@@ -252,12 +260,18 @@ def interrupted(signum, frame):
 
 
 def stop(signum):
+    IN_STOP[0] = True
     with LIVE_LOCK:  # (waits for a worker thread starting a process; none starts after this)
         STOPPING[:] = STOPPING or [signum]
         kills = list(LIVE.values())
     for k in kills:
         k()
     os._exit(128 + signum)
+
+
+def warn(text):
+    """A line on stderr without the stream's lock, which a signal handler interrupting a write would find held."""
+    os.write(2, (text + "\n").encode(errors="replace"))
 
 
 def tail(r):
