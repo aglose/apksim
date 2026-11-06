@@ -27,10 +27,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`).
+    commands (`runCommand`). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
-    extra shadows.
+    extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
+    (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
+    the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
+    async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
@@ -294,6 +299,9 @@ imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` de
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
+its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
+drives it; `PopupTouchTest` in a test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -594,7 +602,8 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
-UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
+unpaused Choreographer that frame loop never let the looper idle). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running

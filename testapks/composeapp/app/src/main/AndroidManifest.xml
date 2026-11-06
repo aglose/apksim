@@ -54,6 +54,15 @@
                 <data android:scheme="apksim" android:host="timer" />
             </intent-filter>
         </activity>
+        <!-- apksim://popup-trace: a Trace section begun twice, and taps outside a non-focusable popup (issue 52). -->
+        <activity android:name=".PopupTraceActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="popup-trace" />
+            </intent-filter>
+        </activity>
         <service android:name=".TripSyncJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
         <activity android:name=".SecondActivity" android:exported="false" />
         <provider android:name=".StartupProvider" android:authorities="${applicationId}.startup" android:exported="false" />

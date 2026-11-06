@@ -688,10 +688,17 @@ public class Host {
     if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
   }
 
+  /**
+   * Whether a touch outside this window goes on to the windows behind it. As InputDispatcher's isTouchModal: a window
+   * is touch-modal only when it is focusable and has no FLAG_NOT_TOUCH_MODAL, so a non-focusable popup (a slider's
+   * value tooltip) takes only the touches inside it. Robolectric's UiAutomation injection, used in test runs, has the
+   * same rule.
+   */
   private static boolean isTouchThrough(View root) {
     ViewGroup.LayoutParams lp = root.getLayoutParams();
     return lp instanceof WindowManager.LayoutParams wl
-        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
+        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
   }
 
   // Two fingers (Option-drag, trackpad pinch and rotate, the `pinch` command): the first finger follows the event,
