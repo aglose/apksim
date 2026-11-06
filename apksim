@@ -1,5 +1,6 @@
 #!/bin/bash
-# Usage: apksim [--shot FILE] [--exit-after-first-frame] [--debug PORT] [--instrument test.apk [-e KEY VALUE]...] app.apk
+# Usage: apksim [--activity PKG/.Act|.Act|NAME] [--shot FILE] [--exit-after-first-frame] [--debug PORT]
+#               [--instrument test.apk [-e KEY VALUE]...] app.apk
 #        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
@@ -70,6 +71,9 @@ if [[ "${1:-}" == --standby ]]; then
 fi
 while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
   case "$1" in
+    # The activity to start instead of the first MAIN/LAUNCHER one: PKG/.Act, .Act, a full or simple class name;
+    # any activity in the manifest, exported or not (AppInfo).
+    --activity) EXTRA+=("-Dapksim.activity=$2"); shift 2 ;;
     --shot) EXTRA+=("-Dapksim.screenshot=$2"); shift 2 ;;
     --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
     --control) EXTRA+=("-Dapksim.control=$2"); shift 2 ;;
@@ -174,7 +178,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   WARM_OK=1
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
-      -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
+      -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;

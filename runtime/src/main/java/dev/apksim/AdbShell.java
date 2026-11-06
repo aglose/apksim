@@ -778,7 +778,8 @@ final class AdbShell {
     if (ri == null || ri.activityInfo == null) return "Error: Activity not started, unable to resolve " + describe(in);
     control("resume");
     String target = ri.activityInfo.packageName + "/" + ri.activityInfo.name;
-    if (ri.activityInfo.name.equals(control("activity")) && in.getData() == null && in.getExtras() == null
+    // (An alias counts as its targetActivity, as a device's ActivityRecord.mActivityComponent does.)
+    if (AppInfo.activityClass(ri.activityInfo.name).equals(control("activity")) && in.getData() == null && in.getExtras() == null
         && (in.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
       // As on a device, launching what is already running brings it to the front instead of stacking a copy.
       print("Warning: Activity not started, its current task has been brought to the front\n");
@@ -1099,11 +1100,12 @@ final class AdbShell {
       }
       case "resolve-activity" -> {
         boolean brief = a.contains("--brief");
-        if (!a.get(a.size() - 1).equals(pkg)) {
+        // The launcher activity a device resolves, not --activity's: a home-only app has none.
+        String launcher = System.getProperty("apksim.launcher");
+        if (!a.get(a.size() - 1).equals(pkg) || launcher == null) {
           print("No activity found\n");
           return 1;
         }
-        String launcher = System.getProperty("apksim.launcher");
         if (brief) print("priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n" + pkg + "/" + launcher + "\n");
         else print("Activity Resolver Table:\n  " + pkg + "/" + launcher + "\n");
         return 0;
