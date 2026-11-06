@@ -135,6 +135,9 @@ final class Instrument {
     JUnitCore core = new JUnitCore();
     core.addListener(raw);
     if (dev.apksim.dex.Probes.ON) core.addListener(new DepsListener(out));  // after raw: its lines go between blocks
+    // The runner's listeners (its "listener" argument, -e listener), joined at the first test (TestRunnerSetup).
+    System.setProperty("apksim.runner", instr[0]);
+    core.addListener(TestRunnerSetup.LISTENERS);
     Result r = core.run(request);
     raw.finish(r, r.getRunTime());
     return r.wasSuccessful() && raw.networkFailures.isEmpty() ? 0 : 1;

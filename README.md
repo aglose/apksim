@@ -151,6 +151,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
 | | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
 | | `--start-activities` | In test runs, an activity the app starts comes up, as on a device, instead of only being recorded |
+| | `--test-outputs DIR` | In test runs, the Test Storage service's files (what a report library such as Allure writes) go under DIR, laid out as a device's `/sdcard/googletest` |
 | | `--mock-maker auto\|keep\|subclass\|inline\|NAME` | Mockito's mock maker for the tests. `auto` (default) swaps the ART makers a test APK names (mockito-android, dexmaker) for Mockito's subclass maker; `keep` leaves the APK's; `subclass`/`inline` force `mock-maker-subclass`/`mock-maker-inline` (`inline` needs Byte Buddy's agent and mocks JDK types only, not the APK's translated classes); any other value is used as given |
 | | `--bundles DIR` | In test runs, a [failure bundle](#failure-bundles) in DIR for each failing test. `--bundles-on all` for passing tests too, `--bundles-max N` (default 50 a process), `--bundles-redact REGEX` |
 | | `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
@@ -354,8 +355,7 @@ Kotlin or Java file selects the tests that reached a class compiled from it; a c
 manifests, build files) runs the whole suite and says why. How it works, its limits and measurements on a large app:
 [docs/affected-tests.md](docs/affected-tests.md).
 
-**Not supported yet:** accessibility events for UiAutomator, the Test Storage service, the runner's own listeners,
-and `adb shell am instrument` of a test APK. Tests that wait for another process won't work either. See AGENTS.md,
+**Not supported yet:** accessibility events for UiAutomator and `adb shell am instrument` of a test APK. Tests that wait for another process won't work either. See AGENTS.md,
 "Instrumentation tests", for the details, and [docs/plan.md](docs/plan.md) for what's planned.
 
 ## Screenshot tests

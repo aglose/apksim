@@ -62,7 +62,10 @@ jobs:
           cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
           cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
-            --xml tests/junit.xml -e timezone America/New_York -- --timezone America/New_York
+            --xml tests/junit.xml -e timezone America/New_York -- --timezone America/New_York --test-outputs /work/outputs
+          # The runner's listener (RecordingListener) wrote through Test Storage after each test's teardown.
+          test -s "tests/outputs/googletest/test_outputfiles/listener/dev.apksim.composeapp.RunnerListenersTest#theRunnersListenerHearsTheTest.txt"
+          test -s tests/outputs/googletest/test_outputfiles/storage-check/out.txt
           # Again with the clock following real time (opt-in), which RealTimeClockTest needs.
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-realtime.xml -e timezone America/New_York -e realtimeClock true \

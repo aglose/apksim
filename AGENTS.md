@@ -487,7 +487,15 @@ Instrumentation shadow records the class it hands on to Instrumentation.newAppli
 then gets that Application (`SimTestEnvironment` sets `Config.application`; Robolectric's global config is fixed
 before the probe). If the runner's newApplication fails with the probe's context, the manifest's is kept, with a
 line in the log; `--jvm -Dapksim.runnerApplication=false` skips the probe. The test app's `HarnessRunner` swaps in
-`HarnessTestApplication` (`RunnerApplicationTest`). The runner's listeners and other runner arguments are not run.
+`HarnessTestApplication` (`RunnerApplicationTest`). The runner's onCreate runs too, once a process at the first
+test's setup (`TestRunnerSetup`): up to its `super.onCreate(arguments)`, which the translator sends to
+`TestRunnerSetup.superOnCreate` so it keeps the arguments the runner passes on instead of starting a run. The
+listeners those arguments name (`listener`, which a report library's runner adds to) and any `-e listener` hear the
+run through `TestRunnerSetup.LISTENERS`, as AndroidJUnitRunner registers them; they join at the first test, which
+they hear started. Robolectric resets its providers before JUnit reports a test's end, so the Test Storage provider
+(`SimTestStorage`: test_outputfiles, test_runfiles, internal_use and testargs, files under `--test-outputs DIR`,
+default `cache/test-outputs` in the state folder) is registered again before each listener call. The test app's
+`HarnessRunner` adds `RecordingListener` (`RunnerListenersTest`).
 `-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work (in `class`/`notClass`, `\,` is
 a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`: an apksim extension, which
 `instrument.py` writes when it names tests; any other backslash is literal), and every `-e` reaches

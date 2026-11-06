@@ -272,6 +272,8 @@ public class SimRunner extends RobolectricTestRunner {
       InstrumentationRegistry.registerInstance(InstrumentationRegistry.getInstrumentation(), args);
       initJniConstants();
       useTestApkContext();
+      SimTestStorage.install();
+      TestRunnerSetup.beforeFirstTest();
       try {
         Host.useDeviceGestureThresholds(RuntimeEnvironment.getApplication());  // as on a device, as Host does
       } catch (Exception e) {

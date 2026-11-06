@@ -2587,6 +2587,14 @@ final class MethodTranslator implements Opcodes {
       // Compose's caret blinks unless made with animate=false; --snapshot holds it (dev.apksim.Snapshot).
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Snapshot", "cursorBlink", "(Z)Z", false);
     }
+    if (opcode == INVOKESPECIAL && "androidx/test/runner/AndroidJUnitRunner".equals(ownerName) && "onCreate".equals(m.name())
+        && "(Landroid/os/Bundle;)V".equals(m.descriptor())) {
+      // A runner's super.onCreate(arguments): apksim runs the runner's own onCreate up to here (TestRunnerSetup).
+      mv.visitLdcInsn(org.objectweb.asm.Type.getObjectType(owner));
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestRunnerSetup", "superOnCreate",
+          "(Ljava/lang/Object;Landroid/os/Bundle;Ljava/lang/Class;)V", false);
+      return;
+    }
     if (opcode == INVOKEVIRTUAL && "android/app/Instrumentation".equals(ownerName) && "getContext".equals(m.name())
         && "()Landroid/content/Context;".equals(m.descriptor())) {
       // The test APK's own context, as on a device (Robolectric's instrumentation returns the app's).
