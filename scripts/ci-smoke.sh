@@ -68,17 +68,20 @@ drive quit >/dev/null || true
 
 # --activity: a non-exported activity started instead of the launcher one, kept by restart and process-death; back on
 # it ends the app. One the manifest lacks stops the launch with exit 2 and the manifest's activities.
-ACT_PORT=7402 ACT_NAME=$NAME-activity
+ACT_PORT=7403 ACT_NAME=$NAME-activity
+# Its log saved and the container removed once checked (act_done), and by the trap meanwhile: later stages replace it.
+act_done() { docker logs "$ACT_NAME" > "$OUT/activity.log" 2>&1 || true; docker rm -f "$ACT_NAME" >/dev/null 2>&1 || true; }
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true; act_done' EXIT
 docker run -d --name "$ACT_NAME" --platform "$PLATFORM" -p "127.0.0.1:$ACT_PORT:$ACT_PORT" -v "$OUT:/work" "$IMAGE" \
   --activity .TripChooserActivity --control "$ACT_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
-trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker logs "$ACT_NAME" > "$OUT/activity.log" 2>&1 || true
-  docker rm -f "$NAME" "$ACT_NAME" >/dev/null 2>&1 || true' EXIT
 act() { python3 "$ROOT/scripts/drive.py" "$ACT_PORT" "$@"; }
 for _ in $(seq 1 120); do act ping 2>/dev/null | grep -q pong && break; sleep 1; done
 started="$(act activity restart 'wait 1500' activity process-death 'wait 1500' activity | grep -c '^activity -> dev.apksim.composeapp.TripChooserActivity$' || true)"
 act back >/dev/null || true
 for _ in $(seq 1 30); do [[ "$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")" == false ]] && break; sleep 1; done
 running="$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")"
+act_done
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 code=0
 docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --activity .NoSuchActivity app.apk \
   > "$OUT/activity-missing.log" 2>&1 || code=$?

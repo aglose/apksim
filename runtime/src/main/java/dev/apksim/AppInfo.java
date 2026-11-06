@@ -36,42 +36,41 @@ final class AppInfo {
     Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
         .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
     String pkg = doc.getDocumentElement().getAttribute("package");
-    String launcher = null;  // the first MAIN/LAUNCHER activity, as a device's launcher starts it
-    String home = null;  // the first MAIN/HOME one, as a device starts its home app
+    Element launcher = null;  // the first MAIN/LAUNCHER activity or alias, as a device's launcher starts it
+    Element home = null;  // the first MAIN/HOME one, as a device starts its home app
     Map<String, Element> activities = new LinkedHashMap<>();  // full name -> element, aliases too
     for (String tag : new String[] {"activity", "activity-alias"}) {
       NodeList list = doc.getElementsByTagName(tag);
       for (int i = 0; i < list.getLength(); i++) {
         Element a = (Element) list.item(i);
         activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
-        if (launcher == null && hasMain(a, "android.intent.category.LAUNCHER")) launcher = target(pkg, a);
-        if (home == null && hasMain(a, "android.intent.category.HOME")) home = target(pkg, a);
+        if (launcher == null && hasMain(a, "android.intent.category.LAUNCHER")) launcher = a;
+        if (home == null && hasMain(a, "android.intent.category.HOME")) home = a;
       }
     }
     // A test run needs none: a library's test APK (KMP androidDeviceTest, a library's androidTest) is its own app.
     boolean testRun = System.getProperty("apksim.instrument") != null;
     String asked = System.getProperty("apksim.activity", "");
-    String start = launcher;
-    String category = "LAUNCHER";
+    Element start = launcher;
     if (!asked.isEmpty()) {
       if (testRun) throw new LaunchError("--activity is for running the app: a test run starts what its tests start");
-      Element a = find(pkg, asked, activities);
-      start = target(pkg, a);
-      // Started as a device would: MAIN with its filter's category (launcher, home), else by component only (am start -n).
-      category = hasMain(a, "android.intent.category.LAUNCHER") ? "LAUNCHER"
-          : hasMain(a, "android.intent.category.HOME") ? "HOME" : "";
-    } else if (start == null && home != null) {
+      start = find(pkg, asked, activities);
+    } else if (start == null) {
       start = home;  // a home app with no launcher entry
-      category = "HOME";
     }
     if (start == null && !testRun) throw new LaunchError("no launcher activity in " + apk + " (choose one with --activity)");
     System.setProperty("apksim.apk", apk.toString());
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
-    if (launcher != null) System.setProperty("apksim.launcher", launcher);
+    if (launcher != null) System.setProperty("apksim.launcher", fullName(pkg, launcher.getAttribute(NS + "name")));
     if (start != null) {
-      System.setProperty("apksim.startActivity", start);
-      System.setProperty("apksim.startCategory", category);
+      // The component the intent names (an alias stays the alias, as on a device: the app can tell which one started
+      // it) and the class to make (an alias's targetActivity).
+      System.setProperty("apksim.startActivity", fullName(pkg, start.getAttribute(NS + "name")));
+      System.setProperty("apksim.startClass", target(pkg, start));
+      // Started as a device would: MAIN with its filter's category (launcher, home), else by component only (am start -n).
+      System.setProperty("apksim.startCategory", hasMain(start, "android.intent.category.LAUNCHER") ? "LAUNCHER"
+          : hasMain(start, "android.intent.category.HOME") ? "HOME" : "");
     }
   }
 

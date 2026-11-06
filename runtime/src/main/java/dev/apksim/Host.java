@@ -125,8 +125,7 @@ public class Host {
     controls.showTitle();
     Timing.detail("controls");
 
-    Intent first = startIntent();
-    start(first.getComponent().getClassName(), first);
+    start(System.getProperty("apksim.startClass"), startIntent());
     Timing.mark("activity-resumed");
     // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
     Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
@@ -353,13 +352,15 @@ public class Host {
   private String restart(String url) throws Exception {
     String pkg = System.getProperty("apksim.package");
     Intent intent = startIntent();
-    String cls = intent.getComponent().getClassName();
+    String cls = System.getProperty("apksim.startClass");
     if (url != null) {
       // Resolved first: with no activity left the process would end.
       intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(pkg);
       android.content.pm.ResolveInfo r = app.getPackageManager().resolveActivity(intent, 0);
       if (r == null || r.activityInfo == null) return "error: no activity in " + pkg + " handles " + url;
-      cls = r.activityInfo.name;
+      // An alias's name stays the intent's component; its targetActivity is the class made (as TestActivities.launch).
+      intent.setComponent(new ComponentName(pkg, r.activityInfo.name));
+      cls = r.activityInfo.targetActivity != null ? r.activityInfo.targetActivity : r.activityInfo.name;
     }
     if (controls.hidden()) controls.show();
     while (shadowOf(app).getNextStartedActivity() != null) {
@@ -372,7 +373,7 @@ public class Host {
     pendingScript.clear();
     drags.clear();
     drag = null;
-    intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     start(cls, intent);
     return "ok, " + cls;
   }
@@ -513,7 +514,8 @@ public class Host {
   /**
    * What the instance starts, and `restart` starts again: --activity's activity, else the manifest's first MAIN/LAUNCHER
    * one (else MAIN/HOME, see AppInfo), with the intent a device gives it: MAIN and its filter's category (LAUNCHER, or
-   * HOME for a home app), or the component alone for an activity with no MAIN filter, as `am start -n` sends.
+   * HOME for a home app), or the component alone for an activity with no MAIN filter, as `am start -n` sends. For an
+   * alias the component is the alias and the class made is apksim.startClass, its targetActivity.
    */
   private static Intent startIntent() {
     String category = System.getProperty("apksim.startCategory", "");

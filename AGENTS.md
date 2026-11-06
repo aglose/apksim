@@ -320,7 +320,8 @@ Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android k
 `--activity PKG/.Act|.Act|CLASS` (`AppInfo`: start that activity, exported or not, instead of the manifest's first
 MAIN/LAUNCHER one, as `am start -n` would: a debug manifest's test LAUNCHER listed before a home app's MAIN/HOME
 entry, or a screen deep inside; a simple name such as `SecondActivity` works when one activity has it; with a MAIN
-filter it gets MAIN and that filter's LAUNCHER or HOME category, else the component alone. `restart` starts it again
+filter it gets MAIN and that filter's LAUNCHER or HOME category, else the component alone; an alias stays the intent's
+component and its targetActivity is made (the test app's `.SecondAlias`). `restart` starts it again
 and `process-death` rebuilds it; one the manifest lacks stops the launch with exit 2 and the list; not in test runs.
 With no LAUNCHER activity the first MAIN/HOME one starts), `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
