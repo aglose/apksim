@@ -220,7 +220,9 @@ public class Host {
           stepMs = passed > nowMs ? passed - nowMs : 0;
           // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
           // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
-          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / gridHz() + 1 - nowMs;
+          // On the 120 Hz grid whatever the cap: a 1 fps grid line can be most of a second away, and stepping there would
+          // run the app's startup timers (a 500 ms one) before anything was drawn.
+          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs, 120) + 1000 / 120 + 1 - nowMs;
         }
       }
       long looperStart = System.nanoTime();
@@ -439,6 +441,10 @@ public class Host {
       long nowMs = SystemClock.uptimeMillis();
       long nextLine = lineAfter(nowMs, hz) + 1;
       wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
+      // Under a cap the loop still turns at 120 Hz between frames, the clock waiting for the next line: input and
+      // commands go out once a turn, so parking a whole interval at 1 fps put a tap's DOWN and UP a second apart (a
+      // long press) and typed text out at a character a second.
+      if (hz < 120) wait = Math.min(wait, 1_000_000_000L / 120);
     }
     if (wait > 50_000L) LockSupport.parkNanos(wait);
   }
