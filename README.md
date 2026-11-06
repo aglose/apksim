@@ -143,6 +143,11 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
 | | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
+| Per-instance costs | `--max-fps N` | At most N frames a second (1-120), not the display's rate. Animations keep their speed in fewer frames, and the app still sees the display's refresh rate. The biggest saving for many headless instances: the test app's Shader tab costs about 0.7 of a core at 120 fps and 0.2 at 30 |
+| | `--video on\|blank\|off` | `blank`: players play at their pace but nothing is decoded or drawn (TextureViews stay empty). `off`: no video decoders are listed, as on a device without them. Launch only for `off` |
+| | `--audio on\|mute\|off` | `mute` keeps the timing and plays silence; `off` lists no AAC or MP3 decoders |
+| | `--anim-scale N` | The animator duration scale from the start: 0 jumps animations to their end, 10 slows them. In test runs it is set again at each test's setup |
+| | `--gles on\|off` | Offscreen GLES (on in test runs by default; off falls back to Robolectric's stand-ins) |
 | | `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9` or `VERSION.SECURITY_PATCH=2026-10-05` (not `VERSION.SDK_INT`: the framework is API 36). Repeatable. In test runs leave `FINGERPRINT` alone: with a device's, Compose's test rule waits for draw passes that never come |
 | Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
@@ -222,7 +227,7 @@ state folder.
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
 | Inspection | `activity`, `windows` (each window, its activity and lifecycle state), `viewtree [FILE]` (every view of every window, with ids and screen bounds), `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
-| Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video`, `stats` |
+| Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video [blank\|on]` (decode counts; sets the mode for the next codec), `maxfps [N]` (the frame rate cap, 1-120), `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
 
 A command that fails answers `error: ...`, and the app keeps running.
@@ -294,6 +299,7 @@ library's device-test APK, such as a KMP `androidDeviceTest`, instruments itself
 - **`--isolate`:** gives each test a fresh process, N at a time, as the AndroidX Test Orchestrator with `clearPackageData` does.
 - **`--shards N`:** splits the suite over N processes at once, with AndroidJUnitRunner's `-e numShards`/`shardIndex` (which `--instrument` takes too), into one report. Prefer it, and running suites side by side, to `--isolate`: every process pays a JVM and app start. On a large app's 4,134 tests, the whole set went from 167 s to 58 s on a Mac and from 670 s to about 135 s on 4 CPUs in the Linux image; in the app's own CI, on a GitHub runner, from a median 310 s to 140 s ([docs/parallel.md](docs/parallel.md)).
 - **Crash recovery:** without `--isolate`, if the process dies mid-run (a native crash, or a test that ignores its timeout), the test that was running is reported failed and the rest run in a new process.
+- **`--test-timeout SEC`:** a process that goes SEC seconds (default 900, 0 for none) without a test starting or ending, such as a hang in teardown, gets a thread dump and is killed. The running test fails with the dump's JUnit stacks, and the rest run in a new process.
 - **Arguments:** `-e` passes instrumentation arguments: `class`, `notClass`, `package`, `notPackage`, `log`, and anything your tests read. Options after `--` go to apksim.
 - **Failure bundles (`--bundles DIR`):** what each failing test left, so a red check can be read without a rerun ([below](#failure-bundles)).
 - **Only the affected tests (`--record-deps`, `--affected-by`):** record once on main which classes each test reaches, then on a pull request run only the tests the branch's changes can reach ([below](#affected-tests-and-balanced-shards)).
@@ -438,6 +444,7 @@ running it on a Mac are covered in [docs/linux-docker.md](docs/linux-docker.md).
 
 - **Breakpoints in app code.** Launch with `--debug 5005`, then attach Android Studio or IntelliJ ("Remote JVM Debug", localhost:5005). Breakpoints in the app's Kotlin and Java sources stop, step and show locals. R8-minified apps have no locals, and their line numbers need retracing with the mapping file.
 - **Logs.** Send `logcat on`, or set `APKSIM_LOGCAT=1` at launch, to copy `android.util.Log` output to stderr. With `--adb`, `adb logcat` reads it with filters.
+- **Crashes.** An uncaught exception ends the app as on a device: `FATAL EXCEPTION` with the stack goes to the log (`adb logcat`, and stderr), and the exit status is 10. An app's own default exception handler replaces apksim's. `--jvm -Dapksim.crashes=log` logs it and keeps running.
 - **Startup timing.** `--jvm -Dapksim.timing=verbose` prints each startup stage's time.
 - **Frames.** `frames`, `fps` and `shaders` show where frame time goes, and which shaders run on the GPU.
 - **Layout and accessibility.** `debug layout on` shows layout bounds for Views and Compose. `a11y show` marks unlabeled controls and touch targets under 48 dp.
@@ -468,10 +475,12 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.mute=true` | Keep audio timing, but play silence |
 | `-Dapksim.audio=false` | Turn off sound and the audio decoders |
 | `-Dapksim.runnerApplication=false` | In test runs, ignore the runner's `newApplication` |
+| `-Dapksim.crashes=log` | Log an uncaught exception and keep running, instead of ending the app (to look at a broken screen) |
+| `-Dapksim.providerFailures=fail` | In running instances, a content provider that throws at startup crashes the launch, as on a device (by default it is logged) |
 
 A launch is warm when it's handed to a pre-booted standby. `--debug`, test runs and most JVM options launch cold,
-because the standby read them when it booted. Of the switches above, only `timing`, `vsync` and `classCache` still
-launch warm.
+because the standby read them when it booted. Of the switches above, only `timing`, `vsync`, `classCache`, `crashes` and
+`providerFailures` still launch warm.
 
 ### Files and folders
 
@@ -517,7 +526,7 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.
-- **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
+- **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. libjnigraphics's `AndroidBitmap_*` calls work (getInfo, lock and unlock pixels, compress; no hardware bitmaps). Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
 - **Test runs are Robolectric-style:** the test body runs on the main thread. A `runBlocking` or `Thread.sleep` there runs the main queue while it waits, as the device's main thread would beside the test thread, but accessibility events aren't sent.
 - **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
