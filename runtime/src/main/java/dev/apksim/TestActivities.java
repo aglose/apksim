@@ -77,7 +77,12 @@ public final class TestActivities {
   public static void beforeUiThreadAction() {
     if (!testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
     org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
-    main.idle();
+    RealTimeClock.noBarrierWait++;
+    try {
+      main.idle();
+    } finally {
+      RealTimeClock.noBarrierWait--;
+    }
   }
 
   /**
@@ -317,6 +322,8 @@ public final class TestActivities {
   private static volatile java.lang.ref.WeakReference<Object> composeIdling;
   private static volatile java.lang.reflect.Method composeIdleNow;
   private static volatile java.lang.reflect.Method loopUntilIdle;
+  /** The longest one Espresso check waits for Compose here, in real time. */
+  private static final long COMPOSE_WAIT_MS = 50;
 
   /**
    * A Compose test rule was set up in its Robolectric mode (MethodTranslator, at RobolectricIdlingStrategy's
@@ -327,12 +334,60 @@ public final class TestActivities {
    */
   public static void composeIdling(Object resource) {
     composeIdling = new java.lang.ref.WeakReference<>(resource);
+    composeRealBase = System.nanoTime();
+    composeClockBase = -1;
+  }
+
+  private static volatile java.lang.reflect.Method composeShouldPump;
+  private static volatile long composeRealBase;
+  private static volatile long composeClockBase = -1;
+
+  /**
+   * Whether the Compose rule's clock is already ahead of real time since the rule was made: Espresso on a device polls
+   * in real time, so the frames it pumps keep that clock near real time. Pumped back to back on every check, an app
+   * that always has a frame waiting got the clock far ahead (an in-class screen's timer then stalled).
+   */
+  private static boolean composeAhead(Object resource) throws ReflectiveOperationException {
+    java.lang.reflect.Field f = resource.getClass().getDeclaredField("clock");
+    f.setAccessible(true);
+    Object clock = f.get(resource);
+    long now = (Long) clock.getClass().getMethod("getCurrentTime").invoke(clock);
+    if (composeClockBase < 0) {  // both clocks from the first check: the rule's has not moved before it
+      composeClockBase = now;
+      composeRealBase = System.nanoTime();
+    }
+    return now - composeClockBase > (System.nanoTime() - composeRealBase) / 1_000_000L;
+  }
+
+  /**
+   * Whether this wait is the Compose rule's own (its Robolectric idling strategy runs the main queue through Espresso's
+   * UiController): the rule drives its clock there itself, and a second pump from here ran it twice over, which threw an
+   * in-class screen's Compose effects off for good (a list that never filled, a timer that stopped). Only an Espresso
+   * check of the app's views needs Compose waited for here.
+   */
+  private static boolean inComposeSync() {
+    return StackWalker.getInstance().walk(f -> f.anyMatch(x ->
+        x.getClassName().startsWith("androidx.compose.ui.test.RobolectricIdlingStrategy")));
+  }
+
+  /** Compose's own test for "the rule's clock has frames to give", without isIdleNow's side effects. */
+  private static boolean shouldPump(Object resource) throws ReflectiveOperationException {
+    java.lang.reflect.Method m = composeShouldPump;
+    if (m == null || m.getDeclaringClass() != resource.getClass()) {
+      m = resource.getClass().getDeclaredMethod("_get_isIdleNow_$shouldPumpTime", resource.getClass());
+      m.setAccessible(true);
+      composeShouldPump = m;
+    }
+    return (Boolean) m.invoke(null, resource);
   }
 
   /**
    * UiController.loopMainThreadUntilIdle from Espresso (MethodTranslator): Robolectric's, then, as Espresso on a device
-   * waits for the idling resources too, until the Compose rule's resource (composeIdling) is idle, for at most 2,000
-   * frames, with the main queue run between them.
+   * waits for the idling resources too, until the Compose rule's resource (composeIdling) is idle. Only while Compose
+   * has frames to pump (an animation waiting on its clock), outside the rule's own sync, and with its clock not ahead of
+   * real time; paced about a frame of real time apart, as Espresso polls on a device, for at most COMPOSE_WAIT_MS.
+   * isIdleNow also applies snapshot changes and runs the rule's test dispatcher: called on every check, back to back,
+   * a screen that is never quite idle (a running in-class timer) got its Compose clock run tens of seconds ahead.
    */
   public static void espressoLoopMainThreadUntilIdle(Object controller) throws Throwable {
     java.lang.reflect.Method loop = loopUntilIdle;
@@ -346,13 +401,20 @@ public final class TestActivities {
       java.lang.ref.WeakReference<Object> ref = composeIdling;
       Object resource = ref == null ? null : ref.get();
       if (resource == null || !testRun() || Looper.myLooper() != Looper.getMainLooper()) return;
+      if (!shouldPump(resource) || inComposeSync() || composeAhead(resource)) return;
       java.lang.reflect.Method idleNow = composeIdleNow;
       if (idleNow == null || idleNow.getDeclaringClass() != resource.getClass()) {
         idleNow = resource.getClass().getMethod("isIdleNow");
         idleNow.setAccessible(true);
         composeIdleNow = idleNow;
       }
-      for (int i = 0; i < 2000 && !(Boolean) idleNow.invoke(resource); i++) loop.invoke(controller);
+      long until = System.nanoTime() + COMPOSE_WAIT_MS * 1_000_000L;
+      while (!composeAhead(resource) && !(Boolean) idleNow.invoke(resource) && System.nanoTime() < until) {
+        long next = System.nanoTime() + 16_000_000L;
+        loop.invoke(controller);
+        long left = next - System.nanoTime();
+        if (left > 0) java.util.concurrent.locks.LockSupport.parkNanos(left);
+      }
     } catch (java.lang.reflect.InvocationTargetException e) {
       throw e.getCause();
     }

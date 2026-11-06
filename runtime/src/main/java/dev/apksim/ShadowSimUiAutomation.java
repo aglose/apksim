@@ -215,6 +215,13 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   private static void settle(long quietMillis) {
     ShadowLooper main = shadowOf(Looper.getMainLooper());
+    if (RealTimeClock.requested()) {
+      // The clock follows real time, so an endless animation always has its next frame due and idle() never ends; on a
+      // device the wait returns after its timeout. Run what is due for at most the quiet time, in real time.
+      long until = System.nanoTime() + quietMillis * 1_000_000L;
+      while (!main.isIdle() && System.nanoTime() < until) main.runOneTask();
+      return;
+    }
     main.idle();
     long end = SystemClock.uptimeMillis() + quietMillis;
     while (SystemClock.uptimeMillis() < end) {
