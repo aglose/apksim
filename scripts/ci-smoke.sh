@@ -76,6 +76,11 @@ if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
+# An app's own default uncaught-exception handler gets a coroutine's crash and decides: this one keeps the app running
+# (issue 104, the test app's apksim://crash?kind=handled). Last: the handler stays the app's for the rest of the run.
+handled="$(drive 'open apksim://crash?kind=handled' 'wait 2500' nodes | grep -oE 'text="crash: handled by the app [^"]*"' || true)"
+echo "Crash with the app's own handler: $handled"
+[[ -n "$handled" ]] && drive ping | grep -q pong || { echo "the app's own uncaught-exception handler was not called" >&2; exit 1; }
 drive quit >/dev/null || true
 
 # --activity: a non-exported activity started instead of the launcher one, kept by restart and process-death; back on
@@ -100,6 +105,16 @@ docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --act
 echo "--activity: started and kept $started of 3 times, running after back: $running, missing one: exit $code"
 [[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
   || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
+
+# An exception escaping a coroutine on the main thread (viewModelScope.launch) crashes the app as on a device (issue
+# 104): FATAL EXCEPTION in the log with the stack, and the process ends with RuntimeInit's exit status 10.
+code=0
+limit 300 docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --activity .CrashActivity app.apk \
+  > "$OUT/crash.log" 2>&1 || code=$?
+echo "Uncaught coroutine exception: exit $code, $(grep -c 'FATAL EXCEPTION: main' "$OUT/crash.log" || true) FATAL EXCEPTION line(s)"
+[[ "$code" == 10 ]] && grep -q 'E/AndroidRuntime: FATAL EXCEPTION: main' "$OUT/crash.log" \
+  && grep -q 'Process: dev.apksim.composeapp, PID: ' "$OUT/crash.log" && grep -q 'java.lang.ArithmeticException: / by zero' "$OUT/crash.log" \
+  || { echo "an uncaught coroutine exception did not crash the app" >&2; tail -40 "$OUT/crash.log" >&2; exit 1; }
 
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"

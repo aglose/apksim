@@ -63,9 +63,11 @@ public final class Main {
       Storage.deleteScratch();
       Standby.halt(code);
     }
+    // A device's default uncaught-exception handler (RuntimeInit's): FATAL EXCEPTION in the log, then the process ends.
+    Crashes.install(classes);
     Result r = new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
-      f.getException().printStackTrace();
+      if (!Crashes.wasLogged(f.getException())) f.getException().printStackTrace();
     }
     System.err.printf("[apksim] translated %d classes in %d ms, %d from cache, %d ahead%n", classes.translated,
         classes.translateNanos / 1_000_000, classes.cached(), classes.translatedAhead());

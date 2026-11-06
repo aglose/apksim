@@ -192,6 +192,11 @@ final class AppClasses {
     return at == NONE ? null : at;
   }
 
+  /** Whether the APK defines this class ("a.b.C", as a stack frame names it; a nested class too). */
+  boolean defines(String binaryName) {
+    return find(binaryName.replace('.', '/')) != null;
+  }
+
   private boolean isInterface(String owner) {
     int[] at = find(owner);
     if (at != null) return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0;

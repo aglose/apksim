@@ -64,6 +64,12 @@ final class AdbLog {
     }
   }
 
+  /** Whether what the app logs reaches this process's stderr (`logcat on`, APKSIM_LOGCAT), directly or past the tee. */
+  static synchronized boolean reachesStderr() {
+    PrintStream s = ShadowLog.stream;
+    return s == System.err || (s != null && s == tee && delegate == System.err);
+  }
+
   static synchronized void clear() {
     ring.clear();
   }

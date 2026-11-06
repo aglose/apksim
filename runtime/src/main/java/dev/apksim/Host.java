@@ -125,7 +125,12 @@ public class Host {
     controls.showTitle();
     Timing.detail("controls");
 
-    start(System.getProperty("apksim.startActivity"), startIntent());
+    try {
+      start(System.getProperty("apksim.startActivity"), startIntent());
+    } catch (Throwable crash) {
+      Crashes.mainThreadDied(crash);  // returns only with -Dapksim.crashes=log, and no activity started to keep running
+      throw crash;
+    }
     Timing.mark("activity-resumed");
     // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
     Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
@@ -140,114 +145,120 @@ public class Host {
     boolean firstFrame = true;
     boolean closed = false;
     while (!closed) {
-      long start = System.nanoTime();
-      // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
-      // gesture detectors see no movement. Real mouse input rarely hits this limit.
-      if (start - lastInput >= 8_000_000L) {
-        SimWindow.Event e = nextInput(start);
-        if (e != null) {
-          lastInput = start;
-          if (e.type() == SimWindow.COMMAND) {
-            menuCommand((int) e.x());
-          } else if (e.type() == SimWindow.RESIZE) {
-            controls.windowResized((int) e.x(), (int) e.y(), e.value() != 0);
-          } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
-            // Back put the software keyboard away; the app does not see it.
-          } else if (!controls.hidden()) {
-            closed = dispatch(e);
-          } else if (e.type() == SimWindow.UP) {
-            controls.show();  // a click on the home or lock screen brings the app back
-          } else {
-            closed = e.type() == SimWindow.CLOSE;
+      try {
+        long start = System.nanoTime();
+        // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
+        // gesture detectors see no movement. Real mouse input rarely hits this limit.
+        if (start - lastInput >= 8_000_000L) {
+          SimWindow.Event e = nextInput(start);
+          if (e != null) {
+            lastInput = start;
+            if (e.type() == SimWindow.COMMAND) {
+              menuCommand((int) e.x());
+            } else if (e.type() == SimWindow.RESIZE) {
+              controls.windowResized((int) e.x(), (int) e.y(), e.value() != 0);
+            } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
+              // Back put the software keyboard away; the app does not see it.
+            } else if (!controls.hidden()) {
+              closed = dispatch(e);
+            } else if (e.type() == SimWindow.UP) {
+              controls.show();  // a click on the home or lock screen brings the app back
+            } else {
+              closed = e.type() == SimWindow.CLOSE;
+            }
           }
         }
-      }
-      if (autofill != null) autofill.tick(Host::rootViews);
-      controls.tick();
-      Control.Pending cmd;
-      while ((cmd = Control.QUEUE.poll()) != null) {
-        // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
-        // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
-        String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
-        if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
-        if (cmd.args[0].equals("settle")) {
-          // Answered later, from the loop, once the UI is quiet (or it gives up).
-          Settle next;
-          try {
-            next = new Settle(cmd);
-          } catch (NumberFormatException ex) {
-            cmd.finish("error: usage: settle [MAX_MS] [QUIET_MS] [HORIZON_MS]: " + ex.getMessage());
+        if (autofill != null) autofill.tick(Host::rootViews);
+        controls.tick();
+        Control.Pending cmd;
+        while ((cmd = Control.QUEUE.poll()) != null) {
+          // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
+          // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
+          String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
+          if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
+          if (cmd.args[0].equals("settle")) {
+            // Answered later, from the loop, once the UI is quiet (or it gives up).
+            Settle next;
+            try {
+              next = new Settle(cmd);
+            } catch (NumberFormatException ex) {
+              cmd.finish("error: usage: settle [MAX_MS] [QUIET_MS] [HORIZON_MS]: " + ex.getMessage());
+              continue;
+            }
+            if (settle != null) settle.pending.finish("error: replaced by another settle");
+            settle = next;
             continue;
           }
-          if (settle != null) settle.pending.finish("error: replaced by another settle");
-          settle = next;
-          continue;
+          String reply;
+          try {
+            reply = runCommand(cmd.args);
+          } catch (Exception ex) {
+            // A bad command (or one the framework rejects) is an answer, not a crash of the app.
+            ex.printStackTrace();
+            reply = "error: " + ex;
+          }
+          cmd.finish(reply);
         }
-        String reply;
-        try {
-          reply = runCommand(cmd.args);
-        } catch (Exception ex) {
-          // A bad command (or one the framework rejects) is an answer, not a crash of the app.
-          ex.printStackTrace();
-          reply = "error: " + ex;
-        }
-        cmd.finish(reply);
-      }
-      // Robolectric's looper clock moves in whole milliseconds and drops any fraction, so advance only
-      // by whole milliseconds and leave the remainder for next time, or simulated time runs slow.
-      // Time a main-thread SystemClock.sleep already gave the clock (ShadowRealSleep) is not given again.
-      last += ShadowRealSleep.takeMainAdvancedMs() * 1_000_000L;
-      long availableMs = (System.nanoTime() - last) / 1_000_000;
-      long nowMs = SystemClock.uptimeMillis();
-      long stepMs = availableMs;
-      if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
-        if (frameAtNanos != 0) {
-          // Following the display: the frame waits for its vsync, then the clock catches up to now.
-          if (System.nanoTime() < frameAtNanos) stepMs = 0;
-        } else {
-          // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
-          // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
-          // any others, as a device does under load.
-          long passed = lineAtOrBefore(nowMs + availableMs);
-          stepMs = passed > nowMs ? passed - nowMs : 0;
-          // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
-          // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
-          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / VSYNC_HZ + 1 - nowMs;
-        }
-      }
-      long looperStart = System.nanoTime();
-      if (availableMs > MAX_CATCH_UP_MS) {
-        // A long stall: time spent stalled is not replayed.
-        last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
-        stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
-      }
-      if (stepMs > 0) {
-        last += stepMs * 1_000_000;
-        looper.idleFor(Duration.ofMillis(stepMs));
-      } else {
-        looper.idle();
-      }
-      looperNanos += System.nanoTime() - looperStart;
-      updateActivityStack();
-      if (stack.isEmpty()) break;
-      if (Snapshot.ON) focusTopWindow();
-      List<View> roots = rootViews();
-      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
-        render(roots);
-        if (firstFrame) {
-          firstFrame = false;
-          Timing.mark("first-frame");
-          Standby.spawnNextSoon();
-          String shot = System.getProperty("apksim.screenshot");
-          if (shot != null) saveFrame(shot);
-          if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
-            Timing.done();
-            exit(0);
+        // Robolectric's looper clock moves in whole milliseconds and drops any fraction, so advance only
+        // by whole milliseconds and leave the remainder for next time, or simulated time runs slow.
+        // Time a main-thread SystemClock.sleep already gave the clock (ShadowRealSleep) is not given again.
+        last += ShadowRealSleep.takeMainAdvancedMs() * 1_000_000L;
+        long availableMs = (System.nanoTime() - last) / 1_000_000;
+        long nowMs = SystemClock.uptimeMillis();
+        long stepMs = availableMs;
+        if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+          if (frameAtNanos != 0) {
+            // Following the display: the frame waits for its vsync, then the clock catches up to now.
+            if (System.nanoTime() < frameAtNanos) stepMs = 0;
+          } else {
+            // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
+            // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
+            // any others, as a device does under load.
+            long passed = lineAtOrBefore(nowMs + availableMs);
+            stepMs = passed > nowMs ? passed - nowMs : 0;
+            // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
+            // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
+            if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / VSYNC_HZ + 1 - nowMs;
           }
         }
+        long looperStart = System.nanoTime();
+        if (availableMs > MAX_CATCH_UP_MS) {
+          // A long stall: time spent stalled is not replayed.
+          last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
+          stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
+        }
+        if (stepMs > 0) {
+          last += stepMs * 1_000_000;
+          looper.idleFor(Duration.ofMillis(stepMs));
+        } else {
+          looper.idle();
+        }
+        looperNanos += System.nanoTime() - looperStart;
+        updateActivityStack();
+        if (stack.isEmpty()) break;
+        if (Snapshot.ON) focusTopWindow();
+        List<View> roots = rootViews();
+        if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
+          render(roots);
+          if (firstFrame) {
+            firstFrame = false;
+            Timing.mark("first-frame");
+            Standby.spawnNextSoon();
+            String shot = System.getProperty("apksim.screenshot");
+            if (shot != null) saveFrame(shot);
+            if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
+              Timing.done();
+              exit(0);
+            }
+          }
+        }
+        if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
+        if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
+      } catch (Throwable crash) {
+        // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a
+        // device the main thread dies with it (Crashes). Returns only with -Dapksim.crashes=log.
+        Crashes.mainThreadDied(crash);
       }
-      if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
-      if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
     }
     exit(0);
   }
@@ -501,7 +512,7 @@ public class Host {
     Files.createSymbolicLink(link, data);
   }
 
-  private static void exit(int code) {
+  static void exit(int code) {
     ClassCache.flush();
     Storage.deleteScratch();
     Standby.halt(code);
