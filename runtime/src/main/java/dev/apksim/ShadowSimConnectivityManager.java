@@ -62,6 +62,8 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     Runnable timeout;
     /** When that timeout expires (SystemClock uptime): past it, the request is matched to nothing. */
     long expiresAt;
+    /** Matched a network at least once (under TRACKED): a request that was ever satisfied never times out. */
+    boolean satisfied;
 
     Tracked(ConnectivityManager cm, ConnectivityManager.NetworkCallback cb, NetworkRequest request, Kind kind, Handler handler) {
       this.cm = cm;
@@ -108,7 +110,7 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     requestNetwork(request, cb, handler);
     synchronized (TRACKED) {
       Tracked t = TRACKED.get(cb);
-      if (t == null || !t.told.isEmpty()) return;  // satisfied at once: nothing to time out
+      if (t == null || t.satisfied) return;  // satisfied already (even if lost since): nothing to time out
       t.expiresAt = android.os.SystemClock.uptimeMillis() + timeoutMs;
       t.timeout = () -> expire(t);
       t.handler.postDelayed(t.timeout, timeoutMs);
@@ -272,6 +274,7 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
         if (link != null && !Objects.equals(was[1], link)) t.queue.add(() -> cb.onLinkPropertiesChanged(n, link));
       }
       t.told.put(n, new Object[] {caps, link});
+      t.satisfied = true;
     }
   }
 
