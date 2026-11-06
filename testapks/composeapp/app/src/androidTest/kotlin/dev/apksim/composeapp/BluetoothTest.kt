@@ -169,6 +169,32 @@ class BluetoothTest {
 
   @Test
   @Suppress("DEPRECATION", "MissingPermission")
+  fun h_switchesFromSeveralThreadsLeaveTheAdapterAndSettingAgreeing() {
+    assumeTrue("apksim's `bluetooth` command; a device refuses enable()/disable() to an app targeting 33+", onApksim)
+    val a = adapter
+    val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+    val workers = (0..1).map { n ->
+      Thread {
+        try {
+          repeat(200) { i -> if ((i + n) % 2 == 0) a.enable() else a.disable() }
+        } catch (t: Throwable) {
+          failures += t
+        }
+      }
+    }
+    workers.forEach { it.start() }
+    repeat(20) { shell("apksim bluetooth toggle") }
+    workers.forEach { it.join(30_000) }
+    assertTrue("workers still running", workers.none { it.isAlive })
+    assertTrue("worker failures: $failures", failures.isEmpty())
+    instrumentation.waitForIdleSync()
+    val setting = Settings.Global.getInt(context.contentResolver, Settings.Global.BLUETOOTH_ON)
+    assertEquals("adapter state ${a.state} against bluetooth_on $setting", if (a.isEnabled) 1 else 0, setting)
+    assertTrue("a settled state", a.state == BluetoothAdapter.STATE_ON || a.state == BluetoothAdapter.STATE_OFF)
+  }
+
+  @Test
+  @Suppress("DEPRECATION", "MissingPermission")
   fun g_bluetoothOnIsWrittenEvenWithNoSwitchToMake() {
     assumeTrue("settings put global bluetooth_on switches the adapter on apksim, not on a device", onApksim)
     assertTrue(adapter.disable())

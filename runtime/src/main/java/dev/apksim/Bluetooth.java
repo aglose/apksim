@@ -45,23 +45,40 @@ public final class Bluetooth {
     apply(app, null);
   }
 
+  /**
+   * Held for each whole switch: the adapter's state, what it broadcasts (queued, in order) and bluetooth_on, so a
+   * switch on one thread (the app's enable()/disable(), on whatever thread it calls them) and one on another (the shell
+   * and control commands, on the main thread) never leave the adapter on with the setting 0. Never held while
+   * broadcasting or notifying observers, which may call back into the adapter from another thread.
+   */
+  private static final Object LOCK = new Object();
+
+  /** Held while sending what the switches queued, so their broadcasts go out in the order the switches happened. */
+  private static final Object SEND = new Object();
+
+  /** Broadcasts and setting notifications the switches decided on, oldest first. Guarded by LOCK. */
+  private static final java.util.ArrayDeque<Runnable> pending = new java.util.ArrayDeque<>();
+
   /** The adapter there or not (its feature), in state [on], or (null) in the state it has. */
   private static void apply(Application app, Boolean on) {
-    boolean supported = supported(app);
-    ShadowBluetoothAdapter.setIsBluetoothSupported(supported);
-    if (!supported) {
-      setSetting(app, false);
-      return;
+    synchronized (LOCK) {
+      boolean supported = supported(app);
+      ShadowBluetoothAdapter.setIsBluetoothSupported(supported);
+      if (!supported) {
+        writeSetting(app, false);
+      } else {
+        BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
+        ShadowBluetoothAdapter s = Shadow.extract(a);
+        int state = a.getState();
+        // An adapter never set up (the device had no Bluetooth until now) starts as the launch asked.
+        boolean want = on != null ? on : state == 0 ? launchState() : isOn(state);
+        if (state == 0 || want != isOn(state)) s.setState(want ? BluetoothAdapter.STATE_ON : BluetoothAdapter.STATE_OFF);
+        s.setAddress("02:00:00:00:00:00");
+        a.setName(Build.MODEL);
+        writeSetting(app, want);
+      }
     }
-    BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
-    ShadowBluetoothAdapter s = Shadow.extract(a);
-    int state = a.getState();
-    // An adapter never set up (the device had no Bluetooth until now) starts as the launch asked.
-    boolean want = on != null ? on : state == 0 ? launchState() : isOn(state);
-    if (state == 0 || want != isOn(state)) s.setState(want ? BluetoothAdapter.STATE_ON : BluetoothAdapter.STATE_OFF);
-    s.setAddress("02:00:00:00:00:00");
-    a.setName(Build.MODEL);
-    setSetting(app, want);
+    flush();
   }
 
   private static boolean isOn(int state) {
@@ -79,9 +96,13 @@ public final class Bluetooth {
     if (op.isEmpty()) return status(app);
     if (!op.matches("on|enable|1|off|disable|0|toggle")) return "usage: bluetooth [on|off|toggle]";
     if (!supported(app)) return "error: the device has no Bluetooth (android.hardware.bluetooth is off)";
-    // The adapter's own state, which the app may have changed (enable()/disable()).
-    boolean want = op.equals("toggle") ? !BluetoothAdapter.getDefaultAdapter().isEnabled() : op.matches("on|enable|1");
-    set(app, want);
+    boolean want;
+    synchronized (LOCK) {
+      // The adapter's own state, which the app may have changed (enable()/disable()), read and switched in one go.
+      want = op.equals("toggle") ? !BluetoothAdapter.getDefaultAdapter().isEnabled() : op.matches("on|enable|1");
+      switchTo(app, want);
+    }
+    flush();
     return "ok (" + (want ? "on" : "off") + ")";
   }
 
@@ -92,11 +113,20 @@ public final class Bluetooth {
         + a.getAddress() + ")";
   }
 
-  /**
-   * Switches the adapter, broadcasting each step: TURNING_ON then ON, or TURNING_OFF then OFF. bluetooth_on is set to
-   * [want] even when the adapter is in that state already (it may have been written behind the adapter's back).
-   */
+  /** Switches the adapter (see switchTo), from any thread. */
   static void set(Application app, boolean want) {
+    synchronized (LOCK) {
+      switchTo(app, want);
+    }
+    flush();
+  }
+
+  /**
+   * Switches the adapter, queueing a broadcast for each step: TURNING_ON then ON, or TURNING_OFF then OFF.
+   * bluetooth_on is set to [want] even when the adapter is in that state already (it may have been written behind the
+   * adapter's back). Under LOCK; the caller flushes after releasing it.
+   */
+  private static void switchTo(Application app, boolean want) {
     BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
     ShadowBluetoothAdapter s = Shadow.extract(a);
     int now = a.getState();
@@ -104,19 +134,36 @@ public final class Bluetooth {
     if (now != target) {
       for (int step : new int[] {want ? BluetoothAdapter.STATE_TURNING_ON : BluetoothAdapter.STATE_TURNING_OFF, target}) {
         s.setState(step);
-        app.sendBroadcast(new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
+        Intent intent = new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
             .putExtra(BluetoothAdapter.EXTRA_STATE, step)
-            .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now));
+            .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now);
+        pending.add(() -> app.sendBroadcast(intent));
         now = step;
       }
     }
-    setSetting(app, want);
+    writeSetting(app, want);
   }
 
-  private static void setSetting(Application app, boolean value) {
+  /** bluetooth_on written now (under LOCK), its observers told on the next flush. */
+  private static void writeSetting(Application app, boolean value) {
     Settings.Global.putInt(app.getContentResolver(), Settings.Global.BLUETOOTH_ON, value ? 1 : 0);
-    app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.BLUETOOTH_ON), null);
+    pending.add(() -> app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.BLUETOOTH_ON), null));
   }
+
+  /** Sends what the switches queued, oldest first, without LOCK. */
+  private static void flush() {
+    synchronized (SEND) {
+      while (true) {
+        Runnable r;
+        synchronized (LOCK) {
+          r = pending.poll();
+        }
+        if (r == null) return;
+        r.run();
+      }
+    }
+  }
+
 
   static String stateName(int state) {
     return switch (state) {  // BluetoothAdapter's (the framework jar's fields are not compile-time constants)
