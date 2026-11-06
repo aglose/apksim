@@ -460,6 +460,48 @@ static int s_condattr_setclock(void *a, int clk) {
 }
 static int s_condattr_getclock(const void *a, int *clk) { *clk = (int)*(const long *)a; return 0; }
 
+// Barriers: macOS has none. Android's pthread_barrier_t is 32 bytes, 8-aligned; it holds a pointer to this.
+typedef struct { pthread_mutex_t m; pthread_cond_t c; unsigned count, waiting, cycle; } Barrier;
+static int s_barrier_init(void *b, const void *attr, unsigned count) {
+  if (count == 0) return 22;  // EINVAL
+  Barrier *h = malloc(sizeof *h);
+  pthread_mutex_init(&h->m, NULL);
+  pthread_cond_init(&h->c, NULL);
+  h->count = count;
+  h->waiting = h->cycle = 0;
+  atomic_store(&shell_of(b)->host, h);
+  return 0;
+}
+static int s_barrier_destroy(void *b) {
+  Barrier *h = atomic_exchange(&shell_of(b)->host, NULL);
+  if (!h) return 22;
+  pthread_cond_destroy(&h->c);
+  pthread_mutex_destroy(&h->m);
+  free(h);
+  return 0;
+}
+// The last thread to arrive releases the others and gets PTHREAD_BARRIER_SERIAL_THREAD (-1), as on Android.
+static int s_barrier_wait(void *b) {
+  Barrier *h = atomic_load(&shell_of(b)->host);
+  if (!h) return 22;
+  pthread_mutex_lock(&h->m);
+  unsigned cycle = h->cycle;
+  if (++h->waiting == h->count) {
+    h->waiting = 0;
+    h->cycle++;
+    pthread_cond_broadcast(&h->c);
+    pthread_mutex_unlock(&h->m);
+    return -1;
+  }
+  while (cycle == h->cycle) pthread_cond_wait(&h->c, &h->m);
+  pthread_mutex_unlock(&h->m);
+  return 0;
+}
+static int s_barrierattr_init(int *a) { *a = 0; return 0; }
+static int s_barrierattr_destroy(int *a) { return 0; }
+static int s_barrierattr_setpshared(int *a, int v) { *a = v; return 0; }
+static int s_barrierattr_getpshared(const int *a, int *v) { *v = *a; return 0; }
+
 static pthread_rwlock_t *host_rwlock(void *l) {
   Shell *s = shell_of(l);
   void *h = atomic_load(&s->host);
@@ -508,25 +550,47 @@ static int s_key_delete(int k) { return pthread_key_delete((pthread_key_t)(unsig
 static void *s_getspecific(int k) { return pthread_getspecific((pthread_key_t)(unsigned)k); }
 static int s_setspecific(int k, const void *v) { return pthread_setspecific((pthread_key_t)(unsigned)k, v); }
 
-// pthread_attr_t: holds the settings until pthread_create.
-typedef struct { int detach; size_t stack; } AAttr;
-static int s_attr_init(AAttr *a) { memset(a, 0, sizeof *a); return 0; }
+// pthread_attr_t: holds the settings until pthread_create (Android's is 56 bytes on arm64). Android's constants:
+// PTHREAD_CREATE_DETACHED is 1 (Apple's 2), SCHED_OTHER 0, PTHREAD_SCOPE_SYSTEM 0.
+typedef struct { int detach; size_t stack; void *base; size_t guard; int policy, priority, inherit, scope; } AAttr;
+static int s_attr_init(AAttr *a) { memset(a, 0, sizeof *a); a->guard = 16384; return 0; }
 static int s_attr_destroy(AAttr *a) { return 0; }
 static int s_attr_setdetachstate(AAttr *a, int d) { a->detach = d; return 0; }
 static int s_attr_getdetachstate(AAttr *a, int *d) { *d = a->detach; return 0; }
 static int s_attr_setstacksize(AAttr *a, size_t s) { a->stack = s; return 0; }
 static int s_attr_getstacksize(AAttr *a, size_t *s) { *s = a->stack ? a->stack : 1 << 20; return 0; }
-static int s_attr_setguardsize(AAttr *a, size_t s) { return 0; }
-static int s_attr_setschedparam(AAttr *a, void *p) { return 0; }
-static int s_attr_setschedpolicy(AAttr *a, int p) { return 0; }
-static int s_attr_setinheritsched(AAttr *a, int p) { return 0; }
+static int s_attr_setstack(AAttr *a, void *base, size_t size) { a->base = base; a->stack = size; return 0; }
+static int s_attr_getstack(AAttr *a, void **base, size_t *size) {
+  *base = a->base;
+  return s_attr_getstacksize(a, size);
+}
+static int s_attr_setguardsize(AAttr *a, size_t s) { a->guard = s; return 0; }
+static int s_attr_getguardsize(AAttr *a, size_t *s) { *s = a->guard; return 0; }
+static int s_attr_setschedparam(AAttr *a, const int *p) { a->priority = *p; return 0; }
+static int s_attr_getschedparam(AAttr *a, int *p) { *p = a->priority; return 0; }
+static int s_attr_setschedpolicy(AAttr *a, int p) { a->policy = p; return 0; }
+static int s_attr_getschedpolicy(AAttr *a, int *p) { *p = a->policy; return 0; }
+static int s_attr_setinheritsched(AAttr *a, int p) { a->inherit = p; return 0; }
+static int s_attr_getinheritsched(AAttr *a, int *p) { *p = a->inherit; return 0; }
+static int s_attr_setscope(AAttr *a, int p) { a->scope = p; return 0; }
+static int s_attr_getscope(AAttr *a, int *p) { *p = a->scope; return 0; }
+
+// A running thread's attributes, as engines read their stack bounds (Hermes, V8): macOS gives the stack's top and
+// size; Android's attribute has its lowest address. The detach state cannot be read back on macOS: joinable.
+static int s_getattr_np(pthread_t t, AAttr *a) {
+  s_attr_init(a);
+  a->stack = pthread_get_stacksize_np(t);
+  a->base = (char *)pthread_get_stackaddr_np(t) - a->stack;
+  return 0;
+}
 
 static int s_pthread_create(pthread_t *t, const AAttr *a, void *(*fn)(void *), void *arg) {
   pthread_attr_t h;
   pthread_attr_init(&h);
   size_t stack = a && a->stack ? a->stack : 1 << 20;
   size_t page = 16384;
-  pthread_attr_setstacksize(&h, (stack + page - 1) & ~(page - 1));
+  if (a && a->base) pthread_attr_setstack(&h, a->base, stack);
+  else pthread_attr_setstacksize(&h, (stack + page - 1) & ~(page - 1));
   if (a && a->detach) pthread_attr_setdetachstate(&h, PTHREAD_CREATE_DETACHED);
   int r = pthread_create(t, &h, fn, arg);
   pthread_attr_destroy(&h);
@@ -979,6 +1043,15 @@ static const Entry table[] = {
     E("pthread_attr_getdetachstate", s_attr_getdetachstate), E("pthread_attr_setstacksize", s_attr_setstacksize), E("pthread_attr_getstacksize", s_attr_getstacksize),
     E("pthread_attr_setguardsize", s_attr_setguardsize), E("pthread_attr_setschedparam", s_attr_setschedparam),
     E("pthread_attr_setschedpolicy", s_attr_setschedpolicy), E("pthread_attr_setinheritsched", s_attr_setinheritsched),
+    E("pthread_attr_setstack", s_attr_setstack), E("pthread_attr_getstack", s_attr_getstack),
+    E("pthread_attr_getguardsize", s_attr_getguardsize), E("pthread_attr_getschedparam", s_attr_getschedparam),
+    E("pthread_attr_getschedpolicy", s_attr_getschedpolicy), E("pthread_attr_getinheritsched", s_attr_getinheritsched),
+    E("pthread_attr_setscope", s_attr_setscope), E("pthread_attr_getscope", s_attr_getscope),
+    E("pthread_getattr_np", s_getattr_np),
+    E("pthread_barrier_init", s_barrier_init), E("pthread_barrier_destroy", s_barrier_destroy),
+    E("pthread_barrier_wait", s_barrier_wait), E("pthread_barrierattr_init", s_barrierattr_init),
+    E("pthread_barrierattr_destroy", s_barrierattr_destroy), E("pthread_barrierattr_setpshared", s_barrierattr_setpshared),
+    E("pthread_barrierattr_getpshared", s_barrierattr_getpshared),
     E("pthread_create", s_pthread_create), E("pthread_setname_np", s_pthread_setname), E("pthread_setschedparam", s_setschedparam),
     E("pthread_atfork", s_atfork), E("__register_atfork", s_atfork), E("gettid", s_gettid),
     E("stat", s_stat), E("lstat", s_lstat), E("fstat", s_fstat), E("fstatat", s_fstatat), E("stat64", s_stat), E("lstat64", s_lstat), E("fstat64", s_fstat),
