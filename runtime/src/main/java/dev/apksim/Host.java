@@ -109,7 +109,7 @@ public class Host {
     usePersistentDataDir();
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
     // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
-    if (Device.current().systemBars()) DeviceControls.applySystemUi(Device.current());
+    DeviceControls.applySystemUi(Device.current());
     Timing.detail("host-setup");
     app = RuntimeEnvironment.getApplication();
     Timing.detail("got-application");
@@ -587,6 +587,7 @@ public class Host {
   }
 
   private void dispatchTouch(SimWindow.Event e, long now) {
+    SystemBars.touch(e.type(), e.x(), e.y(), rootViews(), h);  // a swipe in from a bar the app hid shows it
     if (e.type() == SimWindow.DOWN) {
       downTime = now;
       List<View> roots = rootViews();

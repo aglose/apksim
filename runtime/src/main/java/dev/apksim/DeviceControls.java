@@ -49,6 +49,7 @@ final class DeviceControls {
   private final ActivityResults results = new ActivityResults();
   private final SoftKeyboard keyboard;
   private long keyboardCheckNanos;
+  private long barsCheckNanos;
   // Created on first use, or a second after launch: making the system services they need costs startup time.
   private Notifications notifications;
   private LocationSim location;
@@ -76,10 +77,13 @@ final class DeviceControls {
     "location bike", "location drive", "location none", "biometrics toggle", "biometrics match", "biometrics nomatch",
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
+    "bars status toggle", "bars nav toggle",
   };
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
   private static final int TAG_SOFT_KEYBOARD = 30;
+  private static final int TAG_STATUS_BAR = 40;
+  private static final int TAG_NAV_BAR = 41;
   private static final int TAG_LAYOUT_BOUNDS = 28;
   private boolean layoutBounds;
   private static final int TAG_BIOMETRICS_ENROLLED = 25;
@@ -109,6 +113,7 @@ final class DeviceControls {
     if (locale != null) applyLocale(locale);
     String fontScale = System.getProperty("apksim.fontScale");
     if (fontScale != null) RuntimeEnvironment.setFontScale(Float.parseFloat(fontScale));
+    SystemBars.launchOptions();
   }
 
   /** True while the app is behind the home screen or the lock screen: nothing to draw, a tap brings it back. */
@@ -278,13 +283,17 @@ final class DeviceControls {
       keyboardCheckNanos = now;
       keyboard.tick(rootViews(), w, h);
     }
+    // Every 50 ms, so bars the app hides or shows go with it (and transient ones go away on time).
+    if (now - barsCheckNanos > 50_000_000L && now - createdNanos > 1_000_000_000L && !SimWindow.isHeadless()) {
+      barsCheckNanos = now;
+      updateSystemBars();
+    }
     if (now - slowTickNanos < 300_000_000L || now - createdNanos < 1_000_000_000L) return;
     slowTickNanos = now;
     location().tick();
     notifications().tick();
     background().tick();
     if (SimWindow.isHeadless()) return;
-    updateSystemBars();
     if (clipboard == null) {
       clipboard = (ClipboardManager) app.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
       clipboard.addPrimaryClipChangedListener(this::appCopied);
@@ -300,9 +309,13 @@ final class DeviceControls {
     clipboard.setPrimaryClip(ClipData.newPlainText("Mac", text));
   }
 
-  /** Phones and tablets have a status bar and gesture navigation (24 dp each); desktop and TV have neither. */
+  /** The bars the device has (24 dp each), less those the app hid; dark icons and handle for light bars. */
   private void updateSystemBars() {
-    if (!Device.current().systemBars()) return;
+    int[] bars = SystemBars.drawn(hiddenBy != null);
+    if (bars[0] == 0 && bars[1] == 0) {
+      SimWindow.setSystemBars(0, 0, false, false);
+      return;
+    }
     boolean darkStatus = false;
     boolean darkNav = false;
     ActivityController<? extends Activity> top = stack.peek();
@@ -312,8 +325,7 @@ final class DeviceControls {
       darkStatus = (appearance & android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS) != 0;
       darkNav = (appearance & android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS) != 0;
     }
-    int bar = Math.round(24 * Device.current().density());  // Robolectric's SystemUi: 24 dp each
-    SimWindow.setSystemBars(bar, bar, darkStatus, darkNav);
+    SimWindow.setSystemBars(bars[0], bars[1], darkStatus, darkNav);
   }
 
   private void appCopied() {
@@ -458,6 +470,13 @@ final class DeviceControls {
         // keyboard show|hide: raise or dismiss it now.
         String r = keyboard.run(a, rootViews());
         SimWindow.setMenuState(TAG_SOFT_KEYBOARD, SoftKeyboard.enabled);
+        return r;
+      }
+      case "bars" -> {
+        // bars [status on|off|toggle] [nav gesture|off|toggle]: which system bars the device has (SystemBars).
+        String r = SystemBars.command(a);
+        showTitle();
+        updateSystemBars();
         return r;
       }
       case "pick" -> {
@@ -758,7 +777,7 @@ final class DeviceControls {
       org.robolectric.Shadows.shadowOf(app.getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(0);
     }
     Device.setCurrent(now);
-    if (was.systemBars() != now.systemBars()) applySystemUi(now);
+    applySystemUi(now);
     android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
     w = m.widthPixels;
     h = m.heightPixels;
@@ -766,24 +785,16 @@ final class DeviceControls {
     String r = configurationChanged(before);
     windowsResized();
     showTitle();
-    if (!now.systemBars()) SimWindow.setSystemBars(0, 0, false, false);
+    updateSystemBars();
     return r + " (" + now.describe() + ", " + w + "x" + h + " px)";
   }
 
-  /** Status bar and gesture navigation for phones, foldables and tablets; none on desktop and TV. */
+  /**
+   * Status bar and gesture navigation for phones, foldables and tablets, none on desktop and TV, unless the launch
+   * options or the `bars` command say otherwise (SystemBars).
+   */
   static void applySystemUi(Device d) {
-    try {
-      // Robolectric keeps SystemUi package-private.
-      Class<?> ui = Class.forName("org.robolectric.shadows.SystemUi");
-      Object display = org.robolectric.util.ReflectionHelpers.callStaticMethod(ui, "systemUiForDefaultDisplay");
-      org.robolectric.util.ReflectionHelpers.callInstanceMethod(display, "setBehavior",
-          org.robolectric.util.ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$StatusBarBehavior"),
-              org.robolectric.util.ReflectionHelpers.getStaticField(ui, d.systemBars() ? "STANDARD_STATUS_BAR" : "NO_STATUS_BAR")),
-          org.robolectric.util.ReflectionHelpers.ClassParameter.from(Class.forName("org.robolectric.shadows.SystemUi$NavigationBarBehavior"),
-              org.robolectric.util.ReflectionHelpers.getStaticField(ui, d.systemBars() ? "GESTURAL_NAVIGATION" : "NO_NAVIGATION_BAR")));
-    } catch (ClassNotFoundException e) {
-      throw new IllegalStateException(e);
-    }
+    SystemBars.apply(d);
   }
 
   /** The window's title: the APK and the device it runs on, with the display's size while it is being resized. */
@@ -792,6 +803,8 @@ final class DeviceControls {
     SimWindow.setTitle(System.getProperty("apksim.windowTitle", "apksim") + " - " + d.name()
         + " " + d.widthDp() + "\u00d7" + d.heightDp() + " dp");
     for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
+    SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
+    SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
   }
 
   /**

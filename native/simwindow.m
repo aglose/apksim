@@ -70,7 +70,7 @@ enum {
   TAG_LOCATION_BIKE, TAG_LOCATION_DRIVE, TAG_LOCATION_NONE, TAG_BIOMETRICS_ENROLLED, TAG_BIOMETRICS_MATCH,
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
-  TAG_NETWORK_LOSSY,
+  TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR,
 };
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
@@ -229,6 +229,8 @@ static void buildMenus(NSMenu *bar) {
   addItem(device, @"Volume Down", TAG_VOLUME_DOWN, @"-", cmd | opt);
   [device addItem:[NSMenuItem separatorItem]];
   addItem(device, @"Software Keyboard", TAG_SOFT_KEYBOARD, @"k", cmd);
+  addItem(device, @"Status Bar", TAG_STATUS_BAR, nil, 0);
+  addItem(device, @"Navigation Bar", TAG_NAV_BAR, nil, 0);
   NSMenu *features = submenu(bar, @"Features");
   addItem(features, @"Dark Appearance", TAG_APPEARANCE, @"a", cmd | shift);
   addItem(features, @"Larger Text", TAG_TEXT_LARGER, @"=", cmd | shift);
@@ -723,11 +725,13 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeRecordStop(JNIEnv *env, 
 // ---------------------------------------------------------------- system bars
 
 // Drawn over the app as on a phone: clock, Wi-Fi and battery in the status bar, and the gesture handle. The app
-// already gets their insets; these layers sit above its pixels (window captures show them, `shot` does not).
-static CALayer *barsLayer, *wifiLayer, *batteryLayer, *handleLayer;
+// already gets their insets; these layers sit above its pixels (window captures show them, `shot` does not). Each bar
+// is drawn only while the device has it and the app has not hidden it (SystemBars.java).
+static CALayer *barsLayer, *statusLayer, *wifiLayer, *batteryLayer, *handleLayer;
 static CATextLayer *clockLayer;
 static NSTimer *clockTimer;
 static int darkStatusIcons = -1, darkHandle = -1;
+static CGFloat barsW, barsH, barsStatus = -1, barsNav = -1;
 
 static CGImageRef symbol(NSString *name, NSColor *color, CGFloat points) {
   NSImage *img = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
@@ -752,51 +756,61 @@ static void styleBars(void) {
   handleLayer.backgroundColor = (darkHandle ? [NSColor colorWithWhite:0 alpha:0.75] : [NSColor colorWithWhite:1 alpha:0.85]).CGColor;
 }
 
-// statusPx/navPx: the insets in device pixels (0 = no bar). Icons dark when the app asked for light bars.
+// statusPx/navPx: the bars' heights in device pixels (0 = not drawn). Icons dark when the app asked for light bars.
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env, jclass c, jint statusPx, jint navPx, jboolean darkStatus, jboolean darkNav) {
   onMain(^{
     if (!frameLayer) return;
     CGFloat sh = statusPx / deviceScale, nh = navPx / deviceScale, W = devW / deviceScale, H = devH / deviceScale;
+    if (!barsLayer && sh == 0 && nh == 0) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     if (!barsLayer) {
       barsLayer = [CALayer layer];
-      barsLayer.frame = frameLayer.bounds;
       barsLayer.geometryFlipped = NO;  // the parent layer is already top-down
       barsLayer.zPosition = 10;
       [frameLayer addSublayer:barsLayer];
       CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
-      if (sh > 0) {
-        clockLayer = [CATextLayer layer];
-        clockLayer.font = (__bridge CFTypeRef)[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
-        clockLayer.fontSize = 12;
-        clockLayer.contentsScale = scale;
-        clockLayer.frame = CGRectMake(16, (sh - 15) / 2, 60, 16);
-        [barsLayer addSublayer:clockLayer];
-        batteryLayer = [CALayer layer];
-        batteryLayer.contentsGravity = kCAGravityResizeAspect;
-        batteryLayer.contentsScale = scale;
-        batteryLayer.frame = CGRectMake(W - 16 - 24, (sh - 12) / 2, 24, 12);
-        [barsLayer addSublayer:batteryLayer];
-        wifiLayer = [CALayer layer];
-        wifiLayer.contentsGravity = kCAGravityResizeAspect;
-        wifiLayer.contentsScale = scale;
-        wifiLayer.frame = CGRectMake(W - 16 - 24 - 20, (sh - 11) / 2, 15, 11);
-        [barsLayer addSublayer:wifiLayer];
-        updateClock();
-        clockTimer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) { updateClock(); }];
-      }
-      if (nh > 0) {
-        handleLayer = [CALayer layer];
-        handleLayer.frame = CGRectMake((W - 108) / 2, H - nh / 2 - 2, 108, 4);
-        handleLayer.cornerRadius = 2;
-        [barsLayer addSublayer:handleLayer];
-      }
+      statusLayer = [CALayer layer];
+      [barsLayer addSublayer:statusLayer];
+      clockLayer = [CATextLayer layer];
+      clockLayer.font = (__bridge CFTypeRef)[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
+      clockLayer.fontSize = 12;
+      clockLayer.contentsScale = scale;
+      [statusLayer addSublayer:clockLayer];
+      batteryLayer = [CALayer layer];
+      batteryLayer.contentsGravity = kCAGravityResizeAspect;
+      batteryLayer.contentsScale = scale;
+      [statusLayer addSublayer:batteryLayer];
+      wifiLayer = [CALayer layer];
+      wifiLayer.contentsGravity = kCAGravityResizeAspect;
+      wifiLayer.contentsScale = scale;
+      [statusLayer addSublayer:wifiLayer];
+      updateClock();
+      clockTimer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) { updateClock(); }];
+      handleLayer = [CALayer layer];
+      handleLayer.cornerRadius = 2;
+      [barsLayer addSublayer:handleLayer];
     }
-    if (darkStatus == darkStatusIcons && darkNav == darkHandle) return;
-    darkStatusIcons = darkStatus;
-    darkHandle = darkNav;
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    styleBars();
+    // Laid out again when a bar comes or goes or the display changes size (rotation, another device, resizing).
+    if (sh != barsStatus || nh != barsNav || W != barsW || H != barsH) {
+      barsStatus = sh;
+      barsNav = nh;
+      barsW = W;
+      barsH = H;
+      barsLayer.frame = frameLayer.bounds;
+      statusLayer.hidden = sh == 0;
+      statusLayer.frame = CGRectMake(0, 0, W, sh);
+      clockLayer.frame = CGRectMake(16, (sh - 15) / 2, 60, 16);
+      batteryLayer.frame = CGRectMake(W - 16 - 24, (sh - 12) / 2, 24, 12);
+      wifiLayer.frame = CGRectMake(W - 16 - 24 - 20, (sh - 11) / 2, 15, 11);
+      handleLayer.hidden = nh == 0;
+      handleLayer.frame = CGRectMake((W - 108) / 2, H - nh / 2 - 2, 108, 4);
+    }
+    if (darkStatus != darkStatusIcons || darkNav != darkHandle) {
+      darkStatusIcons = darkStatus;
+      darkHandle = darkNav;
+      styleBars();
+    }
     [CATransaction commit];
   });
 }

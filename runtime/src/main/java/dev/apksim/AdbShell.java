@@ -1537,6 +1537,9 @@ final class AdbShell {
       case "network" -> {
         return dev.apksim.net.Net.command(a);
       }
+      case "bars" -> {
+        return SystemBars.command(a);
+      }
       default -> {
         return "error: " + a[0] + " is not available in a test run";
       }
