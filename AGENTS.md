@@ -131,7 +131,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     Download inside it, mounted; Robolectric's was two temp folders per process, "removed"; the File overloads too:
     `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder), and `settings.properties`
     the Settings.Global/Secure/System values that differ from the defaults (by the app or `adb shell settings put`;
-    Robolectric's static maps, read every 250 ms from Host's loop and on exit, as no write hook exists, and written a
+    Robolectric's static maps, read every 250 ms from Host's loop and on exit (Host.exit, the warm client hanging up,
+    a JVM shutdown hook for SIGTERM and the app's System.exit), as no write hook exists, and written a
     last time by `SlotDevice.close` at the start of `SimTestEnvironment.resetState`, which then ends it: the reset puts the
     defaults back, and a flush after it (the warm client hanging up after Host.run threw) erased the file; not
     animator_duration_scale or font_scale, which `animscale`/`fontscale` own). Apps keep a device id in /sdcard and a
@@ -139,7 +140,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     cleanup clear it with the slot; `--setting NS:KEY=VALUE` (repeatable) sets a value before onCreate, kept like a
     `settings put`, and in test runs at each test's setup (one for animator_duration_scale or font_scale runs the
     control's code, `setAnimatorScale`/`setFontScale`, and is not kept; the font scale is `--font-scale`, else the last
-    font_scale seed, set again after each setQualifiers that resets it: Host.run's, and a test's setup in SimRunner,
+    font_scale seed, with Settings.System FONT_SCALE beside it (as `fontscale` now sets too), set again after each setQualifiers that resets it: Host.run's, and a test's setup in SimRunner,
     so the test's activities get it too). Test runs otherwise start each test from a clean device.
     `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).

@@ -61,6 +61,8 @@ class SlotStateTest {
     assumeTrue("run with -e fontSeed F and --setting system:font_scale=F", font != null)
     val app = InstrumentationRegistry.getInstrumentation().targetContext
     assertEquals(font!!, app.resources.configuration.fontScale, 0f)
+    // And the setting a device's font-size control writes beside the configuration.
+    assertEquals(font, Settings.System.getFloat(app.contentResolver, Settings.System.FONT_SCALE), 0f)
     androidx.test.core.app.ActivityScenario.launch(SlotStateActivity::class.java).use { scenario ->
       scenario.onActivity { assertEquals(font, it.resources.configuration.fontScale, 0f) }
     }

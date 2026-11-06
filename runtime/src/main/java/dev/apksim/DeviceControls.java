@@ -387,6 +387,8 @@ final class DeviceControls {
           default -> Float.parseFloat(a[1]);
         };
         RuntimeEnvironment.setFontScale(scale);
+        SlotDevice.putFontScaleSetting(scale);  // Settings.System.FONT_SCALE follows, as on a device
+        app.getContentResolver().notifyChange(Settings.System.getUriFor(Settings.System.FONT_SCALE), null);
         return configurationChanged(before);
       }
       case "animscale" -> {

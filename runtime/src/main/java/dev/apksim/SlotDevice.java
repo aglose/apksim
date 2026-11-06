@@ -86,6 +86,9 @@ final class SlotDevice {
     dir = d;
     saved = stored;
     flush();
+    // Ctrl-C or SIGTERM on a cold launch, or the app's System.exit, end the JVM past every other flush: a value set
+    // within the last 250 ms would be lost. A no-op once close() has run, so never the reset's defaults.
+    Runtime.getRuntime().addShutdownHook(new Thread(SlotDevice::close, "apksim-slot-settings"));
   }
 
   /**
@@ -158,7 +161,17 @@ final class SlotDevice {
    */
   static void applyFontScale() {
     Float f = launchFontScale();
-    if (f != null) RuntimeEnvironment.setFontScale(f);
+    if (f == null) return;
+    RuntimeEnvironment.setFontScale(f);
+    putFontScaleSetting(f);
+  }
+
+  /**
+   * Settings.System.FONT_SCALE as a device's font-size setting writes it beside the configuration (the seed, --font-scale
+   * and `fontscale`), straight into the shadow's table: no ContentResolver may exist yet. Not kept in the slot's file.
+   */
+  static void putFontScaleSetting(float f) {
+    system().put(0, android.provider.Settings.System.FONT_SCALE, Optional.of((Object) f));
   }
 
   /**
