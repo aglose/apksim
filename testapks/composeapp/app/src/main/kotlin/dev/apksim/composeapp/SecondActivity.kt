@@ -74,3 +74,11 @@ class SecondActivity : Activity() {
     private val COLOURS = intArrayOf(Color.rgb(140, 30, 30), Color.rgb(30, 110, 40), Color.rgb(30, 50, 140), Color.rgb(120, 90, 20))
   }
 }
+
+/** A dialog-themed (floating) activity: the activity under it stays visible, paused, as on a device. */
+class FloatingActivity : Activity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(TextView(this).apply { text = "Floating"; textSize = 24f; setPadding(48, 48, 48, 48) })
+  }
+}

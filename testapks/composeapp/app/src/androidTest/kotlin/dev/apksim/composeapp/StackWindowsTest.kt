@@ -100,6 +100,50 @@ class StackWindowsTest {
     }
   }
 
+  /** A dialog of an activity that is stopped is hidden with it, and shown again when it comes back. */
+  @Test
+  fun aStoppedActivitysDialogIsHiddenWithIt() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("startActivities") == "true")
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      scenario.onActivity { android.app.AlertDialog.Builder(it).setMessage("A dialog over main").show() }
+      assertNotNull(device.wait(Until.findObject(By.text("A dialog over main")), 5_000))
+      scenario.onActivity { it.startActivity(Intent(it, SecondActivity::class.java)) }
+      assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
+      assertFalse("the stopped activity's dialog is hidden", device.hasObject(By.text("A dialog over main")))
+      assertEquals(1, appWindows().size)
+      device.findObject(By.text(Pattern.compile("finish", Pattern.CASE_INSENSITIVE))).click()
+      assertNotNull("the dialog is back", device.wait(Until.findObject(By.text("A dialog over main")), 5_000))
+    }
+  }
+
+  /**
+   * A floating (dialog-themed) activity leaves the one below visible and paused; an opaque one started over both
+   * hides them, and finishing it shows them again.
+   */
+  @Test
+  fun aFloatingActivityLeavesTheOneBelowVisible() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("startActivities") == "true")
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      scenario.onActivity { it.startActivity(Intent(it, FloatingActivity::class.java)) }
+      assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
+      assertEquals(Lifecycle.State.STARTED, scenario.state)
+      assertEquals(2, appWindows().size)
+
+      val context = instrumentation.targetContext
+      context.startActivity(Intent(context, SecondActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
+      assertEquals(Lifecycle.State.CREATED, scenario.state)
+      assertEquals(1, appWindows().size)
+
+      device.findObject(By.text(Pattern.compile("finish", Pattern.CASE_INSENSITIVE))).click()
+      assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
+      assertEquals(Lifecycle.State.STARTED, scenario.state)
+      assertEquals(2, appWindows().size)
+    }
+  }
+
   /**
    * Rotating when only the stopped activity below is recreated (the top one, TripChooserActivity, handles the change
    * itself): the stack keeps its order, so the next activity started goes over the top one, which is stopped.

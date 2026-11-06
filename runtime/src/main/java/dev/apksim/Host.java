@@ -444,10 +444,7 @@ public class Host {
     ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
     stack.push(c);
     c.setup();
-    if (top != null) {
-      top.stop();
-      setWindowVisible(top.get(), false);
-    }
+    coverBelow(c.get(), new ArrayList<>(stack).subList(1, stack.size()));
   }
 
   /**
@@ -456,11 +453,100 @@ public class Host {
    * large app 4 activities deep drew at 3 fps.
    */
   static void setWindowVisible(Activity a, boolean visible) {
-    // Shown only if the app has not hidden it itself (Activity.setVisible(false)), as updateVisibility checks.
-    if (visible && !(boolean) org.robolectric.util.ReflectionHelpers.getField(a, "mVisibleFromClient")) return;
     android.view.Window w = a.getWindow();
     View decor = w == null ? null : w.peekDecorView();
-    if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+    // Shown only if the app has not hidden it itself (Activity.setVisible(false)), as updateVisibility checks.
+    if (decor != null && (!visible || (boolean) org.robolectric.util.ReflectionHelpers.getField(a, "mVisibleFromClient"))) {
+      decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+      touchable(decor, visible);
+    }
+    // The activity's other windows (dialogs, popups) go with it, as the window manager hides an app token's windows.
+    // Only those hidden here are shown again: a dialog the app hid (Dialog.hide) stays hidden.
+    for (View r : rootViews()) {
+      if (r == decor || TestActivities.activityOf(r) != a) continue;
+      if (!visible && r.getVisibility() == View.VISIBLE) {
+        r.setVisibility(View.INVISIBLE);
+        touchable(r, false);
+        HIDDEN_WITH_ACTIVITY.add(r);
+      } else if (visible && HIDDEN_WITH_ACTIVITY.remove(r) && r.getVisibility() == View.INVISIBLE) {
+        r.setVisibility(View.VISIBLE);
+        touchable(r, true);
+      }
+    }
+  }
+
+  /** Dialog and popup windows hidden with their stopped activity, to show again with it. */
+  private static final java.util.Set<View> HIDDEN_WITH_ACTIVITY = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+  /** Windows this class made untouchable, so that only its own flag is taken off again. */
+  private static final java.util.Set<View> MADE_UNTOUCHABLE = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+  /**
+   * A hidden window takes no touches. Host's dispatch skips invisible windows itself; Robolectric's UiAutomation
+   * injection (test runs) only skips windows flagged FLAG_NOT_TOUCHABLE, and ranks a dialog above every activity
+   * window, so a stopped activity's dialog took the touches meant for the activity on top.
+   */
+  private static void touchable(View root, boolean on) {
+    if (!(root.getLayoutParams() instanceof WindowManager.LayoutParams lp)) return;
+    if (!on && (lp.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) {
+      lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+      MADE_UNTOUCHABLE.add(root);
+    } else if (on && MADE_UNTOUCHABLE.remove(root)) {
+      lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+    }
+  }
+
+  /**
+   * An activity whose window lets the ones below show (windowIsTranslucent, or windowIsFloating as a dialog-themed
+   * one): on a device the activity below then stays paused and visible, not stopped.
+   */
+  static boolean seeThrough(Activity a) {
+    for (int attr : new int[] {android.R.attr.windowIsTranslucent, android.R.attr.windowIsFloating}) {
+      android.content.res.TypedArray t = a.getTheme().obtainStyledAttributes(new int[] {attr});
+      try {
+        if (t.getBoolean(0, false)) return true;
+      } finally {
+        t.recycle();
+      }
+    }
+    return false;
+  }
+
+  /**
+   * After {@code top} started over {@code below} (top first): as ActivityThread, an activity stays visible (paused) while
+   * everything above it is see-through; under the first opaque one, each is stopped and its windows hidden.
+   */
+  static void coverBelow(Activity top, List<? extends ActivityController<?>> below) {
+    boolean shown = seeThrough(top);
+    for (ActivityController<?> c : below) {
+      Activity a = c.get();
+      if (a.isFinishing() || a.isDestroyed()) continue;  // finish() ends those
+      if (a.isResumed()) c.pause();
+      if (shown) {
+        shown = seeThrough(a);
+      } else {
+        if (!isStopped(a)) c.stop();
+        setWindowVisible(a, false);
+      }
+    }
+  }
+
+  /**
+   * After the activity above {@code top} went and {@code top} came back: the ones below it (top first) that a
+   * see-through chain from the top now shows again are brought back to paused (if they were stopped) and shown.
+   */
+  static void revealBelow(Activity top, List<? extends ActivityController<?>> below) {
+    boolean shown = seeThrough(top);
+    for (ActivityController<?> c : below) {
+      if (!shown) return;
+      Activity a = c.get();
+      if (a.isFinishing() || a.isDestroyed()) continue;
+      // Stopped to paused goes through restart, start and resume, as TransactionExecutor's lifecycle path does.
+      if (isStopped(a)) c.restart().resume().pause();
+      setWindowVisible(a, true);
+      View decor = a.getWindow().peekDecorView();
+      if (decor == null || decor.getViewRootImpl() == null) c.visible();
+      shown = seeThrough(a);
+    }
   }
 
   static boolean isStopped(Activity a) {
@@ -487,7 +573,8 @@ public class Host {
    */
   static void bringToFront(ActivityController<? extends Activity> c) {
     setWindowVisible(c.get(), true);
-    c.restart().resume();
+    if (isStopped(c.get())) c.restart();  // one under a see-through activity was only paused
+    c.resume();
     View decor = c.get().getWindow().peekDecorView();
     if (decor == null || decor.getViewRootImpl() == null) c.visible();
   }
@@ -543,7 +630,10 @@ public class Host {
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
-      if (below != null) bringToFront(below);
+      if (below != null) {
+        bringToFront(below);
+        revealBelow(below.get(), new ArrayList<>(stack).subList(1, stack.size()));
+      }
     }
     // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
     // too, as the system server would. It stayed stopped instead, its window up and its ViewModels alive.

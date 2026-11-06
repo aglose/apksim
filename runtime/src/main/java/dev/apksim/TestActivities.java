@@ -317,6 +317,17 @@ public final class TestActivities {
     } else {
       below.resume();
     }
+    Host.revealBelow(top, controllers(left.subList(0, left.size() - 1)));
+  }
+
+  /** The controllers of {@code activities} (bottom to top), top first. */
+  private static List<ActivityController<?>> controllers(List<Activity> activities) {
+    List<ActivityController<?>> out = new ArrayList<>();
+    for (int i = activities.size() - 1; i >= 0; i--) {
+      ActivityController<?> c = controller(activities.get(i));
+      if (c != null) out.add(c);
+    }
+    return out;
   }
 
   /** Receivers still registered when a test ended, which Robolectric's reset dropped (see ShadowSimContextImpl). */
@@ -695,13 +706,11 @@ public final class TestActivities {
       if (below != null && top.isResumed()) below.pause();
       Intent start = new Intent(intent);
       if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
-      org.robolectric.Robolectric.buildActivity(cls, start).setup();
-      if (below != null && !top.isFinishing() && !top.isDestroyed()) {
-        below.stop();
-        // Hidden, as ActivityThread hides a stopped activity's window: UiAutomator found the views of every activity
-        // below, and screenshots and failure bundles drew them under the top one.
-        Host.setWindowVisible(top, false);
-      }
+      Activity started = org.robolectric.Robolectric.buildActivity(cls, start).setup().get();
+      // Those below are stopped and hidden, as ActivityThread hides a stopped activity's window (UiAutomator found the
+      // views of every activity below, and screenshots and failure bundles drew them under the top one), unless the
+      // new one is see-through (a dialog-themed activity): then they stay visible, paused.
+      Host.coverBelow(started, controllers(running));
     } catch (ReflectiveOperationException | LinkageError e) {
       // No such class: on a device the start fails in the app's own call.
       throw new IllegalStateException("starting " + info.name + ": " + e, e);

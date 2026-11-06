@@ -29,7 +29,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     commands (`runCommand`). A stopped activity's window is hidden, as ActivityThread hides it, so only the top
     one draws and takes touches; one coming back to the front (`bringToFront`: its top finished, `resume`) is shown
     again, and gets a window if it was recreated or rebuilt while stopped (configuration change, `recreate`,
-    `process-death`): before, finishing the top of such a stack left nothing on screen. Robolectric's configuration
+    `process-death`): before, finishing the top of such a stack left nothing on screen. The activity's dialogs and
+    popups are hidden with it, and hidden windows get FLAG_NOT_TOUCHABLE while hidden (Robolectric's UiAutomation
+    injection reads only that). Under a translucent or floating (dialog-themed) activity the one below stays visible
+    and paused (`coverBelow`/`revealBelow`, also in test runs; the test app's `FloatingActivity`). Robolectric's configuration
     change recreates an activity into the resumed state whatever it was, so one that was stopped is stopped again
     (`stopAgain`; in test runs too, where Robolectric's instrumentation recreates ActivityScenario's activities
     itself on `setQualifiers`): a rotation used to leave the whole stack resumed.
