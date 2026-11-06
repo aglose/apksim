@@ -49,6 +49,8 @@ final class AccessibleWindows {
       Region frame = new Region(at[0], at[1], at[0] + v.getWidth(), at[1] + v.getHeight());
       boolean touchable = (p.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0;
       boolean isFocused = i == focused;
+      // quickReject compares bounding boxes, so a window inside a hole of what is left still counts: the window
+      // manager's own test (windowMattersToAccessibility), kept so the same windows are reported as on a device.
       if (isFocused || (touchable && !frame.isEmpty() && !unaccounted.quickReject(frame))) {
         out[i] = true;
         // An app window is never a trusted overlay, so even an untouchable one (only reached when focused) counts.
