@@ -16,7 +16,12 @@ dependencies {
     runtimeOnly("org.robolectric:nativeruntime-dist-compat:1.0.20")
     linuxArm64Runtime("org.robolectric:android-all-instrumented:16-robolectric-13921718-2-i7") { isTransitive = false }
 }
-tasks.register<Copy>("deps") { from(configurations.runtimeClasspath); into("work/lib") }
+tasks.register<Copy>("deps") {
+    // An earlier version of the compat jar left in work/lib would be a second match for prepare-runtime.sh and the image.
+    doFirst { delete(fileTree("work/lib") { include("nativeruntime-dist-compat-*.jar") }) }
+    from(configurations.runtimeClasspath)
+    into("work/lib")
+}
 tasks.register<Copy>("linuxArm64Runtime") {
     from({ linuxArm64Runtime.map { zipTree(it) } }) { include("native/linux/aarch64/*.so"); eachFile { path = name } }
     includeEmptyDirs = false

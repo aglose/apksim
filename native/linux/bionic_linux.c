@@ -281,10 +281,12 @@ static void *s_null(void) { return NULL; }
 // Android's pthread_mutex_t is 40 bytes and pthread_attr_t 56; glibc's are 48 and 64 on arm64 (on x86_64 they match,
 // so glibc's functions take Android's objects as they are). Each such object holds a pointer to a real glibc one,
 // made on first use, which also handles Android's all-zero static initialisers, as ../bionic.c does on macOS.
-// Condition variables and rwlocks are the same size on both and stay glibc's, but a wait takes the mutex's glibc twin.
+// Condition variables are boxed the same way for alignment (below); rwlocks and barriers use 32-bit atomics in glibc
+// and stay glibc's own.
 typedef struct { _Atomic(void *) host; } Shell;
 
-// Android's mutexes are only int-aligned, while an atomic pointer must be 8-byte aligned: 40 bytes leave an aligned slot.
+// Android's mutexes and condition variables are only int-aligned, while an atomic pointer must be 8-byte aligned:
+// 40 bytes leave an aligned slot.
 static inline Shell *shell_of(void *object) { return (Shell *)(((uintptr_t)object + 7) & ~7UL); }
 static inline int is_static_init(void *p) { return (uintptr_t)p < 0x100000; }
 
@@ -326,13 +328,44 @@ static int s_mutex_unlock(void *m) { return pthread_mutex_unlock(host_mutex(m));
 static int s_mutex_timedlock(void *m, const struct timespec *t) { return pthread_mutex_timedlock(host_mutex(m), t); }
 static int s_mutex_clocklock(void *m, clockid_t c, const struct timespec *t) { return pthread_mutex_clocklock(host_mutex(m), c, t); }
 
-static int s_cond_wait(pthread_cond_t *c, void *m) { return pthread_cond_wait(c, host_mutex(m)); }
-static int s_cond_timedwait(pthread_cond_t *c, void *m, const struct timespec *t) { return pthread_cond_timedwait(c, host_mutex(m), t); }
-static int s_cond_clockwait(pthread_cond_t *c, void *m, clockid_t k, const struct timespec *t) {
-  return pthread_cond_clockwait(c, host_mutex(m), k, t);
+// pthread_cond_t is 48 bytes on both, but bionic's is only int-aligned while glibc's arm64 code uses 64-bit atomics
+// on its sequence counters: one at an address that is 4 mod 8 (after an int in a struct) would fault with SIGBUS.
+// So condition variables are boxed too: a glibc one made on first use (Android's all-zero static initialiser) or
+// by pthread_cond_init with its attribute (the clock), which is glibc's own (pthread_condattr_t is 8 bytes on both).
+static pthread_cond_t *host_cond(void *c) {
+  Shell *s = shell_of(c);
+  void *h = atomic_load(&s->host);
+  if (h) return h;
+  pthread_cond_t *n = malloc(sizeof *n);
+  pthread_cond_init(n, NULL);
+  if (atomic_compare_exchange_strong(&s->host, &h, n)) return n;
+  pthread_cond_destroy(n);
+  free(n);
+  return atomic_load(&s->host);
 }
-static int s_cond_timedwait_monotonic(pthread_cond_t *c, void *m, const struct timespec *t) {
-  return pthread_cond_clockwait(c, host_mutex(m), CLOCK_MONOTONIC, t);
+static int s_cond_init(void *c, const pthread_condattr_t *attr) {
+  pthread_cond_t *n = malloc(sizeof *n);
+  int r = pthread_cond_init(n, attr);
+  atomic_store(&shell_of(c)->host, n);
+  return r;
+}
+static int s_cond_destroy(void *c) {
+  pthread_cond_t *h = atomic_exchange(&shell_of(c)->host, NULL);
+  if (h) {
+    pthread_cond_destroy(h);
+    free(h);
+  }
+  return 0;
+}
+static int s_cond_signal(void *c) { return pthread_cond_signal(host_cond(c)); }
+static int s_cond_broadcast(void *c) { return pthread_cond_broadcast(host_cond(c)); }
+static int s_cond_wait(void *c, void *m) { return pthread_cond_wait(host_cond(c), host_mutex(m)); }
+static int s_cond_timedwait(void *c, void *m, const struct timespec *t) { return pthread_cond_timedwait(host_cond(c), host_mutex(m), t); }
+static int s_cond_clockwait(void *c, void *m, clockid_t k, const struct timespec *t) {
+  return pthread_cond_clockwait(host_cond(c), host_mutex(m), k, t);
+}
+static int s_cond_timedwait_monotonic(void *c, void *m, const struct timespec *t) {
+  return pthread_cond_clockwait(host_cond(c), host_mutex(m), CLOCK_MONOTONIC, t);
 }
 
 // pthread_attr_t: Android's 56 bytes hold a pointer to a glibc attribute made by pthread_attr_init (or
@@ -439,7 +472,8 @@ static const Entry table[] = {
     E("pthread_mutex_init", s_mutex_init), E("pthread_mutex_destroy", s_mutex_destroy), E("pthread_mutex_lock", s_mutex_lock),
     E("pthread_mutex_trylock", s_mutex_trylock), E("pthread_mutex_unlock", s_mutex_unlock),
     E("pthread_mutex_timedlock", s_mutex_timedlock), E("pthread_mutex_clocklock", s_mutex_clocklock),
-    E("pthread_cond_wait", s_cond_wait), E("pthread_cond_timedwait", s_cond_timedwait), E("pthread_cond_clockwait", s_cond_clockwait),
+    E("pthread_cond_init", s_cond_init), E("pthread_cond_destroy", s_cond_destroy), E("pthread_cond_signal", s_cond_signal),
+    E("pthread_cond_broadcast", s_cond_broadcast), E("pthread_cond_wait", s_cond_wait), E("pthread_cond_timedwait", s_cond_timedwait), E("pthread_cond_clockwait", s_cond_clockwait),
     E("pthread_cond_timedwait_monotonic_np", s_cond_timedwait_monotonic),
     E("pthread_attr_init", s_attr_init), E("pthread_attr_destroy", s_attr_destroy), E("pthread_getattr_np", s_getattr_np),
     E("pthread_create", s_pthread_create),

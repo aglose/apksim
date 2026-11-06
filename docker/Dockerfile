@@ -11,7 +11,10 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
     gcc -O2 -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c -ldl -lpthread
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
-RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar)" && DIST="$(ls lib/nativeruntime-dist-compat-*.jar)" && \
+# The newest of each, should an older one be left in work/lib; the others go.
+RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \
+    DIST="$(ls lib/nativeruntime-dist-compat-*.jar | sort -V | tail -1)" && \
+    for J in lib/nativeruntime-dist-compat-*.jar; do [ "$J" = "$DIST" ] || rm "$J"; done && \
     # Robolectric's runtime for this CPU (x86_64 or aarch64; aarch64 from nativeruntime-dist-compat 1.0.20) must be there.
     test -n "$(unzip -l "$DIST" "native/linux/$(uname -m)/*" | grep nativeruntime)" && \
     for JAR in "$ALL" "$DIST"; do \
