@@ -421,10 +421,14 @@ static pthread_cond_t *host_cond(void *c) {
 // pointer (Android's pthread_cond_t is 48 bytes): 0 is CLOCK_REALTIME, 1 CLOCK_MONOTONIC (pthread_condattr_setclock,
 // or the monotonic static initialiser, read by host_cond).
 
+// Boxed at once, so host_cond never reads a static initialiser's flag left in the object (a 4 mod 8 one keeps its
+// first int outside the shell) over the clock asked for here.
 static int s_cond_init(void *c, void *a) {
-  atomic_store(&shell_of(c)->host, NULL);
+  pthread_cond_t *n = malloc(sizeof *n);
+  pthread_cond_init(n, NULL);
   // Android's pthread_condattr_t is a long; ours holds the clock pthread_condattr_setclock set (see s_condattr_init).
   cond_shell(c)->clock = a ? (int)*(long *)a : 0;
+  atomic_store(&shell_of(c)->host, n);
   return 0;
 }
 static int s_cond_destroy(void *c) {
@@ -635,9 +639,13 @@ static void *thread_start(void *p) {
   pthread_setspecific(exit_key, (void *)1);  // so thread_exiting runs
   return s.fn(s.arg);
 }
+// Under the lock: once detached, the thread may exit (its record dropped under the lock) and its pthread_t go to a new
+// thread (recorded under the lock), neither of which can then come between the detach and this record.
 static int s_pthread_detach(pthread_t t) {
+  pthread_mutex_lock(&detached_lock);
   int r = pthread_detach(t);
-  if (!r) set_detached(t, 1);
+  if (!r) set_detached_locked(t, 1);
+  pthread_mutex_unlock(&detached_lock);
   return d2a_errno(r);
 }
 

@@ -288,6 +288,10 @@ static void add_ms(struct timespec *t, long ms) {
 static _Alignas(8) pthread_cond_t mono_aligned = PTHREAD_COND_INITIALIZER_MONOTONIC_NP;
 static struct { int pad; pthread_cond_t c; } __attribute__((aligned(8))) mono_odd = {0, PTHREAD_COND_INITIALIZER_MONOTONIC_NP};
 
+// Destroyed and initialised again for the realtime clock: the monotonic initialiser must not linger (at 4 mod 8 its
+// flag is outside the slot a shim keeps its pointer in). A realtime deadline read as a monotonic one waits for decades.
+static struct { int pad; pthread_cond_t c; } __attribute__((aligned(8))) mono_reinit = {0, PTHREAD_COND_INITIALIZER_MONOTONIC_NP};
+
 static const char *monotonic_wait(pthread_cond_t *c, const char *which) {
   struct timespec t0, deadline;
   clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -352,7 +356,25 @@ static const char *check_cond(void) {
   if ((uintptr_t)&mono_odd.c % 8 != 4) FAIL("the fixture's odd monotonic condition variable is not at 4 mod 8");
   const char *bad = monotonic_wait(&mono_aligned, "an 8-aligned");
   if (!bad) bad = monotonic_wait(&mono_odd.c, "a 4 mod 8");
-  return bad ? bad : "ok";
+  if (bad) return bad;
+
+  pthread_cond_t *again = &mono_reinit.c;
+  pthread_mutex_lock(STATIC_MUTEX);
+  pthread_cond_broadcast(again);  // used once as the monotonic initialiser left it
+  pthread_mutex_unlock(STATIC_MUTEX);
+  pthread_cond_destroy(again);
+  if (pthread_cond_init(again, NULL)) FAIL("pthread_cond_init of a destroyed condition variable failed");
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  add_ms(&deadline, 100);
+  pthread_mutex_lock(STATIC_MUTEX);
+  r = pthread_cond_timedwait(again, STATIC_MUTEX, &deadline);
+  pthread_mutex_unlock(STATIC_MUTEX);
+  waited = since(&t0);
+  pthread_cond_destroy(again);
+  if (r != ETIMEDOUT) FAIL("re-initialised condition variable: timed wait returned %d, not ETIMEDOUT", r);
+  if (waited < 0.08 || waited > 5) FAIL("re-initialised condition variable: timed wait took %.3f s for 0.1 s", waited);
+  return "ok";
 }
 
 // ---------------------------------------------------------------- thread attributes
