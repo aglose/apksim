@@ -400,12 +400,15 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       // The stack before the change, hidden activities (stopped below the top) included: the controller stays, its
       // activity is replaced when it is recreated.
       java.util.Map<ActivityController<?>, Activity> was = new java.util.LinkedHashMap<>();
-      java.util.Set<ActivityController<?>> stopped = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      java.util.Map<ActivityController<?>, Integer> states = new java.util.IdentityHashMap<>();
+      java.util.Set<ActivityController<?>> shown = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
       for (Activity a : activities()) {
         ActivityController<?> c = ReflectionHelpers.getField(Shadow.extract(a), "controller");
         if (c == null) continue;
         was.put(c, a);
-        if (Host.isStopped(a)) stopped.add(c);
+        states.put(c, Host.state(a));
+        View decor = a.getWindow().peekDecorView();
+        if (decor != null && decor.getVisibility() == View.VISIBLE) shown.add(c);
       }
       // Robolectric's instrumentation recreates the activities ActivityScenario launched here, itself.
       RuntimeEnvironment.setQualifiers("+w" + Math.round(w / d) + "dp-h" + Math.round(h / d) + "dp-" + (w > h ? "land" : "port"));
@@ -416,23 +419,19 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
         for (java.util.Map.Entry<ActivityController<?>, Activity> e : was.entrySet()) {
           ActivityController<?> c = e.getKey();
           if (c.get() == e.getValue()) c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-          // A recreated activity's window is left detached by Robolectric (setup() would call visible()). A stopped
-          // one gets its window too, hidden, and is stopped again (recreating left it resumed): TestActivities finds
-          // the stack by its windows.
-          if (c.get().getWindow().getDecorView().getViewRootImpl() == null) c.visible();
-          if (stopped.contains(c)) Host.stopAgain(c);
-          else Host.setWindowVisible(c.get(), true);
         }
-        // A recreated activity's window was added after the others: the stack's order again (TestActivities reads
-        // the stack from it), and the focus on its top. An activity above that handled the change itself kept its
-        // window, which was then below the recreated, hidden one.
-        List<ActivityController<?>> stack = new ArrayList<>(was.keySet());
-        ShadowSimWindowManagerImpl.reorder(v -> {
-          Activity a = TestActivities.activityOf(v);
-          for (int i = 0; i < stack.size(); i++) if (stack.get(i).get() == a) return i;
-          return -1;
-        });
-        ShadowSimWindowManagerImpl.focusTop();
+        // Recreating left each activity resumed (whatever it was: a stopped or paused one too), with its window
+        // detached (Robolectric's recreate) or added after the others. Each gets its state and window back, and the
+        // windows their order (TestActivities reads the stack from it) and focus.
+        List<Activity> order = new ArrayList<>();
+        for (ActivityController<?> c : was.keySet()) {
+          Host.moveTo(c, states.get(c));
+          View decor = c.get().getWindow().peekDecorView();
+          if (decor == null || decor.getViewRootImpl() == null) c.visible();
+          Host.setWindowVisible(c.get(), shown.contains(c));
+          order.add(c.get());
+        }
+        Host.windowsInOrder(order);
       }
       settle(100);
       return true;

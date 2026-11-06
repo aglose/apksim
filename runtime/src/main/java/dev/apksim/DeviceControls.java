@@ -497,8 +497,6 @@ final class DeviceControls {
         // recreate() needs window focus before the new window exists, so go through its configuration change, with a
         // change no activity handles itself (assets paths).
         changeConfiguration(new Configuration(app.getResources().getConfiguration()), 0x80000000);
-        ActivityController<? extends Activity> top = stack.peek();
-        if (top != null && hiddenBy == null && top.get().getWindow().getDecorView().getViewRootImpl() == null) top.visible();
         return "ok";
       }
       case "process-death" -> {
@@ -603,8 +601,7 @@ final class DeviceControls {
     ActivityController<? extends Activity> top = stack.peek();
     if (top == null) return "no activity";
     if (why.equals("home")) top.userLeaving();
-    top.pause().stop();
-    Host.setWindowVisible(top.get(), false);  // as every stopped activity's (Host.start)
+    Host.arrange(new java.util.ArrayList<>(stack), true);  // every visible one stopped and hidden
     if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
     hiddenBy = why;
     SimWindow.present(placeholder(why));
@@ -617,7 +614,7 @@ final class DeviceControls {
     hiddenBy = null;
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) {
-      Host.bringToFront(top);
+      Host.arrange(new java.util.ArrayList<>(stack), false);
       top.get().getWindow().getDecorView().invalidate();
     }
     return "ok";
@@ -824,6 +821,7 @@ final class DeviceControls {
       }
       stack.push(c);
     }
+    Host.arrange(new java.util.ArrayList<>(stack), hiddenBy != null);  // those a see-through top shows, too
     return "ok, " + old.size() + " activit" + (old.size() == 1 ? "y" : "ies") + " rebuilt from saved state";
   }
 
@@ -876,15 +874,17 @@ final class DeviceControls {
     return RuntimeEnvironment.getApplication();
   }
 
-  /** Every activity of the stack gets the change; those that were stopped stay stopped (Host.stopAgain). */
+  /**
+   * Every activity of the stack gets the change, then the stack is arranged again (Host.arrange): Robolectric
+   * recreates an activity into the resumed state whatever it was, and leaves the new window detached.
+   */
   private int changeConfiguration(Configuration config, int changed) {
     int n = 0;
     for (ActivityController<? extends Activity> c : stack) {
-      boolean stopped = Host.isStopped(c.get());
       c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-      if (stopped) Host.stopAgain(c);
       n++;
     }
+    Host.arrange(new java.util.ArrayList<>(stack), hiddenBy != null);
     return n;
   }
 
@@ -897,9 +897,6 @@ final class DeviceControls {
     int changed = before.diff(config);
     if (changed == 0) return "unchanged";
     int n = changeConfiguration(config, changed);
-    // Robolectric's recreate() leaves the new activity's window detached (setup() would call visible()).
-    ActivityController<? extends Activity> top = stack.peek();
-    if (top != null && hiddenBy == null && top.get().getWindow().getDecorView().getViewRootImpl() == null) top.visible();
     return "ok, " + n + " activit" + (n == 1 ? "y" : "ies") + " updated";
   }
 }

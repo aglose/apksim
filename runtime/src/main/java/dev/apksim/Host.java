@@ -444,7 +444,7 @@ public class Host {
     ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
     stack.push(c);
     c.setup();
-    coverBelow(c.get(), new ArrayList<>(stack).subList(1, stack.size()));
+    arrange(new ArrayList<>(stack), false);
   }
 
   /**
@@ -512,71 +512,80 @@ public class Host {
   }
 
   /**
-   * After {@code top} started over {@code below} (top first): as ActivityThread, an activity stays visible (paused) while
-   * everything above it is see-through; under the first opaque one, each is stopped and its windows hidden.
+   * Puts the stack (top first) where a device's activity manager would have it after a start, a finish, a
+   * configuration change, a rebuild, or the app leaving or coming back: the top resumed (unless {@code backgrounded},
+   * the home or lock screen); below it, while everything above is see-through (translucent or floating), paused and
+   * visible; every other one stopped, its windows hidden. A visible activity that has no window (recreated or rebuilt
+   * while it was not) gets one, and the windows are put in the stack's order, which is the order they are drawn,
+   * touched and found in; in test runs the top visible window has the focus. Each path used to fix up only its own
+   * part: a rotation left the whole stack resumed, a rebuilt stack's revealed windows were added above the top one.
    */
-  static void coverBelow(Activity top, List<? extends ActivityController<?>> below) {
-    boolean shown = seeThrough(top);
-    for (ActivityController<?> c : below) {
-      Activity a = c.get();
-      if (a.isFinishing() || a.isDestroyed()) continue;  // finish() ends those
-      if (a.isResumed()) c.pause();
-      if (shown) {
-        shown = seeThrough(a);
-      } else {
-        if (!isStopped(a)) c.stop();
-        setWindowVisible(a, false);
-      }
-    }
+  static void arrange(List<? extends ActivityController<?>> topFirst, boolean backgrounded) {
+    arrange(topFirst, backgrounded, false);
   }
 
   /**
-   * After the activity above {@code top} went and {@code top} came back: the ones below it (top first) that a
-   * see-through chain from the top now shows again are brought back to paused (if they were stopped) and shown.
+   * {@code onlyUp}: activities are only brought up (stopped to paused or resumed, paused to resumed), never down:
+   * what a finish needs in a test run, whose activities a test may have launched side by side with ActivityScenario.
    */
-  static void revealBelow(Activity top, List<? extends ActivityController<?>> below) {
-    boolean shown = seeThrough(top);
-    for (ActivityController<?> c : below) {
-      if (!shown) return;
+  static void arrange(List<? extends ActivityController<?>> topFirst, boolean backgrounded, boolean onlyUp) {
+    boolean shown = !backgrounded;
+    boolean first = true;
+    List<Activity> order = new ArrayList<>();
+    for (ActivityController<?> c : topFirst) {
       Activity a = c.get();
-      if (a.isFinishing() || a.isDestroyed()) continue;
-      // Stopped to paused goes through restart, start and resume, as TransactionExecutor's lifecycle path does.
-      if (isStopped(a)) c.restart().resume().pause();
-      setWindowVisible(a, true);
-      View decor = a.getWindow().peekDecorView();
-      if (decor == null || decor.getViewRootImpl() == null) c.visible();
-      shown = seeThrough(a);
+      if (a.isFinishing() || a.isDestroyed()) continue;  // finish() ends those
+      order.add(0, a);
+      int target = !shown ? 0 : first ? 2 : 1;
+      first = false;
+      int now = state(a);
+      if (onlyUp && target <= now) {
+        if (shown) shown = seeThrough(a);
+        continue;
+      }
+      moveTo(c, target);
+      if (shown) {
+        View decor = a.getWindow().peekDecorView();
+        if (decor == null || decor.getViewRootImpl() == null) c.visible();
+        setWindowVisible(a, true);
+        shown = seeThrough(a);
+      } else {
+        setWindowVisible(a, false);
+      }
     }
+    windowsInOrder(order);
+  }
+
+  /** The activities' windows (bottom first) in that order, and in test runs the focus on the top visible one. */
+  static void windowsInOrder(List<Activity> bottomFirst) {
+    ShadowSimWindowManagerImpl.reorder(v -> bottomFirst.indexOf(TestActivities.activityOf(v)));
+    if (TestActivities.testRun()) ShadowSimWindowManagerImpl.focusTop();
+  }
+
+  /** Stopped (0), paused (1) or resumed (2). */
+  static int state(Activity a) {
+    return a.isResumed() ? 2 : isStopped(a) ? 0 : 1;
+  }
+
+  /**
+   * Moves an activity to stopped (0), paused (1) or resumed (2) along the path a device takes (TransactionExecutor:
+   * stopped to paused is restart, start, resume, pause).
+   */
+  static void moveTo(ActivityController<?> c, int target) {
+    Activity a = c.get();
+    boolean stopped = isStopped(a);
+    if (target == 0) {
+      if (a.isResumed()) c.pause();
+      if (!stopped) c.stop();
+      return;
+    }
+    if (stopped) c.restart();
+    if (!a.isResumed() && (stopped || target == 2)) c.resume();
+    if (target == 1 && a.isResumed()) c.pause();
   }
 
   static boolean isStopped(Activity a) {
     return org.robolectric.util.ReflectionHelpers.getField(a, "mStopped");
-  }
-
-  /**
-   * After a configuration change: Robolectric recreates an activity into the resumed state whatever state the old one
-   * was in, so a rotation left every activity of the stack resumed (and in test runs, the window of one ActivityScenario
-   * launched on top). One that was stopped is stopped again, its window hidden.
-   */
-  static void stopAgain(ActivityController<?> c) {
-    Activity a = c.get();
-    if (a.isResumed()) c.pause();
-    if (!isStopped(a)) c.stop();
-    setWindowVisible(a, false);
-  }
-
-  /**
-   * A stopped activity coming back to the front (the one above finished, or the app returns from the home screen):
-   * restarted, resumed, and its window shown. An activity recreated or rebuilt while stopped (a configuration change,
-   * `recreate`, `process-death`) has never had a window: it gets one now, as ActivityThread adds the window of an
-   * activity it resumes. Before, the stack was left with no window at all once its top finished.
-   */
-  static void bringToFront(ActivityController<? extends Activity> c) {
-    setWindowVisible(c.get(), true);
-    if (isStopped(c.get())) c.restart();  // one under a see-through activity was only paused
-    c.resume();
-    View decor = c.get().getWindow().peekDecorView();
-    if (decor == null || decor.getViewRootImpl() == null) c.visible();
   }
 
   /**
@@ -630,10 +639,7 @@ public class Host {
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
-      if (below != null) {
-        bringToFront(below);
-        revealBelow(below.get(), new ArrayList<>(stack).subList(1, stack.size()));
-      }
+      if (below != null) arrange(new ArrayList<>(stack), false);
     }
     // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
     // too, as the system server would. It stayed stopped instead, its window up and its ViewModels alive.

@@ -130,6 +130,18 @@ class StackWindowsTest {
       assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
       assertEquals(Lifecycle.State.STARTED, scenario.state)
       assertEquals(2, appWindows().size)
+      // A rotation recreates both; the one below stays paused under the floating one, its window under it.
+      try {
+        device.setOrientationLeft()
+        assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
+        assertEquals(Lifecycle.State.STARTED, scenario.state)
+        assertEquals(2, appWindows().size)
+        // UiAutomation lists windows topmost first.
+        assertTrue("the floating window is on top", appWindows().first().root.findAccessibilityNodeInfosByText("Floating").isNotEmpty())
+      } finally {
+        device.setOrientationNatural()
+        device.unfreezeRotation()
+      }
 
       val context = instrumentation.targetContext
       context.startActivity(Intent(context, SecondActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

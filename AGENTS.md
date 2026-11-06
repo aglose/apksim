@@ -26,16 +26,18 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`). A stopped activity's window is hidden, as ActivityThread hides it, so only the top
-    one draws and takes touches; one coming back to the front (`bringToFront`: its top finished, `resume`) is shown
-    again, and gets a window if it was recreated or rebuilt while stopped (configuration change, `recreate`,
-    `process-death`): before, finishing the top of such a stack left nothing on screen. The activity's dialogs and
-    popups are hidden with it, and hidden windows get FLAG_NOT_TOUCHABLE while hidden (Robolectric's UiAutomation
-    injection reads only that). Under a translucent or floating (dialog-themed) activity the one below stays visible
-    and paused (`coverBelow`/`revealBelow`, also in test runs; the test app's `FloatingActivity`). Robolectric's configuration
-    change recreates an activity into the resumed state whatever it was, so one that was stopped is stopped again
-    (`stopAgain`; in test runs too, where Robolectric's instrumentation recreates ActivityScenario's activities
-    itself on `setQualifiers`): a rotation used to leave the whole stack resumed.
+    commands (`runCommand`). The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
+    path that changes it ends: start, finish, `home`/`resume`, configuration changes, `recreate`, `process-death`,
+    test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
+    dialog-themed activity: the test app's `FloatingActivity`, `apksim://floating`), paused and visible; the rest
+    stopped with their windows hidden, so only what a device shows draws and takes touches. A visible activity with
+    no window (recreated or rebuilt while stopped: Robolectric's recreate leaves it detached, and resumed whatever it
+    was) gets one, windows are put in the stack's order, and in test runs the top has the focus. An activity's dialogs
+    and popups hide with it, and a hidden window is FLAG_NOT_TOUCHABLE meanwhile (Robolectric's UiAutomation injection
+    reads only that, and ranks dialogs above every activity window). Before, a rotation left the whole stack resumed,
+    and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
+    up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
+    (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows.
@@ -164,7 +166,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
-colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks. `snapshots/` has its screenshot-test specs
+colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
+`apksim://floating` a dialog-themed `FloatingActivity`. `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK

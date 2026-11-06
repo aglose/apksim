@@ -302,22 +302,15 @@ public final class TestActivities {
   private static void finished(Activity a) {
     ActivityController<?> c = controller(a);
     if (c == null || a.isDestroyed()) return;
+    // One that finished while hidden (stopped below the top, or with its task in the background) uncovers nothing.
+    View decor = a.getWindow() == null ? null : a.getWindow().peekDecorView();
+    boolean shown = decor != null && decor.getVisibility() == View.VISIBLE;
     if (a.isResumed()) c.pause();
     if (!(boolean) ReflectionHelpers.getField(a, "mStopped")) c.stop();
     c.destroy();
-    List<Activity> left = withWindows();
-    if (left.isEmpty()) return;
-    Activity top = left.get(left.size() - 1);
-    ActivityController<?> below = controller(top);
-    if (below == null || top.isResumed()) return;
-    // A stopped one shows its window again (Host.bringToFront); one only paused (under a dialog-like activity) kept it.
-    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) {
-      Host.bringToFront(below);
-      ShadowSimWindowManagerImpl.focusTop();  // the window that had it went while this one was hidden
-    } else {
-      below.resume();
-    }
-    Host.revealBelow(top, controllers(left.subList(0, left.size() - 1)));
+    // The new top is resumed, and what a see-through chain from it shows is paused and visible again (stopped ones
+    // with their windows shown, Host.arrange); nothing is stopped here.
+    if (shown) Host.arrange(controllers(withWindows()), false, true);
   }
 
   /** The controllers of {@code activities} (bottom to top), top first. */
@@ -488,9 +481,7 @@ public final class TestActivities {
           ActivityController<?> c = controller(a);
           if (c == null || a.isFinishing()) return;
           a.moveTaskToBack(true);
-          if (a.isResumed()) c.pause();
-          c.stop();
-          Host.setWindowVisible(a, false);  // a stopped activity's window is hidden, as on a device
+          Host.arrange(controllers(withWindows()), true);  // the task's activities stopped, their windows hidden
         });
       } else {
         try {
@@ -706,11 +697,11 @@ public final class TestActivities {
       if (below != null && top.isResumed()) below.pause();
       Intent start = new Intent(intent);
       if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
-      Activity started = org.robolectric.Robolectric.buildActivity(cls, start).setup().get();
+      org.robolectric.Robolectric.buildActivity(cls, start).setup();
       // Those below are stopped and hidden, as ActivityThread hides a stopped activity's window (UiAutomator found the
       // views of every activity below, and screenshots and failure bundles drew them under the top one), unless the
       // new one is see-through (a dialog-themed activity): then they stay visible, paused.
-      Host.coverBelow(started, controllers(running));
+      Host.arrange(controllers(withWindows()), false);
     } catch (ReflectiveOperationException | LinkageError e) {
       // No such class: on a device the start fails in the app's own call.
       throw new IllegalStateException("starting " + info.name + ": " + e, e);

@@ -48,7 +48,15 @@
             </intent-filter>
         </activity>
         <service android:name=".TripSyncJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
-        <activity android:name=".FloatingActivity" android:exported="false" android:theme="@android:style/Theme.Material.Light.Dialog" />
+        <!-- apksim://floating: a dialog-themed activity over whatever is running (the one below stays visible). -->
+        <activity android:name=".FloatingActivity" android:exported="true" android:theme="@android:style/Theme.Material.Light.Dialog">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="floating" />
+            </intent-filter>
+        </activity>
         <!-- apksim://stack: SecondActivity over whatever is running ("Deeper" stacks more), for stack checks. -->
         <activity android:name=".SecondActivity" android:exported="true">
             <intent-filter>
