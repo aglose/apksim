@@ -32,6 +32,14 @@ final class UiDump {
 
   /** The dump, or null when there is no window to dump. */
   static String xml(boolean compressed, boolean allWindows) throws IOException {
+    try {
+      return dump(compressed, allWindows);
+    } finally {
+      views = null;
+    }
+  }
+
+  private static String dump(boolean compressed, boolean allWindows) throws IOException {
     Display display = AdbShell.app().getSystemService(WindowManager.class).getDefaultDisplay();
     Point size = new Point();
     display.getRealSize(size);
@@ -164,23 +172,25 @@ final class UiDump {
     return v != null ? v.isImportantForAccessibility() : n.isImportantForAccessibility();
   }
 
+  /**
+   * The shown windows' views by accessibility view id, made by one walk the first time a dump needs it and kept until
+   * that dump ends ({@link #xml}), so each lookup is constant time. Main thread only, as dumps are.
+   */
+  private static java.util.Map<Integer, View> views;
+
   private static View viewById(int accessibilityViewId) {
-    for (View root : ShadowSimUiAutomation.rootViews()) {
-      View v = find(root, accessibilityViewId);
-      if (v != null) return v;
+    if (views == null) {
+      views = new java.util.HashMap<>();
+      for (View root : ShadowSimUiAutomation.rootViews()) index(root);
     }
-    return null;
+    return views.get(accessibilityViewId);
   }
 
-  private static View find(View v, int accessibilityViewId) {
-    if (v.getAccessibilityViewId() == accessibilityViewId) return v;
+  private static void index(View v) {
+    views.put(v.getAccessibilityViewId(), v);
     if (v instanceof ViewGroup g) {
-      for (int i = 0; i < g.getChildCount(); i++) {
-        View found = find(g.getChildAt(i), accessibilityViewId);
-        if (found != null) return found;
-      }
+      for (int i = 0; i < g.getChildCount(); i++) index(g.getChildAt(i));
     }
-    return null;
   }
 
   /** The tool's: bounds in screen intersected with the display, empty when outside it. */
