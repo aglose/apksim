@@ -67,26 +67,38 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     }
   }
 
-  private static List<Win> windows() {
-    Object global = ReflectionHelpers.callStaticMethod(android.view.WindowManagerGlobal.class, "getInstance");
-    List<ViewRootImpl> roots = ReflectionHelpers.getField(global, "mRoots");
-    List<WindowManager.LayoutParams> params = ReflectionHelpers.getField(global, "mParams");
+  /** Every shown window, bottom to top in the stack Host draws ({@link AccessibleWindows#stack}), covered ones included. */
+  private static List<Win> allWindows() {
     List<Win> out = new ArrayList<>();
-    for (int i = 0; i < roots.size() && i < params.size(); i++) {
-      ViewRootImpl r = roots.get(i);
-      View v = r.getView();
-      if (v == null || v.getVisibility() != View.VISIBLE || !v.isAttachedToWindow()) continue;
-      out.add(new Win(r, v, params.get(i)));
+    for (View v : AccessibleWindows.stack()) {
+      ViewRootImpl r = v.getViewRootImpl();
+      if (r != null) out.add(new Win(r, v, (WindowManager.LayoutParams) v.getLayoutParams()));
     }
-    // Higher window types are drawn above lower ones; within a type, later windows are above earlier ones.
-    out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
     return out;
   }
 
-  /** The root views of the shown windows, bottom to top; main thread only. */
+  /**
+   * The windows accessibility reports, bottom to top: those a touch-modal or full-screen window above them covers are
+   * left out, as on a device ({@link AccessibleWindows}).
+   */
+  private static List<Win> windows() {
+    List<Win> all = allWindows();
+    List<View> views = new ArrayList<>();
+    List<WindowManager.LayoutParams> params = new ArrayList<>();
+    for (Win w : all) {
+      views.add(w.view);
+      params.add(w.params);
+    }
+    boolean[] keep = AccessibleWindows.reported(views, params);
+    List<Win> out = new ArrayList<>();
+    for (int i = 0; i < all.size(); i++) if (keep[i]) out.add(all.get(i));
+    return out;
+  }
+
+  /** The root views of every shown window, covered ones included, bottom to top; main thread only. */
   static List<View> rootViews() {
     List<View> out = new ArrayList<>();
-    for (Win w : windows()) out.add(w.view);
+    for (Win w : allWindows()) out.add(w.view);
     return out;
   }
 
@@ -98,6 +110,14 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   /** The root node of a window, linked to its views so that the whole tree can be walked from it. */
   private static AccessibilityNodeInfo rootNode(Win w) {
+    // The window's accessibility id, which the system gives each window it reports (here no one did): every node of
+    // the window carries it, and a node's equals and hashCode include it. Without it every window's root node was
+    // equal to every other's (the same root item id, window id undefined), and UiDevice, which collects the roots in a
+    // set, kept only the active window's.
+    Object attach = ReflectionHelpers.getField(w.root, "mAttachInfo");
+    if (ReflectionHelpers.<Integer>getField(attach, "mAccessibilityWindowId") == AccessibilityWindowInfo.UNDEFINED_WINDOW_ID) {
+      ReflectionHelpers.setField(attach, "mAccessibilityWindowId", windowId(w.root));
+    }
     AccessibilityNodeInfo info = w.view.createAccessibilityNodeInfo();
     if (info == null) return null;
     info.setQueryFromAppProcessEnabled(w.view, true);
@@ -128,7 +148,10 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return onMain(ShadowSimUiAutomation::windowInfos);
   }
 
-  /** Every shown window, topmost first as the system lists them, each one's root linked to its views; main thread. */
+  /**
+   * Every window accessibility reports (none a touch-modal or full-screen window covers), topmost first as the system
+   * lists them, each one's root linked to its views; main thread.
+   */
   static List<AccessibilityWindowInfo> windowInfos() {
     List<Win> all = windows();
     List<AccessibilityWindowInfo> out = new ArrayList<>();
@@ -147,8 +170,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
           ? AccessibilityWindowInfo.TYPE_SYSTEM : AccessibilityWindowInfo.TYPE_APPLICATION);
       info.setActive(i == active);
       info.setFocused(i == active);
-      int[] at = new int[2];
-      w.view.getLocationOnScreen(at);
+      int[] at = Host.screenPosition(w.view);
       info.setRegionInScreen(new android.graphics.Region(at[0], at[1], at[0] + w.view.getWidth(), at[1] + w.view.getHeight()));
       info.setTitle(w.params.getTitle());
       rootNode(w);  // links the root's direct connection
@@ -499,5 +521,39 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     if (failed[0] != null) throw failed[0];
     @SuppressWarnings("unchecked") T t = (T) result[0];
     return t;
+  }
+
+  /**
+   * The transform from a window to the screen, as the accessibility service hands it to a window's direct connection:
+   * AccessibilityInteractionController takes the window's position (AttachInfo's mWindowLeft/mWindowTop) off each node's
+   * boundsInScreen and applies this matrix, which on a device moves it back by the window's frame. Robolectric's is the
+   * identity, so every node of a window not at 0,0 (a centred dialog) reported bounds inside its window, and
+   * UiAutomator clicked there.
+   */
+  @Implements(android.view.accessibility.AccessibilityManager.class)
+  public static class ShadowSimAccessibilityManager extends org.robolectric.shadows.ShadowAccessibilityManager {
+    @Implementation(minSdk = 33)
+    @Override
+    protected Object getWindowTransformationSpec(int windowId) {
+      Object spec = super.getWindowTransformationSpec(windowId);
+      ViewRootImpl root = null;
+      synchronized (WINDOW_IDS) {
+        for (java.util.Map.Entry<ViewRootImpl, Integer> e : WINDOW_IDS.entrySet()) {
+          if (e.getValue() == windowId) root = e.getKey();
+        }
+      }
+      if (root == null) return spec;
+      Object attach = ReflectionHelpers.getField(root, "mAttachInfo");
+      if (attach == null) return spec;
+      int left = ReflectionHelpers.<Integer>getField(attach, "mWindowLeft");
+      int top = ReflectionHelpers.<Integer>getField(attach, "mWindowTop");
+      if (left == 0 && top == 0) return spec;
+      android.graphics.Matrix m = new android.graphics.Matrix();
+      m.setTranslate(left, top);
+      float[] values = new float[9];
+      m.getValues(values);
+      ReflectionHelpers.setField(spec, "transformationMatrix", values);
+      return spec;
+    }
   }
 }

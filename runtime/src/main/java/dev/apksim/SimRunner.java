@@ -229,27 +229,13 @@ public class SimRunner extends RobolectricTestRunner {
     }
 
     /**
-     * The device's time zone, `--timezone ZONE` (-Dapksim.timezone): the JDK's default and android.icu's. ICU keeps
-     * the zone it first worked out, and a standby may have formatted a date before the launch named one, so its cached
-     * zone is dropped too and taken again from the JDK's. Here, inside the sandbox, rather than in Main: ICU's classes
-     * are instrumented framework classes.
-     */
-    private static void applyTimeZone() {
-      String zone = System.getProperty("apksim.timezone");
-      if (zone == null) return;
-      // ZoneId.of rejects an unknown name, which TimeZone.getTimeZone would quietly turn into GMT.
-      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(java.time.ZoneId.of(zone)));
-      android.icu.util.TimeZone.setICUDefault(null);
-    }
-
-    /**
      * For a test run (Instrument), also sets the device's screen (Host does that itself) and hands the tests am
      * instrument's -e arguments, as InstrumentationRegistry does.
      */
     @Override
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
-      applyTimeZone();
+      TimeZones.applyLaunchZone();  // --timezone: the JDK's, android.icu's and user.timezone (Joda-Time)
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
       SimClock.applyLaunchOption();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
@@ -398,7 +384,7 @@ public class SimRunner extends RobolectricTestRunner {
   }
 
   private static Class<?>[] baseShadows() {
-    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimSurfaceView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, Bluetooth.ShadowSimBluetoothAdapter.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.Recording.class, ShadowSimConnectivityManager.class, SystemBroadcasts.ShadowSimAudioManager.class, SimWifi.ShadowSimWifiManager.class};
+    return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimSurfaceView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, Bluetooth.ShadowSimBluetoothAdapter.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.Recording.class, ShadowSimUiAutomation.ShadowSimAccessibilityManager.class, ShadowSimConnectivityManager.class, SystemBroadcasts.ShadowSimAudioManager.class, SimWifi.ShadowSimWifiManager.class};
   }
 
   @Override

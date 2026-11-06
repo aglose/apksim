@@ -130,12 +130,20 @@ def main():
     failure = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingView"), "failure.txt")
     check(os.path.exists(failure) and re.search(r"\(read as MainActivity finished\)\n  nodes\.txt \d+ ms\n", open(failure).read()),
           "failure.txt reports the deferred read's time, as for the other parts")
-    # Two activities shown: each one's tree is read as its own scenario closes, the top one first, and none is lost.
-    nodes = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingViewOverFloatingActivity"), "nodes.txt")
+    # Two activities shown, the top one a dialog-themed (touch-modal) activity: each reported window's tree is read as its
+    # own scenario closes, and the one it covers is not reported to accessibility, so it is in windows.txt (marked
+    # covered) and not in nodes.txt.
+    folder_ = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingViewOverFloatingActivity"))
+    nodes = os.path.join(folder_, "nodes.txt")
     n = open(nodes).read() if os.path.exists(nodes) else ""
-    top, below = n.find("read as FloatingActivity finished"), n.find("read as MainActivity finished")
-    check(0 <= top < n.find("Floating\"", top) < below < n.find("FAB clicks: 0", below),
-          "with an activity over another, nodes.txt has each one's tree, read as each finished (top first)")
+    top = n.find("read as FloatingActivity finished")
+    check(0 <= top < n.find("Floating\"", top) and "read as MainActivity finished" not in n and "FAB clicks" not in n,
+          "with a dialog-themed activity over another, nodes.txt has the top one's tree and not the covered one's")
+    wins = os.path.join(folder_, "windows.txt")
+    w = open(wins).read() if os.path.exists(wins) else ""
+    check(any("MainActivity" in l and "covered" in l for l in w.splitlines())
+          and not any("FloatingActivity" in l and "covered" in l for l in w.splitlines()),
+          "windows.txt lists both windows and marks the covered one")
     exp = cases.get((PKG + "FailureBundleExpectedTest", "expectedThrows"))
     check(exp is not None and exp.find("failure") is None and exp.find("skipped") is None,
           "@Test(expected) passes, with no bundle started for it (its @After checks before the test's end)")

@@ -742,9 +742,12 @@ static CGImageRef symbol(NSString *name, NSColor *color, CGFloat points) {
   return [img CGImageForProposedRect:&r context:nil hints:@{NSImageHintCTM : [NSAffineTransform transform]}];
 }
 
+static NSTimeZone *clockZone;  // the device's (--timezone, `timezone`); nil: the Mac's
+
 static void updateClock(void) {
   NSDateFormatter *f = [NSDateFormatter new];
   f.dateFormat = @"H:mm";
+  if (clockZone) f.timeZone = clockZone;
   clockLayer.string = [f stringFromDate:[NSDate date]];
 }
 
@@ -914,6 +917,17 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTitle(JNIEnv *env, jcl
   NSString *ns = [NSString stringWithUTF8String:t];
   (*env)->ReleaseStringUTFChars(env, title, t);
   onMain(^{ NSApp.windows.firstObject.title = ns; });
+}
+
+// The status bar clock shows this zone (an IANA name), as the device's own clock would.
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTimeZone(JNIEnv *env, jclass c, jstring zone) {
+  const char *z = (*env)->GetStringUTFChars(env, zone, NULL);
+  NSTimeZone *tz = [NSTimeZone timeZoneWithName:[NSString stringWithUTF8String:z]];
+  (*env)->ReleaseStringUTFChars(env, zone, z);
+  onMain(^{
+    clockZone = tz;
+    if (clockLayer) updateClock();
+  });
 }
 
 // Sets the window's content size in points as a drag of its corner would end (the `window` control command), so

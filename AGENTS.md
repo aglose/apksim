@@ -33,7 +33,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
     never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
-    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). A touch event's
+    raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
+    Host places windows itself (`position`: gravity and offsets on the display; Robolectric's window session gives a
+    window that is not full-screen the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
+    moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
+    position (getLocationOnScreen, boundsInScreen, Compose's window position) is where the window is drawn. Before, a
+    centred dialog's views thought they were at the top left, and `nodes`, `tap-text` and UiAutomator missed them.
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
     path that changes it ends: start, finish (of the top or of one below it), `home`/`resume`, configuration changes,
     `recreate`, `process-death`, test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
@@ -138,6 +144,15 @@ Read README.md for results and limits; this file covers how to work on the code.
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
+    `AccessibleWindows`: which windows accessibility reports (UiAutomation, `uiautomator dump`, `nodes`, bundles'
+    nodes.txt), as the window manager computes them: top down, a window is left out once touch-modal windows above it
+    (any Dialog, a dialog-themed activity, a focusable popup: their touchable region is the whole task) or their frames
+    leave none of it uncovered, unless it has the focus. AOSP's `AccessibilityController.computeWindowsForAccessibility`
+    (Android SDK sources, `android-33/com/android/server/wm`), down to its bounding-box test (`Region.quickReject`:
+    a window inside a hole of what is left still counts, as there). Touch input does not use it (`Host.isTouchThrough`).
+    `AccessibleWindows.stack()` is the one window order: WindowManagerGlobal's, in which windows were added, as Host
+    draws them and sends touches down; every window list (UiAutomation, dump, `nodes`, bundles) uses it. Sorting by
+    window type put a popup opened before a dialog above the dialog.
   - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
     blinking, the top window focused), `SimClock` (`clock`, `--clock`), `ImageDiff` (`diff`), and in `Host` the
     `settle` idle signal and `restart`.
@@ -257,8 +272,8 @@ drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity d
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
-`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone` (the zone the app sees; set at launch with
-`--timezone America/New_York`), `config` (configuration the app sees),
+`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
+launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
@@ -411,9 +426,23 @@ received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/ad
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://timezone` opens `TimeZoneActivity`: each zone source (JDK, android.icu, `user.timezone`, Joda-Time 2.10's
+default) on a line, and ACTION_TIMEZONE_CHANGED heard as joda-time-android hears it ("tz changes: 1 to Asia/Tokyo";
+`ci-smoke.sh` drives it).
+Time zones (`TimeZones`): `--timezone ZONE` is applied before the Application exists, warm or cold, and in test runs at
+each setup: the JDK's default, android.icu's (its cached default dropped: a standby may have worked it out before the
+launch), the `user.timezone` property (Joda-Time up to 2.10 reads it before the JDK's default and caches the result; a
+standby's JVM had set it to the host's, so Joda dates were a day off), the status bar clock and logcat's timestamps.
+`timezone ZONE` does the same while the app runs and broadcasts ACTION_TIMEZONE_CHANGED with EXTRA_TIMEZONE, as a
+device does (joda-time-android sets Joda's default from it; plain Joda keeps its cached zone, as on a device). Without
+`--timezone` nothing is changed.
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://dialogs[?open=full|modal|nonmodal|compose]` opens `DialogsActivity`: a full-screen dialog, a small
+(touch-modal) one, a small FLAG_NOT_TOUCH_MODAL one or a Compose Dialog over it; under all but the third accessibility
+reports only the dialog. Each counts taps on its "Count" button, for clicks at a centred dialog's node bounds
+(`CoveredWindowsTest`, `adb-check.py`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 `apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
@@ -549,7 +578,8 @@ view to draw to), `webrtclog [info|verbose]`,
 another thread is blocked writing to it returns the write (`ShadowSimAudioTrack` frees the stream only once no native
 call on it is in progress: before, the writer read the freed stream); `scripts/make-media.sh` writes 2 s
 clips to `work/media`), `nodes` (accessibility tree: text, hints,
-fields, clickables with bounds), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
+fields, clickables with bounds, of the windows accessibility reports, so not what a dialog covers; `nodes all`: every
+window; `tap-text` looks there too), `logcat on|off` (app's android.util.Log to stderr; `APKSIM_LOGCAT=1` at launch).
 ELF natives whose stack arguments differ between Apple's and AAPCS64's conventions (more than 8 integer or 8 FP
 arguments) are bound through trampolines in `jnibridge.c`; without them they read garbage and crashed. Variadic libc
 functions an APK imports need a `THUNK` in `bionic.c` (AAPCS va_list) or they fall through to libSystem, which reads
@@ -657,7 +687,8 @@ back/home/lock/unlock; key codes by number too), `input tap|swipe` return once t
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell uiautomator dump [--compressed] [--windows] [FILE]` (`UiDump`: the stock tool's XML and its "UI hierchary
 dumped to: FILE" line, AOSP's AccessibilityNodeInfoDumper attribute for attribute, NAF included, from the active
-window's tree as UiAutomation reads it here, so Compose nodes and testTagsAsResourceId ids show; default
+window's tree as UiAutomation reads it here (`--windows`: every window it reports, so none a dialog covers), so
+Compose nodes and testTagsAsResourceId ids show; default
 /sdcard/window_dump.xml, `/dev/tty` prints it, so `adb exec-out uiautomator dump /dev/tty`; `--compressed` drops views
 not important for accessibility, lifting their children; it waits up to 1 s for the main thread to go idle first),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
@@ -787,7 +818,8 @@ true` one more hangs with nothing to end it but `--test-timeout`. `instrument-ch
 **Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
 failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
 which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot
-is), `windows.txt`, `nodes.txt` (as the `nodes` command), `logcat.txt` (that test's lines only: `AdbLog` is installed
+is), `windows.txt` (every window, those accessibility leaves out marked `covered`), `nodes.txt` (as the `nodes`
+command: what UiAutomator could reach), `logcat.txt` (that test's lines only: `AdbLog` is installed
 for the run), `threads.txt`, `looper.txt` (the main queue and androidx.test's activity stages) and `repro.sh` (the
 launch narrowed to `-e class` that test, from `-Dapksim.argv`). Where it captures matters: listeners hear of a
 failure after `@After` and rules have closed the activity, so `SimRunner`'s helper runner wraps `methodInvoker`
@@ -842,7 +874,15 @@ variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with
 built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
 libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
 new case wrong, add it there; a device passes every check.
-UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
+UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
+Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
+accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
+equals/hashCode include it, and without it every window's root was equal to every other's, so UiDevice (which keeps
+the roots in a set) searched only the active window. Node bounds are on the screen for a window not at 0,0 (a
+centred dialog): AccessibilityInteractionController takes the window's position off each node and applies the
+window-to-screen matrix the accessibility service gives (`ShadowSimAccessibilityManager.getWindowTransformationSpec`;
+Robolectric's is the identity, so a dialog's nodes sat at the top left and clicks missed). Each window's root node is
+linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
@@ -876,12 +916,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
   test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
-  the control commands it reaches are animscale and fontscale (`ShellCommandTest`).
+  the control commands it reaches are animscale, fontscale, network, bars and timezone (`ShellCommandTest`).
 - The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
   in framework code at its uptime clock, so the framework thought it was 1970 while the app's own code and the JDK
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
-  when it skips idle time. `--timezone ZONE` sets the JDK's and android.icu's zone, at each test's setup (ICU caches
-  its default, and a standby may have worked it out before the launch) (`WallClockTest` with `-e timezone ZONE`).
+  when it skips idle time. `--timezone ZONE` sets the zone at each test's setup (`TimeZones`, as in running
+  instances), and a test's `executeShellCommand("apksim timezone ZONE")` changes it until the next setup
+  (`WallClockTest` with `-e timezone ZONE`).
 - `--realtime-clock` (opt-in, test runs only; `RealTimeClock`): the simulated clock follows real time instead of
   skipping idle time, for suites written for a device whose timed UI must last (a banner that closes itself after
   5 s). By default Robolectric's Choreographer is not paused in a test run, so each frame asked for moves the clock

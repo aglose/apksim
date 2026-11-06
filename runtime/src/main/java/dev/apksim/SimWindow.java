@@ -193,6 +193,13 @@ final class SimWindow {
 
   private static native void nativeSetSystemBars(int statusPx, int navPx, boolean darkStatusIcons, boolean darkHandle);
 
+  /** The status bar's clock follows the device's zone (TimeZones). */
+  static void setTimeZone(String zone) {
+    if (!headless) nativeSetTimeZone(zone);
+  }
+
+  private static native void nativeSetTimeZone(String zone);
+
   /** The display's new size in device pixels (rotation, resizing); call with no frame being presented. */
   /** actualSize: the window goes back to actual size (zoomed out only as far as the Mac's screen needs), for a new device. */
   static void resize(int w, int h, boolean actualSize) {
