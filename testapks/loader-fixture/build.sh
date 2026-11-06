@@ -5,8 +5,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SDK="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
-NDK="${ANDROID_NDK_HOME:-$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)}"
-[ -d "$NDK" ] || { echo "no Android NDK (set ANDROID_NDK_HOME)" >&2; exit 1; }
+NDK="${ANDROID_NDK_HOME:-$( (ls -d "$SDK"/ndk/* 2>/dev/null || true) | sort -V | tail -1)}"
+[ -d "$NDK" ] || { echo "no Android NDK under $SDK/ndk (install one, or set ANDROID_NDK_HOME)" >&2; exit 1; }
 BIN="$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)"
 OUT="$HERE/../composeapp/app/src/main/jniLibs"
 for pair in arm64-v8a:aarch64 x86_64:x86_64; do
