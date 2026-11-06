@@ -444,7 +444,21 @@ public class Host {
     ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
     stack.push(c);
     c.setup();
-    if (top != null) top.stop();
+    if (top != null) {
+      top.stop();
+      setWindowVisible(top.get(), false);
+    }
+  }
+
+  /**
+   * What ActivityThread does on stop and restart (updateVisibility): a stopped activity's window is hidden, not
+   * removed. Robolectric's controller leaves it visible, so every activity below the top was drawn each frame: a
+   * large app 4 activities deep drew at 3 fps.
+   */
+  private static void setWindowVisible(Activity a, boolean visible) {
+    android.view.Window w = a.getWindow();
+    View decor = w == null ? null : w.peekDecorView();
+    if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
   }
 
   /**
@@ -498,7 +512,19 @@ public class Host {
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
-      if (below != null) below.restart().resume();
+      if (below != null) {
+        setWindowVisible(below.get(), true);
+        below.restart().resume();
+      }
+    }
+    // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
+    // too, as the system server would. It stayed stopped instead, its window up and its ViewModels alive.
+    for (java.util.Iterator<ActivityController<? extends Activity>> it = stack.iterator(); it.hasNext(); ) {
+      ActivityController<? extends Activity> c = it.next();
+      if (c == stack.peek() || !c.get().isFinishing()) continue;
+      it.remove();
+      c.destroy();
+      results.finished(c.get());
     }
   }
 
@@ -567,6 +593,8 @@ public class Host {
       touchTarget = roots.isEmpty() ? null : roots.get(roots.size() - 1);
       for (int i = roots.size() - 1; i >= 0; i--) {
         View r = roots.get(i);
+        // A hidden window (a stopped activity's) is not drawn, so it takes no touches either.
+        if (r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
         int[] at = position(r);
         boolean inside = e.x() >= at[0] && e.x() < at[0] + r.getWidth() && e.y() >= at[1] && e.y() < at[1] + r.getHeight();
         touchTarget = r;
@@ -883,7 +911,8 @@ public class Host {
         for (View r : rootViews()) {
           int[] at = position(r);
           b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
-              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "").append("; ");
+              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "")
+              .append(r.getVisibility() == View.VISIBLE ? "" : r.getVisibility() == View.INVISIBLE ? " invisible" : " gone").append("; ");
         }
         return b.toString();
       }
