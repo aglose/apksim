@@ -741,6 +741,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
   loopMainThreadUntilIdle also waits for the Compose rule's idling resource, as it is registered on a device.
+- Compose lazy layouts prefetch: after a scroll the item past the viewport is composed and measured in idle time, as
+  on a device (a suite counted a second "loading more" row only one of which was on screen). Compose picks a
+  scheduler that does nothing when `Build.FINGERPRINT` is "robolectric" (`PrefetchScheduler_androidKt`); the
+  translator sends that one read to `TestActivities.prefetchFingerprint`, so test runs get Compose's own
+  `AndroidPrefetchScheduler` (view posts; `drawingTime` is 0 here, so every run counts as an idle frame, and a request
+  past the first in a run waits for the next Choreographer frame). FINGERPRINT itself stays (`LazyPrefetchTest`).
+  Running instances keep Compose's choice, so they do not prefetch (not yet measured for frame pacing).
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
