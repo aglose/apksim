@@ -109,6 +109,23 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
     --nav-bar) EXTRA+=("-Dapksim.navBar=$2"); shift 2 ;;
+    # What an instance spends on things a journey may not need (Features.java): a frame rate cap, video decoding
+    # (blank: players play, nothing decoded or drawn; off: no decoders listed), sound, animations, offscreen GLES.
+    --max-fps)
+      [[ "$2" =~ ^[0-9]+$ ]] && (( 10#$2 >= 1 && 10#$2 <= 120 )) || { echo "--max-fps takes a whole number, 1-120" >&2; exit 2; }
+      EXTRA+=("-Dapksim.maxFps=$2"); shift 2 ;;
+    --video)
+      [[ "$2" == on || "$2" == blank || "$2" == off ]] || { echo "--video takes on, blank or off" >&2; exit 2; }
+      EXTRA+=("-Dapksim.video=$2"); shift 2 ;;
+    --audio)
+      [[ "$2" == on || "$2" == mute || "$2" == off ]] || { echo "--audio takes on, mute or off" >&2; exit 2; }
+      EXTRA+=("-Dapksim.audio=$2"); shift 2 ;;
+    --anim-scale)
+      [[ "$2" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "--anim-scale takes a number: 0 off, 1 normal, 10 slow" >&2; exit 2; }
+      EXTRA+=("-Dapksim.animScale=$2"); shift 2 ;;
+    --gles)
+      [[ "$2" == on || "$2" == off ]] || { echo "--gles takes on or off" >&2; exit 2; }
+      EXTRA+=("-Dapksim.gles=$([[ "$2" == on ]] && echo true || echo false)"); shift 2 ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
     --headless) EXTRA+=("-Dapksim.headless=true"); shift ;;
     # How the Mac window shows itself: front (default), nofocus, background, minimized, hidden. APKSIM_WINDOW sets a
@@ -181,6 +198,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*) ;;
+      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;

@@ -48,7 +48,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       return 0;
     }
     frameBytes = channels * (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : encoding == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2);
-    SimAudio.nativeOutVolume(out, 1f, SimAudio.MUTED);
+    SimAudio.nativeOutVolume(out, 1f, SimAudio.muted());
     STATS.incrementAndGet(0);
     return out;
   }
@@ -212,7 +212,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     long o = use();
     if (o == 0) return;
     try {
-      SimAudio.nativeOutVolume(o, Math.max(left, right), SimAudio.MUTED);
+      SimAudio.nativeOutVolume(o, Math.max(left, right), SimAudio.muted());
     } finally {
       done();
     }
