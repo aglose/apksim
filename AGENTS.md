@@ -27,7 +27,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`). The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
+    commands (`runCommand`). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
+    The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
     path that changes it ends: start, finish, `home`/`resume`, configuration changes, `recreate`, `process-death`,
     test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
     dialog-themed activity: the test app's `FloatingActivity`, `apksim://floating`), paused and visible; the rest
@@ -41,7 +44,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
-    extra shadows.
+    extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
+    (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
+    the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
+    async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
@@ -312,6 +318,9 @@ imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` de
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
+its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
+drives it; `PopupTouchTest` in a test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -612,7 +621,8 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
-UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
+unpaused Choreographer that frame loop never let the looper idle). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
@@ -627,8 +637,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
-  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
-  `runBlocking { delay() }` is not covered: kotlinx parks the thread itself, and the main queue waits.
+  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`). Work Compose's
+  test library hands to `runOnUiThread` (its clock's frames, runOnIdle) counts as a dispatch, as it is a main-thread
+  message on a device: a composable's `runBlocking` in a frame the clock stepped ran a window frame from inside the
+  measure, which Compose refused ("performMeasureAndLayout called during measure layout", `ComposeBlockingReadTest`).
 - JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
   Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
@@ -682,7 +694,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back (Robolectric called back with
   nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
-  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
