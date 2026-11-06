@@ -59,7 +59,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     returns (the main thread is dead on a device). Not a device's: an app thread whose exception reaches the app's own
     non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads whose stack
     has no class of the APK are printed and end alone, as before. `--jvm -Dapksim.crashes=log` logs and runs on (the
-    main loop too), to look at a broken screen. Test runs install nothing: AndroidJUnitRunner's handler
+    main loop too), to look at a broken screen. Logging and each cleanup step are best-effort (an OutOfMemoryError may
+    be the crash) and `Standby.haltNow` always halts with 10, the client told first; `-Dapksim.crashTest.failCleanup=true`
+    makes the cache save throw, to check it. Test runs install nothing: AndroidJUnitRunner's handler
     (MonitoringInstrumentation's, set in its onCreate) logs and the test goes on (`UncaughtExceptionTest`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers

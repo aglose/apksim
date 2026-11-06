@@ -31,33 +31,50 @@ final class Crashes {
   /** The exception last logged as FATAL, so the pre-handler and the default handler log it once. */
   private static volatile Throwable logged;
   private static final AtomicBoolean crashing = new AtomicBoolean();
+  /** Read once at install (after a standby's hand-off): nothing to allocate when it is needed. */
+  private static boolean keepRunning;
+  private static boolean failCleanupForTest;
+  /** "\nProcess: PKG, PID: N", made at install, so a crash after an OutOfMemoryError has less to allocate. */
+  private static String processLine = "";
+  /** What stderr gets when logging the crash itself failed (an OutOfMemoryError): written as is, nothing allocated. */
+  private static final byte[] LOG_FAILED =
+      "E/AndroidRuntime: FATAL EXCEPTION (logging it failed: out of memory?)\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
   static void install(AppClasses appClasses) {
     classes = appClasses;
+    keepRunning = "log".equals(System.getProperty("apksim.crashes"));
+    failCleanupForTest = Boolean.getBoolean("apksim.crashTest.failCleanup");
+    processLine = "\nProcess: " + System.getProperty("apksim.package") + ", PID: " + ProcessHandle.current().pid();
     Thread.setDefaultUncaughtExceptionHandler(new KillApplication());
-  }
-
-  static boolean keepRunning() {
-    return "log".equals(System.getProperty("apksim.crashes"));
   }
 
   /** The device's default handler: logs (unless already logged), then ends the process. */
   static final class KillApplication implements Thread.UncaughtExceptionHandler {
     @Override
     public void uncaughtException(Thread t, Throwable e) {
-      if (!isMain(t) && !ranAppCode(e)) {
-        System.err.print("[apksim] exception in apksim's thread \"" + t.getName() + "\" ");
-        e.printStackTrace();
+      boolean apps = true;
+      try {
+        apps = isMain(t) || ranAppCode(e);
+      } catch (Throwable unknown) {
+        // Cannot tell: the app's, as on a device.
+      }
+      if (!apps) {
+        try {
+          System.err.print("[apksim] exception in apksim's thread \"" + t.getName() + "\" ");
+          e.printStackTrace();
+        } catch (Throwable ignored) {
+          // Only that thread ends, as before.
+        }
         return;
       }
-      ensureLogged(t, e);
-      if (keepRunning()) {
-        System.err.println("[apksim] -Dapksim.crashes=log: the app keeps running (on a device the process ends here)");
+      log(t, e);
+      if (keepRunning) {
+        say("[apksim] -Dapksim.crashes=log: the app keeps running (on a device the process ends here)");
         return;
       }
       if (!crashing.compareAndSet(false, true)) return;  // another thread's crash is already ending the process
-      System.err.println("[apksim] the app crashed (FATAL EXCEPTION on " + threadName(t) + "): exit 10");
-      Host.exit(10);
+      say("[apksim] the app crashed (FATAL EXCEPTION): exit 10");
+      terminate();
     }
   }
 
@@ -69,15 +86,47 @@ final class Crashes {
    */
   static void mainThreadDied(Throwable e) {
     Thread t = Thread.currentThread();
-    ensureLogged(t, e);
+    log(t, e);
     try {
       t.getUncaughtExceptionHandler().uncaughtException(t, e);
     } catch (Throwable ignored) {
       // As the JVM ignores what a handler throws.
     }
-    if (keepRunning()) return;
-    System.err.println("[apksim] the main thread died (FATAL EXCEPTION on main) and the app's handler returned: exit 10");
-    Host.exit(10);
+    if (keepRunning) return;
+    if (!crashing.compareAndSet(false, true)) {
+      // Another thread's crash is ending the process: the main thread does nothing more meanwhile.
+      while (true) java.util.concurrent.locks.LockSupport.park();
+    }
+    say("[apksim] the main thread died (FATAL EXCEPTION on main) and the app's handler returned: exit 10");
+    terminate();
+  }
+
+  /**
+   * Ends the process with exit status 10 whatever fails on the way (an OutOfMemoryError, a class cache that cannot be
+   * saved): each step is best-effort, and the exit status reaches a warm launch's client (Standby.haltNow).
+   * {@code -Dapksim.crashTest.failCleanup=true} makes the cache save throw, to check that.
+   */
+  private static void terminate() {
+    try {
+      if (failCleanupForTest) throw new IllegalStateException("apksim.crashTest.failCleanup");
+      ClassCache.flush();
+    } catch (Throwable ignored) {
+      // Translated again next launch.
+    }
+    try {
+      Storage.deleteScratch();
+    } catch (Throwable ignored) {
+      // Swept at the next launch.
+    }
+    Standby.haltNow(10);
+  }
+
+  private static void say(String line) {
+    try {
+      System.err.println(line);
+    } catch (Throwable ignored) {
+      // Ending anyway.
+    }
   }
 
   /** Whether this exception was already logged as FATAL here. */
@@ -85,11 +134,24 @@ final class Crashes {
     return logged == e;
   }
 
+  /** Logs the crash once; never throws (a minimal line on stderr if logging it failed). */
+  private static void log(Thread t, Throwable e) {
+    try {
+      ensureLogged(t, e);
+    } catch (Throwable failed) {
+      try {
+        System.err.write(LOG_FAILED, 0, LOG_FAILED.length);
+        System.err.flush();
+      } catch (Throwable ignored) {
+        // Nothing left to tell it with.
+      }
+    }
+  }
+
   private static void ensureLogged(Thread t, Throwable e) {
     if (logged == e) return;
     logged = e;
-    String message = "FATAL EXCEPTION: " + threadName(t) + "\nProcess: " + System.getProperty("apksim.package")
-        + ", PID: " + ProcessHandle.current().pid();
+    String message = "FATAL EXCEPTION: " + threadName(t) + processLine;
     try {
       Log.e("AndroidRuntime", message, e);
     } catch (Throwable ignored) {

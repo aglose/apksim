@@ -575,7 +575,7 @@ public class Host {
     Files.createSymbolicLink(link, data);
   }
 
-  static void exit(int code) {
+  private static void exit(int code) {
     ClassCache.flush();
     Storage.deleteScratch();
     Standby.halt(code);
