@@ -18,8 +18,8 @@ import org.joda.time.DateTimeZone
  * apksim://timezone: every zone source an app reads, each on its own line: the JDK's default, android.icu's, the
  * `user.timezone` property and Joda-Time's default (up to 2.10 Joda reads that property before the JDK's default:
  * apksim's `--timezone` once left it at the host's in warm launches, issue 91). ACTION_TIMEZONE_CHANGED is heard as
- * joda-time-android hears it, setting Joda's default to the zone broadcast, and counted ("tz changes: 1 to Asia/Tokyo"
- * after `timezone Asia/Tokyo`).
+ * joda-time-android's TimeZoneChangedReceiver hears it, setting Joda's default from the JDK's new default, and counted
+ * with the zone it names ("tz changes: 1 to Asia/Tokyo" after `timezone Asia/Tokyo`).
  */
 class TimeZoneActivity : Activity() {
   private val lines = List(5) { lazy { TextView(this).apply { textSize = 18f; gravity = Gravity.CENTER } } }
@@ -29,7 +29,11 @@ class TimeZoneActivity : Activity() {
   private val receiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
       val zone = intent.getStringExtra(Intent.EXTRA_TIMEZONE)
-      if (zone != null) DateTimeZone.setDefault(DateTimeZone.forID(zone))
+      try {
+        DateTimeZone.setDefault(DateTimeZone.forTimeZone(TimeZone.getDefault()))
+      } catch (e: IllegalArgumentException) {
+        android.util.Log.e("TimeZoneActivity", "could not recognize time zone \"$zone\"", e)
+      }
       changes = "tz changes: ${++count} to $zone"
       show()
     }

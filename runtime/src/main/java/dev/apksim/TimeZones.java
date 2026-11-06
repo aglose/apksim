@@ -38,21 +38,28 @@ final class TimeZones {
   }
 
   /**
-   * A zone named by the user (`--timezone`, `timezone ZONE`): any ID the JDK knows, legacy short ones (PST, EST)
-   * included, and an unknown one is an error, where TimeZone.getTimeZone would quietly give GMT.
+   * A zone named by the user (`--timezone`, `timezone ZONE`): any ID the JDK knows, and an unknown one is an error,
+   * where TimeZone.getTimeZone would quietly give GMT. A device's zone is always a tz database ID, so the JDK's own
+   * short aliases (PST, IST, JST: not in that database) become the region they stand for (America/Los_Angeles), with
+   * the same rules: apps look the broadcast's ID, getprop's and user.timezone up in their own tz data (Joda's forID
+   * threw for PST). EST, MST and HST are tz database zones and stay as they are.
    */
   static TimeZone parse(String id) {
     ZoneId zone = ZoneId.of(id, ZoneId.SHORT_IDS);  // throws for an unknown ID
+    if (!(zone instanceof java.time.ZoneOffset) && !zone.getId().equals(id) && ZoneId.SHORT_IDS.containsKey(id)) {
+      return TimeZone.getTimeZone(zone);
+    }
     TimeZone tz = TimeZone.getTimeZone(id);
     return tz.getID().equals(id) ? tz : TimeZone.getTimeZone(zone);
   }
 
   /** `timezone ZONE` while the app runs (or in a test): the new zone, and the broadcast a device sends for it. */
   static synchronized String change(Context app, String zone) {
-    set(parse(zone));
+    TimeZone tz = parse(zone);
+    set(tz);
     changed = true;
     if (app != null) {
-      app.sendBroadcast(new Intent(Intent.ACTION_TIMEZONE_CHANGED).putExtra(Intent.EXTRA_TIMEZONE, zone)
+      app.sendBroadcast(new Intent(Intent.ACTION_TIMEZONE_CHANGED).putExtra(Intent.EXTRA_TIMEZONE, tz.getID())
           .addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING | Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND));
     }
     return describe();
