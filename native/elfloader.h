@@ -41,6 +41,8 @@ typedef struct Module {
   size_t tls_memsz;
   pthread_key_t tls_key;
   int tls_key_ready;
+  // arm64 Linux only: the page this module's code sees as its thread pointer (see patch_thread_pointer).
+  uintptr_t tp;
 } Module;
 
 // Bounds of the address range all loaded ELF code lives in; read by the JNI bridge's assembly.

@@ -7,7 +7,9 @@
 #   TAP_DEPLOY_KEY secret, the private half of a deploy key with write access to that repository only, and is skipped
 #   without one.
 # - The `image` job builds the Linux image (docker/Dockerfile) for CI on Linux runners, checks it (smoke test, the test
-#   app's androidTest suite through the image's own instrument.py) and on a tag pushes ghcr.io/aglose/apksim:VERSION.
+#   app's androidTest suite through the image's own instrument.py) and on a tag pushes ghcr.io/aglose/apksim:VERSION-amd64;
+#   `image-arm64` does the same for linux/arm64 on an arm64 runner (with the test app `image` built: Android's build tools
+#   are x86_64-only) and makes ghcr.io/aglose/apksim:VERSION the two together, so a pull gets the host's own.
 #   Publishing the release moves :latest to it (`image-latest`). The package must be public once (its settings on
 #   GitHub) for other repositories' CI to pull it without a token.
 # - Pull requests that change the packaging or the image build and check them without releasing.
@@ -40,8 +42,9 @@ permissions:
 jobs:
   package:
     if: github.event_name != 'release'
-    # The draft is made only once the image of its version is pushed: publishing it moves :latest to that image.
-    needs: image
+    # The draft is made only once the image of its version is pushed (both architectures): publishing it moves :latest
+    # to that image.
+    needs: [image, image-arm64]
     runs-on: macos-15  # Apple Silicon
     timeout-minutes: 60
     steps:
@@ -130,11 +133,67 @@ jobs:
             smoke/*.png
             smoke/*.log
             tests/junit.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testapp
+          path: testapks/composeapp/app/build/outputs/apk
+          retention-days: 1
       - name: Push
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:$VERSION"
+          docker tag "$IMAGE:$VERSION" "$IMAGE:$VERSION-amd64"
+          docker push "$IMAGE:$VERSION-amd64"
+
+  image-arm64:
+    if: github.event_name != 'release'
+    needs: image
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.0-ci.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: testapp
+          path: testapks/composeapp/app/build/outputs/apk
+      - name: Build the runtime
+        uses: ./.github/actions/linux-build
+        with:
+          test-app: 'false'
+      - name: Build the image
+        run: scripts/docker-build.sh "$IMAGE:$VERSION-arm64" --platform linux/arm64 --build-arg VERSION="$VERSION"
+      - name: Check the image
+        run: |
+          docker run --rm "$IMAGE:$VERSION-arm64" --version | grep -qx "apksim $VERSION"
+          scripts/ci-smoke.sh "$IMAGE:$VERSION-arm64" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+          mkdir -p tests
+          cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
+          cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
+          docker run --rm -v "$PWD/tests:/work" --entrypoint instrument.py "$IMAGE:$VERSION-arm64" app.apk test.apk \
+            --isolate -j 2 --xml junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-check-arm64
+          path: |
+            smoke/*.png
+            smoke/*.log
+            tests/junit.xml
+      - name: Push, and :VERSION as both architectures
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:$VERSION-arm64"
+          docker buildx imagetools create -t "$IMAGE:$VERSION" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
 
   image-latest:
     if: github.event_name == 'release'

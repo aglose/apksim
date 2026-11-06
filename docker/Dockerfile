@@ -1,5 +1,6 @@
-# apksim for Linux x86_64: headless, for CI. Runs on x86_64 runners natively and on Apple Silicon under
-# Rosetta (Colima/Docker with Rosetta enabled). Build with scripts/docker-build.sh, which stages the context.
+# apksim for Linux, headless, for CI: linux/amd64 (APKs' x86_64 native libraries) or linux/arm64 (their arm64-v8a
+# ones), each built natively for its CPU. amd64 also runs on Apple Silicon under Rosetta, but arm64 runs there natively
+# and is much faster. Build with scripts/docker-build.sh [TAG] [--platform linux/arm64], which stages the context.
 FROM eclipse-temurin:24-jdk AS build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev unzip zip && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -11,14 +12,23 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
       -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c -ldl -lpthread
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar)" && DIST="$(ls lib/nativeruntime-dist-compat-*.jar)" && \
+    # Robolectric's runtime for this CPU (x86_64 or aarch64; aarch64 from nativeruntime-dist-compat 1.0.20) must be there.
+    test -n "$(unzip -l "$DIST" "native/linux/$(uname -m)/*" | grep nativeruntime)" && \
     for JAR in "$ALL" "$DIST"; do \
       unzip -q -o "$JAR" 'fonts/*' 'hyphen-data/*' -d runtime 2>/dev/null || true; \
-      unzip -q -o -j "$JAR" 'native/linux/x86_64/*' -d runtime 2>/dev/null || true; \
+      unzip -q -o -j "$JAR" "native/linux/$(uname -m)/*" -d runtime 2>/dev/null || true; \
     done && \
     unzip -q -o -p "$ALL" "$(unzip -l "$ALL" | awk '{print $4}' | grep '^icu/icudt' | head -1)" > runtime/icu/icudt.dat && \
     # Now unpacked, they need not ship twice: the compat jar is not on the classpath, and android-all keeps its classes
     # and framework resources but drops natives for other platforms, fonts and ICU data.
     rm "$DIST" && zip -q -d "$ALL" 'native/*' 'fonts/*' 'icu/*' 'hyphen-data/*'
+# Android 15+ frameworks run on android-all's own libandroid_runtime, and 16-robolectric-13921718-i7 has none for
+# linux/aarch64: an arm64 build takes the one from its respin, which docker-build.sh puts in linux-arm64/ (see
+# build.gradle.kts, linuxArm64Runtime). Either way both Robolectric libraries must be there for this CPU.
+COPY linux-arm64 /tmp/linux-arm64
+RUN cd /opt/apksim/work/runtime && \
+    if [ ! -e libandroid_runtime.so ] && [ "$(uname -m)" = aarch64 ]; then cp /tmp/linux-arm64/libandroid_runtime.so .; fi && \
+    test -e libandroid_runtime.so && test -e librobolectric-nativeruntime.so
 
 FROM eclipse-temurin:24-jre
 LABEL org.opencontainers.image.source=https://github.com/aglose/apksim \

@@ -1,5 +1,6 @@
-// JNI for loaded x86_64 ELF code on Linux. Android and the host JVM share the SysV calling convention, so
-// unlike ../jnibridge.c (macOS) nothing needs translating: the JVM's own JNI table and function pointers work.
+// JNI for loaded ELF code on Linux (x86_64 or arm64). Android and the host JVM share the calling convention (SysV on
+// x86_64, AAPCS64 on arm64, varargs included), so unlike ../jnibridge.c (macOS) nothing needs translating: the JVM's
+// own JNI table and function pointers work.
 #include <jni.h>
 #include <stdlib.h>
 #include <string.h>
