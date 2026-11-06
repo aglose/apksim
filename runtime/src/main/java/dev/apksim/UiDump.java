@@ -96,7 +96,7 @@ final class UiDump {
   private static void node(AccessibilityNodeInfo n, XmlSerializer s, int index, Point size, boolean compressed)
       throws IOException {
     s.startTag("", "node");
-    if (!nafExcluded(n) && !nafCheck(n)) attr(s, "NAF", "true");
+    if (!nafExcluded(n) && !nafCheck(n, compressed)) attr(s, "NAF", "true");
     attr(s, "index", Integer.toString(index));
     attr(s, "text", safe(n.getText()));
     attr(s, "resource-id", safe(n.getViewIdResourceName()));
@@ -159,18 +159,21 @@ final class UiDump {
     return r;
   }
 
-  /** NAF ("not accessibility friendly"): clickable and enabled with no text or description, nor any below it. */
-  private static boolean nafCheck(AccessibilityNodeInfo n) {
+  /**
+   * NAF ("not accessibility friendly"): clickable and enabled with no text or description, nor any below it. Below
+   * means the tree being dumped: compressed, a device's service never sees the views left out, so a label only they
+   * carry does not count.
+   */
+  private static boolean nafCheck(AccessibilityNodeInfo n, boolean compressed) {
     boolean naf = n.isClickable() && n.isEnabled() && safe(n.getContentDescription()).isEmpty() && safe(n.getText()).isEmpty();
-    return !naf || childNafCheck(n);
+    return !naf || childNafCheck(n, compressed);
   }
 
-  private static boolean childNafCheck(AccessibilityNodeInfo n) {
-    for (int i = 0; i < n.getChildCount(); i++) {
-      AccessibilityNodeInfo c = n.getChild(i);
+  private static boolean childNafCheck(AccessibilityNodeInfo n, boolean compressed) {
+    for (AccessibilityNodeInfo c : children(n, compressed)) {
       if (c == null) continue;
       if (!safe(c.getContentDescription()).isEmpty() || !safe(c.getText()).isEmpty()) return true;
-      if (childNafCheck(c)) return true;
+      if (childNafCheck(c, compressed)) return true;
     }
     return false;
   }
