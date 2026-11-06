@@ -60,6 +60,17 @@ echo "Popup and Trace: $shown-> $tapped"
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+
+# What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
+# to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
+# (the test app's apksim://install, issues 76 and 81).
+install() { drive nodes | grep -oE 'text="(install|android id|provider|bind missing): [^"]*"' | tr '\n' ' '; }
+drive 'open apksim://install' 'wait 3000' >/dev/null
+installed="$(install)"
+echo "Install state: $installed"
+[[ "$installed" == 'text="install: vibrate granted at create" text="android id: set at create" text="provider: before create" text="bind missing: false, unbound, 0 callbacks" ' ]] \
+  || { echo "the app did not start with what installing gives it, or a bind to nothing called back" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
 if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true

@@ -40,6 +40,19 @@ class BindServiceTest {
     assertEquals(0, connection.calls)
   }
 
+  /** A device keeps a refused connection's dispatcher, so unbinding it is allowed and calls nothing back either. */
+  @Test
+  fun unbindingARefusedConnectionCallsNothing() {
+    val connection = Recording()
+    val intent = Intent("com.example.companion.ACTION_BIND").setPackage("com.example.companion.notinstalled")
+    instrumentation.runOnMainSync {
+      assertFalse(context.bindService(intent, connection, Context.BIND_AUTO_CREATE))
+      context.unbindService(connection)
+    }
+    instrumentation.waitForIdleSync()
+    assertEquals(0, connection.calls)
+  }
+
   @Test
   fun bindingThisAppsOwnServiceStillWorks() {
     // Nullable parameters: whether a null binding reaches onNullBinding is not what this checks.
