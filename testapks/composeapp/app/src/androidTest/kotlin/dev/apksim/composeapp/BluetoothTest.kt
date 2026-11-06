@@ -1,5 +1,6 @@
 package dev.apksim.composeapp
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -13,6 +14,7 @@ import android.provider.Settings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -50,6 +52,16 @@ class BluetoothTest {
       instrumentation.waitForIdleSync()
       Thread.sleep(50)
     }
+  }
+
+  /**
+   * The runtime permission getName(), getAddress() and the app's own enable()/disable() need from API 31 (the app
+   * targets 36; isEnabled(), getState() and getBluetoothLeScanner() need none), granted as a user would.
+   */
+  @Before
+  fun grantBluetoothConnect() {
+    instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.BLUETOOTH_CONNECT)
+    assertEquals(PackageManager.PERMISSION_GRANTED, context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT))
   }
 
   @After

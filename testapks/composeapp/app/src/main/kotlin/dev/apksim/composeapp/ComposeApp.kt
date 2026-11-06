@@ -34,7 +34,13 @@ open class ComposeApp : Application() {
     serialAtCreate = try { Build.getSerial() } catch (e: SecurityException) { null }
     cameraAnyAtCreate = packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
     modelAtCreate = Build.MODEL
-    bluetoothOnAtCreate = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
+    // isEnabled() needs no permission on API 31+ (@RequiresNoPermission), but the app must start whatever a device says.
+    bluetoothOnAtCreate = try {
+      getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
+    } catch (e: SecurityException) {
+      Log.w("ComposeApp", "bluetooth: unknown ($e)")
+      null
+    }
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
         "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
@@ -72,7 +78,7 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
-    /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter). */
+    /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter, or the device refused: "unknown"). */
     @Volatile var bluetoothOnAtCreate: Boolean? = null
   }
 }

@@ -49,9 +49,14 @@ class BluetoothActivity : Activity() {
     })
     registerReceiver(receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), RECEIVER_EXPORTED)
     // apksim://bluetooth?disable=1: the app turns Bluetooth off itself (deprecated; apksim allows it at any target).
+    // It needs BLUETOOTH_CONNECT, which a device enforces and apksim does not.
     if (savedInstanceState == null && intent.data?.getQueryParameter("disable") == "1") {
-      @Suppress("DEPRECATION", "MissingPermission")
-      getSystemService(BluetoothManager::class.java)?.adapter?.disable()
+      try {
+        @Suppress("DEPRECATION", "MissingPermission")
+        getSystemService(BluetoothManager::class.java)?.adapter?.disable()
+      } catch (e: SecurityException) {
+        seen += "denied"
+      }
     }
     show()
   }
