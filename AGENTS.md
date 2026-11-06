@@ -91,7 +91,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     rounded before any parent node's transform. Paints with a shadow layer, mask filter or shader stay on HWUI (their
     effects follow the transform). The copy is cut to the clip when most of it is clipped. A copy stays (counted in
     the budget, never recycled) while a node whose latest recording drew it keeps its display list: a static View
-    holds its pixels however long ago it asked. Skia's CPU
+    holds its pixels however long ago it asked. A node's next recording (`RecordingCanvas.obtain`) lets go of them. Skia's CPU
     bilinear was most of a map screen's frame, and of a tablet View screen's (~50 ms → 4.7 ms raster on
     `apksim://bitmaps`). Copies are cached (96 MB, LRU) and made only for a draw that holds still: asked for again
     within 8 frames (Compose records again often), or recorded once in a node that has not recorded again for 8
@@ -316,7 +316,7 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://bitmaps` opens `BitmapsActivity`, a View screen of full-screen scaled bitmaps (a stretched BitmapDrawable
 background, a centerCrop ImageView, a `drawBitmap(Bitmap, Matrix, Paint)` vignette, two thumbnails of the background's
-bitmap) with a dot moving every frame:
+bitmap; a tap swaps the photo for a plain colour and back) with a dot moving every frame:
 the `GpuBitmaps` check on `--device tablet`.
 
 ## Network (record, replay, conditions)

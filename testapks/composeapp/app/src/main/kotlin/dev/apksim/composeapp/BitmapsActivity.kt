@@ -11,6 +11,7 @@ import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -33,11 +34,18 @@ class BitmapsActivity : Activity() {
     val root = FrameLayout(this)
     val backdrop = gradientImage(480, 300)
     root.background = BitmapDrawable(resources, backdrop)
+    val photo = photo(900, 1200)
     root.addView(
       ImageView(this).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
-        setImageBitmap(photo(900, 1200))
+        setImageBitmap(photo)
         alpha = 0.85f
+        // A tap swaps the photo for a plain colour and back: GpuBitmaps must let go of the copy it no longer draws.
+        var plain = false
+        setOnClickListener {
+          plain = !plain
+          if (plain) setImageDrawable(ColorDrawable(0xff336699.toInt())) else setImageBitmap(photo)
+        }
       },
       FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
     )

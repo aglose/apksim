@@ -98,8 +98,8 @@ final class GpuBitmaps {
   /**
    * The copies each node's latest recording draws. A View records once and keeps its display list, which keeps the
    * copy's pixels however long ago it was asked for, so a copy stays (counted in the budget, never recycled) while a
-   * node that drew it in its latest recording still has a display list. (A node that records again without asking
-   * for any bitmap here is not seen to let go: its copies stay until it loses its display list or is collected.)
+   * node that drew it in its latest recording still has a display list. A node's entry goes when it starts its next
+   * recording (ShadowGpuRecordingCanvas.Recording.obtain), whatever that recording draws.
    */
   private static final Map<RenderNode, List<Key>> HELD = new java.util.WeakHashMap<>();
   /** Draws that held still, whose view was invalidated to record them again: the copy is made then. */
@@ -228,10 +228,7 @@ final class GpuBitmaps {
     Recording rec = null;
     if (node != null) {
       rec = RECORDINGS.get(node);
-      if (rec == null || rec.frame != frame) {
-        RECORDINGS.put(node, rec = new Recording(frame));
-        HELD.remove(node);  // a new recording: the last one's copies are no longer drawn from it
-      }
+      if (rec == null || rec.frame != frame) RECORDINGS.put(node, rec = new Recording(frame));
     }
     Entry e = SCALED.get(key);
     if (e != null) {
@@ -271,6 +268,14 @@ final class GpuBitmaps {
     made++;
     held(node, key);
     return scaled;
+  }
+
+  /**
+   * [node] starts a new recording (RenderNode.beginRecording), which replaces the display list that drew its copies,
+   * whether or not it asks for any here. Main thread for Views and Compose; a recording elsewhere holds nothing here.
+   */
+  static void recordingStarts(RenderNode node) {
+    if (!HELD.isEmpty() && Looper.getMainLooper().isCurrentThread()) HELD.remove(node);
   }
 
   private static void held(RenderNode node, Key key) {

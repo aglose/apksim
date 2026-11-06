@@ -14,6 +14,7 @@ import org.robolectric.annotation.RealObject;
 import org.robolectric.shadows.ShadowNativeBaseRecordingCanvas;
 import org.robolectric.util.reflector.Direct;
 import org.robolectric.util.reflector.ForType;
+import org.robolectric.util.reflector.Static;
 
 /**
  * Bitmap draws on HWUI's recording canvases (every View's and Compose layer's display list) go through
@@ -70,7 +71,21 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
    * only natives up to API 34, which call through on later APIs anyway.
    */
   @Implements(value = android.graphics.RecordingCanvas.class, minSdk = 29, callNativeMethodsByDefault = true)
-  public static class Recording extends ShadowGpuRecordingCanvas {}
+  public static class Recording extends ShadowGpuRecordingCanvas {
+    /** RenderNode.beginRecording: the node's last recording, and the copies it drew, are about to be replaced. */
+    @Implementation
+    protected static android.graphics.RecordingCanvas obtain(android.graphics.RenderNode node, int width, int height) {
+      if (GpuBitmaps.ENABLED) GpuBitmaps.recordingStarts(node);
+      return reflector(Obtain_.class).obtain(node, width, height);
+    }
+  }
+
+  @ForType(android.graphics.RecordingCanvas.class)
+  interface Obtain_ {
+    @Static
+    @Direct
+    android.graphics.RecordingCanvas obtain(android.graphics.RenderNode node, int width, int height);
+  }
 
   @ForType(className = "android.graphics.BaseRecordingCanvas")
   interface Direct_ {
