@@ -619,14 +619,16 @@ new process that adds no result (a crash at startup) ends the run, the rest repo
 `--test-timeout SEC` (default 900, 0 for none) handles a hang the same way: a process that goes SEC s without a test
 starting or ending (stuck in teardown, or out of the watchdog's sight) gets a SIGQUIT (the JVM's thread dump: the
 stacks of the threads in JUnit code go in the failure) and then SIGKILL to its process group (each process gets a
-session of its own, so instrument.py forwards Ctrl-C/SIGTERM itself), and with `--apksim "docker|podman run ..."` a
-`docker kill` (by a `--cidfile` instrument.py adds: SIGKILL to the client leaves the container running); the test
+session of its own, so instrument.py forwards Ctrl-C/SIGTERM itself: a process starts and is noted for that under one
+lock, and none starts once a stop has begun), and with `--apksim "docker|podman run ..."` a `docker rm -f` (by a
+`--cidfile` instrument.py adds: SIGKILL to the client leaves the container running; the client is killed first, so it
+starts no container after its ID is read); the test
 fails "timed out after SEC s" with the stderr tail, and with `--bundles` gets process.txt. Test runs launch cold, so
 the process is the JVM itself (the launcher execs it), never a standby's client.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
 the process, one ignores interrupts past its timeout, and the tests after each still pass; with `-e hangOnPurpose
 true` one more hangs with nothing to end it but `--test-timeout`. `instrument-check.py` covers both against a stand-in
-(hangs one process, sharded, isolated, through a stand-in docker, and Ctrl-C).
+(hangs one process, sharded, isolated, through a stand-in docker, and Ctrl-C, also while a process starts).
 **Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
 failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
 which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot

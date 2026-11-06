@@ -9,7 +9,7 @@ started, and the JUnit XML (one entry per test, the failures expected). The real
 `-e crashOnPurpose true` (CI's linux-smoke job). The hang-* scenarios check --test-timeout: the stand-in stops writing
 and stays alive (with a child, and a JVM-style thread dump on SIGQUIT), and every process it started must be gone at
 the end; *-docker ones run it through a stand-in `docker run` whose "container" is outside instrument.py's process
-group, as a real one is, and so ends only by `docker kill`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead.
+group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead.
 The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
 import gzip, json, math, os, re, signal, subprocess, sys, tempfile, time
@@ -77,7 +77,11 @@ def fake():
             print(f"INSTRUMENTATION_STATUS: stack={stack}")
         print(f"INSTRUMENTATION_STATUS: test={m}\nINSTRUMENTATION_STATUS_CODE: {code}")
 
+    if sc == "interrupt-spawn":  # slow to start: instrument.py is interrupted while it starts this process
+        hang(state, "p.Startup", "boot")
     if e.get("log") == "true":
+        if sc == "interrupt-parallel":  # the listing a shard starts after its process died: interrupted as it starts
+            hang(state, "p.Listing", "list")
         if sc == "listing-fails":
             sys.exit(3)
         for n, (c, m) in enumerate(tests):
@@ -103,6 +107,11 @@ def fake():
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
         if sc.startswith(("hang", "interrupt")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
+            hang(state, c, m)
+        if sc == "interrupt-parallel":  # shard 0 dies in its first test (C001#m1), and the other two hang in theirs
+            if (c, m) == ("p.C001", "m1"):
+                print("dies in a test", file=sys.stderr)
+                sys.exit(134)
             hang(state, c, m)
         if sc == "slow":  # slower in all than --test-timeout, but each test well within it
             sys.stdout.flush()
@@ -140,13 +149,13 @@ def hang(state, c, m):
 
 
 def fake_docker():
-    """`docker run [--cidfile F] [--rm] [-v X] IMAGE ARGS...` and `docker kill ID`: the "container" (the stand-in apksim)
+    """`docker run [--cidfile F] [--rm] [-v X] IMAGE ARGS...` and `docker rm -f ID`: the "container" (the stand-in apksim)
     runs in a session of its own, so it outlives a kill of this client, as a real container does."""
     args, state = sys.argv[2:], os.environ["CHECK_DIR"]
-    if args[0] == "kill":
+    if args[:2] == ["rm", "-f"]:
         with open(os.path.join(state, "docker-kills"), "a") as f:
-            f.write(args[1] + "\n")
-        os.killpg(int(args[1]), signal.SIGKILL)  # every process in the container
+            f.write(args[2] + "\n")
+        os.killpg(int(args[2]), signal.SIGKILL)  # every process in the container
         return
     i, cidfile = 1, None
     while args[i].startswith("-"):
@@ -202,8 +211,16 @@ SCENARIOS = {
     # terminal's reach, so instrument.py must end them itself (and the container), then exit 130 with no report.
     "interrupt": (130, 1, 0, []),
     "interrupt-docker": (130, 1, 0, []),
+    # INSTRUMENT_CHECK_SPAWN_DELAY holds instrument.py between starting a process and noting it for a stop, and the
+    # SIGINT comes then: on the main thread (one process), and while a shard's worker starts its listing (--shards 3).
+    "interrupt-spawn": (130, 1, 0, []),
+    "interrupt-parallel": (130, (3, 4), 0, []),  # (a shard may be refused its start once the stop has begun)
 }
-SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3}
+SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3}
+# When an interrupt-* scenario sends its SIGINT: once a process hangs, or, for these, once the process being started
+# has noted its call (its first act), well inside the spawn delay.
+INTERRUPT_WHEN = {"interrupt-spawn": lambda d: os.path.exists(os.path.join(d, "calls")),
+                  "interrupt-parallel": lambda d: "list" in read(os.path.join(d, "calls"))}
 # The failure text expected of a test that timed out: the reason, and the thread dump's JUnit thread (not the other).
 TIMED_OUT = ["timed out after 2 s", "at p.C000.m1(p.C000.java:1)", "hangs in a test"]
 
@@ -239,6 +256,8 @@ def main():
         with tempfile.TemporaryDirectory() as d:
             xml = os.path.join(d, "junit.xml")
             env = dict(os.environ, CHECK_SCENARIO=sc, CHECK_DIR=d)
+            if sc in INTERRUPT_WHEN:
+                env["INSTRUMENT_CHECK_SPAWN_DELAY"] = "1.5"
             launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
             if sc in ("hang-docker", "interrupt-docker"):
                 os.makedirs(os.path.join(d, "bin"))
@@ -253,9 +272,10 @@ def main():
                                  + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + extra_args(sc, d),
                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if sc.startswith("interrupt"):
-                while p.poll() is None and not os.path.exists(os.path.join(d, "pids")) and time.time() - start < 20:
-                    time.sleep(0.05)
-                time.sleep(0.3)
+                ready = INTERRUPT_WHEN.get(sc, lambda d: os.path.exists(os.path.join(d, "pids")))
+                while p.poll() is None and not ready(d) and time.time() - start < 20:
+                    time.sleep(0.02)
+                time.sleep(0.3 if sc not in INTERRUPT_WHEN else 0.1)
                 p.send_signal(signal.SIGINT)
             try:
                 out, err = p.communicate(timeout=60)
@@ -281,6 +301,11 @@ def main():
             pids_file = os.path.join(d, "pids")
             pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
             alive = [n for n in pids if still_alive(n)]
+            for n in alive:  # (a failure: end them, here only)
+                try:
+                    os.kill(n, signal.SIGKILL)
+                except OSError:
+                    pass
             bundle = os.path.join(d, "bundles", "p.C000")
             process_txt = [os.path.join(bundle, b, "process.txt") for b in (os.listdir(bundle) if os.path.isdir(bundle) else [])]
             names = [(c, m) for c, m, _ in cases]
@@ -289,7 +314,7 @@ def main():
             ran = open(ran_log).read().splitlines() if os.path.exists(ran_log) else []
             problems = [p for p, bad in [
                 (f"exit {r.returncode}, expected {status}", r.returncode != status),
-                (f"{len(calls) // 2} processes, expected {processes}", len(calls) // 2 != processes),
+                (f"{len(calls) // 2} processes, expected {processes}", len(calls) // 2 not in (processes if isinstance(processes, tuple) else (processes,))),
                 (f"{len(cases)} entries, expected {entries}", len(cases) != entries),
                 ("an entry twice", len(set(names)) != len(names)),
                 ("a test run twice", len(set(ran)) != len(ran)),
@@ -298,7 +323,7 @@ def main():
                 (f"the failure text lacks {missing}", bool(missing)),
                 (f"processes left running: {alive}", bool(alive)),
                 ("no process that hung", sc.startswith(("hang", "interrupt")) and not pids),
-                ("not killed by docker kill", sc.endswith("-docker") and not os.path.exists(os.path.join(d, "docker-kills"))),
+                ("not ended by docker rm -f", sc.endswith("-docker") and not os.path.exists(os.path.join(d, "docker-kills"))),
                 ("no process.txt saying it timed out", sc == "hang" and not any(
                     "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
                 (f"took {took:.0f} s", took > 30),
@@ -308,6 +333,14 @@ def main():
                 ok = False
                 sys.stderr.write(r.stderr[-3000:])
     sys.exit(0 if ok else 1)
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 def still_alive(pid):

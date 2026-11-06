@@ -26,7 +26,7 @@ test hung past its own JUnit timeout: in teardown, or ignoring interrupts where 
 killed and handled as one that died: the running test fails "timed out after SEC s" with the stderr tail and the
 stacks of the threads running JUnit code (a SIGQUIT thread dump taken just before), and the rest run in a new process.
 The kill takes the process group (each process gets one of its own) and, when --apksim is `docker|podman run`, the
-container too (`docker kill`, by a --cidfile this script adds): killing the client leaves a container running.
+container too (`docker rm -f`, by a --cidfile this script adds): killing the client leaves a container running.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
 for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
@@ -67,7 +67,12 @@ RECORDED = []  # --record-deps: each process's dependency lines, taken out of it
 
 TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
 LIVE = {}  # the processes running now: {Popen: its kill()}, for an interrupt (they are not in our process group)
-LIVE_LOCK = threading.RLock()  # (kill_all takes it on the main thread, which may hold it)
+# Held while a process starts and is entered in LIVE, and while stopping takes LIVE: so every process is either in
+# what stopping kills or never starts. Reentrant: the signal handler runs on the main thread, which may hold it.
+LIVE_LOCK = threading.RLock()
+STOPPING = []  # the signal stopping the run, once one has: no process starts after it
+MAIN_SPAWNING = [False]  # the main thread is between starting a process and entering it in LIVE
+SPAWN_DELAY = float(os.environ.get("INSTRUMENT_CHECK_SPAWN_DELAY", 0))  # instrument-check.py: widen that window
 CONTAINER_TOOLS = ("docker", "podman", "nerdctl")
 
 
@@ -106,25 +111,37 @@ def apksim(app, test, extra_args, apksim_opts):
             cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
             cidfile = os.path.join(cid_dir, "cid")
             cmd = cmd[:run + 1] + ["--cidfile", cidfile] + cmd[run + 1:]
-    # Its own process group (session), so a kill ends whatever it started too, and nothing but this script's own.
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-
     def kill():
+        # The client first, so that it starts no container after the ID is read (it writes the file between
+        # creating the container and starting it); then `rm -f` ends a container whether it started or not.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
         if cidfile:
             try:
                 with open(cidfile) as f:
                     cid = f.read().strip()
                 if cid:
-                    subprocess.run(cmd[:run] + ["kill", cid], capture_output=True, timeout=60)
+                    subprocess.run(cmd[:run] + ["rm", "-f", cid], capture_output=True, timeout=60)
             except (OSError, subprocess.SubprocessError):
                 pass
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
 
+    main = threading.current_thread() is threading.main_thread()
     with LIVE_LOCK:
-        LIVE[p] = kill
+        if STOPPING:
+            raise RuntimeError("instrument.py is stopping: no new apksim process")
+        MAIN_SPAWNING[0] = main
+        try:
+            # Its own process group (session), so a kill ends whatever it started too, and nothing but this script's.
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            if SPAWN_DELAY:
+                time.sleep(SPAWN_DELAY)
+            LIVE[p] = kill
+        finally:
+            MAIN_SPAWNING[0] = False
+    if main and STOPPING:  # a signal came while this thread started it: its handler left the stopping to this
+        stop(STOPPING[0])
     err = []
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
@@ -190,10 +207,20 @@ def apksim(app, test, extra_args, apksim_opts):
     return r
 
 
-def kill_all(signum, frame):
+def interrupted(signum, frame):
     """SIGINT/SIGTERM/SIGHUP: the test processes have process groups of their own, so a Ctrl-C at the terminal no
-    longer reaches them: end them (and their containers), then this script, with the signal's status."""
+    longer reaches them: end them (and their containers), then this script, with the signal's status. If the main
+    thread was starting a process, that is left to it, once the process is in LIVE."""
     with LIVE_LOCK:
+        STOPPING[:] = STOPPING or [signum]
+        if MAIN_SPAWNING[0]:
+            return
+    stop(signum)
+
+
+def stop(signum):
+    with LIVE_LOCK:  # (waits for a worker thread starting a process; none starts after this)
+        STOPPING[:] = STOPPING or [signum]
         kills = list(LIVE.values())
     for k in kills:
         k()
@@ -584,7 +611,7 @@ def main():
         p.error("--test-timeout SEC: 0 for no limit, else the seconds a process may go without a test starting or ending")
     TEST_TIMEOUT = a.test_timeout
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, kill_all)
+        signal.signal(sig, interrupted)
     redact = []
     if a.bundles:
         try:
