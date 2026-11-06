@@ -130,4 +130,40 @@ class BluetoothTest {
     assertTrue("on", adapter.isEnabled)
     assertTrue(shell("dumpsys bluetooth_manager"), shell("dumpsys bluetooth_manager").contains("enabled: true"))
   }
+
+  @Test
+  @Suppress("DEPRECATION", "MissingPermission")
+  fun f_theAppsOwnDisableBroadcastsAndToggleReadsTheAdapter() {
+    assumeTrue("apksim's `bluetooth` command", onApksim)
+    val seen = mutableListOf<Int>()
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, intent: Intent) {
+        seen += intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
+      }
+    }
+    context.registerReceiver(receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), Context.RECEIVER_EXPORTED)
+    try {
+      assertTrue(adapter.disable())
+      waitFor("STATE_OFF broadcast") { BluetoothAdapter.STATE_OFF in seen }
+      assertEquals(listOf(BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF), seen)
+      assertEquals(0, Settings.Global.getInt(context.contentResolver, Settings.Global.BLUETOOTH_ON))
+      // toggle reads the adapter, which the app turned off: it turns it on.
+      shell("apksim bluetooth toggle")
+      assertTrue("on after toggle", adapter.isEnabled)
+    } finally {
+      context.unregisterReceiver(receiver)
+    }
+  }
+
+  @Test
+  @Suppress("DEPRECATION", "MissingPermission")
+  fun g_bluetoothOnIsWrittenEvenWithNoSwitchToMake() {
+    assumeTrue("settings put global bluetooth_on switches the adapter on apksim, not on a device", onApksim)
+    assertTrue(adapter.disable())
+    // Written behind the adapter's back, as an app with WRITE_SECURE_SETTINGS (or a test) might.
+    Settings.Global.putInt(context.contentResolver, Settings.Global.BLUETOOTH_ON, 1)
+    shell("settings put global bluetooth_on 0")
+    assertTrue("still off", !adapter.isEnabled)
+    assertEquals(0, Settings.Global.getInt(context.contentResolver, Settings.Global.BLUETOOTH_ON))
+  }
 }

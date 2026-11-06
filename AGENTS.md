@@ -245,8 +245,11 @@ window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|r
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
-launch as an emulator boots, `--bluetooth off` otherwise; each switch goes TURNING_ON then ON, or TURNING_OFF then OFF,
-with an ACTION_STATE_CHANGED broadcast for each and Settings.Global `bluetooth_on` following; name Build.MODEL, address
+launch as an emulator boots, `--bluetooth off` otherwise; each switch, the app's own BluetoothAdapter.enable()/disable()
+included (`ShadowSimBluetoothAdapter`, allowed at any targetSdk as Robolectric allowed it), goes TURNING_ON then ON, or
+TURNING_OFF then OFF, with an ACTION_STATE_CHANGED broadcast for each and Settings.Global `bluetooth_on` following
+(written even when there is nothing to switch); `toggle` and a `device` switch read the adapter's own state, which is the
+only record of it; name Build.MODEL, address
 02:00:00:00:00:00 as a device tells apps; Robolectric's LE scanner, which finds nothing; no adapter at all without
 android.hardware.bluetooth; in test runs each test starts with the launch's state, and `executeShellCommand("svc
 bluetooth disable")` switches it, `BluetoothTest`), `recreate` (as a configuration change: ViewModels kept),

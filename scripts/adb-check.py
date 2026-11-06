@@ -81,6 +81,24 @@ def bluetooth(serial, port):
     wait_texts(port, ["bluetooth: on, scanner yes", "broadcasts: TURNING_OFF OFF TURNING_ON ON"])
     adb(serial, "shell", "input", "keyevent", "BACK")
     time.sleep(1)
+    # The app turns it off itself (BluetoothAdapter.disable): the same broadcasts, and a device switch (the features
+    # applied again) leaves it off; `bluetooth toggle` reads the adapter, so it turns it on.
+    adb(serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "apksim://bluetooth?disable=1")
+    wait_texts(port, ["bluetooth: off, scanner yes", "broadcasts: TURNING_OFF OFF"])
+    for d in ("tablet", "phone"):
+        adb(serial, "shell", "apksim", "device", d)
+        time.sleep(1.5)
+    state = adb(serial, "shell", "apksim", "bluetooth").strip()
+    if not state.startswith("off"):
+        fail(f"a device switch turned Bluetooth back on after the app disabled it: {state}")
+    if adb(serial, "shell", "settings", "get", "global", "bluetooth_on").strip() != "0":
+        fail("bluetooth_on is not 0 after the app disabled Bluetooth")
+    adb(serial, "shell", "apksim", "bluetooth", "toggle")
+    state = adb(serial, "shell", "apksim", "bluetooth").strip()
+    if not state.startswith("on"):
+        fail(f"bluetooth toggle after the app disabled it: {state}")
+    adb(serial, "shell", "input", "keyevent", "BACK")
+    time.sleep(1)
 
 
 def main():

@@ -7,6 +7,8 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.provider.Settings;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
 import org.robolectric.shadow.api.Shadow;
 import org.robolectric.shadows.ShadowBluetoothAdapter;
 
@@ -14,42 +16,56 @@ import org.robolectric.shadows.ShadowBluetoothAdapter;
  * The Bluetooth adapter, on as an emulator boots (Robolectric's adapter has state 0, neither on nor off, so
  * isEnabled() was false and nothing could turn it on). Off at launch with {@code --bluetooth off}; switched with the
  * `bluetooth on|off|toggle` command, `adb shell svc bluetooth enable|disable`, `cmd bluetooth_manager
- * enable|disable` and `settings put global bluetooth_on 1|0`, each going TURNING_ON then ON (TURNING_OFF then OFF) with
- * an ACTION_STATE_CHANGED broadcast for each step, as a device sends them, and Settings.Global.BLUETOOTH_ON following.
- * A device without android.hardware.bluetooth (`--feature android.hardware.bluetooth=false`) has no adapter:
- * getDefaultAdapter() and BluetoothManager.getAdapter() are null. The adapter's name is Build.MODEL (--build MODEL=...)
- * and its address 02:00:00:00:00:00, what a device tells an app without LOCAL_MAC_ADDRESS. Its LE scanner is
- * Robolectric's (non-null: BLE scanning stays available while Bluetooth is off, as Robolectric's adapter says), and
- * scans find nothing. Set before Application.onCreate, so per test in a test run, where Robolectric's reset brings a
- * new adapter: each test starts with the launch's state.
+ * enable|disable`, `settings put global bluetooth_on 1|0` and the app's own BluetoothAdapter.enable()/disable()
+ * (ShadowSimBluetoothAdapter), each going TURNING_ON then ON (TURNING_OFF then OFF) with an ACTION_STATE_CHANGED
+ * broadcast for each step, as a device sends them, and Settings.Global.BLUETOOTH_ON following. The adapter's state is
+ * the only record of whether it is on: nothing here keeps a copy that could go stale. A device without
+ * android.hardware.bluetooth (`--feature android.hardware.bluetooth=false`) has no adapter: getDefaultAdapter() and
+ * BluetoothManager.getAdapter() are null. The adapter's name is Build.MODEL (--build MODEL=...) and its address
+ * 02:00:00:00:00:00, what a device tells an app without LOCAL_MAC_ADDRESS. Its LE scanner is Robolectric's (non-null:
+ * BLE scanning stays available while Bluetooth is off, as Robolectric's adapter says), and scans find nothing. Set
+ * before Application.onCreate, so per test in a test run, where Robolectric's reset brings a new adapter: each test
+ * starts with the launch's state.
  */
-final class Bluetooth {
+public final class Bluetooth {
   private Bluetooth() {}
-
-  /** The state asked for: the launch's, then the last command's. */
-  static volatile boolean on = launchState();
 
   private static boolean launchState() {
     String v = System.getProperty("apksim.bluetooth", "on").trim().toLowerCase(java.util.Locale.ROOT);
     return !(v.equals("off") || v.equals("false") || v.equals("0") || v.equals("disabled"));
   }
 
+  /** At the application's (a test's) start: the launch's state. */
   static void beforeApplicationOnCreate(Application app) {
-    on = launchState();
-    featuresChanged(app);
+    apply(app, launchState());
   }
 
-  /** The device has Bluetooth or not (its feature), and its adapter in the state asked for. */
+  /** The device's features changed (`device` switched kinds): Bluetooth or none, an adapter keeping its state. */
   static void featuresChanged(Application app) {
+    apply(app, null);
+  }
+
+  /** The adapter there or not (its feature), in state [on], or (null) in the state it has. */
+  private static void apply(Application app, Boolean on) {
     boolean supported = supported(app);
     ShadowBluetoothAdapter.setIsBluetoothSupported(supported);
-    setSetting(app, supported && on);
-    if (!supported) return;
+    if (!supported) {
+      setSetting(app, false);
+      return;
+    }
     BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
     ShadowBluetoothAdapter s = Shadow.extract(a);
-    s.setState(on ? BluetoothAdapter.STATE_ON : BluetoothAdapter.STATE_OFF);
+    int state = a.getState();
+    // An adapter never set up (the device had no Bluetooth until now) starts as the launch asked.
+    boolean want = on != null ? on : state == 0 ? launchState() : isOn(state);
+    if (state == 0 || want != isOn(state)) s.setState(want ? BluetoothAdapter.STATE_ON : BluetoothAdapter.STATE_OFF);
     s.setAddress("02:00:00:00:00:00");
     a.setName(Build.MODEL);
+    setSetting(app, want);
+  }
+
+  private static boolean isOn(int state) {
+    return state == BluetoothAdapter.STATE_ON || state == BluetoothAdapter.STATE_TURNING_ON;
   }
 
   private static boolean supported(Application app) {
@@ -61,13 +77,10 @@ final class Bluetooth {
     Application app = RuntimeEnvironment.getApplication();
     String op = a.length > 1 ? a[1] : "";
     if (op.isEmpty()) return status(app);
-    boolean want = switch (op) {
-      case "on", "enable", "1" -> true;
-      case "off", "disable", "0" -> false;
-      case "toggle" -> !on;
-      default -> throw new IllegalArgumentException("usage: bluetooth [on|off|toggle]");
-    };
+    if (!op.matches("on|enable|1|off|disable|0|toggle")) return "usage: bluetooth [on|off|toggle]";
     if (!supported(app)) return "error: the device has no Bluetooth (android.hardware.bluetooth is off)";
+    // The adapter's own state, which the app may have changed (enable()/disable()).
+    boolean want = op.equals("toggle") ? !BluetoothAdapter.getDefaultAdapter().isEnabled() : op.matches("on|enable|1");
     set(app, want);
     return "ok (" + (want ? "on" : "off") + ")";
   }
@@ -79,20 +92,23 @@ final class Bluetooth {
         + a.getAddress() + ")";
   }
 
-  /** Switches the adapter, broadcasting each step: TURNING_ON then ON, or TURNING_OFF then OFF. */
-  private static void set(Application app, boolean want) {
-    on = want;
+  /**
+   * Switches the adapter, broadcasting each step: TURNING_ON then ON, or TURNING_OFF then OFF. bluetooth_on is set to
+   * [want] even when the adapter is in that state already (it may have been written behind the adapter's back).
+   */
+  static void set(Application app, boolean want) {
     BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
     ShadowBluetoothAdapter s = Shadow.extract(a);
     int now = a.getState();
     int target = want ? BluetoothAdapter.STATE_ON : BluetoothAdapter.STATE_OFF;
-    if (now == target) return;
-    for (int step : new int[] {want ? BluetoothAdapter.STATE_TURNING_ON : BluetoothAdapter.STATE_TURNING_OFF, target}) {
-      s.setState(step);
-      app.sendBroadcast(new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
-          .putExtra(BluetoothAdapter.EXTRA_STATE, step)
-          .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now));
-      now = step;
+    if (now != target) {
+      for (int step : new int[] {want ? BluetoothAdapter.STATE_TURNING_ON : BluetoothAdapter.STATE_TURNING_OFF, target}) {
+        s.setState(step);
+        app.sendBroadcast(new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
+            .putExtra(BluetoothAdapter.EXTRA_STATE, step)
+            .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now));
+        now = step;
+      }
     }
     setSetting(app, want);
   }
@@ -110,5 +126,28 @@ final class Bluetooth {
       case 13 -> "STATE_TURNING_OFF";
       default -> "state " + state;
     };
+  }
+
+  /**
+   * The app's own BluetoothAdapter.enable()/disable() (and Robolectric's setEnabled, which calls them) go through the
+   * same switch, with its broadcasts and setting: Robolectric's shadow only set the state. Allowed whatever the app
+   * targets (a device returns false to apps targeting 33+), as Robolectric allowed it. Robolectric's own resetter
+   * (ShadowBluetoothAdapter.reset, which its generated Shadows.reset calls) still runs between tests.
+   */
+  @Implements(BluetoothAdapter.class)
+  public static class ShadowSimBluetoothAdapter extends ShadowBluetoothAdapter {
+    @Implementation
+    @Override
+    protected boolean enable() {
+      set(RuntimeEnvironment.getApplication(), true);
+      return true;
+    }
+
+    @Implementation
+    @Override
+    protected boolean disable() {
+      set(RuntimeEnvironment.getApplication(), false);
+      return true;
+    }
   }
 }
