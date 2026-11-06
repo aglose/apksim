@@ -55,6 +55,15 @@ final class HostNetworks {
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
       if (!tunnel) capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+      // What a device's Wi-Fi network also has, and a NetworkRequest asks for by default (NOT_RESTRICTED, TRUSTED,
+      // NOT_VPN, NOT_VCN_MANAGED): without them no request matched the network (ShadowSimConnectivityManager).
+      for (int c : new int[] {NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED, NetworkCapabilities.NET_CAPABILITY_TRUSTED,
+          NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING, NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED,
+          NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED, NetworkCapabilities.NET_CAPABILITY_FOREGROUND,
+          NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED}) {
+        capsShadow.addCapability(c);
+      }
+      if (!tunnel) capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
       shadow.setNetworkCapabilities(network, caps);
 
       LinkProperties lp = new LinkProperties();
@@ -81,6 +90,7 @@ final class HostNetworks {
         shadow.setLinkProperties(reported, activeLinks);
       }
     }
+    SystemBroadcasts.network(context);  // Wi-Fi's and the network's sticky broadcasts say so
   }
 
   private static boolean hasIpv4(NetworkInterface ni) {

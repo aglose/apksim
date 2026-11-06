@@ -1,7 +1,6 @@
 package dev.apksim;
 
 import android.app.Application;
-import android.content.Intent;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
@@ -18,7 +17,7 @@ import org.robolectric.shadows.ShadowConnectivityManager;
 
 /**
  * `network offline` as ConnectivityManager shows it: the networks go away (no active network, callbacks get onLost,
- * the CONNECTIVITY_ACTION broadcast says there is no connectivity), and come back with `network online`
+ * the sticky CONNECTIVITY_ACTION broadcast says there is no connectivity), and come back with `network online`
  * (onAvailable, onCapabilitiesChanged, onLinkPropertiesChanged), as on a device whose Wi-Fi is turned off and on.
  * Robolectric keeps that state in ShadowConnectivityManager's static fields, so it can be set before the Application
  * exists: with --network-profile offline, Application.onCreate already sees no network.
@@ -98,9 +97,7 @@ final class NetConnectivity {
     }
     Application app = RuntimeEnvironment.application;
     if (app == null) return;  // before the Application: there is no one to tell yet
-    @SuppressWarnings("deprecation")
-    Intent intent = new Intent(ConnectivityManager.CONNECTIVITY_ACTION).putExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, offline);
-    app.sendBroadcast(intent);
+    SystemBroadcasts.network(app);  // CONNECTIVITY_ACTION and Wi-Fi's NETWORK_STATE_CHANGED, sticky as on a device
   }
 
   @SuppressWarnings("unchecked")

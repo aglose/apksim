@@ -357,6 +357,10 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
+`apksim://system-sources` opens `SystemSourcesActivity`: what a quick-settings panel awaits in coroutines (Wi-Fi's,
+the network's and the battery's sticky broadcasts, a default and a Wi-Fi network callback, VOLUME_CHANGED_ACTION after
+setStreamVolume, a settings observer, an A2DP profile proxy), one line each, "timed out" after 3 s (`ci-smoke.sh`
+checks none does but Bluetooth's, which connects only while Bluetooth is on; `SystemSourcesTest` in a test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -384,6 +388,17 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   network that netId: before, apps got Robolectric's stand-in (no INTERNET or VALIDATED capability). On Linux the
   container's `eth0` counts as Ethernet; before, ConnectivityManager had no network there at all.
   `setDefaultNetworkActive(true)` with an active network calls onAvailable itself, so NetConnectivity sets it first.
+- What a device's system server has already sent or sends at once, which Robolectric never does (issue 96: a large
+  app's quick-settings panel awaited it in a coroutine and stayed empty, no exception): `SystemBroadcasts` keeps the
+  sticky WIFI_STATE_CHANGED, Wi-Fi NETWORK_STATE_CHANGED, CONNECTIVITY_ACTION (from ConnectivityManager, again on every
+  `network offline|online` and HostNetworks install) and ACTION_BATTERY_CHANGED (full, not charging), set before
+  Application.onCreate in running instances and every test; `ShadowSimConnectivityManager` tells a network callback of
+  the networks it matches as it registers (`NetworkRequest.canBeSatisfiedBy`; a default callback of the active one:
+  onAvailable, onCapabilitiesChanged, onLinkPropertiesChanged, onBlockedStatusChanged, posted to its handler, else the
+  main thread), so HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED, NOT_METERED...,
+  which a default NetworkRequest asks for); `SystemBroadcasts.ShadowSimAudioManager` sends VOLUME_CHANGED_ACTION
+  (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream. Robolectric prints every
+  broadcast it sends to stderr, so a sticky nobody listens for yet is only kept.
   The shadow's state is static, so NetConnectivity applies an offline launch profile before the Application exists
   (`SimTestEnvironment.setUpApplicationState`): `Application.onCreate` sees no network, in Host and in tests.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
