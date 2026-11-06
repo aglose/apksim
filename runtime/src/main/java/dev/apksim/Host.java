@@ -229,6 +229,7 @@ public class Host {
         }
       }
       long looperStart = System.nanoTime();
+      if (!firstFrame && gridHz() < 120) alignFrameDelay();
       if (availableMs > MAX_CATCH_UP_MS) {
         // A long stall: time spent stalled is not replayed.
         last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
@@ -423,12 +424,29 @@ public class Host {
 
   /**
    * The Choreographer's frame delay: how long after a frame is asked for its vsync comes. 1 ms (Host's own grid paces
-   * frames), or under a frame rate cap the cap's interval, so frames come no faster while the clock follows real time.
-   * The first frame comes at once whatever the cap.
+   * frames, and the first frame comes at once), or under a frame rate cap whatever puts that vsync on the next line of
+   * the cap's grid, as an N Hz display's would be: so the clock follows real time while frames come N a second on
+   * average and never faster. A fixed delay of the interval ran slow (each frame is asked for when the last one ran,
+   * a little after its vsync: 56 fps at a cap of 60, 85 at 101), and rounded down ran fast (16 ms at 60: 62.5 fps).
+   * Set every loop turn under a cap ({@link #alignFrameDelay}).
    */
   static void applyFrameDelay(boolean beforeFirstFrame) {
-    int hz = Features.maxFps();
-    ShadowChoreographer.setFrameDelay(Duration.ofMillis(beforeFirstFrame || hz >= 120 ? 1 : 1000 / hz));
+    if (beforeFirstFrame || gridHz() >= 120) {
+      ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+    } else {
+      alignFrameDelay();
+    }
+  }
+
+  /**
+   * Under a cap: a frame asked for next is asked for during the pending vsync's frame, at its time, or with none pending
+   * about now; its vsync then falls on the grid line after that.
+   */
+  private static void alignFrameDelay() {
+    long pending = ShadowChoreographer.getNextVsyncTimeNanos();
+    long nowMs = SystemClock.uptimeMillis();
+    long askedMs = pending != 0 ? Math.max(nowMs, (pending + 999_999) / 1_000_000) : nowMs;
+    ShadowChoreographer.setFrameDelay(Duration.ofMillis(Math.max(1, lineAfter(askedMs, gridHz()) - askedMs)));
   }
 
   /** No frame drawn yet. Main thread only. */
