@@ -5,22 +5,29 @@ import java.nio.ByteBuffer;
 /**
  * Sound (native/audio.m): AAC and MP3 decoding on AudioToolbox for MediaCodec, and AudioTrack's PCM played on the
  * Mac's default output. Mac only; elsewhere {@link #available} is false and Robolectric's silent AudioTrack stays.
- * {@code -Dapksim.audio=false} turns it off, {@code -Dapksim.mute=true} keeps the timing but plays silence.
+ * {@code --audio off} turns it off, {@code --audio mute} keeps the timing but plays silence ({@link dev.apksim.Features}:
+ * read at each launch, so a standby that loaded the library still serves a launch without sound).
  */
 public final class SimAudio {
   private SimAudio() {}
 
   static final int AAC = 0, MP3 = 1;
   private static final boolean AVAILABLE = load();
-  static final boolean MUTED = Boolean.getBoolean("apksim.mute");
 
   static boolean available() {
-    return AVAILABLE;
+    return AVAILABLE && dev.apksim.Features.audio() != dev.apksim.Features.Audio.OFF;
+  }
+
+  /** Whether streams play silence (--audio mute), read when a stream opens or its volume changes. */
+  static boolean muted() {
+    return dev.apksim.Features.audio() == dev.apksim.Features.Audio.MUTE;
   }
 
   private static boolean load() {
     try {
-      if (!dev.apksim.HostOs.MAC || !Boolean.parseBoolean(System.getProperty("apksim.audio", "true"))) return false;
+      // A launch without sound never loads the library (a standby loads it, and Features then turns it off).
+      String option = System.getProperty("apksim.audio", "on");
+      if (!dev.apksim.HostOs.MAC || option.equals("off") || option.equals("false")) return false;
       System.load(dev.apksim.HostOs.runtimeLib("libsimaudio").toString());
       return true;
     } catch (Throwable t) {
