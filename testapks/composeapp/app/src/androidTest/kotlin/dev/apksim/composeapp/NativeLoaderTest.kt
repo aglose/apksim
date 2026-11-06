@@ -2,7 +2,9 @@ package dev.apksim.composeapp
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import org.junit.runner.RunWith
 
 /**
@@ -13,6 +15,9 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class NativeLoaderTest {
+  // A broken barrier, wait or join would hang: the watchdog then ends the process and instrument.py runs the rest.
+  @get:Rule val timeout: Timeout = Timeout.seconds(60)
+
   @Test fun stackGuardIsStableOnEveryThread() = assertEquals("ok", LoaderFixture.check("stackGuard"))
 
   @Test fun threadLocalsArePerThreadAndKeepRegisters() = assertEquals("ok", LoaderFixture.check("tls"))

@@ -461,20 +461,30 @@ static int s_condattr_setclock(void *a, int clk) {
 static int s_condattr_getclock(const void *a, int *clk) { *clk = (int)*(const long *)a; return 0; }
 
 // Barriers: macOS has none. Android's pthread_barrier_t is 32 bytes, 8-aligned; it holds a pointer to this.
-typedef struct { pthread_mutex_t m; pthread_cond_t c; unsigned count, waiting, cycle; } Barrier;
+// `leaving` counts released threads that have not yet let go of the mutex: destroy waits for them, so a thread
+// that returns from a round and destroys the barrier cannot free it under its peers.
+typedef struct { pthread_mutex_t m; pthread_cond_t c; unsigned count, waiting, cycle, leaving; } Barrier;
 static int s_barrier_init(void *b, const void *attr, unsigned count) {
   if (count == 0) return 22;  // EINVAL
   Barrier *h = malloc(sizeof *h);
   pthread_mutex_init(&h->m, NULL);
   pthread_cond_init(&h->c, NULL);
   h->count = count;
-  h->waiting = h->cycle = 0;
+  h->waiting = h->cycle = h->leaving = 0;
   atomic_store(&shell_of(b)->host, h);
   return 0;
 }
 static int s_barrier_destroy(void *b) {
-  Barrier *h = atomic_exchange(&shell_of(b)->host, NULL);
+  Barrier *h = atomic_load(&shell_of(b)->host);
   if (!h) return 22;
+  pthread_mutex_lock(&h->m);
+  if (h->waiting) {
+    pthread_mutex_unlock(&h->m);
+    return 16;  // EBUSY: threads are waiting in it, as bionic answers
+  }
+  while (h->leaving) pthread_cond_wait(&h->c, &h->m);
+  atomic_store(&shell_of(b)->host, NULL);
+  pthread_mutex_unlock(&h->m);
   pthread_cond_destroy(&h->c);
   pthread_mutex_destroy(&h->m);
   free(h);
@@ -489,11 +499,13 @@ static int s_barrier_wait(void *b) {
   if (++h->waiting == h->count) {
     h->waiting = 0;
     h->cycle++;
+    h->leaving += h->count - 1;
     pthread_cond_broadcast(&h->c);
     pthread_mutex_unlock(&h->m);
     return -1;
   }
   while (cycle == h->cycle) pthread_cond_wait(&h->c, &h->m);
+  if (--h->leaving == 0) pthread_cond_broadcast(&h->c);  // a destroy may be waiting for the last one out
   pthread_mutex_unlock(&h->m);
   return 0;
 }

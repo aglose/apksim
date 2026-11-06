@@ -339,10 +339,29 @@ static const char *check_thread_attr(void) {
 static struct { jmp_buf env; unsigned long after[8]; } jump;
 static struct { sigjmp_buf env; unsigned long after[8]; } sigjump;
 
+// Garbage in every callee-saved register right before the jump, so only longjmp's restore can bring the values the
+// caller kept there back (the function's own epilogue, which would restore them, never runs).
+#if defined(__aarch64__)
+#define SCRAMBLE_CALLEE_SAVED() __asm__ volatile( \
+    "movz x19, #0xdead\n mov x20, x19\n mov x21, x19\n mov x22, x19\n mov x23, x19\n" \
+    "mov x24, x19\n mov x25, x19\n mov x26, x19\n mov x27, x19\n mov x28, x19\n" \
+    "fmov d8, x19\n fmov d9, x19\n fmov d10, x19\n fmov d11, x19\n" \
+    "fmov d12, x19\n fmov d13, x19\n fmov d14, x19\n fmov d15, x19\n" \
+    ::: "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", \
+        "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15")
+#else
+#define SCRAMBLE_CALLEE_SAVED() __asm__ volatile( \
+    "mov $0xdead, %%rbx\n mov %%rbx, %%r12\n mov %%rbx, %%r13\n mov %%rbx, %%r14\n mov %%rbx, %%r15\n" \
+    ::: "rbx", "r12", "r13", "r14", "r15")
+#endif
+
 __attribute__((noinline)) static void jump_from(int depth) {
   volatile char pad[32];
   pad[0] = (char)depth;
-  if (depth == 0) longjmp(jump.env, 7);
+  if (depth == 0) {
+    SCRAMBLE_CALLEE_SAVED();
+    longjmp(jump.env, 7);
+  }
   jump_from(depth - 1);
   pad[1] = 0;
 }
@@ -350,15 +369,37 @@ __attribute__((noinline)) static void jump_from(int depth) {
 __attribute__((noinline)) static void sigjump_from(int depth) {
   volatile char pad[32];
   pad[0] = (char)depth;
-  if (depth == 0) siglongjmp(sigjump.env, 9);
+  if (depth == 0) {
+    SCRAMBLE_CALLEE_SAVED();
+    siglongjmp(sigjump.env, 9);
+  }
   sigjump_from(depth - 1);
   pad[1] = 0;
 }
 
+// Values the optimizer cannot see through, so a comparison after the jump is not folded away.
+static inline long hide(long v) { __asm__ volatile("" : "+r"(v)); return v; }
+static inline double hide_d(double v) {
+#if defined(__aarch64__)
+  __asm__ volatile("" : "+w"(v));
+#else
+  __asm__ volatile("" : "+x"(v));
+#endif
+  return v;
+}
+#define K(i) hide(seed * (31 + (i)) + (i))
+#define D(i) hide_d((double)seed * (1.5 + (i)))
+// Eight integers and eight doubles live across setjmp and the calls after it: on arm64 they fill x19-x28 and d8-d15,
+// on x86_64 rbx and r12-r15 (the rest, and doubles, are on the stack there).
+#define KEPT(k, d) (k##0 == K(0) && k##1 == K(1) && k##2 == K(2) && k##3 == K(3) && k##4 == K(4) && k##5 == K(5) && \
+                    k##6 == K(6) && k##7 == K(7) && d##0 == D(0) && d##1 == D(1) && d##2 == D(2) && d##3 == D(3) && \
+                    d##4 == D(4) && d##5 == D(5) && d##6 == D(6) && d##7 == D(7))
+
 __attribute__((noinline)) static const char *check_setjmp_with(long seed) {
   for (int i = 0; i < 8; i++) jump.after[i] = sigjump.after[i] = CANARY;
-  long keep = seed * 31 + 7;        // not changed after setjmp, so kept in a callee-saved register across the jump
-  double keep_d = (double)seed * 1.5;
+  // Not changed after setjmp, so their values are defined after the jump.
+  long k0 = K(0), k1 = K(1), k2 = K(2), k3 = K(3), k4 = K(4), k5 = K(5), k6 = K(6), k7 = K(7);
+  double d0 = D(0), d1 = D(1), d2 = D(2), d3 = D(3), d4 = D(4), d5 = D(5), d6 = D(6), d7 = D(7);
   volatile int reached = 0;
   int r = setjmp(jump.env);
   if (r == 0) {
@@ -368,7 +409,7 @@ __attribute__((noinline)) static const char *check_setjmp_with(long seed) {
   }
   if (r != 7) FAIL("setjmp returned %d after longjmp(env, 7)", r);
   if (reached != 1) FAIL("a volatile local lost its value across longjmp");
-  if (keep != seed * 31 + 7 || keep_d != (double)seed * 1.5) FAIL("callee-saved registers were not restored by longjmp");
+  if (!KEPT(k, d)) FAIL("callee-saved registers were not restored by longjmp");
   for (int i = 0; i < 8; i++) if (jump.after[i] != CANARY) FAIL("setjmp wrote past jmp_buf (word %d after it)", i);
 
   r = sigsetjmp(sigjump.env, 1);
@@ -379,7 +420,7 @@ __attribute__((noinline)) static const char *check_setjmp_with(long seed) {
   }
   if (r != 9) FAIL("sigsetjmp returned %d after siglongjmp(env, 9)", r);
   if (reached != 2) FAIL("a volatile local lost its value across siglongjmp");
-  if (keep != seed * 31 + 7 || keep_d != (double)seed * 1.5) FAIL("callee-saved registers were not restored by siglongjmp");
+  if (!KEPT(k, d)) FAIL("callee-saved registers were not restored by siglongjmp");
   for (int i = 0; i < 8; i++) if (sigjump.after[i] != CANARY) FAIL("sigsetjmp wrote past sigjmp_buf (word %d after it)", i);
   return "ok";
 }
