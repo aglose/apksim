@@ -3,7 +3,8 @@
 
 Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
-                     [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [-- APKSIM_OPTION...]
+                     [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
+                     [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
 the app's own statics carry over). If that process ends before every test has a result (a native crash or abort, or
@@ -20,6 +21,12 @@ With --shards N the suite is split over N processes running at once, each given 
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
 process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
 suite that passes in one process passes sharded unless its tests depend on running after one another.
+--test-timeout SEC (default 900, 0 for none): a process that goes SEC seconds without a test starting or ending (a
+test hung past its own JUnit timeout: in teardown, or ignoring interrupts where apksim's watchdog cannot see it) is
+killed and handled as one that died: the running test fails "timed out after SEC s" with the stderr tail and the
+stacks of the threads running JUnit code (a SIGQUIT thread dump taken just before), and the rest run in a new process.
+The kill takes the process group (each process gets one of its own) and, when --apksim is `docker|podman run`, the
+container too (`docker kill`, by a --cidfile this script adds): killing the client leaves a container running.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
 for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
@@ -45,7 +52,8 @@ the tests (docs, JVM unit tests: `--ignore '*.md' --ignore '*/src/test/*'`).
 each shard given an `-e class` list, instead of by hash. --shard I runs only shard I (0-based) of the N, for CI jobs
 on separate machines; every job must be given the same suite, timings and change.
 """
-import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
+import time
 import affected
 from xml.sax.saxutils import escape, quoteattr
 
@@ -57,18 +65,99 @@ LAUNCHER = [ROOT + "/apksim"]
 RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
 
 
+TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
+LIVE = {}  # the processes running now: {Popen: its kill()}, for an interrupt (they are not in our process group)
+LIVE_LOCK = threading.RLock()  # (kill_all takes it on the main thread, which may hold it)
+CONTAINER_TOOLS = ("docker", "podman", "nerdctl")
+
+
+def container_run(cmd):
+    """Where `run` is when [cmd] starts a container (`docker [OPTIONS] run ...`): its index, else None."""
+    for i, w in enumerate(cmd):
+        if os.path.basename(w) in CONTAINER_TOOLS:
+            return next((j for j in range(i + 1, len(cmd)) if cmd[j] == "run"), None)
+    return None
+
+
+def thread_dump_tests(dump):
+    """From a JVM thread dump, the stacks of the threads in JUnit code (the hung test's, a timeout's watchdog), else all."""
+    threads = [t for t in "\n".join(dump).split("\n\n") if t.lstrip().startswith('"')]
+    picked = [t.strip("\n") for t in threads if "org.junit." in t] or [t.strip("\n") for t in threads]
+    text = "\n\n".join(picked)
+    return text if len(text) <= 30_000 else text[:30_000] + f"\n... ({len(text) - 30_000} more characters)"
+
+
 def apksim(app, test, extra_args, apksim_opts):
     """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
-    from when each test's start and end blocks arrived (the output is read as it comes)."""
+    from when each test's start and end blocks arrived (the output is read as it comes), and, when --test-timeout
+    killed it, .timed_out (the limit) and .threads (the JUnit threads' stacks from a thread dump taken first)."""
     cmd = LAUNCHER + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
-    p = subprocess.Popen(cmd + apksim_opts + [app], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cmd += apksim_opts + [app]
+    # A container outlives its client (SIGKILL is not passed on): note its ID so that a kill can end it.
+    run, cidfile, cid_dir = container_run(cmd), None, None
+    if run is not None:
+        given = [cmd[i + 1] if w == "--cidfile" else w.split("=", 1)[1] for i, w in enumerate(cmd[:-1])
+                 if w == "--cidfile" or w.startswith("--cidfile=")]
+        if given:
+            cidfile = given[0]
+        else:
+            cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
+            cidfile = os.path.join(cid_dir, "cid")
+            cmd = cmd[:run + 1] + ["--cidfile", cidfile] + cmd[run + 1:]
+    # Its own process group (session), so a kill ends whatever it started too, and nothing but this script's own.
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+    def kill():
+        if cidfile:
+            try:
+                with open(cidfile) as f:
+                    cid = f.read().strip()
+                if cid:
+                    subprocess.run(cmd[:run] + ["kill", cid], capture_output=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    with LIVE_LOCK:
+        LIVE[p] = kill
     err = []
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
     lines, seconds, started, block, deps = [], {}, {}, {}, []
+    # --test-timeout: when the process started or a test last started or ended (a hung test held the run for as long
+    # as the CI job allowed: 67 minutes once). Past the limit: SIGQUIT (the JVM prints every thread's stack on its
+    # stdout, read below), up to 5 s for that, then the kill.
+    progress, timed_out, dump, in_dump = [time.monotonic()], [], [], False
+    quit_sent, dumped, done = threading.Event(), threading.Event(), threading.Event()
+
+    def watchdog():
+        while not done.wait(min(1.0, TEST_TIMEOUT / 4)):
+            if time.monotonic() - progress[0] > TEST_TIMEOUT:
+                timed_out.append(TEST_TIMEOUT)
+                quit_sent.set()
+                try:
+                    p.send_signal(signal.SIGQUIT)  # (with docker, the client passes it on to the container's JVM)
+                except ProcessLookupError:
+                    pass
+                dumped.wait(5)
+                kill()
+                return
+
+    if TEST_TIMEOUT > 0:
+        threading.Thread(target=watchdog, daemon=True).start()
     for line in p.stdout:
+        if quit_sent.is_set() and (in_dump or line.startswith("Full thread dump")):
+            in_dump = True
+            dump.append(line.rstrip("\n"))
+            if line.startswith("JNI global refs"):
+                in_dump = False
+                dumped.set()
+            continue
         if line.startswith(affected.PREFIX):
             deps.append(line)
             continue
@@ -77,19 +166,53 @@ def apksim(app, test, extra_args, apksim_opts):
         if m:
             block[m[1]] = m[2].rstrip("\n")
         elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            progress[0] = time.monotonic()
             t = (block.get("class"), block.get("test"))
             if line.split(": ")[1].strip() == "1":
                 started[t] = time.time()
             elif t in started:
                 seconds[t] = time.time() - started.pop(t)
             block = {}
+    dumped.set()
     p.wait()
+    done.set()
     reader.join()
+    with LIVE_LOCK:
+        LIVE.pop(p, None)
+    if cid_dir:
+        shutil.rmtree(cid_dir, ignore_errors=True)
     if deps:
         RECORDED.append(deps)
     r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
     r.seconds = seconds
+    r.timed_out = timed_out[0] if timed_out else None
+    r.threads = thread_dump_tests(dump) if dump else ""
     return r
+
+
+def kill_all(signum, frame):
+    """SIGINT/SIGTERM/SIGHUP: the test processes have process groups of their own, so a Ctrl-C at the terminal no
+    longer reaches them: end them (and their containers), then this script, with the signal's status."""
+    with LIVE_LOCK:
+        kills = list(LIVE.values())
+    for k in kills:
+        k()
+    os._exit(128 + signum)
+
+
+def tail(r):
+    """What a failure that this script reports for a process shows of it: the tail of its stderr, and after a
+    --test-timeout kill the stacks of the threads running JUnit code when it was killed."""
+    t = r.stderr[-4000:]
+    if r.threads:
+        t = (t.rstrip("\n") + "\n\nthreads in JUnit code when instrument.py killed the process (from the JVM's thread "
+             "dump):\n" + r.threads)
+    return t
+
+
+def timeout_note(r):
+    return (f"timed out after {r.timed_out:g} s: no test started or ended for that long (--test-timeout), "
+            "so instrument.py killed the apksim process")
 
 
 def incomplete(r, results, test=None):
@@ -97,6 +220,8 @@ def incomplete(r, results, test=None):
     every test it announced (numtests), or the process crashed or was killed partway and the missing tests would
     otherwise vanish from the report. [test] is the one test an isolated run was started for."""
     announced = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+    if getattr(r, "timed_out", None):
+        return timeout_note(r)
     if "INSTRUMENTATION_CODE: " not in r.stdout:
         return f"apksim exited ({r.returncode}) before the run finished"
     if announced and len(results) < max(announced):
@@ -216,20 +341,23 @@ def one_process(a, passthrough, label=""):
         for g in new:
             record(*g, r.seconds.get((g[0], g[1])))
         why = incomplete(r, got)
-        tail = r.stderr[-4000:]
+        out = tail(r)
         crashed = None
         if why:
-            sys.stderr.write(tail)
+            sys.stderr.write(out if out.endswith("\n") else out + "\n")
             if running and not has_result(running) and (remaining is None or running in set(remaining)):
                 crashed = running
                 finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
-                record(*running, "failed", f"apksim exited ({r.returncode}) while this test was running"
-                                           + (f" ({why})" if finished else "") + ":\n" + tail)
+                record(*running, "failed", (f"timed out after {r.timed_out:g} s while this test was running: no test "
+                                            "started or ended for that long (--test-timeout), so instrument.py killed "
+                                            "the apksim process" if r.timed_out else
+                                            f"apksim exited ({r.returncode}) while this test was running"
+                                            + (f" ({why})" if finished else "")) + ":\n" + out)
             elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
                 # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
                 # device. One entry per such process, named apart so the XML keeps one entry per name.
                 name = ("incomplete" if processes == 1 else f"incomplete (process {processes})") + label
-                results.append(("(run)", name, "failed", why + ":\n" + tail, None))
+                results.append(("(run)", name, "failed", why + ":\n" + out, None))
                 counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
                 if remaining is None and "INSTRUMENTATION_CODE: " in r.stdout and counts and len(got) >= max(counts):
                     break  # every test has a result (it failed at exit, say): nothing to list or rerun
@@ -242,7 +370,7 @@ def one_process(a, passthrough, label=""):
                     if not has_result((c, m)):
                         record(c, m, "failed", f"not run: the apksim process started for the {len(remaining)} tests "
                                                f"left gave none of them a result ({why or f'exit {r.returncode}'}):\n"
-                                               + tail)
+                                               + out)
             break
         if listing is None:
             listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
@@ -261,7 +389,8 @@ def one_process(a, passthrough, label=""):
         args = narrow(a.e, listing, remaining)
         if why:
             at = f" while {crashed[0]}#{crashed[1]} was running" if crashed else ""
-            print(f"apksim exited ({r.returncode}){label}{at}: {len(listing) - len(remaining)} of {len(listing)} tests have "
+            ended = f"timed out after {r.timed_out:g} s" if r.timed_out else f"exited ({r.returncode})"
+            print(f"apksim {ended}{label}{at}: {len(listing) - len(remaining)} of {len(listing)} tests have "
                   f"results, running the {len(remaining)} left in a new process", file=sys.stderr)
     if processes > 1:
         print(f"{processes} apksim processes{label}, one of them listing the suite", file=sys.stderr)
@@ -278,7 +407,7 @@ def bundle_folder(c, m):
 
 def died(st):
     """A failure this script reported, not the test: the process ended without the test's result (see one_process)."""
-    return st.startswith(("apksim ", "not run:"))
+    return st.startswith(("apksim ", "not run:", "timed out "))
 
 
 def clear_bundles(local):
@@ -424,6 +553,7 @@ def run_tests(a, passthrough, listing, tests, label=""):
 
 
 def main():
+    global TEST_TIMEOUT
     argv = sys.argv[1:]
     passthrough = []
     if "--" in argv:
@@ -448,7 +578,13 @@ def main():
     p.add_argument("--ignore", action="append", default=[], metavar="GLOB")
     p.add_argument("--timings", action="append", default=[], metavar="XML")
     p.add_argument("--shard", type=int, metavar="I")
+    p.add_argument("--test-timeout", type=float, default=TEST_TIMEOUT, metavar="SEC")
     a = p.parse_args(argv)
+    if a.test_timeout < 0:
+        p.error("--test-timeout SEC: 0 for no limit, else the seconds a process may go without a test starting or ending")
+    TEST_TIMEOUT = a.test_timeout
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, kill_all)
     redact = []
     if a.bundles:
         try:
@@ -558,7 +694,7 @@ def main():
             got = parse(r.stdout)
             why = incomplete(r, got)
             if not got or why:
-                return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + r.stderr[-4000:],
+                return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r),
                         time.time() - start)
             c, m, s, st = got[0]
             return (c, m, s, st, time.time() - start)

@@ -22,7 +22,7 @@ status=0; wait $shared || status=1; wait $app || status=1; exit $status
 **One suite over several processes.** `instrument.py --shards N` runs N processes at once, each given
 AndroidJUnitRunner's `-e numShards N -e shardIndex I` (`--instrument` takes them too, as a device's runner does): a
 test's shard comes from its name's hash, every test runs once, and each shard recovers from a crash as one process
-does. Results make one JUnit XML, with each test's time. A shard's tests share its process, so a suite that passes in
+does, and from a hang: `--test-timeout SEC` (default 900) kills a shard's process stuck that long on one test. Results make one JUnit XML, with each test's time. A shard's tests share its process, so a suite that passes in
 one process passes sharded unless its tests depend on running after one another.
 
 **Shards balanced by measured time.** Hash sharding gives shards equal numbers of tests, not equal times.

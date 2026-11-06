@@ -78,6 +78,10 @@ python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/out:/work apksim
   app.apk test.apk --xml out/junit.xml
 ```
 
+A process that goes `--test-timeout` seconds (default 900) without a test starting or ending is killed, its container
+with it: instrument.py adds `--cidfile` to `docker|podman run` and runs `docker kill` (killing the client alone leaves
+the container running), reports that test timed out, and runs the rest in a new container.
+
 Keep the cache between runs with a volume at `/opt/apksim/work/cache` (translated classes, the per-APK manifest and
 native libraries, app data). Without one every `docker run` translates the app's classes again: for a large app's
 journey run alone (one container per test, `instrument.py --isolate`) that was 15.6 s a test against 10.4-10.6 s with

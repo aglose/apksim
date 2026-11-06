@@ -6,9 +6,13 @@ Usage: instrument-check.py. No apksim, APK or JVM needed: instrument.py runs wit
 (classes p.C000.., methods m0..) and dying where the scenario (CHECK_SCENARIO) says. It honours -e class, notClass
 log true and numShards/shardIndex as apksim does, and counts its calls in CHECK_DIR. Each scenario checks the exit status, the processes
 started, and the JUnit XML (one entry per test, the failures expected). The real thing is ProcessDeathTest, run with
-`-e crashOnPurpose true` (CI's linux-smoke job).
+`-e crashOnPurpose true` (CI's linux-smoke job). The hang-* scenarios check --test-timeout: the stand-in stops writing
+and stays alive (with a child, and a JVM-style thread dump on SIGQUIT), and every process it started must be gone at
+the end; *-docker ones run it through a stand-in `docker run` whose "container" is outside instrument.py's process
+group, as a real one is, and so ends only by `docker kill`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead.
+The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
-import gzip, json, math, os, re, subprocess, sys, tempfile
+import gzip, json, math, os, re, signal, subprocess, sys, tempfile, time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -84,6 +88,8 @@ def fake():
     if sc == "startup" or (sc == "rerun-startup" and calls > 1):
         print("dies at startup", file=sys.stderr)
         sys.exit(1)
+    if sc == "hang-startup":
+        hang(state, "p.Startup", "boot")
     for n, (c, m) in enumerate(tests):
         if sc == "before-class" and c == "p.C001":
             if m == "m0":
@@ -96,6 +102,11 @@ def fake():
         block(c, m, n + 1, 1)
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
+        if sc.startswith(("hang", "interrupt")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
+            hang(state, c, m)
+        if sc == "slow":  # slower in all than --test-timeout, but each test well within it
+            sys.stdout.flush()
+            time.sleep(0.6)
         if {"during-test": calls == 1 and n == 1, "rerun-startup": n == 1, "big": calls == 1 and n == 1,
                 "non-ascii": calls == 1 and n == 1,
                 # Shards run at once, so not by call count: the first time this test runs (in shard 0 of 3, first).
@@ -107,6 +118,49 @@ def fake():
     print("INSTRUMENTATION_CODE: -1")
     if sc == "at-exit":
         sys.exit(134)
+
+
+def hang(state, c, m):
+    """A test that never ends, in a process that stays alive (and has a child) until it is killed. SIGQUIT prints a
+    thread dump on stdout, as the JVM does: the test's thread, in JUnit code, and one that is not."""
+    child = subprocess.Popen(["sleep", "300"])
+    with open(os.path.join(state, "pids"), "a") as f:
+        f.write(f"{os.getpid()}\n{child.pid}\n")
+
+    def dump(*_):
+        print(f'Full thread dump Fake VM:\n\n"main" #1 prio=5\n   java.lang.Thread.State: TIMED_WAITING\n'
+              f'\tat {c}.{m}({c}.java:1)\n\tat org.junit.runners.ParentRunner.run(ParentRunner.java:1)\n\n'
+              f'"Reference Handler" #2 daemon\n   java.lang.Thread.State: RUNNABLE\n\nJNI global refs: 1, weak refs: 0',
+              flush=True)
+    signal.signal(signal.SIGQUIT, dump)
+    print("hangs in a test", file=sys.stderr, flush=True)
+    sys.stdout.flush()
+    while True:
+        time.sleep(1)
+
+
+def fake_docker():
+    """`docker run [--cidfile F] [--rm] [-v X] IMAGE ARGS...` and `docker kill ID`: the "container" (the stand-in apksim)
+    runs in a session of its own, so it outlives a kill of this client, as a real container does."""
+    args, state = sys.argv[2:], os.environ["CHECK_DIR"]
+    if args[0] == "kill":
+        with open(os.path.join(state, "docker-kills"), "a") as f:
+            f.write(args[1] + "\n")
+        os.killpg(int(args[1]), signal.SIGKILL)  # every process in the container
+        return
+    i, cidfile = 1, None
+    while args[i].startswith("-"):
+        if args[i] == "--cidfile":
+            cidfile = args[i + 1]
+        i += 2 if args[i] in ("--cidfile", "-v") else 1
+    child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--fake"] + args[i + 1:], start_new_session=True)
+    with open(os.path.join(state, "pids"), "a") as f:
+        f.write(f"{child.pid}\n")
+    if cidfile:
+        with open(cidfile, "x") as f:  # (docker refuses a cidfile that exists)
+            f.write(str(child.pid))
+    signal.signal(signal.SIGQUIT, lambda *_: os.kill(child.pid, signal.SIGQUIT))  # docker's sig-proxy
+    sys.exit(child.wait() % 256)
 
 
 def ran_before(state, test):
@@ -137,8 +191,21 @@ SCENARIOS = {
     "affected": (0, 2, 6, []),
     # The same 6 tests over 8 shards, running shard 7 only: an empty job of a CI matrix passes, after the listing.
     "affected-empty-shard": (0, 1, 0, []),
+    # --test-timeout 2: C000#m1 hangs the first time it runs. As during-test, with "timed out" for the reason.
+    "hang": (1, 3, 9, ["p.C000#m1"]),
+    "hang-startup": (1, 1, 1, ["(run)#incomplete"]),
+    "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
+    "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
+    "hang-docker": (1, 3, 9, ["p.C000#m1"]),
+    "slow": (0, 1, 9, []),  # 0.6 s a test, 5.4 s in all: no kill
+    # No limit, and a SIGINT (Ctrl-C) once C000#m1 hangs: the processes have sessions of their own, out of the
+    # terminal's reach, so instrument.py must end them itself (and the container), then exit 130 with no report.
+    "interrupt": (130, 1, 0, []),
+    "interrupt-docker": (130, 1, 0, []),
 }
-SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2}
+SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3}
+# The failure text expected of a test that timed out: the reason, and the thread dump's JUnit thread (not the other).
+TIMED_OUT = ["timed out after 2 s", "at p.C000.m1(p.C000.java:1)", "hangs in a test"]
 
 
 def extra_args(sc, d):
@@ -149,6 +216,11 @@ def extra_args(sc, d):
             f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
         return ["--timings", xml]
+    if sc.startswith("interrupt"):
+        return ["--test-timeout", "0"]
+    if sc.startswith("hang") or sc == "slow":
+        return (["--test-timeout", "2"] + (["--isolate", "-j", "3"] if sc == "hang-isolate" else [])
+                + (["--bundles", os.path.join(d, "bundles")] if sc == "hang" else []))
     if sc.startswith("affected"):
         deps = os.path.join(d, "deps.json.gz")
         doc = {"version": 1, "apks": [], "packages": ["p/"], "named": 1.0, "classes": ["p/C000", "p/C001"],
@@ -167,15 +239,50 @@ def main():
         with tempfile.TemporaryDirectory() as d:
             xml = os.path.join(d, "junit.xml")
             env = dict(os.environ, CHECK_SCENARIO=sc, CHECK_DIR=d)
-            r = subprocess.run([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim",
-                                f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake", "app.apk", "test.apk",
-                                "--xml", xml, "-e", "other", "kept"]
-                               + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + extra_args(sc, d),
-                               env=env, capture_output=True, text=True)
+            launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
+            if sc in ("hang-docker", "interrupt-docker"):
+                os.makedirs(os.path.join(d, "bin"))
+                docker = os.path.join(d, "bin", "docker")
+                with open(docker, "w") as f:
+                    f.write(f'#!/bin/sh\nexec "{sys.executable}" "{os.path.abspath(sys.argv[0])}" --fake-docker "$@"\n')
+                os.chmod(docker, 0o755)
+                launcher = f"{docker} run --rm -v {d}:/work apksim:check"
+            start = time.time()
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim", launcher,
+                                  "app.apk", "test.apk", "--xml", xml, "-e", "other", "kept"]
+                                 + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + extra_args(sc, d),
+                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if sc.startswith("interrupt"):
+                while p.poll() is None and not os.path.exists(os.path.join(d, "pids")) and time.time() - start < 20:
+                    time.sleep(0.05)
+                time.sleep(0.3)
+                p.send_signal(signal.SIGINT)
+            try:
+                out, err = p.communicate(timeout=60)
+            except subprocess.TimeoutExpired:  # (a hang that was not killed: end what it left, and say so)
+                p.kill()
+                for n in (open(os.path.join(d, "pids")).read().split() if os.path.exists(os.path.join(d, "pids")) else []):
+                    try:
+                        os.killpg(int(n), signal.SIGKILL)
+                    except OSError:
+                        pass
+                out, err = p.communicate()
+            r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
+            took = time.time() - start
             calls = open(os.path.join(d, "calls")).read().split()
-            cases = [(c.get("classname"), c.get("name"), c.find("failure") is not None)
+            cases = [(c.get("classname"), c.get("name"), c.find("failure") is not None,
+                      (c.find("failure").text or "") if c.find("failure") is not None else "")
                      for c in ET.parse(xml).iter("testcase")] if os.path.exists(xml) else []
+            texts = {f"{c}#{m}": t for c, m, _, t in cases}
+            cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
+            hung = [t for t in ("p.C000#m1", "(run)#incomplete") if t in failed] if sc.startswith("hang") else []
+            missing = [w for t in hung for w in (TIMED_OUT if t == "p.C000#m1" else TIMED_OUT[:1]) if w not in texts.get(t, "")]
+            pids_file = os.path.join(d, "pids")
+            pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
+            alive = [n for n in pids if still_alive(n)]
+            bundle = os.path.join(d, "bundles", "p.C000")
+            process_txt = [os.path.join(bundle, b, "process.txt") for b in (os.listdir(bundle) if os.path.isdir(bundle) else [])]
             names = [(c, m) for c, m, _ in cases]
             longest = max(int(n) for n in calls[1::2])
             ran_log = os.path.join(d, "ran")
@@ -188,6 +295,13 @@ def main():
                 ("a test run twice", len(set(ran)) != len(ran)),
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
                 (f"an argument of {longest} bytes", longest > 100_000),
+                (f"the failure text lacks {missing}", bool(missing)),
+                (f"processes left running: {alive}", bool(alive)),
+                ("no process that hung", sc.startswith(("hang", "interrupt")) and not pids),
+                ("not killed by docker kill", sc.endswith("-docker") and not os.path.exists(os.path.join(d, "docker-kills"))),
+                ("no process.txt saying it timed out", sc == "hang" and not any(
+                    "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
+                (f"took {took:.0f} s", took > 30),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
             if problems:
@@ -196,7 +310,22 @@ def main():
     sys.exit(0 if ok else 1)
 
 
+def still_alive(pid):
+    """Whether [pid] runs a second from now (a killed process's parent may take a moment to reap it)."""
+    for _ in range(10):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        if subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip().startswith("Z"):
+            return False
+        time.sleep(0.1)
+    return True
+
+
 if len(sys.argv) > 1 and sys.argv[1] == "--fake":
     fake()
+elif len(sys.argv) > 1 and sys.argv[1] == "--fake-docker":
+    fake_docker()
 else:
     main()

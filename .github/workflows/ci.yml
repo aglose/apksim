@@ -150,6 +150,26 @@ jobs:
           assert failed == ["b_haltsTheProcess", "d_ignoresInterruptsPastItsTimeout"], f"failed: {failed}"
           print(f"{len(crash)} tests, failed as meant: {failed}")
           EOF
+      # ProcessDeathTest's hanging test has nothing in the process to end it: --test-timeout must kill the container
+      # (not just the docker client), report that test timed out with its stack, and run the one after it.
+      - name: Test run that hangs on purpose
+        run: |
+          status=0
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-hang.xml -e class dev.apksim.composeapp.ProcessDeathTest -e hangOnPurpose true \
+            --test-timeout 30 || status=$?
+          test "$status" = 1
+          test -z "$(docker ps -q --filter ancestor=apksim:ci)"
+          python3 - tests/junit-hang.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          cases = {c.get("name"): c.find("failure") for c in ET.parse(sys.argv[1]).iter("testcase")}
+          failed = sorted(n for n, f in cases.items() if f is not None)
+          assert failed == ["f_hangsWithNoTimeout"], f"failed: {failed}"
+          text = cases["f_hangsWithNoTimeout"].text
+          assert "timed out after 30 s" in text and "ProcessDeathTest.f_hangsWithNoTimeout(" in text, text
+          assert "g_runsAfterTheHang" in cases, f"tests: {sorted(cases)}"
+          print(f"{len(cases)} tests, the hang killed and reported: {failed}")
+          EOF
       # The same suite split over 3 processes at once (-e numShards/shardIndex): every test once, the same results.
       - name: Test run in shards
         run: |
