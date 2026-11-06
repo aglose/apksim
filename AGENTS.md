@@ -7,7 +7,8 @@ Read README.md for results and limits; this file covers how to work on the code.
 1. Launch in a few seconds: done. Then "improve start up time by 10x, as fast as possible to load a new
    simulator": a launch is handed to a pre-booted standby JVM (see "Warm launches"): window ~0.1 s → 12 ms, first
    frame 1.49 s → ~0.22 s (test app), ~1.9 s → ~0.36 s (the owner's R8 app). What is left is mostly the app's own
-   startup code, interpreted (cold JIT). Measured with `scripts/bench.py` (cold and warm).
+   startup code, interpreted (cold JIT). Measured with `scripts/bench.py` (cold and warm); CI's `startup-gate`
+   job fails a pull request that makes it slower than its budget against a fixed anchor release (docs/startup-gate.md).
 2. Run real APKs, including the owner's own app: done (its R8 release and debug builds both run).
 3. **120 fps**: the owner said "don't stop until it's that fast". Average is now ~117-120 fps on normal UI, the GPU
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
@@ -127,7 +128,8 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
+  `bench.py` (launch times, cold and warm), `startup-gate.py` (CI's startup-time gate: this build against an anchor
+  release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
   goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
@@ -136,7 +138,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
+  against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -153,8 +156,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
-  image), `plan.md` (remaining work, in order).
-- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
+  image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
+  launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
+- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"), and
+  `startup-gate` on an Apple Silicon runner (docs/startup-gate.md).
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
@@ -179,12 +184,13 @@ Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
-Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
+Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
+lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
+(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the launcher activity or the
@@ -280,6 +286,10 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
+onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
+deadline waited for with SystemClock.sleep); `scripts/timer-check.py
+PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
@@ -426,7 +436,8 @@ quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.
 `Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
 the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
-back/home/lock/unlock), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
+after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
@@ -803,6 +814,12 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   `work/lib` through `$TMPDIR/apksim-<hash>`.
 - Robolectric's looper clock has **1 ms resolution and drops fractions**. Always advance by whole ms (see
   `Host.run`).
+- **Nothing but Host's loop may move the clock in a running instance.** Robolectric's SystemClock.sleep moves it by
+  the time asked and returns at once, from any thread; Host never gives that time back, so app timers fire early by
+  as much, and a worker polling with SystemClock.sleep raced the clock minutes ahead (an app's 10-minute inactivity
+  CountDownTimer fired after ~30 s, most likely this). `ShadowRealSleep` makes it a real sleep outside test runs; on the main thread it also moves the clock by the time
+  slept (Host's loop cannot meanwhile, and a deadline loop there would never end), which Host then does not add again. `stats` clockAheadMs
+  shows drift; `scripts/timer-check.py` checks it.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
   animations.

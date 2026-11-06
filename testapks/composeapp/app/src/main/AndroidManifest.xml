@@ -45,6 +45,15 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
+        <!-- apksim://timer: SystemClock against the wall clock, and onUserInteraction per input path (scripts/timer-check.py). -->
+        <activity android:name=".TimerActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="timer" />
+            </intent-filter>
+        </activity>
         <!-- apksim://popup-trace: a Trace section begun twice, and taps outside a non-focusable popup (issue 52). -->
         <activity android:name=".PopupTraceActivity" android:exported="true">
             <intent-filter>

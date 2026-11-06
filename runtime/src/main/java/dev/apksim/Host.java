@@ -91,7 +91,7 @@ public class Host {
   /** Whether scripted input is still waiting to be dispatched. Main thread only. */
   static boolean inputQueued() {
     Host h = current;
-    return h != null && !h.pendingScript.isEmpty();
+    return h != null && (!h.pendingScript.isEmpty() || h.drag != null);
   }
 
   @Test
@@ -138,6 +138,9 @@ public class Host {
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
     long lastInput = 0;
     long last = System.nanoTime();
+    clockBaseMs = SystemClock.uptimeMillis();
+    clockBaseNanos = last;
+    ShadowRealSleep.takeMainAdvancedMs();  // the standby's warm-up, or the app's start before the loop: real time
     boolean firstFrame = true;
     boolean closed = false;
     while (!closed) {
@@ -145,7 +148,7 @@ public class Host {
       // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
       // gesture detectors see no movement. Real mouse input rarely hits this limit.
       if (start - lastInput >= 8_000_000L) {
-        SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+        SimWindow.Event e = nextInput(start);
         if (e != null) {
           lastInput = start;
           if (e.type() == SimWindow.COMMAND) {
@@ -196,6 +199,8 @@ public class Host {
       }
       // Robolectric's looper clock moves in whole milliseconds and drops any fraction, so advance only
       // by whole milliseconds and leave the remainder for next time, or simulated time runs slow.
+      // Time a main-thread SystemClock.sleep already gave the clock (ShadowRealSleep) is not given again.
+      last += ShadowRealSleep.takeMainAdvancedMs() * 1_000_000L;
       long availableMs = (System.nanoTime() - last) / 1_000_000;
       long nowMs = SystemClock.uptimeMillis();
       long stepMs = availableMs;
@@ -305,7 +310,7 @@ public class Host {
 
   /** What keeps the UI from being quiet for a screenshot, or null. */
   private String busy(ShadowLooper looper, List<View> roots) {
-    if (!pendingScript.isEmpty()) return "input queued";
+    if (!pendingScript.isEmpty() || drag != null) return "input queued";
     if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
     for (View r : roots) {
       if (r.isDirty() || r.isLayoutRequested()) return "a window needs drawing (" + r.getClass().getSimpleName() + ")";
@@ -367,6 +372,8 @@ public class Host {
     while (!stack.isEmpty()) stack.pop().destroy();
     controls.results().clear();
     pendingScript.clear();
+    drags.clear();
+    drag = null;
     intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     start(cls, intent);
     return "ok, " + cls;
@@ -408,6 +415,69 @@ public class Host {
   }
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
+
+  /** In pendingScript: the next of {@link #drags} starts here. */
+  private static final int DRAG = 100;
+  /** How long a timed drag stays still at its end before lifting, so it does not fling. */
+  private static final long HOLD_NANOS = 120_000_000L;
+  private final ArrayDeque<Drag> drags = new ArrayDeque<>();
+  /** The timed drag in progress, or null. Scripted and window input wait for it to end. */
+  private Drag drag;
+
+  /**
+   * `swipe X1 Y1 X2 Y2 MS` (and adb's `input swipe`): one finger down, moving from the first point to the second over
+   * MS of real time, still for {@link #HOLD_NANOS}, then up, as InputShellCommand's swipe follows the clock. Not a
+   * fixed number of queued events: input goes out at most once a loop turn, and a turn takes as long as a frame, so on
+   * a screen drawing at 20 fps a 1.5 s hold of ~200 events would lift only after ~10 s.
+   */
+  private static final class Drag {
+    final float x1;
+    final float y1;
+    final float x2;
+    final float y2;
+    final long nanos;
+    long start;
+    /** When the move to the end point went out (0 before): the hold counts from there, not from the deadline. */
+    long atEnd;
+
+    Drag(float x1, float y1, float x2, float y2, long ms) {
+      this.x1 = x1;
+      this.y1 = y1;
+      this.x2 = x2;
+      this.y2 = y2;
+      this.nanos = Math.max(0, ms) * 1_000_000L;
+    }
+
+    /** The event due at {@code now}: a move along the way, at the end, then the lift (null once done). */
+    SimWindow.Event next(long now) {
+      long t = now - start;
+      if (t < nanos) {
+        float f = (float) t / nanos;
+        return new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
+      }
+      if (atEnd == 0) atEnd = now;
+      if (now - atEnd < HOLD_NANOS) return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
+      return new SimWindow.Event(SimWindow.UP, x2, y2, 0);
+    }
+  }
+
+  /** The next input to dispatch: a timed drag's, else scripted input, else the window's. */
+  private SimWindow.Event nextInput(long now) {
+    if (drag != null) {
+      SimWindow.Event e = drag.next(now);
+      if (e.type() == SimWindow.UP) drag = null;
+      return e;
+    }
+    SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+    if (e == null || e.type() != DRAG) return e;
+    drag = drags.poll();
+    drag.start = now;
+    return new SimWindow.Event(SimWindow.DOWN, drag.x1, drag.y1, 0);
+  }
+
+  /** Where the simulated clock and real time stood together when the loop started (`stats` reports the drift). */
+  private long clockBaseMs;
+  private long clockBaseNanos;
 
   /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
   private static Path dataDir;
@@ -825,13 +895,18 @@ public class Host {
         float y1 = Float.parseFloat(a[2]);
         float x2 = Float.parseFloat(a[3]);
         float y2 = Float.parseFloat(a[4]);
-        // swipe X1 Y1 X2 Y2 [MS]: with a duration, a slow drag that holds still before lifting, so it does not fling.
-        int steps = a.length > 5 ? Math.max(12, Integer.parseInt(a[5]) / 8) : 12;
+        // swipe X1 Y1 X2 Y2 [MS]: with a duration, a drag over that much real time that holds still before lifting,
+        // so it does not fling (Drag); without, 12 moves a loop turn apart, which flings.
+        if (a.length > 5) {
+          drags.add(new Drag(x1, y1, x2, y2, Long.parseLong(a[5])));
+          pendingScript.add(new SimWindow.Event(DRAG, x1, y1, 0));
+          return "ok";
+        }
+        int steps = 12;
         pendingScript.add(new SimWindow.Event(SimWindow.DOWN, x1, y1, 0));
         for (int i = 1; i <= steps; i++) {
           pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps, 0));
         }
-        for (int i = 0; a.length > 5 && i < 15; i++) pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x2, y2, 0));
         pendingScript.add(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
       }
       case "touch" -> {
@@ -1015,8 +1090,11 @@ public class Host {
       }
       case "stats" -> {
         Runtime rt = Runtime.getRuntime();
-        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
-            ProcessHandle.current().pid(), dataDir);
+        // clockAheadMs: how far SystemClock has run ahead of real time since the loop started (negative: behind, from
+        // stalls it does not replay). It should stay within a frame or two; app timers fire early by as much.
+        long ahead = SystemClock.uptimeMillis() - clockBaseMs - (System.nanoTime() - clockBaseNanos) / 1_000_000L;
+        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s clockAheadMs=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
+            ProcessHandle.current().pid(), dataDir, ahead);
       }
       case "redraw" -> {
         // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).
