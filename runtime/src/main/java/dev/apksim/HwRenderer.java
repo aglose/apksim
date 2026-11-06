@@ -123,6 +123,7 @@ final class HwRenderer {
       }
       int[] at = placer.position(root);
       c.translate(at[0], at[1]);
+      DrawingTime.stamp(root);  // legacy view Animations read AttachInfo.mDrawingTime
       RenderNode node = root.updateDisplayListIfDirty();
       c.drawRenderNode(node);
       c.restoreToCount(save);
