@@ -87,7 +87,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --clock) EXTRA+=("-Dapksim.clock=$2"); shift 2 ;;
     # Screenshot tests (docs/snapshots.md): CPU-only drawing and carets that do not blink, for the same pixels each run.
     --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
-    --test-outputs) EXTRA+=("-Dapksim.testOutputs=$2"); shift 2 ;;
+    # Made here, as --bundles is: under the sandbox only the folder itself is writable, not a missing parent.
+    --test-outputs) mkdir -p "$2" && TEST_OUTPUTS="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.testOutputs=$TEST_OUTPUTS"); shift 2 ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
@@ -201,8 +202,6 @@ if [[ "$1" == /* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
 for i in "${!EXTRA[@]}"; do
   # Relative to this launch's directory, whatever the working directory of the JVM that takes it.
   [[ "${EXTRA[$i]}" == -Dapksim.screenshot=* && "${EXTRA[$i]#*=}" != /* ]] && EXTRA[$i]="-Dapksim.screenshot=$PWD/${EXTRA[$i]#*=}"
-  [[ "${EXTRA[$i]}" == -Dapksim.testOutputs=* && "${EXTRA[$i]#*=}" != /* ]] && EXTRA[$i]="-Dapksim.testOutputs=$PWD/${EXTRA[$i]#*=}"
-  [[ "${EXTRA[$i]}" == -Dapksim.testOutputs=* ]] && TEST_OUTPUTS="${EXTRA[$i]#*=}"
 done
 # The startup cache records file paths, so it fits only the install it was built for (app.aot.root). An installed
 # release builds it in the background on its first launch, and after an upgrade (a new folder); this launch goes ahead
