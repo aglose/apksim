@@ -87,6 +87,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --clock) EXTRA+=("-Dapksim.clock=$2"); shift 2 ;;
     # Screenshot tests (docs/snapshots.md): CPU-only drawing and carets that do not blink, for the same pixels each run.
     --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
+    # Made here, as --bundles is: under the sandbox only the folder itself is writable, not a missing parent.
+    --test-outputs) mkdir -p "$2" && TEST_OUTPUTS="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.testOutputs=$TEST_OUTPUTS"); shift 2 ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
@@ -242,7 +244,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
 (allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_FILE:+
-(allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}
+(allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${TEST_OUTPUTS:+
+(allow file-write* (subpath \"$TEST_OUTPUTS\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"
