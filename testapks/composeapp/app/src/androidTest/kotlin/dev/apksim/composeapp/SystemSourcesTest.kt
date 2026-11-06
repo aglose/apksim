@@ -176,6 +176,37 @@ class SystemSourcesTest {
   }
 
   /**
+   * A request past its deadline is not satisfied by a network that comes later, even while its handler is too busy to
+   * have run the timeout: offline, a 500 ms request on a handler blocked for 700 ms, the network back at ~600 ms, it
+   * hears only onUnavailable, as Android's request had expired.
+   */
+  @Test
+  fun anExpiredRequestIsNotSatisfiedLater() {
+    apksimOnly("`apksim network offline|online`")
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    shell("apksim network offline")
+    val thread = android.os.HandlerThread("busy-request-handler").apply { start() }
+    val handler = android.os.Handler(thread.looper)
+    val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { events += "available" }
+      override fun onUnavailable() { events += "unavailable" }
+    }
+    try {
+      handler.post { Thread.sleep(700) }  // the callback's thread is busy past the deadline
+      cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+        cb, handler, 500)
+      runBlocking { delay(600) }
+      shell("apksim network online")
+      runBlocking { delay(1_000) }
+      assertEquals(listOf("unavailable"), events.toList())
+    } finally {
+      runCatching { cm.unregisterNetworkCallback(cb) }
+      thread.quitSafely()
+    }
+  }
+
+  /**
    * Offline and back before the registration's announcement ran: the callback hears all three, in order, as from the
    * system server's one queue.
    */

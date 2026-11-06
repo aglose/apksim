@@ -55,6 +55,8 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     boolean delivering;
     /** A requestNetwork timeout still pending (no network satisfied the request yet), else null. */
     Runnable timeout;
+    /** When that timeout expires (SystemClock uptime): past it, the request is matched to nothing. */
+    long expiresAt;
 
     Tracked(ConnectivityManager cm, ConnectivityManager.NetworkCallback cb, NetworkRequest request, Kind kind, Handler handler) {
       this.cm = cm;
@@ -102,12 +104,17 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     synchronized (TRACKED) {
       Tracked t = TRACKED.get(cb);
       if (t == null || !t.told.isEmpty()) return;  // satisfied at once: nothing to time out
+      t.expiresAt = android.os.SystemClock.uptimeMillis() + timeoutMs;
       t.timeout = () -> expire(t);
       t.handler.postDelayed(t.timeout, timeoutMs);
     }
   }
 
-  /** The request's deadline passed with no network: it is released and hears onUnavailable. */
+  /**
+   * The request's deadline passed with no network: it is released and hears onUnavailable. Run by the posted timeout,
+   * or posted by decide() when a network comes after the deadline but before a busy handler ran the timeout; the
+   * first to run wins, once.
+   */
   private static void expire(Tracked t) {
     synchronized (TRACKED) {
       if (TRACKED.get(t.cb) != t || t.timeout == null) return;
@@ -224,6 +231,12 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
    */
   private static void decide(Tracked t) {
     ConnectivityManager cm = t.cm;  // Robolectric keeps the networks in static state: any instance has them
+    if (t.timeout != null && android.os.SystemClock.uptimeMillis() >= t.expiresAt) {
+      // Expired, though its handler has not run the timeout yet (busy): as on a device, it can no longer be
+      // satisfied; it is released with onUnavailable, whichever of this post and the timeout runs first.
+      t.handler.post(() -> expire(t));
+      return;
+    }
     List<Network> now = entitled(t, cm);
     ConnectivityManager.NetworkCallback cb = t.cb;
     if (t.timeout != null && !now.isEmpty()) {  // satisfied before its deadline: the timeout is off
