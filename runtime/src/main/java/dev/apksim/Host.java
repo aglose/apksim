@@ -140,6 +140,7 @@ public class Host {
     long last = System.nanoTime();
     clockBaseMs = SystemClock.uptimeMillis();
     clockBaseNanos = last;
+    ShadowRealSleep.takeMainAdvancedMs();  // the standby's warm-up, or the app's start before the loop: real time
     boolean firstFrame = true;
     boolean closed = false;
     while (!closed) {
@@ -198,6 +199,8 @@ public class Host {
       }
       // Robolectric's looper clock moves in whole milliseconds and drops any fraction, so advance only
       // by whole milliseconds and leave the remainder for next time, or simulated time runs slow.
+      // Time a main-thread SystemClock.sleep already gave the clock (ShadowRealSleep) is not given again.
+      last += ShadowRealSleep.takeMainAdvancedMs() * 1_000_000L;
       long availableMs = (System.nanoTime() - last) / 1_000_000;
       long nowMs = SystemClock.uptimeMillis();
       long stepMs = availableMs;
@@ -434,7 +437,8 @@ public class Host {
     final float y2;
     final long nanos;
     long start;
-    boolean atEnd;
+    /** When the move to the end point went out (0 before): the hold counts from there, not from the deadline. */
+    long atEnd;
 
     Drag(float x1, float y1, float x2, float y2, long ms) {
       this.x1 = x1;
@@ -451,10 +455,8 @@ public class Host {
         float f = (float) t / nanos;
         return new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
       }
-      if (!atEnd || t < nanos + HOLD_NANOS) {
-        atEnd = true;
-        return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
-      }
+      if (atEnd == 0) atEnd = now;
+      if (now - atEnd < HOLD_NANOS) return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
       return new SimWindow.Event(SimWindow.UP, x2, y2, 0);
     }
   }

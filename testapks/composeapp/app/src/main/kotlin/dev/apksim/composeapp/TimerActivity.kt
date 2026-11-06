@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
  * - "interactions": onUserInteraction calls, and the touch downs and key downs the activity dispatched.
  * - "Sleep worker": a background thread sleeps 20 x 100 ms with SystemClock.sleep, as a polling worker would; it
  *   should take 2 s of wall time and move the clock by as much as wall time passes, no more.
+ * - "Sleep on main": the main thread waits for an uptime deadline 500 ms away with SystemClock.sleep(10), which ends
+ *   only if sleeping there moves the clock; it should take about 500 ms of wall time.
  */
 class TimerActivity : androidx.activity.ComponentActivity() {
   private val startWall = System.currentTimeMillis()
@@ -41,6 +43,7 @@ class TimerActivity : androidx.activity.ComponentActivity() {
   private var touches by mutableStateOf(0)
   private var keys by mutableStateOf(0)
   private var sleeper by mutableStateOf("idle")
+  private var mainSleeper by mutableStateOf("idle")
   private val handler = Handler(Looper.getMainLooper())
   private lateinit var countDown: CountDownTimer
 
@@ -60,7 +63,8 @@ class TimerActivity : androidx.activity.ComponentActivity() {
       }
 
       override fun onFinish() {
-        timer = "finished after %.1f s of wall time".format((System.currentTimeMillis() - startWall) / 1000.0)
+        // Locale.ROOT: scripts/timer-check.py reads the number, whatever --locale the app runs with.
+        timer = "finished after %.1f s of wall time".format(java.util.Locale.ROOT, (System.currentTimeMillis() - startWall) / 1000.0)
       }
     }.start()
     tick.run()
@@ -73,8 +77,10 @@ class TimerActivity : androidx.activity.ComponentActivity() {
           Text("interactions: $interactions, touches $touches, keys $keys", Modifier.padding(top = 8.dp))
           Row(Modifier.padding(top = 12.dp)) {
             Button({ sleepWorker() }) { Text("Sleep worker") }
+            Button({ sleepOnMain() }, Modifier.padding(start = 8.dp)) { Text("Sleep on main") }
           }
           Text("sleep: $sleeper", Modifier.padding(top = 8.dp))
+          Text("main sleep: $mainSleeper", Modifier.padding(top = 8.dp))
         }
       }
     }
@@ -90,6 +96,18 @@ class TimerActivity : androidx.activity.ComponentActivity() {
       val clock = SystemClock.elapsedRealtime() - clock0
       runOnUiThread { sleeper = "20 x 100 ms took $wall ms of wall time, clock moved $clock ms" }
     }.start()
+  }
+
+  private fun sleepOnMain() {
+    val wall0 = System.nanoTime()
+    val end = SystemClock.uptimeMillis() + 500
+    var naps = 0
+    while (SystemClock.uptimeMillis() < end && naps < 1000) {
+      SystemClock.sleep(10)
+      naps++
+    }
+    val wall = (System.nanoTime() - wall0) / 1_000_000
+    mainSleeper = if (naps >= 1000) "deadline never came after $wall ms" else "500 ms deadline after $wall ms of wall time"
   }
 
   override fun onUserInteraction() {

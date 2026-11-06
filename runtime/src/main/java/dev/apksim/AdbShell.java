@@ -554,10 +554,13 @@ final class AdbShell {
 
   private int key(String k) throws Exception {
     String name = k.toUpperCase(Locale.ROOT);
-    if (name.startsWith("KEYCODE_")) name = name.substring(8);
+    boolean prefixed = name.startsWith("KEYCODE_");
+    if (prefixed) name = name.substring(8);
+    // KEYCODE_0..9 are the digit keys, not key codes 0..9 (nor Back and Home below).
+    if (prefixed && name.matches("\\d")) return reply(control("key", name), false);
     // A key code (`input keyevent 66`), as adb tools send them, by its name: the control command takes names, and
     // KeyEvent.keyCodeToString has no native table here (it answers the number).
-    if (name.matches("\\d+")) {
+    if (!prefixed && name.matches("\\d+")) {
       int code = Integer.parseInt(name);
       for (java.lang.reflect.Field f : KeyEvent.class.getFields()) {
         if (f.getType() == int.class && f.getName().startsWith("KEYCODE_") && f.getInt(null) == code) {

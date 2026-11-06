@@ -278,7 +278,8 @@ plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
-onUserInteraction, touches and keys, and a "Sleep worker" (SystemClock.sleep on a thread); `scripts/timer-check.py
+onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
+deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
 
 ## Network (record, replay, conditions)
@@ -803,7 +804,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - **Nothing but Host's loop may move the clock in a running instance.** Robolectric's SystemClock.sleep moves it by
   the time asked and returns at once, from any thread; Host never gives that time back, so app timers fire early by
   as much, and a worker polling with SystemClock.sleep raced the clock minutes ahead (an app's 10-minute inactivity
-  CountDownTimer fired after ~30 s, most likely this). `ShadowRealSleep` makes it a real sleep outside test runs. `stats` clockAheadMs
+  CountDownTimer fired after ~30 s, most likely this). `ShadowRealSleep` makes it a real sleep outside test runs; on the main thread it also moves the clock by the time
+  slept (Host's loop cannot meanwhile, and a deadline loop there would never end), which Host then does not add again. `stats` clockAheadMs
   shows drift; `scripts/timer-check.py` checks it.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite

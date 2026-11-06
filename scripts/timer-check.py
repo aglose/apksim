@@ -22,6 +22,7 @@ import time
 
 ADB = os.environ.get("ADB", "adb")
 SLEEP_BUTTON = (180, 376)  # "Sleep worker" (phone device)
+MAIN_SLEEP_BUTTON = (466, 376)  # "Sleep on main"
 EMPTY = (400, 1000)        # nothing there: a touch only the activity sees
 DRIFT_MS = 150             # a few frames: the loop moves the clock in whole frames while animating
 
@@ -45,7 +46,7 @@ def page(ctl):
     """The page's texts: timer, drift, interactions, sleep."""
     out = {}
     for t in re.findall(r'text="([^"]*)"', ctl("nodes")):
-        for key in ("timer", "drift", "interactions", "sleep"):
+        for key in ("timer", "drift", "interactions", "sleep", "main sleep"):
             if t.startswith(key + ":"):
                 out[key] = t
     return out
@@ -121,6 +122,8 @@ def main():
         n = expect(ctl, n, 1, 1, 0, "adb input swipe (a hold)")
         adb("input", "keyevent", "29")
         n = expect(ctl, n, 2, 0, 1, "adb input keyevent 29")
+        adb("input", "keyevent", "KEYCODE_4")  # the digit 4, not Back (which would close the page)
+        n = expect(ctl, n, 2, 0, 1, "adb input keyevent KEYCODE_4")
         adb("input", "text", "y")
         n = expect(ctl, n, 2, 0, 1, "adb input text")
 
@@ -137,6 +140,17 @@ def main():
     wall, clock = int(m.group(1)), int(m.group(2))
     if wall < 1950 or clock > wall + DRIFT_MS:
         fail(f"SystemClock.sleep: 20 x 100 ms took {wall} ms of wall time and moved the clock {clock} ms")
+    print(f"  {s}")
+
+    print("SystemClock.sleep on the main thread, waiting for an uptime deadline:")
+    ctl(f"tap {MAIN_SLEEP_BUTTON[0]} {MAIN_SLEEP_BUTTON[1]}")
+    deadline = time.time() + 10
+    while time.time() < deadline and "after" not in page(ctl).get("main sleep", ""):
+        time.sleep(0.2)
+    s = page(ctl).get("main sleep", "")
+    m = re.search(r"500 ms deadline after (\d+) ms of wall time", s)
+    if not m or not 490 <= int(m.group(1)) <= 1500:
+        fail(f"SystemClock.sleep on the main thread: {s!r}")
     print(f"  {s}")
 
     print("idle:")
