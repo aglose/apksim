@@ -7,6 +7,8 @@ import android.net.Uri
 /** A provider that does startup work in onCreate, as AndroidX Startup's does: a device creates it before the app's onCreate. */
 class StartupProvider : ContentProvider() {
   override fun onCreate(): Boolean {
+    // With --jvm -Ddev.apksim.testapp.crash_in_provider=true (apksim only): a provider whose onCreate throws (issue 104).
+    if (System.getProperty("dev.apksim.testapp.crash_in_provider").toBoolean()) throw IllegalStateException("thrown in a provider's onCreate")
     created = true
     return true
   }

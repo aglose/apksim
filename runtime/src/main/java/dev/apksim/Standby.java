@@ -137,6 +137,36 @@ final class Standby {
     Timing.mark("standby-jit-idle");
   }
 
+  /**
+   * As {@link #halt}, for a crash: every step best-effort (an OutOfMemoryError may be why it ends), and whatever fails,
+   * the client still gets the exit code and the process halts with it.
+   */
+  static void haltNow(int code) {
+    try {
+      dev.apksim.net.Net.flush();
+    } catch (Throwable ignored) {
+      // A recording in progress loses its end.
+    }
+    try {
+      spawnNext();
+    } catch (Throwable ignored) {
+      // The next launch starts one.
+    }
+    try {
+      System.err.flush();
+      System.out.flush();
+    } catch (Throwable ignored) {
+      // Ending anyway.
+    }
+    try {
+      if (adopted) nativeSendExit(code);
+    } catch (Throwable ignored) {
+      // The client then reports that the instance died without an exit code.
+    } finally {
+      Runtime.getRuntime().halt(code);
+    }
+  }
+
   /** Ends the process, passing the exit code to the launcher's client when this instance came from a standby. */
   static void halt(int code) {
     dev.apksim.net.Net.flush();  // a recording in progress

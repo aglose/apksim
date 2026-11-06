@@ -82,11 +82,11 @@ final class Control {
         } catch (IOException e) {
           continue;
         }
-        Thread c = new Thread(() -> serve(s), "control-" + s.getPort());
+        Thread c = new Thread(() -> serve(s), "apksim-control-" + s.getPort());
         c.setDaemon(true);
         c.start();
       }
-    }, "control");
+    }, "apksim-control");
     t.setDaemon(true);
     t.start();
   }
