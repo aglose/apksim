@@ -275,8 +275,8 @@ drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity d
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
-`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone` (the zone the app sees; set at launch with
-`--timezone America/New_York`), `config` (configuration the app sees),
+`appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
+launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
@@ -434,6 +434,16 @@ received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/ad
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://timezone` opens `TimeZoneActivity`: each zone source (JDK, android.icu, `user.timezone`, Joda-Time 2.10's
+default) on a line, and ACTION_TIMEZONE_CHANGED heard as joda-time-android hears it ("tz changes: 1 to Asia/Tokyo";
+`ci-smoke.sh` drives it).
+Time zones (`TimeZones`): `--timezone ZONE` is applied before the Application exists, warm or cold, and in test runs at
+each setup: the JDK's default, android.icu's (its cached default dropped: a standby may have worked it out before the
+launch), the `user.timezone` property (Joda-Time up to 2.10 reads it before the JDK's default and caches the result; a
+standby's JVM had set it to the host's, so Joda dates were a day off), the status bar clock and logcat's timestamps.
+`timezone ZONE` does the same while the app runs and broadcasts ACTION_TIMEZONE_CHANGED with EXTRA_TIMEZONE, as a
+device does (joda-time-android sets Joda's default from it; plain Joda keeps its cached zone, as on a device). Without
+`--timezone` nothing is changed.
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
@@ -867,12 +877,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
   test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
-  the control commands it reaches are animscale and fontscale (`ShellCommandTest`).
+  the control commands it reaches are animscale, fontscale, network, bars and timezone (`ShellCommandTest`).
 - The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
   in framework code at its uptime clock, so the framework thought it was 1970 while the app's own code and the JDK
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
-  when it skips idle time. `--timezone ZONE` sets the JDK's and android.icu's zone, at each test's setup (ICU caches
-  its default, and a standby may have worked it out before the launch) (`WallClockTest` with `-e timezone ZONE`).
+  when it skips idle time. `--timezone ZONE` sets the zone at each test's setup (`TimeZones`, as in running
+  instances), and a test's `executeShellCommand("apksim timezone ZONE")` changes it until the next setup
+  (`WallClockTest` with `-e timezone ZONE`).
 - `--realtime-clock` (opt-in, test runs only; `RealTimeClock`): the simulated clock follows real time instead of
   skipping idle time, for suites written for a device whose timed UI must last (a banner that closes itself after
   5 s). By default Robolectric's Choreographer is not paused in a test run, so each frame asked for moves the clock

@@ -229,27 +229,13 @@ public class SimRunner extends RobolectricTestRunner {
     }
 
     /**
-     * The device's time zone, `--timezone ZONE` (-Dapksim.timezone): the JDK's default and android.icu's. ICU keeps
-     * the zone it first worked out, and a standby may have formatted a date before the launch named one, so its cached
-     * zone is dropped too and taken again from the JDK's. Here, inside the sandbox, rather than in Main: ICU's classes
-     * are instrumented framework classes.
-     */
-    private static void applyTimeZone() {
-      String zone = System.getProperty("apksim.timezone");
-      if (zone == null) return;
-      // ZoneId.of rejects an unknown name, which TimeZone.getTimeZone would quietly turn into GMT.
-      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(java.time.ZoneId.of(zone)));
-      android.icu.util.TimeZone.setICUDefault(null);
-    }
-
-    /**
      * For a test run (Instrument), also sets the device's screen (Host does that itself) and hands the tests am
      * instrument's -e arguments, as InstrumentationRegistry does.
      */
     @Override
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
-      applyTimeZone();
+      TimeZones.applyLaunchZone();  // --timezone: the JDK's, android.icu's and user.timezone (Joda-Time)
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
       SimClock.applyLaunchOption();
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place

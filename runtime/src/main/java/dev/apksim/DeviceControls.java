@@ -390,10 +390,8 @@ final class DeviceControls {
         return SimClock.command(a);
       }
       case "timezone" -> {
-        // timezone: the zone the app sees, the JDK's and android.icu's (set at launch with --timezone ZONE)
-        String icu = android.icu.util.TimeZone.getDefault().getID();
-        String jdk = java.util.TimeZone.getDefault().getID();
-        return jdk.equals(icu) ? jdk : jdk + " (android.icu: " + icu + ")";
+        // timezone [ZONE]: the zone the app sees (set at launch with --timezone ZONE); a new one is broadcast
+        return a.length < 2 ? TimeZones.describe() : TimeZones.change(app, a[1]);
       }
       case "locale" -> {
         // locale fr-FR

@@ -96,13 +96,13 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
-        <!-- apksim://slot: a Settings value and a /sdcard file that the next launch of the data slot must see (issues 82, 84). -->
-        <activity android:name=".SlotStateActivity" android:exported="true">
+        <!-- apksim://timezone: every zone source an app reads, Joda-Time's included, and zone-change broadcasts (issue 91). -->
+        <activity android:name=".TimeZoneActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="apksim" android:host="slot" />
+                <data android:scheme="apksim" android:host="timezone" />
             </intent-filter>
         </activity>
         <!-- apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained: an uncaught exception (issue 104). -->
@@ -161,6 +161,15 @@
         <service android:name=".SingletonBinderService" android:exported="false" />
         <service android:name=".StaticHandlerService" android:exported="false" />
         <receiver android:name=".ReminderReceiver" android:exported="false" />
+        <!-- apksim://slot: a Settings value and a /sdcard file that the next launch of the data slot must see (issues 82, 84). -->
+        <activity android:name=".SlotStateActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="slot" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>
