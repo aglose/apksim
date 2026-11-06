@@ -33,8 +33,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
-    path that changes it ends: start, finish, `home`/`resume`, configuration changes, `recreate`, `process-death`,
-    test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
+    path that changes it ends: start, finish (of the top or of one below it), `home`/`resume`, configuration changes,
+    `recreate`, `process-death`, test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
     dialog-themed activity: the test app's `FloatingActivity`, `apksim://floating`), paused and visible; the rest
     stopped with their windows hidden, so only what a device shows draws and takes touches. A visible activity with
     no window (recreated or rebuilt while stopped: Robolectric's recreate leaves it detached, and resumed whatever it

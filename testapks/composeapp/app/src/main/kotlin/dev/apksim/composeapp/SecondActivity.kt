@@ -55,6 +55,14 @@ class SecondActivity : Activity() {
         finish()
       }
     }
+    // A floating activity on top, then this one finishes under it: the one below this shows again, paused.
+    val floatThenFinish = Button(this).apply {
+      text = "Float, then finish"
+      setOnClickListener {
+        startActivity(Intent(this@SecondActivity, FloatingActivity::class.java))
+        postDelayed({ finish() }, 1000)
+      }
+    }
     setContentView(LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER
@@ -64,6 +72,7 @@ class SecondActivity : Activity() {
       addView(deeper)
       addView(finish)
       addView(handOff)
+      addView(floatThenFinish)
     })
   }
 
