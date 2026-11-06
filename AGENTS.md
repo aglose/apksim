@@ -180,7 +180,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
-- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"), and
+- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
+  `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
   `startup-gate` on an Apple Silicon runner (docs/startup-gate.md).
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
