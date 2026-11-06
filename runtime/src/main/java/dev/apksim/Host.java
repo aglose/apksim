@@ -196,7 +196,10 @@ public class Host {
           try {
             reply = runCommand(cmd.args);
           } catch (Crashes.AppCrash crash) {
-            throw crash;  // app code threw in a transition the command ran: a crash, as on a device (below)
+            // App code threw in a transition the command ran: a crash, as on a device (below). Answered first, so the
+            // client sees why (and, with -Dapksim.crashes=log, is not left waiting).
+            cmd.finish("error: app crashed: " + crash.getCause());
+            throw crash;
           } catch (Exception ex) {
             // A bad command (or one the framework rejects) is an answer, not a crash of the app.
             ex.printStackTrace();
@@ -1148,6 +1151,9 @@ public class Host {
     if (cmd == null) return;
     try {
       System.err.println("[apksim] menu: " + cmd + " -> " + runCommand(cmd.split(" ")));
+    } catch (Crashes.AppCrash crash) {
+      System.err.println("[apksim] menu: " + cmd + ": the app crashed");
+      throw crash;  // to Host's crash path, as a command's
     } catch (Exception ex) {
       System.err.println("[apksim] menu: " + cmd + " failed: " + ex);
     }

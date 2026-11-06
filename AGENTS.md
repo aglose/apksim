@@ -57,7 +57,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     it. An exception leaving the main looper (Host's loop, the first activity's start, the Application's construction,
     attachBaseContext and onCreate (SimRunner, TestActivities), and app code a command's lifecycle transition runs:
     `Crashes.app` around restart, recreate, process-death, configuration changes, home/resume, memory, `Host.arrange`;
-    a command's bad arguments stay `error:`/usage answers) is logged
+    the command, menu item or adb shell call is answered `error: app crashed: ...` first; a command's bad arguments stay
+    `error:`/usage answers) is logged
     first, as the device's pre-handler does, then goes to the thread's handler, and the process ends even if that
     returns (the main thread is dead on a device). Not a device's: an app thread whose exception reaches the app's own
     non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads (every thread
