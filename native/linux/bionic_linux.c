@@ -377,8 +377,8 @@ static inline pthread_mutex_t *host_mutex(void *m) { return m; }  // glibc's own
 // So condition variables are boxed too: a glibc one made on first use (Android's all-zero static initialiser) or
 // by pthread_cond_init with its attribute (the clock), which is glibc's own (pthread_condattr_t is 8 bytes on both).
 // Android's static initialisers: PTHREAD_COND_INITIALIZER is all zeros, PTHREAD_COND_INITIALIZER_MONOTONIC_NP has 2
-// in its first int. That int is the host slot's low half when the object is 8-aligned, else just before the slot
-// (malloc'd host pointers never have bit 1 set).
+// in its first int. That int is the host slot's low half when the object is 8-aligned (read from h, the slot's value
+// already loaded atomically), else the int just before the slot, which nothing else writes.
 static pthread_cond_t *host_cond(void *c) {
   Shell *s = shell_of(c);
   void *h = atomic_load(&s->host);
@@ -386,7 +386,8 @@ static pthread_cond_t *host_cond(void *c) {
   pthread_cond_t *n = malloc(sizeof *n);
   pthread_condattr_t a;
   pthread_condattr_init(&a);
-  if (((uintptr_t)h | (uint32_t)*(int *)c) & 2) pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+  uintptr_t first = (void *)shell_of(c) == c ? (uintptr_t)h : (uint32_t)*(int *)c;
+  if (first & 2) pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
   pthread_cond_init(n, &a);
   pthread_condattr_destroy(&a);
   if (atomic_compare_exchange_strong(&s->host, &h, n)) return n;

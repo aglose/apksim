@@ -415,6 +415,55 @@ static void *detached_thread(void *p) {
   return NULL;
 }
 
+// Many detached threads parked at once (a registry of them must not fill up): each reads its detach state, then they
+// are all let go. Returns PTHREAD_CREATE_DETACHED, the first other state seen, or 0 if a thread could not start.
+enum { MANY = 600 };
+static int many_arrived, many_bad, many_go;
+
+static void *many_thread(void *p) {
+  (void)p;
+  pthread_attr_t a;
+  int state = -2;
+  if (!pthread_getattr_np(pthread_self(), &a)) {
+    pthread_attr_getdetachstate(&a, &state);
+    pthread_attr_destroy(&a);
+  }
+  pthread_mutex_lock(&gate_lock);
+  if (state != PTHREAD_CREATE_DETACHED && !many_bad) many_bad = state;
+  many_arrived++;
+  pthread_cond_broadcast(&gate_cond);
+  while (!many_go) pthread_cond_wait(&gate_cond, &gate_lock);
+  many_arrived--;
+  pthread_cond_broadcast(&gate_cond);
+  pthread_mutex_unlock(&gate_lock);
+  return NULL;
+}
+
+static int many_detached(void) {
+  pthread_attr_t a;
+  pthread_attr_init(&a);
+  pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+  pthread_attr_setstacksize(&a, 64 * 1024);
+  pthread_mutex_lock(&gate_lock);
+  many_arrived = many_bad = many_go = 0;
+  pthread_mutex_unlock(&gate_lock);
+  int started = 0;
+  for (; started < MANY; started++) {
+    pthread_t t;
+    if (pthread_create(&t, &a, many_thread, NULL)) break;
+  }
+  pthread_attr_destroy(&a);
+  pthread_mutex_lock(&gate_lock);
+  while (many_arrived < started) pthread_cond_wait(&gate_cond, &gate_lock);
+  int bad = many_bad;
+  many_go = 1;
+  pthread_cond_broadcast(&gate_cond);
+  while (many_arrived > 0) pthread_cond_wait(&gate_cond, &gate_lock);  // all past the gate's lock before it is reused
+  pthread_mutex_unlock(&gate_lock);
+  if (started < MANY) return 0;
+  return bad ? bad : PTHREAD_CREATE_DETACHED;
+}
+
 static int detached_state_seen(void) {
   pthread_mutex_lock(&gate_lock);
   while (detached_seen == -1) pthread_cond_wait(&gate_cond, &gate_lock);
@@ -438,6 +487,10 @@ static const char *check_detached_attr(void) {
   int state = detached_state_seen();
   if (state == -2) FAIL("pthread_getattr_np failed in a detached thread");
   if (state != PTHREAD_CREATE_DETACHED) FAIL("a detached thread's pthread_getattr_np reports detach state %d", state);
+
+  // 600 detached threads alive at once, each checking its own state.
+  if (!(state = many_detached())) FAIL("pthread_create of a detached thread failed");
+  if (state != PTHREAD_CREATE_DETACHED) FAIL("one of 600 detached threads reports detach state %d", state);
 
   // Created joinable and detached at once, before it has run any code of its own.
   for (int i = 0; i < 50; i++) {

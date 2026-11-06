@@ -397,13 +397,16 @@ static int s_mutex_lock(void *m) { return d2a_errno(pthread_mutex_lock(host_mute
 static int s_mutex_trylock(void *m) { return d2a_errno(pthread_mutex_trylock(host_mutex(m))); }
 static int s_mutex_unlock(void *m) { return d2a_errno(pthread_mutex_unlock(host_mutex(m))); }
 
-typedef struct { _Atomic(void *) host; int clock; } CondShell;
+typedef struct { _Atomic(void *) host; _Atomic int clock; } CondShell;
 static inline CondShell *cond_shell(void *c) { return (CondShell *)shell_of(c); }
 
 // Android's static initialisers: PTHREAD_COND_INITIALIZER is all zeros, PTHREAD_COND_INITIALIZER_MONOTONIC_NP has 2
-// in its first int. That int is the host slot's low half when the object is 8-aligned, else just before the slot
-// (malloc'd host pointers never have bit 1 set).
-static int static_cond_monotonic(void *c, void *h) { return (((uintptr_t)h | (uint32_t)*(int *)c) & 2) != 0; }
+// in its first int. That int is the host slot's low half when the object is 8-aligned (read from h, the slot's value
+// already loaded atomically), else the int just before the slot, which nothing else writes.
+static int static_cond_monotonic(void *c, void *h) {
+  uintptr_t first = (void *)shell_of(c) == c ? (uintptr_t)h : (uint32_t)*(int *)c;
+  return (first & 2) != 0;
+}
 
 static pthread_cond_t *host_cond(void *c) {
   Shell *s = shell_of(c);
@@ -602,19 +605,28 @@ static int s_attr_getinheritsched(AAttr *a, int *p) { *p = a->inherit; return 0;
 static int s_attr_setscope(AAttr *a, int p) { a->scope = p; return 0; }
 static int s_attr_getscope(AAttr *a, int *p) { *p = a->scope; return 0; }
 
-// Which threads are detached, for pthread_getattr_np: macOS cannot report it. pthread_create records a new thread's
+// Which threads are detached, for pthread_getattr_np: macOS cannot report it (a list that grows as needed). pthread_create records a new thread's
 // state while holding the lock (clearing any left by an exited thread with the same pthread_t), so neither the
 // thread's exit, which drops it, nor a pthread_detach right after create, which records it, can come first.
 static pthread_mutex_t detached_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_t detached[512];
-static int detached_n;
+static pthread_t *detached;
+static int detached_n, detached_cap;
 static pthread_key_t exit_key;
 static pthread_once_t exit_once = PTHREAD_ONCE_INIT;
 
 static void set_detached_locked(pthread_t t, int on) {
   int i = 0;
   while (i < detached_n && !pthread_equal(detached[i], t)) i++;
-  if (on && i == detached_n && detached_n < 512) detached[detached_n++] = t;
+  if (on && i == detached_n) {
+    if (detached_n == detached_cap) {
+      int cap = detached_cap ? detached_cap * 2 : 64;
+      pthread_t *grown = realloc(detached, cap * sizeof *grown);
+      if (!grown) return;  // out of memory: this thread reads as joinable
+      detached = grown;
+      detached_cap = cap;
+    }
+    detached[detached_n++] = t;
+  }
   if (!on && i < detached_n) detached[i] = detached[--detached_n];
 }
 static void set_detached(pthread_t t, int on) {
