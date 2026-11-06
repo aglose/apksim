@@ -48,6 +48,17 @@ public final class TestActivities {
     return System.getProperty("apksim.instrument") != null;
   }
 
+  /**
+   * Build.FINGERPRINT as Compose's lazy layouts read it, once, to pick their prefetch scheduler (the translator calls
+   * this for that read in PrefetchScheduler_androidKt). Compose turns prefetch off when it is "robolectric", which a
+   * test run's is and stays (Compose's test idling reads it too). On a device the item past the viewport in the
+   * direction of a scroll is composed and measured in idle time after the frame, and suites count it; so in a test
+   * run this read sees a device's and Compose's own AndroidPrefetchScheduler runs (LazyPrefetchTest).
+   */
+  public static String prefetchFingerprint() {
+    return testRun() ? "apksim/device" : android.os.Build.FINGERPRINT;
+  }
+
   /** The activities that have a window, bottom to top. */
   static List<Activity> withWindows() {
     List<View> views = ReflectionHelpers.getField(android.view.WindowManagerGlobal.getInstance(), "mViews");
@@ -581,6 +592,7 @@ public final class TestActivities {
         }
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
+      DeviceControls.applyAnimScaleOption(app);  // --anim-scale, so the app's startup code sees it too
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
       try {

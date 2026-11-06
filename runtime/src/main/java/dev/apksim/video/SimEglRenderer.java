@@ -26,6 +26,8 @@ public class SimEglRenderer extends EglRenderer {
   private final Bitmap[] pool = new Bitmap[POOL];
   private int next;
   private ByteBuffer rgba;
+  /** A frame of ours is on the view (decode thread only): `video blank` takes it off. */
+  private boolean shown;
   private SurfaceTexture surface;
   private final List<Object[]> listeners = new ArrayList<>();
 
@@ -127,6 +129,18 @@ public class SimEglRenderer extends EglRenderer {
       listeners.clear();
     }
     if (target == null && waiting.isEmpty()) return;  // No surface: dropped, as the GL renderer does.
+    // --video blank (Features): nothing drawn, so no conversion either. A frame the app asked for (a listener) is
+    // still converted for it, but not drawn: the view stays empty.
+    if (dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK) {
+      VideoSurfaces.webrtcBlank.incrementAndGet();
+      // Switched to blank while frames were drawn (`video blank`): the last one comes off the view, once.
+      if (target != null && shown) {
+        shown = false;
+        VideoSurfaces.publish(target, null);
+      }
+      if (waiting.isEmpty()) return;
+      target = null;
+    }
     // Scaled down to the view before converting, with libyuv on this (the decode) thread: drawing a 4K picture
     // into a phone-sized view cost the raster thread ~50 ms a frame.
     VideoFrame.Buffer source = frame.getBuffer();
@@ -155,7 +169,10 @@ public class SimEglRenderer extends EglRenderer {
         int sh = Math.max(1, Math.round(h * scale));
         ((FrameListener) l[0]).onFrame(Bitmap.createScaledBitmap(picture, sw, sh, true));
       }
-      if (target != null) VideoSurfaces.publish(target, picture);
+      if (target != null) {
+        VideoSurfaces.publish(target, picture);
+        shown = true;
+      }
     } finally {
       i420.release();
     }

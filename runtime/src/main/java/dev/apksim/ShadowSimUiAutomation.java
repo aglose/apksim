@@ -83,6 +83,13 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return out;
   }
 
+  /** The root views of the shown windows, bottom to top; main thread only. */
+  static List<View> rootViews() {
+    List<View> out = new ArrayList<>();
+    for (Win w : windows()) out.add(w.view);
+    return out;
+  }
+
   private static int windowId(ViewRootImpl root) {
     synchronized (WINDOW_IDS) {
       return WINDOW_IDS.computeIfAbsent(root, r -> nextWindowId++);
@@ -99,13 +106,16 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   @Implementation
   protected AccessibilityNodeInfo getRootInActiveWindow() {
-    return onMain(() -> {
-      List<Win> all = windows();
-      for (int i = all.size() - 1; i >= 0; i--) {
-        if (all.get(i).focusable()) return rootNode(all.get(i));
-      }
-      return all.isEmpty() ? null : rootNode(all.get(all.size() - 1));
-    });
+    return onMain(ShadowSimUiAutomation::activeRoot);
+  }
+
+  /** The root node of the active window (the topmost focusable one), linked to its views; main thread only. */
+  static AccessibilityNodeInfo activeRoot() {
+    List<Win> all = windows();
+    for (int i = all.size() - 1; i >= 0; i--) {
+      if (all.get(i).focusable()) return rootNode(all.get(i));
+    }
+    return all.isEmpty() ? null : rootNode(all.get(all.size() - 1));
   }
 
   @Implementation
@@ -115,34 +125,37 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   @Implementation
   protected List<AccessibilityWindowInfo> getWindows() {
-    return onMain(() -> {
-      List<Win> all = windows();
-      List<AccessibilityWindowInfo> out = new ArrayList<>();
-      int active = -1;
-      for (int i = all.size() - 1; i >= 0 && active < 0; i--) if (all.get(i).focusable()) active = i;
-      // Topmost first, as the system lists them.
-      for (int i = all.size() - 1; i >= 0; i--) {
-        Win w = all.get(i);
-        // The framework's own (hidden) setters: once nodes query the app process, Robolectric's shadow defers to
-        // the real object. Its connection is the root's direct one, so getRoot() reads the window's views.
-        AccessibilityWindowInfo info = AccessibilityWindowInfo.obtain();
-        info.setId(windowId(w.root));
-        info.setLayer(i);
-        info.setDisplayId(Display.DEFAULT_DISPLAY);
-        info.setType(w.params.type >= WindowManager.LayoutParams.FIRST_SYSTEM_WINDOW
-            ? AccessibilityWindowInfo.TYPE_SYSTEM : AccessibilityWindowInfo.TYPE_APPLICATION);
-        info.setActive(i == active);
-        info.setFocused(i == active);
-        int[] at = new int[2];
-        w.view.getLocationOnScreen(at);
-        info.setRegionInScreen(new android.graphics.Region(at[0], at[1], at[0] + w.view.getWidth(), at[1] + w.view.getHeight()));
-        info.setTitle(w.params.getTitle());
-        rootNode(w);  // links the root's direct connection
-        info.setConnectionId(w.root.getDirectAccessibilityConnectionId());
-        out.add(info);
-      }
-      return out;
-    });
+    return onMain(ShadowSimUiAutomation::windowInfos);
+  }
+
+  /** Every shown window, topmost first as the system lists them, each one's root linked to its views; main thread. */
+  static List<AccessibilityWindowInfo> windowInfos() {
+    List<Win> all = windows();
+    List<AccessibilityWindowInfo> out = new ArrayList<>();
+    int active = -1;
+    for (int i = all.size() - 1; i >= 0 && active < 0; i--) if (all.get(i).focusable()) active = i;
+    // Topmost first, as the system lists them.
+    for (int i = all.size() - 1; i >= 0; i--) {
+      Win w = all.get(i);
+      // The framework's own (hidden) setters: once nodes query the app process, Robolectric's shadow defers to
+      // the real object. Its connection is the root's direct one, so getRoot() reads the window's views.
+      AccessibilityWindowInfo info = AccessibilityWindowInfo.obtain();
+      info.setId(windowId(w.root));
+      info.setLayer(i);
+      info.setDisplayId(Display.DEFAULT_DISPLAY);
+      info.setType(w.params.type >= WindowManager.LayoutParams.FIRST_SYSTEM_WINDOW
+          ? AccessibilityWindowInfo.TYPE_SYSTEM : AccessibilityWindowInfo.TYPE_APPLICATION);
+      info.setActive(i == active);
+      info.setFocused(i == active);
+      int[] at = new int[2];
+      w.view.getLocationOnScreen(at);
+      info.setRegionInScreen(new android.graphics.Region(at[0], at[1], at[0] + w.view.getWidth(), at[1] + w.view.getHeight()));
+      info.setTitle(w.params.getTitle());
+      rootNode(w);  // links the root's direct connection
+      info.setConnectionId(w.root.getDirectAccessibilityConnectionId());
+      out.add(info);
+    }
+    return out;
   }
 
   @Implementation
@@ -195,7 +208,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
    * In a running instance (an instrumentation started over adb) the Host loop owns the clock, which follows real time:
    * waits, in real time, until the main thread has nothing due, or QUIET ms at most (an endless animation).
    */
-  private static void liveSettle(long quietMillis) {
+  static void liveSettle(long quietMillis) {
     long end = System.nanoTime() + quietMillis * 1_000_000;
     do {
       try {
