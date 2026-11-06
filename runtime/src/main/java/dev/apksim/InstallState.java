@@ -4,23 +4,49 @@ import android.app.Application;
 import android.provider.Settings;
 
 /**
- * What a device has before an app's process starts, set up in a test run just before Application.onCreate
- * (ShadowSimInstrumentation.callApplicationOnCreate): an app reads it from its first line of startup.
+ * What a device has before an app's process starts, set up just before Application.onCreate
+ * (ShadowSimInstrumentation.callApplicationOnCreate) in test runs and running instances alike, warm or cold: an app
+ * reads it from its first line of startup. Running instances got none of it before onCreate (the host's networks only
+ * after it, from Host.run), and one app's onCreate died on a normal permission's check (BLUETOOTH).
  */
 final class InstallState {
   private InstallState() {}
 
   static void beforeApplicationOnCreate(Application app) {
+    // --setting, at each test's setup (Robolectric resets the settings between tests); a running instance applied them
+    // with its slot's settings already (SlotDevice.take, just before this). Before the ANDROID_ID, so a seeded one wins
+    // in both, as one the slot kept does.
+    if (TestActivities.testRun()) SlotDevice.applySeeds(app);
     seedAndroidId(app);
-    SlotDevice.applySeeds(app);  // --setting, at each test's setup: Robolectric resets the settings between tests
     grantInstallPermissions(app);
     hostNetworks(app);
     installProviders(app);
   }
 
   /**
+   * A standby's warm-up (StandbyWarmup, an app with no APK): the same steps on its application, so a launch finds their
+   * classes loaded and the framework's permission levels read (~15 ms of a warm launch). Robolectric resets what they
+   * set before the launch.
+   */
+  static void warm(Application app) {
+    seedAndroidId(app);
+    android.content.pm.PackageManager pm = app.getPackageManager();
+    try {
+      pm.getPackageInfo(app.getPackageName(), android.content.pm.PackageManager.GET_PERMISSIONS);
+      pm.getPackageInfo(app.getPackageName(), android.content.pm.PackageManager.GET_PROVIDERS);
+    } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+      // nothing to warm
+    }
+    for (String p : new String[] {"android.permission.INTERNET", "android.permission.CAMERA", "dev.apksim.warm.PERMISSION"}) {
+      eligible(pm, app.getPackageName(), p, false);
+    }
+    org.robolectric.Shadows.shadowOf(app).grantPermissions("android.permission.INTERNET");
+    hostNetworks(app);
+  }
+
+  /**
    * The host's network, as a device's connected one: HostNetworks shows its interfaces as Android networks with
-   * INTERNET and VALIDATED, as Host does for a running instance. Robolectric's default network has neither, so an app
+   * INTERNET and VALIDATED. Robolectric's default network has neither, so an app
    * that checks NET_CAPABILITY_VALIDATED before a request decided it was offline and refused its own requests
    * (NoNetworkConnectionException from its OkHttp interceptor) while the host's network worked.
    */
@@ -137,13 +163,26 @@ final class InstallState {
 
   /**
    * A device always has Settings.Secure.ANDROID_ID (16 hex digits, one per app signing key since API 26); Robolectric
-   * leaves it null. An app that reads it as its device id, into a non-null Kotlin String, threw in every test. A fixed
-   * value, as one device would have; a test that sets its own keeps it.
+   * leaves it null. An app that reads it as its device id, into a non-null Kotlin String, threw in every test. In test
+   * runs a fixed value, as one device would have; a test that sets its own keeps it. A running instance's comes from
+   * its data slot, as its serial does (DeviceIdentity): the same each launch of a slot, another for another slot, so
+   * two instances side by side are two devices to a backend.
    */
   private static void seedAndroidId(Application app) {
     android.content.ContentResolver cr = app.getContentResolver();
     if (Settings.Secure.getString(cr, Settings.Secure.ANDROID_ID) == null) {
-      Settings.Secure.putString(cr, Settings.Secure.ANDROID_ID, "a75e5101d0c0ffee");
+      Settings.Secure.putString(cr, Settings.Secure.ANDROID_ID, TestActivities.testRun() ? "a75e5101d0c0ffee" : slotAndroidId());
+    }
+  }
+
+  private static String slotAndroidId() {
+    String slot = Storage.heldSlot();
+    try {
+      byte[] h = java.security.MessageDigest.getInstance("SHA-256").digest(
+          ("apksim-android-id:" + (slot == null ? "default" : slot)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      return java.util.HexFormat.of().formatHex(h, 0, 8);
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
     }
   }
 
@@ -155,7 +194,9 @@ final class InstallState {
    * application Context), and without it the HTTP client could not read the public suffix list from the app's assets
    * and canceled its requests. A provider that cannot be made or whose onCreate throws fails the test's setup, as it
    * crashes the app's start on a device; `-Dapksim.providerFailures=log` only logs it and goes on (the earlier
-   * behaviour, for a suite that must run past a provider apksim cannot start).
+   * behaviour, for a suite that must run past a provider apksim cannot start). A running instance logs by default
+   * (`-Dapksim.providerFailures=fail` to stop there): before, its providers were made only when first used, and an
+   * app that ran then keeps running, its failing provider left to Robolectric's on-first-use creation.
    */
   private static void installProviders(Application app) {
     android.content.pm.ProviderInfo[] providers;
@@ -180,7 +221,8 @@ final class InstallState {
           org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
         }
       } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-        if ("log".equals(System.getProperty("apksim.providerFailures"))) {
+        String failures = System.getProperty("apksim.providerFailures", TestActivities.testRun() ? "fail" : "log");
+        if ("log".equals(failures)) {
           System.err.println("[apksim] content provider " + info.name + ": " + e);
         } else {
           Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : e;

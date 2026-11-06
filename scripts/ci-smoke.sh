@@ -74,6 +74,17 @@ echo "Popup and Trace: $shown-> $tapped"
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 
+# What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
+# to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
+# (the test app's apksim://install, issues 76 and 81).
+install() { drive nodes | grep -oE 'text="(install|android id|provider|bind missing): [^"]*"' | tr '\n' ' '; }
+drive 'open apksim://install' 'wait 3000' >/dev/null
+installed="$(install)"
+echo "Install state: $installed"
+[[ "$installed" == 'text="install: vibrate granted at create" text="android id: set at create" text="provider: before create" text="bind missing: false, unbound, 0 callbacks" ' ]] \
+  || { echo "the app did not start with what installing gives it, or a bind to nothing called back" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
+
 # A frame rate cap (maxfps, as --max-fps): the Shader tab animates without end, and draws no faster than the cap.
 # Counted from `stats` over a timed window, not `frames`: that leaves out intervals of 100 ms or more, and under
 # Rosetta a CPU-drawn Shader frame can take that long.
