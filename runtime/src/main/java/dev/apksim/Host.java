@@ -722,6 +722,7 @@ public class Host {
       ActivityController<? extends Activity> c = it.next();
       if (c == stack.peek() || !c.get().isFinishing()) continue;
       it.remove();
+      moveTo(c, 0);  // onStop first: arrange leaves a finishing one as it was (paused, in a hand-off)
       c.destroy();
       results.finished(c.get());
     }

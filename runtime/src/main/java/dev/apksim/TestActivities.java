@@ -311,9 +311,9 @@ public final class TestActivities {
   private static void finished(Activity a) {
     ActivityController<?> c = controller(a);
     if (c == null || a.isDestroyed()) return;
-    // One that finished while hidden (stopped below the top, or with its task in the background) uncovers nothing.
-    View decor = a.getWindow() == null ? null : a.getWindow().peekDecorView();
-    boolean shown = decor != null && decor.getVisibility() == View.VISIBLE;
+    // One that finished while stopped (below the top, or with its task in the background) uncovers nothing; one in
+    // the foreground does, even if the app had hidden its window itself (setVisible(false)).
+    boolean shown = !Host.isStopped(a);
     if (a.isResumed()) c.pause();
     if (!(boolean) ReflectionHelpers.getField(a, "mStopped")) c.stop();
     c.destroy();

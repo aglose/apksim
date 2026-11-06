@@ -47,6 +47,14 @@ class SecondActivity : Activity() {
       text = "Finish"
       setOnClickListener { finish() }
     }
+    // The usual hand-off: the next screen started, this one finished.
+    val handOff = Button(this).apply {
+      text = "Hand off"
+      setOnClickListener {
+        startActivity(Intent(this@SecondActivity, SecondActivity::class.java).putExtra("from", "stack").putExtra("depth", depth + 1))
+        finish()
+      }
+    }
     setContentView(LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER
@@ -55,6 +63,7 @@ class SecondActivity : Activity() {
       addView(tap)
       addView(deeper)
       addView(finish)
+      addView(handOff)
     })
   }
 
@@ -66,6 +75,16 @@ class SecondActivity : Activity() {
   override fun onResume() {
     super.onResume()
     resumed = true
+  }
+
+  override fun onStop() {
+    super.onStop()
+    android.util.Log.i("Stack", "onStop depth ${intent.getIntExtra("depth", 1)}")
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()
+    android.util.Log.i("Stack", "onDestroy depth ${intent.getIntExtra("depth", 1)}")
   }
 
   companion object {

@@ -100,6 +100,28 @@ class StackWindowsTest {
     }
   }
 
+  /** The top activity finishing after hiding its own window (setVisible(false)) still brings back the one below. */
+  @Test
+  fun aTopThatHidItselfStillUncoversTheOneBelow() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("startActivities") == "true")
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      var second: android.app.Activity? = null
+      scenario.onActivity { it.startActivity(Intent(it, SecondActivity::class.java)) }
+      assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
+      instrumentation.runOnMainSync {
+        second = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+          .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).single()
+        // As a device's setVisible(false) does (Robolectric's only records it).
+        second!!.setVisible(false)
+        second!!.window.decorView.visibility = android.view.View.INVISIBLE
+        second!!.finish()
+      }
+      assertNotNull("the activity below is back", device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      assertEquals(Lifecycle.State.RESUMED, scenario.state)
+    }
+  }
+
   /** A dialog of an activity that is stopped is hidden with it, and shown again when it comes back. */
   @Test
   fun aStoppedActivitysDialogIsHiddenWithIt() {
