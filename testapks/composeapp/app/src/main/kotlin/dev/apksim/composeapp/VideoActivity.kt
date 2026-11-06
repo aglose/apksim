@@ -39,8 +39,18 @@ class VideoActivity : Activity() {
       repeatMode = Player.REPEAT_MODE_ALL
       setMediaItem(MediaItem.fromUri("android.resource://$packageName/${R.raw.video1080}"))
       prepare()
-      play()
     }
+  }
+
+  // Plays only while shown, so a stopped screen left on the stack decodes nothing behind another one.
+  override fun onStart() {
+    super.onStart()
+    player?.play()
+  }
+
+  override fun onStop() {
+    player?.pause()
+    super.onStop()
   }
 
   override fun onDestroy() {
