@@ -96,6 +96,15 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
+        <!-- apksim://timezone: every zone source an app reads, Joda-Time's included, and zone-change broadcasts (issue 91). -->
+        <activity android:name=".TimeZoneActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="timezone" />
+            </intent-filter>
+        </activity>
         <!-- apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained: an uncaught exception (issue 104). -->
         <activity android:name=".CrashActivity" android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection|keyboardHidden">

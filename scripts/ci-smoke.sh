@@ -33,7 +33,8 @@ grep -q "launch overlay added" "$OUT/overlay.log" || { echo "the test app added 
 grep first-frame "$OUT/overlay.log"
 
 docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
-  -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
+  -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 \
+  --timezone America/New_York app.apk >/dev/null
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 # Docker's port proxy accepts before the app listens, so wait for an answer rather than a connection.
 for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
@@ -71,6 +72,20 @@ echo "Popup and Trace: $shown-> $tapped"
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" ' \
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
+
+# Every zone source an app reads follows --timezone, Joda-Time's (it reads user.timezone) included, and `timezone ZONE`
+# changes them all and broadcasts ACTION_TIMEZONE_CHANGED, which the screen hears as joda-time-android does (the test
+# app's apksim://timezone, issue 91).
+zones() { drive nodes | grep -oE 'text="(jdk zone|icu zone|user.timezone|joda zone|tz changes): [^"]*"' | tr '\n' ' '; }
+expect() { printf 'text="%s zone: %s" ' jdk "$1" icu "$1"; printf 'text="user.timezone: %s" text="joda zone: %s" text="tz changes: %s" ' "$1" "$1" "$2"; }
+drive 'open apksim://timezone' 'wait 2000' >/dev/null
+launched="$(zones)"
+drive 'timezone Asia/Tokyo' 'wait 1000' >/dev/null
+changed="$(zones)"
+echo "Time zones: $launched-> $changed"
+[[ "$launched" == "$(expect America/New_York 0)" && "$changed" == "$(expect Asia/Tokyo '1 to Asia/Tokyo')" ]] \
+  || { echo "the app's time zones did not follow --timezone or the timezone command" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
