@@ -19,11 +19,18 @@ final class Control {
   /** A command waiting to run on the Android main thread. */
   static final class Pending {
     final String[] args;
+    /** Answered only once the input this command queues has been dispatched (adb's `input`; see Host's drains). */
+    final boolean untilDispatched;
     private final CountDownLatch done = new CountDownLatch(1);
     private String result = "ok";
 
     Pending(String[] args) {
+      this(args, false);
+    }
+
+    Pending(String[] args, boolean untilDispatched) {
       this.args = args;
+      this.untilDispatched = untilDispatched;
     }
 
     void finish(String r) {

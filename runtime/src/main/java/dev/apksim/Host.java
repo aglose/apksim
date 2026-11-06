@@ -190,7 +190,7 @@ public class Host {
         if (cmd.args[0].equals("drain")) {
           // Answered from the loop once the scripted events queued before it have been dispatched (see drains); not
           // those queued after it, by this or another connection, which could hold it up for good.
-          drains.add(new Drain(cmd, dispatched + pendingScript.size() + (drag != null ? 1 : 0)));  // a drag counts once lifted
+          drains.add(new Drain(cmd, "ok", drainTarget()));
           continue;
         }
         String reply;
@@ -200,6 +200,11 @@ public class Host {
           // A bad command (or one the framework rejects) is an answer, not a crash of the app.
           ex.printStackTrace();
           reply = "error: " + ex;
+        }
+        if (cmd.untilDispatched && reply.startsWith("ok")) {
+          // Its cutoff is taken now, before any other connection's command runs and queues more input.
+          drains.add(new Drain(cmd, reply, drainTarget()));
+          continue;
         }
         cmd.finish(reply);
       }
@@ -260,7 +265,7 @@ public class Host {
         // A drain's last event and what the looper ran for it are done, and the frame it caused drawn.
         drains.removeIf(d -> {
           if (dispatched < d.after()) return false;
-          d.pending().finish("ok");
+          d.pending().finish(d.reply());
           return true;
         });
       }
@@ -278,11 +283,25 @@ public class Host {
    */
   private final List<Drain> drains = new ArrayList<>();
 
-  /** A `drain` and the count of scripted events dispatched once those queued before it are. */
-  private record Drain(Control.Pending pending, long after) {}
+  /** A `drain` (or an input command answered once dispatched), its answer, and the dispatch count that ends it. */
+  private record Drain(Control.Pending pending, String reply, long after) {}
 
-  /** Scripted events taken from pendingScript so far (dispatched, or dropped by a clear). Main thread only. */
-  private long dispatched;
+  /** The dispatch count at which everything queued so far is done: a drag in progress counts once it lifts. */
+  private long drainTarget() {
+    return dispatched + pendingScript.size() + (drag != null ? 1 : 0);
+  }
+
+  /**
+   * Scripted events taken from pendingScript so far (dispatched, or dropped by a clear). Written on the main thread;
+   * read by adb's input commands to tell slow progress from none ({@link #dispatchedCount}).
+   */
+  private volatile long dispatched;
+
+  /** How many scripted events the running Host has dispatched, or -1 when none runs. Any thread. */
+  static long dispatchedCount() {
+    Host h = current;
+    return h == null ? -1 : h.dispatched;
+  }
 
   /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */
   private Settle settle;

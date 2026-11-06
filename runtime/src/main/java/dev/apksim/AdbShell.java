@@ -509,7 +509,7 @@ final class AdbShell {
     switch (op) {
       case "tap" -> {
         if (r.size() < 2) return usage("input tap X Y");
-        return reply(delivered(control("tap", r.get(0), r.get(1)), 0), false);
+        return reply(controlDispatched(0, "tap", r.get(0), r.get(1)), false);
       }
       case "swipe", "draganddrop" -> {
         if (r.size() < 4) return usage("input swipe X1 Y1 X2 Y2 [DURATION_MS]");
@@ -517,12 +517,12 @@ final class AdbShell {
         List<String> c = new ArrayList<>(List.of("swipe"));
         c.addAll(r.subList(0, Math.min(5, r.size())));
         long ms = r.size() > 4 ? Long.parseLong(r.get(4)) : 0;
-        return reply(delivered(control(c.toArray(new String[0])), ms), false);
+        return reply(controlDispatched(ms, c.toArray(new String[0])), false);
       }
       case "text" -> {
         if (r.isEmpty()) return usage("input text TEXT");
         // As on a device: %s is a space (adb strips the quoting a real space would need).
-        return reply(delivered(control("type", String.join(" ", r).replace("%s", " ")), 0), false);
+        return reply(controlDispatched(0, "type", String.join(" ", r).replace("%s", " ")), false);
       }
       case "keyevent", "keycombination" -> {
         int status = 0;
@@ -531,7 +531,7 @@ final class AdbShell {
           if (k.equals("-t")) continue;
           status |= key(k);
         }
-        return status != 0 ? status : reply(delivered("ok", 0), false);
+        return status;
       }
       default -> {
         print("Error: Unknown command: " + op + "\n");
@@ -541,16 +541,27 @@ final class AdbShell {
   }
 
   /**
-   * As a device's `input` returns once its events are injected (a swipe after its duration): waits on a `drain`, which
-   * the Host answers once the input queued before it has been dispatched, so a tool that takes a screenshot or reads
-   * the UI next sees the finger lifted. Input queued after it (another connection's) does not hold it up.
+   * An input command answered as a device's `input` returns, once its events are injected (a swipe after its
+   * duration): the Host answers it only once the input queued up to and including its own has been dispatched, so a
+   * tool that takes a screenshot or reads the UI next sees the finger lifted. The cutoff is taken as the Host runs the
+   * command, so input another connection queues afterwards does not hold it up. It gives up only when dispatching stops
+   * making progress for 10 s past MS (long text is one event per character, one every 8 ms at most), not after a fixed
+   * time.
    */
-  private static String delivered(String reply, long ms) throws Exception {
-    if (!reply.equals("ok") || Looper.getMainLooper().isCurrentThread() || TestActivities.testRun()) return reply;
-    Control.Pending p = new Control.Pending(new String[] {"drain"});
+  private static String controlDispatched(long ms, String... args) throws Exception {
+    if (TestActivities.testRun() || Looper.getMainLooper().isCurrentThread()) return control(args);
+    Control.Pending p = new Control.Pending(args, true);
+    long seen = Host.dispatchedCount();
     Control.QUEUE.add(p);
-    String r = p.await(ms + 10_000L);
-    return r == null ? "error: input still queued after " + (ms + 10_000L) + " ms" : r.equals("ok") ? reply : r;
+    long wait = ms + 10_000L;
+    while (true) {
+      String r = p.await(wait);
+      if (r != null) return r;
+      long now = Host.dispatchedCount();
+      if (now == seen) return "error: input stopped being dispatched (nothing for 10 s)";
+      seen = now;
+      wait = 10_000L;
+    }
   }
 
   private int key(String k) throws Exception {
@@ -568,10 +579,10 @@ final class AdbShell {
     }
     if (name.startsWith("KEYCODE_")) name = name.substring(8);
     // KEYCODE_0..9 (codes 7..16) are the digit keys, not key codes 0..9 nor Back and Home below.
-    if (name.matches("\\d")) return reply(control("key", name), false);
+    if (name.matches("\\d")) return reply(controlDispatched(0, "key", name), false);
     switch (name) {
       case "BACK" -> {
-        return reply(control("back"), false);
+        return reply(controlDispatched(0, "back"), false);
       }
       case "HOME" -> {
         return reply(control("home"), false);
@@ -590,10 +601,10 @@ final class AdbShell {
       case "MENU" -> {
         // The classic "unlock the screen" key; with the screen on, it is the menu key.
         String r = control("unlock");
-        return r.equals("not hidden") ? reply(control("key", "MENU"), false) : reply(quiet(r), false);
+        return r.equals("not hidden") ? reply(controlDispatched(0, "key", "MENU"), false) : reply(quiet(r), false);
       }
       default -> {
-        return reply(control("key", name), false);
+        return reply(controlDispatched(0, "key", name), false);
       }
     }
   }
