@@ -28,7 +28,8 @@ import org.robolectric.shadows.ShadowConnectivityManager;
  *   satisfies the request, else the first that does;
  * - registerNetworkCallback (a listen): every network whose capabilities satisfy the request.
  * A network it gains gets onAvailable, onCapabilitiesChanged, onLinkPropertiesChanged and onBlockedStatusChanged, one
- * it keeps gets onCapabilitiesChanged/onLinkPropertiesChanged when those change, one it loses onLost.
+ * it keeps gets onCapabilitiesChanged/onLinkPropertiesChanged when those change, one it loses onLost (a default
+ * callback or a request only when no network replaces it, or it disconnected: see decide).
  * What a callback is owed is decided when it registers and at every change (`rematch`: HostNetworks installing the
  * host's networks, `network offline|online`), as the system server decides it, and goes into that callback's own queue,
  * delivered in order on its handler (the main thread without one). A change made on that thread delivers the queue at
@@ -50,6 +51,8 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     /** What the callback has been told (or has queued): each network with its capabilities and link properties. */
     final Map<Network, Object[]> told = new LinkedHashMap<>();
     final ArrayDeque<Runnable> queue = new ArrayDeque<>();
+    /** The queue is being delivered (on the handler's thread): a nested deliver leaves it to that loop. */
+    boolean delivering;
 
     Tracked(ConnectivityManager cm, ConnectivityManager.NetworkCallback cb, NetworkRequest request, Kind kind, Handler handler) {
       this.cm = cm;
@@ -169,11 +172,26 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     return t.kind == Kind.REQUEST && !out.isEmpty() ? List.of(out.get(0)) : out;
   }
 
-  /** Queues what the callback is owed against what it was told (under TRACKED's lock). */
+  /**
+   * Queues what the callback is owed against what it was told (under TRACKED's lock), as ConnectivityService's
+   * rematch does. A network the callback no longer gets: a listen hears onLost; a default callback or a request (one
+   * network) hears onLost only when that network disconnected or nothing replaces it. When another network takes over
+   * while the old one stays up (it lingers, then goes), the switch is just onAvailable of the new one: Android sends
+   * those registrations no onLost for the network they moved off (applyNetworkReassignment notifies the new satisfier,
+   * CALLBACK_LOST only with none; the old network's teardown later notifies the requests it still serves, not these).
+   */
   private static void decide(Tracked t) {
     ConnectivityManager cm = t.cm;  // Robolectric keeps the networks in static state: any instance has them
     List<Network> now = entitled(t, cm);
     ConnectivityManager.NetworkCallback cb = t.cb;
+    // Losses first: a network that disconnected is gone before its replacement is announced.
+    List<Network> connected = java.util.Arrays.asList(cm.getAllNetworks());
+    for (Network n : new ArrayList<>(t.told.keySet())) {
+      if (now.contains(n)) continue;
+      t.told.remove(n);
+      boolean up = connected.contains(n);
+      if (t.kind == Kind.LISTEN || now.isEmpty() || !up) t.queue.add(() -> cb.onLost(n));
+    }
     for (Network n : now) {
       NetworkCapabilities caps = cm.getNetworkCapabilities(n);
       LinkProperties link = cm.getLinkProperties(n);
@@ -191,23 +209,32 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
       }
       t.told.put(n, new Object[] {caps, link});
     }
-    for (Network n : new ArrayList<>(t.told.keySet())) {
-      if (now.contains(n)) continue;
-      t.told.remove(n);
-      t.queue.add(() -> cb.onLost(n));
-    }
   }
 
-  /** Runs the callback's queue in order, unless it was unregistered meanwhile. */
+  /**
+   * Runs the callback's queue in order, unless it was unregistered meanwhile. A change a callback makes from inside
+   * one of its own calls (onAvailable going offline) only queues: the outer drain finishes the announcement it is in
+   * (onCapabilitiesChanged, onLinkPropertiesChanged), then delivers the new entries (onLost).
+   */
   private static void deliver(Tracked t) {
-    while (true) {
-      Runnable r;
-      synchronized (TRACKED) {
-        if (TRACKED.get(t.cb) != t) return;
-        r = t.queue.poll();
+    synchronized (TRACKED) {
+      if (t.delivering) return;
+      t.delivering = true;
+    }
+    try {
+      while (true) {
+        Runnable r;
+        synchronized (TRACKED) {
+          if (TRACKED.get(t.cb) != t) return;
+          r = t.queue.poll();
+        }
+        if (r == null) return;
+        r.run();
       }
-      if (r == null) return;
-      r.run();
+    } finally {
+      synchronized (TRACKED) {
+        t.delivering = false;
+      }
     }
   }
 }

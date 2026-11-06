@@ -61,6 +61,7 @@ final class SimWifi {
       info.setMacAddress(REDACTED_MAC);
       info.setSupplicantState(SupplicantState.DISCONNECTED);
       info.setRssi(-127);  // WifiInfo.INVALID_RSSI
+      info.setBSSID(REDACTED_MAC);
       info.setNetworkId(-1);
       return info;
     }
@@ -94,7 +95,8 @@ final class SimWifi {
       info.setBSSID(BSSID);
       info.setNetworkId(0);
     } else {
-      info.setNetworkId(-1);  // SSID stays <unknown ssid> and BSSID 02:00:00:00:00:00, as WifiInfo redacts them
+      info.setBSSID(REDACTED_MAC);  // as WifiInfo redacts it (a new WifiInfo has none); SSID stays <unknown ssid>
+      info.setNetworkId(-1);
     }
     if (address != null) info.setInetAddress(address);
     return info;

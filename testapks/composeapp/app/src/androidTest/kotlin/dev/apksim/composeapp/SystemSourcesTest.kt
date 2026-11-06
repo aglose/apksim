@@ -53,6 +53,10 @@ class SystemSourcesTest {
     assertEquals("connected RSSI", -50, info.rssi)
     assertTrue("frequency ${info.frequency}", info.frequency > 0)
     assertEquals("SSID without location permission", WifiManager.UNKNOWN_SSID, info.ssid)
+    assertEquals("BSSID without location permission", "02:00:00:00:00:00", info.bssid)
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val transport = cm.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
+    assertEquals("the network capabilities' WifiInfo BSSID", "02:00:00:00:00:00", transport?.bssid)
     val level = wm.calculateSignalLevel(info.rssi) / (wm.maxSignalLevel / 4)
     assertTrue("level $level", level in 0..4)
     assertEquals(4, wm.calculateSignalLevel(-50))
@@ -120,6 +124,68 @@ class SystemSourcesTest {
       shell("apksim network online")
       pumpMainThread()
       assertEquals(listOf("available", "lost", "available"), events)
+    } finally {
+      cm.unregisterNetworkCallback(cb)
+    }
+  }
+
+  /**
+   * The default network moves from Wi-Fi to Ethernet (Ethernet comes up and takes over, then Wi-Fi goes): a default
+   * callback hears only onAvailable(Ethernet), as Android tells a registration that moved to another network, while a
+   * listen hears Ethernet come and Wi-Fi go.
+   */
+  @Test
+  fun aDefaultNetworkSwitchIsOnlyOnAvailable() {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val wifi = cm.activeNetwork!!
+    val defaults = mutableListOf<String>()
+    val listens = mutableListOf<String>()
+    fun recorder(into: MutableList<String>) = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { into += "available ${name(n, wifi)}" }
+      override fun onLost(n: Network) { into += "lost ${name(n, wifi)}" }
+    }
+    val defaultCb = recorder(defaults)
+    val listenCb = recorder(listens)
+    cm.registerDefaultNetworkCallback(defaultCb)
+    cm.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), listenCb)
+    try {
+      pumpMainThread()
+      // apksim's hook: no device control does this (a device is plugged into Ethernet).
+      Class.forName("dev.apksim.NetConnectivity").getDeclaredMethod("switchDefaultToEthernetForTest")
+        .apply { isAccessible = true }.invoke(null)
+      pumpMainThread()
+      assertEquals(listOf("available wifi", "available ethernet"), defaults)
+      // The host's other networks (a second interface) come and stay: only Wi-Fi and Ethernet count here.
+      assertEquals(listOf("available wifi", "available ethernet", "lost wifi"), listens.filter { !it.endsWith("other") })
+    } finally {
+      cm.unregisterNetworkCallback(defaultCb)
+      cm.unregisterNetworkCallback(listenCb)
+    }
+  }
+
+  /** The hook's Ethernet network is netId TYPE_ETHERNET (Robolectric finds the default network by its type). */
+  @Suppress("DEPRECATION")
+  private fun name(n: Network, wifi: Network) =
+    if (n == wifi) "wifi" else if (n.toString() == ConnectivityManager.TYPE_ETHERNET.toString()) "ethernet" else "other"
+
+  /** A callback that goes offline from inside onAvailable still gets that announcement whole, then onLost. */
+  @Test
+  fun goingOfflineFromOnAvailableKeepsTheOrder() {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val events = mutableListOf<String>()
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) {
+        events += "available"
+        if (events.size == 1) shell("apksim network offline")
+      }
+      override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) { events += "caps" }
+      override fun onLinkPropertiesChanged(n: Network, link: android.net.LinkProperties) { events += "link" }
+      override fun onLost(n: Network) { events += "lost" }
+    }
+    cm.registerDefaultNetworkCallback(cb)
+    try {
+      pumpMainThread()
+      assertEquals(listOf("available", "caps", "link", "lost"), events)
     } finally {
       cm.unregisterNetworkCallback(cb)
     }

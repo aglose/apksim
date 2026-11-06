@@ -89,6 +89,39 @@ final class NetConnectivity {
     SystemBroadcasts.network(app);  // CONNECTIVITY_ACTION and Wi-Fi's NETWORK_STATE_CHANGED, sticky as on a device
   }
 
+  /**
+   * For SystemSourcesTest only (it calls this by reflection): the device moves its default network from Wi-Fi to
+   * Ethernet, as when it is plugged in. Ethernet comes up with the same capabilities and becomes the default while
+   * Wi-Fi stays up; then Wi-Fi disconnects. Callbacks hear each step (rematch).
+   */
+  static void switchDefaultToEthernetForTest() {
+    ShadowConnectivityManager shadow = new ShadowConnectivityManager();
+    NetworkInfo activeInfo = staticField("activeNetworkInfo");
+    Map<Integer, Network> networks = staticField("netIdToNetwork");
+    Map<Network, NetworkCapabilities> caps = staticField("networkCapabilitiesMap");
+    Map<Network, LinkProperties> links = staticField("linkPropertiesMap");
+    Network wifi = networks.get(activeInfo.getType());
+    @SuppressWarnings("deprecation")
+    int ethernet = android.net.ConnectivityManager.TYPE_ETHERNET;
+    // Robolectric's active network is the one whose netId is the active NetworkInfo's type.
+    Network eth = org.robolectric.shadows.ShadowNetwork.newInstance(ethernet);
+    NetworkInfo info = org.robolectric.shadows.ShadowNetworkInfo.newInstance(
+        NetworkInfo.DetailedState.CONNECTED, ethernet, 0, true, NetworkInfo.State.CONNECTED);
+    NetworkCapabilities ethCaps = new NetworkCapabilities(caps.get(wifi));
+    ethCaps.setTransportInfo(null);
+    org.robolectric.Shadows.shadowOf(ethCaps).removeTransportType(NetworkCapabilities.TRANSPORT_WIFI);
+    org.robolectric.Shadows.shadowOf(ethCaps).addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET);
+    shadow.addNetwork(eth, info);
+    shadow.setNetworkCapabilities(eth, ethCaps);
+    if (links.get(wifi) != null) shadow.setLinkProperties(eth, new LinkProperties(links.get(wifi)));
+    shadow.setActiveNetworkInfo(info);
+    ShadowSimConnectivityManager.rematch();
+    shadow.removeNetwork(wifi);
+    caps.remove(wifi);
+    links.remove(wifi);
+    ShadowSimConnectivityManager.rematch();
+  }
+
   @SuppressWarnings("unchecked")
   private static <T> T staticField(String name) {
     try {
