@@ -505,6 +505,10 @@ final class DeviceControls {
         SimWindow.setMenuState(TAG_BIOMETRICS_ENROLLED, Biometrics.enrolled);
         return r;
       }
+      case "bluetooth" -> {
+        // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).
+        return Bluetooth.command(a);
+      }
       case "location" -> {
         return location().run(a);
       }
@@ -790,6 +794,7 @@ final class DeviceControls {
       org.robolectric.Shadows.shadowOf(app.getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(0);
     }
     Device.setCurrent(now);
+    if (!now.kind().equals(was.kind())) SystemFeatures.deviceChanged(app, now);  // a TV has no touchscreen, has leanback...
     applySystemUi(now);
     android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
     w = m.widthPixels;
