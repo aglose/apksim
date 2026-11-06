@@ -412,8 +412,11 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   every change (`rematch`: HostNetworks install, NetConnectivity, which no longer calls callbacks itself), as diffs
   against what it was told (onAvailable + onCapabilitiesChanged + onLinkPropertiesChanged + onBlockedStatusChanged,
   changed capabilities or links, onLost), queued per callback and run in order on its handler (main without one);
-  a change made on that thread runs the queue at once, so offline and online before a registration's post give
-  available, lost, available. A callback registered in Application.onCreate hears of the host's networks when Host
+  a change made on that thread runs the queue at once (unless it is made from inside that callback: then the drain
+  under way delivers it after the current announcement), so offline and online before a registration's post give
+  available, lost, available. A default callback or a request hears onLost only when its network disconnected or
+  nothing replaces it: a switch to another network is just onAvailable, as Android reassigns (a listen hears every
+  loss; `NetConnectivity.switchDefaultToEthernetForTest` is SystemSourcesTest's hook for it). A callback registered in Application.onCreate hears of the host's networks when Host
   installs them after it. HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED,
   NOT_METERED..., which a default NetworkRequest asks for). `SystemBroadcasts.ShadowSimAudioManager` sends
   VOLUME_CHANGED_ACTION (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream.
