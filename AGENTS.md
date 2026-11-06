@@ -601,8 +601,8 @@ a lock's catch-all range); it translates them and runs them on a plain JVM. Its 
 The native loader's is `testapks/loader-fixture` (`loaderfixture.c`, built with the NDK by its `build.sh` into the
 test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so the test app needs no NDK), run by
 `NativeLoaderTest` in the suite, so on the Mac and in both Linux images: the stack guard through the thread pointer,
-TLS on several threads with registers live across the access (TLSDESC on arm64), barriers, mutexes and condition
-variables at 4 mod 8, thread attributes with `pthread_getattr_np`, and setjmp/longjmp into bionic's jmp_buf. It is
+TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
+variables at 4 mod 8, thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
 built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
 libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
 new case wrong, add it there; a device passes every check.

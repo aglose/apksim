@@ -14,6 +14,7 @@
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -291,7 +292,7 @@ static const char *check_cond(void) {
 }
 
 // ---------------------------------------------------------------- thread attributes
-typedef struct { size_t stack_size; int inside; int detached; } AttrSeen;
+typedef struct { size_t stack_size; int inside; int detached; uintptr_t local; } AttrSeen;
 
 static void *attr_thread(void *p) {
   AttrSeen *s = p;
@@ -304,6 +305,7 @@ static void *attr_thread(void *p) {
   pthread_attr_getdetachstate(&a, &s->detached);
   pthread_attr_destroy(&a);
   char here;
+  s->local = (uintptr_t)&here;
   s->inside = (uintptr_t)&here >= (uintptr_t)base && (uintptr_t)&here < (uintptr_t)base + size;
   return NULL;
 }
@@ -329,6 +331,75 @@ static const char *check_thread_attr(void) {
   if (seen.stack_size < 512 * 1024) FAIL("the thread's stack is %zu bytes, asked for 512 KB", seen.stack_size);
   if (!seen.inside) FAIL("a local's address is outside the stack pthread_getattr_np reports");
   if (seen.detached != PTHREAD_CREATE_JOINABLE) FAIL("the thread reports detach state %d", seen.detached);
+
+  // A stack the app allocates itself: the thread must run on it, not on one the host picks.
+  enum { STACK = 256 * 1024 };
+  void *stack;
+  if (posix_memalign(&stack, 16384, STACK)) FAIL("posix_memalign failed");
+  pthread_attr_init(&a);
+  if (pthread_attr_setstack(&a, stack, STACK)) FAIL("pthread_attr_setstack refused a 16 KB-aligned 256 KB stack");
+  void *base;
+  pthread_attr_getstack(&a, &base, &got);
+  if (base != stack || got != STACK) FAIL("the attribute's stack reads back as %p+%zu, set %p+%d", base, got, stack, STACK);
+  memset(&seen, 0, sizeof seen);
+  if (pthread_create(&t, &a, attr_thread, &seen)) FAIL("pthread_create with the app's own stack failed");
+  pthread_attr_destroy(&a);
+  pthread_join(t, &r);
+  if (r) FAIL("pthread_getattr_np failed in a thread on the app's stack");
+  if (seen.local < (uintptr_t)stack || seen.local >= (uintptr_t)stack + STACK)
+    FAIL("a thread given the app's own stack did not run on it");
+  if (!seen.inside) FAIL("pthread_getattr_np reports another stack than the app's");
+  free(stack);
+  return "ok";
+}
+
+// ---------------------------------------------------------------- barriers: reuse and teardown
+enum { ROUNDS = 1000, PARTIES = 4 };
+static pthread_barrier_t reused;
+static _Atomic int round_arrivals[ROUNDS], serials;
+static _Atomic int early;
+
+static void *round_thread(void *p) {
+  (void)p;
+  for (int i = 0; i < ROUNDS; i++) {
+    round_arrivals[i]++;
+    if (pthread_barrier_wait(&reused) == PTHREAD_BARRIER_SERIAL_THREAD) serials++;
+    if (round_arrivals[i] != PARTIES) early = 1;  // released before every party of this round arrived
+  }
+  return NULL;
+}
+
+static void *wait_once(void *b) {
+  pthread_barrier_wait(b);
+  return NULL;
+}
+
+static const char *check_barrier(void) {
+  // One barrier for 1,000 rounds: each releases only once all four have arrived, and names one serial thread.
+  memset(round_arrivals, 0, sizeof round_arrivals);
+  serials = 0;
+  early = 0;
+  if (pthread_barrier_init(&reused, NULL, PARTIES)) FAIL("pthread_barrier_init failed");
+  pthread_t t[PARTIES];
+  for (int i = 0; i < PARTIES; i++) pthread_create(&t[i], NULL, round_thread, NULL);
+  for (int i = 0; i < PARTIES; i++) pthread_join(t[i], NULL);
+  if (pthread_barrier_destroy(&reused)) FAIL("pthread_barrier_destroy failed after the rounds");
+  if (early) FAIL("a reused barrier let a thread through before its round was complete");
+  if (serials != ROUNDS) FAIL("%d serial threads in %d rounds", serials, ROUNDS);
+
+  // Destroyed as soon as this thread's wait returns, while the other may still be on its way out (bionic waits for
+  // it); then the memory is reused. 500 times.
+  for (int i = 0; i < 500; i++) {
+    _Alignas(8) unsigned char buf[sizeof(pthread_barrier_t)];
+    pthread_barrier_t *b = (pthread_barrier_t *)buf;
+    if (pthread_barrier_init(b, NULL, 2)) FAIL("pthread_barrier_init failed (round %d)", i);
+    pthread_t other;
+    pthread_create(&other, NULL, wait_once, b);
+    pthread_barrier_wait(b);
+    if (pthread_barrier_destroy(b)) FAIL("pthread_barrier_destroy failed right after a round (round %d)", i);
+    memset(buf, 0xa5, sizeof buf);
+    pthread_join(other, NULL);
+  }
   return "ok";
 }
 
@@ -442,6 +513,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_LoaderFixture_check(JNIEnv 
                   : !strcmp(name, "mutex")    ? check_mutex()
                   : !strcmp(name, "cond")     ? check_cond()
                   : !strcmp(name, "threadAttr") ? check_thread_attr()
+                  : !strcmp(name, "barrier")  ? check_barrier()
                   : !strcmp(name, "setjmp")   ? check_setjmp()
                                               : "no such check";
   (*env)->ReleaseStringUTFChars(env, jname, name);
