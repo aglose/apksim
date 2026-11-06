@@ -322,6 +322,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private ByteBuffer input;
     private ByteBuffer rgba;
     private final Bitmap[] pool = new Bitmap[3];
+    private static final boolean AT_VIEW_SIZE = !"false".equals(System.getProperty("apksim.videoAtViewSize"));
     private int next;
     private final Set<Long> pictures = new HashSet<>();
 
@@ -466,8 +467,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       int w = VideoToolbox.nativePictureWidth(picture);
       int h = VideoToolbox.nativePictureHeight(picture);
       int[] view = VideoSurfaces.viewSize(target);
-      if (view != null) {
-        // Drawn at the view's size: scaling a 4K picture down on the raster thread every frame is far slower.
+      if (view != null && AT_VIEW_SIZE) {
+        // Converted at the view's size, which the view draws 1:1: scaling on the raster thread every frame (a 4K
+        // picture down, or a small one up into a large view) is far slower than in VideoToolbox's transfer here.
+        w = view[0];
+        h = view[1];
+      } else if (view != null) {
         w = Math.min(w, view[0]);
         h = Math.min(h, view[1]);
       }

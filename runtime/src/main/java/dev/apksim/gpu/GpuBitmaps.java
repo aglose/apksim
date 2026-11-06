@@ -11,18 +11,27 @@ import java.util.Map;
 
 /**
  * Scaled bitmap draws resampled on Metal. HWUI here samples a scaled bitmap with Skia's CPU pipeline, about 10 ns a
- * pixel: map and photo tiles drawn scaled took most of a frame (a map screen, ~9 ms per full-screen layer). Here
- * a draw of a bitmap scaled to w x h device pixels gets a copy already that size, made once on the GPU with the same
- * bilinear sampling, which HWUI then draws 1:1 as a plain blit. Copies are kept while they are drawn, and made only
- * for a size asked for again within a few frames, so a zoom (a new size every frame) stays on the CPU. (Tiles placed
- * on rounded edges alternate between two widths as they move, so "again" cannot mean the very next frame.)
+ * pixel: map and photo tiles drawn scaled took most of a frame (a map screen, ~9 ms per full-screen layer), and a
+ * full-screen ImageView or BitmapDrawable background on a 2560x1600 tablet ~20 ms. Here a draw of a bitmap scaled to
+ * w x h device pixels gets a copy already that size, made once on the GPU with the same bilinear sampling, which HWUI
+ * then draws 1:1 as a plain blit. Every recorded drawBitmap reaches it ({@link ShadowGpuRecordingCanvas}: framework
+ * Views and app code alike). Copies are kept while they are drawn. One is made the first time a bitmap is drawn (a
+ * View records its background once and HWUI redraws that recording every frame, so there is no second ask), and
+ * after that only for a size and content asked for again within a few frames, so a zoom (a new size every frame) or
+ * video (new pixels) stays on the CPU after its first frame. (Tiles placed on rounded edges alternate between two widths as they move, so "again" cannot
+ * mean the very next frame.)
  *
- * <p>Main thread only (where Compose records). A node scaled again by HWUI (a graphicsLayer scale) samples the copy a
- * second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
+ * <p>Main thread only (where Views and Compose record). A node scaled again by HWUI (a graphicsLayer scale) samples
+ * the copy a second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
  */
 final class GpuBitmaps {
+  /**
+   * Not in test runs: their recordings are dropped, never rasterized, and no frame ticks, so copies would be made for
+   * nothing and never freed.
+   */
   static final boolean ENABLED = !"false".equals(System.getProperty("apksim.gpuBitmaps"))
-      && !Boolean.getBoolean("apksim.noGpu") && !dev.apksim.Snapshot.ON && dev.apksim.HostOs.MAC;
+      && !Boolean.getBoolean("apksim.noGpu") && !dev.apksim.Snapshot.ON && dev.apksim.HostOs.MAC
+      && System.getProperty("apksim.instrument") == null;
   private static final int MIN_PIXELS = 64 * 64;
   private static final long BUDGET_BYTES = 96L << 20;
   /** Frames a copy or an uploaded source survives without being drawn. */
@@ -55,6 +64,11 @@ final class GpuBitmaps {
   private static final Map<Key, Entry> SCALED = new HashMap<>();
   /** Sizes asked for and not made yet, with the frame they were last asked for. */
   private static final Map<Key, Long> SEEN = new HashMap<>();
+  /**
+   * Every bitmap asked for, with the frame it was last asked for (at any size or content), kept as long as copies:
+   * a player's pool of pictures each drawn every few frames with new pixels must not count as new bitmaps.
+   */
+  private static final Map<Bitmap, Long> DRAWN = new IdentityHashMap<>();
   private static final Map<Bitmap, Source> SOURCES = new IdentityHashMap<>();
   private static ByteBuffer scratch = ByteBuffer.allocateDirect(1 << 20).order(ByteOrder.nativeOrder());
   private static long frame;
@@ -62,15 +76,24 @@ final class GpuBitmaps {
 
   static long made;
   static long hits;
-  /** Draws left to HWUI, by reason: [config or size, first ask, over budget, off whole pixels or not scale+translate]. */
+  /** Draws left to HWUI, by reason: [too small, first ask, over budget, off whole pixels or not scale+translate]. */
   static final long[] passed = new long[4];
+  /** Draws left to HWUI because of the bitmap's config, by config. */
+  private static final Map<String, Long> CONFIGS = new java.util.TreeMap<>();
+  /** True while a self-test draws HWUI's own result to compare with. */
+  static boolean suspended;
 
   private GpuBitmaps() {}
 
   /** The bitmap to draw in place of [b] scaled from [src] (null: all of it) to w x h device pixels, or null. */
   static Bitmap scaled(Bitmap b, Rect src, int w, int h) {
-    if (!ENABLED || b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || (long) w * h < MIN_PIXELS) {
+    if (!ENABLED || b.isRecycled()) return null;
+    if ((long) w * h < MIN_PIXELS) {
       passed[0]++;
+      return null;
+    }
+    if (b.getConfig() != Bitmap.Config.ARGB_8888) {
+      CONFIGS.merge(String.valueOf(b.getConfig()), 1L, Long::sum);
       return null;
     }
     int sl = src == null ? 0 : src.left;
@@ -79,6 +102,7 @@ final class GpuBitmaps {
     int sb = src == null ? b.getHeight() : src.bottom;
     if (sr - sl == w && sb - st == h || sr <= sl || sb <= st) return null;
     Key key = new Key(b, b.getGenerationId(), sl, st, sr, sb, w, h);
+    Long drawn = DRAWN.put(b, frame);
     Entry e = SCALED.get(key);
     if (e != null) {
       e.used = frame;
@@ -86,7 +110,8 @@ final class GpuBitmaps {
       return e.scaled;
     }
     Long seen = SEEN.put(key, frame);
-    if (seen == null || seen < frame - REPEAT_FRAMES) {
+    boolean firstOfBitmap = drawn == null;
+    if (!firstOfBitmap && (seen == null || seen < frame - REPEAT_FRAMES)) {
       passed[1]++;
       return null;
     }
@@ -171,7 +196,7 @@ final class GpuBitmaps {
   /** Once a frame, on the main thread: lets go of copies and sources no longer drawn. */
   static void tick() {
     frame++;
-    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty()) return;
+    if (SCALED.isEmpty() && SEEN.isEmpty() && DRAWN.isEmpty() && SOURCES.isEmpty()) return;
     long stale = frame - KEEP_FRAMES;
     for (Iterator<Entry> i = SCALED.values().iterator(); i.hasNext(); ) {
       Entry e = i.next();
@@ -182,6 +207,7 @@ final class GpuBitmaps {
       }
     }
     SEEN.values().removeIf(f -> f < frame - REPEAT_FRAMES);
+    DRAWN.values().removeIf(f -> f < stale);
     for (Iterator<Source> i = SOURCES.values().iterator(); i.hasNext(); ) {
       Source s = i.next();
       if (s.used < stale) {
@@ -193,7 +219,8 @@ final class GpuBitmaps {
 
   /** For the `shaders` command. */
   static String report() {
-    return String.format("scaled bitmaps: cached=%d (%d MB) made=%d hits=%d sources=%d; to HWUI: small/config=%d new=%d budget=%d"
-        + " unaligned=%d", SCALED.size(), bytes >> 20, made, hits, SOURCES.size(), passed[0], passed[1], passed[2], passed[3]);
+    return String.format("scaled bitmaps: cached=%d (%d MB) made=%d hits=%d sources=%d; to HWUI: small=%d config=%s new=%d"
+        + " budget=%d unaligned=%d", SCALED.size(), bytes >> 20, made, hits, SOURCES.size(), passed[0],
+        CONFIGS.isEmpty() ? "0" : CONFIGS.toString().replace(" ", ""), passed[1], passed[2], passed[3]);
   }
 }
