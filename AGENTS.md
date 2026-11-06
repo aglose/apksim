@@ -668,6 +668,14 @@ regression check is `scripts/check-translator.sh` (CI too): `testapks/translator
 miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
 a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
 `.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
+The native loader's is `testapks/loader-fixture` (`loaderfixture.c`, built with the NDK by its `build.sh` into the
+test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so the test app needs no NDK), run by
+`NativeLoaderTest` in the suite, so on the Mac and in both Linux images: the stack guard through the thread pointer,
+TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
+variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
+built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
+libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
+new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
@@ -954,6 +962,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
 - An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
+- `testapks/loader-fixture`: a native library of loader and bionic checks inside the test app (see "Instrumentation tests").
 
 ## Open work
 - **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, the four failures that are the
