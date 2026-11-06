@@ -10,6 +10,9 @@ class StartupProvider : ContentProvider() {
     // With --jvm -Ddev.apksim.testapp.crash_in_provider=true (apksim only): a provider whose onCreate throws (issue 104).
     if (System.getProperty("dev.apksim.testapp.crash_in_provider").toBoolean()) throw IllegalStateException("thrown in a provider's onCreate")
     created = true
+    // A startup initializer reading the battery: the system's sticky broadcast is there before any provider runs.
+    batteryAtCreate = context?.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+      ?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
     return true
   }
 
@@ -21,5 +24,6 @@ class StartupProvider : ContentProvider() {
 
   companion object {
     @Volatile var created = false
+    @Volatile var batteryAtCreate: Int? = null
   }
 }

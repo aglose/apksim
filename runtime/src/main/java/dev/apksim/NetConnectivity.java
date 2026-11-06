@@ -1,8 +1,6 @@
 package dev.apksim;
 
 import android.app.Application;
-import android.content.Intent;
-import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -18,7 +16,7 @@ import org.robolectric.shadows.ShadowConnectivityManager;
 
 /**
  * `network offline` as ConnectivityManager shows it: the networks go away (no active network, callbacks get onLost,
- * the CONNECTIVITY_ACTION broadcast says there is no connectivity), and come back with `network online`
+ * the sticky CONNECTIVITY_ACTION broadcast says there is no connectivity), and come back with `network online`
  * (onAvailable, onCapabilitiesChanged, onLinkPropertiesChanged), as on a device whose Wi-Fi is turned off and on.
  * Robolectric keeps that state in ShadowConnectivityManager's static fields, so it can be set before the Application
  * exists: with --network-profile offline, Application.onCreate already sees no network.
@@ -70,15 +68,10 @@ final class NetConnectivity {
       shadow.clearAllNetworks();
       shadow.setActiveNetworkInfo(null);  // first: with no active network Robolectric notifies no one below
       shadow.setDefaultNetworkActive(false);
-      // Robolectric keeps no request with a callback, so each hears of the default network, as a default network
-      // callback does (the common kind); one registered for a VPN alone is told of the default network too.
-      for (ConnectivityManager.NetworkCallback cb : new ArrayList<>(shadow.getNetworkCallbacks())) {
-        for (Saved s : saved) if (s.active) cb.onLost(s.network);
-      }
     } else {
       if (saved == null) return;
       // Before there is an active network again: with one, Robolectric calls onAvailable itself, and the callbacks
-      // below would hear of it twice (it also skips onCapabilitiesChanged and onLinkPropertiesChanged).
+      // would hear of it twice (ShadowSimConnectivityManager.rematch below tells them).
       shadow.setDefaultNetworkActive(true);
       for (Saved s : saved) {
         shadow.addNetwork(s.network, s.info);
@@ -86,21 +79,65 @@ final class NetConnectivity {
         if (s.link != null) shadow.setLinkProperties(s.network, s.link);
         if (s.active) shadow.setActiveNetworkInfo(s.info);
       }
-      for (ConnectivityManager.NetworkCallback cb : new ArrayList<>(shadow.getNetworkCallbacks())) {
-        for (Saved s : saved) {
-          if (!s.active) continue;
-          cb.onAvailable(s.network);
-          if (s.caps != null) cb.onCapabilitiesChanged(s.network, s.caps);
-          if (s.link != null) cb.onLinkPropertiesChanged(s.network, s.link);
-        }
-      }
       saved = null;
     }
+    // Each callback hears of what it gains or loses (onLost; onAvailable, onCapabilitiesChanged, ...), as its request
+    // says: a default callback of the default network, a listen of every network it matches.
+    ShadowSimConnectivityManager.rematch();
     Application app = RuntimeEnvironment.application;
     if (app == null) return;  // before the Application: there is no one to tell yet
+    SystemBroadcasts.network(app);  // CONNECTIVITY_ACTION and Wi-Fi's NETWORK_STATE_CHANGED, sticky as on a device
+  }
+
+  /**
+   * For SystemSourcesTest only (it calls this by reflection): the device moves its default network from Wi-Fi to
+   * Ethernet, as when it is plugged in. Ethernet comes up with the same capabilities and becomes the default while
+   * Wi-Fi stays up; then Wi-Fi disconnects. Callbacks hear each step (rematch).
+   */
+  static void switchDefaultToEthernetForTest() {
+    ShadowConnectivityManager shadow = new ShadowConnectivityManager();
+    NetworkInfo activeInfo = staticField("activeNetworkInfo");
+    Map<Integer, Network> networks = staticField("netIdToNetwork");
+    Map<Network, NetworkCapabilities> caps = staticField("networkCapabilitiesMap");
+    Map<Network, LinkProperties> links = staticField("linkPropertiesMap");
+    Network wifi = networks.get(activeInfo.getType());
     @SuppressWarnings("deprecation")
-    Intent intent = new Intent(ConnectivityManager.CONNECTIVITY_ACTION).putExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, offline);
-    app.sendBroadcast(intent);
+    int ethernet = android.net.ConnectivityManager.TYPE_ETHERNET;
+    // Robolectric's active network is the one whose netId is the active NetworkInfo's type.
+    Network eth = org.robolectric.shadows.ShadowNetwork.newInstance(ethernet);
+    NetworkInfo info = org.robolectric.shadows.ShadowNetworkInfo.newInstance(
+        NetworkInfo.DetailedState.CONNECTED, ethernet, 0, true, NetworkInfo.State.CONNECTED);
+    NetworkCapabilities ethCaps = new NetworkCapabilities(caps.get(wifi));
+    ethCaps.setTransportInfo(null);
+    org.robolectric.Shadows.shadowOf(ethCaps).removeTransportType(NetworkCapabilities.TRANSPORT_WIFI);
+    org.robolectric.Shadows.shadowOf(ethCaps).addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET);
+    shadow.addNetwork(eth, info);
+    shadow.setNetworkCapabilities(eth, ethCaps);
+    if (links.get(wifi) != null) shadow.setLinkProperties(eth, new LinkProperties(links.get(wifi)));
+    shadow.setActiveNetworkInfo(info);
+    ShadowSimConnectivityManager.rematch();
+    shadow.removeNetwork(wifi);
+    caps.remove(wifi);
+    links.remove(wifi);
+    ShadowSimConnectivityManager.rematch();
+  }
+
+  /**
+   * For SystemSourcesTest only (by reflection): a disconnected network with capabilities, as Robolectric's own Wi-Fi
+   * is before HostNetworks replaces it. Returns its netId.
+   */
+  @SuppressWarnings("deprecation")
+  static int addDisconnectedNetworkForTest() {
+    ShadowConnectivityManager shadow = new ShadowConnectivityManager();
+    int netId = 4242;
+    Network n = org.robolectric.shadows.ShadowNetwork.newInstance(netId);
+    NetworkInfo info = org.robolectric.shadows.ShadowNetworkInfo.newInstance(NetworkInfo.DetailedState.DISCONNECTED,
+        android.net.ConnectivityManager.TYPE_WIFI, 0, true, NetworkInfo.State.DISCONNECTED);
+    shadow.addNetwork(n, info);
+    NetworkCapabilities caps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance();
+    org.robolectric.Shadows.shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
+    shadow.setNetworkCapabilities(n, caps);
+    return netId;
   }
 
   @SuppressWarnings("unchecked")

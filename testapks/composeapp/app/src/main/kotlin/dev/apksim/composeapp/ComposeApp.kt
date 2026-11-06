@@ -56,6 +56,44 @@ open class ComposeApp : Application() {
         "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
     slotAtCreate = SlotStateActivity.describe(this)
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
+    listenForTheNetwork()
+  }
+
+  /**
+   * A network callback registered in onCreate, as an app's connectivity monitor does: a running instance installs the
+   * host's networks after onCreate, and the callback must still hear of them (apksim://system-sources shows it).
+   */
+  private fun listenForTheNetwork() {
+    startupNetwork.value = null
+    val cm = getSystemService(ConnectivityManager::class.java)
+    val request = android.net.NetworkRequest.Builder().addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
+    cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: android.net.Network) { startupNetwork.value = "available" }
+    })
+    // What a monitor registered here hears first: on a connected device, never "lost" or "down" before "up".
+    startupHeard.clear()
+    cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: android.net.Network) { synchronized(startupHeard) { startupHeard += "default up" } }
+      override fun onLost(network: android.net.Network) { synchronized(startupHeard) { startupHeard += "default lost" } }
+    })
+    @Suppress("DEPRECATION")
+    val receiver = object : android.content.BroadcastReceiver() {
+      override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+        val heard = when (i.action) {
+          ConnectivityManager.CONNECTIVITY_ACTION ->
+            if (i.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)) "connectivity down" else "connectivity up"
+          else -> {
+            val info = i.getParcelableExtra<android.net.NetworkInfo>(android.net.wifi.WifiManager.EXTRA_NETWORK_INFO)
+            if (info?.isConnected == true) "wifi up" else "wifi down"
+          }
+        }
+        synchronized(startupHeard) { startupHeard += heard }
+      }
+    }
+    @Suppress("DEPRECATION")
+    val filter = android.content.IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+      .apply { addAction(android.net.wifi.WifiManager.NETWORK_STATE_CHANGED_ACTION) }
+    registerReceiver(receiver, filter, RECEIVER_EXPORTED)
   }
 
   /**
@@ -93,6 +131,10 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
+    /** "available" once the callback listenForTheNetwork registered heard of a network. */
+    val startupNetwork = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    /** What a default callback and a connectivity/Wi-Fi receiver registered in onCreate heard, in order. */
+    val startupHeard = mutableListOf<String>()
     /** The slot's Settings value and /sdcard file in onCreate (SlotStateActivity, apksim://slot). */
     @Volatile var slotAtCreate: String? = null
     /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter, or the device refused: "unknown"). */

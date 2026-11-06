@@ -10,6 +10,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
@@ -55,6 +56,24 @@ final class HostNetworks {
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
       if (!tunnel) capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+      // What a device's Wi-Fi network also has, and a NetworkRequest asks for by default (NOT_RESTRICTED, TRUSTED,
+      // NOT_VPN, NOT_VCN_MANAGED): without them no request matched the network (ShadowSimConnectivityManager).
+      for (int c : new int[] {NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED, NetworkCapabilities.NET_CAPABILITY_TRUSTED,
+          NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING, NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED,
+          NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED, NetworkCapabilities.NET_CAPABILITY_FOREGROUND,
+          NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED}) {
+        capsShadow.addCapability(c);
+      }
+      if (!tunnel) {
+        capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+        // As ConnectivityService shows a Wi-Fi network to an app: its WifiInfo (location fields redacted) and signal.
+        InetAddress v4 = null;
+        for (InterfaceAddress a : ni.getInterfaceAddresses()) {
+          if (a.getAddress() instanceof Inet4Address && !a.getAddress().isLinkLocalAddress()) v4 = a.getAddress();
+        }
+        caps.setTransportInfo(SimWifi.connected(false, v4));
+        caps.setSignalStrength(SimWifi.RSSI);
+      }
       shadow.setNetworkCapabilities(network, caps);
 
       LinkProperties lp = new LinkProperties();
@@ -80,6 +99,13 @@ final class HostNetworks {
         shadow.setNetworkCapabilities(reported, activeCaps);
         shadow.setLinkProperties(reported, activeLinks);
       }
+    }
+    // Callbacks registered before (in Application.onCreate, when Host installs these after it) hear of them now, and
+    // the sticky broadcasts say so. Not with --network-profile offline: NetConnectivity.networksReplaced, next, takes
+    // these away again, then tells everyone there is no network (else they would hear connected, then not).
+    if (!dev.apksim.net.Net.offline()) {
+      ShadowSimConnectivityManager.rematch();
+      SystemBroadcasts.network(context);
     }
   }
 

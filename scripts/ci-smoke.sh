@@ -74,6 +74,18 @@ echo "Popup and Trace: $shown-> $tapped"
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+# System state as apps read it and await it in coroutines (issue 96): Wi-Fi's signal level bucketed as
+# level / (max / 4) (getMaxSignalLevel() was 0: a division by zero), Wi-Fi's, the network's and the battery's sticky
+# broadcasts, network
+# callbacks (one registered in Application.onCreate), VOLUME_CHANGED_ACTION, a settings observer
+# (apksim://system-sources, 3 s each). Bluetooth's profile proxy waits for Bluetooth to be on, as on a device.
+drive 'open apksim://system-sources' 'wait 5000' >/dev/null
+sources="$(drive nodes | grep -oE 'text="[a-z ]+: [^"]*"' | grep -v 'bluetooth profile' || true)"
+echo "System sources: $(echo "$sources" | wc -l | tr -d ' ') answered or timed out"
+if [[ "$(echo "$sources" | grep -c ': ')" -lt 12 ]] || echo "$sources" | grep -qE 'timed out|: error'; then
+  echo "$sources"; echo "a system source never answered" >&2; exit 1
+fi
+drive back 'wait 1000' >/dev/null
 
 # Every zone source an app reads follows --timezone, Joda-Time's (it reads user.timezone) included, and `timezone ZONE`
 # changes them all and broadcasts ACTION_TIMEZONE_CHANGED, which the screen hears as joda-time-android does (the test

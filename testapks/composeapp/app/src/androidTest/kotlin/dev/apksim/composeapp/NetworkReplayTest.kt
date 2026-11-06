@@ -2,6 +2,8 @@ package dev.apksim.composeapp
 
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -62,8 +64,7 @@ class NetworkReplayTest {
       override fun onLost(network: Network) { lost++ }
       override fun onAvailable(network: Network) { available++ }
     }
-    cm.registerDefaultNetworkCallback(callback)
-    val availableAtStart = available  // as on a device, registering may report the current network at once
+    cm.registerDefaultNetworkCallback(callback, Handler(Looper.getMainLooper()))  // as on a device, it hears of the current network (posted)
     try {
       shell("apksim network offline")
       assertEquals("onLost calls", 1, lost)
@@ -72,7 +73,7 @@ class NetworkReplayTest {
       assertTrue("offline gave $e", e is UnknownHostException || e is IOException)
       assertTrue(runCatching { GreetingClient.fetchWithUrlConnection() }.exceptionOrNull() is UnknownHostException)
       shell("apksim network online")
-      assertEquals("onAvailable calls after coming back", availableAtStart + 1, available)
+      assertEquals("onAvailable calls: at registration, then after coming back", 2, available)
       assertNotNull(cm.activeNetwork)
       assertEquals(200, GreetingClient.fetch().code)
     } finally {

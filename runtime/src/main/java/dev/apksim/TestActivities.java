@@ -595,6 +595,9 @@ public final class TestActivities {
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
       DeviceControls.applyAnimScaleOption(app);  // --anim-scale, so the app's startup code sees it too
+      // Battery, Wi-Fi and network stickies: before the providers InstallState creates, which may read them (its
+      // HostNetworks install brings the network ones up to date, before the providers).
+      SystemBroadcasts.beforeApplicationOnCreate(app);
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it. Nor for
       // a standby's warm-up, which has no APK.
       if (testRun() ? !RunnerApplication.probing : instance) {
