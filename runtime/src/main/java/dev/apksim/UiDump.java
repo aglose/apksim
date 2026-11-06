@@ -4,6 +4,8 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.util.Xml;
 import android.view.Display;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -139,16 +141,46 @@ final class UiDump {
     List<AccessibilityNodeInfo> out = new ArrayList<>();
     for (int i = 0; i < n.getChildCount(); i++) {
       AccessibilityNodeInfo c = n.getChild(i);
-      if (c != null && compressed && isView(c) && !c.isImportantForAccessibility()) out.addAll(children(c, true));
+      if (c != null && compressed && !important(c)) out.addAll(children(c, true));
       else out.add(c);
     }
     return out;
   }
 
-  /** A view's own node, not a virtual one of a provider (Compose semantics are always important). */
-  private static boolean isView(AccessibilityNodeInfo n) {
-    int virtual = AccessibilityNodeInfo.getVirtualDescendantId(n.getSourceNodeId());
-    return virtual == AccessibilityNodeInfo.UNDEFINED_ITEM_ID || virtual == android.view.accessibility.AccessibilityNodeProvider.HOST_VIEW_ID;
+  /**
+   * Whether a compressed dump keeps the node, as the system decides for a service that does not ask for views not
+   * important for accessibility: a view by its own View.isImportantForAccessibility (true for a provider host such as
+   * AndroidComposeView, an actionable view, one with listeners, a delegate or a live region), whatever its node says
+   * (Compose marks its root node unimportant); a provider's virtual node always.
+   */
+  private static boolean important(AccessibilityNodeInfo n) {
+    long source = n.getSourceNodeId();
+    int virtual = AccessibilityNodeInfo.getVirtualDescendantId(source);
+    // A provider host's own node comes from the provider (HOST_VIEW_ID), so it counts as the view's.
+    boolean view = virtual == AccessibilityNodeInfo.UNDEFINED_ITEM_ID
+        || virtual == android.view.accessibility.AccessibilityNodeProvider.HOST_VIEW_ID;
+    if (!view) return true;
+    View v = viewById(AccessibilityNodeInfo.getAccessibilityViewId(source));
+    return v != null ? v.isImportantForAccessibility() : n.isImportantForAccessibility();
+  }
+
+  private static View viewById(int accessibilityViewId) {
+    for (View root : ShadowSimUiAutomation.rootViews()) {
+      View v = find(root, accessibilityViewId);
+      if (v != null) return v;
+    }
+    return null;
+  }
+
+  private static View find(View v, int accessibilityViewId) {
+    if (v.getAccessibilityViewId() == accessibilityViewId) return v;
+    if (v instanceof ViewGroup g) {
+      for (int i = 0; i < g.getChildCount(); i++) {
+        View found = find(g.getChildAt(i), accessibilityViewId);
+        if (found != null) return found;
+      }
+    }
+    return null;
   }
 
   /** The tool's: bounds in screen intersected with the display, empty when outside it. */

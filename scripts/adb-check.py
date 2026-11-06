@@ -92,9 +92,29 @@ def uiautomator_dump(serial):
     xml, _, tail = out.rpartition("UI hierchary dumped to: ")
     if tail.strip() != "/dev/tty":
         fail(f"uiautomator dump /dev/tty ended {out[-80:]!r}")
-    compressed = list(ET.fromstring(xml).iter("node"))
+    compressed_root = ET.fromstring(xml)
+    compressed = list(compressed_root.iter("node"))
     if not compressed or len(compressed) >= len(nodes) or any(n.get("class") == "android.widget.LinearLayout" for n in compressed):
         fail(f"uiautomator dump --compressed kept views not important for accessibility ({len(compressed)} of {len(nodes)})")
+    # The provider host (AndroidComposeView, the ComposeView's child) is important on a device, so compressed keeps it
+    # and every Compose node under it: the same path from the ComposeView down to the FAB as in the full dump.
+    def path_to_fab(tree):
+        for cv in tree.iter("node"):
+            if cv.get("class") == "androidx.compose.ui.platform.ComposeView":
+                def down(n, path):
+                    if n.get("resource-id") == "fab":
+                        return path
+                    for c in n:
+                        p = down(c, path + [(c.get("index"), c.get("class"), c.get("bounds"))])
+                        if p:
+                            return p
+                    return None
+                return down(cv, [])
+        return None
+    full_path, compressed_path = path_to_fab(root), path_to_fab(compressed_root)
+    if not compressed_path or compressed_path != full_path:
+        fail(f"uiautomator dump --compressed dropped the AndroidComposeView or Compose nodes above the FAB:"
+             f" {compressed_path} against {full_path}")
     adb(serial, "shell", "rm", "/sdcard/window_dump.xml")
     # A file it cannot write (no such folder) is an error the shell goes on from, so a `||` fallback runs.
     out = adb(serial, "shell", "uiautomator dump /sdcard/missing/dump.xml || echo fallback").strip()

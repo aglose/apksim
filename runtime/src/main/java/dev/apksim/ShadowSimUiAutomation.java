@@ -83,6 +83,13 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return out;
   }
 
+  /** The root views of the shown windows, bottom to top; main thread only. */
+  static List<View> rootViews() {
+    List<View> out = new ArrayList<>();
+    for (Win w : windows()) out.add(w.view);
+    return out;
+  }
+
   private static int windowId(ViewRootImpl root) {
     synchronized (WINDOW_IDS) {
       return WINDOW_IDS.computeIfAbsent(root, r -> nextWindowId++);
