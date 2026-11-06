@@ -397,10 +397,19 @@ static int s_mutex_lock(void *m) { return d2a_errno(pthread_mutex_lock(host_mute
 static int s_mutex_trylock(void *m) { return d2a_errno(pthread_mutex_trylock(host_mutex(m))); }
 static int s_mutex_unlock(void *m) { return d2a_errno(pthread_mutex_unlock(host_mutex(m))); }
 
+typedef struct { _Atomic(void *) host; int clock; } CondShell;
+static inline CondShell *cond_shell(void *c) { return (CondShell *)shell_of(c); }
+
+// Android's static initialisers: PTHREAD_COND_INITIALIZER is all zeros, PTHREAD_COND_INITIALIZER_MONOTONIC_NP has 2
+// in its first int. That int is the host slot's low half when the object is 8-aligned, else just before the slot
+// (malloc'd host pointers never have bit 1 set).
+static int static_cond_monotonic(void *c, void *h) { return (((uintptr_t)h | (uint32_t)*(int *)c) & 2) != 0; }
+
 static pthread_cond_t *host_cond(void *c) {
   Shell *s = shell_of(c);
   void *h = atomic_load(&s->host);
-  if (h) return h;
+  if (!is_static_init(h)) return h;
+  if (static_cond_monotonic(c, h)) cond_shell(c)->clock = 1;  // every thread racing here stores the same
   pthread_cond_t *n = malloc(sizeof *n);
   pthread_cond_init(n, NULL);
   if (atomic_compare_exchange_strong(&s->host, &h, n)) return n;
@@ -408,10 +417,9 @@ static pthread_cond_t *host_cond(void *c) {
   free(n);
   return atomic_load(&s->host);
 }
-// The clock a condition variable's timed waits measure their deadline on, kept beside its host pointer (Android's
-// pthread_cond_t is 48 bytes): 0 is CLOCK_REALTIME, which the all-zero static initialiser means, 1 CLOCK_MONOTONIC.
-typedef struct { _Atomic(void *) host; int clock; } CondShell;
-static inline CondShell *cond_shell(void *c) { return (CondShell *)shell_of(c); }
+// CondShell.clock: the clock a condition variable's timed waits measure their deadline on, kept beside its host
+// pointer (Android's pthread_cond_t is 48 bytes): 0 is CLOCK_REALTIME, 1 CLOCK_MONOTONIC (pthread_condattr_setclock,
+// or the monotonic static initialiser, read by host_cond).
 
 static int s_cond_init(void *c, void *a) {
   atomic_store(&shell_of(c)->host, NULL);
@@ -421,7 +429,7 @@ static int s_cond_init(void *c, void *a) {
 }
 static int s_cond_destroy(void *c) {
   void *h = atomic_exchange(&shell_of(c)->host, NULL);
-  if (h) {
+  if (!is_static_init(h)) {
     pthread_cond_destroy(h);
     free(h);
   }
@@ -445,7 +453,10 @@ static int cond_wait_until(void *c, void *m, int clk, const struct timespec *t) 
   if (rel.tv_sec < 0) return d2a_errno(ETIMEDOUT);
   return d2a_errno(pthread_cond_timedwait_relative_np(host_cond(c), host_mutex(m), &rel));
 }
-static int s_cond_timedwait(void *c, void *m, const struct timespec *t) { return cond_wait_until(c, m, cond_shell(c)->clock, t); }
+static int s_cond_timedwait(void *c, void *m, const struct timespec *t) {
+  host_cond(c);  // a static initialiser's clock is known once it is boxed
+  return cond_wait_until(c, m, cond_shell(c)->clock, t);
+}
 static int s_cond_timedwait_monotonic(void *c, void *m, const struct timespec *t) { return cond_wait_until(c, m, 1, t); }
 static int s_cond_clockwait(void *c, void *m, int clk, const struct timespec *t) {
   if (clk != 0 && clk != 1) return 22;  // EINVAL: bionic takes CLOCK_REALTIME and CLOCK_MONOTONIC only
@@ -587,21 +598,24 @@ static int s_attr_getinheritsched(AAttr *a, int *p) { *p = a->inherit; return 0;
 static int s_attr_setscope(AAttr *a, int p) { a->scope = p; return 0; }
 static int s_attr_getscope(AAttr *a, int *p) { *p = a->scope; return 0; }
 
-// Which threads are detached, for pthread_getattr_np: macOS cannot report it. A thread this shim starts records its
-// state as it starts (clearing any left by an exited thread with the same pthread_t) and drops it as it exits;
-// pthread_detach records its target.
+// Which threads are detached, for pthread_getattr_np: macOS cannot report it. pthread_create records a new thread's
+// state while holding the lock (clearing any left by an exited thread with the same pthread_t), so neither the
+// thread's exit, which drops it, nor a pthread_detach right after create, which records it, can come first.
 static pthread_mutex_t detached_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t detached[512];
 static int detached_n;
 static pthread_key_t exit_key;
 static pthread_once_t exit_once = PTHREAD_ONCE_INIT;
 
-static void set_detached(pthread_t t, int on) {
-  pthread_mutex_lock(&detached_lock);
+static void set_detached_locked(pthread_t t, int on) {
   int i = 0;
   while (i < detached_n && !pthread_equal(detached[i], t)) i++;
   if (on && i == detached_n && detached_n < 512) detached[detached_n++] = t;
   if (!on && i < detached_n) detached[i] = detached[--detached_n];
+}
+static void set_detached(pthread_t t, int on) {
+  pthread_mutex_lock(&detached_lock);
+  set_detached_locked(t, on);
   pthread_mutex_unlock(&detached_lock);
 }
 static int is_detached(pthread_t t) {
@@ -614,12 +628,11 @@ static int is_detached(pthread_t t) {
 static void thread_exiting(void *unused) { set_detached(pthread_self(), 0); }
 static void make_exit_key(void) { pthread_key_create(&exit_key, thread_exiting); }
 
-typedef struct { void *(*fn)(void *); void *arg; int detached; } ThreadStart;
+typedef struct { void *(*fn)(void *); void *arg; } ThreadStart;
 static void *thread_start(void *p) {
   ThreadStart s = *(ThreadStart *)p;
   free(p);
   pthread_setspecific(exit_key, (void *)1);  // so thread_exiting runs
-  set_detached(pthread_self(), s.detached);
   return s.fn(s.arg);
 }
 static int s_pthread_detach(pthread_t t) {
@@ -657,9 +670,12 @@ static int s_pthread_create(pthread_t *t, const AAttr *a, void *(*fn)(void *), v
   int detach = a && a->detach;
   if (detach) pthread_attr_setdetachstate(&h, PTHREAD_CREATE_DETACHED);
   ThreadStart *s = malloc(sizeof *s);
-  *s = (ThreadStart){fn, arg, detach};
+  *s = (ThreadStart){fn, arg};
+  pthread_mutex_lock(&detached_lock);
   int r = pthread_create(t, &h, thread_start, s);
   if (r) free(s);
+  else set_detached_locked(*t, detach);
+  pthread_mutex_unlock(&detached_lock);
   pthread_attr_destroy(&h);
   return d2a_errno(r);
 }

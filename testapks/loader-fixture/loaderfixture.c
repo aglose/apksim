@@ -283,6 +283,27 @@ static void add_ms(struct timespec *t, long ms) {
   t->tv_nsec %= 1000000000L;
 }
 
+// The monotonic static initialiser, 8-aligned and at 4 mod 8: timed waits measure their deadline on the monotonic
+// clock without any init call.
+static _Alignas(8) pthread_cond_t mono_aligned = PTHREAD_COND_INITIALIZER_MONOTONIC_NP;
+static struct { int pad; pthread_cond_t c; } __attribute__((aligned(8))) mono_odd = {0, PTHREAD_COND_INITIALIZER_MONOTONIC_NP};
+
+static const char *monotonic_wait(pthread_cond_t *c, const char *which) {
+  struct timespec t0, deadline;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  deadline = t0;
+  add_ms(&deadline, 100);
+  pthread_mutex_lock(STATIC_MUTEX);
+  int r = pthread_cond_timedwait(c, STATIC_MUTEX, &deadline);
+  pthread_mutex_unlock(STATIC_MUTEX);
+  double waited = since(&t0);
+  if (r != ETIMEDOUT) FAIL("%s monotonic static initialiser: timed wait returned %d, not ETIMEDOUT", which, r);
+  if (waited < 0.08 || waited > 5) FAIL("%s monotonic static initialiser: timed wait took %.3f s for 0.1 s", which, waited);
+  pthread_cond_signal(c);  // and the other calls take it too
+  pthread_cond_broadcast(c);
+  return NULL;
+}
+
 static const char *check_cond(void) {
   if ((uintptr_t)STATIC_COND % 8 != 4) FAIL("the fixture's condition variable is not at 4 mod 8");
   // Ping-pong: 2,000 hand-overs each way on a statically initialised condition variable.
@@ -327,7 +348,11 @@ static const char *check_cond(void) {
   pthread_cond_destroy(c);
   if (r != ETIMEDOUT) FAIL("monotonic timed wait returned %d, not ETIMEDOUT", r);
   if (waited < 0.08 || waited > 5) FAIL("monotonic timed wait took %.3f s for 0.1 s", waited);
-  return "ok";
+
+  if ((uintptr_t)&mono_odd.c % 8 != 4) FAIL("the fixture's odd monotonic condition variable is not at 4 mod 8");
+  const char *bad = monotonic_wait(&mono_aligned, "an 8-aligned");
+  if (!bad) bad = monotonic_wait(&mono_odd.c, "a 4 mod 8");
+  return bad ? bad : "ok";
 }
 
 // ---------------------------------------------------------------- thread attributes
@@ -354,6 +379,7 @@ static int detached_seen = -1;
 
 static void *detached_thread(void *p) {
   (void)p;
+  if (gate_wait() < 0) return NULL;
   pthread_attr_t a;
   int state = -2;
   if (!pthread_getattr_np(pthread_self(), &a)) {
@@ -367,23 +393,43 @@ static void *detached_thread(void *p) {
   return NULL;
 }
 
+static int detached_state_seen(void) {
+  pthread_mutex_lock(&gate_lock);
+  while (detached_seen == -1) pthread_cond_wait(&gate_cond, &gate_lock);
+  int state = detached_seen;
+  pthread_mutex_unlock(&gate_lock);
+  return state;
+}
+
 static const char *check_detached_attr(void) {
   pthread_attr_t a;
   pthread_attr_init(&a);
   pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
   pthread_mutex_lock(&gate_lock);
   detached_seen = -1;
+  gate = 1;
   pthread_mutex_unlock(&gate_lock);
   pthread_t t;
   int r = pthread_create(&t, &a, detached_thread, NULL);
   pthread_attr_destroy(&a);
   if (r) FAIL("pthread_create of a detached thread failed");
-  pthread_mutex_lock(&gate_lock);
-  while (detached_seen == -1) pthread_cond_wait(&gate_cond, &gate_lock);
-  int state = detached_seen;
-  pthread_mutex_unlock(&gate_lock);
+  int state = detached_state_seen();
   if (state == -2) FAIL("pthread_getattr_np failed in a detached thread");
   if (state != PTHREAD_CREATE_DETACHED) FAIL("a detached thread's pthread_getattr_np reports detach state %d", state);
+
+  // Created joinable and detached at once, before it has run any code of its own.
+  for (int i = 0; i < 50; i++) {
+    pthread_mutex_lock(&gate_lock);
+    detached_seen = -1;
+    gate = 0;
+    pthread_mutex_unlock(&gate_lock);
+    if (pthread_create(&t, NULL, detached_thread, NULL)) FAIL("pthread_create failed");
+    if (pthread_detach(t)) FAIL("pthread_detach failed");
+    gate_set(1);
+    state = detached_state_seen();
+    if (state != PTHREAD_CREATE_DETACHED)
+      FAIL("a thread detached right after pthread_create reports detach state %d (try %d)", state, i);
+  }
   return "ok";
 }
 
