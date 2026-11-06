@@ -46,6 +46,29 @@ Read README.md for results and limits; this file covers how to work on the code.
     and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
     up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
     (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
+  - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
+    had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
+    coroutine's exception to the thread's handler itself (traced: `propagateExceptionFinalResort`, ThreadGroup, no
+    default; AndroidExceptionPreHandler does nothing past API 27), and a crash reporter passing it on to the handler it
+    found (none) left nothing at all. Main sets `KillApplication` as the default before any app code: `E
+    AndroidRuntime: FATAL EXCEPTION: <thread>` (the main looper's is `main`), `Process: PKG, PID: N` and the stack through
+    android.util.Log (`adb logcat`; stderr too when logcat is off), then exit 10 (RuntimeInit's System.exit(10); warm,
+    the client's). An app's own default handler replaces it, as on a device; one that passes the exception on reaches
+    it. An exception leaving the main looper (Host's loop, the first activity's start, the Application's construction,
+    attachBaseContext and onCreate (SimRunner, TestActivities), and app code a command's lifecycle transition runs:
+    `Crashes.app` around restart, recreate, process-death, configuration changes, home/resume, memory, `Host.arrange`;
+    the command, menu item or adb shell call is answered `error: app crashed: ...` first; a command's bad arguments stay
+    `error:`/usage answers) is logged
+    first, as the device's pre-handler does, then goes to the thread's handler, and the process ends even if that
+    returns (the main thread is dead on a device). Not a device's: an app thread whose exception reaches the app's own
+    non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads (every thread
+    apksim starts is named `apksim-...`: keep it so for new ones) are printed and end alone, as before; every other
+    thread is the app's (not judged by the exception's stack, which may be a JDK one or have none). The adb log's tee is
+    put back in front of ShadowLog.stream before logging, and stderr gets the crash whenever Log.e failed. `--jvm -Dapksim.crashes=log` logs and runs on (the
+    main loop too), to look at a broken screen. Logging and each cleanup step are best-effort (an OutOfMemoryError may
+    be the crash) and `Standby.haltNow` always halts with 10, the client told first; `-Dapksim.crashTest.failCleanup=true`
+    makes the cache save throw, to check it. Test runs install nothing: AndroidJUnitRunner's handler
+    (MonitoringInstrumentation's, set in its onCreate) logs and the test goes on (`UncaughtExceptionTest`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
@@ -362,7 +385,8 @@ Then, as in test runs, what installing gives the app (`InstallState`, see "Instr
 granted (one app's onCreate threw "Need BLUETOOTH permission" before), an ANDROID_ID (from the data slot, as the
 serial), the host's networks, and the app's content providers created (AndroidX Startup's initializers ran never
 before, providers being made only when first queried); a provider that fails is logged and skipped
-(`-Dapksim.providerFailures=fail` stops the launch, as a device's crash). The standby's warm-up loads Conscrypt's
+(`-Dapksim.providerFailures=fail` crashes the launch as a device would: FATAL EXCEPTION, exit 10, see `Crashes`; log
+stays the default here, as a provider apksim cannot start may be apksim's gap, and such apps ran before). The standby's warm-up loads Conscrypt's
 native library, which OkHttp's startup initializer asks for (~125 ms of a warm launch otherwise). `apksim://install`
 (`InstallStateActivity`) shows what onCreate saw and binds to a service nothing provides (`ci-smoke.sh` checks it). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
@@ -392,6 +416,13 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
+`apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
+viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
+(`bare`); `resume`, `config`, `destroy` throw from the second onResume (`recreate`, `restart URL`), onConfigurationChanged
+(`appearance dark`, `rotate`) and onDestroy (`restart`); `handled` first sets a default handler that keeps the app
+running ("crash: handled by the app ..."), `chained` one that passes it on (`--activity .CrashActivity` is `coroutine`;
+`ci-smoke.sh` checks it exits 10 with FATAL EXCEPTION, `handled`, and the test app's attachBaseContext throwing with
+`--jvm -Ddev.apksim.testapp.crash_in_attach=true`).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
