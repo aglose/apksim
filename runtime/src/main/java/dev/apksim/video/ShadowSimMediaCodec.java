@@ -312,6 +312,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     return index >= 0 && index < buffers.length ? buffers[index] : null;
   }
 
+  /**
+   * Pictures are converted at the view's size, scaled up as well as down, so the view draws them 1:1. Off
+   * (`-Dapksim.videoUpscale=false`): a smaller picture is drawn scaled up by the view, on the raster thread every frame.
+   */
+  private static final boolean UPSCALE = !"false".equals(System.getProperty("apksim.videoUpscale"));
+
   /** One codec's VideoToolbox session, the Surface it draws to, and the pictures its output buffers hold. */
   private static final class Decoder implements CodecConfig.Codec {
     private final boolean hevc;
@@ -467,9 +473,16 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       int h = VideoToolbox.nativePictureHeight(picture);
       int[] view = VideoSurfaces.viewSize(target);
       if (view != null) {
-        // Drawn at the view's size: scaling a 4K picture down on the raster thread every frame is far slower.
-        w = Math.min(w, view[0]);
-        h = Math.min(h, view[1]);
+        // Converted at the view's size (VideoToolbox scales, on the thread releasing the buffer): Skia's bilinear on the
+        // raster thread was ~3.8 ms a frame for 1080p in a 2560x1600 view, and a picture smaller than its view was sent
+        // to GpuBitmaps, which resampled every new one on Metal for a copy never drawn twice.
+        if (UPSCALE) {
+          w = view[0];
+          h = view[1];
+        } else {
+          w = Math.min(w, view[0]);
+          h = Math.min(h, view[1]);
+        }
       }
       if (w <= 0 || h <= 0) return;
       if (rgba == null || rgba.capacity() < w * h * 4) rgba = ByteBuffer.allocateDirect(w * h * 4);

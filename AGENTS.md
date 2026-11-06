@@ -357,8 +357,10 @@ reference to the decoded picture, drawn into the Surface's TextureView on releas
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
-and plays silence; `--jvm -Dapksim.audio=false` turns sound and the audio decoders off. Bitmaps here are BGRA in memory (Skia's macOS order),
-not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
+and plays silence; `--jvm -Dapksim.audio=false` turns sound and the audio decoders off. Pictures are converted at
+the view's size (VideoToolbox scales them, up or down), so the view draws them 1:1: upscaling 1080p into a 2560x1600
+view on the raster thread cost ~3.8 ms a frame (`-Dapksim.videoUpscale=false` for A/B; `apksim://video` in the test
+app). Bitmaps here are BGRA in memory (Skia's macOS order), not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
 Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, and each live
 codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
 view to draw to), `webrtclog [info|verbose]`,
