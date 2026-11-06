@@ -423,6 +423,16 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
           if (stopped.contains(c)) Host.stopAgain(c);
           else Host.setWindowVisible(c.get(), true);
         }
+        // A recreated activity's window was added after the others: the stack's order again (TestActivities reads
+        // the stack from it), and the focus on its top. An activity above that handled the change itself kept its
+        // window, which was then below the recreated, hidden one.
+        List<ActivityController<?>> stack = new ArrayList<>(was.keySet());
+        ShadowSimWindowManagerImpl.reorder(v -> {
+          Activity a = TestActivities.activityOf(v);
+          for (int i = 0; i < stack.size(); i++) if (stack.get(i).get() == a) return i;
+          return -1;
+        });
+        ShadowSimWindowManagerImpl.focusTop();
       }
       settle(100);
       return true;

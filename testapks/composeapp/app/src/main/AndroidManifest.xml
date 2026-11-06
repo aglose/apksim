@@ -35,7 +35,9 @@
                 <data android:scheme="apksim" android:host="composeapp" />
             </intent-filter>
         </activity>
-        <activity android:name=".TripChooserActivity" android:exported="false" />
+        <!-- Handles size and orientation changes itself (not recreated on rotation): StackWindowsTest. -->
+        <activity android:name=".TripChooserActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
         <!-- apksim://network: an HTTPS fetch with OkHttp and with HttpURLConnection (docs/network.md "Checks"). -->
         <activity android:name=".NetworkActivity" android:exported="true">
             <intent-filter>

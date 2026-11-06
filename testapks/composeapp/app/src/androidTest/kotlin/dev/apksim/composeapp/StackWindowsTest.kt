@@ -67,6 +67,38 @@ class StackWindowsTest {
     }
   }
 
+  /**
+   * Rotating when only the stopped activity below is recreated (the top one, TripChooserActivity, handles the change
+   * itself): the stack keeps its order, so the next activity started goes over the top one, which is stopped.
+   */
+  @Test
+  fun aRotationKeepsTheStackOrder() {
+    assumeTrue(InstrumentationRegistry.getArguments().getString("startActivities") == "true")
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      scenario.onActivity { it.startActivity(Intent(it, TripChooserActivity::class.java)) }
+      assertNotNull(device.wait(Until.findObject(By.text("Choose a trip")), 5_000))
+      try {
+        device.setOrientationLeft()
+        assertNotNull(device.wait(Until.findObject(By.text("Choose a trip")), 5_000))
+        assertEquals(1, appWindows().size)
+        val context = instrumentation.targetContext
+        context.startActivity(Intent(context, SecondActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
+        assertFalse("the activity below is not shown", device.hasObject(By.text("Choose a trip")))
+        assertEquals(1, appWindows().size)
+        var focused = false
+        instrumentation.runOnMainSync {
+          focused = appWindows().singleOrNull()?.isFocused == true
+        }
+        assertTrue("the top window has the focus", focused)
+      } finally {
+        device.setOrientationNatural()
+        device.unfreezeRotation()
+      }
+    }
+  }
+
   /** Rotating with an activity stopped below the top: it gets the new configuration too, and comes back with it. */
   @Test
   fun aStoppedActivityFollowsARotation() {

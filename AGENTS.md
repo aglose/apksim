@@ -666,7 +666,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
   The stopped activity's window is hidden until it comes back (also for back on a launcher root, which sends the task
   to the background), so UiAutomator, UiAutomation's windows and screenshots, and failure bundles see only the top
-  one, and gets the window focus back when it returns (`StackWindowsTest`). Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were.
+  one, and gets the window focus back when it returns (`StackWindowsTest`). UiDevice rotation puts the windows back
+  in the stack's order afterwards (a recreated activity's window is added last) and the focus on the top one. Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were.
   Not yet: a start for a result (startActivityForResult, ActivityResultContracts) is still only recorded, so a flow
   that waits for the started activity's result needs the test to supply it, as with Robolectric.
 - Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's
