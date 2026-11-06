@@ -9,7 +9,8 @@
 App data, like simctl's listapps / get_app_container / erase (no instance needed):
   ctl.py apps                      packages with data, and their data folders (default, instance-N)
   ctl.py container PKG             a package's data folder(s)
-  ctl.py erase PKG                 deletes a package's data, as uninstalling would (refused while in use)
+  ctl.py erase PKG                 deletes a package's data, as uninstalling would (refused while in use), with what
+                                   each slot keeps of the device beside it (SLOT.device: /sdcard, Settings values)
 
 Instances need --control PORT or --control auto. Commands are those of the control channel (see AGENTS.md).
 """
@@ -57,10 +58,15 @@ def in_use(slot):
         return True
 
 
+def slot_names(pkg_dir):
+    """A package's data slots; SLOT.device beside each is that slot's /sdcard and settings (SlotDevice), not a slot."""
+    return sorted(s for s in os.listdir(pkg_dir) if not s.endswith(".device"))
+
+
 def data_command(argv):
     if argv[0] == "apps":
         for pkg in sorted(os.listdir(DATA)) if os.path.isdir(DATA) else []:
-            slots = sorted(os.listdir(os.path.join(DATA, pkg)))
+            slots = slot_names(os.path.join(DATA, pkg))
             print(f"{pkg:48} {', '.join(slots)}")
         return 0
     if len(argv) < 2:
@@ -70,7 +76,7 @@ def data_command(argv):
     if not os.path.isdir(pkg_dir):
         print(f"no data for {argv[1]}", file=sys.stderr)
         return 1
-    slots = [os.path.join(pkg_dir, s) for s in sorted(os.listdir(pkg_dir))]
+    slots = [os.path.join(pkg_dir, s) for s in slot_names(pkg_dir)]
     if argv[0] == "container":
         print("\n".join(slots))
         return 0

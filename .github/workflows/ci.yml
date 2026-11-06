@@ -99,19 +99,21 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-start.xml -e startActivities true \
             -e class dev.apksim.composeapp.StartActivityTest,dev.apksim.composeapp.StackWindowsTest -- --start-activities
-      # Device identity given at launch (--serial, --feature, --build) is what the app sees from Application.onCreate.
+      # Device identity given at launch (--serial, --feature, --build) and a Settings value (--setting) are what the app
+      # sees from Application.onCreate.
       - name: Test run with a device identity
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
-            --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest \
-            -e serial R5CT20ABCDE -e feature android.hardware.camera.any -e model SimPhone9 \
-            -- --serial R5CT20ABCDE --feature android.hardware.camera.any --build MODEL=SimPhone9
+            --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest,dev.apksim.composeapp.SlotStateTest \
+            -e serial R5CT20ABCDE -e feature android.hardware.camera.any -e model SimPhone9 -e settingSeed seeded \
+            -- --serial R5CT20ABCDE --feature android.hardware.camera.any --build MODEL=SimPhone9 \
+            --setting global:apksim_slot_seed=seeded
           python3 - tests/junit-identity.xml <<'EOF'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).iter("testcase"))
           skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
-          assert len(cases) == 3 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
-          print(f"{len(cases)} device identity tests")
+          assert len(cases) == 6 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
+          print(f"{len(cases)} device identity and setting tests")
           EOF
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.

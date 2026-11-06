@@ -83,6 +83,15 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
+        <!-- apksim://slot: a Settings value and a /sdcard file that the next launch of the data slot must see (issues 82, 84). -->
+        <activity android:name=".SlotStateActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="slot" />
+            </intent-filter>
+        </activity>
         <!-- apksim://video: a 1080p60 clip looping full-screen in a TextureView. -->
         <activity android:name=".VideoActivity" android:exported="true">
             <intent-filter>

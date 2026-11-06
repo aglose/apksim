@@ -94,6 +94,7 @@ final class Standby {
       Thread hangup = new Thread(() -> {
         nativeAwaitHangup();
         // The launch was interrupted (Ctrl-C, terminal closed, killed): the instance goes with it.
+        SlotDevice.flush();
         ClassCache.flush();
         Storage.deleteScratch();
         Runtime.getRuntime().halt(130);

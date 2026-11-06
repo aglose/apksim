@@ -124,7 +124,16 @@ Read README.md for results and limits; this file covers how to work on the code.
     `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
-    Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
+    `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot
+    before Application.onCreate (warm or cold): `sdcard/` is external storage (`/sdcard`, its public folders such as
+    Download inside it, mounted; Robolectric's was two temp folders per process, "removed"), and `settings.properties`
+    the Settings.Global/Secure/System values that differ from the defaults (by the app or `adb shell settings put`;
+    Robolectric's static maps, read every 250 ms from Host's loop and on exit, as no write hook exists; not
+    animator_duration_scale or font_scale, which `animscale`/`fontscale` own). Apps keep a device id in /sdcard and a
+    setup-done flag in Settings.Global on purpose; before, every launch lost them. `--fresh`, `ctl.py erase` and serve's
+    cleanup clear it with the slot; `--setting NS:KEY=VALUE` (repeatable) sets a value before onCreate, kept like a
+    `settings put`, and in test runs at each test's setup. Test runs otherwise start each test from a clean device.
+    `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
   - `FrameStream`: the screen as JPEG frames for `apksim serve` (see "apksim serve"). `Control` serves each connection
@@ -163,7 +172,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
-  "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
+  "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
+  `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
@@ -293,7 +303,8 @@ no use restriction is enforced.
 `record` without a Mac window (headless, Linux) writes Motion-JPEG `.avi` (`MjpegRecorder`, 30 fps, Android's JPEG
 encoder); with a window `.mov` H.264, or `.avi` if the file name says so. Configuration changes recreate activities as on a device (state not in
 `rememberSaveable`/`onSaveInstanceState` resets). A command that throws answers `error: ...` instead of ending the app.
-`ctl.py apps|container PKG|erase PKG` lists, locates and deletes app data (erase refuses while an instance holds it).
+`ctl.py apps|container PKG|erase PKG` lists, locates and deletes app data (erase refuses while an instance holds it),
+erase with each slot's `<slot>.device/` (its /sdcard and Settings values, `SlotDevice`).
 `scripts/ctl.py list` / `ctl.py [@PID|@PORT|@APKNAME] CMD [ARGS] [';' CMD...]` finds running instances by themselves
 (each writes `work/tmp/<pid>/control.port`); `--control auto` takes a free port.
 
@@ -327,8 +338,11 @@ ShadowPackageManager.setSystemFeature: Robolectric reports no hardware features,
 `--build FIELD=VALUE` (repeatable: any public static Build or Build.VERSION field, `MODEL=Pixel 9`,
 `VERSION.SECURITY_PATCH=...`, typed by the field; not VERSION.SDK_INT, and leave FINGERPRINT alone in test runs,
 see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
-checks them (CI runs it with the options). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
-before onCreate, not in `Host.run` after it), so what onCreate writes is kept and `APKSIM_LOGCAT` shows its log. Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+checks them (CI runs it with the options). `--setting global|secure|system:KEY=VALUE` (repeatable) puts a Settings value
+before onCreate, as `adb shell settings put` before a first launch would (`SlotDevice`; kept with the slot, and in test
+runs set at each test's setup: `SlotStateTest`). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
+before onCreate, not in `Host.run` after it), so what onCreate writes is kept, it finds the slot's /sdcard and Settings
+values (`SlotDevice`), and `APKSIM_LOGCAT` shows its log. Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
@@ -352,6 +366,9 @@ PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://slot` opens `SlotStateActivity`: the Settings.Global values `apksim_slot_check` and `apksim_slot_seed` and the
+file `/sdcard/apksim-slot-check.txt` as Application.onCreate saw them ("at app start") and now, and "Write" to set the
+first two (`scripts/slot-check.sh` drives it across launches).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
@@ -517,7 +534,8 @@ PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|p
 tee that timestamps lines into a 20k-line ring and still passes them on (`logcat on` keeps working; a watcher puts the
 tee back when the stream is reassigned); supports `-d -c -t N -T N -s -e`, `TAG:LEVEL` and `*:S`.
 `adb push/pull` (and `ls`) see `/data/data/PKG` = `/data/user/0/PKG` (the app's persistent data folder),
-`/sdcard` = `/storage/emulated/0` (Robolectric's external storage, per process) and `/data/local/tmp` (this
+`/sdcard` = `/storage/emulated/0` (the data slot's external storage, kept across launches: `SlotDevice`; per test in
+test runs) and `/data/local/tmp` (this
 instance's scratch); anything else is refused. `pm clear PKG` fails with a pointer to `--fresh` / `ctl.py erase`
 (here the instance is both the app's process and the device, and the app's open databases would outlive a delete).
 Tools with an on-device server work (checked with the Android CLI: `android layout`, `input tap|text|scroll|key`,

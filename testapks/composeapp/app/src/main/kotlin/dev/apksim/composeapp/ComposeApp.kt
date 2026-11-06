@@ -13,7 +13,8 @@ import android.util.Log
  * The app's Application. The androidTest runner swaps in a subclass (HarnessRunner). It records what onCreate sees,
  * before any test code runs: the network ConnectivityManager reports (NetworkActivity shows it: apksim's
  * --network-profile offline must hold from before onCreate), AndroidIdTest's and InstallPermissionsTest's values, and
- * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances).
+ * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances), and the data slot's
+ * Settings value and /sdcard file (SlotStateActivity).
  */
 open class ComposeApp : Application() {
   @SuppressLint("HardwareIds", "MissingPermission")
@@ -29,6 +30,7 @@ open class ComposeApp : Application() {
     modelAtCreate = Build.MODEL
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
         "model=$modelAtCreate release=${Build.VERSION.RELEASE}")
+    slotAtCreate = SlotStateActivity.describe(this)
   }
 
   companion object {
@@ -40,5 +42,7 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
+    /** The slot's Settings value and /sdcard file in onCreate (SlotStateActivity, apksim://slot). */
+    @Volatile var slotAtCreate: String? = null
   }
 }
