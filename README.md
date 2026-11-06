@@ -138,7 +138,8 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--biometrics enrolled` | Start with a fingerprint enrolled |
 | | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
 | | `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
-| | `--fresh` | Erase the app's data first, as if just installed |
+| | `--fresh` | Erase the app's data first, with the data slot's `/sdcard` and Settings values: a new device with the app just installed |
+| | `--setting NS:KEY=VALUE` | A `Settings.Global`, `Secure` or `System` value (`global:my_flag=1`) set before `Application.onCreate`, as `adb shell settings put` before a first launch would. Repeatable |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
 | | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
@@ -251,7 +252,7 @@ tools work against it.
 - **App control:** `am start` (including deep links), `am broadcast` (with its result), `am instrument` of an instrumentation that targets its own package, `monkey`.
 - **Packages and settings:** `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
 - **Bluetooth:** `svc bluetooth enable|disable`, `cmd bluetooth_manager enable|disable|wait-for-state:STATE_ON`, `settings put global bluetooth_on 0|1`, `dumpsys bluetooth_manager`; the app gets `ACTION_STATE_CHANGED` as on a device.
-- **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`.
+- **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`. `/sdcard` and what `settings put` sets are kept with the app's data slot across launches, as a device keeps them across app restarts.
 - **Logs and forwarding:** `logcat` (with filters), `adb forward` to a `LocalServerSocket`.
 - **Anything else:** `adb shell apksim CMD` runs any [control command](#automation).
 
@@ -479,6 +480,7 @@ launch warm.
 | `app.aot` | The JVM startup cache (`apksim --train` builds it) |
 | `cache/classes/` | Translated app classes, per DEX file |
 | `cache/data/PKG/` | Each app's persistent data (`default`, or `instance-N` for extra instances) |
+| `cache/data/PKG/SLOT.device/` | What that data slot keeps of the device: `sdcard/` (the app's `/sdcard`) and `settings.properties` (Settings values that differ from the defaults) |
 | `tmp/PID/` | Per-instance scratch, including `control.port` and `adb.port` |
 | `screenshots/` | Saved screenshots and recordings |
 

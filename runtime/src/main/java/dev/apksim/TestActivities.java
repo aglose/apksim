@@ -588,7 +588,7 @@ public final class TestActivities {
       if (instance) {
         if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
         try {
-          Host.usePersistentDataDir();
+          Host.usePersistentDataDir(app);
         } catch (Exception e) {
           throw new IllegalStateException("app data slot", e);
         }

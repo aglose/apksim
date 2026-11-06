@@ -125,6 +125,11 @@ final class Crashes {
       // Translated again next launch.
     }
     try {
+      SlotDevice.flush();  // halt skips the shutdown hook: what the app wrote before crashing (onCreate) is kept
+    } catch (Throwable ignored) {
+      // Lost, as a device loses a write its settings provider had not saved yet.
+    }
+    try {
       Storage.deleteScratch();
     } catch (Throwable ignored) {
       // Swept at the next launch.

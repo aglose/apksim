@@ -13,6 +13,10 @@ final class InstallState {
   private InstallState() {}
 
   static void beforeApplicationOnCreate(Application app) {
+    // --setting, at each test's setup (Robolectric resets the settings between tests); a running instance applied them
+    // with its slot's settings already (SlotDevice.take, just before this). Before the ANDROID_ID, so a seeded one wins
+    // in both, as one the slot kept does.
+    if (TestActivities.testRun()) SlotDevice.applySeeds(app);
     seedAndroidId(app);
     grantInstallPermissions(app);
     hostNetworks(app);

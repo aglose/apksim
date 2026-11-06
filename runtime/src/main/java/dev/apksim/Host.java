@@ -109,7 +109,7 @@ public class Host {
     // passes the next frame, and this loop moves the clock in real time.
     applyFrameDelay(true);
     ShadowChoreographer.setPaused(true);
-    usePersistentDataDir();
+    usePersistentDataDir(RuntimeEnvironment.getApplication());
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
     // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
     DeviceControls.applySystemUi(Device.current());
@@ -173,6 +173,7 @@ public class Host {
         }
         if (autofill != null) autofill.tick(Host::rootViews);
         controls.tick();
+        SlotDevice.tick();
         Control.Pending cmd;
         while ((cmd = Control.QUEUE.poll()) != null) {
           // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
@@ -566,12 +567,14 @@ public class Host {
    * first call is from just before Application.onCreate (ShadowSimInstrumentation.callApplicationOnCreate), so the
    * slot's serial (DeviceIdentity) is known and what onCreate writes lands in the slot; run's is then a no-op.
    */
-  static synchronized void usePersistentDataDir() throws Exception {
+  static synchronized void usePersistentDataDir(android.app.Application app) throws Exception {
     if (dataDir != null) return;
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
     if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
+    // The slot's /sdcard and Settings values (SlotDevice), before onCreate reads them, as a device has them at app start.
+    SlotDevice.take(data, Boolean.getBoolean("apksim.fresh"), app);
     dataDir = data;
     // apksim serve learns the slot from here (not from `stats`, which waits for the activity to start): it empties the
     // slot when the session ends, even if the app never got that far.
@@ -584,6 +587,7 @@ public class Host {
   }
 
   private static void exit(int code) {
+    SlotDevice.flush();
     ClassCache.flush();
     Storage.deleteScratch();
     Standby.halt(code);

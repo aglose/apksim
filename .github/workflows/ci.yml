@@ -99,22 +99,25 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-start.xml -e startActivities true \
             -e class dev.apksim.composeapp.StartActivityTest,dev.apksim.composeapp.StackWindowsTest -- --start-activities
-      # Device identity given at launch (--serial, --feature, --build, --bluetooth) is what the app sees from
-      # Application.onCreate, and --feature NAME=false takes a default feature away.
+      # Device identity given at launch (--serial, --feature, --build, --bluetooth) and a Settings value (--setting) are what the app
+      # sees from Application.onCreate, and --feature NAME=false takes a default feature away.
       - name: Test run with a device identity
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
-            --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest \
+            --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest,dev.apksim.composeapp.SlotStateTest \
             -e serial R5CT20ABCDE -e feature android.hardware.camera.any -e model SimPhone9 \
-            -e absentFeature android.hardware.fingerprint -e bluetooth off \
+            -e absentFeature android.hardware.fingerprint -e bluetooth off -e settingSeed seeded \
+            -e animSeed 0.5 -e fontSeed 1.3 \
             -- --serial R5CT20ABCDE --feature android.hardware.camera.any --build MODEL=SimPhone9 \
-            --feature android.hardware.fingerprint=false --bluetooth off
+            --feature android.hardware.fingerprint=false --bluetooth off \
+            --setting global:apksim_slot_seed=seeded --setting global:animator_duration_scale=0.5 \
+            --setting system:font_scale=1.15 --setting system:font_scale=1.3
           python3 - tests/junit-identity.xml <<'EOF'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).iter("testcase"))
           skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
-          assert len(cases) == 5 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
-          print(f"{len(cases)} device identity tests")
+          assert len(cases) == 11 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
+          print(f"{len(cases)} device identity and setting tests")
           EOF
       # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
       - name: Test run with animations off

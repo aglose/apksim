@@ -20,8 +20,8 @@ import android.widget.FrameLayout
  * The app's Application. The androidTest runner swaps in a subclass (HarnessRunner). It records what onCreate sees,
  * before any test code runs: the network ConnectivityManager reports (NetworkActivity shows it: apksim's
  * --network-profile offline must hold from before onCreate), AndroidIdTest's and InstallPermissionsTest's values, and
- * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances) and the animator scale
- * (AnimScaleOptionTest).
+ * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances), the animator scale
+ * (AnimScaleOptionTest), and the data slot's Settings value and /sdcard file (SlotStateActivity).
  */
 open class ComposeApp : Application() {
   /**
@@ -54,6 +54,7 @@ open class ComposeApp : Application() {
     animScaleAtCreate = android.animation.ValueAnimator.getDurationScale()
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
         "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
+    slotAtCreate = SlotStateActivity.describe(this)
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
   }
 
@@ -92,6 +93,8 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
+    /** The slot's Settings value and /sdcard file in onCreate (SlotStateActivity, apksim://slot). */
+    @Volatile var slotAtCreate: String? = null
     /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter, or the device refused: "unknown"). */
     @Volatile var bluetoothOnAtCreate: Boolean? = null
   }

@@ -255,6 +255,7 @@ public class SimRunner extends RobolectricTestRunner {
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
+      SlotDevice.afterTestQualifiers();  // that reset a --setting system:font_scale onCreate had seen
       SystemBars.testSetUp();  // no system bars, as before, unless --status-bar/--nav-bar ask for them
       if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
       // That replaced the log tee failure bundles read (AdbLog): put it back now, not at its watcher's next turn
@@ -342,6 +343,7 @@ public class SimRunner extends RobolectricTestRunner {
     /** As AndroidTestEnvironment.resetState, but with a tracker this process can answer. */
     @Override
     public void resetState() {
+      SlotDevice.close();  // a running instance's settings are written, and no longer, before the reset empties them
       RealTimeClock.endTest();
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));
