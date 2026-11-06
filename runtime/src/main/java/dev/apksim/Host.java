@@ -412,12 +412,6 @@ public class Host {
   /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
   private static Path dataDir;
 
-  /** The name of that slot (default, instance-1, serve-0...), or null before it is taken and in test runs. */
-  static String dataSlot() {
-    Path d = dataDir;
-    return d == null ? null : d.getFileName().toString();
-  }
-
   /**
    * Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. Once: the
    * first call is from just before Application.onCreate (ShadowSimInstrumentation.callApplicationOnCreate), so the

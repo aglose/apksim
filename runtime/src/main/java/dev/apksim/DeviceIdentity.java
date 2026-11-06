@@ -52,7 +52,8 @@ final class DeviceIdentity {
   static String serial() {
     String s = System.getProperty("apksim.serial");
     if (s != null && !s.isEmpty()) return s;
-    return defaultSerial(TestActivities.testRun() ? null : Host.dataSlot());
+    // Storage, not Host: a standby's warm-up comes here too, and Host's statics must wait for the launch's properties.
+    return defaultSerial(TestActivities.testRun() ? null : Storage.heldSlot());
   }
 
   /**
