@@ -61,16 +61,29 @@ final class AccessibleWindows {
   }
 
   /**
-   * Of root views (any order, each with its window's layout params, as WindowManagerGlobal's mViews), the shown ones
-   * accessibility reports, bottom to top (higher window types above lower; within a type, later above earlier).
+   * The shown windows' root views, bottom to top in the stack Host draws them in and sends touches down
+   * (WindowManagerGlobal's order, in which they were added), each with its window's layout params as its own. Every
+   * list of windows (UiAutomation, uiautomator dump, `nodes`, failure bundles) is in this order, so what accessibility
+   * reports as covered is what the screen shows covered: sorting by window type put a popup opened before a dialog
+   * above the dialog, where it is neither drawn nor touched.
    */
-  static List<View> reported(List<View> roots) {
-    List<View> shown = new ArrayList<>();
+  static List<View> stack() {
+    return shown(Host.rootViews());
+  }
+
+  /** Of root views in WindowManagerGlobal's order, the shown ones (visible, attached, with window layout params). */
+  static List<View> shown(List<View> roots) {
+    List<View> out = new ArrayList<>();
     for (View v : roots) {
       if (v.getVisibility() == View.VISIBLE && v.isAttachedToWindow()
-          && v.getLayoutParams() instanceof WindowManager.LayoutParams) shown.add(v);
+          && v.getLayoutParams() instanceof WindowManager.LayoutParams) out.add(v);
     }
-    shown.sort(java.util.Comparator.comparingInt(v -> ((WindowManager.LayoutParams) v.getLayoutParams()).type));
+    return out;
+  }
+
+  /** Of root views in WindowManagerGlobal's order ({@link #stack}), the shown ones accessibility reports, bottom to top. */
+  static List<View> reported(List<View> roots) {
+    List<View> shown = shown(roots);
     List<WindowManager.LayoutParams> params = new ArrayList<>();
     for (View v : shown) params.add((WindowManager.LayoutParams) v.getLayoutParams());
     boolean[] keep = reported(shown, params);

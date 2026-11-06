@@ -43,9 +43,12 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
  * - "Non-modal dialog": a small Dialog with FLAG_NOT_TOUCH_MODAL: touches outside it reach the activity, which is
  *   reported, and "Tap behind" there counts them.
  * - "Compose dialog": a small Compose Dialog (androidx.compose.ui.window.Dialog), touch-modal too.
+ * - "Popup, then dialog": a non-focusable PopupWindow of the activity, then a full-screen dialog over it. The popup's
+ *   window type (a panel, 1000) is above the dialog's (2), but it was added first and sits under the dialog, as on a
+ *   device: it is not reported either.
  * Each dialog counts the taps on its "Count" button ("dialog taps: N"): a centred dialog's nodes must report where the
  * dialog is on the screen, so that a tap at their bounds (`tap-text`, UiAutomator's click) lands on them.
- * `?open=full|modal|nonmodal|compose` (or the "open" extra) opens one at start. Plain views but for the Compose dialog,
+ * `?open=full|modal|nonmodal|compose|popupfull` (or the "open" extra) opens one at start. Plain views but for the Compose dialog,
  * for `viewtree` and `nodes`.
  */
 class DialogsActivity : Activity() {
@@ -66,6 +69,7 @@ class DialogsActivity : Activity() {
       addView(button("Modal dialog") { open("modal") })
       addView(button("Non-modal dialog") { open("nonmodal") })
       addView(button("Compose dialog") { open("compose") })
+      addView(button("Popup, then dialog") { open("popupfull") })
     }
     setContentView(root)
   }
@@ -86,6 +90,15 @@ class DialogsActivity : Activity() {
 
   private fun open(which: String) {
     if (which == "compose") return openCompose()
+    if (which == "popupfull") {
+      val popup = android.widget.PopupWindow(TextView(this).apply {
+        text = "Popup under the dialog"
+        setBackgroundColor(Color.rgb(200, 160, 40))
+        setPadding(24, 24, 24, 24)
+      }, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, false)
+      popup.showAtLocation(window.decorView, android.view.Gravity.TOP or android.view.Gravity.START, 48, 1200)
+      return open("full")
+    }
     val dialog = Dialog(this)
     var dialogTaps = 0
     val count = TextView(this).apply { text = "dialog taps: 0"; setTextColor(Color.WHITE) }

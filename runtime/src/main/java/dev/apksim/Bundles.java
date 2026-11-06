@@ -601,17 +601,12 @@ public final class Bundles {
 
   private record Win(View view, WindowManager.LayoutParams params) {}
 
-  /** This process's visible windows, bottom to top (higher window types above lower; within a type, later above earlier). */
+  /** This process's visible windows with a size, bottom to top in the stack ({@link AccessibleWindows#stack}). */
   private static List<Win> visibleWindows() {
-    Object global = android.view.WindowManagerGlobal.getInstance();
-    List<View> views = new ArrayList<>(ReflectionHelpers.<List<View>>getField(global, "mViews"));
-    List<WindowManager.LayoutParams> params = new ArrayList<>(ReflectionHelpers.<List<WindowManager.LayoutParams>>getField(global, "mParams"));
     List<Win> out = new ArrayList<>();
-    for (int i = 0; i < views.size() && i < params.size(); i++) {
-      View v = views.get(i);
-      if (v.getVisibility() == View.VISIBLE && v.isAttachedToWindow() && v.getWidth() > 0 && v.getHeight() > 0) out.add(new Win(v, params.get(i)));
+    for (View v : AccessibleWindows.stack()) {
+      if (v.getWidth() > 0 && v.getHeight() > 0) out.add(new Win(v, (WindowManager.LayoutParams) v.getLayoutParams()));
     }
-    out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
     return out;
   }
 

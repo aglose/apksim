@@ -67,20 +67,13 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     }
   }
 
-  /** Every shown window, bottom to top, covered ones included. */
+  /** Every shown window, bottom to top in the stack Host draws ({@link AccessibleWindows#stack}), covered ones included. */
   private static List<Win> allWindows() {
-    Object global = ReflectionHelpers.callStaticMethod(android.view.WindowManagerGlobal.class, "getInstance");
-    List<ViewRootImpl> roots = ReflectionHelpers.getField(global, "mRoots");
-    List<WindowManager.LayoutParams> params = ReflectionHelpers.getField(global, "mParams");
     List<Win> out = new ArrayList<>();
-    for (int i = 0; i < roots.size() && i < params.size(); i++) {
-      ViewRootImpl r = roots.get(i);
-      View v = r.getView();
-      if (v == null || v.getVisibility() != View.VISIBLE || !v.isAttachedToWindow()) continue;
-      out.add(new Win(r, v, params.get(i)));
+    for (View v : AccessibleWindows.stack()) {
+      ViewRootImpl r = v.getViewRootImpl();
+      if (r != null) out.add(new Win(r, v, (WindowManager.LayoutParams) v.getLayoutParams()));
     }
-    // Higher window types are drawn above lower ones; within a type, later windows are above earlier ones.
-    out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
     return out;
   }
 

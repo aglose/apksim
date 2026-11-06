@@ -54,6 +54,21 @@ class CoveredWindowsTest {
     }
   }
 
+  /**
+   * A popup the activity opened before the dialog is under the dialog, though its window type (a panel) is higher:
+   * windows stack in the order they were added, as Host draws them and a device shows them.
+   */
+  @Test
+  fun aPopupOpenedBeforeAFullScreenDialogIsCoveredToo() {
+    launch("popupfull").use {
+      assertNotNull("the dialog", device.wait(Until.findObject(By.text("Full-screen dialog open")), 5_000))
+      assertNull("the popup under the dialog", device.findObject(By.text("Popup under the dialog")))
+      assertEquals("windows: $appWindows", 1, appWindows.size)
+      device.findObject(By.text("Close")).click()
+      assertNotNull("the popup again", device.wait(Until.findObject(By.text("Popup under the dialog")), 5_000))
+    }
+  }
+
   @Test
   fun aSmallModalDialogHidesTheActivity() {
     launch("modal").use {

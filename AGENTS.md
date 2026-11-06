@@ -125,7 +125,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     nodes.txt), as the window manager computes them: top down, a window is left out once touch-modal windows above it
     (any Dialog, a dialog-themed activity, a focusable popup: their touchable region is the whole task) or their frames
     leave none of it uncovered, unless it has the focus. AOSP's `AccessibilityController.computeWindowsForAccessibility`
-    (Android SDK sources, `android-33/com/android/server/wm`). Touch input does not use it (`Host.isTouchThrough`).
+    (Android SDK sources, `android-33/com/android/server/wm`), down to its bounding-box test (`Region.quickReject`:
+    a window inside a hole of what is left still counts, as there). Touch input does not use it (`Host.isTouchThrough`).
+    `AccessibleWindows.stack()` is the one window order: WindowManagerGlobal's, in which windows were added, as Host
+    draws them and sends touches down; every window list (UiAutomation, dump, `nodes`, bundles) uses it. Sorting by
+    window type put a popup opened before a dialog above the dialog.
   - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
     blinking, the top window focused), `SimClock` (`clock`, `--clock`), `ImageDiff` (`diff`), and in `Host` the
     `settle` idle signal and `restart`.
