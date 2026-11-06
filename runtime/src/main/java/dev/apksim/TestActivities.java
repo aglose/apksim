@@ -138,6 +138,24 @@ public final class TestActivities {
   }
 
   /**
+   * UiAutomator's wait for the next frame (InteractionController.waitForNextFrame, after every step of UiDevice.swipe
+   * and drag, UiObject.swipe*, UiScrollable and multi-pointer gestures; the translator calls this for its
+   * CountDownLatch.await). It posts to the main looper a Runnable that asks the Choreographer for a frame callback
+   * counting the latch down, then waits for it. On a device the test thread waits while the main thread draws the
+   * frame; here the test is on the main thread, so the post never ran and every step waited out its 5 s ("Timed out
+   * waiting for VSync frame."): a 20-step swipe took 100 s. So, where a sleep would pump (a test run, the main thread,
+   * outside a dispatch), the main queue runs until that frame has been drawn: Robolectric's unpaused Choreographer
+   * moves the clock a frame and runs it at once; with --realtime-clock the frame comes on the next real vsync.
+   */
+  public static boolean awaitFrame(java.util.concurrent.CountDownLatch latch, long timeout, TimeUnit unit)
+      throws InterruptedException {
+    if (!pumpsWhileSleeping()) return latch.await(timeout, unit);
+    if (Thread.interrupted()) throw new InterruptedException();
+    runMainQueueUntil(() -> latch.getCount() == 0, unit.toNanos(timeout));
+    return latch.getCount() == 0;
+  }
+
+  /**
    * Parked time not yet given to the clock: the looper moves it in whole milliseconds and drops the rest, so parks of
    * under a millisecond each would never move it. Carried over between parks; reset between tests (beforeReset).
    */

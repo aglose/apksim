@@ -578,7 +578,7 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
-UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+UI is quiet). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue until the frame has been drawn, as `Thread.sleep` does (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running

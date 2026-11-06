@@ -2602,6 +2602,14 @@ final class MethodTranslator implements Opcodes {
           "(Landroid/app/Instrumentation;)Landroid/content/Context;", false);
       return;
     }
+    if (opcode == INVOKEVIRTUAL && "java/util/concurrent/CountDownLatch".equals(ownerName) && "await".equals(m.name())
+        && "(JLjava/util/concurrent/TimeUnit;)Z".equals(m.descriptor()) && "androidx/test/uiautomator/InteractionController".equals(owner)) {
+      // UiAutomator's wait for a frame after each gesture step; on the main thread in a test run, the main queue
+      // draws that frame meanwhile (TestActivities.awaitFrame).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "awaitFrame",
+          "(Ljava/util/concurrent/CountDownLatch;JLjava/util/concurrent/TimeUnit;)Z", false);
+      return;
+    }
     if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())
         && ("(Ljava/lang/Object;J)V".equals(m.descriptor()) || "(J)V".equals(m.descriptor()))) {
       // runBlocking's event loop parks here; on the main thread in a test run, the main queue runs meanwhile.
