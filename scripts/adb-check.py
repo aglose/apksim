@@ -7,9 +7,9 @@ then finish and uninstall. The server is the test app project's `uiserver` modul
   scripts/adb-check.py SERIAL UISERVER_APK      (SERIAL: localhost:PORT, an instance started with --adb PORT)
 
 Runs against the test app (phone device): it opens the Home tab, reads it with `uiautomator dump` (to /sdcard and to
-/dev/tty, full and --compressed), taps the FAB, then presses and holds it with `input swipe`. Exits non-zero with the
-reason on
-the first failure. adb comes from PATH, or $ADB.
+/dev/tty, full and --compressed), taps the FAB, then presses and holds it with `input swipe`; then `pm list features`,
+and `svc bluetooth disable|enable` on the app's apksim://bluetooth screen. Exits non-zero with the reason on the
+first failure. adb comes from PATH, or $ADB.
 """
 import os
 import re
@@ -122,6 +122,55 @@ def uiautomator_dump(serial):
         fail(f"uiautomator dump to a missing folder said {out!r}")
 
 
+def wait_texts(port, want, seconds=10):
+    """The screen's texts once every one of `want` is among them; fails after `seconds`."""
+    deadline = time.time() + seconds
+    while True:
+        texts = request(port, "texts")
+        if all(w in texts for w in want):
+            return texts
+        if time.time() > deadline:
+            fail(f"wanted {want} on screen: {texts}")
+        time.sleep(0.3)
+
+
+def bluetooth(serial, port):
+    """`pm list features` lists the device's (Bluetooth among them), and `svc bluetooth` switches the adapter, which
+    the test app's apksim://bluetooth screen shows with the ACTION_STATE_CHANGED broadcasts it received."""
+    features = adb(serial, "shell", "pm", "list", "features").split()
+    for f in ("android.hardware.bluetooth", "android.hardware.bluetooth_le", "android.hardware.touchscreen"):
+        if f"feature:{f}" not in features:
+            fail(f"pm list features lacks {f}: {features}")
+    adb(serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "apksim://bluetooth")
+    wait_texts(port, ["bluetooth: on, scanner yes", "broadcasts: none", "features: bluetooth yes, ble yes"])
+    adb(serial, "shell", "svc", "bluetooth", "disable")
+    wait_texts(port, ["bluetooth: off, scanner yes", "broadcasts: TURNING_OFF OFF"])
+    if adb(serial, "shell", "settings", "get", "global", "bluetooth_on").strip() != "0":
+        fail("bluetooth_on is not 0 after svc bluetooth disable")
+    adb(serial, "shell", "svc", "bluetooth", "enable")
+    wait_texts(port, ["bluetooth: on, scanner yes", "broadcasts: TURNING_OFF OFF TURNING_ON ON"])
+    adb(serial, "shell", "input", "keyevent", "BACK")
+    time.sleep(1)
+    # The app turns it off itself (BluetoothAdapter.disable): the same broadcasts, and a device switch (the features
+    # applied again) leaves it off; `bluetooth toggle` reads the adapter, so it turns it on.
+    adb(serial, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "apksim://bluetooth?disable=1")
+    wait_texts(port, ["bluetooth: off, scanner yes", "broadcasts: TURNING_OFF OFF"])
+    for d in ("tablet", "phone"):
+        adb(serial, "shell", "apksim", "device", d)
+        time.sleep(1.5)
+    state = adb(serial, "shell", "apksim", "bluetooth").strip()
+    if not state.startswith("off"):
+        fail(f"a device switch turned Bluetooth back on after the app disabled it: {state}")
+    if adb(serial, "shell", "settings", "get", "global", "bluetooth_on").strip() != "0":
+        fail("bluetooth_on is not 0 after the app disabled Bluetooth")
+    adb(serial, "shell", "apksim", "bluetooth", "toggle")
+    state = adb(serial, "shell", "apksim", "bluetooth").strip()
+    if not state.startswith("on"):
+        fail(f"bluetooth toggle after the app disabled it: {state}")
+    adb(serial, "shell", "input", "keyevent", "BACK")
+    time.sleep(1)
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -198,6 +247,7 @@ def main():
             time.sleep(0.1)
         else:
             fail(f"the hold had not lifted 5 s after input swipe returned (wanted {want!r}): {texts}")
+        bluetooth(serial, port)
         if request(port, "finish") != "ok":
             fail("finish was not answered")
     finally:
@@ -207,7 +257,7 @@ def main():
     if "Success" not in adb(serial, "uninstall", PKG, check=False):
         fail("adb uninstall failed")
     print("adb check passed: uiautomator dump, install, am instrument, am broadcast, forward to a local socket,"
-          " UiAutomation read and tap, input swipe hold")
+          " UiAutomation read and tap, input swipe hold, pm list features, svc bluetooth")
 
 
 if __name__ == "__main__":

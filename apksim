@@ -105,6 +105,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
     --mock-maker) EXTRA+=("-Dapksim.mockMaker=$2"); shift 2 ;;
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
+    # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
+    --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
@@ -197,7 +199,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*|-Dapksim.bluetooth=*) ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;

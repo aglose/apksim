@@ -25,6 +25,15 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     return current;
   }
 
+  /**
+   * current() without fixing it: a standby's warm-up sets the device up before the launch's --device is known, and
+   * must not leave its phone behind for the launch.
+   */
+  static Device peek() {
+    Device d = current;
+    return d != null ? d : named(System.getProperty("apksim.device", "phone"));
+  }
+
   static void setCurrent(Device d) {
     current = d;
   }
