@@ -124,6 +124,8 @@ def main():
         n = expect(ctl, n, 2, 0, 1, "adb input keyevent 29")
         adb("input", "keyevent", "KEYCODE_4")  # the digit 4, not Back (which would close the page)
         n = expect(ctl, n, 2, 0, 1, "adb input keyevent KEYCODE_4")
+        adb("input", "keyevent", "11")  # KEYCODE_4 by number, not Back either
+        n = expect(ctl, n, 2, 0, 1, "adb input keyevent 11")
         adb("input", "text", "y")
         n = expect(ctl, n, 2, 0, 1, "adb input text")
 

@@ -554,40 +554,39 @@ final class AdbShell {
 
   private int key(String k) throws Exception {
     String name = k.toUpperCase(Locale.ROOT);
-    boolean prefixed = name.startsWith("KEYCODE_");
-    if (prefixed) name = name.substring(8);
-    // KEYCODE_0..9 are the digit keys, not key codes 0..9 (nor Back and Home below).
-    if (prefixed && name.matches("\\d")) return reply(control("key", name), false);
     // A key code (`input keyevent 66`), as adb tools send them, by its name: the control command takes names, and
     // KeyEvent.keyCodeToString has no native table here (it answers the number).
-    if (!prefixed && name.matches("\\d+")) {
+    if (name.matches("\\d+")) {
       int code = Integer.parseInt(name);
       for (java.lang.reflect.Field f : KeyEvent.class.getFields()) {
         if (f.getType() == int.class && f.getName().startsWith("KEYCODE_") && f.getInt(null) == code) {
-          name = f.getName().substring(8);
+          name = f.getName();
           break;
         }
       }
     }
+    if (name.startsWith("KEYCODE_")) name = name.substring(8);
+    // KEYCODE_0..9 (codes 7..16) are the digit keys, not key codes 0..9 nor Back and Home below.
+    if (name.matches("\\d")) return reply(control("key", name), false);
     switch (name) {
-      case "4", "BACK" -> {
+      case "BACK" -> {
         return reply(control("back"), false);
       }
-      case "3", "HOME" -> {
+      case "HOME" -> {
         return reply(control("home"), false);
       }
-      case "223", "SLEEP" -> {
+      case "SLEEP" -> {
         return reply(quiet(control("lock")), false);
       }
-      case "224", "WAKEUP" -> {
+      case "WAKEUP" -> {
         return reply(quiet(control("unlock")), false);
       }
-      case "26", "POWER" -> {
+      case "POWER" -> {
         String r = control("lock");
         if (r.startsWith("already")) r = control("unlock");
         return reply(quiet(r), false);
       }
-      case "82", "MENU" -> {
+      case "MENU" -> {
         // The classic "unlock the screen" key; with the screen on, it is the menu key.
         String r = control("unlock");
         return r.equals("not hidden") ? reply(control("key", "MENU"), false) : reply(quiet(r), false);
