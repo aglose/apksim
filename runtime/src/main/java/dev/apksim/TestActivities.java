@@ -592,6 +592,7 @@ public final class TestActivities {
         }
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
+      DeviceControls.applyAnimScaleOption(app);  // --anim-scale, so the app's startup code sees it too
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
       try {

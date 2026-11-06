@@ -125,6 +125,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 
 | Area | Option | Effect |
 |---|---|---|
+| Start | `--activity PKG/.Act\|.Act\|CLASS` | Start this activity instead of the manifest's first launcher one, as `am start -n` would: exported or not, by package and class, `.Act`, a full class name, or a simple name when one activity has it. For a home app whose debug manifest lists a test launcher first, or a screen deep inside the app. `restart` starts it again. An activity the manifest lacks stops the launch with the list of those it has. (An app with no launcher activity starts its MAIN/HOME one.) |
 | Display | `--device NAME\|WxH[@density]` | The device to simulate (table above) |
 | | `--headless` | No window; the app still runs and renders |
 | | `--window-x N` | The window's horizontal position on screen |
@@ -237,6 +238,7 @@ apksim --adb 5600 app.apk &
 adb connect localhost:5600
 adb shell input tap 733 1533
 adb exec-out screencap -p > shot.png
+adb exec-out uiautomator dump /dev/tty
 adb logcat -s MyTag
 ```
 
@@ -244,7 +246,8 @@ The instance appears in `adb devices` as `apksim_phone`. It speaks adb's transpo
 tools work against it.
 
 **Supported:**
-- **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`.
+- **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`, `uiautomator dump` (the stock XML, Compose
+  nodes and test tags included).
 - **App control:** `am start` (including deep links), `am broadcast` (with its result), `am instrument` of an instrumentation that targets its own package, `monkey`.
 - **Packages and settings:** `pm list|path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
 - **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`. `/sdcard` and what `settings put` sets are kept with the app's data slot across launches, as a device keeps them across app restarts.

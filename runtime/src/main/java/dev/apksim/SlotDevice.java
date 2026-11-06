@@ -122,7 +122,9 @@ final class SlotDevice {
   private static void deviceControl(android.app.Application app, String seed, String key, String value) {
     float f = number(seed, key, value);
     if (key.equals("global/animator_duration_scale")) {
-      DeviceControls.setAnimatorScale(app, f);  // = `animscale F`
+      // = `animscale F`; the last seed wins, and --anim-scale (applied after it in a launch, before it in a test's
+      // setup) wins over any seed, as --font-scale does.
+      if (System.getProperty("apksim.animScale", "").isEmpty()) DeviceControls.setAnimatorScale(app, f);
     } else {
       applyFontScale();  // = `fontscale F`, for the value the launch ends up with
     }

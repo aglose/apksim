@@ -117,6 +117,19 @@ jobs:
           assert len(cases) == 8 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity and setting tests")
           EOF
+      # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
+      - name: Test run with animations off
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-animscale.xml -e class dev.apksim.composeapp.AnimScaleOptionTest -e animScale 0 \
+            -- --anim-scale 0
+          python3 - tests/junit-animscale.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter("testcase"))
+          bad = [c.get("name") for c in cases if c.find("skipped") is not None or c.find("failure") is not None]
+          assert len(cases) == 2 and not bad, f"tests: {[c.get('name') for c in cases]}, skipped or failed {bad}"
+          print(f"{len(cases)} animation scale tests")
+          EOF
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.
       - name: Test run with the network replayed
@@ -153,6 +166,26 @@ jobs:
           assert set(crash) == set(normal), f"tests differ: {set(crash) ^ set(normal)}"
           assert failed == ["b_haltsTheProcess", "d_ignoresInterruptsPastItsTimeout"], f"failed: {failed}"
           print(f"{len(crash)} tests, failed as meant: {failed}")
+          EOF
+      # ProcessDeathTest's hanging test has nothing in the process to end it: --test-timeout must kill the container
+      # (not just the docker client), report that test timed out with its stack, and run the one after it.
+      - name: Test run that hangs on purpose
+        run: |
+          status=0
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-hang.xml -e class dev.apksim.composeapp.ProcessDeathTest -e hangOnPurpose true \
+            --test-timeout 30 || status=$?
+          test "$status" = 1
+          test -z "$(docker ps -q --filter ancestor=apksim:ci)"
+          python3 - tests/junit-hang.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          cases = {c.get("name"): c.find("failure") for c in ET.parse(sys.argv[1]).iter("testcase")}
+          failed = sorted(n for n, f in cases.items() if f is not None)
+          assert failed == ["f_hangsWithNoTimeout"], f"failed: {failed}"
+          text = cases["f_hangsWithNoTimeout"].text
+          assert "timed out after 30 s" in text and "ProcessDeathTest.f_hangsWithNoTimeout(" in text, text
+          assert "g_runsAfterTheHang" in cases, f"tests: {sorted(cases)}"
+          print(f"{len(cases)} tests, the hang killed and reported: {failed}")
           EOF
       # The same suite split over 3 processes at once (-e numShards/shardIndex): every test once, the same results.
       - name: Test run in shards

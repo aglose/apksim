@@ -40,6 +40,10 @@
 #define DT_GNU_HASH 0x6ffffef5
 #define DT_ANDROID_RELA 0x60000011
 #define DT_ANDROID_RELASZ 0x60000012
+// The same RELR table under Android's own tags: the NDK writes these for libraries built for API 28-29 (lld's
+// --use-android-relr-tags), as the standard DT_RELR came only with API 30.
+#define DT_ANDROID_RELR 0x6fffe000
+#define DT_ANDROID_RELRSZ 0x6fffe001
 #if defined(__x86_64__)
 #define ELF_MACHINE 62
 #define ELF_ARCH "x86_64"
@@ -463,8 +467,8 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
       case DT_RELASZ: relasz = e[1]; break;
       case DT_JMPREL: jmprel = e[1]; break;
       case DT_PLTRELSZ: pltsz = e[1]; break;
-      case DT_RELR: relr = e[1]; break;
-      case DT_RELRSZ: relrsz = e[1]; break;
+      case DT_RELR: case DT_ANDROID_RELR: relr = e[1]; break;
+      case DT_RELRSZ: case DT_ANDROID_RELRSZ: relrsz = e[1]; break;
       case DT_ANDROID_RELA: arela = e[1]; break;
       case DT_ANDROID_RELASZ: arelasz = e[1]; break;
       case DT_INIT: init = e[1]; break;

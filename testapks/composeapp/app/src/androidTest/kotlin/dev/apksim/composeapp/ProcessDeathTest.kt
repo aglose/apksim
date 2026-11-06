@@ -17,13 +17,17 @@ import org.junit.runners.model.Statement
  * Tests that end the test process, for checking that a one-process run (`scripts/instrument.py` without --isolate)
  * reports the test that was running as failed and runs the rest in a new process. They run only with
  * `-e crashOnPurpose true`, and are skipped otherwise (on a device and in normal runs). The methods run in name order,
- * so tests of this class (and the classes after it) still have to run after each crash.
+ * so tests of this class (and the classes after it) still have to run after each crash. One more, with
+ * `-e hangOnPurpose true`, hangs for good with nothing to end it, for instrument.py's `--test-timeout`.
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class ProcessDeathTest {
   private fun crashOnPurpose() =
     assumeTrue(InstrumentationRegistry.getArguments().getString("crashOnPurpose") == "true")
+
+  private fun hangOnPurpose() =
+    assumeTrue(InstrumentationRegistry.getArguments().getString("hangOnPurpose") == "true")
 
   @Test
   fun a_runsBeforeTheCrashes() {
@@ -62,6 +66,24 @@ class ProcessDeathTest {
 
   @Test
   fun e_runsAfterTheWatchdog() {
+    assertEquals("dev.apksim.composeapp", InstrumentationRegistry.getInstrumentation().targetContext.packageName)
+  }
+
+  /**
+   * A test that never ends and has no timeout (as one stuck in teardown, or in code JUnit's Timeout does not wrap):
+   * nothing in the process ends it, so only instrument.py's `--test-timeout` does, killing the process.
+   */
+  @Test
+  fun f_hangsWithNoTimeout() {
+    hangOnPurpose()
+    while (true) {
+      Thread.interrupted()
+      LockSupport.parkNanos(50_000_000)
+    }
+  }
+
+  @Test
+  fun g_runsAfterTheHang() {
     assertEquals("dev.apksim.composeapp", InstrumentationRegistry.getInstrumentation().targetContext.packageName)
   }
 }

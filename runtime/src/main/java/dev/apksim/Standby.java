@@ -90,6 +90,8 @@ final class Standby {
       // Options a class read while this standby booted (volatile, so they can be read again).
       SoftKeyboard.enabled = Boolean.getBoolean("apksim.softKeyboard");
       Biometrics.enrolled = Boolean.getBoolean("apksim.biometricsEnrolled");
+      // --max-fps, --video, --audio: the warm-up read the standby's own; the app's onCreate must see the launch's.
+      Features.load();
       Timing.mark("handoff");
       Thread hangup = new Thread(() -> {
         nativeAwaitHangup();
