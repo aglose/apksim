@@ -157,7 +157,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
   goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
-  `--apksim CMD` runs the Linux image instead; `instrument-check.py` checks how it handles a process that dies,
+  `--apksim CMD` runs the Linux image instead; `--test-timeout SEC` kills a process stuck SEC s on one test;
+  `instrument-check.py` checks how it handles a process that dies or hangs,
   against a stand-in apksim), `affected.py` (instrument.py's test-impact recording and selection and its
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
@@ -641,7 +642,8 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N [--timings XML] [--shard I]]
-[--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [-- APKSIM_OPTS]` runs a
+[--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [--test-timeout SEC]
+[-- APKSIM_OPTS]` runs a
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
 process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
@@ -660,8 +662,21 @@ and the stderr tail (with none running, a failed "(run)" entry is, so the run st
 and the tests with no result run in a new process, as `-e class` (whole classes where none of their tests ran, else
 Class#method, chunked under Linux's 128 KB argument limit) with the other `-e` arguments kept. No test runs twice; a
 new process that adds no result (a crash at startup) ends the run, the rest reported failed as not run.
+`--test-timeout SEC` (default 900, 0 for none) handles a hang the same way: a process that goes SEC s without a test
+starting or ending (stuck in teardown, or out of the watchdog's sight) gets a SIGQUIT (the JVM's thread dump: the
+stacks of the threads in JUnit code go in the failure) and then SIGKILL to its process group (each process gets a
+session of its own, so instrument.py forwards Ctrl-C/SIGTERM itself: a process starts and is noted for that under one
+lock, and none starts once a stop has begun), and with `--apksim "docker|podman run ..."` a `docker rm -f` (by a
+`--cidfile` instrument.py adds: SIGKILL to the client leaves the container running; the ID is read before the client is
+killed and the client killed before `rm -f`, and a client that dies of any signal has its container removed too; each
+process gets a cidfile of its own, as docker refuses one that exists, so a `--cidfile` in `--apksim` is taken out and
+gets the ID of the last container to end); the test
+fails "timed out after SEC s" with the stderr tail, and with `--bundles` gets process.txt. Test runs launch cold, so
+the process is the JVM itself (the launcher execs it), never a standby's client.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
-the process, one ignores interrupts past its timeout, and the tests after each still pass.
+the process, one ignores interrupts past its timeout, and the tests after each still pass; with `-e hangOnPurpose
+true` one more hangs with nothing to end it but `--test-timeout`. `instrument-check.py` covers both against a stand-in
+(hangs one process, sharded, isolated, through a stand-in docker, and Ctrl-C, also while a process starts).
 **Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
 failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
 which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot
