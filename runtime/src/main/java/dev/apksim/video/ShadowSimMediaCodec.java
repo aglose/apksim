@@ -286,6 +286,26 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   protected void native_start() {
     reserved.clear();
     super.native_start();
+    if (decoder != null || audio != null) handOutInputs();
+  }
+
+  /**
+   * In async mode Robolectric's start hands the app one input buffer, and each buffer comes back only when the output
+   * it became is released, so a player had one picture in flight: a video player holds each output until its frame
+   * is due, then waits a turn of its work loop for the input callback, so ExoPlayer decoded ~40 pictures a second
+   * and dropped most of a 60 fps clip as late. A device's codec offers several inputs at once; here every buffer but
+   * the {@link Decoder#MAX_DEPTH} that {@link #reserve} may keep for held pictures.
+   */
+  private void handOutInputs() {
+    boolean async = ReflectionHelpers.getField(this, "isAsync");
+    if (!async) return;
+    java.util.concurrent.BlockingQueue<Integer> free = ReflectionHelpers.getField(this, "inputBuffersPendingDequeue");
+    int keep = decoder != null ? Decoder.MAX_DEPTH : 0;
+    Integer next;
+    while (free.size() > keep && (next = free.poll()) != null) {
+      ReflectionHelpers.callInstanceMethod(ShadowMediaCodec.class, this, "makeInputBufferAvailable",
+          ReflectionHelpers.ClassParameter.from(int.class, next));
+    }
   }
 
   @Implementation

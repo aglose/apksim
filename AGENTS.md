@@ -318,6 +318,8 @@ PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
+muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -373,6 +375,10 @@ codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric a
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
 (else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
 (playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).
+In async mode (Media3's default) Robolectric's start hands the app one input buffer and gives each back only when the
+output it became is released, so a player had one picture in flight and ExoPlayer decoded ~40 a second: a 1080p60
+clip showed ~9 pictures a second and dropped the rest as late. `handOutInputs` offers every buffer at start but the
+4 kept for held pictures (below), as a device's codec offers several (`apksim://video`: 60 of 60 a second).
 Its placeholders are told apart by identity, so
 each must be its own object: one non-capturing lambda is a single shared instance. Video decoding happens in
 `native_queueInputBuffer`, not Robolectric's per-buffer process call, so that pictures leave in presentation order
