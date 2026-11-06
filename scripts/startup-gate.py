@@ -4,19 +4,49 @@ when the build under test starts slower than its budget allows (docs/startup-gat
 
 Usage: startup-gate.py --base DIR --head DIR --apk APK [--config FILE] [--runs N] [--json OUT] [--summary FILE]
        [--base-home DIR] [--head-home DIR]
+       startup-gate.py --self-test   (the decision rules on synthetic numbers)
 
 DIR is an apksim folder (a source checkout or an unpacked release); --*-home sets its APKSIM_HOME (state folder).
 Both must have a startup cache (scripts/train.sh). Times on a shared CI machine drift by tens of percent between runs,
 so the two installs are measured in one job, in rounds whose order is shuffled, and only the ratio between them is
 judged: a metric fails when the head's median exceeds the anchor's by more than its budget (`max_slower`, a fraction,
-plus `slack_ms`) and a one-sided Mann-Whitney test says the difference is real (p < `alpha`). A failure is measured
-again with as many rounds before it counts, so one slow stretch of the machine does not fail a pull request; a median
-over budget that is not significant is measured up to twice more, and is reported (not failed) if it stays unclear.
-Exit status: 0 within budget, 1 over budget, 2 the launches themselves failed."""
-import argparse, json, math, os, random, re, statistics, subprocess, sys, tempfile, time
+plus `slack_ms`) and a one-sided Mann-Whitney test says the difference is real (p < `alpha`). Rounds come in batches
+judged each on its own launches: a metric fails only when two batches are over budget, so one slow stretch of the
+machine does not fail a pull request; a batch over its limit, significant or not, is followed by another (at most
+three), and a median still over its limit at the end without a second significant batch is reported (not failed) as
+inconclusive.
+Exit status: 0 within budget, 1 over budget, 2 the launches themselves failed or a gated metric had no samples."""
+import argparse, ctypes, json, math, os, random, re, statistics, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MARK = re.compile(r"^\[apksim\] (\S.*?)\s+(-?\d+) ms$", re.M)
+
+
+def cpu_ticks():
+    """Cumulative (busy, idle) CPU ticks of the whole machine, or None where unknown."""
+    try:
+        if sys.platform == "darwin":
+            lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
+            lib.mach_host_self.restype = ctypes.c_uint
+            info, count = (ctypes.c_uint * 4)(), ctypes.c_uint(4)  # HOST_CPU_LOAD_INFO: user, system, idle, nice
+            if lib.host_statistics(lib.mach_host_self(), 3, info, ctypes.byref(count)) != 0:
+                return None
+            return info[0] + info[1] + info[3], info[2]
+        with open("/proc/stat") as f:
+            v = [int(x) for x in f.readline().split()[1:]]
+        return sum(v) - v[3] - v[4], v[3] + v[4]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def cpu_idle(window=0.3):
+    """Percent of the machine's CPU time idle over the next `window` seconds (100 where unknown)."""
+    a = cpu_ticks()
+    time.sleep(window)
+    b = cpu_ticks()
+    if a is None or b is None or (b[0] + b[1]) == (a[0] + a[1]):
+        return 100
+    return round(100 * (b[1] - a[1]) / ((b[0] + b[1]) - (a[0] + a[1])))
 
 
 class Install:
@@ -142,6 +172,50 @@ def judge(metrics, samples, alpha):
     return rows
 
 
+def decide(history):
+    """Final verdict of one metric from its rows, one per batch so far, and whether another batch is needed.
+    Fails on two batches over budget; a batch over its limit (significant or not) without that asks for another."""
+    if sum(r["verdict"] == "over budget" for r in history) >= 2:
+        return "over budget", False
+    last = history[-1]
+    if last["verdict"] in ("over budget", "inconclusive"):
+        return "inconclusive", True
+    return last["verdict"], False
+
+
+def self_test():
+    """The decision rules on synthetic batches (no launches): `startup-gate.py --self-test`."""
+    rnd = random.Random(7)
+    metrics = {"warm": {"mode": "warm", "mark": "first-frame", "max_slower": 0.10, "slack_ms": 15}}
+
+    def row(base_ms, head_ms, n=12):
+        noise = lambda mu: [mu + rnd.randint(-6, 6) for _ in range(n)]
+        return judge(metrics, {"base": {"warm": {"first-frame": noise(base_ms)}},
+                               "head": {"warm": {"first-frame": noise(head_ms)}}}, 0.01)[0]
+
+    cases = [
+        ("same speed", [(200, 202)], ("ok", False)),
+        ("within budget", [(200, 225)], ("ok", False)),
+        ("over budget once: measure again", [(200, 280)], ("inconclusive", True)),
+        ("over budget twice: fail", [(200, 280), (200, 280)], ("over budget", False)),
+        # A slow first batch must not outweigh a fresh batch within budget (pooled, 240 against a 235 limit, would fail).
+        ("slow batch, then a clean one", [(200, 280), (200, 200)], ("ok", False)),
+        ("over, clean, over: one batch is not two in a row, but two in all", [(200, 280), (200, 200), (200, 280)],
+         ("over budget", False)),
+        ("much faster", [(200, 150)], ("faster", False)),
+    ]
+    bad = 0
+    for name, batches, want in cases:
+        got = decide([row(b, h) for b, h in batches])
+        print(f"{'ok  ' if got == want else 'FAIL'} {name}: {got}")
+        bad += got != want
+    missing = judge({"x": {"mode": "warm", "mark": "appinfo", "max_slower": 0.1}},
+                    {"base": {"warm": {}}, "head": {"warm": {}}}, 0.01)[0]["verdict"]
+    print(f"{'ok  ' if missing == 'missing' else 'FAIL'} a mark no launch printed is missing: {missing}")
+    bad += missing != "missing"
+    sys.exit(1 if bad else 0)
+
+
 def table(rows, base_name, head_name):
     out = [f"| metric | {base_name} | {head_name} | change | budget | p | |", "|---|---:|---:|---:|---:|---:|---|"]
     for r in rows:
@@ -156,6 +230,8 @@ def table(rows, base_name, head_name):
 
 
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)
@@ -176,7 +252,7 @@ def main():
     sides = {"base": Install("base", a.base, a.base_home), "head": Install("head", a.head, a.head_home)}
     base_name = a.base_name or cfg.get("anchor", "anchor")
     cwd = tempfile.mkdtemp(prefix="startup-gate-")
-    samples = {s: {m: {} for m in modes} for s in sides}
+    batches = []  # per batch: side -> mode -> mark -> launches (ms)
     failures, deaths = [], []
 
     def ready_all():
@@ -188,10 +264,16 @@ def main():
                     print(f"startup-gate: {s.name}'s standby did not come up (log: {s.sock}.log)", file=sys.stderr)
                     print("\n".join(deaths), file=sys.stderr)
                     sys.exit(2)
-        time.sleep(0.5)
+        # Then the machine itself quiet (the last instance exiting, the OS's own work), up to a few seconds: on a
+        # 3-core runner one busy process is a third of it. What was idle goes into the launch's record.
+        end = time.time() + 5
+        idle = cpu_idle()
+        while idle < 80 and time.time() < end:
+            idle = cpu_idle()
+        return idle
 
     def measure(side, mode, record=True):
-        ready_all()
+        idle = ready_all()
         marks, err = sides[side].launch(apk, mode, cwd)
         if marks is None:
             failures.append(f"{side} {mode}: {err}")
@@ -201,10 +283,11 @@ def main():
                     print(f, file=sys.stderr)
                 sys.exit(2)
             return
-        print(f"  {side:4} {mode}: first frame {marks['first-frame']:5d} ms", flush=True)
+        print(f"  {side:4} {mode}: first frame {marks['first-frame']:5d} ms (cpu {idle}% idle before)", flush=True)
+        marks["cpu-idle-before"] = idle
         if record:
             for k, v in marks.items():
-                samples[side][mode].setdefault(k, []).append(v)
+                batches[-1][side][mode].setdefault(k, []).append(v)
 
     for s in sides.values():
         s.stop_standbys()
@@ -216,38 +299,56 @@ def main():
             for mode in modes:
                 measure(side, mode, record=False)
 
-    def rounds(n, first):
-        for i in range(first, first + n):
+    def batch():
+        batches.append({side: {m: {} for m in modes} for side in sides})
+        first = (len(batches) - 1) * runs
+        for i in range(first, first + runs):
             print(f"round {i + 1}", flush=True)
             plan = [(side, mode) for side in sides for mode in modes]
             random.shuffle(plan)
             for side, mode in plan:
                 measure(side, mode)
+        return judge(metrics, batches[-1], alpha)
 
-    # A median over budget is measured again before it counts: once more when the difference is significant, up to
-    # twice when it is not yet (a busy machine widens the spread, and more launches tell a real change from noise).
-    rounds(runs, 0)
-    batches = 1
+    # Each batch is judged on its own launches (pooling would let one slow stretch outweigh a fresh batch that is
+    # within budget). A batch over budget is followed by another; two over budget fail.
+    history = {name: [] for name in metrics}
     while True:
-        rows = judge(metrics, samples, alpha)
-        over_limit = [r for r in rows if r.get("gate") and r["verdict"] != "missing" and r["head_median"] > r["limit"]]
-        if not over_limit or batches == 3 or (batches >= 2 and all(r["p"] < alpha for r in over_limit)):
+        rows = batch()
+        missing = [r["metric"] for r in rows if r["verdict"] == "missing" and metrics[r["metric"]].get("gate", True)]
+        if missing:
+            print(f"startup-gate: no samples for gated metric(s) {', '.join(missing)}: no launch printed their mark "
+                  f"(a mark from -Dapksim.timing=verbose needs that switch)", file=sys.stderr)
+            for side in sides.values():
+                side.stop_standbys()
+            sys.exit(2)
+        for r in rows:
+            history[r["metric"]].append(r)
+        pending = [n for n in metrics if metrics[n].get("gate", True) and decide(history[n])[1]]
+        if not pending or len(batches) == 3:
             break
-        print(f"{', '.join(r['metric'] for r in over_limit)} over budget after {batches * runs} rounds: measuring "
-              f"{runs} more before it counts", flush=True)
+        print(f"{', '.join(pending)} over budget in batch {len(batches)}: measuring a batch of {runs} more rounds "
+              f"before it counts", flush=True)
         print(table(rows, base_name, a.head_name), flush=True)
-        rounds(runs, batches * runs)
-        batches += 1
-    for s in sides.values():
-        s.stop_standbys()
+    for side in sides.values():
+        side.stop_standbys()
+    # The last batch's numbers, with each metric's verdict over all batches.
+    for r in rows:
+        if r.get("gate", True):
+            r["verdict"] = decide(history[r["metric"]])[0]
+    per_batch = ["", "| batch | " + " | ".join(metrics) + " |", "|---|" + "---:|" * len(metrics)]
+    for i in range(len(batches)):
+        per_batch.append(f"| {i + 1} | " + " | ".join(
+            (f"{h['change'] * 100:+.1f}% (p {h['p']:.3f})" if "change" in h else "no samples")
+            for h in (history[n][i] for n in metrics)) + " |")
 
     over = [r for r in rows if r["verdict"] == "over budget"]
     report = [f"### Startup time: {a.head_name} against {base_name}", "",
-              table(rows, base_name, a.head_name), "",
-              f"Median of {len(samples['head'][modes[0]].get('first-frame', []))} launches each of "
-              f"`{os.path.basename(apk)}` (headless, `--no-network`), from the launcher's start to the app's first "
-              f"frame; ± is half the interquartile range. Over budget means slower than the budget **and** "
-              f"p < {alpha} (one-sided Mann-Whitney), measured twice. Load average at the end: "
+              table(rows, base_name, a.head_name), *(per_batch if len(batches) > 1 else []), "",
+              f"Medians of the last batch's {runs} launches each of `{os.path.basename(apk)}` (headless, "
+              f"`--no-network`), from the launcher's start to the app's first frame; ± is half the interquartile "
+              f"range. Over budget means slower than the budget **and** p < {alpha} (one-sided Mann-Whitney) in two "
+              f"batches of {runs} rounds, each judged on its own. Load average at the end: "
               f"{' '.join(f'{x:.1f}' for x in os.getloadavg())}."]
     if over:
         report += ["", "**Startup got slower than its budget.** Find the cause with `-Dapksim.timing=verbose` and "
@@ -272,7 +373,7 @@ def main():
             f.write(text + "\n")
     if a.json:
         with open(a.json, "w") as f:
-            json.dump({"anchor": base_name, "apk": os.path.basename(apk), "rows": rows, "samples": samples,
+            json.dump({"anchor": base_name, "apk": os.path.basename(apk), "rows": rows, "batches": batches,
                        "failures": failures, "standby_deaths": deaths,
                        "loadavg": os.getloadavg()}, f, indent=1)
     sys.exit(1 if over else 0)
