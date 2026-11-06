@@ -20,8 +20,8 @@ Both headless and with `--no-network`. The two installs are:
 - **this commit**, built (`scripts/setup.sh --no-train`) and packaged (`scripts/package-release.sh`) as a release
   would be.
 
-Both are trained the same way (`apksim --train --headless`, each with its own `APKSIM_HOME`) and both launch the
-anchor's own test app (`apksim-testapp-VERSION.apk` from the same release), so the APK never changes under the
+Both are trained the same way, on the same APK (`apksim --train --headless APK`, each with its own `APKSIM_HOME`), and
+both launch the anchor's own test app (`apksim-testapp-VERSION.apk` from the same release), so the APK never changes under the
 numbers: only the runtime does.
 
 ## Why against an anchor, and why it is reliable
@@ -37,9 +37,16 @@ see the same machine, so the gate judges only how they compare:
 - Medians, not means: one stalled launch moves a median by one place.
 - A metric is **over budget** when this commit's median exceeds `anchor median × (1 + max_slower) + slack_ms` **and** a
   one-sided Mann-Whitney test gives p < `alpha` (0.01): slower, and not by chance.
-- Over budget after the first `runs` rounds is measured again with as many rounds and must hold on all of them. A
-  median over budget that is not yet significant (a noisy machine) gets up to two more batches; if it stays unclear it
-  is reported as inconclusive and does not fail the job.
+- Rounds come in batches of `runs`, and each batch is judged on its own launches, never pooled with earlier ones: a
+  metric fails when **two** batches are over budget. A batch over its limit (significant or not) is followed by
+  another, at most three in all, so a slow stretch of the machine during one batch does not fail the job, and a fresh
+  batch within budget clears it. A median still over its limit after three batches without a second significant one is
+  reported as inconclusive and does not fail the job. (On a machine overloaded about 30 times over, load average 100,
+  a 50 ms regression, +28-43% warm, stayed inconclusive this way. Pooling the batches or pairing each round's two
+  launches did not separate it either: the machine's speed changed by 2x between batches. A hosted runner running
+  only this job is far from that.)
+- A gated metric no launch printed (a mark that needs `-Dapksim.timing=verbose`, a typo) ends the run with exit 2
+  rather than passing unchecked.
 - A standby that dies while booting is started again and reported; it is a crash to look into, not a startup time.
 
 Why a fixed anchor and not the pull request's merge base: comparing with the merge base catches a single large
@@ -80,12 +87,15 @@ as `activity-resumed` can be gated too. `"gate": false` reports a metric without
 ```bash
 gh release download v0.11.0 -D /tmp/anchor -p 'apksim-0.11.0-macos-arm64.tar.gz' -p 'apksim-testapp-0.11.0.apk'
 tar -xzf /tmp/anchor/apksim-0.11.0-macos-arm64.tar.gz -C /tmp/anchor
-APKSIM_STANDBY=0 APKSIM_HOME=/tmp/anchor/state /tmp/anchor/apksim-0.11.0-macos-arm64/apksim --train --headless
+APKSIM_STANDBY=0 APKSIM_HOME=/tmp/anchor/state /tmp/anchor/apksim-0.11.0-macos-arm64/apksim --train --headless \
+  /tmp/anchor/apksim-testapp-0.11.0.apk
 python3 scripts/startup-gate.py --base /tmp/anchor/apksim-0.11.0-macos-arm64 --base-home /tmp/anchor/state \
   --head . --apk /tmp/anchor/apksim-testapp-0.11.0.apk
 ```
 
-`--head .` measures this checkout as it is (after `scripts/build.sh` and `scripts/train.sh`); a source checkout and a
+`--head .` measures this checkout as it is (after `scripts/build.sh` and `scripts/train.sh --headless APK`, the
+benchmark APK, as CI trains); a source checkout and a
 packaged release can differ by a few percent (the release's jlink'ed JDK), so for numbers that compare with CI's,
 package it first as the job does. Close other heavy work first: the gate tolerates noise by measuring longer, not by
-ignoring it. `--json FILE` keeps every launch's marks; `--runs N` overrides the rounds.
+ignoring it. `--json FILE` keeps every launch's marks, batch by batch; `--runs N` overrides the rounds.
+`startup-gate.py --self-test` checks the decision rules on synthetic numbers (CI runs it first).
