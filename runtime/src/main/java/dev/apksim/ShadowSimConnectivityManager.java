@@ -31,7 +31,7 @@ import org.robolectric.shadows.ShadowConnectivityManager;
  * callback or a request only when no network replaces it, or it disconnected: see decide).
  * What a callback is owed is decided when it registers and at every change (`rematch`: HostNetworks installing the
  * host's networks, `network offline|online`), as the system server decides it, and goes into that callback's own queue,
- * delivered in order on its handler (the main thread without one). A change made on that thread delivers the queue at
+ * delivered in order on its handler (a background ConnectivityThread without one, as on Android). A change made on that thread delivers the queue at
  * once (NetConnectivity's callers expect onLost when `network offline` returns), so a registration's announcement
  * still pending then arrives first: registered, then offline and online before the main thread ran, a callback hears
  * available, lost, available, as on a device. A callback registered before the host's networks exist (in

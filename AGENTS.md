@@ -469,7 +469,7 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   network that satisfies it (`NetworkRequest.canBeSatisfiedBy`). What each is owed is decided as it registers and at
   every change (`rematch`: HostNetworks install, NetConnectivity, which no longer calls callbacks itself), as diffs
   against what it was told (onAvailable + onCapabilitiesChanged + onLinkPropertiesChanged + onBlockedStatusChanged,
-  changed capabilities or links, onLost), queued per callback and run in order on its handler (main without one);
+  changed capabilities or links, onLost), queued per callback and run in order on its handler (a background ConnectivityThread without one, as on Android);
   a change made on that thread runs the queue at once (unless it is made from inside that callback: then the drain
   under way delivers it after the current announcement), so offline and online before a registration's post give
   available, lost, available. A default callback or a request hears onLost only when its network disconnected or
