@@ -12,7 +12,7 @@ the end; *-docker ones run it through a stand-in `docker run` whose "container" 
 group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead.
 The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
-import gzip, json, math, os, re, signal, subprocess, sys, tempfile, time
+import gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -106,7 +106,7 @@ def fake():
         block(c, m, n + 1, 1)
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
-        if sc.startswith(("hang", "interrupt")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
+        if sc.startswith(("hang", "interrupt", "docker")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
             hang(state, c, m)
         if sc == "interrupt-parallel":  # shard 0 dies in its first test (C001#m1), and the other two hang in theirs
             if (c, m) == ("p.C001", "m1"):
@@ -150,7 +150,10 @@ def hang(state, c, m):
 
 def fake_docker():
     """`docker run [--cidfile F] [--rm] [-v X] IMAGE ARGS...` and `docker rm -f ID`: the "container" (the stand-in apksim)
-    runs in a session of its own, so it outlives a kill of this client, as a real container does."""
+    runs in a session of its own, so it outlives a kill of this client, as a real container does, and its output
+    comes through this client's pipes, so instrument.py sees the end of it when the client ends. In
+    hang-docker-client-exits the client dies of the SIGQUIT (no sig-proxy), and in docker-client-dies it is killed by
+    something else once the container hangs: either way the container goes on running."""
     args, state = sys.argv[2:], os.environ["CHECK_DIR"]
     if args[:2] == ["rm", "-f"]:
         with open(os.path.join(state, "docker-kills"), "a") as f:
@@ -162,14 +165,34 @@ def fake_docker():
         if args[i] == "--cidfile":
             cidfile = args[i + 1]
         i += 2 if args[i] in ("--cidfile", "-v") else 1
-    child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--fake"] + args[i + 1:], start_new_session=True)
+    child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--fake"] + args[i + 1:],
+                             start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def relay(src, dst):
+        while True:
+            b = os.read(src, 65536)
+            if not b:
+                return
+            os.write(dst, b)
+            if dst == 2 and b"hangs in a test" in b and os.environ["CHECK_SCENARIO"] == "docker-client-dies":
+                threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGKILL)).start()  # (once stdout is relayed too)
+    relays = [threading.Thread(target=relay, args=(child.stdout.fileno(), 1), daemon=True),
+              threading.Thread(target=relay, args=(child.stderr.fileno(), 2), daemon=True)]
+    for t in relays:
+        t.start()
     with open(os.path.join(state, "pids"), "a") as f:
         f.write(f"{child.pid}\n")
     if cidfile:
         with open(cidfile, "x") as f:  # (docker refuses a cidfile that exists)
             f.write(str(child.pid))
-    signal.signal(signal.SIGQUIT, lambda *_: os.kill(child.pid, signal.SIGQUIT))  # docker's sig-proxy
-    sys.exit(child.wait() % 256)
+    if os.environ["CHECK_SCENARIO"] == "hang-docker-client-exits":
+        signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+    else:
+        signal.signal(signal.SIGQUIT, lambda *_: os.kill(child.pid, signal.SIGQUIT))  # docker's sig-proxy
+    code = child.wait()
+    for t in relays:
+        t.join()
+    sys.exit(code % 256)
 
 
 def ran_before(state, test):
@@ -206,6 +229,10 @@ SCENARIOS = {
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
+    # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
+    "hang-docker-client-exits": (1, 3, 9, ["p.C000#m1"]),
+    # The client is killed (not by instrument.py) while its container hangs: the container must not outlive the run.
+    "docker-client-dies": (1, 3, 9, ["p.C000#m1"]),
     "slow": (0, 1, 9, []),  # 0.6 s a test, 5.4 s in all: no kill
     # No limit, and a SIGINT (Ctrl-C) once C000#m1 hangs: the processes have sessions of their own, out of the
     # terminal's reach, so instrument.py must end them itself (and the container), then exit 130 with no report.
@@ -259,7 +286,7 @@ def main():
             if sc in INTERRUPT_WHEN:
                 env["INSTRUMENT_CHECK_SPAWN_DELAY"] = "1.5"
             launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
-            if sc in ("hang-docker", "interrupt-docker"):
+            if "docker" in sc:
                 os.makedirs(os.path.join(d, "bin"))
                 docker = os.path.join(d, "bin", "docker")
                 with open(docker, "w") as f:
@@ -297,7 +324,9 @@ def main():
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
             hung = [t for t in ("p.C000#m1", "(run)#incomplete") if t in failed] if sc.startswith("hang") else []
-            missing = [w for t in hung for w in (TIMED_OUT if t == "p.C000#m1" else TIMED_OUT[:1]) if w not in texts.get(t, "")]
+            # (A client that ends at the SIGQUIT passes on no thread dump.)
+            wanted = TIMED_OUT if "client-exits" not in sc else [w for w in TIMED_OUT if "java:" not in w]
+            missing = [w for t in hung for w in (wanted if t == "p.C000#m1" else wanted[:1]) if w not in texts.get(t, "")]
             pids_file = os.path.join(d, "pids")
             pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
             alive = [n for n in pids if still_alive(n)]
@@ -322,8 +351,8 @@ def main():
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),
                 (f"processes left running: {alive}", bool(alive)),
-                ("no process that hung", sc.startswith(("hang", "interrupt")) and not pids),
-                ("not ended by docker rm -f", sc.endswith("-docker") and not os.path.exists(os.path.join(d, "docker-kills"))),
+                ("no process that hung", sc.startswith(("hang", "interrupt", "docker")) and not pids),
+                ("not ended by docker rm -f", "docker" in sc and not os.path.exists(os.path.join(d, "docker-kills"))),
                 ("no process.txt saying it timed out", sc == "hang" and not any(
                     "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
                 (f"took {took:.0f} s", took > 30),

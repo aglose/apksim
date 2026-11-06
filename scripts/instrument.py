@@ -111,21 +111,47 @@ def apksim(app, test, extra_args, apksim_opts):
             cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
             cidfile = os.path.join(cid_dir, "cid")
             cmd = cmd[:run + 1] + ["--cidfile", cidfile] + cmd[run + 1:]
-    def kill():
-        # The client first, so that it starts no container after the ID is read (it writes the file between
-        # creating the container and starting it); then `rm -f` ends a container whether it started or not.
+    cid, kill_lock = [], threading.Lock()
+    tool = next((os.path.basename(w) for w in cmd[:run or 0] if os.path.basename(w) in CONTAINER_TOOLS), "docker")
+
+    def container_id():
+        """The container's ID, once docker has written it (it creates the file empty, then writes the ID between
+        creating the container and starting it). OSError if the file cannot be read."""
+        if not cid:
+            with open(cidfile) as f:
+                c = f.read().strip()
+            if c:
+                cid.append(c)
+        return cid[0] if cid else None
+
+    def remove_container():
         try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        if cidfile:
+            c = container_id()
+        except OSError as e:
+            sys.stderr.write(f"instrument.py: could not read the container ID from {cidfile} ({e}): a container "
+                             f"{tool} started for this process may still be running\n")
+            return
+        if c:  # (`rm -f`: it ends a container whether it started or not; one already gone is an error, ignored)
             try:
-                with open(cidfile) as f:
-                    cid = f.read().strip()
-                if cid:
-                    subprocess.run(cmd[:run] + ["rm", "-f", cid], capture_output=True, timeout=60)
-            except (OSError, subprocess.SubprocessError):
+                subprocess.run(cmd[:run] + ["rm", "-f", c], capture_output=True, timeout=60)
+            except (OSError, subprocess.SubprocessError) as e:
+                sys.stderr.write(f"instrument.py: `{tool} rm -f {c}` failed ({e}): the container may still be "
+                                 "running\n")
+
+    def kill():
+        with kill_lock:
+            if cidfile:
+                try:
+                    container_id()  # before the client ends, while its file is sure to be there
+                except OSError:
+                    pass
+            # Then the client, so that it starts no container after the ID is read, then the container.
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
                 pass
+            if cidfile:
+                remove_container()
 
     main = threading.current_thread() is threading.main_thread()
     with LIVE_LOCK:
@@ -165,8 +191,9 @@ def apksim(app, test, extra_args, apksim_opts):
                 kill()
                 return
 
-    if TEST_TIMEOUT > 0:
-        threading.Thread(target=watchdog, daemon=True).start()
+    dog = threading.Thread(target=watchdog, daemon=True) if TEST_TIMEOUT > 0 else None
+    if dog:
+        dog.start()
     for line in p.stdout:
         if quit_sent.is_set() and (in_dump or line.startswith("Full thread dump")):
             in_dump = True
@@ -193,10 +220,16 @@ def apksim(app, test, extra_args, apksim_opts):
     dumped.set()
     p.wait()
     done.set()
+    if dog:
+        dog.join()  # (a kill under way reads the cidfile: the client's end, closing its output, comes first)
     reader.join()
+    if cidfile and p.returncode < 0 and not timed_out:
+        with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
+            remove_container()
     with LIVE_LOCK:
         LIVE.pop(p, None)
-    if cid_dir:
+        stopping = bool(STOPPING)
+    if cid_dir and not stopping:  # (a stop's kill may still read it; this script ends with it anyway)
         shutil.rmtree(cid_dir, ignore_errors=True)
     if deps:
         RECORDED.append(deps)

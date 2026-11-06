@@ -621,8 +621,8 @@ starting or ending (stuck in teardown, or out of the watchdog's sight) gets a SI
 stacks of the threads in JUnit code go in the failure) and then SIGKILL to its process group (each process gets a
 session of its own, so instrument.py forwards Ctrl-C/SIGTERM itself: a process starts and is noted for that under one
 lock, and none starts once a stop has begun), and with `--apksim "docker|podman run ..."` a `docker rm -f` (by a
-`--cidfile` instrument.py adds: SIGKILL to the client leaves the container running; the client is killed first, so it
-starts no container after its ID is read); the test
+`--cidfile` instrument.py adds: SIGKILL to the client leaves the container running; the ID is read before the client is
+killed and the client killed before `rm -f`, and a client that dies of any signal has its container removed too); the test
 fails "timed out after SEC s" with the stderr tail, and with `--bundles` gets process.txt. Test runs launch cold, so
 the process is the JVM itself (the launcher execs it), never a standby's client.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
