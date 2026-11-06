@@ -652,17 +652,12 @@ public final class Bundles {
 
   private record Win(View view, WindowManager.LayoutParams params) {}
 
-  /** This process's visible windows, bottom to top (higher window types above lower; within a type, later above earlier). */
+  /** This process's visible windows with a size, bottom to top in the stack ({@link AccessibleWindows#stack}). */
   private static List<Win> visibleWindows() {
-    Object global = android.view.WindowManagerGlobal.getInstance();
-    List<View> views = new ArrayList<>(ReflectionHelpers.<List<View>>getField(global, "mViews"));
-    List<WindowManager.LayoutParams> params = new ArrayList<>(ReflectionHelpers.<List<WindowManager.LayoutParams>>getField(global, "mParams"));
     List<Win> out = new ArrayList<>();
-    for (int i = 0; i < views.size() && i < params.size(); i++) {
-      View v = views.get(i);
-      if (v.getVisibility() == View.VISIBLE && v.isAttachedToWindow() && v.getWidth() > 0 && v.getHeight() > 0) out.add(new Win(v, params.get(i)));
+    for (View v : AccessibleWindows.stack()) {
+      if (v.getWidth() > 0 && v.getHeight() > 0) out.add(new Win(v, (WindowManager.LayoutParams) v.getLayoutParams()));
     }
-    out.sort(java.util.Comparator.comparingInt(w -> w.params.type));
     return out;
   }
 
@@ -678,14 +673,17 @@ public final class Bundles {
     StringBuilder b = new StringBuilder();
     List<Win> wins = visibleWindows();
     if (wins.isEmpty()) b.append("no visible windows\n");
+    boolean[] reported = reported(wins);
     int[] at = new int[2];
-    for (Win w : wins) {
+    for (int i = 0; i < wins.size(); i++) {
+      Win w = wins.get(i);
       w.view.getLocationOnScreen(at);
       Activity a = TestActivities.activityOf(w.view);
       b.append("type ").append(w.params.type).append(" \"").append(w.params.getTitle()).append("\" ")
           .append(a == null ? "(no activity)" : a.getClass().getName() + (a.isFinishing() ? " finishing" : ""))
           .append(" [").append(at[0]).append(',').append(at[1]).append(',').append(at[0] + w.view.getWidth()).append(',')
-          .append(at[1] + w.view.getHeight()).append("]").append(w.view.hasWindowFocus() ? " focused" : "").append('\n');
+          .append(at[1] + w.view.getHeight()).append("]").append(w.view.hasWindowFocus() ? " focused" : "")
+          .append(reported[i] ? "" : " covered (not reported to accessibility)").append('\n');
     }
     return b.toString();
   }
@@ -740,9 +738,25 @@ public final class Bundles {
     }
   }
 
+  /** Which windows accessibility reports: those a touch-modal or full-screen window above covers are not. */
+  private static boolean[] reported(List<Win> wins) {
+    List<View> views = new ArrayList<>();
+    List<WindowManager.LayoutParams> params = new ArrayList<>();
+    for (Win w : wins) {
+      views.add(w.view);
+      params.add(w.params);
+    }
+    return AccessibleWindows.reported(views, params);
+  }
+
+  /**
+   * The roots of what UiAutomator could reach: the windows of [wins] accessibility reports (windows.txt lists every
+   * one). Every read of nodes.txt, immediate or deferred, takes its windows from here.
+   */
   private static List<View> rootsOf(List<Win> wins) {
+    boolean[] reported = reported(wins);
     List<View> roots = new ArrayList<>();
-    for (Win w : wins) roots.add(w.view);
+    for (int i = 0; i < wins.size(); i++) if (reported[i]) roots.add(wins.get(i).view);
     return roots;
   }
 

@@ -139,9 +139,17 @@ class StackWindowsTest {
     }
   }
 
+  /** Whether the scenario's activity has its window shown (not hidden as a stopped activity's is). */
+  private fun shown(scenario: ActivityScenario<*>): Boolean {
+    var shown = false
+    scenario.onActivity { shown = it.window.decorView.isAttachedToWindow && it.window.decorView.visibility == android.view.View.VISIBLE }
+    return shown
+  }
+
   /**
    * A floating (dialog-themed) activity leaves the one below visible and paused; an opaque one started over both
-   * hides them, and finishing it shows them again.
+   * hides them, and finishing it shows them again. UiAutomation lists only the floating one's window: it is
+   * touch-modal, so the window manager counts the whole task as covered and leaves the one below out (issue 97).
    */
   @Test
   fun aFloatingActivityLeavesTheOneBelowVisible() {
@@ -151,15 +159,16 @@ class StackWindowsTest {
       scenario.onActivity { it.startActivity(Intent(it, FloatingActivity::class.java)) }
       assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
       assertEquals(Lifecycle.State.STARTED, scenario.state)
-      assertEquals(2, appWindows().size)
+      assertTrue("the one below is shown", shown(scenario))
+      assertEquals(1, appWindows().size)
       // A rotation recreates both; the one below stays paused under the floating one, its window under it.
       try {
         device.setOrientationLeft()
         assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
         assertEquals(Lifecycle.State.STARTED, scenario.state)
-        assertEquals(2, appWindows().size)
-        // UiAutomation lists windows topmost first.
-        assertTrue("the floating window is on top", appWindows().first().root.findAccessibilityNodeInfosByText("Floating").isNotEmpty())
+        assertTrue("the one below is shown", shown(scenario))
+        assertEquals(1, appWindows().size)
+        assertTrue("the floating window is the one listed", appWindows().first().root.findAccessibilityNodeInfosByText("Floating").isNotEmpty())
       } finally {
         device.setOrientationNatural()
         device.unfreezeRotation()
@@ -169,12 +178,14 @@ class StackWindowsTest {
       context.startActivity(Intent(context, SecondActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
       assertNotNull(device.wait(Until.findObject(By.text("Stack 1: 0 taps")), 5_000))
       assertEquals(Lifecycle.State.CREATED, scenario.state)
+      assertFalse("the one below is hidden", shown(scenario))
       assertEquals(1, appWindows().size)
 
       device.findObject(By.text(Pattern.compile("finish", Pattern.CASE_INSENSITIVE))).click()
       assertNotNull(device.wait(Until.findObject(By.text("Floating")), 5_000))
       assertEquals(Lifecycle.State.STARTED, scenario.state)
-      assertEquals(2, appWindows().size)
+      assertTrue("the one below is shown again", shown(scenario))
+      assertEquals(1, appWindows().size)
     }
   }
 
