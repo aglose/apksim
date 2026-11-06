@@ -255,6 +255,7 @@ public class SimRunner extends RobolectricTestRunner {
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
       NetConnectivity.beforeApplication();
+      if (System.getProperty("apksim.instrument") == null) untracedDevice();
       super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
@@ -281,6 +282,21 @@ public class SimRunner extends RobolectricTestRunner {
       } catch (Exception e) {
         System.err.println("[apksim] gesture thresholds: " + e);
       }
+    }
+
+    /**
+     * A running instance is a device nobody is tracing: android.os.Trace's enabled tags are 0, so every Trace call
+     * returns at once. Robolectric's ShadowTrace acts as if a trace were always being captured (TRACE_TAG_APP), keeps
+     * every section in static sets for the life of the process, and throws "Section is already running" for an async
+     * section (name and cookie) begun twice, which a device never does: a large app's screen-load tracker ended its
+     * process. Its reset between tests (the standby's warmup is one) puts the checks back on but leaves the tags, so
+     * this runs before every setup. Test runs keep Robolectric's behaviour, which a test may assert on
+     * (ShadowTrace.getCurrentAsyncSections()).
+     */
+    private static void untracedDevice() {
+      org.robolectric.shadows.ShadowTrace.doNotUseSetCrashOnIncorrectUsage(false);
+      org.robolectric.shadows.ShadowTrace.setEnabled(false);
+      ReflectionHelpers.setStaticField(org.robolectric.shadows.ShadowTrace.class, "tags", 0L);
     }
 
     private static android.content.res.AssetManager testAssets;
@@ -365,6 +381,8 @@ public class SimRunner extends RobolectricTestRunner {
     if (RealTimeClock.requested()) {  // --realtime-clock
       shadows.add(RealTimeClock.ShadowRealTimeSystemClock.class);
       shadows.add(RealTimeClock.ShadowRealTimeDisplayEventReceiver.class);
+    } else if (!TestActivities.testRun()) {
+      shadows.add(ShadowRealSleep.class);  // running instances: SystemClock.sleep takes real time, not simulated
     }
     if (Snapshot.ON) shadows.add(Snapshot.ShadowSteadyCaret.class);  // --snapshot: carets that do not blink
     return shadows.toArray(new Class<?>[0]);

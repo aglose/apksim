@@ -27,10 +27,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`).
+    commands (`runCommand`). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
-    extra shadows.
+    extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
+    (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
+    the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
+    async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
@@ -133,7 +138,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
+  against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -178,12 +184,13 @@ Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
-Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
+Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
+lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
+(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the launcher activity or the
@@ -266,7 +273,16 @@ app opens outside itself go to the Mac's browser/mail app. The keyboard sends Co
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
-`APKSIM_WINDOW`). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+`APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
+warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
+digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
+the `default` slot's: Robolectric's `unknown` failed a backend's format check), `--feature NAME[=false]` (repeatable,
+ShadowPackageManager.setSystemFeature: Robolectric reports no hardware features, FEATURE_CAMERA_ANY included) and
+`--build FIELD=VALUE` (repeatable: any public static Build or Build.VERSION field, `MODEL=Pixel 9`,
+`VERSION.SECURITY_PATCH=...`, typed by the field; not VERSION.SDK_INT, and leave FINGERPRINT alone in test runs,
+see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
+checks them (CI runs it with the options). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
+before onCreate, not in `Host.run` after it), so what onCreate writes is kept and `APKSIM_LOGCAT` shows its log. Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
@@ -279,6 +295,13 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
+onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
+deadline waited for with SystemClock.sleep); `scripts/timer-check.py
+PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
+its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
+drives it; `PopupTouchTest` in a test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -422,7 +445,8 @@ quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.
 `Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
 the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
-back/home/lock/unlock), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
+after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
@@ -578,7 +602,8 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
-UI is quiet). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue until the frame has been drawn, as `Thread.sleep` does (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
+unpaused Choreographer that frame loop never let the looper idle). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue until the frame has been drawn, as `Thread.sleep` does (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
@@ -593,8 +618,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
-  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
-  `runBlocking { delay() }` is not covered: kotlinx parks the thread itself, and the main queue waits.
+  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`). Work Compose's
+  test library hands to `runOnUiThread` (its clock's frames, runOnIdle) counts as a dispatch, as it is a main-thread
+  message on a device: a composable's `runBlocking` in a frame the clock stepped ran a window frame from inside the
+  measure, which Compose refused ("performMeasureAndLayout called during measure layout", `ComposeBlockingReadTest`).
 - JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
   Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
@@ -648,7 +675,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back (Robolectric called back with
   nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
-  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
@@ -798,6 +825,12 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   `work/lib` through `$TMPDIR/apksim-<hash>`.
 - Robolectric's looper clock has **1 ms resolution and drops fractions**. Always advance by whole ms (see
   `Host.run`).
+- **Nothing but Host's loop may move the clock in a running instance.** Robolectric's SystemClock.sleep moves it by
+  the time asked and returns at once, from any thread; Host never gives that time back, so app timers fire early by
+  as much, and a worker polling with SystemClock.sleep raced the clock minutes ahead (an app's 10-minute inactivity
+  CountDownTimer fired after ~30 s, most likely this). `ShadowRealSleep` makes it a real sleep outside test runs; on the main thread it also moves the clock by the time
+  slept (Host's loop cannot meanwhile, and a deadline loop there would never end), which Host then does not add again. `stats` clockAheadMs
+  shows drift; `scripts/timer-check.py` checks it.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
   animations.
@@ -818,6 +851,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   display list in HWUI and draws nothing until recorded again. `GpuRenderNode` closes a content raster only a frame
   after the content is drawn in the screen's tree again; destroying a HardwareRenderer also deletes the display lists
   of everything it draws, so it empties its root first.
+- Nothing may change the process locale once the JVM runs threads: macOS's `setlocale` swaps the global locale under
+  any thread in `vsnprintf` (a JIT compiler thread crashed in `localeconv_l` while a standby booted, under load). The
+  launcher sets `LC_NUMERIC=en_US.UTF-8` on macOS, the value libandroid_runtime's `JNI_OnLoad` sets, so its
+  `setlocale` changes nothing. Check new native libraries for `setlocale` imports (`nm -u`).
 - zsh is the shell: `==` and unquoted globs (`--include=*.kt`) break one-liners. Quote them, or use bash/python.
 
 ## Test APKs
