@@ -236,6 +236,7 @@ public class Host {
       if (stack.isEmpty()) break;
       if (Snapshot.ON) focusTopWindow();
       List<View> roots = rootViews();
+      syncWindowPositions(roots);
       if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
         render(roots);
         if (firstFrame) {
@@ -813,7 +814,10 @@ public class Host {
     }
     if (touchTarget == null) return;
     int action = e.type() == SimWindow.CANCEL ? MotionEvent.ACTION_CANCEL : e.type();
-    MotionEvent m = MotionEvent.obtain(downTime, now, action, e.x() - touchDx, e.y() - touchDy, 0);
+    // As a device delivers it: raw coordinates on the screen, x and y in the window (Compose reads the raw ones and
+    // takes the window's position off them).
+    MotionEvent m = MotionEvent.obtain(downTime, now, action, e.x(), e.y(), 0);
+    m.offsetLocation(-touchDx, -touchDy);
     m.setSource(InputDevice.SOURCE_TOUCHSCREEN);
     touchTarget.dispatchTouchEvent(m);
     m.recycle();
@@ -876,13 +880,14 @@ public class Host {
       props[i].id = i;
       props[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
       coords[i] = new MotionEvent.PointerCoords();
-      coords[i].x = at[i][0] - touchDx;
-      coords[i].y = at[i][1] - touchDy;
+      coords[i].x = at[i][0];
+      coords[i].y = at[i][1];
       coords[i].pressure = 1;
       coords[i].size = 1;
     }
     int masked = action == MotionEvent.ACTION_MOVE ? action : action | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
     MotionEvent m = MotionEvent.obtain(downTime, now, masked, 2, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+    m.offsetLocation(-touchDx, -touchDy);  // raw on the screen, x and y in the window
     return m;
   }
 
@@ -898,7 +903,12 @@ public class Host {
         new MotionEvent.PointerProperties[] {props}, new MotionEvent.PointerCoords[] {coords},
         0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
     List<View> roots = rootViews();
-    if (!roots.isEmpty()) roots.get(roots.size() - 1).dispatchGenericMotionEvent(m);
+    if (!roots.isEmpty()) {
+      View top = roots.get(roots.size() - 1);
+      int[] at = position(top);
+      m.offsetLocation(-at[0], -at[1]);  // raw on the screen, x and y in the window
+      top.dispatchGenericMotionEvent(m);
+    }
     m.recycle();
   }
 
@@ -972,11 +982,14 @@ public class Host {
 
   /** Where a window sits on screen, from its layout params (the window manager's job on a device). */
   private int[] position(View root) {
+    return position(root, root.getWidth(), root.getHeight());
+  }
+
+  /** Where a window of this size goes: its gravity and offsets on the display. */
+  private int[] position(View root, int rw, int rh) {
     int x = 0;
     int y = 0;
     if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
-      int rw = root.getWidth();
-      int rh = root.getHeight();
       int hg = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;
       int vg = lp.gravity & Gravity.VERTICAL_GRAVITY_MASK;
       x = hg == Gravity.CENTER_HORIZONTAL ? (w - rw) / 2 + lp.x : hg == Gravity.RIGHT ? w - rw - lp.x : lp.x;
@@ -1024,15 +1037,78 @@ public class Host {
   }
 
   /**
-   * A window's top left on the screen: where Host places it in a running instance (its views' getLocationOnScreen
-   * reads 0,0 there), else where the window manager put it (test runs). Main thread.
+   * Puts each window where Host shows it as far as its views know: AttachInfo's window position, which
+   * getLocationOnScreen, accessibility's boundsInScreen and the window's matrix to the screen read, and the frame's top
+   * left, which ViewRootImpl copies into it on each traversal. Robolectric's window session gives a window that is
+   * not full-screen (a centred dialog) a display-sized frame at lp.x/lp.y, so its views reported positions inside the
+   * window as screen positions: a dialog's nodes sat at the top left, where `tap-text` and UiAutomator then tapped.
+   * The frame's size is left as it is (it sets the window's measure specs and insets); a relayout puts Robolectric's
+   * frame back, and the next loop turn moves it again.
+   */
+  private void syncWindowPositions(List<View> roots) {
+    for (View root : roots) {
+      ViewRootImpl vr = root.getViewRootImpl();
+      if (vr == null) continue;
+      try {
+        Object attach = WindowPosition.ATTACH.get(vr);
+        if (attach == null) continue;
+        int[] at = position(root);
+        android.graphics.Rect frame = (android.graphics.Rect) WindowPosition.FRAME.get(vr);
+        if (frame.left != at[0] || frame.top != at[1]) frame.offsetTo(at[0], at[1]);
+        if (WindowPosition.LEFT.getInt(attach) != at[0] || WindowPosition.TOP.getInt(attach) != at[1]) {
+          WindowPosition.LEFT.setInt(attach, at[0]);
+          WindowPosition.TOP.setInt(attach, at[1]);
+        }
+      } catch (IllegalAccessException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
+  /** ViewRootImpl's mAttachInfo and mWinFrame and AttachInfo's mWindowLeft/mWindowTop, looked up once. */
+  private static final class WindowPosition {
+    static final java.lang.reflect.Field ATTACH;
+    static final java.lang.reflect.Field FRAME;
+    static final java.lang.reflect.Field LEFT;
+    static final java.lang.reflect.Field TOP;
+
+    static {
+      try {
+        ATTACH = ViewRootImpl.class.getDeclaredField("mAttachInfo");
+        FRAME = ViewRootImpl.class.getDeclaredField("mWinFrame");
+        Class<?> info = Class.forName("android.view.View$AttachInfo", false, ViewRootImpl.class.getClassLoader());
+        LEFT = info.getDeclaredField("mWindowLeft");
+        TOP = info.getDeclaredField("mWindowTop");
+        for (java.lang.reflect.Field f : new java.lang.reflect.Field[] {ATTACH, FRAME, LEFT, TOP}) f.setAccessible(true);
+      } catch (ReflectiveOperationException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
+  /**
+   * A window's top left on the screen: where Host places it in a running instance (its views learn it each loop turn,
+   * {@link #syncWindowPositions}, so this does not wait for that), else where the window manager put it (test runs).
+   * Main thread.
    */
   static int[] screenPosition(View root) {
-    Host h = current;
-    if (h != null) return h.position(root);
-    int[] at = new int[2];
+    int[] at = screenPositionIfRunning(root);
+    if (at != null) return at;
+    at = new int[2];
     root.getLocationOnScreen(at);
     return at;
+  }
+
+  /** Where Host shows a window, or null when no Host is running (a test run). Main thread. */
+  static int[] screenPositionIfRunning(View root) {
+    Host h = current;
+    return h == null ? null : h.position(root);
+  }
+
+  /** Where Host will show a window once it is laid out at this size (a relayout's, measured), or null. */
+  static int[] screenPositionIfRunning(View root, int width, int height) {
+    Host h = current;
+    return h == null ? null : h.position(root, width, height);
   }
 
   /**

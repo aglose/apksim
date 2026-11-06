@@ -74,4 +74,35 @@ class CoveredWindowsTest {
       assertTrue("the tap reached the activity", device.wait(Until.hasObject(By.text("behind taps: 1")), 5_000))
     }
   }
+
+  /**
+   * A centred dialog's nodes report where they are on the screen, inside the dialog's window, so a click at their
+   * bounds lands on them. They used to report their place in the window (the dialog at the top left).
+   */
+  @Test
+  fun aCentredDialogsNodesAreOnTheScreenWhereItIs() {
+    launch("modal").use {
+      val count = device.wait(Until.findObject(By.text("Count")), 5_000)
+      assertNotNull("the dialog's button", count)
+      val window = android.graphics.Rect().also { appWindows.single().getBoundsInScreen(it) }
+      assertTrue("the dialog is centred: $window", window.left > 0 && window.top > 0)
+      val bounds = count.visibleBounds
+      assertTrue("the button $bounds is inside the dialog $window", window.contains(bounds))
+      count.click()
+      assertTrue("the click reached the button", device.wait(Until.hasObject(By.text("dialog taps: 1")), 5_000))
+    }
+  }
+
+  /** The same for a Compose Dialog, whose nodes take their screen position from the window's. */
+  @Test
+  fun aComposeDialogsButtonTakesAClick() {
+    launch("compose").use {
+      val count = device.wait(Until.findObject(By.text("Compose count")), 5_000)
+      assertNotNull("the Compose dialog's button", count)
+      val window = android.graphics.Rect().also { appWindows.single().getBoundsInScreen(it) }
+      assertTrue("the button ${count.visibleBounds} is inside the dialog $window", window.contains(count.visibleBounds))
+      count.click()
+      assertTrue("the click reached the button", device.wait(Until.hasObject(By.text("compose dialog taps: 1")), 5_000))
+    }
+  }
 }

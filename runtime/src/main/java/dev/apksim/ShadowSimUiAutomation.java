@@ -529,4 +529,38 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     @SuppressWarnings("unchecked") T t = (T) result[0];
     return t;
   }
+
+  /**
+   * The transform from a window to the screen, as the accessibility service hands it to a window's direct connection:
+   * AccessibilityInteractionController takes the window's position (AttachInfo's mWindowLeft/mWindowTop) off each node's
+   * boundsInScreen and applies this matrix, which on a device moves it back by the window's frame. Robolectric's is the
+   * identity, so every node of a window not at 0,0 (a centred dialog) reported bounds inside its window, and
+   * UiAutomator clicked there.
+   */
+  @Implements(android.view.accessibility.AccessibilityManager.class)
+  public static class ShadowSimAccessibilityManager extends org.robolectric.shadows.ShadowAccessibilityManager {
+    @Implementation(minSdk = 33)
+    @Override
+    protected Object getWindowTransformationSpec(int windowId) {
+      Object spec = super.getWindowTransformationSpec(windowId);
+      ViewRootImpl root = null;
+      synchronized (WINDOW_IDS) {
+        for (java.util.Map.Entry<ViewRootImpl, Integer> e : WINDOW_IDS.entrySet()) {
+          if (e.getValue() == windowId) root = e.getKey();
+        }
+      }
+      if (root == null) return spec;
+      Object attach = ReflectionHelpers.getField(root, "mAttachInfo");
+      if (attach == null) return spec;
+      int left = ReflectionHelpers.<Integer>getField(attach, "mWindowLeft");
+      int top = ReflectionHelpers.<Integer>getField(attach, "mWindowTop");
+      if (left == 0 && top == 0) return spec;
+      android.graphics.Matrix m = new android.graphics.Matrix();
+      m.setTranslate(left, top);
+      float[] values = new float[9];
+      m.getValues(values);
+      ReflectionHelpers.setField(spec, "transformationMatrix", values);
+      return spec;
+    }
+  }
 }

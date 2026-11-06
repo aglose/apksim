@@ -125,7 +125,8 @@ def uiautomator_dump(serial):
 
 def covered_windows(serial, port):
     """Windows a dialog covers are not reported, as on a device (issue 97): to UiAutomation.getWindows (the server's
-    `texts`), `uiautomator dump --windows` and `apksim nodes`; a FLAG_NOT_TOUCH_MODAL dialog leaves the activity in."""
+    `texts`), `uiautomator dump --windows` and `apksim nodes`; a FLAG_NOT_TOUCH_MODAL dialog leaves the activity in.
+    A centred dialog's nodes report its place on the screen, so a tap at them lands."""
     def dialog(which, title):
         adb(serial, "shell", f"am start -W -a android.intent.action.VIEW -d 'apksim://dialogs?open={which}'")
         deadline = time.time() + 10
@@ -140,6 +141,33 @@ def covered_windows(serial, port):
         adb(serial, "shell", "uiautomator", "dump", "--windows", "/sdcard/windows.xml")
         root = ET.fromstring(adb(serial, "shell", "cat", "/sdcard/windows.xml"))
         return [w for w in root.iter("window") if w.get("type") == "TYPE_APPLICATION"]
+
+    def bounds(text):
+        r = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", text)
+        return tuple(int(v) for v in r.groups())
+
+    def centred_dialog(win):
+        """The centred dialog's nodes are where it is on the screen, and a tap at one's centre reaches it."""
+        left, top, right, bottom = bounds(win.get("bounds"))
+        if left == 0 or top == 0:
+            fail(f"the modal dialog is not centred: {win.get('bounds')}")
+        adb(serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml")
+        root = ET.fromstring(adb(serial, "shell", "cat", "/sdcard/window_dump.xml"))
+        count = [n for n in root.iter("node") if n.get("text") == "Count"]
+        if not count:
+            fail("uiautomator dump has no Count button in the dialog")
+        l, t, r, b = bounds(count[0].get("bounds"))
+        if not (left <= l and r <= right and top <= t and b <= bottom):
+            fail(f"the dialog's Count button [{l},{t}][{r},{b}] is outside the dialog {win.get('bounds')}")
+        if f"[{l},{t},{r},{b}] clickable text=\"Count\"" not in adb(serial, "shell", "apksim", "nodes"):
+            fail("`nodes` and uiautomator dump disagree on the Count button's bounds")
+        if request(port, f"tap {(l + r) // 2} {(t + b) // 2}") != "ok":
+            fail("tap was not answered")
+        deadline = time.time() + 5
+        while "dialog taps: 1" not in (texts := request(port, "texts")):
+            if time.time() > deadline:
+                fail(f"a tap at the Count button's bounds did not reach it: {texts}")
+            time.sleep(0.2)
 
     def close():
         adb(serial, "shell", "input", "keyevent", "BACK")  # the dialog
@@ -158,6 +186,8 @@ def covered_windows(serial, port):
             fail(f"`nodes` listed the activity under the {which} dialog")
         if behind not in adb(serial, "shell", "apksim", "nodes", "all"):
             fail(f"`nodes all` left out the activity under the {which} dialog")
+        if which == "modal":
+            centred_dialog(wins[0])
         close()
     texts = dialog("nonmodal", "Small non-modal dialog open")
     if behind not in texts:

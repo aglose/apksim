@@ -31,7 +31,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
     loop turn draw, 150-400 frames a second on a video screen. A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
-    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). A touch event's
+    raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
+    Host places windows itself (`position`: gravity and offsets on the display; Robolectric's window session gives a
+    window that is not full-screen the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
+    moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
+    position (getLocationOnScreen, boundsInScreen, Compose's window position) is where the window is drawn. Before, a
+    centred dialog's views thought they were at the top left, and `nodes`, `tap-text` and UiAutomator missed them.
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
     path that changes it ends: start, finish (of the top or of one below it), `home`/`resume`, configuration changes,
     `recreate`, `process-death`, test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
@@ -357,9 +363,10 @@ PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
-`apksim://dialogs[?open=full|modal|nonmodal]` opens `DialogsActivity`: a full-screen dialog, a small (touch-modal)
-one and a small FLAG_NOT_TOUCH_MODAL one over it; under the first two accessibility reports only the dialog, under the
-third the activity too (`CoveredWindowsTest`, `adb-check.py`).
+`apksim://dialogs[?open=full|modal|nonmodal|compose]` opens `DialogsActivity`: a full-screen dialog, a small
+(touch-modal) one, a small FLAG_NOT_TOUCH_MODAL one or a Compose Dialog over it; under all but the third accessibility
+reports only the dialog. Each counts taps on its "Count" button, for clicks at a centred dialog's node bounds
+(`CoveredWindowsTest`, `adb-check.py`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
@@ -679,7 +686,11 @@ UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `Acces
 Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
 accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
 equals/hashCode include it, and without it every window's root was equal to every other's, so UiDevice (which keeps
-the roots in a set) searched only the active window. Each window's root node is linked to its views with
+the roots in a set) searched only the active window. Node bounds are on the screen for a window not at 0,0 (a
+centred dialog): AccessibilityInteractionController takes the window's position off each node and applies the
+window-to-screen matrix the accessibility service gives (`ShadowSimAccessibilityManager.getWindowTransformationSpec`;
+Robolectric's is the identity, so a dialog's nodes sat at the top left and clicks missed). Each window's root node is
+linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
