@@ -92,8 +92,7 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
   @Implementation
   @Override
   protected void registerNetworkCallback(NetworkRequest request, ConnectivityManager.NetworkCallback cb, Handler handler) {
-    super.registerNetworkCallback(request, cb, handler);
-    track(new Tracked(cm, cb, request, Kind.LISTEN, handler));
+    track(() -> super.registerNetworkCallback(request, cb, handler), new Tracked(cm, cb, request, Kind.LISTEN, handler));
   }
 
   // Robolectric sends requestNetwork to the two-argument registerNetworkCallback; a request gets one network.
@@ -137,16 +136,15 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     synchronized (TRACKED) {
       if (TRACKED.get(t.cb) != t || t.timeout == null) return;
       t.timeout = null;
+      t.cm.unregisterNetworkCallback(t.cb);  // under the lock: a re-registration of the callback can't come in between
     }
-    t.cm.unregisterNetworkCallback(t.cb);
     t.cb.onUnavailable();
   }
 
   @Implementation
   @Override
   protected void requestNetwork(NetworkRequest request, ConnectivityManager.NetworkCallback cb, Handler handler) {
-    super.registerNetworkCallback(request, cb, handler);  // Robolectric's record of it, without our listen
-    track(new Tracked(cm, cb, request, Kind.REQUEST, handler));
+    track(() -> super.registerNetworkCallback(request, cb, handler), new Tracked(cm, cb, request, Kind.REQUEST, handler));  // Robolectric's record of it, without our listen
   }
 
   @Implementation
@@ -158,22 +156,20 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
   @Implementation
   @Override
   protected void registerDefaultNetworkCallback(ConnectivityManager.NetworkCallback cb, Handler handler) {
-    super.registerDefaultNetworkCallback(cb, handler);
-    track(new Tracked(cm, cb, null, Kind.DEFAULT, handler));
+    track(() -> super.registerDefaultNetworkCallback(cb, handler), new Tracked(cm, cb, null, Kind.DEFAULT, handler));
   }
 
   @Implementation
   @Override
   protected void registerBestMatchingNetworkCallback(NetworkRequest request, ConnectivityManager.NetworkCallback cb, Handler handler) {
-    super.registerBestMatchingNetworkCallback(request, cb, handler);
-    track(new Tracked(cm, cb, request, Kind.REQUEST, handler));
+    track(() -> super.registerBestMatchingNetworkCallback(request, cb, handler), new Tracked(cm, cb, request, Kind.REQUEST, handler));
   }
 
   @Implementation
   @Override
   protected void unregisterNetworkCallback(ConnectivityManager.NetworkCallback cb) {
-    super.unregisterNetworkCallback(cb);
     synchronized (TRACKED) {
+      super.unregisterNetworkCallback(cb);
       Tracked t = TRACKED.remove(cb);
       if (t != null) {
         t.queue.clear();
@@ -183,8 +179,10 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     }
   }
 
-  private void track(Tracked t) {
+  /** Robolectric's record of the callback (register) and ours, together under TRACKED: expire() and unregister see both or neither. */
+  private void track(Runnable register, Tracked t) {
     synchronized (TRACKED) {
+      register.run();
       TRACKED.put(t.cb, t);
       decide(t);
     }
