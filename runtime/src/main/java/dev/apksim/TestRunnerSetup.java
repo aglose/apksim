@@ -96,9 +96,9 @@ public final class TestRunnerSetup {
           }
         }
       } catch (InvocationTargetException e) {
-        System.err.println("[apksim] " + runner + ".onCreate: " + e.getCause());
+        LISTENERS.fail(runner + ".onCreate", e.getCause());  // on a device the instrumentation crashes
       } catch (ReflectiveOperationException | LinkageError e) {
-        System.err.println("[apksim] " + runner + ": " + e);
+        LISTENERS.fail(runner, e);
       }
     }
     List<RunListener> listeners = new ArrayList<>();
@@ -109,8 +109,10 @@ public final class TestRunnerSetup {
         if (name.isEmpty()) continue;
         try {
           listeners.add((RunListener) Class.forName(name, true, ClassLoader.getSystemClassLoader()).getDeclaredConstructor().newInstance());
+        } catch (InvocationTargetException e) {
+          LISTENERS.fail("listener " + name, e.getCause());
         } catch (ReflectiveOperationException | LinkageError | ClassCastException e) {
-          System.err.println("[apksim] listener " + name + ": " + e);
+          LISTENERS.fail("listener " + name, e);
         }
       }
     }
@@ -136,9 +138,13 @@ public final class TestRunnerSetup {
   /** Forwards the run to listeners that join late, replaying the run's start and the current test's start to them. */
   static final class Deferred extends RunListener {
     private final List<RunListener> active = new CopyOnWriteArrayList<>();
-    /** Listeners that threw: as JUnit does, each stops hearing the run, and the run fails (Instrument's exit status). */
+    /**
+     * Listeners that threw (as JUnit does, each stops hearing the run) and setup failures: either fails the run
+     * (Instrument's exit status).
+     */
     final List<Throwable> failures = new CopyOnWriteArrayList<>();
     private final List<Description> ignoredBefore = new ArrayList<>();
+    private final java.util.ArrayDeque<Description> openSuites = new java.util.ArrayDeque<>();
     private boolean installed;
     private Description run;
     private Description current;
@@ -148,7 +154,11 @@ public final class TestRunnerSetup {
       for (RunListener l : listeners) {
         active.add(l);
         safely(l, () -> {
+          withInstrumentation(l);
           if (run != null) l.testRunStarted(run);
+          for (java.util.Iterator<Description> i = openSuites.descendingIterator(); i.hasNext(); ) {
+            l.testSuiteStarted(i.next());  // outermost first
+          }
           for (Description d : ignoredBefore) l.testIgnored(d);
           if (current != null) l.testStarted(current);
         });
@@ -161,7 +171,32 @@ public final class TestRunnerSetup {
     }
 
     private void each(ListenerCall c) {
-      for (RunListener l : active) safely(l, () -> c.run(l));
+      for (RunListener l : active) {
+        safely(l, () -> {
+          withInstrumentation(l);
+          c.run(l);
+        });
+      }
+    }
+
+    /** A setup failure (the runner's, or a listener that could not be made): the run fails, as on a device. */
+    void fail(String what, Throwable e) {
+      failures.add(e);
+      System.err.println("[apksim] " + what + " failed: " + e);
+      e.printStackTrace();
+    }
+
+    /**
+     * AndroidJUnitRunner gives each InstrumentationRunListener the instrumentation (TestExecutor); here it is given
+     * before every call, since Robolectric makes a new one for each test.
+     */
+    private static void withInstrumentation(RunListener l) throws ReflectiveOperationException {
+      for (Class<?> c = l.getClass(); c != null && c != RunListener.class; c = c.getSuperclass()) {
+        if (!"androidx.test.internal.runner.listener.InstrumentationRunListener".equals(c.getName())) continue;
+        Method set = c.getMethod("setInstrumentation", Instrumentation.class);
+        set.invoke(l, InstrumentationRegistry.getInstrumentation());
+        return;
+      }
     }
 
     private interface ListenerCall {
@@ -192,12 +227,14 @@ public final class TestRunnerSetup {
     }
 
     @Override
-    public void testSuiteStarted(Description d) {
+    public synchronized void testSuiteStarted(Description d) {
+      openSuites.push(d);
       each(l -> l.testSuiteStarted(d));
     }
 
     @Override
-    public void testSuiteFinished(Description d) {
+    public synchronized void testSuiteFinished(Description d) {
+      openSuites.remove(d);
       each(l -> l.testSuiteFinished(d));
     }
 

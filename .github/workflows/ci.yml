@@ -72,6 +72,18 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-realtime.xml -e timezone America/New_York -e realtimeClock true \
             -- --timezone America/New_York --realtime-clock
+      # Runner listeners named with -e listener: an InstrumentationRunListener gets the instrumentation, as
+      # AndroidJUnitRunner gives it, and a listener that cannot be made fails the run.
+      - name: Test run with extra runner listeners
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-listeners.xml -e class dev.apksim.composeapp.RunnerListenersTest \
+            -e listener androidx.test.internal.runner.listener.SuiteAssignmentPrinter
+          status=0
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-badlistener.xml -e class dev.apksim.composeapp.RunnerListenersTest \
+            -e listener does.not.Exist || status=$?
+          test "$status" = 1
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.
       - name: Test run with the network replayed
