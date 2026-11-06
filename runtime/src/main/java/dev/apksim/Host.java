@@ -483,8 +483,13 @@ public class Host {
   /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
   private static Path dataDir;
 
-  /** Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. */
-  private static void usePersistentDataDir() throws Exception {
+  /**
+   * Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. Once: the
+   * first call is from just before Application.onCreate (ShadowSimInstrumentation.callApplicationOnCreate), so the
+   * slot's serial (DeviceIdentity) is known and what onCreate writes lands in the slot; run's is then a no-op.
+   */
+  static synchronized void usePersistentDataDir() throws Exception {
+    if (dataDir != null) return;
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
@@ -685,10 +690,17 @@ public class Host {
     if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
   }
 
+  /**
+   * Whether a touch outside this window goes on to the windows behind it. As InputDispatcher's isTouchModal: a window
+   * is touch-modal only when it is focusable and has no FLAG_NOT_TOUCH_MODAL, so a non-focusable popup (a slider's
+   * value tooltip) takes only the touches inside it. Robolectric's UiAutomation injection, used in test runs, has the
+   * same rule.
+   */
   private static boolean isTouchThrough(View root) {
     ViewGroup.LayoutParams lp = root.getLayoutParams();
     return lp instanceof WindowManager.LayoutParams wl
-        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
+        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
   }
 
   // Two fingers (Option-drag, trackpad pinch and rotate, the `pinch` command): the first finger follows the event,

@@ -54,6 +54,15 @@
                 <data android:scheme="apksim" android:host="timer" />
             </intent-filter>
         </activity>
+        <!-- apksim://popup-trace: a Trace section begun twice, and taps outside a non-focusable popup (issue 52). -->
+        <activity android:name=".PopupTraceActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="popup-trace" />
+            </intent-filter>
+        </activity>
         <!-- apksim://bitmaps: a full-screen View screen of scaled bitmaps (ImageView, BitmapDrawable, drawBitmap(Matrix)). -->
         <activity android:name=".BitmapsActivity" android:exported="true">
             <intent-filter>
