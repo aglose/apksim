@@ -29,12 +29,14 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
-    loop turn draw, 150-400 frames a second on a video screen. A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    loop turn draw, 150-400 frames a second on a video screen. The first frame waits for the bottom window that is
+    shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
+    never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
-    path that changes it ends: start, finish, `home`/`resume`, configuration changes, `recreate`, `process-death`,
-    test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
+    path that changes it ends: start, finish (of the top or of one below it), `home`/`resume`, configuration changes,
+    `recreate`, `process-death`, test runs' launches): the top resumed; below it, while everything above is translucent or floating (a
     dialog-themed activity: the test app's `FloatingActivity`, `apksim://floating`), paused and visible; the rest
     stopped with their windows hidden, so only what a device shows draws and takes touches. A visible activity with
     no window (recreated or rebuilt while stopped: Robolectric's recreate leaves it detached, and resumed whatever it
@@ -189,7 +191,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
-`apksim://floating` a dialog-themed `FloatingActivity`. `snapshots/` has its screenshot-test specs
+`apksim://floating` a dialog-themed `FloatingActivity`; `--feature dev.apksim.testapp.launch_overlay` has its
+Application add an empty 0x0 overlay window before any activity (`ci-smoke.sh`: the first frame still comes). `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
@@ -773,6 +776,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
   loopMainThreadUntilIdle also waits for the Compose rule's idling resource, as it is registered on a device.
+- Compose lazy layouts prefetch: after a scroll the item past the viewport is composed and measured in idle time, as
+  on a device (a suite counted a second "loading more" row only one of which was on screen). Compose picks a
+  scheduler that does nothing when `Build.FINGERPRINT` is "robolectric" (`PrefetchScheduler_androidKt`); the
+  translator sends that one read to `TestActivities.prefetchFingerprint`, so test runs get Compose's own
+  `AndroidPrefetchScheduler` (view posts; `drawingTime` is 0 here, so every run counts as an idle frame, and a request
+  past the first in a run waits for the next Choreographer frame). FINGERPRINT itself stays (`LazyPrefetchTest`).
+  Running instances keep Compose's choice, so they do not prefetch (not yet measured for frame pacing).
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.

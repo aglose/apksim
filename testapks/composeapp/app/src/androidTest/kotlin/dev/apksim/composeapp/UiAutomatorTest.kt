@@ -65,8 +65,10 @@ class UiAutomatorTest {
       device.waitForIdle()
       val ms = (System.nanoTime() - start) / 1_000_000
       assertTrue("swipe took $ms ms", ms < 5_000)
-      // The list moved: the first item on screen is further down it.
-      val first = device.findObjects(By.text(item)).minOf { item.matcher(it.text).also { m -> m.find() }.group(1).toInt() }
+      // The list moved: the first item on screen is further down it. With --realtime-clock the list may still be
+      // settling, so a row matched by text can have none when read again: skip it.
+      val first = device.findObjects(By.text(item)).mapNotNull { it.text }
+        .minOf { item.matcher(it).also { m -> m.find() }.group(1).toInt() }
       assertTrue("first item on screen: $first", first > 3)
     }
   }
