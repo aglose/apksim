@@ -110,8 +110,8 @@ final class DeviceControls {
     if (appearance != null) overlayQualifiers(nightQualifier(appearance));
     String locale = System.getProperty("apksim.locale");
     if (locale != null) applyLocale(locale);
-    String fontScale = System.getProperty("apksim.fontScale");
-    if (fontScale != null) RuntimeEnvironment.setFontScale(Float.parseFloat(fontScale));
+    // --font-scale, else the last --setting system:font_scale (set before onCreate too, and reset since by setQualifiers).
+    SlotDevice.applyFontScale();
     SystemBars.launchOptions();
   }
 
@@ -336,8 +336,6 @@ final class DeviceControls {
     clipboardSeen = SimWindow.setClipboardText(clipboardLast);
   }
 
-  /** Handles a control command, or returns null if it is not one of these. */
-  /** The animator duration scale, as the system sets it: ValueAnimator's for Views, the global setting for Compose. */
   /**
    * --anim-scale N: the animator duration scale from the start (0: animations jump to their end, so they draw no
    * frames). Host runs it before the first activity, and test runs at each test's setup (Robolectric resets the scale
@@ -356,12 +354,21 @@ final class DeviceControls {
     setAnimatorScale(app, scale);
   }
 
+  /** The animator duration scale, as the system sets it: ValueAnimator's for Views, the global setting for Compose. */
   static void setAnimatorScale(Application app, float scale) {
     ValueAnimator.setDurationScale(scale);
     Settings.Global.putFloat(app.getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, scale);
     app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), null);
   }
 
+  /** The font scale as `fontscale` sets it: the configuration, Settings.System.FONT_SCALE and its observers. */
+  static void setFontScale(android.app.Application app, float scale) {
+    RuntimeEnvironment.setFontScale(scale);
+    SlotDevice.putFontScaleSetting(scale);  // Settings.System.FONT_SCALE follows, as on a device
+    app.getContentResolver().notifyChange(Settings.System.getUriFor(Settings.System.FONT_SCALE), null);
+  }
+
+  /** Handles a control command, or returns null if it is not one of these. */
   String run(String[] a) {
     Configuration before = new Configuration(app.getResources().getConfiguration());
     switch (a[0]) {
@@ -401,7 +408,7 @@ final class DeviceControls {
           case "-" -> step(current, -1);
           default -> Float.parseFloat(a[1]);
         };
-        RuntimeEnvironment.setFontScale(scale);
+        setFontScale(app, scale);
         return configurationChanged(before);
       }
       case "animscale" -> {

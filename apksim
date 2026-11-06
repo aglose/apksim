@@ -99,6 +99,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # any Build or Build.VERSION field (repeatable: MODEL=..., VERSION.RELEASE=...).
     --serial) EXTRA+=("-Dapksim.serial=$2"); shift 2 ;;
     --feature) FEATURES="${FEATURES:+$FEATURES,}$2"; shift 2 ;;
+    # A Settings value set before the app starts (repeatable), as `adb shell settings put` would (SlotDevice.java).
+    --setting)
+      [[ "$2" =~ ^(global|secure|system):[^=]+= ]] || { echo "--setting takes global|secure|system:KEY=VALUE" >&2; exit 2; }
+      EXTRA+=("-Dapksim.setting.${SETTING_N:-0}=$2"); SETTING_N=$((${SETTING_N:-0} + 1)); shift 2 ;;
     --build)
       [[ "$2" == ?*=* ]] || { echo "--build takes FIELD=VALUE" >&2; exit 2; }
       EXTRA+=("-Dapksim.build.${2%%=*}=${2#*=}"); shift 2 ;;
@@ -199,7 +203,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*|-Dapksim.bluetooth=*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;

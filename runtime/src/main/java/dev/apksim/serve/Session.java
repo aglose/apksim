@@ -518,6 +518,13 @@ final class Session {
           Files.deleteIfExists(p);
         }
       }
+      // And what the slot kept of the device beside it (SlotDevice: its /sdcard and Settings values).
+      Path device = dir.resolveSibling(dir.getFileName() + ".device");
+      if (Files.isDirectory(device)) {
+        try (Stream<Path> all = Files.walk(device)) {
+          for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+        }
+      }
       l.release();
     } catch (IOException | RuntimeException e) {
       logLine("[serve] could not erase " + dir + ": " + e);
