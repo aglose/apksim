@@ -47,9 +47,17 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
     else drawCopy(scaled, dst.left, dst.top, dst.right, dst.bottom, p);
   }
 
+  /**
+   * This overload scales by the canvas's density over the bitmap's when both are set and differ; those draws stay
+   * HWUI's (a RecordingCanvas has no density, so Views never take that path).
+   */
   @Implementation
   protected void drawBitmap(Bitmap b, float left, float top, Paint p) {
-    Bitmap scaled = scaledFor(b, null, left, top, left + b.getWidth(), top + b.getHeight(), null, p);
+    int canvasDensity = real.getDensity();
+    int bitmapDensity = b == null ? Bitmap.DENSITY_NONE : b.getDensity();
+    boolean densityScaled = canvasDensity != Bitmap.DENSITY_NONE && bitmapDensity != Bitmap.DENSITY_NONE
+        && canvasDensity != bitmapDensity;
+    Bitmap scaled = densityScaled ? null : scaledFor(b, null, left, top, left + b.getWidth(), top + b.getHeight(), null, p);
     if (scaled == null) direct().drawBitmap(b, left, top, p);
     else drawCopy(scaled, left, top, left + b.getWidth(), top + b.getHeight(), p);
   }
@@ -58,7 +66,8 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
   @Implementation
   protected void drawBitmap(Bitmap b, Matrix matrix, Paint p) {
     Bitmap scaled = null;
-    if (matrix != null) {
+    // Main thread only before touching M: a worker recording another node would share it.
+    if (matrix != null && wanted(b, p)) {
       matrix.getValues(M);
       if (M[1] == 0 && M[3] == 0 && M[6] == 0 && M[7] == 0 && M[8] == 1 && M[0] > 0 && M[4] > 0) {
         float l = M[2];
@@ -66,7 +75,7 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
         float r = M[0] * b.getWidth() + M[2];
         float bottom = M[4] * b.getHeight() + M[5];
         scaled = scaledFor(b, null, l, t, r, bottom, DST, p);
-      } else if (wanted(b, p)) {
+      } else {
         GpuBitmaps.passed[3]++;
       }
     }
