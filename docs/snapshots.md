@@ -77,7 +77,7 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
 ### What one capture does
 
 1. **A fresh activity.** `restart [URL]` (new control command): every activity is finished and destroyed, ViewModels
-   cleared, and the launcher activity started again with no saved state, as a new task from the launcher; with a URL
+   cleared, and the launcher activity (or `--activity`'s) started again with no saved state, as a new task; with a URL
    it is started with that ACTION_VIEW intent instead (the activity that handles it). So no screen sees state a
    previous screen or combination left (scroll positions, `rememberSaveable`, back stack), and a capture does not
    depend on which instance ran it or in what order. App statics, the Application and the app's data persist; each

@@ -29,7 +29,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
-    loop turn draw, 150-400 frames a second on a video screen. A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    loop turn draw, 150-400 frames a second on a video screen. The first frame waits for the bottom window that is
+    shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
+    never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). A touch event's
     raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
@@ -200,7 +202,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
-`apksim://floating` a dialog-themed `FloatingActivity`. `snapshots/` has its screenshot-test specs
+`apksim://floating` a dialog-themed `FloatingActivity`; `--feature dev.apksim.testapp.launch_overlay` has its
+Application add an empty 0x0 overlay window before any activity (`ci-smoke.sh`: the first frame still comes). `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
@@ -234,8 +237,8 @@ last call, then what reached the screen per display vsync), `fps` (per-stage cos
 (frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
-drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the launcher activity or the
-URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
+drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or
+`--activity`) or the URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
@@ -328,7 +331,13 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 each only while the device has it and the app has not hidden it (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
-`--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
+`--activity PKG/.Act|.Act|CLASS` (`AppInfo`: start that activity, exported or not, instead of the manifest's first
+MAIN/LAUNCHER one, as `am start -n` would: a debug manifest's test LAUNCHER listed before a home app's MAIN/HOME
+entry, or a screen deep inside; a simple name such as `SecondActivity` works when one activity has it; with a MAIN
+filter it gets MAIN and that filter's LAUNCHER or HOME category, else the component alone; an alias stays the intent's
+component and its targetActivity is made (the test app's `.SecondAlias`). `restart` starts it again
+and `process-death` rebuilds it; one the manifest lacks stops the launch with exit 2 and the list; not in test runs.
+With no LAUNCHER activity the first MAIN/HOME one starts), `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
 `--biometrics enrolled`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
@@ -682,6 +691,14 @@ regression check is `scripts/check-translator.sh` (CI too): `testapks/translator
 miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
 a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
 `.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
+The native loader's is `testapks/loader-fixture` (`loaderfixture.c`, built with the NDK by its `build.sh` into the
+test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so the test app needs no NDK), run by
+`NativeLoaderTest` in the suite, so on the Mac and in both Linux images: the stack guard through the thread pointer,
+TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
+variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
+built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
+libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
+new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
 Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
 accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
@@ -772,6 +789,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
   loopMainThreadUntilIdle also waits for the Compose rule's idling resource, as it is registered on a device.
+- Compose lazy layouts prefetch: after a scroll the item past the viewport is composed and measured in idle time, as
+  on a device (a suite counted a second "loading more" row only one of which was on screen). Compose picks a
+  scheduler that does nothing when `Build.FINGERPRINT` is "robolectric" (`PrefetchScheduler_androidKt`); the
+  translator sends that one read to `TestActivities.prefetchFingerprint`, so test runs get Compose's own
+  `AndroidPrefetchScheduler` (view posts; `drawingTime` is 0 here, so every run counts as an idle frame, and a request
+  past the first in a run waits for the next Choreographer frame). FINGERPRINT itself stays (`LazyPrefetchTest`).
+  Running instances keep Compose's choice, so they do not prefetch (not yet measured for frame pacing).
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
@@ -969,6 +993,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
 - An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
+- `testapks/loader-fixture`: a native library of loader and bionic checks inside the test app (see "Instrumentation tests").
 
 ## Open work
 - **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, the four failures that are the

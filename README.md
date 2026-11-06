@@ -125,6 +125,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 
 | Area | Option | Effect |
 |---|---|---|
+| Start | `--activity PKG/.Act\|.Act\|CLASS` | Start this activity instead of the manifest's first launcher one, as `am start -n` would: exported or not, by package and class, `.Act`, a full class name, or a simple name when one activity has it. For a home app whose debug manifest lists a test launcher first, or a screen deep inside the app. `restart` starts it again. An activity the manifest lacks stops the launch with the list of those it has. (An app with no launcher activity starts its MAIN/HOME one.) |
 | Display | `--device NAME\|WxH[@density]` | The device to simulate (table above) |
 | | `--headless` | No window; the app still runs and renders |
 | | `--window-x N` | The window's horizontal position on screen |
