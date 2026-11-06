@@ -870,6 +870,21 @@ static void init_ctype(void) {
 }
 
 // locale
+// Bionic's setlocale: Android has only "C" and "C.UTF-8", and setting one changes nothing else. Passing it on would
+// change this process's locale under the JVM's threads (macOS's setlocale is not safe against a thread formatting a
+// string: see the launcher's LC_NUMERIC), and would give native code the host's decimal point.
+static int b_locale_utf8 = 1;
+static char *s_setlocale(int category, const char *name) {
+  if (category < 0 || category > 12) { errno = EINVAL; return NULL; }  // LC_CTYPE..LC_IDENTIFICATION, LC_ALL is 6
+  if (name) {
+    if (*name && strcmp(name, "C") && strcmp(name, "C.UTF-8") && strcmp(name, "en_US.UTF-8") && strcmp(name, "POSIX")) {
+      errno = ENOENT;
+      return NULL;
+    }
+    b_locale_utf8 = !*name || strstr(name, "UTF-8") != NULL;
+  }
+  return b_locale_utf8 ? "C.UTF-8" : "C";
+}
 static void *s_newlocale(int mask, const char *name, void *base) { return newlocale(LC_ALL_MASK, name, base); }
 static size_t s_ctype_mb_cur_max(void) { return MB_CUR_MAX; }
 static int s_cxa_finalize(void *d) { return 0; }
@@ -977,7 +992,7 @@ static const Entry table[] = {
     E("__strchr_chk", s_strchr_chk), E("__strrchr_chk", s_strrchr_chk), E("__strcpy_chk", s_strcpy_chk), E("__strcat_chk", s_strcat_chk),
     E("__strncat_chk", s_strncat_chk), E("__strncpy_chk", s_strncpy_chk), E("__strlcpy_chk", s_strlcpy_chk), E("__strlcat_chk", s_strlcat_chk),
     E("__read_chk", s_read_chk), E("__FD_SET_chk", s_fd_set_chk), E("__FD_CLR_chk", s_fd_clr_chk), E("__FD_ISSET_chk", s_fd_isset_chk),
-    E("newlocale", s_newlocale), E("__ctype_get_mb_cur_max", s_ctype_mb_cur_max),
+    E("newlocale", s_newlocale), E("setlocale", s_setlocale), E("__ctype_get_mb_cur_max", s_ctype_mb_cur_max),
     E("__cxa_finalize", s_cxa_finalize), E("__cxa_atexit", s_cxa_atexit), E("__cxa_thread_atexit_impl", s_cxa_thread_atexit),
     E("dlopen", s_dlopen), E("dlsym", s_dlsym), E("dlclose", s_dlclose), E("dlerror", s_dlerror), E("dladdr", s_dladdr), E("dl_iterate_phdr", s_dl_iterate_phdr),
 };

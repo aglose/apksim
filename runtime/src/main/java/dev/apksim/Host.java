@@ -482,8 +482,13 @@ public class Host {
   /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
   private static Path dataDir;
 
-  /** Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. */
-  private static void usePersistentDataDir() throws Exception {
+  /**
+   * Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. Once: the
+   * first call is from just before Application.onCreate (ShadowSimInstrumentation.callApplicationOnCreate), so the
+   * slot's serial (DeviceIdentity) is known and what onCreate writes lands in the slot; run's is then a no-op.
+   */
+  static synchronized void usePersistentDataDir() throws Exception {
+    if (dataDir != null) return;
     String pkg = System.getProperty("apksim.package");
     Path data = Storage.dataDir(Path.of(System.getProperty("apksim.cacheRoot")), pkg);
     // --fresh: start as a just-installed app (as `ctl.py erase` would, but for the slot this instance holds).
