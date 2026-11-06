@@ -13,10 +13,12 @@ class SecondActivity : Activity() {
   override fun onResume() {
     super.onResume()
     resumed = true
+    current = this
   }
 
   companion object {
     @Volatile var createdWith: String? = null
     @Volatile var resumed = false
+    @Volatile var current: SecondActivity? = null
   }
 }

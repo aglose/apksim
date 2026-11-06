@@ -145,7 +145,13 @@ public class Host {
       // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
       // gesture detectors see no movement. Real mouse input rarely hits this limit.
       if (start - lastInput >= 8_000_000L) {
-        SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+        SimWindow.Event e;
+        if (pendingScript.isEmpty()) {
+          e = SimWindow.poll();
+        } else {
+          e = pendingScript.poll();
+          dispatched++;
+        }
         if (e != null) {
           lastInput = start;
           if (e.type() == SimWindow.COMMAND) {
@@ -185,8 +191,9 @@ public class Host {
           continue;
         }
         if (cmd.args[0].equals("drain")) {
-          // Answered from the loop once every queued scripted event has been dispatched (see drained).
-          drains.add(cmd);
+          // Answered from the loop once the scripted events queued before it have been dispatched (see drains); not
+          // those queued after it, by this or another connection, which could hold it up for good.
+          drains.add(new Drain(cmd, dispatched + pendingScript.size()));
           continue;
         }
         String reply;
@@ -250,10 +257,13 @@ public class Host {
           }
         }
       }
-      if (!drains.isEmpty() && pendingScript.isEmpty()) {
-        // The last queued event and what the looper ran for it are done, and the frame it caused drawn.
-        for (Control.Pending d : drains) d.finish("ok");
-        drains.clear();
+      if (!drains.isEmpty()) {
+        // A drain's last event and what the looper ran for it are done, and the frame it caused drawn.
+        drains.removeIf(d -> {
+          if (dispatched < d.after()) return false;
+          d.pending().finish("ok");
+          return true;
+        });
       }
       if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
       if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
@@ -267,7 +277,13 @@ public class Host {
    * `drain`: commands answered once the scripted input queued before them (tap, swipe, type, key, pinch) has all been
    * dispatched, as a device's `input` command returns only once its gesture is injected. Main thread only.
    */
-  private final List<Control.Pending> drains = new ArrayList<>();
+  private final List<Drain> drains = new ArrayList<>();
+
+  /** A `drain` and the count of scripted events dispatched once those queued before it are. */
+  private record Drain(Control.Pending pending, long after) {}
+
+  /** Scripted events taken from pendingScript so far (dispatched, or dropped by a clear). Main thread only. */
+  private long dispatched;
 
   /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */
   private Settle settle;
@@ -382,6 +398,7 @@ public class Host {
     if (top != null) top.pause().stop();
     while (!stack.isEmpty()) stack.pop().destroy();
     controls.results().clear();
+    dispatched += pendingScript.size();  // dropped, which ends a drain waiting on them as dispatching would
     pendingScript.clear();
     intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     start(cls, intent);

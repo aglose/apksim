@@ -31,6 +31,14 @@ class StartActivityTest {
       assertEquals(Lifecycle.State.CREATED, scenario.state)
       // As ActivityThread on stop: the stopped activity's window is hidden (UiAutomator and drawing skip it).
       scenario.onActivity { assertEquals(View.INVISIBLE, it.window.decorView.visibility) }
+      // Once the one on top finishes, it is shown again and its window has the focus (Espresso looks for it).
+      InstrumentationRegistry.getInstrumentation().runOnMainSync { SecondActivity.current!!.finish() }
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(Lifecycle.State.RESUMED, scenario.state)
+      scenario.onActivity {
+        assertEquals(View.VISIBLE, it.window.decorView.visibility)
+        assertTrue("the window has the focus", it.window.decorView.hasWindowFocus())
+      }
     }
   }
 

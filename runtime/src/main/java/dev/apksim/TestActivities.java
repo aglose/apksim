@@ -315,6 +315,8 @@ public final class TestActivities {
       below.restart();
     }
     below.resume();
+    // The finished one's window went while this one was hidden, so the focus went nowhere: Espresso looks for it.
+    ShadowSimWindowManagerImpl.refocusIfNone();
   }
 
   /** Receivers still registered when a test ended, which Robolectric's reset dropped (see ShadowSimContextImpl). */
@@ -496,8 +498,9 @@ public final class TestActivities {
     @Implementation
     protected void callApplicationOnCreate(android.app.Application app) {
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
+      // --serial, --feature, in running instances too: first, so the providers InstallState creates see them.
+      DeviceIdentity.apply(app);
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
-      DeviceIdentity.apply(app);  // --serial, --feature: in running instances too
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
             "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
@@ -748,6 +751,7 @@ public final class TestActivities {
         }
         c.newIntent(intent);
         c.resume();
+        ShadowSimWindowManagerImpl.refocusIfNone();
       }
       // Activities that were above it in a singleTask's task are finished on a device (CLEAR_TOP): not done here.
     }
