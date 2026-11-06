@@ -44,7 +44,7 @@ import org.robolectric.shadows.ShadowChoreographer;
 import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.util.ReflectionHelpers;
 
-/** The Android "main thread": launches the APK's launcher activity and pumps looper, input and frames. */
+/** The Android "main thread": launches the APK's start activity (launcher or --activity) and pumps looper, input and frames. */
 @RunWith(SimRunner.class)
 @Config(sdk = 36) // Fixed, whatever the APK targets: it is the framework this runtime ships.
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -125,11 +125,7 @@ public class Host {
     controls.showTitle();
     Timing.detail("controls");
 
-    String launcher = System.getProperty("apksim.launcher");
-    Intent intent = new Intent(Intent.ACTION_MAIN)
-        .addCategory(Intent.CATEGORY_LAUNCHER)
-        .setComponent(new ComponentName(System.getProperty("apksim.package"), launcher));
-    start(launcher, intent);
+    start(System.getProperty("apksim.startActivity"), startIntent());
     Timing.mark("activity-resumed");
     // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
     Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
@@ -349,21 +345,21 @@ public class Host {
   }
 
   /**
-   * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the launcher activity started
-   * again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
+   * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the start activity (--activity,
+   * else the launcher one) started again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
    * Application and data persist. Screenshot tests start every screen this way, so none sees what another left.
    */
   private String restart(String url) throws Exception {
     String pkg = System.getProperty("apksim.package");
-    String cls = System.getProperty("apksim.launcher");
-    Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+    Intent intent = startIntent();
     if (url != null) {
       // Resolved first: with no activity left the process would end.
       intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(pkg);
       android.content.pm.ResolveInfo r = app.getPackageManager().resolveActivity(intent, 0);
       if (r == null || r.activityInfo == null) return "error: no activity in " + pkg + " handles " + url;
-      cls = r.activityInfo.name;
+      intent.setComponent(new ComponentName(pkg, r.activityInfo.name));  // an alias stays the alias (see start)
     }
+    String name = intent.getComponent().getClassName();
     if (controls.hidden()) controls.show();
     while (shadowOf(app).getNextStartedActivity() != null) {
       // Starts not yet acted on belong to the activities being dropped.
@@ -375,9 +371,9 @@ public class Host {
     pendingScript.clear();
     drags.clear();
     drag = null;
-    intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-    start(cls, intent);
-    return "ok, " + cls;
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    start(name, intent);
+    return "ok, " + AppInfo.activityClass(name);
   }
 
   /**
@@ -513,7 +509,27 @@ public class Host {
 
   // ---------------------------------------------------------------- activities
 
-  private void start(String className, Intent intent) throws Exception {
+  /**
+   * What the instance starts, and `restart` starts again: --activity's activity, else the manifest's first MAIN/LAUNCHER
+   * one (else MAIN/HOME, see AppInfo), with the intent a device gives it: MAIN and its filter's category (LAUNCHER, or
+   * HOME for a home app), or the component alone for an activity with no MAIN filter, as `am start -n` sends. An
+   * alias stays the component; start() makes its targetActivity.
+   */
+  private static Intent startIntent() {
+    String category = System.getProperty("apksim.startCategory", "");
+    Intent intent = category.isEmpty() ? new Intent()
+        : new Intent(Intent.ACTION_MAIN).addCategory("android.intent.category." + category);
+    String pkg = System.getProperty("apksim.package");
+    return intent.setComponent(new ComponentName(pkg, System.getProperty("apksim.startActivity")));
+  }
+
+  /**
+   * Starts the app's activity component NAME (an alias makes its targetActivity, the intent keeps the alias). An
+   * implicit intent gets the component it resolved to, on a copy, as a device's activity gets it (TestActivities.launch).
+   */
+  private void start(String name, Intent intent) throws Exception {
+    if (intent.getComponent() == null) intent = new Intent(intent).setComponent(new ComponentName(System.getProperty("apksim.package"), name));
+    String className = AppInfo.activityClass(name);
     Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) top.pause();
