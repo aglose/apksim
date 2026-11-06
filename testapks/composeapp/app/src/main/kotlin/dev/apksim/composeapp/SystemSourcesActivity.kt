@@ -90,6 +90,15 @@ object SystemSources {
     "battery" to { sticky(context, Intent.ACTION_BATTERY_CHANGED).first().let { "level ${it.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)}/${it.getIntExtra(BatteryManager.EXTRA_SCALE, -1)}" } },
     "default network" to { defaultNetwork(context).first() },
     "startup callback" to { ComposeApp.startupNetwork.filterNotNull().first() },
+    // A source that says "lost"/"down" before it says "up" reported an offline the device never was.
+    "startup heard" to {
+      val heard = synchronized(ComposeApp.startupHeard) { ComposeApp.startupHeard.toList() }
+      val falselyOffline = heard.groupBy { it.substringBefore(' ') }.values.any { events ->
+        val firstUp = events.indexOfFirst { it.endsWith("up") }
+        firstUp > 0 && events.take(firstUp).any { it.endsWith("lost") || it.endsWith("down") }
+      }
+      if (falselyOffline) "error heard offline first: ${heard.joinToString()}" else heard.joinToString()
+    },
     "wifi callback" to { wifiCallback(context).first() },
     "audio devices" to { audioDevices(context).first() },
     "volume" to { volumeChange(context) },

@@ -590,12 +590,22 @@ public final class TestActivities {
         } catch (Exception e) {
           throw new IllegalStateException("app data slot", e);
         }
+        // The host's networks before onCreate (test runs: InstallState): installed after it, a receiver or default
+        // callback registered in onCreate heard Robolectric's networks first (Wi-Fi disconnected, a default network
+        // that was then lost), an offline the device never was, then connected. With --network-profile offline
+        // they stay away until `network online` (networksReplaced).
+        try {
+          HostNetworks.install(app);
+          NetConnectivity.networksReplaced();
+        } catch (Exception e) {
+          System.err.println("[apksim] host networks: " + e);
+        }
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
       DeviceControls.applyAnimScaleOption(app);  // --anim-scale, so the app's startup code sees it too
-      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       // Battery, Wi-Fi and network stickies: before the providers InstallState creates, which may read them.
       SystemBroadcasts.beforeApplicationOnCreate(app);
+      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(

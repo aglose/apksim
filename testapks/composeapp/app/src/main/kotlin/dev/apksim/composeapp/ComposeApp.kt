@@ -52,6 +52,30 @@ open class ComposeApp : Application() {
     cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: android.net.Network) { startupNetwork.value = "available" }
     })
+    // What a monitor registered here hears first: on a connected device, never "lost" or "down" before "up".
+    startupHeard.clear()
+    cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: android.net.Network) { synchronized(startupHeard) { startupHeard += "default up" } }
+      override fun onLost(network: android.net.Network) { synchronized(startupHeard) { startupHeard += "default lost" } }
+    })
+    @Suppress("DEPRECATION")
+    val receiver = object : android.content.BroadcastReceiver() {
+      override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+        val heard = when (i.action) {
+          ConnectivityManager.CONNECTIVITY_ACTION ->
+            if (i.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)) "connectivity down" else "connectivity up"
+          else -> {
+            val info = i.getParcelableExtra<android.net.NetworkInfo>(android.net.wifi.WifiManager.EXTRA_NETWORK_INFO)
+            if (info?.isConnected == true) "wifi up" else "wifi down"
+          }
+        }
+        synchronized(startupHeard) { startupHeard += heard }
+      }
+    }
+    @Suppress("DEPRECATION")
+    val filter = android.content.IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+      .apply { addAction(android.net.wifi.WifiManager.NETWORK_STATE_CHANGED_ACTION) }
+    registerReceiver(receiver, filter, RECEIVER_EXPORTED)
   }
 
   /**
@@ -90,5 +114,7 @@ open class ComposeApp : Application() {
     @Volatile var modelAtCreate: String? = null
     /** "available" once the callback listenForTheNetwork registered heard of a network. */
     val startupNetwork = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    /** What a default callback and a connectivity/Wi-Fi receiver registered in onCreate heard, in order. */
+    val startupHeard = mutableListOf<String>()
   }
 }

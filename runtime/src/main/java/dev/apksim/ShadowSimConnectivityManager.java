@@ -53,6 +53,8 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     final ArrayDeque<Runnable> queue = new ArrayDeque<>();
     /** The queue is being delivered (on the handler's thread): a nested deliver leaves it to that loop. */
     boolean delivering;
+    /** A requestNetwork timeout still pending (no network satisfied the request yet), else null. */
+    Runnable timeout;
 
     Tracked(ConnectivityManager cm, ConnectivityManager.NetworkCallback cb, NetworkRequest request, Kind kind, Handler handler) {
       this.cm = cm;
@@ -84,13 +86,35 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
   @Implementation
   @Override
   protected void requestNetwork(NetworkRequest request, ConnectivityManager.NetworkCallback cb, int timeoutMs) {
-    requestNetwork(request, cb, (Handler) null);
+    requestNetwork(request, cb, null, timeoutMs);
   }
 
+  /**
+   * A request with a timeout: no network satisfying it within timeoutMs, onUnavailable on the callback's handler and
+   * the request is released, as ConnectivityService's timeout does; one that is satisfied first never times out. The
+   * deadline is the handler's (SystemClock uptime, the clock app timers run on), and unregistering cancels it.
+   */
   @Implementation
   @Override
   protected void requestNetwork(NetworkRequest request, ConnectivityManager.NetworkCallback cb, Handler handler, int timeoutMs) {
+    if (timeoutMs <= 0) throw new IllegalArgumentException("timeoutMs must be strictly positive.");
     requestNetwork(request, cb, handler);
+    synchronized (TRACKED) {
+      Tracked t = TRACKED.get(cb);
+      if (t == null || !t.told.isEmpty()) return;  // satisfied at once: nothing to time out
+      t.timeout = () -> expire(t);
+      t.handler.postDelayed(t.timeout, timeoutMs);
+    }
+  }
+
+  /** The request's deadline passed with no network: it is released and hears onUnavailable. */
+  private static void expire(Tracked t) {
+    synchronized (TRACKED) {
+      if (TRACKED.get(t.cb) != t || t.timeout == null) return;
+      t.timeout = null;
+    }
+    t.cm.unregisterNetworkCallback(t.cb);
+    t.cb.onUnavailable();
   }
 
   @Implementation
@@ -126,7 +150,11 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     super.unregisterNetworkCallback(cb);
     synchronized (TRACKED) {
       Tracked t = TRACKED.remove(cb);
-      if (t != null) t.queue.clear();
+      if (t != null) {
+        t.queue.clear();
+        if (t.timeout != null) t.handler.removeCallbacks(t.timeout);
+        t.timeout = null;
+      }
     }
   }
 
@@ -198,6 +226,10 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     ConnectivityManager cm = t.cm;  // Robolectric keeps the networks in static state: any instance has them
     List<Network> now = entitled(t, cm);
     ConnectivityManager.NetworkCallback cb = t.cb;
+    if (t.timeout != null && !now.isEmpty()) {  // satisfied before its deadline: the timeout is off
+      t.handler.removeCallbacks(t.timeout);
+      t.timeout = null;
+    }
     // Losses first: a network that disconnected is gone before its replacement is announced.
     List<Network> all = java.util.Arrays.asList(cm.getAllNetworks());
     for (Network n : new ArrayList<>(t.told.keySet())) {

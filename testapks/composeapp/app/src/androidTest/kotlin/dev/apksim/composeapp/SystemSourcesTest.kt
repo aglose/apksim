@@ -143,6 +143,39 @@ class SystemSourcesTest {
   }
 
   /**
+   * requestNetwork with a timeout: nothing satisfies it (a transport the host has not), onUnavailable once its time
+   * passes and nothing else; one that is satisfied never hears it; one unregistered first hears nothing.
+   */
+  @Test
+  fun aRequestNothingSatisfiesTimesOut() {
+    apksimOnly("requestNetwork as apksim offers the host's networks")
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    fun recorder(into: MutableList<String>) = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { into += "available" }
+      override fun onLost(n: Network) { into += "lost" }
+      override fun onUnavailable() { into += "unavailable" }
+    }
+    val unsatisfiable = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_LOWPAN).build()
+    val missed = mutableListOf<String>()
+    val met = mutableListOf<String>()
+    val withdrawn = mutableListOf<String>()
+    val metCb = recorder(met)
+    val withdrawnCb = recorder(withdrawn)
+    cm.requestNetwork(unsatisfiable, recorder(missed), 500)
+    cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), metCb, 500)
+    cm.requestNetwork(unsatisfiable, withdrawnCb, 500)
+    cm.unregisterNetworkCallback(withdrawnCb)
+    try {
+      runBlocking { delay(1_500) }
+      assertEquals("a request nothing satisfies", listOf("unavailable"), missed)
+      assertEquals("a request the network satisfies", listOf("available"), met)
+      assertEquals("a request unregistered before its timeout", emptyList<String>(), withdrawn)
+    } finally {
+      cm.unregisterNetworkCallback(metCb)
+    }
+  }
+
+  /**
    * Offline and back before the registration's announcement ran: the callback hears all three, in order, as from the
    * system server's one queue.
    */
