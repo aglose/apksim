@@ -117,19 +117,21 @@ final class UiDump {
     List<AccessibilityNodeInfo> kids = children(n, compressed);
     for (int i = 0; i < kids.size(); i++) {
       AccessibilityNodeInfo c = kids.get(i);
-      // The tool skips children that are not visible to the user, keeping the others' indices.
-      if (c.isVisibleToUser()) node(c, s, i, size, compressed);
+      // The tool skips null children and those not visible to the user, keeping the others' indices.
+      if (c != null && c.isVisibleToUser()) node(c, s, i, size, compressed);
     }
     s.endTag("", "node");
   }
 
-  /** The node's children; compressed, a view not important for accessibility is replaced by its own children. */
+  /**
+   * The node's children, a null where one could not be read (it keeps its index, as in the tool); compressed, a view
+   * not important for accessibility is replaced by its own children.
+   */
   private static List<AccessibilityNodeInfo> children(AccessibilityNodeInfo n, boolean compressed) {
     List<AccessibilityNodeInfo> out = new ArrayList<>();
     for (int i = 0; i < n.getChildCount(); i++) {
       AccessibilityNodeInfo c = n.getChild(i);
-      if (c == null) continue;
-      if (compressed && isView(c) && !c.isImportantForAccessibility()) out.addAll(children(c, true));
+      if (c != null && compressed && isView(c) && !c.isImportantForAccessibility()) out.addAll(children(c, true));
       else out.add(c);
     }
     return out;
@@ -141,11 +143,11 @@ final class UiDump {
     return virtual == AccessibilityNodeInfo.UNDEFINED_ITEM_ID || virtual == android.view.accessibility.AccessibilityNodeProvider.HOST_VIEW_ID;
   }
 
-  /** The tool's: bounds in screen intersected with the display, left as they are when outside it. */
+  /** The tool's: bounds in screen intersected with the display, empty when outside it. */
   private static Rect visibleBounds(AccessibilityNodeInfo n, Point size) {
     Rect r = new Rect();
     n.getBoundsInScreen(r);
-    r.intersect(new Rect(0, 0, size.x, size.y));
+    if (!r.intersect(new Rect(0, 0, size.x, size.y))) r.setEmpty();
     return r;
   }
 
@@ -171,14 +173,23 @@ final class UiDump {
     return false;
   }
 
-  /** The tool's safeCharSeqToString: characters XML 1.1 discourages become '.'. */
+  /**
+   * The tool's safeCharSeqToString: characters XML 1.1 discourages become '.', and so do those XML 1.0 does not allow
+   * at all (U+0000, U+FFFE, U+FFFF, lone surrogates), so the dump always parses.
+   */
   private static String safe(CharSequence cs) {
     if (cs == null) return "";
     StringBuilder b = new StringBuilder(cs.length());
     for (int i = 0; i < cs.length(); i++) {
       char ch = cs.charAt(i);
       boolean bad = (ch >= 0x1 && ch <= 0x8) || (ch >= 0xB && ch <= 0xC) || (ch >= 0xE && ch <= 0x1F)
-          || (ch >= 0x7F && ch <= 0x84) || (ch >= 0x86 && ch <= 0x9F) || (ch >= 0xFDD0 && ch <= 0xFDDF);
+          || (ch >= 0x7F && ch <= 0x84) || (ch >= 0x86 && ch <= 0x9F) || (ch >= 0xFDD0 && ch <= 0xFDDF)
+          || ch == 0 || ch == 0xFFFE || ch == 0xFFFF;
+      if (Character.isHighSurrogate(ch) && i + 1 < cs.length() && Character.isLowSurrogate(cs.charAt(i + 1))) {
+        b.append(ch).append(cs.charAt(++i));
+        continue;
+      }
+      if (Character.isSurrogate(ch)) bad = true;
       b.append(bad ? '.' : ch);
     }
     return b.toString();

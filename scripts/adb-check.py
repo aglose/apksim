@@ -96,6 +96,10 @@ def uiautomator_dump(serial):
     if not compressed or len(compressed) >= len(nodes) or any(n.get("class") == "android.widget.LinearLayout" for n in compressed):
         fail(f"uiautomator dump --compressed kept views not important for accessibility ({len(compressed)} of {len(nodes)})")
     adb(serial, "shell", "rm", "/sdcard/window_dump.xml")
+    # A file it cannot write (no such folder) is an error the shell goes on from, so a `||` fallback runs.
+    out = adb(serial, "shell", "uiautomator dump /sdcard/missing/dump.xml || echo fallback").strip()
+    if not out.startswith("ERROR: could not write /sdcard/missing/dump.xml") or not out.endswith("fallback"):
+        fail(f"uiautomator dump to a missing folder said {out!r}")
 
 
 def main():

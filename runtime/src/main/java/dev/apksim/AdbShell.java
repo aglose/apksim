@@ -1463,7 +1463,15 @@ final class AdbShell {
         print("ERROR: could not write " + dev + " (" + (p == null ? "Read-only file system" : "Is a directory") + ")\n");
         return 1;
       }
-      Files.writeString(p, xml);
+      try {
+        Files.writeString(p, xml);
+      } catch (IOException e) {
+        // Not thrown on: AdbServer reads an IOException as the client gone, and the command would end silently.
+        String why = e instanceof java.nio.file.NoSuchFileException ? "No such file or directory"
+            : e instanceof java.nio.file.AccessDeniedException ? "Permission denied" : String.valueOf(e.getMessage());
+        print("ERROR: could not write " + dev + " (" + why + ")\n");
+        return 1;
+      }
     }
     // Spelled as the stock tool spells it: scripts match this line.
     print("UI hierchary dumped to: " + dev + "\n");
