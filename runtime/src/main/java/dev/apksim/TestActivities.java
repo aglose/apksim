@@ -495,6 +495,27 @@ public final class TestActivities {
   public static class ShadowSimInstrumentation extends ShadowInstrumentation {
     @org.robolectric.annotation.RealObject private Instrumentation self;
 
+    /**
+     * An activity resumed shows its window, as ActivityThread.handleResumeActivity does (updateVisibility), whoever
+     * resumes it: here also ActivityScenario.moveToState, which restarts an activity whose window apksim hid when it
+     * stopped (back on a launcher root, a rotation while stopped). The visible top then has the focus.
+     */
+    @Implementation
+    protected void callActivityOnResume(Activity activity) {
+      org.robolectric.util.reflector.Reflector.reflector(InstrumentationReflector.class, self).callActivityOnResume(activity);
+      if (!testRun() || activity.getWindow() == null) return;
+      View decor = activity.getWindow().peekDecorView();
+      if (decor == null || decor.getVisibility() == View.VISIBLE) return;
+      decor.setVisibility(View.VISIBLE);
+      ShadowSimWindowManagerImpl.focusTop();
+    }
+
+    @org.robolectric.util.reflector.ForType(Instrumentation.class)
+    interface InstrumentationReflector {
+      @org.robolectric.util.reflector.Direct
+      void callActivityOnResume(Activity activity);
+    }
+
     /** In a test run, what a device has before the app starts (InstallState), then the app's onCreate. */
     @Implementation
     protected void callApplicationOnCreate(android.app.Application app) {

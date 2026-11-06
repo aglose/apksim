@@ -45,6 +45,39 @@ class StackWindowsTest {
     }
   }
 
+  /** Resumed again (ActivityScenario, as from the recents screen), the task's activity shows its window. */
+  @Test
+  fun aTaskBroughtBackShowsItsWindow() {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(pkg, MainActivity::class.java.name)
+    ActivityScenario.launch<MainActivity>(intent).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      device.pressBack()
+      instrumentation.waitForIdleSync()
+      assertEquals(Lifecycle.State.CREATED, scenario.state)
+      scenario.moveToState(Lifecycle.State.RESUMED)
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      assertEquals(1, appWindows().size)
+    }
+  }
+
+  /** Stopped by ActivityScenario, rotated (recreated, still stopped), then resumed: its window is shown. */
+  @Test
+  fun aStoppedActivityRotatedAndResumedShowsItsWindow() {
+    ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+      assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+      try {
+        scenario.moveToState(Lifecycle.State.CREATED)
+        device.setOrientationLeft()
+        scenario.moveToState(Lifecycle.State.RESUMED)
+        assertNotNull(device.wait(Until.findObject(By.text("FAB clicks: 0")), 5_000))
+        assertEquals(1, appWindows().size)
+      } finally {
+        device.setOrientationNatural()
+        device.unfreezeRotation()
+      }
+    }
+  }
+
   /** With `-e startActivities true` (apksim's --start-activities): an activity started over another hides it until it finishes. */
   @Test
   fun onlyTheTopActivitysWindowIsShown() {
