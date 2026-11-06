@@ -1,5 +1,6 @@
 package dev.apksim.composeapp
 
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.view.View
 import android.view.WindowInsets
@@ -8,6 +9,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
+import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,11 +20,13 @@ import org.junit.runner.RunWith
  * System bars as a device has them (apksim's `bars` command, SystemBars.java): a bar the device lacks gives no inset, one
  * it has gives 24 dp, and the app hiding the bars (WindowInsetsController, the legacy flags) takes their insets away.
  * A test run starts each test with no bars, as Robolectric has them, unless --status-bar/--nav-bar say otherwise.
+ * apksim only: a device's bars are its own, and its shell has no `apksim bars`.
  */
 @RunWith(AndroidJUnit4::class)
 class SystemBarsTest {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val bar = Math.round(24 * instrumentation.targetContext.resources.displayMetrics.density)
+  private val onApksim = Build.FINGERPRINT == "robolectric"
 
   private fun shell(command: String): String {
     val pfd = instrumentation.uiAutomation.executeShellCommand(command)
@@ -40,9 +45,14 @@ class SystemBarsTest {
     return r
   }
 
+  @Before
+  fun onlyOnApksim() {
+    assumeTrue("system bars are set with apksim's `bars` command", onApksim)
+  }
+
   @After
   fun noBars() {
-    shell("apksim bars status off nav off")
+    if (onApksim) shell("apksim bars status off nav off")
   }
 
   @Test
