@@ -255,7 +255,18 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
       t.handler.post(() -> expire(t));
       return;
     }
-    List<Network> now = entitled(t, cm);
+    // Each network's capabilities and link properties are read here, once. A network removed meanwhile (another
+    // thread going offline while this callback registers) reads as null: it is not available, so it is neither
+    // announced nor kept as told (a network already told is lost below), and no callback ever gets a null.
+    Map<Network, Object[]> snap = new LinkedHashMap<>();  // network -> {NetworkCapabilities, LinkProperties}
+    List<Network> now = new ArrayList<>();
+    for (Network n : entitled(t, cm)) {
+      NetworkCapabilities caps = cm.getNetworkCapabilities(n);
+      LinkProperties link = cm.getLinkProperties(n);
+      if (caps == null || link == null) continue;
+      now.add(n);
+      snap.put(n, new Object[] {caps, link});
+    }
     ConnectivityManager.NetworkCallback cb = t.cb;
     if (t.timeout != null && !now.isEmpty()) {  // satisfied before its deadline: the timeout is off
       t.handler.removeCallbacks(t.timeout);
@@ -270,19 +281,19 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
       if (t.kind == Kind.LISTEN || now.isEmpty() || !up) t.queue.add(() -> cb.onLost(n));
     }
     for (Network n : now) {
-      NetworkCapabilities caps = cm.getNetworkCapabilities(n);
-      LinkProperties link = cm.getLinkProperties(n);
+      NetworkCapabilities caps = (NetworkCapabilities) snap.get(n)[0];
+      LinkProperties link = (LinkProperties) snap.get(n)[1];
       Object[] was = t.told.get(n);
       if (was == null) {
         t.queue.add(() -> {
           cb.onAvailable(n);
-          cb.onCapabilitiesChanged(n, caps);
+          if (caps != null) cb.onCapabilitiesChanged(n, caps);
           if (link != null) cb.onLinkPropertiesChanged(n, link);
           cb.onBlockedStatusChanged(n, false);
         });
       } else {
-        if (!Objects.equals(was[0], caps)) t.queue.add(() -> cb.onCapabilitiesChanged(n, caps));
-        if (link != null && !Objects.equals(was[1], link)) t.queue.add(() -> cb.onLinkPropertiesChanged(n, link));
+        if (!Objects.equals(was[0], caps)) t.queue.add(() -> { if (caps != null) cb.onCapabilitiesChanged(n, caps); });
+        if (!Objects.equals(was[1], link)) t.queue.add(() -> { if (link != null) cb.onLinkPropertiesChanged(n, link); });
       }
       t.told.put(n, new Object[] {caps, link});
       t.satisfied = true;
