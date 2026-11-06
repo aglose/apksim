@@ -58,7 +58,7 @@ It is a fast UI and logic check, not a compatibility guarantee: system services 
 
 ## Installation
 
-**Requirements:** an Apple Silicon Mac. For CI, a Linux x86_64 host with Docker (see [Linux and Docker](#linux-and-docker)).
+**Requirements:** an Apple Silicon Mac. For CI, a Linux host with Docker, x86_64 or arm64 (see [Linux and Docker](#linux-and-docker)).
 
 ### Homebrew
 
@@ -414,14 +414,16 @@ recording but not replayed. Not recorded: Cronet's native stack and Ktor CIO, wh
 
 ## Linux and Docker
 
-Each release publishes a headless Linux x86_64 image, `ghcr.io/aglose/apksim:VERSION`, with `:latest` following
-the newest release. It's about 565 MB and holds:
+Each release publishes a headless Linux image, `ghcr.io/aglose/apksim:VERSION`, for x86_64 and arm64 under the
+one tag (Docker pulls the host's), with `:latest` following the newest release. It's about 565 MB and holds:
 - the launcher and a trained startup cache;
 - Mesa, for offscreen GLES;
 - `instrument.py`, `snapshot.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
-VideoToolbox: rendering and shaders run on the CPU. APKs need x86_64 native libraries there (4 KB-aligned ones load). There is no sandbox inside the container,
+VideoToolbox: rendering and shaders run on the CPU. APKs need native libraries for the host's CPU there: x86_64, or
+arm64-v8a on arm64 (4 KB-aligned ones load). On an Apple Silicon Mac or an arm64 runner the arm64 image runs without
+emulation, so it is the faster choice there. There is no sandbox inside the container,
 so use `docker run --network none` to keep an app off the network. Building the image and
 running it on a Mac are covered in [docs/linux-docker.md](docs/linux-docker.md).
 
@@ -506,7 +508,7 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.
-- **Native libraries:** they must be arm64-v8a (x86_64 on Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
+- **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS they must also be 16 KB-aligned: macOS forbids memory that is writable and executable at once, so 4 KB-aligned libraries such as Flipper's fail to load there. Linux loads 4 KB-aligned libraries too. Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
 - **Test runs are Robolectric-style:** the test body runs on the main thread, so `runBlocking { delay() }` on the test thread freezes the app, and accessibility events aren't sent.
 - **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
