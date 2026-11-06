@@ -223,7 +223,7 @@ public class StandbyWarmup {
         path.cubicTo(100, 100, 200, 300, 300, 200);
         GpuCanvas.drawPath(rc, path, paint);
         paint.setStyle(Paint.Style.FILL);
-        GpuCanvas.drawBitmap(rc, bitmap, new Rect(0, 0, 64, 64), new RectF(320, 20, 448, 148), paint);
+        rc.drawBitmap(bitmap, new Rect(0, 0, 64, 64), new RectF(320, 20, 448, 148), paint);
         rc.save();
         rc.clipRect(0, 0, w / 2f, 300);
         rc.rotate(5);

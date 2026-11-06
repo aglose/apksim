@@ -47,6 +47,15 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
+        <!-- apksim://bitmaps: framework View drawing of scaled bitmaps (GpuBitmaps). -->
+        <activity android:name=".ViewBitmapsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="bitmaps" />
+            </intent-filter>
+        </activity>
         <!-- apksim://systembars: the system bar insets this window gets, and buttons that hide the bars. -->
         <activity android:name=".SystemBarsActivity" android:exported="true">
             <intent-filter>

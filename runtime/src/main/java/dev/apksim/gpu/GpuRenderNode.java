@@ -394,7 +394,10 @@ public class GpuRenderNode extends RenderNode {
         n.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
         RecordingCanvas c = n.beginRecording(ARRANGED_W, ARRANGED_H);
         c.drawColor(0xff202020);
+        // HWUI's own scaled draw, not GpuBitmaps' (every recorded drawBitmap reaches it).
+        GpuBitmaps.suspended = true;
         c.drawBitmap(b, b == source ? src : null, dst, filter);
+        GpuBitmaps.suspended = false;
         n.endRecording();
         Raster r = new Raster(ARRANGED_W, ARRANGED_H, n);
         ByteBuffer out = r.capture();

@@ -68,7 +68,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     block of its range, or at a return) typed ints and floats as references and dropped them
     (`-Dapksim.debugTypes=owner/Class.method` reports such a merge). Methods over 64 KB are split automatically
     (`emitSplit`). It also rewrites app calls: `System.loadLibrary` → `Natives`, `new RuntimeShader` →
-    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
+    `TrackedRuntimeShader`, `Canvas.draw*(…Paint)` of shapes and paths → `GpuCanvas`, `RenderEffect.create*` → `GpuEffects`,
     `new RenderNode` → `GpuRenderNode`, wall-clock reads (`System.currentTimeMillis`, java.time `X.now()`,
     `Clock.system*`, `new Date()`, `Calendar.getInstance`) → `SimClock`, and Compose's `CursorAnimationState(animate)`
     through `Snapshot.cursorBlink`. `Peephole` then shrinks each method (not with `--debug`): a parameter copy
@@ -95,12 +95,20 @@ Read README.md for results and limits; this file covers how to work on the code.
     alone and inside a parent as scaled, rotated and nested layers. `shaders` reports `rasters` (open content
     rasters) and `discards`. Memory freed only at GC: HotSpot does not count native memory (Bitmap pixels, renderers)
     towards collecting as ART does, so free native-backed objects eagerly where the code knows they are done.
-    `GpuBitmaps`: app `drawBitmap(bitmap, src, dst, paint)` calls (Compose's drawImage) that scale a filtered bitmap
-    onto whole device pixels get a copy already that size, resampled once on Metal (bilinear in float, as Skia), which
-    HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame. Copies are cached (96 MB, LRU) and made only
-    for a size asked for again within 8 frames, so zooms stay on the CPU. `-Dapksim.gpuBitmaps=false` turns it off;
-    `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
-    a tiled texture made the CPU untile it, ~3 ms per full screen.
+    `GpuBitmaps`: every `drawBitmap` recorded into a RenderNode (`ShadowGpuRecordingCanvas`, a shadow of
+    BaseRecordingCanvas and RecordingCanvas: framework Views such as ImageView and BitmapDrawable backgrounds, Compose's
+    drawImage, app code; the src/dst Rect(F), x/y and Matrix overloads) that scales a filtered bitmap onto whole device
+    pixels (canvas and Matrix scale+translate only) gets a copy already that size, resampled once on Metal (bilinear in
+    float, as Skia), which HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame, and of a 2560x1600
+    tablet screen with a full-screen background (raster ~36 → ~2.3 ms, test app `apksim://bitmaps`). Copies are cached
+    (96 MB, LRU), and so are the uploaded originals (their own 96 MB); no table holds a Bitmap itself (copies are keyed
+    by Skia's process-wide generation ID), so an app drawing a new bitmap every frame keeps nothing alive. They are made for every size asked for in the frame a bitmap is first drawn (a View records its
+    background once and HWUI redraws that recording every frame, so it is never asked for twice), then only for a
+    size asked for again within 8 frames, so zooms and per-frame content (video) stay on the CPU after their first
+    frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A copy dropped from the
+    cache stays alive in display lists still drawing it. `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows
+    hits and why draws went to HWUI (`small`, `config` by Bitmap.Config, `new`, `budget`, `unaligned`). Metal targets
+    are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
   - Screenshot tests (docs/snapshots.md): `Snapshot` (`--snapshot`: CPU-only drawing, carets drawn and not
@@ -330,6 +338,10 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
+CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
+still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
+`--device tablet`.
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
@@ -401,7 +413,12 @@ B-frames (decode order pts 0, 66, 33, ...) ExoPlayer dropped 58 of 90 frames as 
 (the codec owns it, as on a device); at end of stream those buffers carry the held pictures out in order, before the
 end-of-stream buffer (`selftest clip.h264` checks every frame arrives). Other inputs that give no output are passed on
 with API 34's BUFFER_FLAG_DECODE_ONLY, which Robolectric recycles without an output. Video output buffers carry a
-reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true); audio ones
+reference to the decoded picture, drawn into the Surface's TextureView on releaseOutputBuffer(render=true), converted
+by VideoToolbox at the view's size, up or down (3 pooled Bitmaps of that size per codec), so the raster thread blits it
+1:1 (a new view size is taken once it has held for 10 pictures, so a window drag does not replace the pool on
+every picture): a 640x360 clip in a 1600x900 view had Skia's upscale at ~40% of raster time (raster 9.4 → 5.9 ms on average,
+`apksim://bitmaps?video=1` on `--device tablet`; `-Dapksim.videoAtViewSize=false` keeps the picture's size when
+smaller); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
