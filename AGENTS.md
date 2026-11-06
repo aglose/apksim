@@ -472,9 +472,11 @@ has the measurements.
   The clock still follows real time and input and commands go out every 8 ms: the Choreographer's frame delay is the
   cap's interval (`Host.applyFrameDelay`; the first frame comes at once). Moving the clock only to an N Hz grid's
   lines put a tap's DOWN and UP a second apart at 1 fps, and ran a long-press timeout between them. Animations keep
-  their speed in fewer frames, and a video draws at most N frames a second. The biggest lever for many headless
-  instances: the test app's Shader tab, which never stops animating, costs ~0.7 of a core at 120 fps, ~0.4 at 60,
-  ~0.2 at 30. The display's refresh rate the app sees is unchanged.
+  their speed in fewer frames. A video reaches the screen at most N times a second too (`apksim://video` at
+  `--max-fps 10`: 10.1 screen frames a second), but every picture is still decoded and converted (59.9 a second for
+  its 60 fps clip): `--video blank` saves that. The biggest lever for many headless instances: the test app's Shader
+  tab, which never stops animating, costs ~0.7 of a core at 120 fps, ~0.4 at 60, ~0.2 at 30. The display's refresh
+  rate the app sees is unchanged.
 - `--video on|blank|off`: `blank` keeps the H.264/HEVC decoders listed and a player plays at its pace, but nothing is
   decoded or drawn (each input gives an empty output with its timestamp, in presentation order as before) and
   libwebrtc's frames are dropped before conversion (one an app asks for with addFrameListener is converted for it,
