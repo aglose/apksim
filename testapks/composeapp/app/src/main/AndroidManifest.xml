@@ -45,6 +45,15 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
+        <!-- apksim://systembars: the system bar insets this window gets, and buttons that hide the bars. -->
+        <activity android:name=".SystemBarsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="systembars" />
+            </intent-filter>
+        </activity>
         <!-- apksim://timer: SystemClock against the wall clock, and onUserInteraction per input path (scripts/timer-check.py). -->
         <activity android:name=".TimerActivity" android:exported="true">
             <intent-filter>

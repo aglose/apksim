@@ -102,6 +102,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --mock-maker) EXTRA+=("-Dapksim.mockMaker=$2"); shift 2 ;;
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
+    # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
+    --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
+    --nav-bar) EXTRA+=("-Dapksim.navBar=$2"); shift 2 ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
     --headless) EXTRA+=("-Dapksim.headless=true"); shift ;;
     # How the Mac window shows itself: front (default), nofocus, background, minimized, hidden. APKSIM_WINDOW sets a
@@ -174,7 +177,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*) ;;
-      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).

@@ -241,6 +241,22 @@ only to a registered binder). Checked with the owner's app: its messaging servic
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
+`bars [status on|off|toggle] [nav gesture|off|toggle]` (`SystemBars`; Device > Status Bar / Navigation Bar,
+`--status-bar on|off`, `--nav-bar gesture|off`): which system bars the device has, overriding the `--device` preset
+(phone, foldable, tablet: both; desktop, TV: neither) and kept across `device` switches. A bar that is off is not drawn
+and gets no inset (Robolectric's `SystemUi` behaviour NO_STATUS_BAR / NO_NAVIGATION_BAR), as on a device without it;
+`bars` alone says what the app sees ("status on (hidden by the app), nav gesture (shown)"). The app hiding the bars needs
+no hook of ours: `WindowInsetsController.hide` reaches Robolectric's window session as the window's requested visible
+types, which sets the bar invisible in `SystemUi` (inset 0), and ViewRootImpl's compatibility code turns the legacy
+`SYSTEM_UI_FLAG_FULLSCREEN`/`HIDE_NAVIGATION`/`IMMERSIVE*` flags and `FLAG_FULLSCREEN` into the same hide;
+`SystemBars.drawn` reads that visibility every 50 ms and draws only the bars that show. A swipe in from a hidden bar's
+edge (from within 24 dp, moving 24 dp inward; `Host.dispatchTouch`, the app still gets the touch) shows them as the
+system does for the window's behaviour: BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE (legacy IMMERSIVE_STICKY) draws them over
+the app for 2.25 s with the insets unchanged, anything else calls the window's `show` (a device's `IWindow.showInsets`),
+and the deprecated show-by-touch behaviour (legacy flags without IMMERSIVE) shows them on any touch. Test runs keep
+Robolectric's no bars unless `--status-bar`/`--nav-bar` ask for them, reset at each test's setup; a test's
+`executeShellCommand("apksim bars ...")` changes them for that test (`SystemBarsTest`). The test app's
+`apksim://systembars` screen shows its insets ("bars: status=48 nav=48") and has buttons that hide the bars each way.
 The Android Keystore (`SimKeyStore`, provider "AndroidKeyStore": KeyStore, AES/HMAC KeyGenerator, EC/RSA
 KeyPairGenerator with KeyGenParameterSpec) is a test keystore: keys persist in the app's data folder in the clear and
 no use restriction is enforced.
@@ -263,16 +279,16 @@ Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
 Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
-Accessibility Audit). Permission requests
+Accessibility Audit), and Device > Status Bar / Navigation Bar (see `bars`). Permission requests
 and biometric prompts show as sheets on the window; notifications as a banner (click opens it).
 Saves go to `work/screenshots` (the sandbox keeps the app out of ~/Desktop). Option-drag pinches around the screen
 centre, Option-Shift-drag pans with two fingers, trackpad pinch/rotate map to two fingers. The status bar (clock,
-Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle are drawn over the app as layers
-(`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
+Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle are drawn over the app as layers,
+each only while the device has it and the app has not hidden it (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--biometrics enrolled`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
 digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
@@ -844,7 +860,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   allows `mprotect` to read+execute of a private file mapping; if refused, the range is copied as before. Never rewrite
   an extracted `.so` in place (ElfLoader renames a new file over it).
 - Phone, foldable and tablet report a 24 dp (48 px) status bar and gesture-nav inset (Robolectric's `SystemUi`, set
-  in `DeviceControls.applySystemUi`; desktop and TV have none), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
+  in `SystemBars.apply`; desktop and TV have none; `--status-bar`/`--nav-bar` and `bars` override it per bar, and a bar
+  the app hides reports 0), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
 - `scripts/build.sh` writes the jar beside the old one and renames it, so running instances keep their classes.
 - A RenderNode whose last parent goes away (removed from every renderer's tree, or its renderer destroyed) loses its

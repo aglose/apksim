@@ -136,6 +136,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Device state | `--permissions ask\|grant\|deny` | Runtime permission prompts; `grant` is like `adb install -g` |
 | | `--biometrics enrolled` | Start with a fingerprint enrolled |
 | | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
+| | `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
 | | `--fresh` | Erase the app's data first, as if just installed |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` reports, for example `android.hardware.camera.any`; `=false` takes one away. Repeatable |
@@ -183,7 +184,7 @@ The menus follow the iOS Simulator wherever Android has the same thing:
 
 **Also in the window:**
 - **Input:** Option-drag pinches around the centre, and Option-Shift-drag pans with two fingers. Trackpad pinch and rotate map to two fingers, and the keyboard sends Android key events, Control shortcuts included.
-- **System UI:** a status bar and gesture handle are drawn over the app. Permission requests and biometric prompts appear as sheets, and notifications as banners.
+- **System UI:** a status bar and gesture handle are drawn over the app, each only while the device has it (`--status-bar`, `--nav-bar`, `bars`) and the app has not hidden it (`WindowInsetsController.hide`, the legacy fullscreen and immersive flags); a swipe in from the edge shows hidden bars as on a device, transiently in immersive-sticky mode. Permission requests and biometric prompts appear as sheets, and notifications as banners.
 - **The Mac:** the clipboard is shared with the Mac both ways, http(s) and mailto links open in the Mac's browser and mail app, sharing goes to the Mac's share menu, and document pickers open the Mac's file panel.
 
 Screenshots and recordings are saved to `work/screenshots` (`~/.apksim/screenshots` in a release). Gaps relative
@@ -210,7 +211,7 @@ state folder.
 |---|---|
 | Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste` |
 | Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
-| Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `config` |
+| Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `bars [status on\|off] [nav gesture\|off]`, `config` |
 | Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
 | Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
