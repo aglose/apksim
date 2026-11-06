@@ -21,6 +21,13 @@ class RunnerListenersTest {
   }
 
   @Test
+  fun theListenerHearsTheStartWithThisTestsApplication() {
+    val me = "theListenerHearsTheStartWithThisTestsApplication(${RunnerListenersTest::class.java.name})"
+    val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+    assertEquals(System.identityHashCode(app), RecordingListener.applicationAtStart[me])
+  }
+
+  @Test
   fun theRunnersOnCreateHadItsContextsAndItsArgumentsAreTheRuns() {
     val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
     assertEquals(instrumentation.targetContext.packageName, onCreateTargetPackage)

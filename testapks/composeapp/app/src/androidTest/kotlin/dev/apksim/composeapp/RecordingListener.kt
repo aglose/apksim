@@ -12,6 +12,9 @@ import org.junit.runner.notification.RunListener
 class RecordingListener : RunListener() {
   override fun testStarted(description: Description) {
     started += description.displayName
+    // The Application the instrumentation points at when the test's start is heard: this test's, as on a device.
+    applicationAtStart[description.displayName] = System.identityHashCode(
+      androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.applicationContext)
   }
 
   override fun testFinished(description: Description) {
@@ -22,5 +25,6 @@ class RecordingListener : RunListener() {
 
   companion object {
     val started: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+    val applicationAtStart: MutableMap<String, Int> = java.util.concurrent.ConcurrentHashMap()
   }
 }

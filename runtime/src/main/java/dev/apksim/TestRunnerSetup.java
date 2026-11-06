@@ -148,6 +148,8 @@ public final class TestRunnerSetup {
     private boolean installed;
     private Description run;
     private Description current;
+    /** A test's start, held until its environment is set up (environmentReady): JUnit reports it before that. */
+    private Description pendingStart;
 
     synchronized void install(List<RunListener> listeners) {
       installed = true;
@@ -160,7 +162,7 @@ public final class TestRunnerSetup {
             l.testSuiteStarted(i.next());  // outermost first
           }
           for (Description d : ignoredBefore) l.testIgnored(d);
-          if (current != null) l.testStarted(current);
+          if (current != null && pendingStart == null) l.testStarted(current);  // a held start goes out at environmentReady
         });
       }
       ignoredBefore.clear();
@@ -168,6 +170,22 @@ public final class TestRunnerSetup {
 
     private interface Call {
       void run() throws Exception;
+    }
+
+    /**
+     * Once a test's environment is set up (SimRunner, after the instrumentation and the test APK's context): its held
+     * start goes to the listeners, so an InstrumentationRunListener reading its context there sees this test's.
+     */
+    synchronized void environmentReady() {
+      Description d = pendingStart;
+      if (d == null) return;
+      pendingStart = null;
+      each(l -> l.testStarted(d));
+    }
+
+    /** A held start goes out before anything else about its test, if the test ends before its environment is ready. */
+    private void flushStart() {
+      if (pendingStart != null) environmentReady();
     }
 
     private void each(ListenerCall c) {
@@ -221,7 +239,8 @@ public final class TestRunnerSetup {
     }
 
     @Override
-    public void testRunFinished(Result r) {
+    public synchronized void testRunFinished(Result r) {
+      flushStart();
       SimTestStorage.ensureInstalled();
       each(l -> l.testRunFinished(r));
     }
@@ -240,25 +259,29 @@ public final class TestRunnerSetup {
 
     @Override
     public synchronized void testStarted(Description d) {
+      flushStart();
       current = d;
-      each(l -> l.testStarted(d));
+      pendingStart = d;
     }
 
     @Override
     public synchronized void testFinished(Description d) {
+      flushStart();
       SimTestStorage.ensureInstalled();
       each(l -> l.testFinished(d));
       current = null;
     }
 
     @Override
-    public void testFailure(Failure f) {
+    public synchronized void testFailure(Failure f) {
+      flushStart();
       SimTestStorage.ensureInstalled();
       each(l -> l.testFailure(f));
     }
 
     @Override
-    public void testAssumptionFailure(Failure f) {
+    public synchronized void testAssumptionFailure(Failure f) {
+      flushStart();
       SimTestStorage.ensureInstalled();
       each(l -> l.testAssumptionFailure(f));
     }
