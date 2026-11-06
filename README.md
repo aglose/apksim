@@ -237,6 +237,7 @@ apksim --adb 5600 app.apk &
 adb connect localhost:5600
 adb shell input tap 733 1533
 adb exec-out screencap -p > shot.png
+adb exec-out uiautomator dump /dev/tty
 adb logcat -s MyTag
 ```
 
@@ -244,7 +245,8 @@ The instance appears in `adb devices` as `apksim_phone`. It speaks adb's transpo
 tools work against it.
 
 **Supported:**
-- **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`.
+- **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`, `uiautomator dump` (the stock XML, Compose
+  nodes and test tags included).
 - **App control:** `am start` (including deep links), `am broadcast` (with its result), `am instrument` of an instrumentation that targets its own package, `monkey`.
 - **Packages and settings:** `pm list|path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
 - **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`.
