@@ -263,7 +263,9 @@ the hash of the whole description, so Parameterized names (`test[0: x, y]`) stay
 - `screen.png`: every visible window drawn bottom to top as it was at the failure. `windows.txt`: each window's type,
   activity, bounds and focus.
 - `nodes.txt`: `Nodes.dump` of the roots (text, hints, fields, clickables with bounds; Compose semantics through
-  virtual nodes), the same format as the `nodes` control command.
+  virtual nodes), the same format as the `nodes` control command. Reading it changes a Compose screen (#73), so a
+  capture in Espresso's failure handler, whose failure the test may handle, reads it only once the screen cannot
+  matter: when the failure leaves the body, as an activity finishes, or at the listener (its first line says when).
 - `logcat.txt`: the app's log lines (`AdbLog`) from this test's start to the capture, at most 5,000 (head and tail
   kept, the middle cut with a line saying how many went).
 - `threads.txt`: every thread's stack, main thread first.

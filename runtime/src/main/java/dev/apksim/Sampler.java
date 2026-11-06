@@ -35,7 +35,7 @@ final class Sampler {
           return;
         }
       }
-    }, "sampler");
+    }, "apksim-sampler");
     t.setDaemon(true);
     t.start();
   }

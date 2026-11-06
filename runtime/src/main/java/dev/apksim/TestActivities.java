@@ -342,6 +342,7 @@ public final class TestActivities {
     @Implementation
     @Override
     protected void finish() {
+      Bundles.finishing(realActivity);  // a failure bundle's tree, while this activity's windows are still there
       super.finish();
       if (testRun()) {
         Activity a = realActivity;
@@ -601,7 +602,14 @@ public final class TestActivities {
       // a standby's warm-up, which has no APK.
       if (testRun() ? !RunnerApplication.probing : instance) {
         Timing.detail("device-identity");
-        InstallState.beforeApplicationOnCreate(app);
+        try {
+          InstallState.beforeApplicationOnCreate(app);
+        } catch (Throwable crash) {
+          // A content provider that failed with -Dapksim.providerFailures=fail (running instances log and go on by
+          // default): a crash of the app's start, as on a device (Crashes). Returns only with -Dapksim.crashes=log.
+          if (Crashes.installed()) Crashes.mainThreadDied(crash);
+          throw crash;
+        }
         Timing.detail("install-state");
       }
       try {
@@ -610,6 +618,9 @@ public final class TestActivities {
         m.setAccessible(true);
         m.invoke(self, app);
       } catch (java.lang.reflect.InvocationTargetException e) {
+        // A running instance's Application.onCreate threw: on a device the main thread dies with it (Crashes). Returns
+        // only with -Dapksim.crashes=log; the launch then fails as before.
+        if (Crashes.installed()) Crashes.mainThreadDied(e.getCause());
         if (e.getCause() instanceof RuntimeException r) throw r;
         if (e.getCause() instanceof Error r) throw r;
         throw new IllegalStateException(e.getCause());
