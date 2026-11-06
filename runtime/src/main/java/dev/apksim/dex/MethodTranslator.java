@@ -2175,7 +2175,13 @@ final class MethodTranslator implements Opcodes {
     }
     if (o >= 0x60 && o <= 0x66) {
       DexFile.FieldRef f = dex.field(rb);
-      mv.visitFieldInsn(GETSTATIC, f.ownerInternal(), f.name(), f.type());
+      if ("androidx/compose/foundation/lazy/layout/PrefetchScheduler_androidKt".equals(owner)
+          && "android/os/Build".equals(f.ownerInternal()) && "FINGERPRINT".equals(f.name())) {
+        // Compose's lazy layouts never prefetch when this reads "robolectric" (TestActivities.prefetchFingerprint).
+        mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "prefetchFingerprint", "()Ljava/lang/String;", false);
+      } else {
+        mv.visitFieldInsn(GETSTATIC, f.ownerInternal(), f.name(), f.type());
+      }
       store(s, i, ra, kindOf(f.type()), o == 0x61);
       return;
     }
