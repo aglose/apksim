@@ -27,10 +27,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`).
+    commands (`runCommand`). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
+    InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`).
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
-    extra shadows.
+    extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
+    (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
+    the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
+    async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
@@ -243,6 +248,22 @@ only to a registered binder). Checked with the owner's app: its messaging servic
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
+`bars [status on|off|toggle] [nav gesture|off|toggle]` (`SystemBars`; Device > Status Bar / Navigation Bar,
+`--status-bar on|off`, `--nav-bar gesture|off`): which system bars the device has, overriding the `--device` preset
+(phone, foldable, tablet: both; desktop, TV: neither) and kept across `device` switches. A bar that is off is not drawn
+and gets no inset (Robolectric's `SystemUi` behaviour NO_STATUS_BAR / NO_NAVIGATION_BAR), as on a device without it;
+`bars` alone says what the app sees ("status on (hidden by the app), nav gesture (shown)"). The app hiding the bars needs
+no hook of ours: `WindowInsetsController.hide` reaches Robolectric's window session as the window's requested visible
+types, which sets the bar invisible in `SystemUi` (inset 0), and ViewRootImpl's compatibility code turns the legacy
+`SYSTEM_UI_FLAG_FULLSCREEN`/`HIDE_NAVIGATION`/`IMMERSIVE*` flags and `FLAG_FULLSCREEN` into the same hide;
+`SystemBars.drawn` reads that visibility every 50 ms and draws only the bars that show. A swipe in from a hidden bar's
+edge (from within 24 dp, moving 24 dp inward; `Host.dispatchTouch`, the app still gets the touch) shows them as the
+system does for the window's behaviour: BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE (legacy IMMERSIVE_STICKY) draws them over
+the app for 2.25 s with the insets unchanged, anything else calls the window's `show` (a device's `IWindow.showInsets`),
+and the deprecated show-by-touch behaviour (legacy flags without IMMERSIVE) shows them on any touch. Test runs keep
+Robolectric's no bars unless `--status-bar`/`--nav-bar` ask for them, reset at each test's setup; a test's
+`executeShellCommand("apksim bars ...")` changes them for that test (`SystemBarsTest`). The test app's
+`apksim://systembars` screen shows its insets ("bars: status=48 nav=48") and has buttons that hide the bars each way.
 The Android Keystore (`SimKeyStore`, provider "AndroidKeyStore": KeyStore, AES/HMAC KeyGenerator, EC/RSA
 KeyPairGenerator with KeyGenParameterSpec) is a test keystore: keys persist in the app's data folder in the clear and
 no use restriction is enforced.
@@ -265,16 +286,16 @@ Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
 Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
-Accessibility Audit). Permission requests
+Accessibility Audit), and Device > Status Bar / Navigation Bar (see `bars`). Permission requests
 and biometric prompts show as sheets on the window; notifications as a banner (click opens it).
 Saves go to `work/screenshots` (the sandbox keeps the app out of ~/Desktop). Option-drag pinches around the screen
 centre, Option-Shift-drag pans with two fingers, trackpad pinch/rotate map to two fingers. The status bar (clock,
-Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle are drawn over the app as layers
-(`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
+Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle are drawn over the app as layers,
+each only while the device has it and the app has not hidden it (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--biometrics enrolled`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
 digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
@@ -305,6 +326,9 @@ still for pixel comparisons, `?video=1` adds the clip scaled up in a large Textu
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
+`apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
+its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
+drives it; `PopupTouchTest` in a test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -610,7 +634,8 @@ UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked t
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
-UI is quiet). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
+UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
+unpaused Choreographer that frame loop never let the looper idle). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
 other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
@@ -625,8 +650,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
-  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`).
-  `runBlocking { delay() }` is not covered: kotlinx parks the thread itself, and the main queue waits.
+  Dispatchers.Main coroutine had not sent yet otherwise waited out its timeout (`MainThreadSleepTest`). Work Compose's
+  test library hands to `runOnUiThread` (its clock's frames, runOnIdle) counts as a dispatch, as it is a main-thread
+  message on a device: a composable's `runBlocking` in a frame the clock stepped ran a window frame from inside the
+  measure, which Compose refused ("performMeasureAndLayout called during measure layout", `ComposeBlockingReadTest`).
 - JUnit's `Timeout` rule (and `@Test(timeout)` in plain JUnit runners) runs the test on a thread of its own, and
   Robolectric refuses to drive the main looper from there ("Main looper can only be controlled from its thread in
   PAUSED mode"). apksim.jar comes first on the class path with its own `FailOnTimeout` (JUnit 4.13's API): the test
@@ -680,7 +707,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back (Robolectric called back with
   nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
-  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, as `Thread.sleep` does.
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
@@ -849,7 +876,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   allows `mprotect` to read+execute of a private file mapping; if refused, the range is copied as before. Never rewrite
   an extracted `.so` in place (ElfLoader renames a new file over it).
 - Phone, foldable and tablet report a 24 dp (48 px) status bar and gesture-nav inset (Robolectric's `SystemUi`, set
-  in `DeviceControls.applySystemUi`; desktop and TV have none), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
+  in `SystemBars.apply`; desktop and TV have none; `--status-bar`/`--nav-bar` and `bars` override it per bar, and a bar
+  the app hides reports 0), and `useDeviceGestureThresholds` replaces Robolectric's 16 dp touch slop with the framework's 8 dp.
   Without them layouts sat 26 px higher and every drag scrolled 16 px short of the emulator.
 - `scripts/build.sh` writes the jar beside the old one and renames it, so running instances keep their classes.
 - A RenderNode whose last parent goes away (removed from every renderer's tree, or its renderer destroyed) loses its

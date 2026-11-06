@@ -109,7 +109,7 @@ public class Host {
     usePersistentDataDir();
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
     // A phone or tablet has a status bar and gesture navigation, so the app gets their insets as on a device.
-    if (Device.current().systemBars()) DeviceControls.applySystemUi(Device.current());
+    DeviceControls.applySystemUi(Device.current());
     Timing.detail("host-setup");
     app = RuntimeEnvironment.getApplication();
     Timing.detail("got-application");
@@ -662,6 +662,7 @@ public class Host {
   }
 
   private void dispatchTouch(SimWindow.Event e, long now) {
+    SystemBars.touch(e.type(), e.x(), e.y(), rootViews(), h);  // a swipe in from a bar the app hid shows it
     if (e.type() == SimWindow.DOWN) {
       downTime = now;
       List<View> roots = rootViews();
@@ -688,10 +689,17 @@ public class Host {
     if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
   }
 
+  /**
+   * Whether a touch outside this window goes on to the windows behind it. As InputDispatcher's isTouchModal: a window
+   * is touch-modal only when it is focusable and has no FLAG_NOT_TOUCH_MODAL, so a non-focusable popup (a slider's
+   * value tooltip) takes only the touches inside it. Robolectric's UiAutomation injection, used in test runs, has the
+   * same rule.
+   */
   private static boolean isTouchThrough(View root) {
     ViewGroup.LayoutParams lp = root.getLayoutParams();
     return lp instanceof WindowManager.LayoutParams wl
-        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
+        && (wl.flags & (WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)) != 0;
   }
 
   // Two fingers (Option-drag, trackpad pinch and rotate, the `pinch` command): the first finger follows the event,
