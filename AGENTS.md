@@ -466,10 +466,14 @@ print or edit that file, and never type the owner's password: if it is missing, 
 
 ## Per-instance costs (frame rate, video, audio, animations)
 Launch options for what a journey may not need, each per instance and accepted by a warm launch (`Features.java`,
-read in `Host.run` after the hand-off; test runs read them at first use). docs/parallel.md has the measurements.
-- `--max-fps N` (1-120) and `maxfps N` at run time: frames on an N Hz grid, not 120 Hz or the display's vsync.
-  Animations keep their speed in fewer frames, and a video draws at most N frames a second. The biggest lever for many
-  headless instances: the test app's Shader tab, which never stops animating, costs ~0.7 of a core at 120 fps, ~0.4 at 60,
+read again as a standby takes the launch, before the app's Application exists; else at first use). docs/parallel.md
+has the measurements.
+- `--max-fps N` (1-120) and `maxfps N` at run time: at most N frames a second, not 120 Hz or the display's vsync.
+  The clock still follows real time and input and commands go out every 8 ms: the Choreographer's frame delay is the
+  cap's interval (`Host.applyFrameDelay`; the first frame comes at once). Moving the clock only to an N Hz grid's
+  lines put a tap's DOWN and UP a second apart at 1 fps, and ran a long-press timeout between them. Animations keep
+  their speed in fewer frames, and a video draws at most N frames a second. The biggest lever for many headless
+  instances: the test app's Shader tab, which never stops animating, costs ~0.7 of a core at 120 fps, ~0.4 at 60,
   ~0.2 at 30. The display's refresh rate the app sees is unchanged.
 - `--video on|blank|off`: `blank` keeps the H.264/HEVC decoders listed and a player plays at its pace, but nothing is
   decoded or drawn (each input gives an empty output with its timestamp, in presentation order as before) and

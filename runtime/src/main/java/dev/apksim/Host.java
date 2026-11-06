@@ -107,7 +107,7 @@ public class Host {
     // By default Robolectric's vsync fires at once and advances the clock itself, which suits tests but
     // spins forever inside the looper on any endless animation. Paused mode fires only when the clock
     // passes the next frame, and this loop moves the clock in real time.
-    ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+    applyFrameDelay(true);
     ShadowChoreographer.setPaused(true);
     usePersistentDataDir();
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
@@ -145,7 +145,7 @@ public class Host {
     clockBaseMs = SystemClock.uptimeMillis();
     clockBaseNanos = last;
     ShadowRealSleep.takeMainAdvancedMs();  // the standby's warm-up, or the app's start before the loop: real time
-    boolean firstFrame = true;
+    firstFrame = true;
     boolean closed = false;
     while (!closed) {
       long start = System.nanoTime();
@@ -212,28 +212,27 @@ public class Host {
         if (frameAtNanos != 0) {
           // Following the display: the frame waits for its vsync, then the clock catches up to now.
           if (System.nanoTime() < frameAtNanos) stepMs = 0;
+        } else if (gridHz() < 120 && !firstFrame) {
+          // Under a frame rate cap the clock follows real time, and the Choreographer's frame delay (the cap's interval,
+          // applyFrameDelay) spaces the frames: moving the clock only to the cap's grid lines froze uptime between
+          // frames, so at 1 fps one turn jumped a second, running a tap's long-press timeout before its UP.
         } else {
           // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
           // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
           // any others, as a device does under load.
-          long passed = lineAtOrBefore(nowMs + availableMs);
+          // (On the 120 Hz grid: under a cap only the first frame comes here.)
+          long passed = lineAtOrBefore(nowMs + availableMs, 120);
           stepMs = passed > nowMs ? passed - nowMs : 0;
           // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
           // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
-          // On the 120 Hz grid whatever the cap: a 1 fps grid line can be most of a second away, and stepping there would
-          // run the app's startup timers (a 500 ms one) before anything was drawn.
           if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs, 120) + 1000 / 120 + 1 - nowMs;
         }
       }
       long looperStart = System.nanoTime();
-      // A stall is longer than two grid intervals as well: under a low frame rate cap pace() waits an interval on
-      // purpose, and with 50 ms alone every turn at 20 fps or less lost its excess (the clock fell 4.6 s behind real
-      // time in 10 s at 20 fps, so timers fired late).
-      long maxCatchUpMs = Math.max(MAX_CATCH_UP_MS, 2000 / gridHz());
-      if (availableMs > maxCatchUpMs) {
+      if (availableMs > MAX_CATCH_UP_MS) {
         // A long stall: time spent stalled is not replayed.
-        last += (availableMs - maxCatchUpMs) * 1_000_000;
-        stepMs = Math.min(stepMs, maxCatchUpMs);
+        last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
+        stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
       }
       if (stepMs > 0) {
         last += stepMs * 1_000_000;
@@ -250,6 +249,7 @@ public class Host {
         render(roots);
         if (firstFrame) {
           firstFrame = false;
+          applyFrameDelay(false);
           Timing.mark("first-frame");
           Standby.spawnNextSoon();
           String shot = System.getProperty("apksim.screenshot");
@@ -414,16 +414,25 @@ public class Host {
     return k * 1000 / hz;
   }
 
-  private static long lineAtOrBefore(long ms) {
-    return lineAtOrBefore(ms, gridHz());
-  }
-
   /** The first line of the frame grid after this time. */
   static long lineAfter(long ms, long hz) {
     long k = ms * hz / 1000 + 1;
     if (k * 1000 / hz <= ms) k++;
     return k * 1000 / hz;
   }
+
+  /**
+   * The Choreographer's frame delay: how long after a frame is asked for its vsync comes. 1 ms (Host's own grid paces
+   * frames), or under a frame rate cap the cap's interval, so frames come no faster while the clock follows real time.
+   * The first frame comes at once whatever the cap.
+   */
+  static void applyFrameDelay(boolean beforeFirstFrame) {
+    int hz = Features.maxFps();
+    ShadowChoreographer.setFrameDelay(Duration.ofMillis(beforeFirstFrame || hz >= 120 ? 1 : 1000 / hz));
+  }
+
+  /** No frame drawn yet. Main thread only. */
+  private boolean firstFrame = true;
 
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced) {
@@ -439,12 +448,15 @@ public class Host {
     } else if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
       frameAtNanos = 0;
       long nowMs = SystemClock.uptimeMillis();
-      long nextLine = lineAfter(nowMs, hz) + 1;
-      wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
-      // Under a cap the loop still turns at 120 Hz between frames, the clock waiting for the next line: input and
-      // commands go out once a turn, so parking a whole interval at 1 fps put a tap's DOWN and UP a second apart (a
-      // long press) and typed text out at a character a second.
-      if (hz < 120) wait = Math.min(wait, 1_000_000_000L / 120);
+      if (hz < 120 && !firstFrame) {
+        // Under a cap: until the vsync the frame delay put off (applyFrameDelay), but at most a 120 Hz interval, since
+        // input and commands go out once a loop turn (a whole interval at 1 fps put a tap's DOWN and UP a second apart).
+        long vsyncMs = (ShadowChoreographer.getNextVsyncTimeNanos() + 999_999) / 1_000_000;
+        wait = Math.min(1_000_000_000L / 120, (vsyncMs - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced));
+      } else {
+        long nextLine = lineAfter(nowMs, 120) + 1;
+        wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
+      }
     }
     if (wait > 50_000L) LockSupport.parkNanos(wait);
   }
@@ -1216,7 +1228,9 @@ public class Host {
         return a.length > 1 ? Features.videoCommand(a[1]) : Features.describe() + " | " + dev.apksim.video.VideoSurfaces.report();
       }
       case "maxfps" -> {
-        return Features.maxFpsCommand(a);
+        String r = Features.maxFpsCommand(a);
+        applyFrameDelay(firstFrame);
+        return r;
       }
       case "webrtclog" -> {
         // libwebrtc's own log (ICE, networks, codecs) to stderr: webrtclog [verbose|info|warning|error].

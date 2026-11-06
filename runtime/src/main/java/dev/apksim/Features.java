@@ -8,8 +8,8 @@ package dev.apksim;
  * while the instance runs.
  *
  * <ul>
- *   <li>max fps: frames on a grid of this rate (1-120) instead of 120 Hz or the display's vsync. Animations run at the
- *       same speed, in fewer frames; an animating screen costs about a core at 120 fps headless.
+ *   <li>max fps: at most this many frames a second (1-120) instead of 120 Hz or the display's vsync, the clock still
+ *       following real time (Host.applyFrameDelay). Animations run at the same speed, in fewer frames; an animating screen costs about a core at 120 fps headless.
  *   <li>video blank: MediaCodec's H.264 and HEVC decoders stay listed and a player plays at its pace, but nothing is
  *       decoded or drawn (each input gives an empty output with its timestamp), and libwebrtc's frames are dropped
  *       before conversion and drawing. A codec takes the mode it is configured in. video off: the decoders are not
