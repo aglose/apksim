@@ -84,6 +84,26 @@ class NativeBitmapTest {
   }
 
   @Test
+  fun rgba1010102IsOnePackedWordPerPixel() {
+    val b = Bitmap.createBitmap(4, 3, Bitmap.Config.RGBA_1010102)
+    assertArrayEquals(intArrayOf(0, 4, 3, 16, FORMAT_RGBA_1010102, FLAGS_PREMUL), BitmapFixture.info(b))
+    b.eraseColor(Color.GREEN)
+    b.setPixel(1, 0, Color.RED)
+    // Little-endian words, red in bits 0-9, green 10-19, blue 20-29, alpha 30-31: red is 0xc00003ff.
+    assertArrayEquals(bytes(0xff, 0x03, 0x00, 0xc0), BitmapFixture.read(b, 4, 4))
+    assertArrayEquals(bytes(0x00, 0xfc, 0x0f, 0xc0), BitmapFixture.read(b, 0, 4))
+    // Blue (0xfff00000) written at (2, 1).
+    assertEquals(0, BitmapFixture.write(b, b.rowBytes + 8, bytes(0x00, 0x00, 0xf0, 0xff)))
+    assertEquals(Color.BLUE, b.getPixel(2, 1))
+    val png = BitmapFixture.compress(b, COMPRESS_PNG, 100)
+    assertNotNull("compress: ${BitmapFixture.lastResult()}", png)
+    val decoded = BitmapFactory.decodeByteArray(png, 0, png!!.size)
+    assertEquals(Color.RED, decoded.getPixel(1, 0))
+    assertEquals(Color.BLUE, decoded.getPixel(2, 1))
+    assertEquals(Color.GREEN, decoded.getPixel(3, 2))
+  }
+
+  @Test
   fun copiesOneLockedBitmapIntoAnother() {
     val src = Bitmap.createBitmap(5, 4, Bitmap.Config.ARGB_8888)
     src.setPixels(IntArray(20) { Color.argb(255, it * 12, 255 - it * 12, it * 3) }, 0, 5, 0, 0, 5, 4)
@@ -135,6 +155,7 @@ class NativeBitmapTest {
     const val FORMAT_RGB_565 = 4
     const val FORMAT_A_8 = 8
     const val FORMAT_RGBA_F16 = 9
+    const val FORMAT_RGBA_1010102 = 10
     const val FLAGS_PREMUL = 0
     const val FLAGS_OPAQUE = 1
     const val FLAGS_UNPREMUL = 2

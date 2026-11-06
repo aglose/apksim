@@ -128,7 +128,8 @@ final class NativeBitmaps {
   }
 
   /**
-   * AndroidBitmap_compress: pixels (stride × height bytes, in Android's byte order) encoded as JPEG (0), PNG (1),
+   * AndroidBitmap_compress: pixels (stride × height bytes, in Android's byte order; only ARGB_8888's differs here, as
+   * RGBA_1010102 is one little-endian word with red in the low bits on every platform) encoded as JPEG (0), PNG (1),
    * WEBP_LOSSY (3) or WEBP_LOSSLESS (4). Null for a parameter the NDK refuses; empty when the encoder failed.
    */
   static byte[] compress(ByteBuffer pixels, int width, int height, int stride, int format, int flags, int dataSpace,
@@ -138,6 +139,7 @@ final class NativeBitmaps {
       case RGB_565 -> Bitmap.Config.RGB_565;
       case A_8 -> Bitmap.Config.ALPHA_8;
       case RGBA_F16 -> Bitmap.Config.RGBA_F16;
+      case RGBA_1010102 -> Bitmap.Config.RGBA_1010102;
       default -> null;
     };
     Bitmap.CompressFormat cf = switch (compressFormat) {
@@ -155,7 +157,7 @@ final class NativeBitmaps {
         : Bitmap.createBitmap(width, height, config, !opaque, cs);
     try {
       int rowBytes = b.getRowBytes(), bpp = switch (format) {
-        case RGBA_8888 -> 4;
+        case RGBA_8888, RGBA_1010102 -> 4;
         case RGB_565 -> 2;
         case A_8 -> 1;
         default -> 8;

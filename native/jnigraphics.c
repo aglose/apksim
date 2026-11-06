@@ -233,13 +233,20 @@ static int bm_compress(const BitmapInfo *info, int32_t data_space, const void *p
                        void *context, CompressWrite write) {
   if (!info || !pixels || !write || !info->width || !info->height || !vm) return RESULT_BAD_PARAMETER;
   if (!helper) return RESULT_JNI_EXCEPTION;
+  int bpp;  // bytes per pixel of the AndroidBitmapFormat
+  switch (info->format) {
+    case 1: case 10: bpp = 4; break;  // RGBA_8888, RGBA_1010102
+    case 4: case 7: bpp = 2; break;  // RGB_565, RGBA_4444
+    case 8: bpp = 1; break;  // A_8
+    case 9: bpp = 8; break;  // RGBA_F16
+    default: return RESULT_BAD_PARAMETER;
+  }
   JNIEnv *env = NULL;
   int attached = 0;
   if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
     if ((*vm)->AttachCurrentThread(vm, (void **)&env, NULL) != JNI_OK) return RESULT_JNI_EXCEPTION;
     attached = 1;
   }
-  int bpp = info->format == 1 ? 4 : info->format == 4 ? 2 : info->format == 8 ? 1 : 8;
   size_t size = (size_t)info->stride * (info->height - 1) + (size_t)info->width * bpp;
   int r;
   jobject buf = (*env)->NewDirectByteBuffer(env, (void *)pixels, (jlong)size);
