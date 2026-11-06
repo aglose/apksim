@@ -117,14 +117,7 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
   @Override
   protected void requestNetwork(NetworkRequest request, ConnectivityManager.NetworkCallback cb, Handler handler, int timeoutMs) {
     if (timeoutMs <= 0) throw new IllegalArgumentException("timeoutMs must be strictly positive.");
-    requestNetwork(request, cb, handler);
-    synchronized (TRACKED) {
-      Tracked t = TRACKED.get(cb);
-      if (t == null || t.satisfied) return;  // satisfied already (even if lost since): nothing to time out
-      t.expiresAt = android.os.SystemClock.uptimeMillis() + timeoutMs;
-      t.timeout = () -> expire(t);
-      t.handler.postDelayed(t.timeout, timeoutMs);
-    }
+    track(() -> super.registerNetworkCallback(request, cb, handler), new Tracked(cm, cb, request, Kind.REQUEST, handler), timeoutMs);
   }
 
   /**
@@ -181,10 +174,24 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
 
   /** Robolectric's record of the callback (register) and ours, together under TRACKED: expire() and unregister see both or neither. */
   private void track(Runnable register, Tracked t) {
+    track(register, t, 0);
+  }
+
+  /**
+   * As track(register, t), and with timeoutMs > 0 a requestNetwork timeout armed on this registration: inside the same
+   * TRACKED lock, after decide(), so a request satisfied at once never arms one, and no delivery can replace it in between.
+   */
+  private void track(Runnable register, Tracked t, int timeoutMs) {
     synchronized (TRACKED) {
       register.run();
       TRACKED.put(t.cb, t);
       decide(t);
+      // Armed on this registration, in the same lock: no delivery can replace it in between.
+      if (timeoutMs > 0 && !t.satisfied) {
+        t.expiresAt = android.os.SystemClock.uptimeMillis() + timeoutMs;
+        t.timeout = () -> expire(t);
+        t.handler.postDelayed(t.timeout, timeoutMs);
+      }
     }
     t.handler.post(() -> deliver(t));
   }
