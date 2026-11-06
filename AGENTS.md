@@ -89,7 +89,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     pixels (canvas and Matrix scale+translate only) gets a copy already that size, resampled once on Metal (bilinear in
     float, as Skia), which HWUI then blits 1:1; Skia's CPU bilinear was most of a map screen's frame, and of a 2560x1600
     tablet screen with a full-screen background (raster ~36 → ~2.3 ms, test app `apksim://bitmaps`). Copies are cached
-    (96 MB, LRU). They are made for every size asked for in the frame a bitmap is first drawn (a View records its
+    (96 MB, LRU), and so are the uploaded originals (their own 96 MB); no table holds a Bitmap itself (copies are keyed
+    by Skia's process-wide generation ID), so an app drawing a new bitmap every frame keeps nothing alive. They are made for every size asked for in the frame a bitmap is first drawn (a View records its
     background once and HWUI redraws that recording every frame, so it is never asked for twice), then only for a
     size asked for again within 8 frames, so zooms and per-frame content (video) stay on the CPU after their first
     frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A copy dropped from the

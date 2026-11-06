@@ -130,6 +130,8 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
       GpuBitmaps.passed[3]++;
       return null;
     }
+    // An empty or inverted destination draws nothing: HWUI's to skip.
+    if (ir <= il || ib <= it) return null;
     if (keep != null) keep.set(l, t, r, bottom);
     return GpuBitmaps.scaled(b, src, ir - il, ib - it);
   }
