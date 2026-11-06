@@ -57,14 +57,14 @@ final class AdbServer {
         try {
           Socket s = server.accept();
           s.setTcpNoDelay(true);
-          Thread c = new Thread(new Connection(s), "adb-transport");
+          Thread c = new Thread(new Connection(s), "apksim-adb-transport");
           c.setDaemon(true);
           c.start();
         } catch (IOException e) {
           // Keep accepting.
         }
       }
-    }, "adb");
+    }, "apksim-adb");
     t.setDaemon(true);
     t.start();
   }
@@ -177,7 +177,7 @@ final class AdbServer {
             return;
           }
           pump(s, target);
-        }, "adb-forward");
+        }, "apksim-adb-forward");
         t.setDaemon(true);
         t.start();
         return;
@@ -188,7 +188,7 @@ final class AdbServer {
         return;
       }
       Stream s = accept(remote);
-      Thread t = new Thread(() -> serve(s, service), "adb-" + service.split("[: ]", 2)[0]);
+      Thread t = new Thread(() -> serve(s, service), "apksim-adb-" + service.split("[: ]", 2)[0]);
       t.setDaemon(true);
       t.start();
     }
@@ -246,7 +246,7 @@ final class AdbServer {
             // Already closed.
           }
         }
-      }, "adb-forward-in");
+      }, "apksim-adb-forward-in");
       up.setDaemon(true);
       up.start();
       try (socket) {
