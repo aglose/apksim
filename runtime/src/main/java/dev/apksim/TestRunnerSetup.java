@@ -153,6 +153,7 @@ public final class TestRunnerSetup {
 
     synchronized void install(List<RunListener> listeners) {
       installed = true;
+      if (!listeners.isEmpty()) SimTestStorage.ensureInstalled();
       for (RunListener l : listeners) {
         active.add(l);
         safely(l, () -> {
@@ -189,6 +190,9 @@ public final class TestRunnerSetup {
     }
 
     private void each(ListenerCall c) {
+      // Robolectric resets providers between tests and before JUnit reports a test's end: every call, a held start
+      // included, goes out with Test Storage registered.
+      if (!active.isEmpty()) SimTestStorage.ensureInstalled();
       for (RunListener l : active) {
         safely(l, () -> {
           withInstrumentation(l);
@@ -241,7 +245,6 @@ public final class TestRunnerSetup {
     @Override
     public synchronized void testRunFinished(Result r) {
       flushStart();
-      SimTestStorage.ensureInstalled();
       each(l -> l.testRunFinished(r));
     }
 
@@ -267,7 +270,6 @@ public final class TestRunnerSetup {
     @Override
     public synchronized void testFinished(Description d) {
       flushStart();
-      SimTestStorage.ensureInstalled();
       each(l -> l.testFinished(d));
       current = null;
     }
@@ -275,14 +277,12 @@ public final class TestRunnerSetup {
     @Override
     public synchronized void testFailure(Failure f) {
       flushStart();
-      SimTestStorage.ensureInstalled();
       each(l -> l.testFailure(f));
     }
 
     @Override
     public synchronized void testAssumptionFailure(Failure f) {
       flushStart();
-      SimTestStorage.ensureInstalled();
       each(l -> l.testAssumptionFailure(f));
     }
 
@@ -292,7 +292,6 @@ public final class TestRunnerSetup {
         ignoredBefore.add(d);  // before the first test's setup: replayed when the listeners join
         return;
       }
-      SimTestStorage.ensureInstalled();
       each(l -> l.testIgnored(d));
     }
   }
