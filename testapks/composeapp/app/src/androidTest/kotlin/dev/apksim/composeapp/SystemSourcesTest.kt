@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -35,9 +36,40 @@ class SystemSourcesTest {
     for ((name, source) in SystemSources.all(context)) {
       if (name == "bluetooth profile") continue
       val v = runBlocking { withTimeoutOrNull(5_000) { source() } }
-      if (v == null) waiting += name
+      if (v == null || v.startsWith("error")) waiting += "$name: $v"
     }
-    assertEquals("sources that never answered", emptyList<String>(), waiting)
+    assertEquals("sources that never answered or failed", emptyList<String>(), waiting)
+  }
+
+  /**
+   * Wi-Fi's signal as an API 31+ device gives it (issue 96): levels 0..4, so a quick-settings library's
+   * `calculateSignalLevel(rssi) / (maxSignalLevel / 4)` does not divide by zero; a connection with a real RSSI.
+   */
+  @Test
+  fun wifiSignalLevelsAreADevicesZeroToFour() {
+    val wm = context.getSystemService(WifiManager::class.java)
+    assertEquals("getMaxSignalLevel()", 4, wm.maxSignalLevel)
+    @Suppress("DEPRECATION") val info = wm.connectionInfo
+    assertEquals("connected RSSI", -50, info.rssi)
+    assertTrue("frequency ${info.frequency}", info.frequency > 0)
+    assertEquals("SSID without location permission", WifiManager.UNKNOWN_SSID, info.ssid)
+    val level = wm.calculateSignalLevel(info.rssi) / (wm.maxSignalLevel / 4)
+    assertTrue("level $level", level in 0..4)
+    assertEquals(4, wm.calculateSignalLevel(-50))
+    assertEquals(0, wm.calculateSignalLevel(-95))
+    @Suppress("DEPRECATION") val classic = WifiManager.calculateSignalLevel(-70, 5)
+    assertEquals("static calculateSignalLevel(-70, 5)", 2, classic)
+    assertTrue(SystemSources.wifiLevel(context), SystemSources.wifiLevel(context).startsWith("level 4 of 4"))
+  }
+
+  @Test
+  fun offlineWifiIsDisconnected() {
+    shell("apksim network offline")
+    val wm = context.getSystemService(WifiManager::class.java)
+    @Suppress("DEPRECATION") val info = wm.connectionInfo
+    assertEquals(-127, info.rssi)
+    assertEquals(-1, info.networkId)
+    assertEquals(0, wm.calculateSignalLevel(info.rssi))
   }
 
   @Test

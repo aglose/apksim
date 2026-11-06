@@ -48,8 +48,9 @@ import kotlin.coroutines.resume
  * awaits in coroutines, each as an app wraps it (callbackFlow + first(), suspendCancellableCoroutine), with a timeout.
  * On a device every one answers at once: sticky broadcasts are delivered to a receiver as it registers, a network
  * callback hears of the networks that match it (one registered in Application.onCreate too), a profile proxy
- * connects. One that never answers leaves a panel
- * waiting for ever with nothing on screen (issue 96). Each line reads "name: value" or "name: timed out";
+ * connects. One that never answers leaves a panel waiting for ever with nothing on screen, and so does one that
+ * throws in a coroutine whose exception the app swallows: "wifi level" divides by getMaxSignalLevel() / 4 as a
+ * quick-settings library does (issue 96). Each line reads "name: value", "name: timed out" or "name: error ...";
  * SystemSourcesTest awaits the same sources in a test run.
  */
 class SystemSourcesActivity : ComponentActivity() {
@@ -83,6 +84,7 @@ object SystemSources {
   const val TIMEOUT_MS = 3000L
 
   fun all(context: Context): List<Pair<String, suspend () -> String>> = listOf(
+    "wifi level" to { wifiLevel(context) },
     "wifi state" to { sticky(context, WifiManager.WIFI_STATE_CHANGED_ACTION).first().let { "state ${it.getIntExtra(WifiManager.EXTRA_WIFI_STATE, -1)}" } },
     "wifi network" to { sticky(context, WifiManager.NETWORK_STATE_CHANGED_ACTION).first().let { "connected ${netInfo(it)?.isConnected}" } },
     "connectivity" to { sticky(context, ConnectivityManager.CONNECTIVITY_ACTION).first().let { "no connectivity ${it.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)}" } },
@@ -95,6 +97,21 @@ object SystemSources {
     "brightness" to { brightnessChange(context) },
     "bluetooth profile" to { profileProxy(context) },
   )
+
+  /**
+   * The signal as a quick-settings library computes it on API 31+ (issue 96): levels 0..getMaxSignalLevel() cut into
+   * four. A WifiManager whose getMaxSignalLevel() is under 4 makes that a division by zero.
+   */
+  fun wifiLevel(context: Context): String {
+    val wm = context.getSystemService(WifiManager::class.java)
+    @Suppress("DEPRECATION") val info = wm.connectionInfo
+    val max = wm.maxSignalLevel
+    return try {
+      "level ${wm.calculateSignalLevel(info.rssi) / (max / 4)} of 4, max $max, rssi ${info.rssi}"
+    } catch (e: ArithmeticException) {
+      "error $e, max $max"
+    }
+  }
 
   @Suppress("DEPRECATION")
   private fun netInfo(i: Intent): android.net.NetworkInfo? = i.getParcelableExtra(WifiManager.EXTRA_NETWORK_INFO)

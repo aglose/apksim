@@ -10,6 +10,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
@@ -63,7 +64,16 @@ final class HostNetworks {
           NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED}) {
         capsShadow.addCapability(c);
       }
-      if (!tunnel) capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+      if (!tunnel) {
+        capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+        // As ConnectivityService shows a Wi-Fi network to an app: its WifiInfo (location fields redacted) and signal.
+        InetAddress v4 = null;
+        for (InterfaceAddress a : ni.getInterfaceAddresses()) {
+          if (a.getAddress() instanceof Inet4Address && !a.getAddress().isLinkLocalAddress()) v4 = a.getAddress();
+        }
+        caps.setTransportInfo(SimWifi.connected(false, v4));
+        caps.setSignalStrength(SimWifi.RSSI);
+      }
       shadow.setNetworkCapabilities(network, caps);
 
       LinkProperties lp = new LinkProperties();

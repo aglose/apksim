@@ -357,10 +357,12 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
-`apksim://system-sources` opens `SystemSourcesActivity`: what a quick-settings panel awaits in coroutines (Wi-Fi's,
-the network's and the battery's sticky broadcasts, a default and a Wi-Fi network callback, VOLUME_CHANGED_ACTION after
-setStreamVolume, a settings observer, an A2DP profile proxy), one line each, "timed out" after 3 s (`ci-smoke.sh`
-checks none does but Bluetooth's, which connects only while Bluetooth is on; `SystemSourcesTest` in a test run).
+`apksim://system-sources` opens `SystemSourcesActivity`: what a quick-settings panel reads and awaits in coroutines
+(Wi-Fi's signal level as `calculateSignalLevel(rssi) / (maxSignalLevel / 4)`, Wi-Fi's, the network's and the battery's
+sticky broadcasts, a default and a Wi-Fi network callback, one registered in Application.onCreate, VOLUME_CHANGED_ACTION
+after setStreamVolume, a settings observer, an A2DP profile proxy), one line each, "timed out" after 3 s or "error"
+(`ci-smoke.sh` checks none does but Bluetooth's, which connects only while Bluetooth is on; `SystemSourcesTest` in a
+test run).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -408,6 +410,13 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   NOT_METERED..., which a default NetworkRequest asks for). `SystemBroadcasts.ShadowSimAudioManager` sends
   VOLUME_CHANGED_ACTION (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream.
   Robolectric prints every broadcast it sends to stderr, so a sticky nobody listens for yet is only kept.
+- WifiManager as a connected API 31+ device's (`SimWifi`; issue 96's actual cause): getMaxSignalLevel() 4 and
+  calculateSignalLevel(rssi) on RssiUtil's default thresholds (-88/-77/-66/-55), the static
+  calculateSignalLevel(rssi, n) by the classic -100..-55 formula, getConnectionInfo at -50 dBm, 5180 MHz, 866 Mbps while
+  the active network is Wi-Fi (SSID "AndroidWifi", BSSID and network id only with ACCESS_FINE_LOCATION, else redacted
+  as a device does; offline: disconnected, rssi -127). Robolectric's stub IWifiManager made getMaxSignalLevel() 0, and a
+  quick-settings library's `level / (max / 4)` threw ArithmeticException in a coroutine the app swallowed, so its
+  panel never showed. HostNetworks gives the Wi-Fi network's capabilities that (redacted) WifiInfo and signal strength.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
