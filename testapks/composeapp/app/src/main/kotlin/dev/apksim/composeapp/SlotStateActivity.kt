@@ -37,19 +37,26 @@ class SlotStateActivity : ComponentActivity() {
   @Composable
   private fun Screen() {
     var now by remember { mutableStateOf(describe(this)) }
+    var typed by remember { mutableStateOf(typed(this)) }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
       Text("Slot state", style = MaterialTheme.typography.titleLarge)
       Text("at app start: ${ComposeApp.slotAtCreate}")
       Text("now: $now")
+      Text("typed: $typed")
       Text("storage: ${storage()}")
       Text("font scale: ${resources.configuration.fontScale}")
       Button(onClick = {
         // A device refuses an ordinary app WRITE_SECURE_SETTINGS (SecurityException); apksim allows it.
         try {
           Settings.Global.putString(contentResolver, SETTING, "written")
+          // Typed values, which the provider keeps as text and its getters parse: they must read back after a relaunch.
+          Settings.Global.putInt(contentResolver, INT, 42)
+          Settings.Secure.putLong(contentResolver, LONG, 1234567890123L)
+          Settings.System.putFloat(contentResolver, FLOAT, 1.25f)
         } catch (e: SecurityException) {
           // left as it was: "now" shows it
         }
+        typed = typed(this@SlotStateActivity)
         try {
           File(Environment.getExternalStorageDirectory(), FILE).writeText("written")
         } catch (e: Exception) {
@@ -80,6 +87,16 @@ class SlotStateActivity : ComponentActivity() {
     const val SETTING = "apksim_slot_check"
     const val SEED = "apksim_slot_seed"
     const val FILE = "apksim-slot-check.txt"
+    const val INT = "apksim_slot_int"
+    const val LONG = "apksim_slot_long"
+    const val FLOAT = "apksim_slot_float"
+
+    /** The typed values "Write" sets, read with the typed getters (-1 for one not set), and the float as text. */
+    fun typed(context: Context): String {
+      val cr = context.contentResolver
+      return "int=${Settings.Global.getInt(cr, INT, -1)} long=${Settings.Secure.getLong(cr, LONG, -1L)} " +
+          "float=${Settings.System.getFloat(cr, FLOAT, -1f)} text=${Settings.System.getString(cr, FLOAT)}"
+    }
 
     /** The slot's Settings.Global values and the /sdcard file, as "setting=... seed=... sdcard=...". */
     fun describe(context: Context): String {

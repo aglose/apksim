@@ -378,7 +378,9 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://slot` opens `SlotStateActivity`: the Settings.Global values `apksim_slot_check` and `apksim_slot_seed` and the
 file `/sdcard/apksim-slot-check.txt` as Application.onCreate saw them ("at app start") and now, and "Write" to set the
-first two (`scripts/slot-check.sh` drives it across launches).
+first and the file, plus typed values (Global putInt, Secure putLong, System putFloat; "typed:" reads them back with the
+typed getters: the slot keeps text, as Android's provider does, and the getters parse it) (`scripts/slot-check.sh`
+drives it across launches, and checks `adb shell settings get` when adb is on PATH).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 
