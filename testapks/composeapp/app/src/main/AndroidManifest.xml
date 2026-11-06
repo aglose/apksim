@@ -45,13 +45,13 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
-        <!-- apksim://clock?seconds=60: a CountDownTimer against wall time, restarted on onUserInteraction (scripts/clock-check.py). -->
-        <activity android:name=".ClockCheckActivity" android:exported="true">
+        <!-- apksim://timer: SystemClock against the wall clock, and onUserInteraction per input path (scripts/timer-check.py). -->
+        <activity android:name=".TimerActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="apksim" android:host="clock" />
+                <data android:scheme="apksim" android:host="timer" />
             </intent-filter>
         </activity>
         <service android:name=".TripSyncJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />

@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.KeyEvent;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -497,19 +498,8 @@ final class AdbShell {
     return p;
   }
 
-  // input tap|swipe|text|keyevent: through the control commands, so they queue with the rest of the scripted input. As
-  // a device's `input` does, it returns once its events are dispatched: `input swipe X Y X Y 1500` (a press and hold)
-  // takes its 1.5 s, and a screencap after it sees the press released.
+  // input tap|swipe|text|keyevent: through the control commands, so they queue with the rest of the scripted input.
   private int input(List<String> a) throws Exception {
-    int status = inputQueued(a);
-    if (status == 0 && !TestActivities.testRun()) {
-      String r = control("drain");
-      if (!r.equals("ok")) return reply(r, false);
-    }
-    return status;
-  }
-
-  private int inputQueued(List<String> a) throws Exception {
     int i = 0;
     if (i < a.size() && a.get(i).matches("touchscreen|touchpad|touchnavigation|mouse|keyboard|stylus|trackball|dpad|gamepad|joystick|rotaryencoder")) i++;
     if (i + 1 < a.size() && a.get(i).equals("-d")) i += 2;
@@ -519,18 +509,20 @@ final class AdbShell {
     switch (op) {
       case "tap" -> {
         if (r.size() < 2) return usage("input tap X Y");
-        return reply(control("tap", r.get(0), r.get(1)), false);
+        return reply(delivered(control("tap", r.get(0), r.get(1)), 0), false);
       }
       case "swipe", "draganddrop" -> {
         if (r.size() < 4) return usage("input swipe X1 Y1 X2 Y2 [DURATION_MS]");
+        // A device's swipe takes 300 ms when no duration is given; here that is the control command's fling.
         List<String> c = new ArrayList<>(List.of("swipe"));
         c.addAll(r.subList(0, Math.min(5, r.size())));
-        return reply(control(c.toArray(new String[0])), false);
+        long ms = r.size() > 4 ? Long.parseLong(r.get(4)) : 0;
+        return reply(delivered(control(c.toArray(new String[0])), ms), false);
       }
       case "text" -> {
         if (r.isEmpty()) return usage("input text TEXT");
         // As on a device: %s is a space (adb strips the quoting a real space would need).
-        return reply(control("type", String.join(" ", r).replace("%s", " ")), false);
+        return reply(delivered(control("type", String.join(" ", r).replace("%s", " ")), 0), false);
       }
       case "keyevent", "keycombination" -> {
         int status = 0;
@@ -539,7 +531,7 @@ final class AdbShell {
           if (k.equals("-t")) continue;
           status |= key(k);
         }
-        return status;
+        return status != 0 ? status : reply(delivered("ok", 0), false);
       }
       default -> {
         print("Error: Unknown command: " + op + "\n");
@@ -548,28 +540,54 @@ final class AdbShell {
     }
   }
 
+  /**
+   * As a device's `input` returns once its events are injected (a swipe after its duration): waits on a `drain`, which
+   * the Host answers once the input queued before it has been dispatched, so a tool that takes a screenshot or reads
+   * the UI next sees the finger lifted. Input queued after it (another connection's) does not hold it up.
+   */
+  private static String delivered(String reply, long ms) throws Exception {
+    if (!reply.equals("ok") || Looper.getMainLooper().isCurrentThread() || TestActivities.testRun()) return reply;
+    Control.Pending p = new Control.Pending(new String[] {"drain"});
+    Control.QUEUE.add(p);
+    String r = p.await(ms + 10_000L);
+    return r == null ? "error: input still queued after " + (ms + 10_000L) + " ms" : r.equals("ok") ? reply : r;
+  }
+
   private int key(String k) throws Exception {
     String name = k.toUpperCase(Locale.ROOT);
+    // A key code (`input keyevent 66`), as adb tools send them, by its name: the control command takes names, and
+    // KeyEvent.keyCodeToString has no native table here (it answers the number).
+    if (name.matches("\\d+")) {
+      int code = Integer.parseInt(name);
+      for (java.lang.reflect.Field f : KeyEvent.class.getFields()) {
+        if (f.getType() == int.class && f.getName().startsWith("KEYCODE_") && f.getInt(null) == code) {
+          name = f.getName();
+          break;
+        }
+      }
+    }
     if (name.startsWith("KEYCODE_")) name = name.substring(8);
+    // KEYCODE_0..9 (codes 7..16) are the digit keys, not key codes 0..9 nor Back and Home below.
+    if (name.matches("\\d")) return reply(control("key", name), false);
     switch (name) {
-      case "4", "BACK" -> {
+      case "BACK" -> {
         return reply(control("back"), false);
       }
-      case "3", "HOME" -> {
+      case "HOME" -> {
         return reply(control("home"), false);
       }
-      case "223", "SLEEP" -> {
+      case "SLEEP" -> {
         return reply(quiet(control("lock")), false);
       }
-      case "224", "WAKEUP" -> {
+      case "WAKEUP" -> {
         return reply(quiet(control("unlock")), false);
       }
-      case "26", "POWER" -> {
+      case "POWER" -> {
         String r = control("lock");
         if (r.startsWith("already")) r = control("unlock");
         return reply(quiet(r), false);
       }
-      case "82", "MENU" -> {
+      case "MENU" -> {
         // The classic "unlock the screen" key; with the screen on, it is the menu key.
         String r = control("unlock");
         return r.equals("not hidden") ? reply(control("key", "MENU"), false) : reply(quiet(r), false);

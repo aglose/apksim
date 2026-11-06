@@ -35,6 +35,11 @@ final class Control {
       done.await();
       return result;
     }
+
+    /** The answer, or null if none came within {@code ms}. */
+    String await(long ms) throws InterruptedException {
+      return done.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS) ? result : null;
+    }
   }
 
   static final ConcurrentLinkedQueue<Pending> QUEUE = new ConcurrentLinkedQueue<>();
