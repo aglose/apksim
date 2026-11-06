@@ -75,6 +75,7 @@ final class RealTimeClock {
     main = Looper.getMainLooper().getThread();
     handler = new Handler(Looper.getMainLooper());
     vsyncPosted = false;
+    barrierSince = -1;
     ShadowChoreographer.setPaused(true);
     simBaseNanos = ApksimClock.uptimeNanos();
     elapsedBaseNanos = ApksimClock.elapsedRealtimeNanos();
@@ -189,6 +190,16 @@ final class RealTimeClock {
     }
   }
 
+  /** Main thread only: since when (System.nanoTime) every look at the queue has found a barrier at its head, or -1. */
+  private static long barrierSince = -1;
+  private static final long BARRIER_STREAK_MS = 250;
+
+  /**
+   * Main thread only: above 0 while a caller runs just the messages already due (Compose's test clock stepping a
+   * frame, say), where a barrier's frame is not wanted: waiting it out cost a frame of real time per test-clock frame.
+   */
+  static int noBarrierWait;
+
   /** The longest a looper waits for the frame that will lift a barrier: more than a frame means none is coming. */
   private static final long BARRIER_WAIT_MS = 100;
 
@@ -197,18 +208,33 @@ final class RealTimeClock {
    * (the frame that runs the traversal and lifts it) is due within BARRIER_WAIT_MS, waits for it in real time.
    */
   private static void waitOutBarrier() {
+    if (noBarrierWait > 0) return;
     android.os.MessageQueue q = Looper.getMainLooper().getQueue();
     long frameAt = -1;
     try {
       synchronized (q) {
         Message m = (Message) MESSAGES.get(q);
-        if (m == null || m.getTarget() != null) return;  // no barrier at the head
-        for (; m != null; m = (Message) NEXT.get(m)) {
-          if (m.isAsynchronous()) {
-            frameAt = m.getWhen();
-            break;
+        if (m == null || m.getTarget() != null) {  // no barrier at the head
+          barrierSince = -1;
+          return;
+        }
+        boolean waiting = false;  // work held behind the barrier that is due now (an Espresso check, a posted task)
+        long nowMs = ApksimClock.uptimeNanos() / 1_000_000L;
+        for (Message n = (Message) NEXT.get(m); n != null; n = (Message) NEXT.get(n)) {
+          if (n.isAsynchronous()) {
+            if (frameAt < 0) frameAt = n.getWhen();
+          } else if (n.getWhen() <= nowMs) {
+            waiting = true;
           }
         }
+        // An endless animation keeps a barrier up frame after frame, and waiting each one out kept the looper from ever
+        // being idle. Past BARRIER_STREAK_MS of barriers with nothing due behind them, a barrier counts as idle, as
+        // Espresso counts it on a device; frames still come as the clock catches up. Work due behind the barrier keeps
+        // the wait: Espresso blocks the main thread on its check's result once the queue is idle.
+        long nowNanos = System.nanoTime();
+        if (waiting) barrierSince = -1;
+        else if (barrierSince < 0) barrierSince = nowNanos;
+        else if (nowNanos - barrierSince > BARRIER_STREAK_MS * 1_000_000L) return;
       }
     } catch (IllegalAccessException e) {
       return;
