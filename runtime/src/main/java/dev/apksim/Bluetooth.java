@@ -46,18 +46,19 @@ public final class Bluetooth {
   }
 
   /**
-   * Held for each whole switch: the adapter's state, what it broadcasts (queued, in order) and bluetooth_on, so a
-   * switch on one thread (the app's enable()/disable(), on whatever thread it calls them) and one on another (the shell
-   * and control commands, on the main thread) never leave the adapter on with the setting 0. Never held while
-   * broadcasting or notifying observers, which may call back into the adapter from another thread.
+   * Held for each whole switch: the adapter's state and, queued in order, what it broadcasts and the bluetooth_on it
+   * writes, so a switch on one thread (the app's enable()/disable(), on whatever thread it calls them) and one on
+   * another (the shell and control commands, on the main thread) never leave the adapter on with the setting 0 once
+   * the queue is sent. Never held while broadcasting or writing the setting, whose receivers and observers may call
+   * back into the adapter from another thread.
    */
   private static final Object LOCK = new Object();
 
-  /** Held while sending what the switches queued, so their broadcasts go out in the order the switches happened. */
-  private static final Object SEND = new Object();
-
-  /** Broadcasts and setting notifications the switches decided on, oldest first. Guarded by LOCK. */
+  /** Broadcasts and setting writes the switches decided on, oldest first. Guarded by LOCK. */
   private static final java.util.ArrayDeque<Runnable> pending = new java.util.ArrayDeque<>();
+
+  /** Whether a thread is sending what is pending (flush): the only one, so they go out in order. Guarded by LOCK. */
+  private static boolean draining;
 
   /** The adapter there or not (its feature), in state [on], or (null) in the state it has. */
   private static void apply(Application app, Boolean on) {
@@ -144,22 +145,45 @@ public final class Bluetooth {
     writeSetting(app, want);
   }
 
-  /** bluetooth_on written now (under LOCK), its observers told on the next flush. */
+  /**
+   * bluetooth_on decided now (under LOCK), written on the flush, in the switches' order, so the last switch's value is
+   * the one left. Not under LOCK: Robolectric's Settings.Global.putInt calls the setting's observers on the writing
+   * thread (a handler-less ContentObserver at once), and one that waits for a thread switching the adapter deadlocked.
+   */
   private static void writeSetting(Application app, boolean value) {
-    Settings.Global.putInt(app.getContentResolver(), Settings.Global.BLUETOOTH_ON, value ? 1 : 0);
-    pending.add(() -> app.getContentResolver().notifyChange(Settings.Global.getUriFor(Settings.Global.BLUETOOTH_ON), null));
+    pending.add(() -> Settings.Global.putInt(app.getContentResolver(), Settings.Global.BLUETOOTH_ON, value ? 1 : 0));
   }
 
-  /** Sends what the switches queued, oldest first, without LOCK. */
+  /**
+   * Sends what the switches queued, oldest first, holding no lock while a receiver or observer runs. One thread drains
+   * at a time; a switch made while another thread drains (or from inside a callback of this one) leaves its items to
+   * that drainer and returns at once, so a callback that waits for a thread switching the adapter cannot deadlock.
+   */
   private static void flush() {
-    synchronized (SEND) {
+    synchronized (LOCK) {
+      if (draining) return;
+      draining = true;
+    }
+    boolean done = false;
+    try {
       while (true) {
         Runnable r;
         synchronized (LOCK) {
           r = pending.poll();
+          if (r == null) {
+            draining = false;
+            done = true;
+            return;
+          }
         }
-        if (r == null) return;
         r.run();
+      }
+    } finally {
+      // A callback that threw: the next switch drains what is left.
+      if (!done) {
+        synchronized (LOCK) {
+          draining = false;
+        }
       }
     }
   }

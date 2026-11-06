@@ -195,6 +195,39 @@ class BluetoothTest {
 
   @Test
   @Suppress("DEPRECATION", "MissingPermission")
+  fun i_aCallbackWaitingForAThreadThatSwitchesDoesNotDeadlock() {
+    assumeTrue("apksim's switch; a device refuses enable() to an app targeting 33+", onApksim)
+    val a = adapter
+    var started = false
+    var joined: Boolean? = null  // whether the observer's thread finished within 5 s
+    val uri = Settings.Global.getUriFor(Settings.Global.BLUETOOTH_ON)
+    // No handler: Robolectric calls onChange on the thread that notifies, i.e. inside the switch's sending.
+    val observer = object : android.database.ContentObserver(null) {
+      override fun onChange(selfChange: Boolean) {
+        if (started) return
+        started = true
+        val t = Thread { a.enable() }
+        t.start()
+        t.join(5_000)
+        joined = !t.isAlive
+      }
+    }
+    context.contentResolver.registerContentObserver(uri, false, observer)
+    try {
+      shell("svc bluetooth disable")
+      waitFor("the observer's thread") { joined != null }
+      assertEquals("the thread switching from the observer finished", true, joined)
+      instrumentation.waitForIdleSync()
+      val setting = Settings.Global.getInt(context.contentResolver, Settings.Global.BLUETOOTH_ON)
+      assertTrue("on again (the thread's enable)", a.isEnabled)
+      assertEquals(1, setting)
+    } finally {
+      context.contentResolver.unregisterContentObserver(observer)
+    }
+  }
+
+  @Test
+  @Suppress("DEPRECATION", "MissingPermission")
   fun g_bluetoothOnIsWrittenEvenWithNoSwitchToMake() {
     assumeTrue("settings put global bluetooth_on switches the adapter on apksim, not on a device", onApksim)
     assertTrue(adapter.disable())
