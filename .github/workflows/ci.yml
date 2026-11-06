@@ -116,7 +116,7 @@ jobs:
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).iter("testcase"))
           skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
-          assert len(cases) == 10 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
+          assert len(cases) == 11 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity and setting tests")
           EOF
       # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
