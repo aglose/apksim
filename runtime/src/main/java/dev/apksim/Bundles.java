@@ -90,7 +90,7 @@ public final class Bundles {
   private static final java.util.Set<String> TIMED_OUT = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private static final java.util.concurrent.ScheduledExecutorService DEADLINES =
       java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "bundle-deadline");
+        Thread t = new Thread(r, "apksim-bundle-deadline");
         t.setDaemon(true);
         return t;
       });

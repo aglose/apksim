@@ -57,8 +57,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     it. An exception leaving the main looper (Host's loop, the first activity's start, Application.onCreate) is logged
     first, as the device's pre-handler does, then goes to the thread's handler, and the process ends even if that
     returns (the main thread is dead on a device). Not a device's: an app thread whose exception reaches the app's own
-    non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads whose stack
-    has no class of the APK are printed and end alone, as before. `--jvm -Dapksim.crashes=log` logs and runs on (the
+    non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads (every thread
+    apksim starts is named `apksim-...`: keep it so for new ones) are printed and end alone, as before; every other
+    thread is the app's (not judged by the exception's stack, which may be a JDK one or have none). The adb log's tee is
+    put back in front of ShadowLog.stream before logging, and stderr gets the crash whenever Log.e failed. `--jvm -Dapksim.crashes=log` logs and runs on (the
     main loop too), to look at a broken screen. Logging and each cleanup step are best-effort (an OutOfMemoryError may
     be the crash) and `Standby.haltNow` always halts with 10, the client told first; `-Dapksim.crashTest.failCleanup=true`
     makes the cache save throw, to check it. Test runs install nothing: AndroidJUnitRunner's handler
@@ -382,8 +384,9 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
-`apksim://crash?kind=coroutine|post|worker|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
-viewModelScope.launch, a posted Runnable, a worker thread; `handled` first sets a default handler that keeps the app
+`apksim://crash?kind=coroutine|post|worker|bare|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
+viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
+(`bare`); `handled` first sets a default handler that keeps the app
 running ("crash: handled by the app ..."), `chained` one that passes it on (`--activity .CrashActivity` is `coroutine`;
 `ci-smoke.sh` checks it exits 10 with FATAL EXCEPTION, and `handled`).
 

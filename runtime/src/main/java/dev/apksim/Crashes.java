@@ -21,13 +21,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * does, then calls the thread's handler. The process ends with exit status 10 (RuntimeInit's System.exit(10)).
  * {@code -Dapksim.crashes=log} logs and keeps running (the main loop goes on), to look at a broken screen.
  *
- * Exceptions on apksim's own threads that never ran app code (no frame of a class the APK defines) are printed as the
- * JVM prints them and end only that thread, as before: they are apksim's bugs, not the app's crash.
+ * Exceptions on apksim's own threads (named {@value #OWN_THREADS}..., every thread apksim starts) are printed as the JVM
+ * prints them and end only that thread, as before: they are apksim's bugs, not the app's crash. Every other thread is
+ * the app's: not decided by the exception's stack, which is where it was made (a JDK exception passed on, or one made
+ * without a stack trace) and may have no frame of the app's.
  */
 final class Crashes {
   private Crashes() {}
 
-  private static AppClasses classes;
+  /** The name every thread apksim starts has; any other thread is the app's (its own, or the framework's for it). */
+  static final String OWN_THREADS = "apksim-";
   /** The exception last logged as FATAL, so the pre-handler and the default handler log it once. */
   private static volatile Throwable logged;
   private static final AtomicBoolean crashing = new AtomicBoolean();
@@ -40,8 +43,7 @@ final class Crashes {
   private static final byte[] LOG_FAILED =
       "E/AndroidRuntime: FATAL EXCEPTION (logging it failed: out of memory?)\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
-  static void install(AppClasses appClasses) {
-    classes = appClasses;
+  static void install() {
     keepRunning = "log".equals(System.getProperty("apksim.crashes"));
     failCleanupForTest = Boolean.getBoolean("apksim.crashTest.failCleanup");
     processLine = "\nProcess: " + System.getProperty("apksim.package") + ", PID: " + ProcessHandle.current().pid();
@@ -52,13 +54,13 @@ final class Crashes {
   static final class KillApplication implements Thread.UncaughtExceptionHandler {
     @Override
     public void uncaughtException(Thread t, Throwable e) {
-      boolean apps = true;
+      boolean own = false;
       try {
-        apps = isMain(t) || ranAppCode(e);
+        own = t.getName().startsWith(OWN_THREADS);
       } catch (Throwable unknown) {
         // Cannot tell: the app's, as on a device.
       }
-      if (!apps) {
+      if (own) {
         try {
           System.err.print("[apksim] exception in apksim's thread \"" + t.getName() + "\" ");
           e.printStackTrace();
@@ -152,13 +154,19 @@ final class Crashes {
     if (logged == e) return;
     logged = e;
     String message = "FATAL EXCEPTION: " + threadName(t) + processLine;
+    boolean inLog = false;
     try {
+      // The adb log's tee in front again at once: the app or `logcat on|off` may have just replaced ShadowLog.stream, and
+      // its watcher would put it back only within 250 ms, after the process is gone.
+      AdbLog.reattach();
       Log.e("AndroidRuntime", message, e);
+      inLog = true;
     } catch (Throwable ignored) {
-      // The framework is not up (or went down): stderr below still has it.
+      // The framework is not up (or went down): stderr below has it.
     }
-    // Without `logcat on` the app's log goes only to `adb logcat`: the host log gets it too, as a device's logcat would.
-    if (!AdbLog.reachesStderr()) {
+    // Without `logcat on` the app's log goes only to `adb logcat`: the host log gets it too, as a device's logcat would;
+    // and it gets it whenever Log.e failed.
+    if (!inLog || !AdbLog.reachesStderr()) {
       System.err.println("E/AndroidRuntime: " + message);
       e.printStackTrace();
     }
@@ -176,18 +184,5 @@ final class Crashes {
     } catch (Throwable e) {
       return false;
     }
-  }
-
-  /** Whether the exception (or a cause) passed through a class the APK defines (the app, its libraries). */
-  private static boolean ranAppCode(Throwable e) {
-    AppClasses c = classes;
-    if (c == null) return true;
-    int depth = 0;
-    for (Throwable x = e; x != null && depth++ < 20; x = x.getCause()) {
-      for (StackTraceElement f : x.getStackTrace()) {
-        if (c.defines(f.getClassName())) return true;
-      }
-    }
-    return false;
   }
 }

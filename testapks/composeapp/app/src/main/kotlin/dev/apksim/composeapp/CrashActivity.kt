@@ -29,6 +29,8 @@ import kotlinx.coroutines.launch
  *   thread's uncaught-exception handler.
  * - `post`: thrown from a Runnable posted to the main thread's Handler (it leaves Looper.loop).
  * - `worker`: thrown on a thread of the app's own ("crash-worker").
+ * - `bare`: thrown on a thread of the app's own ("crash-bare"), an exception made without a stack trace, so nothing in
+ *   it says the app's code ran.
  * - `handled`: the app installs a default handler of its own that does not pass the exception on, then crashes as
  *   `coroutine`: the app keeps running and the screen says what its handler got.
  * - `chained`: the app installs a handler that records the crash and passes it on to the one before it, as crash
@@ -63,6 +65,7 @@ class CrashActivity : androidx.activity.ComponentActivity() {
       "worker" -> handler.postDelayed({
         Thread({ throw IllegalStateException("thrown on a worker thread") }, "crash-worker").start()
       }, 300)
+      "bare" -> handler.postDelayed({ Thread({ throw Bare() }, "crash-bare").start() }, 300)
       "handled" -> {
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
           Log.e(TAG, "crash: app handler got ${e.javaClass.name} on ${t.name}")
@@ -91,6 +94,9 @@ class CrashActivity : androidx.activity.ComponentActivity() {
       }
     }
   }
+
+  /** An exception with no stack trace (writableStackTrace false). */
+  class Bare : RuntimeException("thrown without a stack trace", null, false, false)
 
   private companion object {
     const val TAG = "CrashActivity"

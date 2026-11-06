@@ -83,7 +83,7 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
-        <!-- apksim://crash?kind=coroutine|post|worker|handled|chained: an uncaught exception (issue 104). -->
+        <!-- apksim://crash?kind=coroutine|post|worker|bare|handled|chained: an uncaught exception (issue 104). -->
         <activity android:name=".CrashActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

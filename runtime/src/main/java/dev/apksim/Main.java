@@ -64,7 +64,7 @@ public final class Main {
       Standby.halt(code);
     }
     // A device's default uncaught-exception handler (RuntimeInit's): FATAL EXCEPTION in the log, then the process ends.
-    Crashes.install(classes);
+    Crashes.install();
     Result r = new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
       if (!Crashes.wasLogged(f.getException())) f.getException().printStackTrace();

@@ -233,7 +233,7 @@ public final class SelfTest {
     Thread writer = new Thread(() -> {
       wrote[0] = track.write(silence, 0, silence.length, android.media.AudioTrack.WRITE_BLOCKING);
       returned[0] = System.nanoTime();
-    }, "selftest-audio-writer");
+    }, "apksim-selftest-audio-writer");
     writer.start();
     Thread.sleep(300);
     long released = System.nanoTime();
