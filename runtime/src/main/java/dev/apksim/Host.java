@@ -121,6 +121,7 @@ public class Host {
     h = app.getResources().getDisplayMetrics().heightPixels;
     bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw = new HwRenderer(app, w, h);
+    dev.apksim.gpu.GpuRenderNode.framesRun();  // before the first activity records: its static views can be promoted
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
     controls.showTitle();
     Timing.detail("controls");

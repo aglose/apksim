@@ -86,9 +86,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     whole pixels or an edge clipped away) and is cut to the clip when most of it is clipped (centerCrop). Skia's CPU
     bilinear was most of a map screen's frame, and of a tablet View screen's (~50 ms → 4.7 ms raster on
     `apksim://bitmaps`). Copies are cached (96 MB, LRU) and made only for a draw that holds still: asked for again
-    within 8 frames (Compose records again often), or recorded once and nothing else asked of that bitmap for 8
-    frames, in which case the View that recorded it (its node or its background node) is invalidated so it records
-    the copy (`promoted` in `shaders`). Zooms and video (a new picture every frame) stay on the CPU.
+    within 8 frames (Compose records again often), or recorded once in a node that has not recorded again for 8
+    frames, with nothing else asked of that bitmap in a later frame, in which case the View that recorded it (its node
+    or its background node) is invalidated so it records the copy (`promoted` in `shaders`; a view whose draw's copy
+    another view made is invalidated too). Host turns it on before the first activity records (`framesRun`); test
+    runs, which draw no frames, never do. Zooms and video (a new picture every frame) stay on the CPU.
     `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows hits and why draws went to HWUI. Metal targets are linear (buffer-backed, pooled): reading back
     a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
@@ -293,7 +295,8 @@ onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a th
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
 PORT [--adb SERIAL]` drives it (~70 s).
 `apksim://bitmaps` opens `BitmapsActivity`, a View screen of full-screen scaled bitmaps (a stretched BitmapDrawable
-background, a centerCrop ImageView, a `drawBitmap(Bitmap, Matrix, Paint)` vignette) with a dot moving every frame:
+background, a centerCrop ImageView, a `drawBitmap(Bitmap, Matrix, Paint)` vignette, two thumbnails of the background's
+bitmap) with a dot moving every frame:
 the `GpuBitmaps` check on `--device tablet`.
 
 ## Network (record, replay, conditions)

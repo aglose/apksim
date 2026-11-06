@@ -22,7 +22,8 @@ import android.widget.TextView
  * apksim://bitmaps: a full-screen View screen whose pixels are mostly scaled bitmaps, drawn the framework's way rather
  * than Compose's: a BitmapDrawable background stretched over the window (Canvas.drawBitmap with src/dst rects), a
  * centerCrop ImageView over it (its matrix on the canvas, then the drawable's rect draw), and a custom View drawing a
- * vignette image with Canvas.drawBitmap(Bitmap, Matrix, Paint). A small dot moves every frame, so frames keep coming
+ * vignette image with Canvas.drawBitmap(Bitmap, Matrix, Paint), and two thumbnails of the backdrop bitmap at one size
+ * (one copy for both views). A small dot moves every frame, so frames keep coming
  * while the big views are recorded once. On a large display (`--device tablet`) the CPU's bilinear scaling of these
  * draws was most of each frame.
  */
@@ -30,7 +31,8 @@ class BitmapsActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val root = FrameLayout(this)
-    root.background = BitmapDrawable(resources, gradientImage(480, 300))
+    val backdrop = gradientImage(480, 300)
+    root.background = BitmapDrawable(resources, backdrop)
     root.addView(
       ImageView(this).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
@@ -40,6 +42,16 @@ class BitmapsActivity : Activity() {
       FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
     )
     root.addView(VignetteView(this), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    // Two thumbnails of one bitmap at one size: one copy, which both views must pick up.
+    for (i in 0 until 2) {
+      root.addView(
+        ImageView(this).apply {
+          scaleType = ImageView.ScaleType.FIT_XY
+          setImageBitmap(backdrop)
+        },
+        FrameLayout.LayoutParams(720, 450, Gravity.BOTTOM or Gravity.START).apply { leftMargin = 32 + i * 752; bottomMargin = 160 },
+      )
+    }
     root.addView(DotView(this), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 96, Gravity.BOTTOM))
     root.addView(
       TextView(this).apply {

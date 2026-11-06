@@ -12,6 +12,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -29,12 +30,12 @@ import java.util.Map;
  *
  * <p>A copy is made only for a draw that holds still: asked for again within a few frames (Compose records again
  * every frame it changes anything), or recorded once and not asked for at another size or position within those
- * frames, in which case the view that recorded it is invalidated so it records the copy (Views record once and keep
- * their display list). So a zoom (a new size every frame) stays on the CPU. (Tiles placed on rounded edges alternate
+ * frames by its bitmap or by the node it was recorded in, in which case the view that recorded it is invalidated so it
+ * records the copy (Views record once and keep their display list). So a zoom (a new size every frame) stays on the CPU. (Tiles placed on rounded edges alternate
  * between two widths as they move, so "again" cannot mean the very next frame.) Copies are kept while they are drawn
  * and dropped longest-unused first past a budget.
  *
- * <p>Only once frames run (Host's loop ticks it; test runs draw no frames). Main thread only (where Views and
+ * <p>Only once Host's frame loop runs ({@link #framesRun}; test runs draw no frames). Main thread only (where Views and
  * Compose record). A node scaled again by HWUI (a graphicsLayer scale) samples
  * the copy a second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
  */
@@ -78,20 +79,30 @@ final class GpuBitmaps {
   /** A bitmap's last draw: what was asked and when. */
   private record Ask(Key key, long frame) {}
 
-  /** A draw asked for once, in [node]'s recording, on [frame]. */
-  private record Pending(RenderNode node, long frame) {}
+  /** A node's latest recording that asked for anything here ([frame]), and the draws in it asked for the first time. */
+  private static final class Recording {
+    final long frame;
+    final List<Key> firstAsks = new ArrayList<>(2);
+
+    Recording(long frame) {
+      this.frame = frame;
+    }
+  }
 
   private static final Map<Key, Entry> SCALED = new HashMap<>();
   /** Sizes asked for and not made yet, with the frame they were last asked for. */
   private static final Map<Key, Long> SEEN = new HashMap<>();
   private static final Map<Bitmap, Ask> LAST = new IdentityHashMap<>();
-  private static final Map<Key, Pending> PENDING = new HashMap<>();
+  /** By node: a recording supersedes the one before, so only draws a node has kept for REPEAT_FRAMES are promoted. */
+  private static final Map<RenderNode, Recording> RECORDINGS = new IdentityHashMap<>();
   /** Draws that held still, whose view was invalidated to record them again: the copy is made then. */
   private static final Map<Key, Long> PROMOTED = new HashMap<>();
   private static final Map<Bitmap, Source> SOURCES = new IdentityHashMap<>();
   private static ByteBuffer scratch = ByteBuffer.allocateDirect(1 << 20).order(ByteOrder.nativeOrder());
   private static long frame;
   private static long bytes;
+  /** Set once Host's frame loop starts: test runs raster no frames, and nothing would let go of a copy there. */
+  private static boolean framesRun;
   /** Set while drawing a copy (whose own draw comes back through here), and by the self-test for HWUI's draws. */
   static boolean bypass;
 
@@ -115,8 +126,7 @@ final class GpuBitmaps {
    */
   @SuppressWarnings("deprecation")
   static boolean draw(Canvas c, Bitmap b, Rect src, float l, float t, float r, float bottom, Paint p) {
-    // frame 0: no frame loop has run (a test run, which rasters no frames), so nothing would let go of a copy.
-    if (!ENABLED || bypass || frame == 0 || p == null || !p.isFilterBitmap() || !Looper.getMainLooper().isCurrentThread()) {
+    if (!ENABLED || bypass || !framesRun || p == null || !p.isFilterBitmap() || !Looper.getMainLooper().isCurrentThread()) {
       return false;
     }
     if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || b.hasMipMap()) {
@@ -197,6 +207,11 @@ final class GpuBitmaps {
   /** The copy of [b] for a Key's resampling, or null (not made yet, or cannot be). [node]: where it is recorded. */
   private static Bitmap copy(Bitmap b, float u0, float v0, float du, float dv, int w, int h, RenderNode node) {
     Key key = new Key(b, b.getGenerationId(), u0, v0, du, dv, w, h);
+    Recording rec = null;
+    if (node != null) {
+      rec = RECORDINGS.get(node);
+      if (rec == null || rec.frame != frame) RECORDINGS.put(node, rec = new Recording(frame));
+    }
     Entry e = SCALED.get(key);
     if (e != null) {
       e.used = frame;
@@ -207,7 +222,7 @@ final class GpuBitmaps {
     if (PROMOTED.remove(key) == null) {
       Long seen = SEEN.put(key, frame);
       if (seen == null || seen < frame - REPEAT_FRAMES) {
-        if (node != null) PENDING.put(key, new Pending(node, frame));
+        if (rec != null) rec.firstAsks.add(key);
         passed[1]++;
         return null;
       }
@@ -230,7 +245,6 @@ final class GpuBitmaps {
     e.used = frame;
     SCALED.put(key, e);
     SEEN.remove(key);
-    PENDING.remove(key);
     bytes += (long) w * h * 4;
     made++;
     return scaled;
@@ -300,11 +314,18 @@ final class GpuBitmaps {
     return scratch;
   }
 
+  /** Host's frame loop is starting: from now on frames tick, so copies can be made and let go of. */
+  static void framesRun() {
+    framesRun = true;
+  }
+
   /** Once a frame, on the main thread: promotes draws that held still, lets go of copies and sources no longer drawn. */
   static void tick() {
     frame++;
-    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty() && PENDING.isEmpty() && PROMOTED.isEmpty()) return;
-    if (!PENDING.isEmpty()) promote();
+    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty() && RECORDINGS.isEmpty() && PROMOTED.isEmpty() && LAST.isEmpty()) {
+      return;
+    }
+    if (!RECORDINGS.isEmpty()) promote();
     long stale = frame - KEEP_FRAMES;
     for (Iterator<Entry> i = SCALED.values().iterator(); i.hasNext(); ) {
       Entry e = i.next();
@@ -315,8 +336,9 @@ final class GpuBitmaps {
       }
     }
     SEEN.values().removeIf(f -> f < frame - REPEAT_FRAMES);
-    LAST.values().removeIf(a -> a.frame < frame - 2 * REPEAT_FRAMES);
-    PROMOTED.values().removeIf(f -> f < stale);
+    LAST.values().removeIf(a -> a.frame < frame - REPEAT_FRAMES);
+    // An invalidated view records again on the next frame; one that does not (detached) holds its bitmap no longer.
+    PROMOTED.values().removeIf(f -> f < frame - 2 * REPEAT_FRAMES);
     for (Iterator<Source> i = SOURCES.values().iterator(); i.hasNext(); ) {
       Source s = i.next();
       if (s.used < stale) {
@@ -327,40 +349,48 @@ final class GpuBitmaps {
   }
 
   /**
-   * Draws asked for once, REPEAT_FRAMES ago, whose bitmap has been asked for nothing else since: the view that
-   * recorded each is invalidated, and its next recording makes the copy.
+   * Nodes that have not recorded again for REPEAT_FRAMES: each draw asked for for the first time in that recording,
+   * whose bitmap has been asked for nothing else in a later frame, is promoted, and its view invalidated so that its next
+   * recording makes the copy. A draw whose copy another view made meanwhile (two views showing one image) has its
+   * view invalidated too, to pick that copy up.
    */
   private static void promote() {
-    Map<RenderNode, Key> due = null;
-    for (Iterator<Map.Entry<Key, Pending>> i = PENDING.entrySet().iterator(); i.hasNext(); ) {
-      Map.Entry<Key, Pending> e = i.next();
-      if (e.getValue().frame > frame - REPEAT_FRAMES) continue;
+    Map<RenderNode, List<Key>> due = null;
+    for (Iterator<Map.Entry<RenderNode, Recording>> i = RECORDINGS.entrySet().iterator(); i.hasNext(); ) {
+      Map.Entry<RenderNode, Recording> e = i.next();
+      RenderNode node = e.getKey();
+      Recording rec = e.getValue();
+      if (rec.frame > frame - REPEAT_FRAMES) continue;
+      // (An IdentityHashMap entry cannot be read once removed.)
       i.remove();
-      Key key = e.getKey();
-      Ask last = LAST.get(key.bitmap());
-      if (last == null || !last.key().equals(key) || key.bitmap().isRecycled()
-          || key.bitmap().getGenerationId() != key.generation() || SCALED.containsKey(key)) {
-        continue;
+      for (Key key : rec.firstAsks) {
+        if (!SCALED.containsKey(key)) {
+          // Asked for at another size since (another view zooming it): not still. At another size in the same
+          // frame (a background and a thumbnail of one image) is fine.
+          Ask last = LAST.get(key.bitmap());
+          if (last != null && !last.key().equals(key) && last.frame() != rec.frame || key.bitmap().isRecycled()
+              || key.bitmap().getGenerationId() != key.generation()) {
+            continue;
+          }
+        }
+        if (due == null) due = new IdentityHashMap<>();
+        due.computeIfAbsent(node, n -> new ArrayList<>(2)).add(key);
       }
-      if (due == null) due = new IdentityHashMap<>();
-      due.put(e.getValue().node(), key);
     }
     if (due == null) return;
     for (View root : dev.apksim.Host.rootViews()) invalidateRecorders(root, due);
   }
 
-  private static void invalidateRecorders(View v, Map<RenderNode, Key> due) {
+  private static void invalidateRecorders(View v, Map<RenderNode, List<Key>> due) {
     // A view records its background drawable into a node of its own, again each time it records itself.
-    Key key = due.remove(Views.node(Views.NODE, v));
-    Key background = due.isEmpty() ? null : due.remove(Views.node(Views.BACKGROUND, v));
-    if (background != null) {
-      PROMOTED.put(background, frame);
-      promoted++;
-      v.invalidate();
-    }
-    if (key != null) {
-      PROMOTED.put(key, frame);
-      promoted++;
+    List<Key> keys = due.remove(Views.node(Views.NODE, v));
+    List<Key> background = due.isEmpty() ? null : due.remove(Views.node(Views.BACKGROUND, v));
+    for (List<Key> list : java.util.Arrays.asList(keys, background)) {
+      if (list == null) continue;
+      for (Key key : list) {
+        if (!SCALED.containsKey(key)) PROMOTED.put(key, frame);
+        promoted++;
+      }
       v.invalidate();
     }
     if (due.isEmpty() || !(v instanceof ViewGroup g)) return;

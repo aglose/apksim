@@ -177,6 +177,11 @@ public class GpuRenderNode extends RenderNode {
     super.setRenderEffect(effect);
   }
 
+  /** Called by Host before its frame loop records the first frame (test runs, which draw no frames, never call it). */
+  public static void framesRun() {
+    GpuBitmaps.framesRun();
+  }
+
   /**
    * Called on the main thread once the frame's display lists are recorded and before HWUI syncs them:
    * brings every GPU effect layer's output up to date with its content and uniforms.
