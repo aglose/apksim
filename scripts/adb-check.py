@@ -6,7 +6,8 @@ then finish and uninstall. The server is the test app project's `uiserver` modul
 
   scripts/adb-check.py SERIAL UISERVER_APK      (SERIAL: localhost:PORT, an instance started with --adb PORT)
 
-Runs against the test app (phone device): it opens the Home tab and taps the FAB. Exits non-zero with the reason on
+Runs against the test app (phone device): it opens the Home tab, taps the FAB, then presses and holds it with
+`input swipe`. Exits non-zero with the reason on
 the first failure. adb comes from PATH, or $ADB.
 """
 import os
@@ -110,6 +111,22 @@ def main():
             time.sleep(0.3)
         else:
             fail(f"the tap through UiAutomation did not reach the app (wanted {want!r}): {texts}")
+        # A press and hold, as `input swipe X Y X Y MS` holds on a device: it returns once the finger has lifted after
+        # MS, so the FAB's click (on release) shows straight away. It used to return at once and lift much later.
+        want = f"FAB clicks: {before[0] + 2}"
+        t0 = time.time()
+        adb(serial, "shell", "input", "swipe", "733", "1533", "733", "1533", "1500")
+        took = time.time() - t0
+        if took < 1.5:
+            fail(f"input swipe with a 1500 ms hold returned after {took:.2f} s")
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            texts = request(port, "texts")
+            if want in texts:
+                break
+            time.sleep(0.1)
+        else:
+            fail(f"the hold had not lifted 5 s after input swipe returned (wanted {want!r}): {texts}")
         if request(port, "finish") != "ok":
             fail("finish was not answered")
     finally:
@@ -118,7 +135,8 @@ def main():
     time.sleep(1)
     if "Success" not in adb(serial, "uninstall", PKG, check=False):
         fail("adb uninstall failed")
-    print("adb check passed: install, am instrument, am broadcast, forward to a local socket, UiAutomation read and tap")
+    print("adb check passed: install, am instrument, am broadcast, forward to a local socket, UiAutomation read and tap,"
+          " input swipe hold")
 
 
 if __name__ == "__main__":

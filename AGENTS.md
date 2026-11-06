@@ -133,7 +133,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
-  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `bundle-check.py` (failure
+  `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
+  against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `relaunch.sh`, `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -178,12 +179,13 @@ Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
-Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
+Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
+lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
+(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the launcher activity or the
@@ -279,6 +281,10 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
+onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
+deadline waited for with SystemClock.sleep); `scripts/timer-check.py
+PORT [--adb SERIAL]` drives it (~70 s).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
@@ -422,7 +428,8 @@ quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.
 `Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
 the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
-back/home/lock/unlock), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
+after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
@@ -798,6 +805,12 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   `work/lib` through `$TMPDIR/apksim-<hash>`.
 - Robolectric's looper clock has **1 ms resolution and drops fractions**. Always advance by whole ms (see
   `Host.run`).
+- **Nothing but Host's loop may move the clock in a running instance.** Robolectric's SystemClock.sleep moves it by
+  the time asked and returns at once, from any thread; Host never gives that time back, so app timers fire early by
+  as much, and a worker polling with SystemClock.sleep raced the clock minutes ahead (an app's 10-minute inactivity
+  CountDownTimer fired after ~30 s, most likely this). `ShadowRealSleep` makes it a real sleep outside test runs; on the main thread it also moves the clock by the time
+  slept (Host's loop cannot meanwhile, and a deadline loop there would never end), which Host then does not add again. `stats` clockAheadMs
+  shows drift; `scripts/timer-check.py` checks it.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
   animations.
