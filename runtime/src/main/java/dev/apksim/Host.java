@@ -951,8 +951,16 @@ public class Host {
 
   // ---------------------------------------------------------------- rendering
 
+  /**
+   * Whether the first frame can be drawn: the bottom window that is shown and has a size is laid out. Windows that are
+   * hidden or empty do not count, as on a device: an app's overlay added before its activity that never gets a size
+   * (an empty ComposeView, 0x0) was the bottom window, and the first frame waited for it for good (issue 83).
+   */
   private static boolean laidOut(List<View> roots) {
-    return !roots.isEmpty() && roots.get(0).getWidth() > 0 && !roots.get(0).isLayoutRequested();
+    for (View r : roots) {
+      if (HwRenderer.drawn(r) && r.getHeight() != 0) return !r.isLayoutRequested();
+    }
+    return false;
   }
 
   /**

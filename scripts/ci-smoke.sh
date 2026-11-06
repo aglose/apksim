@@ -20,6 +20,18 @@ docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-fir
   > "$OUT/first.log" 2>&1 || { cat "$OUT/first.log"; exit 1; }
 grep first-frame "$OUT/first.log"
 test -s "$OUT/first.png" || { echo "no screenshot after the first frame" >&2; exit 1; }
+# An overlay window the app adds before its activity and never sizes (0x0) is the bottom window: the first frame must
+# not wait for it (issue 83, the screen stayed black). The test app adds one with this feature. Without the fix the run
+# never ends, hence the timeout (where there is one: macOS has no timeout).
+OVERLAY_NAME=apksim-overlay-smoke-$$
+limit() { if command -v timeout >/dev/null; then timeout "$@"; else shift; "$@"; fi; }
+if ! limit 300 docker run --rm --name "$OVERLAY_NAME" --platform "$PLATFORM" -e APKSIM_LOGCAT=1 -v "$OUT:/work" "$IMAGE" \
+    --exit-after-first-frame --feature dev.apksim.testapp.launch_overlay app.apk > "$OUT/overlay.log" 2>&1; then
+  docker rm -f "$OVERLAY_NAME" >/dev/null 2>&1 || true
+  tail -20 "$OUT/overlay.log"; echo "no first frame with an unsized overlay window at the bottom" >&2; exit 1
+fi
+grep -q "launch overlay added" "$OUT/overlay.log" || { echo "the test app added no launch overlay" >&2; exit 1; }
+grep first-frame "$OUT/overlay.log"
 
 docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
   -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
