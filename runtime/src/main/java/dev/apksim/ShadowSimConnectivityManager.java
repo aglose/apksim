@@ -53,7 +53,12 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
     final ArrayDeque<Runnable> queue = new ArrayDeque<>();
     /** The queue is being delivered (on the handler's thread): a nested deliver leaves it to that loop. */
     boolean delivering;
-    /** A requestNetwork timeout still pending (no network satisfied the request yet), else null. */
+    /**
+     * A requestNetwork timeout still pending (no network satisfied the request yet), else null. Cleared for good when
+     * decide() first matches a network, under TRACKED's lock, not when onAvailable is delivered: that is the mark
+     * expire() checks, so a request satisfied once never expires (its onAvailable still queued on a busy handler, or
+     * its network lost and back after the deadline), as Android cancels the timeout once satisfied.
+     */
     Runnable timeout;
     /** When that timeout expires (SystemClock uptime): past it, the request is matched to nothing. */
     long expiresAt;

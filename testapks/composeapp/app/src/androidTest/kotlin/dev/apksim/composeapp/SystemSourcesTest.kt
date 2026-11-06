@@ -207,6 +207,66 @@ class SystemSourcesTest {
   }
 
   /**
+   * A request satisfied before its deadline never expires, even when its onAvailable is still queued on a busy handler
+   * as the deadline passes: offline, a 500 ms request on a handler blocked for 700 ms, the network back at ~200 ms.
+   */
+  @Test
+  fun aRequestSatisfiedBeforeItsDeadlineOnABusyHandlerNeverExpires() {
+    apksimOnly("`apksim network offline|online`")
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    shell("apksim network offline")
+    val thread = android.os.HandlerThread("busy-request-handler").apply { start() }
+    val handler = android.os.Handler(thread.looper)
+    val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { events += "available" }
+      override fun onUnavailable() { events += "unavailable" }
+    }
+    try {
+      handler.post { Thread.sleep(700) }
+      cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+        cb, handler, 500)
+      runBlocking { delay(200) }
+      shell("apksim network online")
+      runBlocking { delay(1_300) }
+      assertEquals(listOf("available"), events.toList())
+    } finally {
+      cm.unregisterNetworkCallback(cb)
+      thread.quitSafely()
+    }
+  }
+
+  /**
+   * A request once satisfied stays registered past its deadline: its network lost and back after the deadline, it
+   * hears available, lost, available, and never onUnavailable.
+   */
+  @Test
+  fun aSatisfiedRequestSurvivesALossPastItsDeadline() {
+    apksimOnly("`apksim network offline|online`")
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    shell("apksim network offline")
+    val events = mutableListOf<String>()
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { events += "available" }
+      override fun onLost(n: Network) { events += "lost" }
+      override fun onUnavailable() { events += "unavailable" }
+    }
+    try {
+      cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), cb, 500)
+      runBlocking { delay(200) }
+      shell("apksim network online")
+      runBlocking { delay(100) }
+      shell("apksim network offline")
+      runBlocking { delay(600) }  // past the deadline, with no network
+      shell("apksim network online")
+      runBlocking { delay(500) }
+      assertEquals(listOf("available", "lost", "available"), events)
+    } finally {
+      cm.unregisterNetworkCallback(cb)
+    }
+  }
+
+  /**
    * Offline and back before the registration's announcement ran: the callback hears all three, in order, as from the
    * system server's one queue.
    */
