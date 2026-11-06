@@ -778,7 +778,8 @@ final class AdbShell {
     if (ri == null || ri.activityInfo == null) return "Error: Activity not started, unable to resolve " + describe(in);
     control("resume");
     String target = ri.activityInfo.packageName + "/" + ri.activityInfo.name;
-    if (ri.activityInfo.name.equals(control("activity")) && in.getData() == null && in.getExtras() == null
+    // (An alias counts as its targetActivity, as a device's ActivityRecord.mActivityComponent does.)
+    if (AppInfo.activityClass(ri.activityInfo.name).equals(control("activity")) && in.getData() == null && in.getExtras() == null
         && (in.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
       // As on a device, launching what is already running brings it to the front instead of stacking a copy.
       print("Warning: Activity not started, its current task has been brought to the front\n");

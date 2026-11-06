@@ -63,15 +63,34 @@ final class AppInfo {
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
     if (launcher != null) System.setProperty("apksim.launcher", fullName(pkg, launcher.getAttribute(NS + "name")));
+    StringBuilder aliases = new StringBuilder(",");
+    for (Map.Entry<String, Element> e : activities.entrySet()) {
+      if (!e.getValue().getAttribute(NS + "targetActivity").isEmpty()) {
+        aliases.append(e.getKey()).append('=').append(target(pkg, e.getValue())).append(',');
+      }
+    }
+    System.setProperty("apksim.aliases", aliases.toString());
     if (start != null) {
-      // The component the intent names (an alias stays the alias, as on a device: the app can tell which one started
-      // it) and the class to make (an alias's targetActivity).
+      // The component the intent names: an alias stays the alias, as on a device (the app can tell which one started
+      // it); activityClass gives the class to make.
       System.setProperty("apksim.startActivity", fullName(pkg, start.getAttribute(NS + "name")));
-      System.setProperty("apksim.startClass", target(pkg, start));
       // Started as a device would: MAIN with its filter's category (launcher, home), else by component only (am start -n).
       System.setProperty("apksim.startCategory", hasMain(start, "android.intent.category.LAUNCHER") ? "LAUNCHER"
           : hasMain(start, "android.intent.category.HOME") ? "HOME" : "");
     }
+  }
+
+  /**
+   * The class an activity component of the app makes: an activity-alias's targetActivity, else the name itself. Every
+   * start of a component goes through it (Host.start), so an alias started by the app, `am start -n` or --activity
+   * makes its target while its intent keeps the alias. A system property: AppInfo.load runs before the sandbox.
+   */
+  static String activityClass(String name) {
+    String aliases = System.getProperty("apksim.aliases", ",");
+    int at = aliases.indexOf("," + name + "=");
+    if (at < 0) return name;
+    int from = at + name.length() + 2;
+    return aliases.substring(from, aliases.indexOf(',', from));
   }
 
   /** A launch the options or the APK rule out: the message says it all, no stack needed. */
