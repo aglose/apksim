@@ -355,6 +355,9 @@ final class AdbShell {
       case "screencap" -> {
         return screencap(args);
       }
+      case "uiautomator" -> {
+        return uiautomator(args);
+      }
       case "run-as" -> {
         if (args.isEmpty()) return usage("run-as PACKAGE [COMMAND...]");
         if (!args.get(0).equals(pkg())) {
@@ -778,7 +781,8 @@ final class AdbShell {
     if (ri == null || ri.activityInfo == null) return "Error: Activity not started, unable to resolve " + describe(in);
     control("resume");
     String target = ri.activityInfo.packageName + "/" + ri.activityInfo.name;
-    if (ri.activityInfo.name.equals(control("activity")) && in.getData() == null && in.getExtras() == null
+    // (An alias counts as its targetActivity, as a device's ActivityRecord.mActivityComponent does.)
+    if (AppInfo.activityClass(ri.activityInfo.name).equals(control("activity")) && in.getData() == null && in.getExtras() == null
         && (in.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
       // As on a device, launching what is already running brings it to the front instead of stacking a copy.
       print("Warning: Activity not started, its current task has been brought to the front\n");
@@ -1099,11 +1103,12 @@ final class AdbShell {
       }
       case "resolve-activity" -> {
         boolean brief = a.contains("--brief");
-        if (!a.get(a.size() - 1).equals(pkg)) {
+        // The launcher activity a device resolves, not --activity's: a home-only app has none.
+        String launcher = System.getProperty("apksim.launcher");
+        if (!a.get(a.size() - 1).equals(pkg) || launcher == null) {
           print("No activity found\n");
           return 1;
         }
-        String launcher = System.getProperty("apksim.launcher");
         if (brief) print("priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n" + pkg + "/" + launcher + "\n");
         else print("Activity Resolver Table:\n  " + pkg + "/" + launcher + "\n");
         return 0;
@@ -1409,6 +1414,70 @@ final class AdbShell {
     } finally {
       Files.deleteIfExists(shot);
     }
+  }
+
+  /**
+   * The stock `uiautomator dump [--compressed] [--windows] [FILE]` (UiDump): the active window's accessibility tree as
+   * XML, to /sdcard/window_dump.xml by default, or printed for /dev/tty (`adb exec-out uiautomator dump /dev/tty`).
+   * As the tool does, it first waits up to a second for the UI to go idle. Tests (`runtest`) and `events` are not here.
+   */
+  private int uiautomator(List<String> a) throws Exception {
+    if (a.isEmpty() || !a.get(0).equals("dump")) {
+      print("""
+          Usage: uiautomator <subcommand> [options]
+
+          Available subcommands:
+
+          help: displays help message
+
+          dump: creates an XML dump of current UI hierarchy
+              dump [--verbose][file]
+                [--compressed]: dumps compressed layout information.
+                [file]: the location where the dumped XML should be stored, default is
+                /sdcard/window_dump.xml
+
+          (apksim: runtest and events are not supported)
+          """);
+      return a.isEmpty() || a.get(0).equals("help") ? 0 : 1;
+    }
+    boolean compressed = false;
+    boolean windows = false;
+    String file = "/sdcard/window_dump.xml";
+    for (String o : a.subList(1, a.size())) {
+      if (o.equals("--compressed")) compressed = true;
+      else if (o.equals("--windows")) windows = true;
+      else if (!o.startsWith("-")) file = o;
+    }
+    if (!TestActivities.testRun() && !Looper.getMainLooper().isCurrentThread()) ShadowSimUiAutomation.liveSettle(1000);
+    boolean c = compressed;
+    boolean w = windows;
+    String xml = onMain(() -> UiDump.xml(c, w));
+    if (xml == null) {
+      print("ERROR: null root node returned by UiTestAutomationBridge.\n");
+      return 1;
+    }
+    String dev = Paths.normalize(file, cwd);
+    if (dev.equals("/dev/tty") || dev.equals("/dev/stdout") || dev.equals("/proc/self/fd/1")) {
+      print(xml);
+    } else {
+      Path p = Paths.host(dev, "/");
+      if (p == null || Files.isDirectory(p)) {
+        print("ERROR: could not write " + dev + " (" + (p == null ? "Read-only file system" : "Is a directory") + ")\n");
+        return 1;
+      }
+      try {
+        Files.writeString(p, xml);
+      } catch (IOException e) {
+        // Not thrown on: AdbServer reads an IOException as the client gone, and the command would end silently.
+        String why = e instanceof java.nio.file.NoSuchFileException ? "No such file or directory"
+            : e instanceof java.nio.file.AccessDeniedException ? "Permission denied" : String.valueOf(e.getMessage());
+        print("ERROR: could not write " + dev + " (" + why + ")\n");
+        return 1;
+      }
+    }
+    // Spelled as the stock tool spells it: scripts match this line.
+    print("UI hierchary dumped to: " + dev + "\n");
+    return 0;
   }
 
   /** screencap's raw format: width, height, format (1 = RGBA_8888) and dataspace, then the pixels. */

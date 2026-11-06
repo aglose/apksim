@@ -27,11 +27,13 @@ public final class VideoSurfaces {
 
   private static final Map<SurfaceTexture, Entry> ENTRIES = new ConcurrentHashMap<>();
   private static final java.util.concurrent.atomic.AtomicLong published = new java.util.concurrent.atomic.AtomicLong();
+  /** libwebrtc frames dropped for --video blank (here: SimEglRenderer references org.webrtc, which not every app has). */
+  static final java.util.concurrent.atomic.AtomicLong webrtcBlank = new java.util.concurrent.atomic.AtomicLong();
 
   /** For the `video` control command. */
   public static String report() {
     StringBuilder b = new StringBuilder("decoded=" + VideoToolbox.decoded.get() + " decodeErrors=" + VideoToolbox.failed.get()
-        + " drawn=" + published.get() + " surfaces=" + ENTRIES.size());
+        + " drawn=" + published.get() + " blank=" + webrtcBlank.get() + " surfaces=" + ENTRIES.size());
     b.append(" | mediacodec");
     for (int i = 0; i < ShadowSimMediaCodec.STAT_NAMES.length; i++) {
       b.append(' ').append(ShadowSimMediaCodec.STAT_NAMES[i]).append('=').append(ShadowSimMediaCodec.STATS.get(i));

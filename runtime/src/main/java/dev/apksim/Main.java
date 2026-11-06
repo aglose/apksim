@@ -44,7 +44,13 @@ public final class Main {
     // For scripts/ctl.py: an instance from a standby has no APK on its command line.
     java.nio.file.Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "launch.info"),
         "apk=" + apk + "\ndevice=" + System.getProperty("apksim.device", "phone") + "\n");
-    AppInfo.load(apk, Path.of(System.getProperty("apksim.cacheRoot"), apk.getFileName() + "-" + apk.toFile().lastModified()));
+    try {
+      AppInfo.load(apk, Path.of(System.getProperty("apksim.cacheRoot"), apk.getFileName() + "-" + apk.toFile().lastModified()));
+    } catch (AppInfo.LaunchError e) {
+      System.err.println("[apksim] " + e.getMessage());
+      Storage.deleteScratch();
+      Standby.halt(2);
+    }
     Timing.detail("appinfo");
     AppClasses classes = AppClasses.install(apk);
     Timing.detail("appclasses");
