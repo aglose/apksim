@@ -840,6 +840,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   display list in HWUI and draws nothing until recorded again. `GpuRenderNode` closes a content raster only a frame
   after the content is drawn in the screen's tree again; destroying a HardwareRenderer also deletes the display lists
   of everything it draws, so it empties its root first.
+- Nothing may change the process locale once the JVM runs threads: macOS's `setlocale` swaps the global locale under
+  any thread in `vsnprintf` (a JIT compiler thread crashed in `localeconv_l` while a standby booted, under load). The
+  launcher sets `LC_NUMERIC=en_US.UTF-8` on macOS, the value libandroid_runtime's `JNI_OnLoad` sets, so its
+  `setlocale` changes nothing. Check new native libraries for `setlocale` imports (`nm -u`).
 - zsh is the shell: `==` and unquoted globs (`--include=*.kt`) break one-liners. Quote them, or use bash/python.
 
 ## Test APKs

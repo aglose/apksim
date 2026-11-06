@@ -205,6 +205,22 @@ if [[ -n "${SERVE:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
     -cp "$ROOT/work/apksim.jar" dev.apksim.serve.Serve "$@"
 fi
+# The JVM starts with LC_NUMERIC en_US.UTF-8. Robolectric's libandroid_runtime sets it when it loads
+# (AndroidRuntime::onStarted, setlocale(LC_NUMERIC, "en_US.UTF-8")), on the main thread with the JIT compilers running.
+# macOS's setlocale swaps the global locale's numeric part under any thread formatting a number or string:
+# localeconv_l read it half replaced and a compiler thread crashed in vsnprintf (now and then, under load; even the
+# crash report then deadlocked, so no hs_err). libjava already calls setlocale(LC_ALL, "") once while the VM is
+# single-threaded; with the variable set it takes en_US.UTF-8 then, and the later call finds the same name and changes
+# nothing. LC_ALL would override it, so it is split into the categories it stands for. Java's Locale does not follow
+# LC_NUMERIC. Not on Linux: the image may have no en_US.UTF-8, and glibc fails a whole setlocale(LC_ALL, "") over one
+# category it cannot load.
+if [[ "$OS" == Darwin ]]; then
+  if [[ -n "${LC_ALL:-}" ]]; then
+    export LC_COLLATE="$LC_ALL" LC_CTYPE="$LC_ALL" LC_MESSAGES="$LC_ALL" LC_MONETARY="$LC_ALL" LC_TIME="$LC_ALL"
+    unset LC_ALL
+  fi
+  export LC_NUMERIC=en_US.UTF-8
+fi
 # APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
 [[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")
 if [[ "$1" == /* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
