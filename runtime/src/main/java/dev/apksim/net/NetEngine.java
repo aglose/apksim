@@ -108,7 +108,7 @@ final class NetEngine {
     dirty = true;
     if (flushPending) return;
     flushPending = true;
-    Thread.ofVirtual().start(() -> {
+    Thread.ofVirtual().name("apksim-net-flush").start(() -> {
       Conditions.sleep(300);
       flushPending = false;
       flushNow();
@@ -1258,7 +1258,7 @@ final class NetEngine {
   static void relay(InputStream cin, OutputStream cout, InputStream uin, OutputStream uout, Socket client, Socket up) {
     boolean cut = Net.conditions.reset();
     long cutAfter = cut ? 1 + java.util.concurrent.ThreadLocalRandom.current().nextInt(64 * 1024) : Long.MAX_VALUE;
-    Thread upstream = Thread.ofVirtual().start(() -> pump(cin, uout, false, Long.MAX_VALUE, up));
+    Thread upstream = Thread.ofVirtual().name("apksim-net-upstream").start(() -> pump(cin, uout, false, Long.MAX_VALUE, up));
     pump(uin, cout, true, cutAfter, client);
     if (cut) {
       try {
@@ -1283,7 +1283,7 @@ final class NetEngine {
 
   private static void pump(InputStream in, OutputStream out, boolean down, long cutAfter, Socket outSocket) {
     LinkedBlockingQueue<Chunk> line = new LinkedBlockingQueue<>(IN_FLIGHT);
-    Thread writer = Thread.ofVirtual().start(() -> {
+    Thread writer = Thread.ofVirtual().name("apksim-net-writer").start(() -> {
       try {
         while (true) {
           Chunk c = line.take();

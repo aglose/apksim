@@ -242,7 +242,15 @@ public class SimRunner extends RobolectricTestRunner {
       // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
       NetConnectivity.beforeApplication();
       if (System.getProperty("apksim.instrument") == null) untracedDevice();
-      super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
+      try {
+        super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
+      } catch (Throwable crash) {
+        // A running instance's Application threw while it was made or attached (constructor, static initializer,
+        // attachBaseContext): on a device the main thread dies with it (Crashes). onCreate's crashes were handled
+        // there (TestActivities). Returns only with -Dapksim.crashes=log; the launch then fails as before.
+        if (Crashes.installed() && !Crashes.wasLogged(crash)) Crashes.mainThreadDied(crash);
+        throw crash;
+      }
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;

@@ -51,7 +51,7 @@ final class AdbLog {
           return;
         }
       }
-    }, "adb-log");
+    }, "apksim-adb-log");
     t.setDaemon(true);
     t.start();
   }
@@ -62,6 +62,17 @@ final class AdbLog {
       delegate = current;
       ShadowLog.stream = tee;
     }
+  }
+
+  /** Puts the tee back in front of ShadowLog.stream at once, if the log is kept (a crash about to be logged). */
+  static synchronized void reattach() {
+    if (tee != null) intercept();
+  }
+
+  /** Whether what the app logs reaches this process's stderr (`logcat on`, APKSIM_LOGCAT), directly or past the tee. */
+  static synchronized boolean reachesStderr() {
+    PrintStream s = ShadowLog.stream;
+    return s == System.err || (s != null && s == tee && delegate == System.err);
   }
 
   static synchronized void clear() {

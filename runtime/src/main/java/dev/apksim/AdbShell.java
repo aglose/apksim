@@ -119,6 +119,8 @@ final class AdbShell {
     shell.inProcess = true;
     try {
       shell.run(line);
+    } catch (Crashes.AppCrash crash) {
+      throw crash;  // app code a command ran on the main thread threw: Host's crash path, not an answer
     } catch (Exception e) {
       try {
         shell.print("error: " + e + "\n");
@@ -1663,8 +1665,8 @@ final class AdbShell {
         String r = Host.runOnMain(args);
         if (r != null) return r;
       }
-    } catch (InterruptedException e) {
-      throw e;
+    } catch (InterruptedException | Crashes.AppCrash e) {
+      throw e;  // a crash of the app's code (on the main thread here) goes to Host's crash path
     } catch (Exception e) {
       return "error: " + e;
     }
@@ -1710,6 +1712,9 @@ final class AdbShell {
     new Handler(Looper.getMainLooper()).post(() -> {
       try {
         f.complete(c.call());
+      } catch (Crashes.AppCrash crash) {
+        f.completeExceptionally(crash);  // the shell answers with it, and the main thread crashes (Host's loop)
+        throw crash;
       } catch (Throwable t) {
         f.completeExceptionally(t);
       }
