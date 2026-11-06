@@ -1,10 +1,12 @@
 package dev.apksim.composeapp
 
+import android.database.ContentObserver
 import android.os.Build
 import android.provider.Settings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.FixMethodOrder
@@ -75,5 +77,32 @@ class SlotStateTest {
     Settings.Global.putString(context.contentResolver, SlotStateActivity.SETTING, "written")
     java.io.File(android.os.Environment.getExternalStorageDirectory(), SlotStateActivity.FILE).writeText("written")
     assertEquals("setting=written seed=$seed sdcard=written", SlotStateActivity.describe(context))
+  }
+
+  @Test
+  fun f_aShellFontScaleUpdatesTheSettingAndObservers() {
+    // `settings put system font_scale V` through the test run's shell does what `fontscale V` does: the configuration,
+    // Settings.System.FONT_SCALE and that setting's observers (DeviceControls.setFontScale).
+    assumeTrue("apksim's shell and font_scale control", Build.FINGERPRINT == "robolectric")
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = instrumentation.targetContext
+    val resolver = context.contentResolver
+    var notified = 0
+    // No handler: the observer is called on the thread that notifies, as in BluetoothTest.
+    val observer = object : ContentObserver(null) {
+      override fun onChange(selfChange: Boolean) {
+        notified++
+      }
+    }
+    resolver.registerContentObserver(Settings.System.getUriFor(Settings.System.FONT_SCALE), false, observer)
+    try {
+      val pfd = instrumentation.uiAutomation.executeShellCommand("settings put system font_scale 1.5")
+      android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { it.readBytes() }
+      assertEquals(1.5f, Settings.System.getFloat(resolver, Settings.System.FONT_SCALE), 0f)
+      assertEquals(1.5f, context.resources.configuration.fontScale, 0f)
+      assertTrue("the observer of font_scale was called", notified > 0)
+    } finally {
+      resolver.unregisterContentObserver(observer)
+    }
   }
 }

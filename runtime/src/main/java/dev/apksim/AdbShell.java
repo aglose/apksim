@@ -1683,7 +1683,7 @@ final class AdbShell {
         return "ok";
       }
       case "fontscale" -> {
-        RuntimeEnvironment.setFontScale(Float.parseFloat(a[1]));
+        DeviceControls.setFontScale(app(), Float.parseFloat(a[1]));
         return "ok";
       }
       case "network" -> {
