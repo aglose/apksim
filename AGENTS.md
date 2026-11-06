@@ -7,7 +7,8 @@ Read README.md for results and limits; this file covers how to work on the code.
 1. Launch in a few seconds: done. Then "improve start up time by 10x, as fast as possible to load a new
    simulator": a launch is handed to a pre-booted standby JVM (see "Warm launches"): window ~0.1 s → 12 ms, first
    frame 1.49 s → ~0.22 s (test app), ~1.9 s → ~0.36 s (the owner's R8 app). What is left is mostly the app's own
-   startup code, interpreted (cold JIT). Measured with `scripts/bench.py` (cold and warm).
+   startup code, interpreted (cold JIT). Measured with `scripts/bench.py` (cold and warm); CI's `startup-gate`
+   job fails a pull request that makes it slower than its budget against a fixed anchor release (docs/startup-gate.md).
 2. Run real APKs, including the owner's own app: done (its R8 release and debug builds both run).
 3. **120 fps**: the owner said "don't stop until it's that fast". Average is now ~117-120 fps on normal UI, the GPU
    stress shader and the owner's app's sheet animation. 15-35% of frames are still 9-12 ms rather than 8.3 ms. See
@@ -128,7 +129,8 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times, cold and warm), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
+  `bench.py` (launch times, cold and warm), `startup-gate.py` (CI's startup-time gate: this build against an anchor
+  release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
   goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
@@ -154,8 +156,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
-  image), `plan.md` (remaining work, in order).
-- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests").
+  image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
+  launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
+- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"), and
+  `startup-gate` on an Apple Silicon runner (docs/startup-gate.md).
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
