@@ -1,24 +1,42 @@
 package dev.apksim.gpu;
 
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.RecordingCanvas;
 import android.graphics.Rect;
+import android.graphics.RenderNode;
+import android.os.Looper;
+import android.view.View;
+import android.view.ViewGroup;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 /**
  * Scaled bitmap draws resampled on Metal. HWUI here samples a scaled bitmap with Skia's CPU pipeline, about 10 ns a
- * pixel: map and photo tiles drawn scaled took most of a frame (a map screen, ~9 ms per full-screen layer). Here
- * a draw of a bitmap scaled to w x h device pixels gets a copy already that size, made once on the GPU with the same
- * bilinear sampling, which HWUI then draws 1:1 as a plain blit. Copies are kept while they are drawn, and made only
- * for a size asked for again within a few frames, so a zoom (a new size every frame) stays on the CPU. (Tiles placed
- * on rounded edges alternate between two widths as they move, so "again" cannot mean the very next frame.)
+ * pixel: map and photo tiles drawn scaled took most of a frame (a map screen, ~9 ms per full-screen layer), and so did
+ * full-screen ImageView and BitmapDrawable backgrounds on a tablet (~40 ms). Here a filtered draw of a bitmap scaled
+ * onto a recording canvas gets a copy already at its device-pixel size, made once on the GPU with the same bilinear
+ * sampling, which HWUI then draws 1:1 as a plain blit. Every `drawBitmap` of a bitmap on a recording canvas comes
+ * through here ({@link ShadowGpuRecordingCanvas}): the framework's (ImageView, BitmapDrawable) and the app's
+ * (Compose's drawImage).
  *
- * <p>Main thread only (where Compose records). A node scaled again by HWUI (a graphicsLayer scale) samples the copy a
- * second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
+ * <p>A copy is made only for a draw that holds still: asked for again within a few frames (Compose records again
+ * every frame it changes anything), or recorded once and not asked for at another size or position within those
+ * frames, in which case the view that recorded it is invalidated so it records the copy (Views record once and keep
+ * their display list). So a zoom (a new size every frame) stays on the CPU. (Tiles placed on rounded edges alternate
+ * between two widths as they move, so "again" cannot mean the very next frame.) Copies are kept while they are drawn
+ * and dropped longest-unused first past a budget.
+ *
+ * <p>Only once frames run (Host's loop ticks it; test runs draw no frames). Main thread only (where Views and
+ * Compose record). A node scaled again by HWUI (a graphicsLayer scale) samples
+ * the copy a second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
  */
 final class GpuBitmaps {
   static final boolean ENABLED = !"false".equals(System.getProperty("apksim.gpuBitmaps"))
@@ -27,10 +45,15 @@ final class GpuBitmaps {
   private static final long BUDGET_BYTES = 96L << 20;
   /** Frames a copy or an uploaded source survives without being drawn. */
   private static final int KEEP_FRAMES = 120;
-  /** A size asked for again within this many frames gets a copy. */
+  /** A size asked for again within this many frames gets a copy; one asked for once and left alone that long, too. */
   private static final int REPEAT_FRAMES = 8;
 
-  private record Key(Bitmap bitmap, int generation, int sl, int st, int sr, int sb, int w, int h) {}
+  /**
+   * One resampling: target pixel (x, y) of a w x h copy reads the source at (u0, v0) + (x + 0.5, y + 0.5) * (du, dv),
+   * in source pixels. Where the copy sits on the screen is not part of it: a draw that moves by whole pixels keeps
+   * its copy.
+   */
+  private record Key(Bitmap bitmap, int generation, float u0, float v0, float du, float dv, int w, int h) {}
 
   private static final class Entry {
     final Bitmap scaled;
@@ -52,43 +75,142 @@ final class GpuBitmaps {
     }
   }
 
+  /** A bitmap's last draw: what was asked and when. */
+  private record Ask(Key key, long frame) {}
+
+  /** A draw asked for once, in [node]'s recording, on [frame]. */
+  private record Pending(RenderNode node, long frame) {}
+
   private static final Map<Key, Entry> SCALED = new HashMap<>();
   /** Sizes asked for and not made yet, with the frame they were last asked for. */
   private static final Map<Key, Long> SEEN = new HashMap<>();
+  private static final Map<Bitmap, Ask> LAST = new IdentityHashMap<>();
+  private static final Map<Key, Pending> PENDING = new HashMap<>();
+  /** Draws that held still, whose view was invalidated to record them again: the copy is made then. */
+  private static final Map<Key, Long> PROMOTED = new HashMap<>();
   private static final Map<Bitmap, Source> SOURCES = new IdentityHashMap<>();
   private static ByteBuffer scratch = ByteBuffer.allocateDirect(1 << 20).order(ByteOrder.nativeOrder());
   private static long frame;
   private static long bytes;
+  /** Set while drawing a copy (whose own draw comes back through here), and by the self-test for HWUI's draws. */
+  static boolean bypass;
 
   static long made;
   static long hits;
-  /** Draws left to HWUI, by reason: [config or size, first ask, over budget, off whole pixels or not scale+translate]. */
+  static long promoted;
+  /** Draws left to HWUI, by reason: [config or size, first ask, over budget, AA edge off whole pixels or not scale+translate]. */
   static final long[] passed = new long[4];
 
   private GpuBitmaps() {}
 
-  /** The bitmap to draw in place of [b] scaled from [src] (null: all of it) to w x h device pixels, or null. */
-  static Bitmap scaled(Bitmap b, Rect src, int w, int h) {
-    if (!ENABLED || b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || (long) w * h < MIN_PIXELS) {
+  private static final Matrix MATRIX = new Matrix();
+  private static final float[] M = new float[9];
+  private static final Rect CLIP = new Rect();
+
+  /**
+   * Draws [b]'s [src] (null: all of it), scaled into the local rect l, t, r, bottom of recording canvas [c], as a
+   * GPU-scaled copy drawn 1:1, and returns true; false: draw it as asked. The copy covers the device pixels HWUI
+   * would fill (Skia rounds a rect's edges without anti-aliasing, and needs whole pixels with it), cut to the clip
+   * when most of it is clipped away (a centerCrop image), and samples at the same places.
+   */
+  @SuppressWarnings("deprecation")
+  static boolean draw(Canvas c, Bitmap b, Rect src, float l, float t, float r, float bottom, Paint p) {
+    // frame 0: no frame loop has run (a test run, which rasters no frames), so nothing would let go of a copy.
+    if (!ENABLED || bypass || frame == 0 || p == null || !p.isFilterBitmap() || !Looper.getMainLooper().isCurrentThread()) {
+      return false;
+    }
+    if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || b.hasMipMap()) {
       passed[0]++;
-      return null;
+      return false;
     }
     int sl = src == null ? 0 : src.left;
     int st = src == null ? 0 : src.top;
     int sr = src == null ? b.getWidth() : src.right;
     int sb = src == null ? b.getHeight() : src.bottom;
-    if (sr - sl == w && sb - st == h || sr <= sl || sb <= st) return null;
-    Key key = new Key(b, b.getGenerationId(), sl, st, sr, sb, w, h);
+    if (sr <= sl || sb <= st || r <= l || bottom <= t) return false;
+    c.getMatrix(MATRIX);
+    MATRIX.getValues(M);
+    if (M[1] != 0 || M[3] != 0 || M[6] != 0 || M[7] != 0 || M[8] != 1 || M[0] <= 0 || M[4] <= 0) {
+      passed[3]++;
+      return false;
+    }
+    float dl = M[0] * l + M[2];
+    float dt = M[4] * t + M[5];
+    float dr = M[0] * r + M[2];
+    float db = M[4] * bottom + M[5];
+    float du = (sr - sl) / (dr - dl);
+    float dv = (sb - st) / (db - dt);
+    if (du == 1f && dv == 1f) return false;
+    // The device pixels HWUI fills: Skia rounds a non-AA rect's edges to the nearest pixel (pixel centres inside).
+    int x0 = (int) Math.floor(dl + 0.5f);
+    int y0 = (int) Math.floor(dt + 0.5f);
+    int x1 = (int) Math.floor(dr + 0.5f);
+    int y1 = (int) Math.floor(db + 0.5f);
+    // The clip in device pixels, rounded out (getClipBounds rounds out in local units, so this may be larger).
+    if (!c.getClipBounds(CLIP)) return false;
+    int cl = (int) Math.floor(M[0] * CLIP.left + M[2]);
+    int ct = (int) Math.floor(M[4] * CLIP.top + M[5]);
+    int cr = (int) Math.ceil(M[0] * CLIP.right + M[2]);
+    int cb = (int) Math.ceil(M[4] * CLIP.bottom + M[5]);
+    // Anti-aliased edges cover their last pixel in part, which a 1:1 copy cannot: only whole pixels, or clipped away.
+    if (p.isAntiAlias() && (!whole(dl) && dl > cl || !whole(dt) && dt > ct || !whole(dr) && dr < cr || !whole(db) && db < cb)) {
+      passed[3]++;
+      return false;
+    }
+    int vl = Math.max(x0, cl), vt = Math.max(y0, ct), vr = Math.min(x1, cr), vb = Math.min(y1, cb);
+    if (vr <= vl || vb <= vt) return false;
+    if ((long) (x1 - x0) * (y1 - y0) > 2L * (vr - vl) * (vb - vt)) {
+      x0 = vl;
+      y0 = vt;
+      x1 = vr;
+      y1 = vb;
+    }
+    int w = x1 - x0;
+    int h = y1 - y0;
+    if ((long) w * h < MIN_PIXELS) {
+      passed[0]++;
+      return false;
+    }
+    RenderNode node = c instanceof RecordingCanvas rc ? rc.mNode : null;
+    Bitmap scaled = copy(b, sl + (x0 - dl) * du, st + (y0 - dt) * dv, du, dv, w, h, node);
+    if (scaled == null) return false;
+    c.save();
+    c.setMatrix(null);
+    // Dithering only hides banding in gradients; on a 1:1 image it just forces a slower blit.
+    boolean dither = p.isDither();
+    if (dither) p.setDither(false);
+    bypass = true;
+    try {
+      c.drawBitmap(scaled, x0, y0, p);
+    } finally {
+      bypass = false;
+      if (dither) p.setDither(true);
+      c.restore();
+    }
+    return true;
+  }
+
+  private static boolean whole(float v) {
+    return Math.abs(v - Math.round(v)) <= 1e-3f;
+  }
+
+  /** The copy of [b] for a Key's resampling, or null (not made yet, or cannot be). [node]: where it is recorded. */
+  private static Bitmap copy(Bitmap b, float u0, float v0, float du, float dv, int w, int h, RenderNode node) {
+    Key key = new Key(b, b.getGenerationId(), u0, v0, du, dv, w, h);
     Entry e = SCALED.get(key);
     if (e != null) {
       e.used = frame;
       hits++;
       return e.scaled;
     }
-    Long seen = SEEN.put(key, frame);
-    if (seen == null || seen < frame - REPEAT_FRAMES) {
-      passed[1]++;
-      return null;
+    LAST.put(b, new Ask(key, frame));
+    if (PROMOTED.remove(key) == null) {
+      Long seen = SEEN.put(key, frame);
+      if (seen == null || seen < frame - REPEAT_FRAMES) {
+        if (node != null) PENDING.put(key, new Pending(node, frame));
+        passed[1]++;
+        return null;
+      }
     }
     if (bytes + (long) w * h * 4 > BUDGET_BYTES && !makeRoom((long) w * h * 4)) {
       passed[2]++;
@@ -97,7 +219,7 @@ final class GpuBitmaps {
     Source s = source(b, key.generation());
     if (s == null) return null;
     ByteBuffer out = scratchFor(w * h * 4);
-    if (!GpuNative.resample(s.texture, sl, st, (sr - sl) / (float) w, (sb - st) / (float) h, w, h, out)) return null;
+    if (!GpuNative.resample(s.texture, u0, v0, du, dv, w, h, out)) return null;
     Bitmap scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     out.position(0).limit(w * h * 4);
     scaled.copyPixelsFromBuffer(out);
@@ -108,9 +230,19 @@ final class GpuBitmaps {
     e.used = frame;
     SCALED.put(key, e);
     SEEN.remove(key);
+    PENDING.remove(key);
     bytes += (long) w * h * 4;
     made++;
     return scaled;
+  }
+
+  /** For the self-test: the copy of [b]'s [src] (null: all) scaled to w x h at a whole-pixel position, or null. */
+  static Bitmap scaled(Bitmap b, Rect src, int w, int h) {
+    int sl = src == null ? 0 : src.left;
+    int st = src == null ? 0 : src.top;
+    int sr = src == null ? b.getWidth() : src.right;
+    int sb = src == null ? b.getHeight() : src.bottom;
+    return copy(b, sl, st, (sr - sl) / (float) w, (sb - st) / (float) h, w, h, null);
   }
 
   /** Drops the copies drawn longest ago, but none drawn this frame, until [need] more bytes fit. */
@@ -168,10 +300,11 @@ final class GpuBitmaps {
     return scratch;
   }
 
-  /** Once a frame, on the main thread: lets go of copies and sources no longer drawn. */
+  /** Once a frame, on the main thread: promotes draws that held still, lets go of copies and sources no longer drawn. */
   static void tick() {
     frame++;
-    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty()) return;
+    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty() && PENDING.isEmpty() && PROMOTED.isEmpty()) return;
+    if (!PENDING.isEmpty()) promote();
     long stale = frame - KEEP_FRAMES;
     for (Iterator<Entry> i = SCALED.values().iterator(); i.hasNext(); ) {
       Entry e = i.next();
@@ -182,6 +315,8 @@ final class GpuBitmaps {
       }
     }
     SEEN.values().removeIf(f -> f < frame - REPEAT_FRAMES);
+    LAST.values().removeIf(a -> a.frame < frame - 2 * REPEAT_FRAMES);
+    PROMOTED.values().removeIf(f -> f < stale);
     for (Iterator<Source> i = SOURCES.values().iterator(); i.hasNext(); ) {
       Source s = i.next();
       if (s.used < stale) {
@@ -191,9 +326,76 @@ final class GpuBitmaps {
     }
   }
 
+  /**
+   * Draws asked for once, REPEAT_FRAMES ago, whose bitmap has been asked for nothing else since: the view that
+   * recorded each is invalidated, and its next recording makes the copy.
+   */
+  private static void promote() {
+    Map<RenderNode, Key> due = null;
+    for (Iterator<Map.Entry<Key, Pending>> i = PENDING.entrySet().iterator(); i.hasNext(); ) {
+      Map.Entry<Key, Pending> e = i.next();
+      if (e.getValue().frame > frame - REPEAT_FRAMES) continue;
+      i.remove();
+      Key key = e.getKey();
+      Ask last = LAST.get(key.bitmap());
+      if (last == null || !last.key().equals(key) || key.bitmap().isRecycled()
+          || key.bitmap().getGenerationId() != key.generation() || SCALED.containsKey(key)) {
+        continue;
+      }
+      if (due == null) due = new IdentityHashMap<>();
+      due.put(e.getValue().node(), key);
+    }
+    if (due == null) return;
+    for (View root : dev.apksim.Host.rootViews()) invalidateRecorders(root, due);
+  }
+
+  private static void invalidateRecorders(View v, Map<RenderNode, Key> due) {
+    // A view records its background drawable into a node of its own, again each time it records itself.
+    Key key = due.remove(Views.node(Views.NODE, v));
+    Key background = due.isEmpty() ? null : due.remove(Views.node(Views.BACKGROUND, v));
+    if (background != null) {
+      PROMOTED.put(background, frame);
+      promoted++;
+      v.invalidate();
+    }
+    if (key != null) {
+      PROMOTED.put(key, frame);
+      promoted++;
+      v.invalidate();
+    }
+    if (due.isEmpty() || !(v instanceof ViewGroup g)) return;
+    for (int i = 0; i < g.getChildCount() && !due.isEmpty(); i++) invalidateRecorders(g.getChildAt(i), due);
+  }
+
+  /** View.mRenderNode and mBackgroundRenderNode (hidden), looked up once. */
+  private static final class Views {
+    static final java.lang.reflect.Field NODE;
+    static final java.lang.reflect.Field BACKGROUND;
+
+    static {
+      try {
+        NODE = View.class.getDeclaredField("mRenderNode");
+        NODE.setAccessible(true);
+        BACKGROUND = View.class.getDeclaredField("mBackgroundRenderNode");
+        BACKGROUND.setAccessible(true);
+      } catch (NoSuchFieldException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    static RenderNode node(java.lang.reflect.Field f, View v) {
+      try {
+        return (RenderNode) f.get(v);
+      } catch (IllegalAccessException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
   /** For the `shaders` command. */
   static String report() {
-    return String.format("scaled bitmaps: cached=%d (%d MB) made=%d hits=%d sources=%d; to HWUI: small/config=%d new=%d budget=%d"
-        + " unaligned=%d", SCALED.size(), bytes >> 20, made, hits, SOURCES.size(), passed[0], passed[1], passed[2], passed[3]);
+    return String.format("scaled bitmaps: cached=%d (%d MB) made=%d hits=%d promoted=%d sources=%d; to HWUI: small/config=%d"
+        + " new=%d budget=%d unaligned=%d", SCALED.size(), bytes >> 20, made, hits, promoted, SOURCES.size(), passed[0],
+        passed[1], passed[2], passed[3]);
   }
 }

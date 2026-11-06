@@ -2,6 +2,7 @@ package dev.apksim.gpu;
 
 import android.graphics.Bitmap;
 import android.graphics.HardwareRenderer;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
@@ -394,7 +395,9 @@ public class GpuRenderNode extends RenderNode {
         n.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
         RecordingCanvas c = n.beginRecording(ARRANGED_W, ARRANGED_H);
         c.drawColor(0xff202020);
+        GpuBitmaps.bypass = true;
         c.drawBitmap(b, b == source ? src : null, dst, filter);
+        GpuBitmaps.bypass = false;
         n.endRecording();
         Raster r = new Raster(ARRANGED_W, ARRANGED_H, n);
         ByteBuffer out = r.capture();
@@ -404,6 +407,53 @@ public class GpuRenderNode extends RenderNode {
       }
       System.err.printf("[apksim] effect self-test scaled bitmap %s -> %dx%d: %s%n", src == null ? "whole" : src.toShortString(),
           dst.width(), dst.height(), got == null ? "not on the GPU" : difference(expected, got));
+    }
+    // Through the canvas, as ImageView and BitmapDrawable draw: a scaled canvas, edges off whole pixels (no
+    // anti-aliasing, so Skia rounds them), part of it clipped away, and the Matrix overload; and as Compose's
+    // drawImage does, anti-aliased onto whole pixels.
+    float[][] drawn = {
+      // canvas scale, translate x, y; dst l, t, r, b (local); clip l, t, r, b (local, -1: none); 1: by Matrix, 2: AA
+      {1.5f, 3.3f, 2.6f, 2.2f, 1.7f, 111.4f, 93.1f, -1, 0, 0, 0, 0},
+      {2f, 0f, 0f, -20.25f, 4.5f, 160.6f, 200.3f, 0, 0, 120, 70, 0},
+      {1f, 0.5f, 0f, 7.25f, 3.75f, 170.5f, 133.25f, -1, 0, 0, 0, 1},
+      {1.25f, 0f, 0f, 8f, 8f, 136f, 112f, -1, 0, 0, 0, 2},
+    };
+    Paint plain = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    Paint antiAliased = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
+    for (float[] k : drawn) {
+      ByteBuffer expected = null;
+      ByteBuffer got = null;
+      for (int pass = 0; pass < 3; pass++) {
+        RenderNode n = new RenderNode("selftest-bitmap-canvas");
+        n.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
+        RecordingCanvas c = n.beginRecording(ARRANGED_W, ARRANGED_H);
+        c.drawColor(0xff202020);
+        c.translate(k[1], k[2]);
+        c.scale(k[0], k[0]);
+        if (k[7] >= 0) c.clipRect(k[7], k[8], k[9], k[10]);
+        // Pass 0 is HWUI's own draw; passes 1 and 2 are asked twice, as in two frames running.
+        GpuBitmaps.bypass = pass == 0;
+        long before = GpuBitmaps.made + GpuBitmaps.hits;
+        if (k[11] == 1) {
+          Matrix m = new Matrix();
+          m.setScale((k[5] - k[3]) / source.getWidth(), (k[6] - k[4]) / source.getHeight());
+          m.postTranslate(k[3], k[4]);
+          c.drawBitmap(source, m, plain);
+        } else {
+          c.drawBitmap(source, null, new android.graphics.RectF(k[3], k[4], k[5], k[6]), k[11] == 2 ? antiAliased : plain);
+        }
+        GpuBitmaps.bypass = false;
+        boolean swapped = GpuBitmaps.made + GpuBitmaps.hits > before;
+        n.endRecording();
+        if (pass == 1) continue;
+        Raster r = new Raster(ARRANGED_W, ARRANGED_H, n);
+        ByteBuffer out = r.capture();
+        r.close();
+        if (pass == 0) expected = out;
+        else if (swapped) got = out;
+      }
+      System.err.printf("[apksim] effect self-test canvas bitmap x%.2f %s%s: %s%n", k[0], k[11] == 1 ? "matrix" : k[11] == 2 ? "rect anti-aliased" : "rect",
+          k[7] >= 0 ? " clipped" : "", got == null ? "not on the GPU" : difference(expected, got));
     }
     return source;
   }

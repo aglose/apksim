@@ -530,8 +530,9 @@ public class Host {
 
   // ---------------------------------------------------------------- input
 
+  /** Every window's root view, top last. Main thread. */
   @SuppressWarnings("unchecked")
-  static List<View> rootViews() {
+  public static List<View> rootViews() {
     try {
       return new ArrayList<>((List<View>) Views.FIELD.get(WindowManagerGlobal.getInstance()));
     } catch (IllegalAccessException e) {
