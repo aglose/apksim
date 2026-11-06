@@ -311,16 +311,25 @@ public final class TestActivities {
   private static void finished(Activity a) {
     ActivityController<?> c = controller(a);
     if (c == null || a.isDestroyed()) return;
+    // One that finished while stopped (below the top, or with its task in the background) uncovers nothing; one in
+    // the foreground does, even if the app had hidden its window itself (setVisible(false)).
+    boolean shown = !Host.isStopped(a);
     if (a.isResumed()) c.pause();
     if (!(boolean) ReflectionHelpers.getField(a, "mStopped")) c.stop();
     c.destroy();
-    List<Activity> left = withWindows();
-    if (left.isEmpty()) return;
-    Activity top = left.get(left.size() - 1);
-    ActivityController<?> below = controller(top);
-    if (below == null || top.isResumed()) return;
-    if ((boolean) ReflectionHelpers.getField(top, "mStopped")) below.restart();
-    below.resume();
+    // The new top is resumed, and what a see-through chain from it shows is paused and visible again (stopped ones
+    // with their windows shown, Host.arrange); nothing is stopped here.
+    if (shown) Host.arrange(controllers(withWindows()), false, true);
+  }
+
+  /** The controllers of {@code activities} (bottom to top), top first. */
+  private static List<ActivityController<?>> controllers(List<Activity> activities) {
+    List<ActivityController<?>> out = new ArrayList<>();
+    for (int i = activities.size() - 1; i >= 0; i--) {
+      ActivityController<?> c = controller(activities.get(i));
+      if (c != null) out.add(c);
+    }
+    return out;
   }
 
   /** Receivers still registered when a test ended, which Robolectric's reset dropped (see ShadowSimContextImpl). */
@@ -481,8 +490,7 @@ public final class TestActivities {
           ActivityController<?> c = controller(a);
           if (c == null || a.isFinishing()) return;
           a.moveTaskToBack(true);
-          if (a.isResumed()) c.pause();
-          c.stop();
+          Host.arrange(controllers(withWindows()), true);  // the task's activities stopped, their windows hidden
         });
       } else {
         try {
@@ -497,6 +505,27 @@ public final class TestActivities {
   @Implements(Instrumentation.class)
   public static class ShadowSimInstrumentation extends ShadowInstrumentation {
     @org.robolectric.annotation.RealObject private Instrumentation self;
+
+    /**
+     * An activity resumed shows its window, as ActivityThread.handleResumeActivity does (updateVisibility), whoever
+     * resumes it: here also ActivityScenario.moveToState, which restarts an activity whose window apksim hid when it
+     * stopped (back on a launcher root, a rotation while stopped). The visible top then has the focus.
+     */
+    @Implementation
+    protected void callActivityOnResume(Activity activity) {
+      org.robolectric.util.reflector.Reflector.reflector(InstrumentationReflector.class, self).callActivityOnResume(activity);
+      if (!testRun() || activity.getWindow() == null) return;
+      View decor = activity.getWindow().peekDecorView();
+      if (decor == null || decor.getVisibility() == View.VISIBLE) return;
+      Host.setWindowVisible(activity, true);  // unless the app hid it (setVisible(false))
+      if (decor.getVisibility() == View.VISIBLE) ShadowSimWindowManagerImpl.focusTop();
+    }
+
+    @org.robolectric.util.reflector.ForType(Instrumentation.class)
+    interface InstrumentationReflector {
+      @org.robolectric.util.reflector.Direct
+      void callActivityOnResume(Activity activity);
+    }
 
     /**
      * Who the device is (DeviceIdentity: serial, features, --build), in running instances too, and in a test run what
@@ -692,7 +721,10 @@ public final class TestActivities {
       Intent start = new Intent(intent);
       if (start.getComponent() == null) start.setComponent(new android.content.ComponentName(info.packageName, info.name));
       org.robolectric.Robolectric.buildActivity(cls, start).setup();
-      if (below != null && !top.isFinishing() && !top.isDestroyed()) below.stop();
+      // Those below are stopped and hidden, as ActivityThread hides a stopped activity's window (UiAutomator found the
+      // views of every activity below, and screenshots and failure bundles drew them under the top one), unless the
+      // new one is see-through (a dialog-themed activity): then they stay visible, paused.
+      Host.arrange(controllers(withWindows()), false);
     } catch (ReflectiveOperationException | LinkageError e) {
       // No such class: on a device the start fails in the app's own call.
       throw new IllegalStateException("starting " + info.name + ": " + e, e);
@@ -756,7 +788,11 @@ public final class TestActivities {
         c.newIntent(intent);
         c.resume();
       } else {
-        if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) c.restart();
+        if ((boolean) ReflectionHelpers.getField(existing, "mStopped")) {
+          c.restart();
+          Host.setWindowVisible(existing, true);
+          ShadowSimWindowManagerImpl.focusTop();
+        }
         c.newIntent(intent);
         c.resume();
       }

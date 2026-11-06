@@ -57,6 +57,63 @@ public class ShadowSimWindowManagerImpl extends ShadowWindowManagerImpl {
     changed(view, true);
   }
 
+  /**
+   * A hidden window was shown again (TestActivities: a stopped activity back on top, after the focused window above
+   * it went while it was still hidden): the topmost visible focusable window gets the focus, if it lacks it.
+   */
+  static void focusTop() {
+    List<View> roots = roots();
+    View top = null;
+    for (int i = roots.size() - 1; i >= 0 && top == null; i--) {
+      View v = roots.get(i);
+      if (v.getVisibility() == View.VISIBLE && v.getLayoutParams() instanceof WindowManager.LayoutParams lp && focusable(lp)) top = v;
+    }
+    // A hidden window can hold it too: one added (and so focused) before it was hidden.
+    for (View v : roots) if (v != top && v.hasWindowFocus()) changed(v, false);
+    if (top != null && !top.hasWindowFocus()) changed(top, true);
+  }
+
+  /**
+   * Puts the windows back in an order (the activity stack's, after windows were added again for recreated
+   * activities): a stable sort by {@code rank}, of WindowManagerGlobal's views, roots and params together, which is
+   * the order windows are drawn, touched and found in. A window {@code rank} gives -1 keeps its place after the window
+   * before it.
+   */
+  static void reorder(java.util.function.ToIntFunction<View> rank) {
+    Object global = android.view.WindowManagerGlobal.getInstance();
+    synchronized (ReflectionHelpers.<Object>getField(global, "mLock")) {
+      List<View> views = ReflectionHelpers.getField(global, "mViews");
+      List<ViewRootImpl> impls = ReflectionHelpers.getField(global, "mRoots");
+      List<WindowManager.LayoutParams> params = ReflectionHelpers.getField(global, "mParams");
+      int n = views.size();
+      if (impls.size() != n || params.size() != n) return;
+      Integer[] order = new Integer[n];
+      int[] ranks = new int[n];
+      int last = -1;
+      for (int i = 0; i < n; i++) {
+        int r = rank.applyAsInt(views.get(i));
+        last = r >= 0 ? r : last;
+        ranks[i] = last;
+        order[i] = i;
+      }
+      java.util.Arrays.sort(order, java.util.Comparator.comparingInt(i -> ranks[i]));  // stable
+      List<View> v2 = new java.util.ArrayList<>(n);
+      List<ViewRootImpl> r2 = new java.util.ArrayList<>(n);
+      List<WindowManager.LayoutParams> p2 = new java.util.ArrayList<>(n);
+      for (int i : order) {
+        v2.add(views.get(i));
+        r2.add(impls.get(i));
+        p2.add(params.get(i));
+      }
+      views.clear();
+      views.addAll(v2);
+      impls.clear();
+      impls.addAll(r2);
+      params.clear();
+      params.addAll(p2);
+    }
+  }
+
   /** The focused window {@code gone} went: the topmost focusable window left gets the focus. */
   private static void refocus(View gone) {
     if (!TestActivities.testRun()) return;

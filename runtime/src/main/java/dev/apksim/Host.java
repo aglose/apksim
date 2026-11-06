@@ -519,10 +519,7 @@ public class Host {
     ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
     stack.push(c);
     c.setup();
-    if (top != null) {
-      top.stop();
-      setWindowVisible(top.get(), false);
-    }
+    arrange(new ArrayList<>(stack), false);
   }
 
   /**
@@ -530,10 +527,140 @@ public class Host {
    * removed. Robolectric's controller leaves it visible, so every activity below the top was drawn each frame: a
    * large app 4 activities deep drew at 3 fps.
    */
-  private static void setWindowVisible(Activity a, boolean visible) {
+  static void setWindowVisible(Activity a, boolean visible) {
     android.view.Window w = a.getWindow();
     View decor = w == null ? null : w.peekDecorView();
-    if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+    // Shown only if the app has not hidden it itself (Activity.setVisible(false)), as updateVisibility checks.
+    if (decor != null && (!visible || (boolean) org.robolectric.util.ReflectionHelpers.getField(a, "mVisibleFromClient"))) {
+      decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+      touchable(decor, visible);
+    }
+    // The activity's other windows (dialogs, popups) go with it, as the window manager hides an app token's windows.
+    // Only those hidden here are shown again: a dialog the app hid (Dialog.hide) stays hidden.
+    for (View r : rootViews()) {
+      if (r == decor || TestActivities.activityOf(r) != a) continue;
+      if (!visible && r.getVisibility() == View.VISIBLE) {
+        r.setVisibility(View.INVISIBLE);
+        touchable(r, false);
+        HIDDEN_WITH_ACTIVITY.add(r);
+      } else if (visible && HIDDEN_WITH_ACTIVITY.remove(r) && r.getVisibility() == View.INVISIBLE) {
+        r.setVisibility(View.VISIBLE);
+        touchable(r, true);
+      }
+    }
+  }
+
+  /** Dialog and popup windows hidden with their stopped activity, to show again with it. */
+  private static final java.util.Set<View> HIDDEN_WITH_ACTIVITY = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+  /** Windows this class made untouchable, so that only its own flag is taken off again. */
+  private static final java.util.Set<View> MADE_UNTOUCHABLE = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+  /**
+   * A hidden window takes no touches. Host's dispatch skips invisible windows itself; Robolectric's UiAutomation
+   * injection (test runs) only skips windows flagged FLAG_NOT_TOUCHABLE, and ranks a dialog above every activity
+   * window, so a stopped activity's dialog took the touches meant for the activity on top.
+   */
+  private static void touchable(View root, boolean on) {
+    if (!(root.getLayoutParams() instanceof WindowManager.LayoutParams lp)) return;
+    if (!on && (lp.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) {
+      lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+      MADE_UNTOUCHABLE.add(root);
+    } else if (on && MADE_UNTOUCHABLE.remove(root)) {
+      lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+    }
+  }
+
+  /**
+   * An activity whose window lets the ones below show (windowIsTranslucent, or windowIsFloating as a dialog-themed
+   * one): on a device the activity below then stays paused and visible, not stopped.
+   */
+  static boolean seeThrough(Activity a) {
+    for (int attr : new int[] {android.R.attr.windowIsTranslucent, android.R.attr.windowIsFloating}) {
+      android.content.res.TypedArray t = a.getTheme().obtainStyledAttributes(new int[] {attr});
+      try {
+        if (t.getBoolean(0, false)) return true;
+      } finally {
+        t.recycle();
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Puts the stack (top first) where a device's activity manager would have it after a start, a finish, a
+   * configuration change, a rebuild, or the app leaving or coming back: the top resumed (unless {@code backgrounded},
+   * the home or lock screen); below it, while everything above is see-through (translucent or floating), paused and
+   * visible; every other one stopped, its windows hidden. A visible activity that has no window (recreated or rebuilt
+   * while it was not) gets one, and the windows are put in the stack's order, which is the order they are drawn,
+   * touched and found in; in test runs the top visible window has the focus. Each path used to fix up only its own
+   * part: a rotation left the whole stack resumed, a rebuilt stack's revealed windows were added above the top one.
+   */
+  static void arrange(List<? extends ActivityController<?>> topFirst, boolean backgrounded) {
+    arrange(topFirst, backgrounded, false);
+  }
+
+  /**
+   * {@code onlyUp}: activities are only brought up (stopped to paused or resumed, paused to resumed), never down:
+   * what a finish needs in a test run, whose activities a test may have launched side by side with ActivityScenario.
+   */
+  static void arrange(List<? extends ActivityController<?>> topFirst, boolean backgrounded, boolean onlyUp) {
+    boolean shown = !backgrounded;
+    boolean first = true;
+    List<Activity> order = new ArrayList<>();
+    for (ActivityController<?> c : topFirst) {
+      Activity a = c.get();
+      if (a.isFinishing() || a.isDestroyed()) continue;  // finish() ends those
+      order.add(0, a);
+      int target = !shown ? 0 : first ? 2 : 1;
+      first = false;
+      int now = state(a);
+      if (onlyUp && target <= now) {
+        if (shown) shown = seeThrough(a);
+        continue;
+      }
+      moveTo(c, target);
+      if (shown) {
+        View decor = a.getWindow().peekDecorView();
+        if (decor == null || decor.getViewRootImpl() == null) c.visible();
+        setWindowVisible(a, true);
+        shown = seeThrough(a);
+      } else {
+        setWindowVisible(a, false);
+      }
+    }
+    windowsInOrder(order);
+  }
+
+  /** The activities' windows (bottom first) in that order, and in test runs the focus on the top visible one. */
+  static void windowsInOrder(List<Activity> bottomFirst) {
+    ShadowSimWindowManagerImpl.reorder(v -> bottomFirst.indexOf(TestActivities.activityOf(v)));
+    if (TestActivities.testRun()) ShadowSimWindowManagerImpl.focusTop();
+  }
+
+  /** Stopped (0), paused (1) or resumed (2). */
+  static int state(Activity a) {
+    return a.isResumed() ? 2 : isStopped(a) ? 0 : 1;
+  }
+
+  /**
+   * Moves an activity to stopped (0), paused (1) or resumed (2) along the path a device takes (TransactionExecutor:
+   * stopped to paused is restart, start, resume, pause).
+   */
+  static void moveTo(ActivityController<?> c, int target) {
+    Activity a = c.get();
+    boolean stopped = isStopped(a);
+    if (target == 0) {
+      if (a.isResumed()) c.pause();
+      if (!stopped) c.stop();
+      return;
+    }
+    if (stopped) c.restart();
+    if (!a.isResumed() && (stopped || target == 2)) c.resume();
+    if (target == 1 && a.isResumed()) c.pause();
+  }
+
+  static boolean isStopped(Activity a) {
+    return org.robolectric.util.ReflectionHelpers.getField(a, "mStopped");
   }
 
   /**
@@ -587,10 +714,7 @@ public class Host {
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
-      if (below != null) {
-        setWindowVisible(below.get(), true);
-        below.restart().resume();
-      }
+      if (below != null) arrange(new ArrayList<>(stack), false);
     }
     // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
     // too, as the system server would. It stayed stopped instead, its window up and its ViewModels alive.
@@ -598,6 +722,7 @@ public class Host {
       ActivityController<? extends Activity> c = it.next();
       if (c == stack.peek() || !c.get().isFinishing()) continue;
       it.remove();
+      moveTo(c, 0);  // onStop first: arrange leaves a finishing one as it was (paused, in a hand-off)
       c.destroy();
       results.finished(c.get());
     }
@@ -996,13 +1121,16 @@ public class Host {
       }
       case "windows" -> {
         StringBuilder b = new StringBuilder();
-        for (View r : rootViews()) {
-          int[] at = position(r);
-          b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
-              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "")
-              .append(r.getVisibility() == View.VISIBLE ? "" : r.getVisibility() == View.INVISIBLE ? " invisible" : " gone").append("; ");
-        }
+        for (View r : rootViews()) b.append(ViewTree.window(r, position(r))).append("; ");
         return b.toString();
+      }
+      case "viewtree" -> {
+        // viewtree [FILE]: every view of every window, one per line (ViewTree). A reply is one line, so it joins them
+        // with "; " (indentation kept); FILE gets them as lines.
+        String tree = ViewTree.dump(rootViews(), this::position);
+        if (a.length < 2) return tree.strip().replace("\n", "; ");
+        Files.writeString(Storage.absolute(a[1]), tree);
+        return "ok, " + tree.lines().count() + " lines in " + Storage.absolute(a[1]);
       }
       case "selftest" -> {
         // selftest [file]: libwebrtc's native scaler (19 arguments: stack arguments must be translated; needs an APK with

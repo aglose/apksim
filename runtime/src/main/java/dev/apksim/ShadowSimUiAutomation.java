@@ -403,32 +403,50 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
         h = t;
       }
       float d = m.density;
+      // The stack before the change, hidden activities (stopped below the top) included: the controller stays, its
+      // activity is replaced when it is recreated.
+      java.util.Map<ActivityController<?>, Activity> was = new java.util.LinkedHashMap<>();
+      java.util.Map<ActivityController<?>, Integer> states = new java.util.IdentityHashMap<>();
+      java.util.Set<ActivityController<?>> shown = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      for (Activity a : activities()) {
+        ActivityController<?> c = ReflectionHelpers.getField(Shadow.extract(a), "controller");
+        if (c == null) continue;
+        was.put(c, a);
+        states.put(c, Host.state(a));
+        View decor = a.getWindow().peekDecorView();
+        if (decor != null && decor.getVisibility() == View.VISIBLE) shown.add(c);
+      }
+      // Robolectric's instrumentation recreates the activities ActivityScenario launched here, itself.
       RuntimeEnvironment.setQualifiers("+w" + Math.round(w / d) + "dp-h" + Math.round(h / d) + "dp-" + (w > h ? "land" : "port"));
       shadowOf(display).setRotation(rotation);
       Configuration config = new Configuration(app.getResources().getConfiguration());
       int changed = before.diff(config);
       if (changed != 0) {
-        for (Activity a : activities()) {
-          ActivityController<?> c = ReflectionHelpers.getField(Shadow.extract(a), "controller");
-          if (c == null) continue;
-          c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-          // A recreated activity's window is left detached by Robolectric (setup() would call visible()).
-          if (c.get().getWindow().getDecorView().getViewRootImpl() == null) c.visible();
+        for (java.util.Map.Entry<ActivityController<?>, Activity> e : was.entrySet()) {
+          ActivityController<?> c = e.getKey();
+          if (c.get() == e.getValue()) c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
         }
+        // Recreating left each activity resumed (whatever it was: a stopped or paused one too), with its window
+        // detached (Robolectric's recreate) or added after the others. Each gets its state and window back, and the
+        // windows their order (TestActivities reads the stack from it) and focus.
+        List<Activity> order = new ArrayList<>();
+        for (ActivityController<?> c : was.keySet()) {
+          Host.moveTo(c, states.get(c));
+          View decor = c.get().getWindow().peekDecorView();
+          if (decor == null || decor.getViewRootImpl() == null) c.visible();
+          Host.setWindowVisible(c.get(), shown.contains(c));
+          order.add(c.get());
+        }
+        Host.windowsInOrder(order);
       }
       settle(100);
       return true;
     });
   }
 
-  /** The activities that have a window, bottom to top. */
+  /** The activities that have a window, bottom to top, hidden ones (stopped below the top) included. */
   private static List<Activity> activities() {
-    List<Activity> out = new ArrayList<>();
-    for (Win w : windows()) {
-      Activity a = TestActivities.activityOf(w.view);
-      if (a != null && !out.contains(a)) out.add(a);
-    }
-    return out;
+    return TestActivities.withWindows();
   }
 
   // ------------------------------------------------------------------------------------------------------------------
