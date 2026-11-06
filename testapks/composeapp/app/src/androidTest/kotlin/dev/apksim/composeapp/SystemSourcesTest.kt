@@ -10,6 +10,8 @@ import android.os.BatteryManager
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -408,5 +410,24 @@ class SystemSourcesTest {
     assertEquals(null, cb)
     val cm = context.getSystemService(ConnectivityManager::class.java)
     assertFalse(cm.activeNetworkInfo?.isConnected == true)
+  }
+
+  /**
+   * A callback registered without a Handler runs on a background ConnectivityThread, not the main thread (as on a
+   * device): the main thread waits here without running its looper, and onAvailable still arrives.
+   */
+  @Test
+  fun aCallbackWithoutAHandlerArrivesWhileTheMainThreadWaits() {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val latch = CountDownLatch(1)
+    val cb = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(n: Network) { latch.countDown() }
+    }
+    cm.registerDefaultNetworkCallback(cb)
+    try {
+      assertTrue("onAvailable while the main thread waits", latch.await(5, TimeUnit.SECONDS))
+    } finally {
+      cm.unregisterNetworkCallback(cb)
+    }
   }
 }

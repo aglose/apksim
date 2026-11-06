@@ -6,7 +6,6 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.os.Handler;
-import android.os.Looper;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -42,6 +41,18 @@ import org.robolectric.shadows.ShadowConnectivityManager;
 public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
   private enum Kind { DEFAULT, REQUEST, LISTEN }
 
+  /** Where callbacks registered without a Handler run: a background looper, as Android's ConnectivityThread. */
+  private static Handler connectivityThread;
+
+  private static synchronized Handler connectivityHandler() {
+    if (connectivityThread == null || !connectivityThread.getLooper().getThread().isAlive()) {
+      android.os.HandlerThread t = new android.os.HandlerThread("ConnectivityThread");
+      t.start();
+      connectivityThread = new Handler(t.getLooper());
+    }
+    return connectivityThread;
+  }
+
   private static final class Tracked {
     final ConnectivityManager.NetworkCallback cb;
     final NetworkRequest request;
@@ -70,7 +81,7 @@ public class ShadowSimConnectivityManager extends ShadowConnectivityManager {
       this.cb = cb;
       this.request = request;
       this.kind = kind;
-      this.handler = handler != null ? handler : new Handler(Looper.getMainLooper());
+      this.handler = handler != null ? handler : connectivityHandler();
     }
   }
 
