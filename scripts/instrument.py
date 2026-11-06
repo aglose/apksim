@@ -26,7 +26,9 @@ test hung past its own JUnit timeout: in teardown, or ignoring interrupts where 
 killed and handled as one that died: the running test fails "timed out after SEC s" with the stderr tail and the
 stacks of the threads running JUnit code (a SIGQUIT thread dump taken just before), and the rest run in a new process.
 The kill takes the process group (each process gets one of its own) and, when --apksim is `docker|podman run`, the
-container too (`docker rm -f`, by a --cidfile this script adds): killing the client leaves a container running.
+container too (`docker rm -f`, by a --cidfile this script adds): killing the client leaves a container running. Every
+process gets its own cidfile (docker refuses one that exists): a --cidfile in --apksim is taken out, and the ID of the
+last container to end is written there.
 -e passes am instrument arguments (class, notClass, package, notPackage, and any others the tests read).
 Options after -- go to apksim, e.g. `-- --device tablet`. Exits 1 if any test failed, or if a process did not account
 for its tests (no INSTRUMENTATION_CODE, fewer results than numtests, or a failing exit with no failed test) and no
@@ -98,21 +100,30 @@ def apksim(app, test, extra_args, apksim_opts):
     """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
     from when each test's start and end blocks arrived (the output is read as it comes), and, when --test-timeout
     killed it, .timed_out (the limit) and .threads (the JUnit threads' stacks from a thread dump taken first)."""
-    cmd = LAUNCHER + ["--instrument", test]
+    launcher, user_cidfile = list(LAUNCHER), None
+    # A container outlives its client (SIGKILL is not passed on): each process gets a cidfile of its own, so that a
+    # kill can end its container. Docker refuses to run with a cidfile that exists, so a --cidfile in --apksim would
+    # fail every process after the first (other shards, -j, a relaunch after a crash): it is taken out, and the last
+    # container's ID written there instead, once its process has ended.
+    run, cidfile, cid_dir = container_run(launcher), None, None
+    if run is not None:
+        i = run + 1
+        while i < len(launcher):
+            if launcher[i] == "--cidfile" and i + 1 < len(launcher):
+                user_cidfile = launcher[i + 1]
+                del launcher[i:i + 2]
+            elif launcher[i].startswith("--cidfile="):
+                user_cidfile = launcher[i].split("=", 1)[1]
+                del launcher[i]
+            else:
+                i += 1
+        cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
+        cidfile = os.path.join(cid_dir, "cid")
+        launcher = launcher[:run + 1] + ["--cidfile", cidfile] + launcher[run + 1:]
+    cmd = launcher + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
     cmd += apksim_opts + [app]
-    # A container outlives its client (SIGKILL is not passed on): note its ID so that a kill can end it.
-    run, cidfile, cid_dir = container_run(cmd), None, None
-    if run is not None:
-        given = [cmd[i + 1] if w == "--cidfile" else w.split("=", 1)[1] for i, w in enumerate(cmd[:-1])
-                 if w == "--cidfile" or w.startswith("--cidfile=")]
-        if given:
-            cidfile = given[0]
-        else:
-            cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
-            cidfile = os.path.join(cid_dir, "cid")
-            cmd = cmd[:run + 1] + ["--cidfile", cidfile] + cmd[run + 1:]
     # Reentrant: the signal handler runs on the main thread, and its stop() kills this process while the main thread
     # may be in kill_lock itself (the cleanup below). Other locks the handler takes: LIVE_LOCK, also reentrant.
     cid, kill_lock = [], threading.RLock()
@@ -234,6 +245,16 @@ def apksim(app, test, extra_args, apksim_opts):
     with LIVE_LOCK:
         LIVE.pop(p, None)
         stopping = bool(STOPPING)
+    if user_cidfile:
+        try:
+            c = container_id()
+            if c:  # (beside it, then renamed over it: a run of shards leaves the last one's, whole)
+                tmp = f"{user_cidfile}.{os.getpid()}.{threading.get_ident()}"
+                with open(tmp, "w") as f:
+                    f.write(c)
+                os.replace(tmp, user_cidfile)
+        except OSError as e:
+            warn(f"instrument.py: could not write the container ID to --cidfile {user_cidfile} ({e})")
     if cid_dir and not stopping:  # (a stop's kill may still read it; this script ends with it anyway)
         shutil.rmtree(cid_dir, ignore_errors=True)
     if deps:

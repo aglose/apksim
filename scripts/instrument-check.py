@@ -106,7 +106,7 @@ def fake():
         block(c, m, n + 1, 1)
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
-        if sc.startswith(("hang", "interrupt", "docker")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
+        if sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
             hang(state, c, m)
         if sc == "interrupt-parallel":  # shard 0 dies in its first test (C001#m1), and the other two hang in theirs
             if (c, m) == ("p.C001", "m1"):
@@ -248,8 +248,13 @@ SCENARIOS = {
     # (in its kill lock) when the SIGINT comes, whose handler then kills the same process; and a second SIGINT while
     # that stop's `rm -f` runs.
     "interrupt-docker-cleanup": (130, 1, 0, []),
+    # A --cidfile of the user's in --apksim (the stand-in docker refuses one that exists, as docker does): over 2 shards
+    # at once, and with a hang (--test-timeout 2) whose relaunch must start. The file gets the last container's ID.
+    "cidfile-sharded": (0, 2, 9, []),
+    "cidfile-hang": (1, 3, 9, ["p.C000#m1"]),
 }
-SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3}
+SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3,
+          "cidfile-sharded": 2}
 # When an interrupt-* scenario sends its SIGINT: once a process hangs, or, for these, once the process being started
 # has noted its call (its first act), well inside the spawn delay.
 INTERRUPT_WHEN = {"interrupt-spawn": lambda d: os.path.exists(os.path.join(d, "calls")),
@@ -271,7 +276,7 @@ def extra_args(sc, d):
         return ["--timings", xml]
     if sc.startswith("interrupt"):
         return ["--test-timeout", "0"]
-    if sc.startswith("hang") or sc == "slow":
+    if sc.startswith("hang") or sc in ("slow", "cidfile-hang"):
         return (["--test-timeout", "2"] + (["--isolate", "-j", "3"] if sc == "hang-isolate" else [])
                 + (["--bundles", os.path.join(d, "bundles")] if sc == "hang" else []))
     if sc.startswith("affected"):
@@ -297,13 +302,15 @@ def main():
             if sc == "interrupt-docker-cleanup":
                 env["INSTRUMENT_CHECK_CLEANUP_DELAY"] = "2"
             launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
-            if "docker" in sc:
+            if "docker" in sc or sc.startswith("cidfile"):
                 os.makedirs(os.path.join(d, "bin"))
                 docker = os.path.join(d, "bin", "docker")
                 with open(docker, "w") as f:
                     f.write(f'#!/bin/sh\nexec "{sys.executable}" "{os.path.abspath(sys.argv[0])}" --fake-docker "$@"\n')
                 os.chmod(docker, 0o755)
                 launcher = f"{docker} run --rm -v {d}:/work apksim:check"
+                if sc.startswith("cidfile"):
+                    launcher = f"{docker} run --cidfile {d}/user.cid --rm -v {d}:/work apksim:check"
             start = time.time()
             p = subprocess.Popen([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim", launcher,
                                   "app.apk", "test.apk", "--xml", xml, "-e", "other", "kept"]
@@ -339,7 +346,8 @@ def main():
             texts = {f"{c}#{m}": t for c, m, _, t in cases}
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
-            hung = [t for t in ("p.C000#m1", "(run)#incomplete") if t in failed] if sc.startswith("hang") else []
+            hung = ([t for t in ("p.C000#m1", "(run)#incomplete") if t in failed]
+                    if sc.startswith(("hang", "cidfile-hang")) else [])
             # (A client that ends at the SIGQUIT passes on no thread dump.)
             wanted = TIMED_OUT if "client-exits" not in sc else [w for w in TIMED_OUT if "java:" not in w]
             missing = [w for t in hung for w in (wanted if t == "p.C000#m1" else wanted[:1]) if w not in texts.get(t, "")]
@@ -367,8 +375,10 @@ def main():
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),
                 (f"processes left running: {alive}", bool(alive)),
-                ("no process that hung", sc.startswith(("hang", "interrupt", "docker")) and not pids),
-                ("not ended by docker rm -f", "docker" in sc and not os.path.exists(os.path.join(d, "docker-kills"))),
+                ("no process that hung", sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and not pids),
+                ("no container ID in the user's --cidfile", sc.startswith("cidfile")
+                 and not read(os.path.join(d, "user.cid")).strip().isdigit()),
+                ("not ended by docker rm -f", ("docker" in sc or sc == "cidfile-hang") and not os.path.exists(os.path.join(d, "docker-kills"))),
                 ("no process.txt saying it timed out", sc == "hang" and not any(
                     "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
                 (f"took {took:.0f} s", took > 30),
