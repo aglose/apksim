@@ -633,8 +633,9 @@ what the test does next, and reading the tree does: Compose's node provider adds
 the AndroidComposeView and builds its accessibility caches, and a test polling past a handled Espresso failure then
 failed (#73; `FailureBundleHandledTest`). So the Espresso handler's capture leaves `nodes.txt` for later (`nodesPending`:
 a placeholder until then) and reads it once that screen cannot matter: when the failure leaves the body, as an activity
-finishes (`ShadowSimActivity.finish`, before it: that activity's windows, e.g. a `use {}` scenario closing), or at the
-listener; its first line says when. Body and listener captures read it at once. A capture never runs the
+finishes (`ShadowSimActivity.finish`, before it: that activity's captured windows only, e.g. a `use {}` scenario
+closing, as another shown below stays in use), or at the listener; each read is appended with a line saying when and
+whose windows, until every captured window is read (`pendingRoots`), and failure.txt's parts get its time. Body and listener captures read it at once. A capture never runs the
 main queue or moves the clock (uptime is read through `ApksimClock`, not SystemClock, which `--realtime-clock` would
 advance); a part past its deadline (screen 2 s, others 5 s) has its thread interrupted and is skipped in later bundles;
 a test's first 2,500 log lines are kept as they arrive (`AdbLog.keepHead`), past the ring's 20,000. A bundle's folder is

@@ -94,6 +94,14 @@ public final class Bundles {
    * test any more: when the failure leaves the test body, as an activity finishes (its own windows), or at the end.
    */
   private static boolean nodesPending;
+  /**
+   * The windows the capture saw whose trees are still to be read, bottom to top. An activity finishing reads only its
+   * own (another visible below it, a dialog-themed activity over one, a --start-activities stack, stays in use), the
+   * body's end or the listener the rest; each read is appended to nodes.txt with where it came from.
+   */
+  private static final List<View> pendingRoots = new ArrayList<>();
+  /** nodes.txt holds at least one read (not the placeholder): later reads are appended. */
+  private static boolean nodesStarted;
   private static int full;
   /** Parts that ran past their deadline once: skipped in later bundles of this process. */
   private static final java.util.Set<String> TIMED_OUT = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -124,6 +132,7 @@ public final class Bundles {
       current = d;
       written = null;
       nodesPending = false;
+      pendingRoots.clear();
       testsBefore++;
       markLog();
     } finally {
@@ -211,6 +220,7 @@ public final class Bundles {
         written = null;
         writtenFor = null;
         nodesPending = false;
+        pendingRoots.clear();
         if (writtenFull) full--;
         writtenFull = false;
         try {
@@ -442,9 +452,13 @@ public final class Bundles {
           part(parts, "windows.txt", () -> write(dir.resolve("windows.txt"), windows()));
           if (tree) {
             nodesPending = false;
-            part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact(nodes(null))));
+            pendingRoots.clear();
+            part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact(nodes(rootsOf(visibleWindows())))));
           } else {
+            pendingRoots.clear();
+            pendingRoots.addAll(rootsOf(safeWindows()));
             nodesPending = true;
+            nodesStarted = false;
             String later = "read later: when the failure leaves the test body, as an activity finishes, or after the test's"
                 + " teardown (reading the tree changes a Compose screen, and the test may handle this failure and go on)";
             part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), "not read yet: " + later + "\n"));
@@ -726,17 +740,24 @@ public final class Bundles {
     }
   }
 
-  /** The tree of every visible window, or of [only]'s (an activity's) when given. */
-  private static String nodes(Activity only) {
+  private static List<View> rootsOf(List<Win> wins) {
     List<View> roots = new ArrayList<>();
-    for (Win w : visibleWindows()) if (only == null || TestActivities.activityOf(w.view) == only) roots.add(w.view);
+    for (Win w : wins) roots.add(w.view);
+    return roots;
+  }
+
+  /** The tree of [roots]. */
+  private static String nodes(List<View> roots) {
     String s = Nodes.dump(roots).replace("; ", "\n");
     return s.isEmpty() ? "no nodes with text, a description or an action\n" : s;
   }
 
   /**
-   * Reads the current bundle's pending nodes.txt ({@link #nodesPending}) [when], from every visible window or only
-   * [finishing]'s. On the main thread only (the views are read); LOCK is held or taken.
+   * Reads what is left of the current bundle's pending nodes.txt ({@link #nodesPending}, {@link #pendingRoots})
+   * [when]: [finishing]'s windows, or with null every captured window still pending. Each read is appended to
+   * nodes.txt (the first replaces the placeholder) under a line saying when and from which windows, and to
+   * failure.txt's parts. A captured window no longer shown is left out. On the main thread only (the views are read);
+   * LOCK is held or taken.
    */
   private static void pendingNodes(String when, Activity finishing) {
     if (!nodesPending || Looper.myLooper() != Looper.getMainLooper()) return;
@@ -744,25 +765,38 @@ public final class Bundles {
     try {
       Path dir = written;
       if (!nodesPending || dir == null) return;
-      if (finishing != null) {
-        boolean shown = false;
-        for (Win w : safeWindows()) shown |= TestActivities.activityOf(w.view) == finishing;
-        if (!shown) return;
-      } else if (safeWindows().isEmpty()) {
-        nodesPending = false;
-        write(dir.resolve("nodes.txt"), "not read: no windows were left " + when + "\n");
+      java.util.Set<View> shown = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      shown.addAll(rootsOf(safeWindows()));
+      List<View> mine = new ArrayList<>();
+      for (View v : pendingRoots) if (finishing == null || TestActivities.activityOf(v) == finishing) mine.add(v);
+      List<View> read = new ArrayList<>();
+      for (View v : mine) if (shown.contains(v)) read.add(v);
+      if (finishing != null && read.isEmpty()) return;  // not one of the captured windows, or not shown now
+      pendingRoots.removeAll(mine);
+      nodesPending = !pendingRoots.isEmpty();
+      String what = finishing == null ? (nodesStarted ? "the other windows" : "every window")
+          : finishing.getClass().getName() + "'s windows";
+      Path file = dir.resolve("nodes.txt");
+      boolean append = nodesStarted;
+      nodesStarted = true;
+      if (read.isEmpty()) {
+        String note = "not read: none of the " + (append ? "other " : "") + "captured windows was left " + when + "\n";
+        if (append) Files.writeString(file, "\n" + note, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+        else write(file, note);
         return;
       }
-      nodesPending = false;
       long t0 = System.nanoTime();
       captureSince = t0;
       StringBuilder parts = new StringBuilder();
       try {
         // As a part, as when read at once: its deadline interrupts a provider that waits, and one that ran past it is
         // skipped in later bundles.
-        String what = finishing == null ? "every window" : finishing.getClass().getName() + "'s windows";
-        part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact("read " + when
-            + ", after the capture (Espresso's failure handler), from " + what + "\n" + nodes(finishing))));
+        part(parts, "nodes.txt", () -> {
+          String text = redact("read " + when + ", after the capture (Espresso's failure handler), from " + what + "\n"
+              + nodes(read));
+          if (append) Files.writeString(file, "\n" + text, StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+          else write(file, text);
+        });
       } finally {
         captureNanos += System.nanoTime() - t0;
         captureSince = 0;

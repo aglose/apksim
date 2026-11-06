@@ -81,12 +81,14 @@ def main():
         (PKG + "FailureBundleTest", "b_composeAssertionFails"): ("test body", True, "FAB clicks: 0"),
         (PKG + "FailureBundleTest", "c_failsWithDialogOpen"): ("test body", True, "Bundle dialog"),
         (PKG + "FailureBundleEspressoTest", "noMatchingView"): ("Espresso failure handler", True, "FAB clicks: 0"),
+        (PKG + "FailureBundleEspressoTest", "noMatchingViewOverFloatingActivity"): ("Espresso failure handler", True, "Floating"),
         (PKG + "FailureBundleAfterTest", "afterFails"): ("listener", False, None),
         # Parameterized runs inside the test environment, as a SimRunner child: captured in its body too
         (PKG + "FailureBundleParameterizedTest", "sameNumbers[1: 1, 2]"): ("test body", False, None),
     }
     markers = {"b_composeAssertionFails": "b_composeAssertionFails", "c_failsWithDialogOpen": "c_failsWithDialogOpen",
-               "noMatchingView": "noMatchingView", "afterFails": "afterFails", "sameNumbers[1: 1, 2]": "sameNumbers 1 2"}
+               "noMatchingView": "noMatchingView", "noMatchingViewOverFloatingActivity": "noMatchingViewOverFloatingActivity",
+               "afterFails": "afterFails", "sameNumbers[1: 1, 2]": "sameNumbers 1 2"}
     for (c, m), (point, screen, text) in expect.items():
         d = os.path.join(local, folder(c, m))
         name = f"{c.rsplit('.', 1)[1]}#{m}"
@@ -128,6 +130,12 @@ def main():
     failure = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingView"), "failure.txt")
     check(os.path.exists(failure) and re.search(r"\(read as MainActivity finished\)\n  nodes\.txt \d+ ms\n", open(failure).read()),
           "failure.txt reports the deferred read's time, as for the other parts")
+    # Two activities shown: each one's tree is read as its own scenario closes, the top one first, and none is lost.
+    nodes = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingViewOverFloatingActivity"), "nodes.txt")
+    n = open(nodes).read() if os.path.exists(nodes) else ""
+    top, below = n.find("read as FloatingActivity finished"), n.find("read as MainActivity finished")
+    check(0 <= top < n.find("Floating\"", top) < below < n.find("FAB clicks: 0", below),
+          "with an activity over another, nodes.txt has each one's tree, read as each finished (top first)")
     exp = cases.get((PKG + "FailureBundleExpectedTest", "expectedThrows"))
     check(exp is not None and exp.find("failure") is None and exp.find("skipped") is None,
           "@Test(expected) passes, with no bundle started for it (its @After checks before the test's end)")

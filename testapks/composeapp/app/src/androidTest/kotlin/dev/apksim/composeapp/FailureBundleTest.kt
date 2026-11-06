@@ -87,6 +87,21 @@ class FailureBundleEspressoTest {
       onView(withText("No view has this text")).check(matches(isDisplayed()))
     }
   }
+
+  /**
+   * The same with a dialog-themed activity over MainActivity: both windows are captured, and each one's tree is read as
+   * its own scenario closes (FloatingActivity's first, while MainActivity's is still in use).
+   */
+  @Test
+  fun noMatchingViewOverFloatingActivity() {
+    failOnPurpose()
+    marker("noMatchingViewOverFloatingActivity")
+    ActivityScenario.launch(MainActivity::class.java).use {
+      ActivityScenario.launch(FloatingActivity::class.java).use {
+        onView(withText("No view has this text")).check(matches(isDisplayed()))
+      }
+    }
+  }
 }
 
 /**
