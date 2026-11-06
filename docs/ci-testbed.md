@@ -48,7 +48,11 @@ cache volume a fresh translation of the app's classes: alone, one journey took 1
 threads compete, which makes it ~36 s a test. Mount the cache volume, and prefer one process for the journeys
 (the single-process timeouts below are the app's, now explained). A test that ends that one process (a native crash,
 or one that ignores interrupts 10 s past its JUnit timeout) no longer takes the rest of the run with it: `instrument.py`
-reports it failed and runs the tests with no result yet in a new process.
+reports it failed and runs the tests with no result yet in a new process. Nor does one that hangs with nothing in the
+process to end it (one CI run of v0.11.0 sat 67 minutes on a single test, then hit the job's limit with half the suite
+unrun): `instrument.py --test-timeout SEC` (default 900 s, 0 for none) kills a process that goes that long without a
+test starting or ending, the container too with `--apksim "docker run ..."`, and reports that test "timed out" with
+the stacks of the threads in JUnit code from a thread dump taken just before. Keep it under the job's own limit.
 The emulator times leave out its boot (~1.5 min per job) and installing each ~170 MB test APK. A cold class cache made
 no difference (166 s cold, 164 s warm for the shared module): the tests' own work dominates.
 

@@ -128,7 +128,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
-  - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
+  - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
   - `FrameStream`: the screen as JPEG frames for `apksim serve` (see "apksim serve"). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
@@ -157,7 +157,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
   goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
-  `--apksim CMD` runs the Linux image instead; `instrument-check.py` checks how it handles a process that dies,
+  `--apksim CMD` runs the Linux image instead; `--test-timeout SEC` kills a process stuck SEC s on one test;
+  `instrument-check.py` checks how it handles a process that dies or hangs,
   against a stand-in apksim), `affected.py` (instrument.py's test-impact recording and selection and its
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
@@ -223,7 +224,8 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
+(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`,
+`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or
@@ -339,7 +341,7 @@ With no LAUNCHER activity the first MAIN/HOME one starts), `--appearance dark`, 
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
 digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
-the `default` slot's: Robolectric's `unknown` failed a backend's format check), system features (`Features`:
+the `default` slot's: Robolectric's `unknown` failed a backend's format check), system features (`SystemFeatures`:
 Robolectric's few (touchscreen, wifi*, telephony*), then what an emulator of the device's kind lists for what apksim
 simulates: bluetooth, bluetooth_le, location*, multitouch*, faketouch, fingerprint, audio.output, both screen
 orientations; a TV drops touchscreen, telephony, GPS and fingerprint and has leanback and type.television, a desktop
@@ -455,7 +457,8 @@ smaller); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
-and plays silence; `--jvm -Dapksim.audio=false` turns sound and the audio decoders off. Bitmaps here are BGRA in memory (Skia's macOS order),
+and plays silence; `--audio off` turns sound and the audio decoders off (`--audio mute`, `--jvm -Dapksim.mute=true` and
+`-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
 Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, and each live
 codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
@@ -485,6 +488,36 @@ Apps that sign in on every cold start can be signed in by apksim itself (`Autofi
 `work/autofill/<package>.properties` (mode 600, written by the owner), finds fields by their label/placeholder in
 the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only. Never read,
 print or edit that file, and never type the owner's password: if it is missing, ask the owner.
+
+## Per-instance costs (frame rate, video, audio, animations)
+Launch options for what a journey may not need, each per instance and accepted by a warm launch (`Features.java`,
+read again as a standby takes the launch, before the app's Application exists; else at first use). docs/parallel.md
+has the measurements.
+- `--max-fps N` (1-120) and `maxfps N` at run time: at most N frames a second, not 120 Hz or the display's vsync.
+  The clock still follows real time and input and commands go out every 8 ms: the Choreographer's frame delay is the
+  cap's interval (`Host.applyFrameDelay`; the first frame comes at once). Moving the clock only to an N Hz grid's
+  lines put a tap's DOWN and UP a second apart at 1 fps, and ran a long-press timeout between them. Animations keep
+  their speed in fewer frames. A video reaches the screen at most N times a second too (`apksim://video` at
+  `--max-fps 10`: 10.1 screen frames a second), but every picture is still decoded and converted (59.9 a second for
+  its 60 fps clip): `--video blank` saves that. The biggest lever for many headless instances: the test app's Shader
+  tab, which never stops animating, costs ~0.7 of a core at 120 fps, ~0.4 at 60, ~0.2 at 30. The display's refresh
+  rate the app sees is unchanged.
+- `--video on|blank|off`: `blank` keeps the H.264/HEVC decoders listed and a player plays at its pace, but nothing is
+  decoded or drawn (each input gives an empty output with its timestamp, in presentation order as before) and
+  libwebrtc's frames are dropped before conversion (one an app asks for with addFrameListener is converted for it,
+  not drawn); the TextureView stays empty. A MediaCodec takes the mode it is configured in, so `video blank`/`video on` at run time
+  apply to the next codec (and libwebrtc's next frame). `off`: the decoders are not listed, as on a device without
+  them (ExoPlayer then plays the clip's audio alone); launch only, since players cache the codec list. Test runs never
+  list them anyway, and Linux has no VideoToolbox.
+- `--audio on|mute|off`: mute decodes and keeps the timing, silent; off lists no AAC/MP3 decoders and leaves
+  AudioTrack to Robolectric (a launch with it cold never loads the CoreAudio library).
+- `--anim-scale N`: the animator duration scale from the start (0: animations jump to their end), in running
+  instances before the first activity and in test runs at each test's setup, since Robolectric resets it
+  (`AnimScaleOptionTest`, CI runs it with `-e animScale 0`). Changes what a test sees: one that waits on an
+  animation's middle fails, as on a device with animations off.
+- `--gles on|off`: offscreen GLES (on in test runs by default; off falls back to Robolectric's stand-ins).
+Not switchable, because unused features cost nothing: GLES loads at its first call, codecs and CoreAudio only when
+the app opens one, WebRTC only in APKs that have it, network hooks one static read.
 
 ## Warm launches
 A launch is handed to a **standby**: a JVM started in the background that has booted everything that does not depend
@@ -532,6 +565,11 @@ the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
 back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+`adb shell uiautomator dump [--compressed] [--windows] [FILE]` (`UiDump`: the stock tool's XML and its "UI hierchary
+dumped to: FILE" line, AOSP's AccessibilityNodeInfoDumper attribute for attribute, NAF included, from the active
+window's tree as UiAutomation reads it here, so Compose nodes and testTagsAsResourceId ids show; default
+/sdcard/window_dump.xml, `/dev/tty` prints it, so `adb exec-out uiautomator dump /dev/tty`; `--compressed` drops views
+not important for accessibility, lifting their children; it waits up to 1 s for the main thread to go idle first),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `wm size|density`, `settings get|put
@@ -621,7 +659,8 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N [--timings XML] [--shard I]]
-[--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [-- APKSIM_OPTS]` runs a
+[--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [--test-timeout SEC]
+[-- APKSIM_OPTS]` runs a
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
 process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
@@ -640,8 +679,21 @@ and the stderr tail (with none running, a failed "(run)" entry is, so the run st
 and the tests with no result run in a new process, as `-e class` (whole classes where none of their tests ran, else
 Class#method, chunked under Linux's 128 KB argument limit) with the other `-e` arguments kept. No test runs twice; a
 new process that adds no result (a crash at startup) ends the run, the rest reported failed as not run.
+`--test-timeout SEC` (default 900, 0 for none) handles a hang the same way: a process that goes SEC s without a test
+starting or ending (stuck in teardown, or out of the watchdog's sight) gets a SIGQUIT (the JVM's thread dump: the
+stacks of the threads in JUnit code go in the failure) and then SIGKILL to its process group (each process gets a
+session of its own, so instrument.py forwards Ctrl-C/SIGTERM itself: a process starts and is noted for that under one
+lock, and none starts once a stop has begun), and with `--apksim "docker|podman run ..."` a `docker rm -f` (by a
+`--cidfile` instrument.py adds: SIGKILL to the client leaves the container running; the ID is read before the client is
+killed and the client killed before `rm -f`, and a client that dies of any signal has its container removed too; each
+process gets a cidfile of its own, as docker refuses one that exists, so a `--cidfile` in `--apksim` is taken out and
+gets the ID of the last container to end); the test
+fails "timed out after SEC s" with the stderr tail, and with `--bundles` gets process.txt. Test runs launch cold, so
+the process is the JVM itself (the launcher execs it), never a standby's client.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
-the process, one ignores interrupts past its timeout, and the tests after each still pass.
+the process, one ignores interrupts past its timeout, and the tests after each still pass; with `-e hangOnPurpose
+true` one more hangs with nothing to end it but `--test-timeout`. `instrument-check.py` covers both against a stand-in
+(hangs one process, sharded, isolated, through a stand-in docker, and Ctrl-C, also while a process starts).
 **Failure bundles** (`--bundles DIR`, also `instrument.py --bundles DIR`; `Bundles`, docs/plan.md phase 5): each
 failing test leaves `DIR/<class>/<method>-<8 hex of SHA-256("class#method")>/` with `failure.txt` (stack, settings,
 which capture point wrote it, how long each part took), `screen.png` (every window, drawn as UiAutomation's screenshot
@@ -685,6 +737,14 @@ regression check is `scripts/check-translator.sh` (CI too): `testapks/translator
 miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
 a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
 `.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
+The native loader's is `testapks/loader-fixture` (`loaderfixture.c`, built with the NDK by its `build.sh` into the
+test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so the test app needs no NDK), run by
+`NativeLoaderTest` in the suite, so on the Mac and in both Linux images: the stack guard through the thread pointer,
+TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
+variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
+built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
+libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
+new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): each window's root node is linked to its views with
 `setQueryFromAppProcessEnabled` (API 34), so UiAutomator walks the real view and Compose tree through the framework's
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
@@ -941,7 +1001,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   shows drift; `scripts/timer-check.py` checks it.
 - Vsync uses `ShadowChoreographer.setPaused(true)` + frame delay 1 ms. The loop only advances the clock to 120 Hz
   grid lines while a frame is wanted (`lineAtOrBefore`). Unpaused Robolectric vsync spins forever on infinite
-  animations.
+  animations. Line k is at k * 1000 / hz ms rounded down, and `ms * hz / 1000` rounded down is not its inverse (8 ms
+  gives line 0): until 2026-11-05 the loop took the line it stood on for the one before, waited for a line already
+  passed, and spun the main thread for the rest of every frame (a core, headless, whenever anything animated).
+  `lineAtOrBefore(ms, hz)`/`lineAfter` are exact for every rate (checked for 1-120 Hz).
 - Some apps step their shader clocks at 30 Hz on purpose (the owner's does): idle shader screens at 30-60 fps can be
   by design. Measure 120 fps on interactions or the test app's Shader tab.
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
@@ -971,6 +1034,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
 - An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
+- `testapks/loader-fixture`: a native library of loader and bionic checks inside the test app (see "Instrumentation tests").
 
 ## Open work
 - **The owner's app's tests in CI:** docs/plan.md phase 0 (measure on a Linux runner, the four failures that are the

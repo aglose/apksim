@@ -20,7 +20,8 @@ import android.widget.FrameLayout
  * The app's Application. The androidTest runner swaps in a subclass (HarnessRunner). It records what onCreate sees,
  * before any test code runs: the network ConnectivityManager reports (NetworkActivity shows it: apksim's
  * --network-profile offline must hold from before onCreate), AndroidIdTest's and InstallPermissionsTest's values, and
- * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances).
+ * the device identity (DeviceIdentityTest; logged as "identity: ..." for running instances) and the animator scale
+ * (AnimScaleOptionTest).
  */
 open class ComposeApp : Application() {
   @SuppressLint("HardwareIds", "MissingPermission")
@@ -41,6 +42,7 @@ open class ComposeApp : Application() {
       Log.w("ComposeApp", "bluetooth: unknown ($e)")
       null
     }
+    animScaleAtCreate = android.animation.ValueAnimator.getDurationScale()
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
         "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
@@ -72,6 +74,8 @@ open class ComposeApp : Application() {
     const val LAUNCH_OVERLAY = "dev.apksim.testapp.launch_overlay"
     /** ConnectivityManager's default network in Application.onCreate, or null before it ran. */
     @JvmStatic var networkAtStart: String? = null
+    /** ValueAnimator's duration scale in onCreate (AnimScaleOptionTest: apksim's --anim-scale holds from before it). */
+    @Volatile var animScaleAtCreate: Float? = null
     @Volatile var androidIdAtCreate: String? = null
     @Volatile var vibrateAtCreate: Int? = null
     @Volatile var providerBeforeCreate = false

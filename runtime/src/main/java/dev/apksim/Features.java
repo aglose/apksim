@@ -1,128 +1,110 @@
 package dev.apksim;
 
-import android.app.Application;
-import android.content.pm.FeatureInfo;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-import org.robolectric.Shadows;
-import org.robolectric.shadows.ShadowPackageManager;
-import org.robolectric.util.ReflectionHelpers;
-
 /**
- * The device's system features (PackageManager.hasSystemFeature, getSystemAvailableFeatures, `pm list features`),
- * set before Application.onCreate (DeviceIdentity) and again when the `device` command switches devices. Robolectric's
- * package manager starts each test with a few (touchscreen, wifi*, telephony*); a device has many more, and apps
- * read them to decide what to offer: one treated a device without android.hardware.bluetooth as having no Bluetooth.
- * apksim adds what it simulates (Bluetooth and BLE, location, multitouch, audio output, a fingerprint sensor, both
- * screen orientations), and per device kind what an emulator of that kind reports: a TV has no touchscreen,
- * telephony, GPS or fingerprint, and has leanback; a desktop is android.hardware.type.pc. No camera: apksim has none
- * (the app's camera permission can be granted, but no frames come), so `--feature android.hardware.camera.any` is
- * for apps that must see one. Then the launch's {@code --feature NAME[=false]} (-Dapksim.features=a,b=false), which
- * can also take a default away.
+ * Per-instance switches for what an instance spends on things a journey may not need: the frame rate (--max-fps),
+ * video (--video on|blank|off) and sound (--audio on|mute|off). Read from the launch's properties on first use, and
+ * again by {@link #load} when a standby takes a launch (its warm-up read the standby's own), before the app's
+ * Application exists. The {@code maxfps} and {@code video} commands change the first two
+ * while the instance runs.
+ *
+ * <ul>
+ *   <li>max fps: at most this many frames a second (1-120) instead of 120 Hz or the display's vsync, the clock still
+ *       following real time (Host.applyFrameDelay). Animations run at the same speed, in fewer frames; an animating screen costs about a core at 120 fps headless.
+ *   <li>video blank: MediaCodec's H.264 and HEVC decoders stay listed and a player plays at its pace, but nothing is
+ *       decoded or drawn (each input gives an empty output with its timestamp), and libwebrtc's frames are dropped
+ *       before conversion and drawing. A codec takes the mode it is configured in. video off: the decoders are not
+ *       listed at all, as on a device without them; launch only, since players cache the codec list.
+ *   <li>audio mute: decoded, timed as played, silent. audio off: no AAC/MP3 decoders, Robolectric's AudioTrack
+ *       (launch only, as video off).
+ * </ul>
  */
-final class Features {
+public final class Features {
   private Features() {}
 
-  /** What apksim adds on every device kind but a TV. */
-  private static final String[] HANDHELD = {
-    "android.hardware.bluetooth", "android.hardware.bluetooth_le", "android.hardware.location",
-    "android.hardware.location.gps", "android.hardware.location.network", "android.hardware.faketouch",
-    "android.hardware.touchscreen", "android.hardware.touchscreen.multitouch",
-    "android.hardware.touchscreen.multitouch.distinct", "android.hardware.touchscreen.multitouch.jazzhand",
-    "android.hardware.screen.portrait", "android.hardware.screen.landscape", "android.hardware.audio.output",
-    "android.hardware.fingerprint", "android.software.input_methods", "android.software.secure_lock_screen",
-  };
+  public enum Video { ON, BLANK, OFF }
 
-  /** A TV's (an Android TV emulator's, of the features above). */
-  private static final String[] TV = {
-    "android.hardware.bluetooth", "android.hardware.bluetooth_le", "android.hardware.location",
-    "android.hardware.location.network", "android.hardware.screen.landscape", "android.hardware.audio.output",
-    "android.hardware.type.television", "android.software.leanback", "android.software.leanback_only",
-    "android.software.input_methods",
-  };
+  public enum Audio { ON, MUTE, OFF }
 
-  /**
-   * The values Robolectric had for the keys apksim changed since the last reset (null: it had none), so a switch to
-   * another device kind starts again from Robolectric's. Main thread only.
-   */
-  private static final Map<String, Boolean> robolectric = new HashMap<>();
+  private static volatile boolean loaded;
+  private static volatile int maxFps = 120;
+  private static volatile Video video = Video.ON;
+  private static volatile Audio audio = Audio.ON;
 
-  /** Before Application.onCreate, after Robolectric's reset: the launch device's features and the --features. */
-  static void beforeApplicationOnCreate(Application app) {
-    robolectric.clear();
-    apply(app, Device.peek());
+  /** Reads the launch options; throws on a bad value, so a mistyped launch fails rather than runs with defaults. */
+  static synchronized void load() {
+    maxFps = parseFps(System.getProperty("apksim.maxFps", "120"));
+    video = parse(Video.class, System.getProperty("apksim.video", "on"));
+    String a = System.getProperty("apksim.audio", "on");
+    // -Dapksim.audio=false and -Dapksim.mute=true, from before these options.
+    if (a.equals("false")) a = "off";
+    if (a.equals("true")) a = "on";
+    audio = parse(Audio.class, a);
+    if (audio == Audio.ON && Boolean.getBoolean("apksim.mute")) audio = Audio.MUTE;
+    loaded = true;
   }
 
-  /** The `device` command switched to another kind of device (a TV and back). */
-  static void deviceChanged(Application app, Device d) {
-    Map<String, Boolean> list = list();
-    for (Map.Entry<String, Boolean> e : robolectric.entrySet()) {
-      if (e.getValue() == null) list.remove(e.getKey());
-      else list.put(e.getKey(), e.getValue());
-    }
-    robolectric.clear();
-    apply(app, d);
-    Bluetooth.featuresChanged(app);
+  private static void ensureLoaded() {
+    if (!loaded) load();
   }
 
-  private static void apply(Application app, Device d) {
-    Map<String, Boolean> want = new LinkedHashMap<>();
-    if (d.tv()) {
-      for (String f : HANDHELD) want.put(f, false);
-      for (String f : list().keySet()) if (f.startsWith("android.hardware.telephony")) want.put(f, false);
-      for (String f : TV) want.put(f, true);
-    } else {
-      for (String f : HANDHELD) want.put(f, true);
-      if (d.kind().equals("desktop")) want.put("android.hardware.type.pc", true);
+  public static int maxFps() {
+    ensureLoaded();
+    return maxFps;
+  }
+
+  public static Video video() {
+    ensureLoaded();
+    return video;
+  }
+
+  public static Audio audio() {
+    ensureLoaded();
+    return audio;
+  }
+
+  static int parseFps(String v) {
+    int fps;
+    try {
+      fps = Integer.parseInt(v.trim());
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("max fps: " + v + " (a whole number, 1-120)");
     }
-    want.putAll(launchOptions());
-    Map<String, Boolean> list = list();
-    for (Map.Entry<String, Boolean> e : want.entrySet()) {
-      if (!robolectric.containsKey(e.getKey())) robolectric.put(e.getKey(), list.get(e.getKey()));
-      list.put(e.getKey(), e.getValue());
-    }
-    // getSystemAvailableFeatures: Robolectric keeps a separate list (empty, so null), which a device fills from the same.
-    ShadowPackageManager pm = Shadows.shadowOf(app.getPackageManager());
-    pm.clearSystemAvailableFeatures();
-    for (String f : present()) {
-      FeatureInfo fi = new FeatureInfo();
-      fi.name = f;
-      pm.addSystemAvailableFeature(fi);
+    if (fps < 1 || fps > 120) throw new IllegalArgumentException("max fps: " + v + " (1-120)");
+    return fps;
+  }
+
+  private static <E extends Enum<E>> E parse(Class<E> type, String v) {
+    try {
+      return Enum.valueOf(type, v.trim().toUpperCase(java.util.Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      StringBuilder names = new StringBuilder();
+      for (E c : type.getEnumConstants()) names.append(names.length() == 0 ? "" : "|").append(c.name().toLowerCase(java.util.Locale.ROOT));
+      throw new IllegalArgumentException(type.getSimpleName().toLowerCase(java.util.Locale.ROOT) + ": " + v + " (" + names + ")");
     }
   }
 
-  /** -Dapksim.features=a,b,c=false: each one made present (or, with =false, absent). */
-  private static Map<String, Boolean> launchOptions() {
-    Map<String, Boolean> out = new LinkedHashMap<>();
-    String list = System.getProperty("apksim.features");
-    if (list == null || list.isBlank()) return out;
-    for (String f : list.split(",")) {
-      f = f.trim();
-      if (f.isEmpty()) continue;
-      boolean on = true;
-      int eq = f.indexOf('=');
-      if (eq > 0) {
-        on = !f.substring(eq + 1).trim().equalsIgnoreCase("false");
-        f = f.substring(0, eq).trim();
-      }
-      out.put(f, on);
+  /** {@code maxfps [N]}: reports or sets the frame rate cap. */
+  static String maxFpsCommand(String[] a) {
+    ensureLoaded();
+    if (a.length > 1) maxFps = parseFps(a[1]);
+    return "maxfps " + maxFps;
+  }
+
+  /** {@code video on|blank}: the mode codecs configured from now on (and libwebrtc's next frames) take. */
+  static String videoCommand(String mode) {
+    ensureLoaded();
+    Video v = parse(Video.class, mode);
+    if (v == Video.OFF || video == Video.OFF) {
+      return "error: video off is a launch option (--video off): players keep the codec list they read";
     }
-    return out;
+    video = v;
+    return "video " + v.name().toLowerCase(java.util.Locale.ROOT);
   }
 
-  /** The features hasSystemFeature answers true for, sorted (what `pm list features` prints). */
-  static List<String> present() {
-    List<String> out = new ArrayList<>();
-    for (Map.Entry<String, Boolean> e : new TreeMap<>(list()).entrySet()) if (Boolean.TRUE.equals(e.getValue())) out.add(e.getKey());
-    return out;
-  }
-
-  /** Robolectric's own table, which hasSystemFeature and a test's setSystemFeature read and write. */
-  private static Map<String, Boolean> list() {
-    return ReflectionHelpers.getStaticField(ShadowPackageManager.class, "systemFeatureList");
+  /** One line for `stats`-style reports. */
+  static String describe() {
+    ensureLoaded();
+    return "maxfps=" + maxFps + " video=" + video.name().toLowerCase(java.util.Locale.ROOT) + " audio="
+        + audio.name().toLowerCase(java.util.Locale.ROOT);
   }
 }

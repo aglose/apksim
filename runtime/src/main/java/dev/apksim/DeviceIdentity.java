@@ -22,7 +22,7 @@ import org.robolectric.util.ReflectionHelpers;
  *       answers "unknown", which a backend that checks a serial's format rejects, so by default it is 16 letters and
  *       digits derived from the data slot: the same each launch of one slot (one device), another for another slot
  *       (instance-1, serve-0), and the default slot's in test runs.</li>
- *   <li>system features (Features: a device's defaults for its kind, then {@code --feature NAME}, repeatable,
+ *   <li>system features (SystemFeatures: a device's defaults for its kind, then {@code --feature NAME}, repeatable,
  *       -Dapksim.features=a,b; {@code NAME=false} takes one away): Robolectric's package manager has only a few, so
  *       an app that tells device variants apart by FEATURE_CAMERA_ANY always saw the camera-less one. Then the
  *       Bluetooth adapter, which follows android.hardware.bluetooth (Bluetooth).</li>
@@ -42,7 +42,7 @@ final class DeviceIdentity {
       String serial = serial();
       ShadowBuild.setSerial(serial);
       ReflectionHelpers.setStaticField(Build.class, "SERIAL", serial);
-      Features.beforeApplicationOnCreate(app);
+      SystemFeatures.beforeApplicationOnCreate(app);
       Bluetooth.beforeApplicationOnCreate(app);
     } catch (RuntimeException e) {
       System.err.println("[apksim] device identity: " + e);
