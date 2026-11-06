@@ -32,11 +32,13 @@ see the same machine, so the gate judges only how they compare:
 
 - Rounds of four launches (anchor and this commit, warm and cold) in a shuffled order, so a slow stretch of the
   machine hits both sides alike. Before each launch every standby of both installs must be ready: a warm launch is
-  followed by the next standby booting, seconds of CPU that would otherwise slow whichever launch came next.
+  followed by the next standby booting, seconds of CPU that would otherwise slow whichever launch came next. Then the
+  machine must be at least 80% idle over 0.3 s (up to 5 s of waiting); each launch's record keeps the figure
+  (`cpu-idle-before` in the JSON).
 - Two launches of each kind per side first, not counted (the class cache for the APK, the first standby).
 - Medians, not means: one stalled launch moves a median by one place.
 - A metric is **over budget** when this commit's median exceeds `anchor median × (1 + max_slower) + slack_ms` **and** a
-  one-sided Mann-Whitney test gives p < `alpha` (0.01): slower, and not by chance.
+  one-sided Mann-Whitney test gives p < `alpha` (0.05): slower, and not by chance.
 - Rounds come in batches of `runs`, and each batch is judged on its own launches, never pooled with earlier ones: a
   metric fails when **two** batches are over budget. A batch over its limit (significant or not) is followed by
   another, at most three in all, so a slow stretch of the machine during one batch does not fail the job, and a fresh
@@ -53,6 +55,25 @@ Why a fixed anchor and not the pull request's merge base: comparing with the mer
 regression but lets startup creep up by a few percent per pull request for ever. Against a fixed anchor the budget is
 for the total, so creep adds up until it fails, and moving the anchor is a decision someone makes in a pull request.
 
+On GitHub's `macos-15` runner (3 cores, 2026-11-06, PR #53, this commit identical to the anchor, 12 rounds): warm
+774 against 714 ms (-7.8%), cold 3124 against 3300 ms (+5.6%), passed. Launches there are ~3.5 times slower than on the
+development Mac and spread more: ±16% warm, ±11% cold (half the interquartile range), from launch to launch rather
+than drifting (pairing each round's two launches left it at ±18% and ±10%). Hence the idle wait, and batches of 20
+rounds judged at p < 0.05: two batches must agree, so false failures stay rare at that level. Simulated by resampling
+that run's 24 launches of each kind (both sides) (500 runs of the gate's whole decision per cell), the share of runs that fail:
+
+| change | warm | cold |
+|---|---:|---:|
+| none | 0% | 0% |
+| +5% | 1.4% | 0.2% |
+| +10% (the budget) | 7.6% | 11% |
+| +15% | 43% | 60% |
+| +20% | 76% | 90% |
+| +30% | 99% | 99% |
+
+(At p < 0.01 with 16 rounds, +20% warm failed only 34% of the time.) So a single pull request has to cost about a
+fifth of the launch time to be caught every time; smaller slowdowns add up against the fixed anchor until they are.
+
 Measured on the development Mac (2026-11-05), 10 rounds, this commit identical to the anchor: warm 216 against 222 ms (+3%),
 cold 1272 against 1278 ms (+0.4%), each ± 3-4% (half the interquartile range). With a 50 ms `Thread.sleep` added to
 `Main` it failed on the first batch and again on the second (warm 236 against 296 ms, +25%, p < 0.001), with the
@@ -66,8 +87,8 @@ grew to ±115 ms and the first batch was not significant, which is what the extr
 ```jsonc
 {
   "anchor": "v0.11.0",        // the release measured against
-  "runs": 12,                 // rounds per batch
-  "alpha": 0.01,
+  "runs": 20,                 // rounds per batch
+  "alpha": 0.05,              // per batch; two batches must be over budget
   "metrics": {"warm first frame": {"mode": "warm", "mark": "first-frame", "max_slower": 0.10, "slack_ms": 15}, ...}
 }
 ```

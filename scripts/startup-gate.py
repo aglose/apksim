@@ -16,10 +16,37 @@ machine does not fail a pull request; a batch over its limit, significant or not
 three), and a median still over its limit at the end without a second significant batch is reported (not failed) as
 inconclusive.
 Exit status: 0 within budget, 1 over budget, 2 the launches themselves failed or a gated metric had no samples."""
-import argparse, json, math, os, random, re, statistics, subprocess, sys, tempfile, time
+import argparse, ctypes, json, math, os, random, re, statistics, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MARK = re.compile(r"^\[apksim\] (\S.*?)\s+(-?\d+) ms$", re.M)
+
+
+def cpu_ticks():
+    """Cumulative (busy, idle) CPU ticks of the whole machine, or None where unknown."""
+    try:
+        if sys.platform == "darwin":
+            lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
+            lib.mach_host_self.restype = ctypes.c_uint
+            info, count = (ctypes.c_uint * 4)(), ctypes.c_uint(4)  # HOST_CPU_LOAD_INFO: user, system, idle, nice
+            if lib.host_statistics(lib.mach_host_self(), 3, info, ctypes.byref(count)) != 0:
+                return None
+            return info[0] + info[1] + info[3], info[2]
+        with open("/proc/stat") as f:
+            v = [int(x) for x in f.readline().split()[1:]]
+        return sum(v) - v[3] - v[4], v[3] + v[4]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def cpu_idle(window=0.3):
+    """Percent of the machine's CPU time idle over the next `window` seconds (100 where unknown)."""
+    a = cpu_ticks()
+    time.sleep(window)
+    b = cpu_ticks()
+    if a is None or b is None or (b[0] + b[1]) == (a[0] + a[1]):
+        return 100
+    return round(100 * (b[1] - a[1]) / ((b[0] + b[1]) - (a[0] + a[1])))
 
 
 class Install:
@@ -237,10 +264,16 @@ def main():
                     print(f"startup-gate: {s.name}'s standby did not come up (log: {s.sock}.log)", file=sys.stderr)
                     print("\n".join(deaths), file=sys.stderr)
                     sys.exit(2)
-        time.sleep(0.5)
+        # Then the machine itself quiet (the last instance exiting, the OS's own work), up to a few seconds: on a
+        # 3-core runner one busy process is a third of it. What was idle goes into the launch's record.
+        end = time.time() + 5
+        idle = cpu_idle()
+        while idle < 80 and time.time() < end:
+            idle = cpu_idle()
+        return idle
 
     def measure(side, mode, record=True):
-        ready_all()
+        idle = ready_all()
         marks, err = sides[side].launch(apk, mode, cwd)
         if marks is None:
             failures.append(f"{side} {mode}: {err}")
@@ -250,7 +283,8 @@ def main():
                     print(f, file=sys.stderr)
                 sys.exit(2)
             return
-        print(f"  {side:4} {mode}: first frame {marks['first-frame']:5d} ms", flush=True)
+        print(f"  {side:4} {mode}: first frame {marks['first-frame']:5d} ms (cpu {idle}% idle before)", flush=True)
+        marks["cpu-idle-before"] = idle
         if record:
             for k, v in marks.items():
                 batches[-1][side][mode].setdefault(k, []).append(v)
