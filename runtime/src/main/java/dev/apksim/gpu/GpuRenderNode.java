@@ -413,15 +413,19 @@ public class GpuRenderNode extends RenderNode {
       System.err.printf("[apksim] effect self-test scaled bitmap %s -> %dx%d: %s%n", src == null ? "whole" : src.toShortString(),
           dst.width(), dst.height(), got == null ? "not on the GPU" : difference(expected, got));
     }
-    // Through the canvas, as ImageView and BitmapDrawable draw: a scaled canvas, edges off whole pixels (no
-    // anti-aliasing, so Skia rounds them), part of it clipped away, and the Matrix overload; and as Compose's
-    // drawImage does, anti-aliased onto whole pixels.
+    // Through the canvas, as ImageView and BitmapDrawable draw: a scaled canvas, edges off whole pixels but clipped
+    // away (centerCrop), the Matrix overload, and as Compose's drawImage does, anti-aliased onto whole pixels; under a
+    // parent node's fractional translation and scale (the copy is sampled again there: expect a soft difference); and
+    // a visible edge off whole pixels, which stays on HWUI ("not on the GPU" is right there).
     float[][] drawn = {
-      // canvas scale, translate x, y; dst l, t, r, b (local); clip l, t, r, b (local, -1: none); 1: by Matrix, 2: AA
-      {1.5f, 3.3f, 2.6f, 2.2f, 1.7f, 111.4f, 93.1f, -1, 0, 0, 0, 0},
-      {2f, 0f, 0f, -20.25f, 4.5f, 160.6f, 200.3f, 0, 0, 120, 70, 0},
-      {1f, 0.5f, 0f, 7.25f, 3.75f, 170.5f, 133.25f, -1, 0, 0, 0, 1},
-      {1.25f, 0f, 0f, 8f, 8f, 136f, 112f, -1, 0, 0, 0, 2},
+      // canvas scale, translate x, y; dst l, t, r, b (local); clip l, t, r, b (local, -1: none); 1: by Matrix, 2: AA;
+      // 1: in a transformed parent
+      {1.5f, 3f, 2f, 2f, 2f, 110f, 94f, -1, 0, 0, 0, 0, 0},
+      {2f, 0f, 0f, -20.25f, 4.5f, 160.6f, 200.3f, 0, 0, 120, 70, 0, 0},
+      {1f, 0f, 0f, 7f, 4f, 171f, 134f, -1, 0, 0, 0, 1, 0},
+      {1.25f, 0f, 0f, 8f, 8f, 136f, 112f, -1, 0, 0, 0, 2, 0},
+      {1.5f, 3f, 2f, 2f, 2f, 110f, 94f, -1, 0, 0, 0, 0, 1},
+      {1.5f, 3.3f, 2.6f, 2.2f, 1.7f, 111.4f, 93.1f, -1, 0, 0, 0, 0, 0},
     };
     Paint plain = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
     Paint antiAliased = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
@@ -451,14 +455,31 @@ public class GpuRenderNode extends RenderNode {
         boolean swapped = GpuBitmaps.made + GpuBitmaps.hits > before;
         n.endRecording();
         if (pass == 1) continue;
-        Raster r = new Raster(ARRANGED_W, ARRANGED_H, n);
+        RenderNode drawnNode = n;
+        if (k[12] == 1) {
+          n.setPivotX(0);
+          n.setPivotY(0);
+          n.setTranslationX(0.5f);
+          n.setTranslationY(-3.25f);
+          n.setScaleX(0.9f);
+          n.setScaleY(0.9f);
+          drawnNode = new RenderNode("selftest-bitmap-parent");
+          drawnNode.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
+          RecordingCanvas pc = drawnNode.beginRecording(ARRANGED_W, ARRANGED_H);
+          pc.drawColor(0xff202020);
+          pc.drawRenderNode(n);
+          drawnNode.endRecording();
+        }
+        Raster r = new Raster(ARRANGED_W, ARRANGED_H, drawnNode);
         ByteBuffer out = r.capture();
         r.close();
         if (pass == 0) expected = out;
         else if (swapped) got = out;
       }
-      System.err.printf("[apksim] effect self-test canvas bitmap x%.2f %s%s: %s%n", k[0], k[11] == 1 ? "matrix" : k[11] == 2 ? "rect anti-aliased" : "rect",
-          k[7] >= 0 ? " clipped" : "", got == null ? "not on the GPU" : difference(expected, got));
+      System.err.printf("[apksim] effect self-test canvas bitmap x%.2f %s%s%s%s: %s%n", k[0],
+          k[11] == 1 ? "matrix" : k[11] == 2 ? "rect anti-aliased" : "rect", k[7] >= 0 ? " clipped" : "",
+          k[12] == 1 ? " in a transformed parent" : "", k[11] == 0 && k[7] < 0 && k[3] != Math.round(k[3]) ? " (visible edges off whole pixels)" : "",
+          got == null ? "not on the GPU" : difference(expected, got));
     }
     return source;
   }

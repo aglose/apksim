@@ -82,8 +82,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     BaseRecordingCanvas and RecordingCanvas: the framework's ImageView/BitmapDrawable draws and the app's, Compose's
     drawImage, alike; framework code is not translated) that scales a bitmap gets a copy already at its device-pixel
     size, resampled once on Metal (bilinear in float, as Skia, at the same sample positions), which HWUI then blits
-    1:1. The copy covers the pixels HWUI would fill (Skia rounds a non-AA rect's edges; an anti-aliased one needs
-    whole pixels or an edge clipped away) and is cut to the clip when most of it is clipped (centerCrop). Skia's CPU
+    1:1. Each edge must fall on a whole device pixel or be clipped away (centerCrop): a fractional one would be
+    rounded before any parent node's transform. Paints with a shadow layer, mask filter or shader stay on HWUI (their
+    effects follow the transform). The copy is cut to the clip when most of it is clipped. A copy stays (counted in
+    the budget, never recycled) while a node whose latest recording drew it keeps its display list: a static View
+    holds its pixels however long ago it asked. Skia's CPU
     bilinear was most of a map screen's frame, and of a tablet View screen's (~50 ms → 4.7 ms raster on
     `apksim://bitmaps`). Copies are cached (96 MB, LRU) and made only for a draw that holds still: asked for again
     within 8 frames (Compose records again often), or recorded once in a node that has not recorded again for 8

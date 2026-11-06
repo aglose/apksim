@@ -95,6 +95,13 @@ final class GpuBitmaps {
   private static final Map<Bitmap, Ask> LAST = new IdentityHashMap<>();
   /** By node: a recording supersedes the one before, so only draws a node has kept for REPEAT_FRAMES are promoted. */
   private static final Map<RenderNode, Recording> RECORDINGS = new IdentityHashMap<>();
+  /**
+   * The copies each node's latest recording draws. A View records once and keeps its display list, which keeps the
+   * copy's pixels however long ago it was asked for, so a copy stays (counted in the budget, never recycled) while a
+   * node that drew it in its latest recording still has a display list. (A node that records again without asking
+   * for any bitmap here is not seen to let go: its copies stay until it loses its display list or is collected.)
+   */
+  private static final Map<RenderNode, List<Key>> HELD = new java.util.WeakHashMap<>();
   /** Draws that held still, whose view was invalidated to record them again: the copy is made then. */
   private static final Map<Key, Long> PROMOTED = new HashMap<>();
   private static final Map<Bitmap, Source> SOURCES = new IdentityHashMap<>();
@@ -117,12 +124,14 @@ final class GpuBitmaps {
   private static final Matrix MATRIX = new Matrix();
   private static final float[] M = new float[9];
   private static final Rect CLIP = new Rect();
+  private static final Rect DST = new Rect();
 
   /**
    * Draws [b]'s [src] (null: all of it), scaled into the local rect l, t, r, bottom of recording canvas [c], as a
-   * GPU-scaled copy drawn 1:1, and returns true; false: draw it as asked. The copy covers the device pixels HWUI
-   * would fill (Skia rounds a rect's edges without anti-aliasing, and needs whole pixels with it), cut to the clip
-   * when most of it is clipped away (a centerCrop image), and samples at the same places.
+   * GPU-scaled copy drawn 1:1, and returns true; false: draw it as asked. Each edge of the draw must fall on a whole
+   * device pixel or be clipped away (a centerCrop image): a fractional edge would be rounded here, before any parent
+   * node's transform, where HWUI rounds or anti-aliases it after. The copy is cut to the clip when most of it is
+   * clipped away, and samples at the same places as HWUI.
    */
   @SuppressWarnings("deprecation")
   static boolean draw(Canvas c, Bitmap b, Rect src, float l, float t, float r, float bottom, Paint p) {
@@ -131,6 +140,12 @@ final class GpuBitmaps {
     }
     if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || b.hasMipMap()) {
       passed[0]++;
+      return false;
+    }
+    // Effects that depend on the transform (a shadow's radius and offset, a blur mask) would change with the
+    // identity matrix the copy is drawn under.
+    if (p.hasShadowLayer() || p.getMaskFilter() != null || p.getShader() != null) {
+      passed[3]++;
       return false;
     }
     int sl = src == null ? 0 : src.left;
@@ -151,7 +166,8 @@ final class GpuBitmaps {
     float du = (sr - sl) / (dr - dl);
     float dv = (sb - st) / (db - dt);
     if (du == 1f && dv == 1f) return false;
-    // The device pixels HWUI fills: Skia rounds a non-AA rect's edges to the nearest pixel (pixel centres inside).
+    // The device pixels HWUI fills, where an edge is clipped away: Skia rounds a non-AA rect's edges to the nearest
+    // pixel, and the clip cuts an anti-aliased one.
     int x0 = (int) Math.floor(dl + 0.5f);
     int y0 = (int) Math.floor(dt + 0.5f);
     int x1 = (int) Math.floor(dr + 0.5f);
@@ -162,8 +178,8 @@ final class GpuBitmaps {
     int ct = (int) Math.floor(M[4] * CLIP.top + M[5]);
     int cr = (int) Math.ceil(M[0] * CLIP.right + M[2]);
     int cb = (int) Math.ceil(M[4] * CLIP.bottom + M[5]);
-    // Anti-aliased edges cover their last pixel in part, which a 1:1 copy cannot: only whole pixels, or clipped away.
-    if (p.isAntiAlias() && (!whole(dl) && dl > cl || !whole(dt) && dt > ct || !whole(dr) && dr < cr || !whole(db) && db < cb)) {
+    // Whole pixels, or clipped away (the clip moves with any parent transform, so it stays clipped).
+    if (!whole(dl) && dl > cl || !whole(dt) && dt > ct || !whole(dr) && dr < cr || !whole(db) && db < cb) {
       passed[3]++;
       return false;
     }
@@ -191,7 +207,9 @@ final class GpuBitmaps {
     if (dither) p.setDither(false);
     bypass = true;
     try {
-      c.drawBitmap(scaled, x0, y0, p);
+      // A dst rect, not (left, top): that overload would scale the copy for a canvas density that is not its own.
+      DST.set(x0, y0, x0 + w, y0 + h);
+      c.drawBitmap(scaled, null, DST, p);
     } finally {
       bypass = false;
       if (dither) p.setDither(true);
@@ -210,12 +228,16 @@ final class GpuBitmaps {
     Recording rec = null;
     if (node != null) {
       rec = RECORDINGS.get(node);
-      if (rec == null || rec.frame != frame) RECORDINGS.put(node, rec = new Recording(frame));
+      if (rec == null || rec.frame != frame) {
+        RECORDINGS.put(node, rec = new Recording(frame));
+        HELD.remove(node);  // a new recording: the last one's copies are no longer drawn from it
+      }
     }
     Entry e = SCALED.get(key);
     if (e != null) {
       e.used = frame;
       hits++;
+      held(node, key);
       return e.scaled;
     }
     LAST.put(b, new Ask(key, frame));
@@ -247,11 +269,17 @@ final class GpuBitmaps {
     SEEN.remove(key);
     bytes += (long) w * h * 4;
     made++;
+    held(node, key);
     return scaled;
+  }
+
+  private static void held(RenderNode node, Key key) {
+    if (node != null) HELD.computeIfAbsent(node, n -> new ArrayList<>(2)).add(key);
   }
 
   /** For the self-test: the copy of [b]'s [src] (null: all) scaled to w x h at a whole-pixel position, or null. */
   static Bitmap scaled(Bitmap b, Rect src, int w, int h) {
+    if (!ENABLED) return null;
     int sl = src == null ? 0 : src.left;
     int st = src == null ? 0 : src.top;
     int sr = src == null ? b.getWidth() : src.right;
@@ -322,10 +350,22 @@ final class GpuBitmaps {
   /** Once a frame, on the main thread: promotes draws that held still, lets go of copies and sources no longer drawn. */
   static void tick() {
     frame++;
-    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty() && RECORDINGS.isEmpty() && PROMOTED.isEmpty() && LAST.isEmpty()) {
+    if (SCALED.isEmpty() && SEEN.isEmpty() && SOURCES.isEmpty() && RECORDINGS.isEmpty() && PROMOTED.isEmpty() && LAST.isEmpty()
+        && HELD.isEmpty()) {
       return;
     }
     if (!RECORDINGS.isEmpty()) promote();
+    for (Iterator<Map.Entry<RenderNode, List<Key>>> i = HELD.entrySet().iterator(); i.hasNext(); ) {
+      Map.Entry<RenderNode, List<Key>> h = i.next();
+      if (!h.getKey().hasDisplayList()) {
+        i.remove();
+        continue;
+      }
+      for (Key key : h.getValue()) {
+        Entry e = SCALED.get(key);
+        if (e != null) e.used = frame;
+      }
+    }
     long stale = frame - KEEP_FRAMES;
     for (Iterator<Entry> i = SCALED.values().iterator(); i.hasNext(); ) {
       Entry e = i.next();
