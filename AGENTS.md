@@ -473,8 +473,8 @@ read in `Host.run` after the hand-off; test runs read them at first use). docs/p
   ~0.2 at 30. The display's refresh rate the app sees is unchanged.
 - `--video on|blank|off`: `blank` keeps the H.264/HEVC decoders listed and a player plays at its pace, but nothing is
   decoded or drawn (each input gives an empty output with its timestamp, in presentation order as before) and
-  libwebrtc's frames are dropped before conversion (frames an app asks for with addFrameListener still are); the
-  TextureView stays empty. A MediaCodec takes the mode it is configured in, so `video blank`/`video on` at run time
+  libwebrtc's frames are dropped before conversion (one an app asks for with addFrameListener is converted for it,
+  not drawn); the TextureView stays empty. A MediaCodec takes the mode it is configured in, so `video blank`/`video on` at run time
   apply to the next codec (and libwebrtc's next frame). `off`: the decoders are not listed, as on a device without
   them (ExoPlayer then plays the clip's audio alone); launch only, since players cache the codec list. Test runs never
   list them anyway, and Linux has no VideoToolbox.

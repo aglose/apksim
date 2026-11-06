@@ -2,9 +2,9 @@ package dev.apksim;
 
 /**
  * Per-instance switches for what an instance spends on things a journey may not need: the frame rate (--max-fps),
- * video (--video on|blank|off) and sound (--audio on|mute|off). Read from the launch's properties by {@link #load},
- * which Host runs after a standby takes the launch (a standby's own properties are the ones it booted with), and on
- * first use elsewhere (test runs launch cold). The {@code maxfps} and {@code video} commands change the first two
+ * video (--video on|blank|off) and sound (--audio on|mute|off). Read from the launch's properties on first use, and
+ * again by {@link #load} when a standby takes a launch (its warm-up read the standby's own), before the app's
+ * Application exists. The {@code maxfps} and {@code video} commands change the first two
  * while the instance runs.
  *
  * <ul>

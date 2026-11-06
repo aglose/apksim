@@ -103,7 +103,6 @@ public class Host {
     Timing.mark("framework-ready");
     SimWindow.boostThread();
     RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
-    Features.load();
     DeviceControls.applyLaunchOptions();
     // By default Robolectric's vsync fires at once and advances the clock itself, which suits tests but
     // spins forever inside the looper on any endless animation. Paused mode fires only when the clock
@@ -225,10 +224,14 @@ public class Host {
         }
       }
       long looperStart = System.nanoTime();
-      if (availableMs > MAX_CATCH_UP_MS) {
+      // A stall is longer than two grid intervals as well: under a low frame rate cap pace() waits an interval on
+      // purpose, and with 50 ms alone every turn at 20 fps or less lost its excess (the clock fell 4.6 s behind real
+      // time in 10 s at 20 fps, so timers fired late).
+      long maxCatchUpMs = Math.max(MAX_CATCH_UP_MS, 2000 / gridHz());
+      if (availableMs > maxCatchUpMs) {
         // A long stall: time spent stalled is not replayed.
-        last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
-        stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
+        last += (availableMs - maxCatchUpMs) * 1_000_000;
+        stepMs = Math.min(stepMs, maxCatchUpMs);
       }
       if (stepMs > 0) {
         last += stepMs * 1_000_000;

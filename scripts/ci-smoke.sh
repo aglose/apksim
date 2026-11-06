@@ -62,16 +62,25 @@ echo "Popup and Trace: $shown-> $tapped"
 drive back 'wait 1000' >/dev/null
 
 # A frame rate cap (maxfps, as --max-fps): the Shader tab animates without end, and draws no faster than the cap.
+# Counted from `stats` over a timed window, not `frames`: that leaves out intervals of 100 ms or more, and under
+# Rosetta a CPU-drawn Shader frame can take that long.
 cap=20
-drive "maxfps $cap" 'tap 720 1690' 'wait 1500' frames 'wait 3000' >/dev/null
-capped="$(drive frames)"
+drive "maxfps $cap" 'tap 720 1690' 'wait 1500' >/dev/null
+capped="$(python3 - "$ROOT/scripts/drive.py" "$PORT" "$cap" <<'EOF'
+import re, subprocess, sys, time
+drive, port, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def frames():
+    out = subprocess.run(["python3", drive, port, "stats"], capture_output=True, text=True).stdout
+    return int(re.search(r"frames=(\d+)", out).group(1))
+f0, t0 = frames(), time.monotonic()
+time.sleep(4)
+n, secs = frames() - f0, time.monotonic() - t0
+print(f"{n} frames in {secs:.1f} s ({n / secs:.1f} fps)")
+assert 0 < n <= cap * secs + 2, f"not capped at {cap} fps: {n} frames in {secs:.1f} s"
+EOF
+)" || { echo "$capped" >&2; exit 1; }
 drive 'maxfps 120' 'tap 130 1690' 'wait 1000' >/dev/null
 echo "Capped at $cap fps: $capped"
-python3 - "$capped" "$cap" <<'EOF'
-import re, sys
-m = re.search(r"frames=(\d+) avg=([\d.]+) fps", sys.argv[1])
-assert m and int(m.group(1)) > 0 and float(m.group(2)) <= int(sys.argv[2]) + 1, f"not capped: {sys.argv[1]}"
-EOF
 if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true

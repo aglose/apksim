@@ -127,10 +127,12 @@ public class SimEglRenderer extends EglRenderer {
       listeners.clear();
     }
     if (target == null && waiting.isEmpty()) return;  // No surface: dropped, as the GL renderer does.
-    // --video blank (Features): nothing drawn, so no conversion either. A frame the app asked for (a listener) still is.
-    if (waiting.isEmpty() && dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK) {
+    // --video blank (Features): nothing drawn, so no conversion either. A frame the app asked for (a listener) is
+    // still converted for it, but not drawn: the view stays empty.
+    if (dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK) {
       VideoSurfaces.webrtcBlank.incrementAndGet();
-      return;
+      if (waiting.isEmpty()) return;
+      target = null;
     }
     // Scaled down to the view before converting, with libyuv on this (the decode) thread: drawing a 4K picture
     // into a phone-sized view cost the raster thread ~50 ms a frame.
