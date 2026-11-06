@@ -91,8 +91,9 @@ public final class TestActivities {
    * meanwhile: a coroutine on Dispatchers.Main resumes, a Handler post runs. Here the test is on the main thread and a
    * plain sleep would hold all of that back until the test next idles the looper, so work that needs one more turn
    * of the main thread never got there and the poll timed out. So, in a test run, on the main thread and outside any
-   * message being dispatched (where a device's main thread would be the one sleeping), the sleep runs the queue's due
-   * messages as it goes (the clock does not move, as in beforeUiThreadAction).
+   * message being dispatched or Compose test work handed to the UI thread (where a device's main thread would be the
+   * one sleeping; see inDispatch), the sleep runs the queue's due messages as it goes (the clock does not move, as in
+   * beforeUiThreadAction).
    */
   public static void sleep(long millis) throws InterruptedException {
     if (millis <= 0 || !pumpsWhileSleeping()) {
@@ -205,12 +206,20 @@ public final class TestActivities {
     }
   }
 
-  /** Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself. */
+  /**
+   * Whether the main thread is inside a message's dispatch (or a looper's own loop), not in the test body itself.
+   * Compose's test library hands its clock's frames and runOnIdle to runOnUiThread, which on a device is a message on
+   * the main thread, so that counts too. Its frames compose and measure outside any Handler message here, and a park
+   * there (a composable's runBlocking, as Compose Multiplatform's stringResource does) ran the main queue: a window
+   * frame then drew the Compose view, whose measureAndLayout ran again inside the measure already in progress
+   * ("performMeasureAndLayout called during measure layout"). On a device that park just blocks the main thread.
+   */
   private static boolean inDispatch() {
     return StackWalker.getInstance().walk(s -> s.anyMatch(f -> {
       String c = f.getClassName();
       return (c.equals("android.os.Handler") && f.getMethodName().equals("dispatchMessage")) || c.equals("android.os.Looper")
-          || c.equals("android.view.Choreographer$FrameDisplayEventReceiver");
+          || c.equals("android.view.Choreographer$FrameDisplayEventReceiver")
+          || (c.equals("androidx.compose.ui.test.AndroidSynchronization_androidKt") && f.getMethodName().equals("runOnUiThread"));
     }));
   }
 
