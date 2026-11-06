@@ -2,6 +2,8 @@ package dev.apksim.composeapp
 
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -62,7 +64,7 @@ class NetworkReplayTest {
       override fun onLost(network: Network) { lost++ }
       override fun onAvailable(network: Network) { available++ }
     }
-    cm.registerDefaultNetworkCallback(callback)  // as on a device, it hears of the current network (posted)
+    cm.registerDefaultNetworkCallback(callback, Handler(Looper.getMainLooper()))  // as on a device, it hears of the current network (posted)
     try {
       shell("apksim network offline")
       assertEquals("onLost calls", 1, lost)

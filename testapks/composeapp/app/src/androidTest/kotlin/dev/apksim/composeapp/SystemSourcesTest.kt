@@ -8,6 +8,8 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
@@ -132,8 +134,8 @@ class SystemSourcesTest {
     val listened = mutableListOf<Network>()
     val requestCb = object : ConnectivityManager.NetworkCallback() { override fun onAvailable(n: Network) { requested += n } }
     val listenCb = object : ConnectivityManager.NetworkCallback() { override fun onAvailable(n: Network) { listened += n } }
-    cm.requestNetwork(request, requestCb)
-    cm.registerNetworkCallback(request, listenCb)
+    cm.requestNetwork(request, requestCb, Handler(Looper.getMainLooper()))
+    cm.registerNetworkCallback(request, listenCb, Handler(Looper.getMainLooper()))
     try {
       pumpMainThread()
       assertEquals("requestNetwork's onAvailable calls", listOf(cm.activeNetwork), requested)
@@ -163,9 +165,9 @@ class SystemSourcesTest {
     val withdrawn = mutableListOf<String>()
     val metCb = recorder(met)
     val withdrawnCb = recorder(withdrawn)
-    cm.requestNetwork(unsatisfiable, recorder(missed), 500)
-    cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), metCb, 500)
-    cm.requestNetwork(unsatisfiable, withdrawnCb, 500)
+    cm.requestNetwork(unsatisfiable, recorder(missed), mainHandler(), 500)
+    cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), metCb, mainHandler(), 500)
+    cm.requestNetwork(unsatisfiable, withdrawnCb, mainHandler(), 500)
     cm.unregisterNetworkCallback(withdrawnCb)
     try {
       runBlocking { delay(1_500) }
@@ -254,7 +256,7 @@ class SystemSourcesTest {
       override fun onUnavailable() { events += "unavailable" }
     }
     try {
-      cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), cb, 500)
+      cm.requestNetwork(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), cb, mainHandler(), 500)
       runBlocking { delay(200) }
       shell("apksim network online")
       runBlocking { delay(100) }
@@ -281,7 +283,7 @@ class SystemSourcesTest {
       override fun onAvailable(n: Network) { events += "available" }
       override fun onLost(n: Network) { events += "lost" }
     }
-    cm.registerDefaultNetworkCallback(cb)
+    cm.registerDefaultNetworkCallback(cb, Handler(Looper.getMainLooper()))
     try {
       shell("apksim network offline")
       shell("apksim network online")
@@ -310,8 +312,8 @@ class SystemSourcesTest {
     }
     val defaultCb = recorder(defaults)
     val listenCb = recorder(listens)
-    cm.registerDefaultNetworkCallback(defaultCb)
-    cm.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), listenCb)
+    cm.registerDefaultNetworkCallback(defaultCb, Handler(Looper.getMainLooper()))
+    cm.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), listenCb, Handler(Looper.getMainLooper()))
     try {
       pumpMainThread()
       // apksim's hook: no device control does this (a device is plugged into Ethernet).
@@ -341,7 +343,7 @@ class SystemSourcesTest {
     val cb = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(n: Network) { told += n.toString() }
     }
-    cm.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities().build(), cb)
+    cm.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities().build(), cb, Handler(Looper.getMainLooper()))
     try {
       pumpMainThread()
       assertFalse("told of the disconnected network $netId: $told", netId.toString() in told)
@@ -371,7 +373,7 @@ class SystemSourcesTest {
       override fun onLinkPropertiesChanged(n: Network, link: android.net.LinkProperties) { events += "link" }
       override fun onLost(n: Network) { events += "lost" }
     }
-    cm.registerDefaultNetworkCallback(cb)
+    cm.registerDefaultNetworkCallback(cb, Handler(Looper.getMainLooper()))
     try {
       pumpMainThread()
       assertEquals(listOf("available", "caps", "link", "lost"), events)
@@ -379,6 +381,9 @@ class SystemSourcesTest {
       cm.unregisterNetworkCallback(cb)
     }
   }
+
+  /** Callbacks that the test reads right after a change take the main looper, where their delivery runs. */
+  private fun mainHandler() = Handler(Looper.getMainLooper())
 
   private fun shell(command: String) =
     InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command).close()
