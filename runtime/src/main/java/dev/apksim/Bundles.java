@@ -756,14 +756,20 @@ public final class Bundles {
       nodesPending = false;
       long t0 = System.nanoTime();
       captureSince = t0;
+      StringBuilder parts = new StringBuilder();
       try {
+        // As a part, as when read at once: its deadline interrupts a provider that waits, and one that ran past it is
+        // skipped in later bundles.
         String what = finishing == null ? "every window" : finishing.getClass().getName() + "'s windows";
-        write(dir.resolve("nodes.txt"), redact("read " + when + ", after the capture (Espresso's failure handler), from "
-            + what + "\n" + nodes(finishing)));
+        part(parts, "nodes.txt", () -> write(dir.resolve("nodes.txt"), redact("read " + when
+            + ", after the capture (Espresso's failure handler), from " + what + "\n" + nodes(finishing))));
       } finally {
         captureNanos += System.nanoTime() - t0;
         captureSince = 0;
       }
+      // failure.txt's parts list says how the deferred read went, as it does for the others.
+      Files.writeString(dir.resolve("failure.txt"), redact("  (read " + when + ")\n" + parts),
+          StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
     } catch (Throwable e) {
       System.err.println("[apksim] failure bundle: nodes.txt not written: " + e);
     } finally {

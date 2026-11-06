@@ -125,6 +125,9 @@ def main():
     nodes = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingView"), "nodes.txt")
     check(os.path.exists(nodes) and "read as MainActivity finished" in open(nodes).read(),
           "the Espresso handler's bundle reads its tree as the scenario closes, not in the handler")
+    failure = os.path.join(local, folder(PKG + "FailureBundleEspressoTest", "noMatchingView"), "failure.txt")
+    check(os.path.exists(failure) and re.search(r"\(read as MainActivity finished\)\n  nodes\.txt \d+ ms\n", open(failure).read()),
+          "failure.txt reports the deferred read's time, as for the other parts")
     exp = cases.get((PKG + "FailureBundleExpectedTest", "expectedThrows"))
     check(exp is not None and exp.find("failure") is None and exp.find("skipped") is None,
           "@Test(expected) passes, with no bundle started for it (its @After checks before the test's end)")
