@@ -140,7 +140,8 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
 | | `--fresh` | Erase the app's data first, as if just installed |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
-| | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` reports, for example `android.hardware.camera.any`; `=false` takes one away. Repeatable |
+| | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
+| | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
 | | `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9` or `VERSION.SECURITY_PATCH=2026-10-05` (not `VERSION.SDK_INT`: the framework is API 36). Repeatable. In test runs leave `FINGERPRINT` alone: with a device's, Compose's test rule waits for draw passes that never come |
 | Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
 | | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
@@ -214,7 +215,7 @@ state folder.
 | Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `bars [status on\|off] [nav gesture\|off]`, `config` |
 | Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
-| Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
+| Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `bluetooth [on\|off\|toggle]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]` |
@@ -248,7 +249,8 @@ tools work against it.
 - **Input and screen:** `input tap|swipe|text|keyevent`, `screencap`, `uiautomator dump` (the stock XML, Compose
   nodes and test tags included).
 - **App control:** `am start` (including deep links), `am broadcast` (with its result), `am instrument` of an instrumentation that targets its own package, `monkey`.
-- **Packages and settings:** `pm list|path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
+- **Packages and settings:** `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `pm install` and `adb install` of an instrumentation-only APK, `wm size|density`, `settings get|put`, `cmd uimode night`, `getprop`.
+- **Bluetooth:** `svc bluetooth enable|disable`, `cmd bluetooth_manager enable|disable|wait-for-state:STATE_ON`, `settings put global bluetooth_on 0|1`, `dumpsys bluetooth_manager`; the app gets `ACTION_STATE_CHANGED` as on a device.
 - **Files:** `ls/cat/rm/mkdir`, `run-as`, and `adb push/pull` of the app's data folder, `/sdcard` and `/data/local/tmp`.
 - **Logs and forwarding:** `logcat` (with filters), `adb forward` to a `LocalServerSocket`.
 - **Anything else:** `adb shell apksim CMD` runs any [control command](#automation).

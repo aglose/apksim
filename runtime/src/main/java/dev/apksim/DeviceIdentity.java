@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-import org.robolectric.Shadows;
 import org.robolectric.shadows.ShadowBuild;
 import org.robolectric.util.ReflectionHelpers;
 
@@ -23,9 +22,10 @@ import org.robolectric.util.ReflectionHelpers;
  *       answers "unknown", which a backend that checks a serial's format rejects, so by default it is 16 letters and
  *       digits derived from the data slot: the same each launch of one slot (one device), another for another slot
  *       (instance-1, serve-0), and the default slot's in test runs.</li>
- *   <li>system features, PackageManager.hasSystemFeature ({@code --feature NAME}, repeatable, -Dapksim.features=a,b;
- *       {@code NAME=false} takes one away): Robolectric's package manager has none of a phone's hardware features,
- *       so an app that tells device variants apart by FEATURE_CAMERA_ANY always saw the camera-less one.</li>
+ *   <li>system features (SystemFeatures: a device's defaults for its kind, then {@code --feature NAME}, repeatable,
+ *       -Dapksim.features=a,b; {@code NAME=false} takes one away): Robolectric's package manager has only a few, so
+ *       an app that tells device variants apart by FEATURE_CAMERA_ANY always saw the camera-less one. Then the
+ *       Bluetooth adapter, which follows android.hardware.bluetooth (Bluetooth).</li>
  *   <li>any Build or Build.VERSION field ({@code --build FIELD=VALUE}, repeatable, -Dapksim.build.FIELD=VALUE):
  *       MODEL, MANUFACTURER, BRAND, DEVICE, PRODUCT, VERSION.RELEASE, VERSION.SECURITY_PATCH..., typed by the field
  *       (String, int, long, boolean, String[] from a comma list).</li>
@@ -42,7 +42,8 @@ final class DeviceIdentity {
       String serial = serial();
       ShadowBuild.setSerial(serial);
       ReflectionHelpers.setStaticField(Build.class, "SERIAL", serial);
-      features(app);
+      SystemFeatures.beforeApplicationOnCreate(app);
+      Bluetooth.beforeApplicationOnCreate(app);
     } catch (RuntimeException e) {
       System.err.println("[apksim] device identity: " + e);
     }
@@ -74,24 +75,6 @@ final class DeviceIdentity {
     out[0] = (char) ('A' + (h[16] & 0xff) % 26);
     out[1] = (char) ('0' + (h[17] & 0xff) % 10);
     return new String(out);
-  }
-
-  /** -Dapksim.features=a,b,c=false: each one made present (or, with =false, absent). */
-  private static void features(Application app) {
-    String list = System.getProperty("apksim.features");
-    if (list == null || list.isBlank()) return;
-    var pm = Shadows.shadowOf(app.getPackageManager());
-    for (String f : list.split(",")) {
-      f = f.trim();
-      if (f.isEmpty()) continue;
-      boolean on = true;
-      int eq = f.indexOf('=');
-      if (eq > 0) {
-        on = !f.substring(eq + 1).trim().equalsIgnoreCase("false");
-        f = f.substring(0, eq).trim();
-      }
-      pm.setSystemFeature(f, on);
-    }
   }
 
   /** The -Dapksim.build.FIELD=VALUE properties, by field name (upper case). */

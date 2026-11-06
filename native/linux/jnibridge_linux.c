@@ -13,6 +13,7 @@ const char *elf_search_dir(void) { return search; }
 
 JNIEXPORT jlong JNICALL Java_dev_apksim_ElfLoader_nativeLoad(JNIEnv *env, jclass c, jstring jpath, jstring jdir) {
   if (!vm) (*env)->GetJavaVM(env, &vm);
+  jnigraphics_init(env);
   const char *dir = (*env)->GetStringUTFChars(env, jdir, NULL);
   strlcpy(search, dir, sizeof search);
   elf_set_search_dir(dir);
