@@ -125,6 +125,7 @@ final class GpuBitmaps {
   private static final float[] M = new float[9];
   private static final Rect CLIP = new Rect();
   private static final Rect DST = new Rect();
+  private static final android.graphics.ColorSpace SRGB = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB);
 
   /**
    * Draws [b]'s [src] (null: all of it), scaled into the local rect l, t, r, bottom of recording canvas [c], as a
@@ -138,7 +139,8 @@ final class GpuBitmaps {
     if (!ENABLED || bypass || !framesRun || p == null || !p.isFilterBitmap() || !Looper.getMainLooper().isCurrentThread()) {
       return false;
     }
-    if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || b.hasMipMap()) {
+    // The copy is made from the raw bytes into an sRGB bitmap: another colour space (Display P3) would change colour.
+    if (b.isRecycled() || b.getConfig() != Bitmap.Config.ARGB_8888 || b.hasMipMap() || b.getColorSpace() != SRGB) {
       passed[0]++;
       return false;
     }
@@ -275,7 +277,8 @@ final class GpuBitmaps {
    * whether or not it asks for any here. Main thread for Views and Compose; a recording elsewhere holds nothing here.
    */
   static void recordingStarts(RenderNode node) {
-    if (!HELD.isEmpty() && Looper.getMainLooper().isCurrentThread()) HELD.remove(node);
+    // The thread first: even isEmpty() changes a WeakHashMap (it drops collected keys).
+    if (Looper.getMainLooper().isCurrentThread() && !HELD.isEmpty()) HELD.remove(node);
   }
 
   private static void held(RenderNode node, Key key) {
