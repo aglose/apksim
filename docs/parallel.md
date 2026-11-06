@@ -109,6 +109,34 @@ FAB three times and checked the count, opened Trips and checked a trip, then ran
 Throughput levels off between 16 and 24 instances on 12 cores (about 38 scripts a minute); 32 still all pass, each
 more slowly. Memory is not the limit: ~220-340 MB resident each.
 
+## Spending less per instance
+
+Launch options for what a journey does not need (AGENTS.md, "Per-instance costs"): `--max-fps N`, `--video
+on|blank|off`, `--audio on|mute|off`, `--anim-scale N`. Each is per instance, so instances of one fleet or one CI job
+can differ, and warm launches take them. With fleet.py: `fleet.py N APK -- --max-fps 30 --video blank -- CMD...`.
+
+Measured 2026-11-05 on the Mac, one headless instance of the test app, CPU-seconds of the whole process over the
+window (one run each; the machine was otherwise quiet):
+
+| Launch | Home, idle 5 s | Shader tab 6 s (fps) | First clip play (9 s) | Second play |
+|---|---|---|---|---|
+| default, before the grid fix | 0.3 | 6.9 (105) | 3.7 | 1.0 |
+| default | 0.4 | 4.1 (120) | 3.7 | 0.7 |
+| `--max-fps 60` | 0.2 | 2.6 (60) | 2.6 | 0.5 |
+| `--max-fps 30` | 0.4 | 1.3 (30) | 3.3 | 0.6 |
+| `--video blank` | 0.2 | 4.3 (120) | 2.1 | 0.6 |
+| `--video off` | 0.2 | 3.7 (120) | 2.1 | 0.5 |
+| `--audio off` | 0.3 | 3.6 (120) | 3.2 | 0.5 |
+
+The clip is the test app's 3 s 640x360 HEVC + AAC (Settings, "Play clip"); a first play includes loading Media3's
+classes, which is the app's own cost and stays. apksim's own share of a play with video on is small: ~15 ms of
+VideoToolbox decoding and ~5-50 ms of drawing for 90 pictures (`video` counters), plus a screen frame per picture.
+With blank or off the clip still ends at 3.0 s. "Before the grid fix": the frame loop spun the main thread between
+grid lines whenever anything animated (AGENTS.md, Hard-won rules), so every headless instance and every hidden
+window paid about half a core extra while animating. So for many instances: cap the frame rate first (anything animating
+costs in proportion), then video, which only matters on screens that play it. Memory hardly moves with any of
+these: resident size was 330-500 MB in every run, the peak set by the player's own buffers.
+
 ## What sets the limits
 
 - **CPU, not memory.** One test process keeps 1-1.5 cores busy (the test's thread, the app's coroutines and render

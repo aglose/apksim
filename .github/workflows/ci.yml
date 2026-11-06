@@ -113,6 +113,19 @@ jobs:
           assert len(cases) == 3 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity tests")
           EOF
+      # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
+      - name: Test run with animations off
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-animscale.xml -e class dev.apksim.composeapp.AnimScaleOptionTest -e animScale 0 \
+            -- --anim-scale 0
+          python3 - tests/junit-animscale.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter("testcase"))
+          bad = [c.get("name") for c in cases if c.find("skipped") is not None or c.find("failure") is not None]
+          assert len(cases) == 2 and not bad, f"tests: {[c.get('name') for c in cases]}, skipped or failed {bad}"
+          print(f"{len(cases)} animation scale tests")
+          EOF
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.
       - name: Test run with the network replayed
