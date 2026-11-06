@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.delay
@@ -17,18 +18,25 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * What a quick-settings panel awaits before it shows anything (issue 96), as apksim://system-sources awaits it:
  * Wi-Fi's and the network's sticky broadcasts, the battery's, network callbacks, VOLUME_CHANGED_ACTION after
- * setStreamVolume, a settings observer, a callback registered in Application.onCreate. On a device each answers at once; one that never does leaves the panel empty.
- * (Bluetooth's profile proxy connects only while Bluetooth is on, as on a device.)
+ * setStreamVolume, a settings observer, a callback registered in Application.onCreate. On a device each answers at
+ * once; one that never does leaves the panel empty. (Bluetooth's profile proxy connects only while Bluetooth is on, as
+ * on a device.) The class also runs on a device or emulator: what needs apksim (its test hooks, `apksim` shell
+ * commands, its exact values) is skipped there.
  */
 @RunWith(AndroidJUnit4::class)
 class SystemSourcesTest {
   private val context = InstrumentationRegistry.getInstrumentation().targetContext
+  private val onApksim = Build.FINGERPRINT == "robolectric"
+
+  /** A case for apksim only: its test hooks, `apksim` shell commands, its exact values. */
+  private fun apksimOnly(what: String) = assumeTrue("$what: apksim only", onApksim)
 
   @Test
   fun everySourceAnswers() {
@@ -50,12 +58,30 @@ class SystemSourcesTest {
     val wm = context.getSystemService(WifiManager::class.java)
     assertEquals("getMaxSignalLevel()", 4, wm.maxSignalLevel)
     @Suppress("DEPRECATION") val info = wm.connectionInfo
+    val level = wm.calculateSignalLevel(info.rssi) / (wm.maxSignalLevel / 4)
+    assertTrue("level $level", level in 0..4)
+    assertFalse(SystemSources.wifiLevel(context), SystemSources.wifiLevel(context).startsWith("error"))
+    @Suppress("DEPRECATION") val classic = WifiManager.calculateSignalLevel(-70, 5)
+    assertEquals("static calculateSignalLevel(-70, 5)", 2, classic)
+    // A device shows the SSID and BSSID only to an app with ACCESS_FINE_LOCATION (--permissions grant).
+    if (!located()) {
+      assertEquals("SSID without location permission", WifiManager.UNKNOWN_SSID, info.ssid)
+      assertTrue("BSSID without location permission: ${info.bssid}", info.bssid == null || info.bssid == "02:00:00:00:00:00")
+    }
+  }
+
+  private fun located() = context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+    android.content.pm.PackageManager.PERMISSION_GRANTED
+
+  /** apksim's Wi-Fi: the host's network as a connection at -50 dBm on 5 GHz, levels on the platform's thresholds. */
+  @Test
+  fun apksimWifiIsAConnectedDevicesWifi() {
+    apksimOnly("apksim's Wi-Fi values")
+    val wm = context.getSystemService(WifiManager::class.java)
+    @Suppress("DEPRECATION") val info = wm.connectionInfo
     assertEquals("connected RSSI", -50, info.rssi)
     assertTrue("frequency ${info.frequency}", info.frequency > 0)
-    // A device shows the SSID, BSSID and network id only to an app with ACCESS_FINE_LOCATION (--permissions grant).
-    val located = context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
-      android.content.pm.PackageManager.PERMISSION_GRANTED
-    if (located) {
+    if (located()) {
       assertEquals("SSID with location permission", "\"AndroidWifi\"", info.ssid)
       assertTrue("BSSID with location permission: ${info.bssid}", info.bssid != null && info.bssid != "02:00:00:00:00:00")
       assertTrue("network id with location permission", info.networkId >= 0)
@@ -67,17 +93,14 @@ class SystemSourcesTest {
       val transport = cm.getNetworkCapabilities(cm.activeNetwork)?.transportInfo as? android.net.wifi.WifiInfo
       assertEquals("the network capabilities' WifiInfo BSSID", "02:00:00:00:00:00", transport?.bssid)
     }
-    val level = wm.calculateSignalLevel(info.rssi) / (wm.maxSignalLevel / 4)
-    assertTrue("level $level", level in 0..4)
     assertEquals(4, wm.calculateSignalLevel(-50))
     assertEquals(0, wm.calculateSignalLevel(-95))
-    @Suppress("DEPRECATION") val classic = WifiManager.calculateSignalLevel(-70, 5)
-    assertEquals("static calculateSignalLevel(-70, 5)", 2, classic)
     assertTrue(SystemSources.wifiLevel(context), SystemSources.wifiLevel(context).startsWith("level 4 of 4"))
   }
 
   @Test
   fun offlineWifiIsDisconnected() {
+    apksimOnly("`apksim network offline`")
     shell("apksim network offline")
     val wm = context.getSystemService(WifiManager::class.java)
     @Suppress("DEPRECATION") val info = wm.connectionInfo
@@ -88,12 +111,15 @@ class SystemSourcesTest {
 
   @Test
   fun aStartupProviderReadsTheBattery() {
-    assertEquals("battery level a provider's onCreate read", 100, StartupProvider.batteryAtCreate)
+    val level = StartupProvider.batteryAtCreate
+    assertTrue("battery level a provider's onCreate read: $level", level != null && level in 0..100)
+    if (onApksim) assertEquals("apksim's full battery", 100, level)
   }
 
   /** An active request is served by one network (the default one), a listen hears of every network it matches. */
   @Test
   fun requestNetworkGetsOneNetwork() {
+    apksimOnly("the host's networks as apksim offers them")  // a device's request may bring up another network
     val cm = context.getSystemService(ConnectivityManager::class.java)
     // Without NOT_VPN, so the host's VPNs (if any) match too.
     val request = NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -122,6 +148,7 @@ class SystemSourcesTest {
    */
   @Test
   fun offlineAndOnlineBeforeTheFirstCallbackArriveInOrder() {
+    apksimOnly("`apksim network offline|online`")
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val events = mutableListOf<String>()
     val cb = object : ConnectivityManager.NetworkCallback() {
@@ -146,6 +173,7 @@ class SystemSourcesTest {
    */
   @Test
   fun aDefaultNetworkSwitchIsOnlyOnAvailable() {
+    apksimOnly("NetConnectivity's test hook")
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val wifi = cm.activeNetwork!!
     val defaults = mutableListOf<String>()
@@ -179,6 +207,7 @@ class SystemSourcesTest {
    */
   @Test
   fun aBroadRequestHearsOnlyOfConnectedNetworks() {
+    apksimOnly("NetConnectivity's test hook")
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val netId = Class.forName("dev.apksim.NetConnectivity").getDeclaredMethod("addDisconnectedNetworkForTest")
       .apply { isAccessible = true }.invoke(null) as Int
@@ -204,6 +233,7 @@ class SystemSourcesTest {
   /** A callback that goes offline from inside onAvailable still gets that announcement whole, then onLost. */
   @Test
   fun goingOfflineFromOnAvailableKeepsTheOrder() {
+    apksimOnly("`apksim network offline`")
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val events = mutableListOf<String>()
     val cb = object : ConnectivityManager.NetworkCallback() {
@@ -235,11 +265,14 @@ class SystemSourcesTest {
     @Suppress("UnspecifiedRegisterReceiverFlag")
     val battery = context.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     assertNotNull("registerReceiver(null, ACTION_BATTERY_CHANGED)", battery)
-    assertEquals(100, battery!!.getIntExtra(BatteryManager.EXTRA_LEVEL, -1))
+    val level = battery!!.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    assertTrue("battery level $level", level in 0..100)
+    if (onApksim) assertEquals("apksim's full battery", 100, level)
   }
 
   @Test
   fun offlineTheStickyConnectivityBroadcastSaysSo() {
+    apksimOnly("`apksim network offline`")
     shell("apksim network offline")
     val conn = runBlocking {
       withTimeoutOrNull(5_000) { SystemSources.sticky(context, ConnectivityManager.CONNECTIVITY_ACTION).first() }
