@@ -601,8 +601,16 @@ static int s_pthread_create(pthread_t *t, const AAttr *a, void *(*fn)(void *), v
   pthread_attr_init(&h);
   size_t stack = a && a->stack ? a->stack : 1 << 20;
   size_t page = 16384;
-  if (a && a->base) pthread_attr_setstack(&h, a->base, stack);
-  else pthread_attr_setstacksize(&h, (stack + page - 1) & ~(page - 1));
+  if (a && a->base) {
+    // The app's own stack: if macOS refuses it (alignment, size), say so rather than run on another one.
+    int r = pthread_attr_setstack(&h, a->base, stack);
+    if (r) {
+      pthread_attr_destroy(&h);
+      return d2a_errno(r);
+    }
+  } else {
+    pthread_attr_setstacksize(&h, (stack + page - 1) & ~(page - 1));
+  }
   if (a && a->detach) pthread_attr_setdetachstate(&h, PTHREAD_CREATE_DETACHED);
   int r = pthread_create(t, &h, fn, arg);
   pthread_attr_destroy(&h);
