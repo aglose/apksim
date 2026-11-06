@@ -267,8 +267,12 @@ BIND_AUTO_CREATE binding is left) and never onServiceDisconnected; connections b
 the service get onServiceDisconnected and onBindingDied, and are not connected again. As on the API 36 emulator (`NullBindingTest`), the
 service class initializes on the main thread, onBind gets the first binding's intent for its filter even if that
 binding ended before the service ran, and a connection bound twice hears of a binder once but of a null binding once
-per binding (LoadedApk's ServiceDispatcher). Other packages' services, and intents a binder was
-registered for through ShadowApplication (the FCM service below), stay Robolectric's. A bound service is not the
+per binding (LoadedApk's ServiceDispatcher). Intents a binder was registered for through ShadowApplication (the FCM
+service below) stay Robolectric's. A bind no installed service resolves (another app's: a companion app, Play
+services) returns false and never calls back, and unbinding that connection calls nothing either, as on a device;
+Robolectric returned true and called onServiceConnected(null, null), then onServiceDisconnected(null) on unbind, which
+a Kotlin connection's non-null parameters threw on (a running instance died on its first idle; `apksim://install`,
+`BindServiceTest`). A bound service is not the
 instance startService runs, and an `android:process` service gets its local binder, not a proxy.
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
@@ -339,7 +343,14 @@ ShadowPackageManager.setSystemFeature: Robolectric reports no hardware features,
 `VERSION.SECURITY_PATCH=...`, typed by the field; not VERSION.SDK_INT, and leave FINGERPRINT alone in test runs,
 see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
 checks them (CI runs it with the options). A running instance takes its data slot in the same hook (`Host.usePersistentDataDir`,
-before onCreate, not in `Host.run` after it), so what onCreate writes is kept and `APKSIM_LOGCAT` shows its log. Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+before onCreate, not in `Host.run` after it), so what onCreate writes is kept and `APKSIM_LOGCAT` shows its log.
+Then, as in test runs, what installing gives the app (`InstallState`, see "Instrumentation tests"): normal permissions
+granted (one app's onCreate threw "Need BLUETOOTH permission" before), an ANDROID_ID (from the data slot, as the
+serial), the host's networks, and the app's content providers created (AndroidX Startup's initializers ran never
+before, providers being made only when first queried); a provider that fails is logged and skipped
+(`-Dapksim.providerFailures=fail` stops the launch, as a device's crash). The standby's warm-up loads Conscrypt's
+native library, which OkHttp's startup initializer asks for (~125 ms of a warm launch otherwise). `apksim://install`
+(`InstallStateActivity`) shows what onCreate saw and binds to a service nothing provides (`ci-smoke.sh` checks it). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
@@ -799,7 +810,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - The framework's 8 dp touch slop (`Host.useDeviceGestureThresholds`), JniConstants warmed on the main thread (Coil's
   ImageDecoder on a worker aborted the process), and receivers registered before a test's reset can be unregistered
   (WebRTC's NetworkMonitor, a static, aborted at teardown otherwise).
-- Before Application.onCreate, as installing and ActivityThread do (`InstallState`): `Settings.Secure.ANDROID_ID` is set
+- Before Application.onCreate, as installing and ActivityThread do (`InstallState`, in running instances too: see
+  "Simulator features"): `Settings.Secure.ANDROID_ID` is set
   (Robolectric leaves it null), every requested permission of protection level normal is granted (runtime ones too
   with `--permissions grant`; signature, privileged and internal ones stay denied unless the app defines them, with
   the framework's levels read from its own manifest, which Robolectric's package manager lacks), and the app's content
@@ -814,8 +826,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   exists (a factory reading the instrumentation's arguments or the app's resources fails), class fixtures run once
   per set rather than once, and the test APK's context is published after the Application's onCreate (an Application
   or provider calling getInstrumentation().getContext() at startup gets the app's).
-- bindService to a service no installed app has returns false and never calls back (Robolectric called back with
-  nulls, which Kotlin's non-null parameters threw on). `LockSupport.parkNanos` on the main thread in a test run
+- bindService to a service no installed app has returns false and never calls back, in running instances too (see
+  "Bound services"). `LockSupport.parkNanos` on the main thread in a test run
   (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
