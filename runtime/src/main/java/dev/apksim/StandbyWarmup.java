@@ -73,7 +73,8 @@ public class StandbyWarmup {
     try {
       // What Host sets up for every app (registrations are reset after this test; classes and libraries stay).
       ClassCache.runtimeHash();
-      HostNetworks.install(app);
+      InstallState.warm(app);
+      conscrypt();
       dev.apksim.video.ShadowSimMediaCodec.install();
       javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new java.io.ByteArrayInputStream(
           "<manifest package=\"a\"><application><activity android:name=\".A\"/></application></manifest>".getBytes()))
@@ -91,6 +92,20 @@ public class StandbyWarmup {
         return;
       }
       Timing.detail("warm-round-" + round);
+    }
+  }
+
+  /**
+   * Conscrypt's native library (Robolectric's conscrypt-openjdk), loaded once per process: OkHttp's Android platform
+   * asks Conscrypt.isAvailable() when it starts, which extracts the library from its jar and loads it (~125 ms). Since
+   * running instances create the app's content providers before Application.onCreate, as a device does, that is AndroidX
+   * Startup's OkHttp initializer in a launch's first 0.3 s. Only checked: no security provider is installed.
+   */
+  private static void conscrypt() {
+    try {
+      Class.forName("org.conscrypt.Conscrypt", true, StandbyWarmup.class.getClassLoader()).getMethod("isAvailable").invoke(null);
+    } catch (ReflectiveOperationException | LinkageError e) {
+      System.err.println("[apksim] standby: conscrypt: " + e);
     }
   }
 

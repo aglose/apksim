@@ -576,14 +576,15 @@ public final class TestActivities {
     }
 
     /**
-     * Who the device is (DeviceIdentity: serial, features, --build), in running instances too, and in a test run what
-     * a device has before the app starts (InstallState); then the app's onCreate.
+     * Who the device is (DeviceIdentity: serial, features, --build) and what a device has before the app starts
+     * (InstallState), in running instances and test runs alike; then the app's onCreate.
      */
     @Implementation
     protected void callApplicationOnCreate(android.app.Application app) {
       // A running instance takes its data slot first (not a standby's warm-up, which has no APK yet), and with
       // APKSIM_LOGCAT the app's log reaches stderr from onCreate on, not from Host.run (after it).
-      if (!testRun() && System.getProperty("apksim.package") != null) {
+      boolean instance = !testRun() && System.getProperty("apksim.package") != null;
+      if (instance) {
         if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
         try {
           Host.usePersistentDataDir();
@@ -593,8 +594,20 @@ public final class TestActivities {
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
       DeviceControls.applyAnimScaleOption(app);  // --anim-scale, so the app's startup code sees it too
-      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
-      if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
+      // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it. Nor for
+      // a standby's warm-up, which has no APK.
+      if (testRun() ? !RunnerApplication.probing : instance) {
+        Timing.detail("device-identity");
+        try {
+          InstallState.beforeApplicationOnCreate(app);
+        } catch (Throwable crash) {
+          // A content provider that failed with -Dapksim.providerFailures=fail (running instances log and go on by
+          // default): a crash of the app's start, as on a device (Crashes). Returns only with -Dapksim.crashes=log.
+          if (Crashes.installed()) Crashes.mainThreadDied(crash);
+          throw crash;
+        }
+        Timing.detail("install-state");
+      }
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
             "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);
@@ -615,18 +628,27 @@ public final class TestActivities {
     /*
      * On a device bindService returns false, and never calls back, when no installed service matches the intent.
      * Robolectric returns true and calls onServiceConnected(null, null), which a Kotlin connection (non-null
-     * parameters) throws on: one app's bind to a service in a companion app that isn't installed failed every test.
-     * Other apps do not exist here, so a bind that BoundServices does not take (not one of the app's own services) and
-     * that no installed service resolves is a bind to nothing; what a test set up through ShadowApplication stays
-     * Robolectric's.
+     * parameters) throws on: one app's bind to a service in a companion app that isn't installed failed every test,
+     * and ended a running instance of it on its first idle. Other apps do not exist here, so a bind that BoundServices
+     * does not take (not one of the app's own services) and that no installed service resolves is a bind to nothing,
+     * in test runs and running instances alike; what a test set up through ShadowApplication stays Robolectric's.
      */
-    private static boolean resolves(Intent intent) {
-      if (!testRun()) return true;
+    private boolean resolves(Intent intent, android.content.ServiceConnection connection) {
       Context app = org.robolectric.RuntimeEnvironment.getApplication();
       if (app.getPackageManager().resolveService(intent, 0) != null) return true;
       System.err.println("[apksim] bindService: no installed service matches " + intent + "; false, as on a device");
+      refused.add(connection);
       return false;
     }
+
+    /*
+     * Connections a bind to nothing refused. A device registers the connection's dispatcher before it asks for the
+     * service and keeps it when the answer is no, so unbinding one is allowed and calls nothing back; Robolectric's
+     * unbindService would call onServiceDisconnected(null), which a Kotlin connection throws on as well. Weak: an app
+     * need not unbind a refused connection.
+     */
+    private final java.util.Set<android.content.ServiceConnection> refused =
+        java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
 
     /** An instrumentation started over adb (LiveInstrumentation) reports to that `am instrument`, not a watcher. */
     @Implementation
@@ -698,27 +720,35 @@ public final class TestActivities {
     @Override
     protected boolean bindService(Intent intent, android.content.ServiceConnection connection, int flags) {
       if (bindHere(intent, flags, null, connection)) return true;
-      if (!setUpByTest(intent) && !resolves(intent)) return false;
+      if (!setUpByTest(intent) && !resolves(intent, connection)) return false;
+      refused.remove(connection);
       return super.bindService(intent, connection, flags);
     }
 
     @Override
     protected boolean bindService(Intent intent, int flags, java.util.concurrent.Executor executor, android.content.ServiceConnection connection) {
       if (bindHere(intent, flags, executor, connection)) return true;
-      if (!setUpByTest(intent) && !resolves(intent)) return false;
+      if (!setUpByTest(intent) && !resolves(intent, connection)) return false;
+      refused.remove(connection);
       return super.bindService(intent, flags, executor, connection);
     }
 
     @Override
     protected void unbindService(android.content.ServiceConnection connection) {
+      // A refused connection may also hold a binding that succeeded (the same connection bound before or after); that
+      // one is unbound as usual. Only a connection whose every bind was refused has nothing to call back.
+      boolean wasRefused = refused.remove(connection);
       if (!BoundServices.of(RuntimeEnvironment.getApplication()).unbind(connection)) {
+        List<android.content.ServiceConnection> robolectric = ReflectionHelpers.getField(this, "boundServiceConnections");
+        if (wasRefused && !robolectric.contains(connection)) return;  // its binds returned false: nothing to call back
         super.unbindService(connection);
         return;
       }
       List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
       List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
       unbound.add(connection);
-      bound.remove(connection);
+      // bindHere listed the connection once per bind; a device's unbindService ends all of its bindings at once.
+      bound.removeIf(c -> c == connection);
     }
 
     /** What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents, a bind that throws). */
@@ -734,6 +764,7 @@ public final class TestActivities {
       // What a test set up through ShadowApplication stays Robolectric's.
       if (setUpByTest(intent)) return false;
       if (!BoundServices.of(RuntimeEnvironment.getApplication()).bind(intent, flags, executor, connection)) return false;
+      refused.remove(connection);
       List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
       List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
       bound.add(connection);
