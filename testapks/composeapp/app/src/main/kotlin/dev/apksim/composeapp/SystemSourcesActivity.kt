@@ -36,6 +36,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -46,7 +47,8 @@ import kotlin.coroutines.resume
  * apksim://system-sources: the system state a quick-settings panel (Wi-Fi, Bluetooth, volume, brightness, battery)
  * awaits in coroutines, each as an app wraps it (callbackFlow + first(), suspendCancellableCoroutine), with a timeout.
  * On a device every one answers at once: sticky broadcasts are delivered to a receiver as it registers, a network
- * callback hears of the networks that match it, a profile proxy connects. One that never answers leaves a panel
+ * callback hears of the networks that match it (one registered in Application.onCreate too), a profile proxy
+ * connects. One that never answers leaves a panel
  * waiting for ever with nothing on screen (issue 96). Each line reads "name: value" or "name: timed out";
  * SystemSourcesTest awaits the same sources in a test run.
  */
@@ -86,6 +88,7 @@ object SystemSources {
     "connectivity" to { sticky(context, ConnectivityManager.CONNECTIVITY_ACTION).first().let { "no connectivity ${it.getBooleanExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, false)}" } },
     "battery" to { sticky(context, Intent.ACTION_BATTERY_CHANGED).first().let { "level ${it.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)}/${it.getIntExtra(BatteryManager.EXTRA_SCALE, -1)}" } },
     "default network" to { defaultNetwork(context).first() },
+    "startup callback" to { ComposeApp.startupNetwork.filterNotNull().first() },
     "wifi callback" to { wifiCallback(context).first() },
     "audio devices" to { audioDevices(context).first() },
     "volume" to { volumeChange(context) },

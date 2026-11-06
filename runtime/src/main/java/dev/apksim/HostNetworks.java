@@ -90,7 +90,13 @@ final class HostNetworks {
         shadow.setLinkProperties(reported, activeLinks);
       }
     }
-    SystemBroadcasts.network(context);  // Wi-Fi's and the network's sticky broadcasts say so
+    // Callbacks registered before (in Application.onCreate, when Host installs these after it) hear of them now, and
+    // the sticky broadcasts say so. Not with --network-profile offline: NetConnectivity.networksReplaced, next, takes
+    // these away again, then tells everyone there is no network (else they would hear connected, then not).
+    if (!dev.apksim.net.Net.offline()) {
+      ShadowSimConnectivityManager.rematch();
+      SystemBroadcasts.network(context);
+    }
   }
 
   private static boolean hasIpv4(NetworkInterface ni) {

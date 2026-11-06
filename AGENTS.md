@@ -388,19 +388,26 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   network that netId: before, apps got Robolectric's stand-in (no INTERNET or VALIDATED capability). On Linux the
   container's `eth0` counts as Ethernet; before, ConnectivityManager had no network there at all.
   `setDefaultNetworkActive(true)` with an active network calls onAvailable itself, so NetConnectivity sets it first.
+  The shadow's state is static, so NetConnectivity applies an offline launch profile before the Application exists
+  (`SimTestEnvironment.setUpApplicationState`): `Application.onCreate` sees no network, in Host and in tests.
 - What a device's system server has already sent or sends at once, which Robolectric never does (issue 96: a large
   app's quick-settings panel awaited it in a coroutine and stayed empty, no exception): `SystemBroadcasts` keeps the
   sticky WIFI_STATE_CHANGED, Wi-Fi NETWORK_STATE_CHANGED, CONNECTIVITY_ACTION (from ConnectivityManager, again on every
-  `network offline|online` and HostNetworks install) and ACTION_BATTERY_CHANGED (full, not charging), set before
-  Application.onCreate in running instances and every test; `ShadowSimConnectivityManager` tells a network callback of
-  the networks it matches as it registers (`NetworkRequest.canBeSatisfiedBy`; a default callback of the active one:
-  onAvailable, onCapabilitiesChanged, onLinkPropertiesChanged, onBlockedStatusChanged, posted to its handler, else the
-  main thread), so HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED, NOT_METERED...,
-  which a default NetworkRequest asks for); `SystemBroadcasts.ShadowSimAudioManager` sends VOLUME_CHANGED_ACTION
-  (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream. Robolectric prints every
-  broadcast it sends to stderr, so a sticky nobody listens for yet is only kept.
-  The shadow's state is static, so NetConnectivity applies an offline launch profile before the Application exists
-  (`SimTestEnvironment.setUpApplicationState`): `Application.onCreate` sees no network, in Host and in tests.
+  `network offline|online` and HostNetworks install, which publishes nothing under `--network-profile offline`) and
+  ACTION_BATTERY_CHANGED (full, not charging), set before Application.onCreate and the providers InstallState creates,
+  in running instances and every test. `ShadowSimConnectivityManager` runs network callbacks as ConnectivityService
+  does: a default callback is owed the active network, requestNetwork and registerBestMatchingNetworkCallback one
+  network (the active one if it satisfies the request, else the first that does), registerNetworkCallback every
+  network that satisfies it (`NetworkRequest.canBeSatisfiedBy`). What each is owed is decided as it registers and at
+  every change (`rematch`: HostNetworks install, NetConnectivity, which no longer calls callbacks itself), as diffs
+  against what it was told (onAvailable + onCapabilitiesChanged + onLinkPropertiesChanged + onBlockedStatusChanged,
+  changed capabilities or links, onLost), queued per callback and run in order on its handler (main without one);
+  a change made on that thread runs the queue at once, so offline and online before a registration's post give
+  available, lost, available. A callback registered in Application.onCreate hears of the host's networks when Host
+  installs them after it. HostNetworks' networks carry a device Wi-Fi's capabilities (NOT_RESTRICTED, TRUSTED,
+  NOT_METERED..., which a default NetworkRequest asks for). `SystemBroadcasts.ShadowSimAudioManager` sends
+  VOLUME_CHANGED_ACTION (STREAM_MUTE_CHANGED_ACTION) when setStreamVolume or adjustStreamVolume changes a stream.
+  Robolectric prints every broadcast it sends to stderr, so a sticky nobody listens for yet is only kept.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must

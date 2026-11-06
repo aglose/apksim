@@ -593,8 +593,9 @@ public final class TestActivities {
       }
       DeviceIdentity.beforeApplicationOnCreate(app);
       // Not for the runner probe's plain Application (RunnerApplication): providers' startup work would keep it.
+      // Battery, Wi-Fi and network stickies: before the providers InstallState creates, which may read them.
+      SystemBroadcasts.beforeApplicationOnCreate(app);
       if (testRun() && !RunnerApplication.probing) InstallState.beforeApplicationOnCreate(app);
-      SystemBroadcasts.beforeApplicationOnCreate(app);  // battery, Wi-Fi and network stickies
       try {
         java.lang.reflect.Method m = Instrumentation.class.getDeclaredMethod(
             "$$robo$$android_app_Instrumentation$callApplicationOnCreate", android.app.Application.class);

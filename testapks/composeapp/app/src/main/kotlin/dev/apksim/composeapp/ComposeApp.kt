@@ -36,6 +36,20 @@ open class ComposeApp : Application() {
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
         "model=$modelAtCreate release=${Build.VERSION.RELEASE}")
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
+    listenForTheNetwork()
+  }
+
+  /**
+   * A network callback registered in onCreate, as an app's connectivity monitor does: a running instance installs the
+   * host's networks after onCreate, and the callback must still hear of them (apksim://system-sources shows it).
+   */
+  private fun listenForTheNetwork() {
+    startupNetwork.value = null
+    val cm = getSystemService(ConnectivityManager::class.java)
+    val request = android.net.NetworkRequest.Builder().addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
+    cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: android.net.Network) { startupNetwork.value = "available" }
+    })
   }
 
   /**
@@ -70,5 +84,7 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
+    /** "available" once the callback listenForTheNetwork registered heard of a network. */
+    val startupNetwork = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
   }
 }

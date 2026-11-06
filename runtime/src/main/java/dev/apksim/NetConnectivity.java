@@ -1,7 +1,6 @@
 package dev.apksim;
 
 import android.app.Application;
-import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -69,15 +68,10 @@ final class NetConnectivity {
       shadow.clearAllNetworks();
       shadow.setActiveNetworkInfo(null);  // first: with no active network Robolectric notifies no one below
       shadow.setDefaultNetworkActive(false);
-      // Robolectric keeps no request with a callback, so each hears of the default network, as a default network
-      // callback does (the common kind); one registered for a VPN alone is told of the default network too.
-      for (ConnectivityManager.NetworkCallback cb : new ArrayList<>(shadow.getNetworkCallbacks())) {
-        for (Saved s : saved) if (s.active) cb.onLost(s.network);
-      }
     } else {
       if (saved == null) return;
       // Before there is an active network again: with one, Robolectric calls onAvailable itself, and the callbacks
-      // below would hear of it twice (it also skips onCapabilitiesChanged and onLinkPropertiesChanged).
+      // would hear of it twice (ShadowSimConnectivityManager.rematch below tells them).
       shadow.setDefaultNetworkActive(true);
       for (Saved s : saved) {
         shadow.addNetwork(s.network, s.info);
@@ -85,16 +79,11 @@ final class NetConnectivity {
         if (s.link != null) shadow.setLinkProperties(s.network, s.link);
         if (s.active) shadow.setActiveNetworkInfo(s.info);
       }
-      for (ConnectivityManager.NetworkCallback cb : new ArrayList<>(shadow.getNetworkCallbacks())) {
-        for (Saved s : saved) {
-          if (!s.active) continue;
-          cb.onAvailable(s.network);
-          if (s.caps != null) cb.onCapabilitiesChanged(s.network, s.caps);
-          if (s.link != null) cb.onLinkPropertiesChanged(s.network, s.link);
-        }
-      }
       saved = null;
     }
+    // Each callback hears of what it gains or loses (onLost; onAvailable, onCapabilitiesChanged, ...), as its request
+    // says: a default callback of the default network, a listen of every network it matches.
+    ShadowSimConnectivityManager.rematch();
     Application app = RuntimeEnvironment.application;
     if (app == null) return;  // before the Application: there is no one to tell yet
     SystemBroadcasts.network(app);  // CONNECTIVITY_ACTION and Wi-Fi's NETWORK_STATE_CHANGED, sticky as on a device

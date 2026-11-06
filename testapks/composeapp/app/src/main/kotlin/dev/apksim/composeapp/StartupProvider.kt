@@ -8,6 +8,9 @@ import android.net.Uri
 class StartupProvider : ContentProvider() {
   override fun onCreate(): Boolean {
     created = true
+    // A startup initializer reading the battery: the system's sticky broadcast is there before any provider runs.
+    batteryAtCreate = context?.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+      ?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
     return true
   }
 
@@ -19,5 +22,6 @@ class StartupProvider : ContentProvider() {
 
   companion object {
     @Volatile var created = false
+    @Volatile var batteryAtCreate: Int? = null
   }
 }

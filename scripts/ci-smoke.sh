@@ -73,12 +73,12 @@ echo "Popup and Trace: $shown-> $tapped"
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 # What a quick-settings panel awaits (issue 96): Wi-Fi's, the network's and the battery's sticky broadcasts, network
-# callbacks, VOLUME_CHANGED_ACTION, a settings observer (apksim://system-sources, 3 s each). Bluetooth's profile
-# proxy waits for Bluetooth to be on, as on a device.
+# callbacks (one registered in Application.onCreate), VOLUME_CHANGED_ACTION, a settings observer
+# (apksim://system-sources, 3 s each). Bluetooth's profile proxy waits for Bluetooth to be on, as on a device.
 drive 'open apksim://system-sources' 'wait 5000' >/dev/null
 sources="$(drive nodes | grep -oE 'text="[a-z ]+: [^"]*"' | grep -v 'bluetooth profile' || true)"
 echo "System sources: $(echo "$sources" | wc -l | tr -d ' ') answered or timed out"
-if [[ "$(echo "$sources" | grep -c ': ')" -lt 9 ]] || echo "$sources" | grep -q 'timed out'; then
+if [[ "$(echo "$sources" | grep -c ': ')" -lt 10 ]] || echo "$sources" | grep -q 'timed out'; then
   echo "$sources"; echo "a system source never answered" >&2; exit 1
 fi
 drive back 'wait 1000' >/dev/null
