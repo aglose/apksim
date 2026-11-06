@@ -45,6 +45,27 @@ class PopupTouchTest {
   }
 
   /**
+   * UiDevice.swipe waits for a frame after each step (TestActivities.awaitFrame here), and from the first moves on the
+   * tooltip's Popup is open: its position poll asks for a frame every frame, so a wait that ran the main queue until
+   * idle never returned.
+   */
+  @Test
+  fun aSwipeWithAPopupOpenWaitsOnlyForFrames() {
+    ActivityScenario.launch(PopupTraceActivity::class.java).use {
+      val above = device.wait(Until.findObject(By.textStartsWith("trace: ")), 5_000).visibleBounds
+      val below = device.findObject(By.text("tooltip: hidden")).visibleBounds
+      val y = (above.bottom + below.top) / 2
+      val start = System.nanoTime()
+      assertTrue(device.swipe(device.displayWidth / 4, y, device.displayWidth / 2, y, 20))
+      val ms = (System.nanoTime() - start) / 1_000_000
+      assertTrue("swipe took $ms ms", ms < 5_000)
+      assertNotNull("the tooltip popup", device.wait(Until.findObject(By.textStartsWith("value ")), 5_000))
+      device.findObject(By.text("Tap me")).click()
+      assertTrue("the tap closed the tooltip", device.wait(Until.hasObject(By.text("tooltip: hidden")), 5_000))
+    }
+  }
+
+  /**
    * A horizontal drag injected through UiAutomation, as UiDevice.swipe does, without its wait for a frame after each
    * step: that posts to the main thread and waits up to 5 s for it, and in a test run the test is the main thread.
    */

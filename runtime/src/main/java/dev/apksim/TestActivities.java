@@ -147,13 +147,32 @@ public final class TestActivities {
    * waiting for VSync frame."): a 20-step swipe took 100 s. So, where a sleep would pump (a test run, the main thread,
    * outside a dispatch), the main queue runs until that frame has been drawn: Robolectric's unpaused Choreographer
    * moves the clock a frame and runs it at once; with --realtime-clock the frame comes on the next real vsync.
+   * Tasks run one at a time, with the latch, an interrupt and the timeout checked between them, not main.idle(): an
+   * endless frame loop (a Compose Popup polls its anchor every frame, an infinite animation) never lets idle() return
+   * with the Choreographer unpaused, nor with --realtime-clock, where the next frame is always due. Without
+   * --realtime-clock the clock moves on only to a task due within a frame; anything later, and the wait gives up
+   * (UiAutomator logs it and goes on), rather than jumping the clock as a 5 s real wait would not.
    */
   public static boolean awaitFrame(java.util.concurrent.CountDownLatch latch, long timeout, TimeUnit unit)
       throws InterruptedException {
     if (!pumpsWhileSleeping()) return latch.await(timeout, unit);
-    if (Thread.interrupted()) throw new InterruptedException();
-    runMainQueueUntil(() -> latch.getCount() == 0, unit.toNanos(timeout));
-    return latch.getCount() == 0;
+    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
+    long frameMs = org.robolectric.shadows.ShadowChoreographer.getFrameDelay().toMillis() + 1;
+    long end = System.nanoTime() + unit.toNanos(timeout);
+    while (latch.getCount() > 0) {
+      if (Thread.interrupted()) throw new InterruptedException();
+      if (System.nanoTime() - end >= 0) return false;
+      if (!main.isIdle()) {
+        main.runOneTask();  // what is due, first
+      } else if (RealTimeClock.requested()) {
+        Thread.sleep(1);  // the clock follows real time: the next vsync comes due
+      } else {
+        long next = main.getNextScheduledTaskTime().toMillis();
+        if (next == 0 || next > android.os.SystemClock.uptimeMillis() + frameMs) return false;
+        main.runOneTask();  // moves the clock to it
+      }
+    }
+    return true;
   }
 
   /**
