@@ -3,6 +3,7 @@ package dev.apksim.composeapp
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
+import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
@@ -34,9 +35,16 @@ open class ComposeApp : Application() {
     serialAtCreate = try { Build.getSerial() } catch (e: SecurityException) { null }
     cameraAnyAtCreate = packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
     modelAtCreate = Build.MODEL
+    // isEnabled() needs no permission on API 31+ (@RequiresNoPermission), but the app must start whatever a device says.
+    bluetoothOnAtCreate = try {
+      getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
+    } catch (e: SecurityException) {
+      Log.w("ComposeApp", "bluetooth: unknown ($e)")
+      null
+    }
     animScaleAtCreate = android.animation.ValueAnimator.getDurationScale()
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
-        "model=$modelAtCreate release=${Build.VERSION.RELEASE}")
+        "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
     listenForTheNetwork()
   }
@@ -116,5 +124,7 @@ open class ComposeApp : Application() {
     val startupNetwork = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     /** What a default callback and a connectivity/Wi-Fi receiver registered in onCreate heard, in order. */
     val startupHeard = mutableListOf<String>()
+    /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter, or the device refused: "unknown"). */
+    @Volatile var bluetoothOnAtCreate: Boolean? = null
   }
 }

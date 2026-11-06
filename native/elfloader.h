@@ -62,3 +62,7 @@ void *tls_descriptor(Module *m, uint64_t offset);
 // bionic.c: the Android C library as seen by loaded code.
 void *bionic_lookup(const char *name);
 void *missing_stub(const char *name);
+
+// jnigraphics.c: libjnigraphics (AndroidBitmap_*), through dev.apksim.NativeBitmaps. Init takes a JNIEnv *.
+void jnigraphics_init(void *env);
+void *jnigraphics_lookup(const char *name);

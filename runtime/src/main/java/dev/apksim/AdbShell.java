@@ -434,6 +434,14 @@ final class AdbShell {
       case "dumpsys" -> {
         return dumpsys(args);
       }
+      case "svc" -> {
+        // svc bluetooth enable|disable (Bluetooth); svc's other services (wifi, data, power...) are not here.
+        if (args.size() == 2 && args.get(0).equals("bluetooth") && args.get(1).matches("enable|disable")) {
+          return bluetooth(args.get(1).equals("enable"));
+        }
+        if (!args.isEmpty() && args.get(0).equals("bluetooth")) return usage("svc bluetooth enable|disable");
+        return unsupported("svc " + String.join(" ", args) + " (only svc bluetooth enable|disable)");
+      }
       case "apksim" -> {
         // Any control command, as `ctl.py` or `drive.py` would send it: `adb shell apksim rotate left`.
         if (args.isEmpty()) return usage("apksim CONTROL-COMMAND [ARGS...] (see AGENTS.md)");
@@ -970,7 +978,12 @@ final class AdbShell {
           print("Users:\n\tUserInfo{0:Owner:c13} running\n");
           return 0;
         }
-        if (what.equals("features") || what.equals("libraries") || what.equals("permissions") || what.equals("instrumentation")) return 0;
+        if (what.equals("features")) {
+          // What hasSystemFeature answers true for (SystemFeatures: the device's defaults and --feature), as pm prints it.
+          for (String f : onMain(SystemFeatures::present)) print("feature:" + f + "\n");
+          return 0;
+        }
+        if (what.equals("libraries") || what.equals("permissions") || what.equals("instrumentation")) return 0;
         print("Error: unknown list type '" + what + "'\n");
         return 1;
       }
@@ -1186,6 +1199,7 @@ final class AdbShell {
         if (value == null) return usage("settings put NAMESPACE KEY VALUE");
         if (key.equals(Settings.Global.ANIMATOR_DURATION_SCALE)) return reply(control("animscale", value), false);
         if (key.equals(Settings.System.FONT_SCALE)) return reply(control("fontscale", value), false);
+        if (ns.equals("global") && key.equals(Settings.Global.BLUETOOTH_ON)) return bluetooth(!value.equals("0"));
         onMain(() -> {
           put(ns, key, value);
           return null;
@@ -1264,6 +1278,22 @@ final class AdbShell {
         }
         return usage("cmd uimode night yes|no");
       }
+      case "bluetooth_manager" -> {
+        // cmd bluetooth_manager enable|disable|wait-for-state:STATE_ON|STATE_OFF (switches are immediate here).
+        String op = r.isEmpty() ? "" : r.get(0);
+        if (op.equals("enable") || op.equals("disable")) return bluetooth(op.equals("enable"));
+        if (op.startsWith("wait-for-state:")) {
+          String want = op.substring("wait-for-state:".length());
+          String state = onMain(() -> {
+            android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+            return ad == null ? "none" : Bluetooth.stateName(ad.getState());
+          });
+          if (state.equals(want)) return 0;
+          print("Error: Bluetooth is " + state + ", not " + want + "\n");
+          return 1;
+        }
+        return usage("cmd bluetooth_manager enable|disable|wait-for-state:STATE_ON|STATE_OFF");
+      }
       default -> {
         print("Can't find service: " + a.get(0) + "\n");
         return 1;
@@ -1309,6 +1339,16 @@ final class AdbShell {
         String top = control("activity");
         print("  mCurrentFocus=Window{0 u0 " + pkg() + "/" + top + "}\n");
         print("  mFocusedApp=ActivityRecord{0 u0 " + pkg() + "/" + top + " t1}\n");
+        return 0;
+      }
+      case "bluetooth_manager" -> {
+        // The first lines of a device's dump, which scripts grep for "enabled: true".
+        print(onMain(() -> {
+          android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+          if (ad == null) return "Bluetooth Status\n  enabled: false\n  state: none (no android.hardware.bluetooth)\n";
+          return "Bluetooth Status\n  enabled: " + ad.isEnabled() + "\n  state: " + Bluetooth.stateName(ad.getState())
+              .substring("STATE_".length()) + "\n  address: " + ad.getAddress() + "\n  name: " + ad.getName() + "\n";
+        }));
         return 0;
       }
       default -> {
@@ -1588,6 +1628,14 @@ final class AdbShell {
     return 1;
   }
 
+  /** svc bluetooth, cmd bluetooth_manager, settings put global bluetooth_on: silent on success, as on a device. */
+  private int bluetooth(boolean on) throws Exception {
+    String r = control("bluetooth", on ? "on" : "off");
+    if (r.startsWith("ok")) return 0;
+    print(r + "\n");
+    return 1;
+  }
+
   private int unsupported(String what) throws IOException {
     print("apksim: " + what + " is not supported\n");
     return 1;
@@ -1641,6 +1689,9 @@ final class AdbShell {
       }
       case "bars" -> {
         return SystemBars.command(a);
+      }
+      case "bluetooth" -> {
+        return Bluetooth.command(a);
       }
       default -> {
         return "error: " + a[0] + " is not available in a test run";

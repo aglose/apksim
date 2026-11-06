@@ -295,10 +295,25 @@ def warn(text):
     os.write(2, (text + "\n").encode(errors="replace"))
 
 
+# FailOnTimeout's line before it ends the process, followed by the stuck test's stack.
+WATCHDOG = "[apksim] test still running "
+
+
+def stderr_tail(text, n=4000):
+    """The last n characters of a process's stderr, but from the start of the watchdog's line when it is further back:
+    the stuck test's stack after it can be longer than n (one caught inside a StackWalker was), which cut the line
+    that says why the process ended. Past 4n, the middle of the stack goes."""
+    i = text.rfind(WATCHDOG)
+    if i < 0 or i >= len(text) - n:
+        return text[-n:]
+    t = text[text.rfind("\n", 0, i) + 1:]
+    return t if len(t) <= 4 * n else t[:3 * n] + "\n\t[...]\n" + t[-n:]
+
+
 def tail(r):
-    """What a failure that this script reports for a process shows of it: the tail of its stderr, and after a
-    --test-timeout kill the stacks of the threads running JUnit code when it was killed."""
-    t = r.stderr[-4000:]
+    """What a failure that this script reports for a process shows of it: the tail of its stderr (stderr_tail), and
+    after a --test-timeout kill the stacks of the threads running JUnit code when it was killed."""
+    t = stderr_tail(r.stderr)
     if r.threads:
         t = (t.rstrip("\n") + "\n\nthreads in JUnit code when instrument.py killed the process (from the JVM's thread "
              "dump):\n" + r.threads)
