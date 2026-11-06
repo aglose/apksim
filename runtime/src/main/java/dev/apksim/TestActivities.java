@@ -725,7 +725,8 @@ public final class TestActivities {
       List<android.content.ServiceConnection> bound = ReflectionHelpers.getField(this, "boundServiceConnections");
       List<android.content.ServiceConnection> unbound = ReflectionHelpers.getField(this, "unboundServiceConnections");
       unbound.add(connection);
-      bound.remove(connection);
+      // bindHere listed the connection once per bind; a device's unbindService ends all of its bindings at once.
+      bound.removeIf(c -> c == connection);
     }
 
     /** What a test set up through ShadowApplication (a binder for the intent, a default one, unbindable intents, a bind that throws). */

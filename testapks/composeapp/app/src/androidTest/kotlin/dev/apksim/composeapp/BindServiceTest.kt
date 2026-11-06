@@ -62,6 +62,32 @@ class BindServiceTest {
     assertEquals(1, connection.calls)
   }
 
+  /**
+   * One connection bound twice to an app's service, unbound (which ends both bindings), then refused a bind to a
+   * service nobody has and unbound again: nothing after the first unbind calls back.
+   */
+  @Test
+  fun aConnectionBoundTwiceThenRefusedUnbindsQuietly() {
+    NullBindingService.events.clear()
+    val connection = Recording()
+    val missing = Intent("com.example.companion.ACTION_BIND").setPackage("com.example.companion.notinstalled")
+    instrumentation.runOnMainSync {
+      assertTrue(context.bindService(Intent(context, NullBindingService::class.java), connection, Context.BIND_AUTO_CREATE))
+      assertTrue(context.bindService(Intent(context, NullBindingService::class.java), connection, Context.BIND_AUTO_CREATE))
+    }
+    waitFor { connection.calls >= 2 }  // a null binding per binding (LoadedApk's ServiceDispatcher)
+    instrumentation.runOnMainSync { context.unbindService(connection) }
+    waitFor { "destroy" in NullBindingService.events }
+    val beforeRefused = connection.calls
+    instrumentation.runOnMainSync {
+      assertFalse(context.bindService(missing, connection, Context.BIND_AUTO_CREATE))
+      context.unbindService(connection)
+    }
+    instrumentation.waitForIdleSync()
+    assertEquals(beforeRefused, connection.calls)
+    assertEquals(listOf("create", "bind", "unbind", "destroy"), NullBindingService.events.toList())
+  }
+
   private fun waitFor(condition: () -> Boolean) {
     for (i in 0 until 100) {
       instrumentation.waitForIdleSync()
