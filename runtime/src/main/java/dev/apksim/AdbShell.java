@@ -481,10 +481,9 @@ final class AdbShell {
     p.put("ro.product.cpu.abilist64", HostOs.apkAbi());
     p.put("ro.build.characteristics", d.characteristics());
     p.put("ro.sf.lcd_density", String.valueOf(Math.round(d.density() * 160)));
-    // --serial: what Build.getSerial() answers, as on a device.
-    String serial = System.getProperty("apksim.serial", "");
-    p.put("ro.serialno", serial.isEmpty() ? "apksim-" + AdbServer.port : serial);
-    p.put("ro.boot.serialno", serial.isEmpty() ? "apksim-" + AdbServer.port : serial);
+    // What Build.getSerial() answers (--serial, or the data slot's), as on a device.
+    p.put("ro.serialno", DeviceIdentity.serial());
+    p.put("ro.boot.serialno", DeviceIdentity.serial());
     p.put("ro.debuggable", "1");
     p.put("ro.secure", "0");
     p.put("ro.adb.secure", "0");

@@ -1,42 +1,60 @@
 package dev.apksim.composeapp
 
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * apksim's `--serial` and `--feature`: run with the values to expect, e.g.
- * `--serial R5CT12345678ABCD --feature hardware.camera.any --feature android.hardware.nfc=false
- * -e expectSerial R5CT12345678ABCD -e expectFeature android.hardware.camera.any -e expectNoFeature android.hardware.nfc`.
- * Skipped without them (a device has its own serial and features).
+ * The device's serial, system features and Build fields, set before Application.onCreate (apksim's --serial,
+ * --feature, --build). Without them the serial is a device-like default; with them (CI runs this class with
+ * `-e serial S -e feature F -e model M` and the same launch options) the app sees exactly what was given. apksim
+ * only: a device or emulator refuses Build.getSerial() to an app without privileged access.
  */
 @RunWith(AndroidJUnit4::class)
+@SuppressLint("HardwareIds", "MissingPermission")
 class DeviceIdentityTest {
   private val args = InstrumentationRegistry.getArguments()
 
-  @SuppressLint("HardwareIds", "MissingPermission")
-  @Test
-  fun serialIsTheOneLaunchedWith() {
-    val want = args.getString("expectSerial")
-    assumeTrue(want != null)
-    assertEquals(want, Build.getSerial())
-    @Suppress("DEPRECATION") assertEquals(want, Build.SERIAL)
+  @Before
+  fun onApksimOnly() {
+    assumeTrue("apksim's device identity", Build.FINGERPRINT == "robolectric")
   }
 
   @Test
-  fun featuresAreTheOnesLaunchedWith() {
-    val on = args.getString("expectFeature")
-    val off = args.getString("expectNoFeature")
-    assumeTrue(on != null || off != null)
+  fun theSerialLooksLikeADevicesAndIsThereBeforeTheApplicationStarts() {
+    val serial = Build.getSerial()
+    assertEquals(serial, Build.SERIAL)
+    assertEquals("Build.getSerial() in Application.onCreate", serial, ComposeApp.serialAtCreate)
+    val expected = args.getString("serial")
+    if (expected != null) {
+      assertEquals(expected, serial)
+    } else {
+      assertTrue("16 letters and digits: $serial", serial.matches(Regex("[A-Z][0-9][A-Z0-9]{14}")))
+    }
+  }
+
+  @Test
+  fun aFeatureGivenAtLaunchIsThereBeforeTheApplicationStarts() {
+    val feature = args.getString("feature")
+    assumeTrue("run with -e feature NAME and --feature NAME", feature != null)
     val pm = InstrumentationRegistry.getInstrumentation().targetContext.packageManager
-    if (on != null) assertTrue("hasSystemFeature($on)", pm.hasSystemFeature(on))
-    if (off != null) assertFalse("hasSystemFeature($off)", pm.hasSystemFeature(off))
+    assertTrue(feature, pm.hasSystemFeature(feature!!))
+    if (feature == PackageManager.FEATURE_CAMERA_ANY) assertEquals(true, ComposeApp.cameraAnyAtCreate)
+  }
+
+  @Test
+  fun aBuildFieldGivenAtLaunchIsThereBeforeTheApplicationStarts() {
+    val model = args.getString("model")
+    assumeTrue("run with -e model M and --build MODEL=M", model != null)
+    assertEquals(model, Build.MODEL)
+    assertEquals(model, ComposeApp.modelAtCreate)
   }
 }

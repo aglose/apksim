@@ -91,12 +91,15 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --test-outputs) mkdir -p "$2" && TEST_OUTPUTS="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.testOutputs=$TEST_OUTPUTS"); shift 2 ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
-    # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
-    --mock-maker) EXTRA+=("-Dapksim.mockMaker=$2"); shift 2 ;;
-    # What the device says it is: Build.getSerial(), and PackageManager.hasSystemFeature (repeatable; NAME=false
-    # takes one away; hardware.X and software.X are short for android.hardware.X and android.software.X).
+    # Device identity (DeviceIdentity.java): Build.getSerial(), a system feature (repeatable; NAME=false removes one),
+    # any Build or Build.VERSION field (repeatable: MODEL=..., VERSION.RELEASE=...).
     --serial) EXTRA+=("-Dapksim.serial=$2"); shift 2 ;;
     --feature) FEATURES="${FEATURES:+$FEATURES,}$2"; shift 2 ;;
+    --build)
+      [[ "$2" == ?*=* ]] || { echo "--build takes FIELD=VALUE" >&2; exit 2; }
+      EXTRA+=("-Dapksim.build.${2%%=*}=${2#*=}"); shift 2 ;;
+    # Mockito's mock maker for the tests: auto (ART makers become JVM ones), keep, subclass, inline, or a maker name.
+    --mock-maker) EXTRA+=("-Dapksim.mockMaker=$2"); shift 2 ;;
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     --window-x) EXTRA+=("-Dapksim.windowX=$2"); shift 2 ;;
@@ -170,7 +173,8 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*) ;;
+      -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*) ;;
       -Dapksim.classCache=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
@@ -200,6 +204,22 @@ fi
 if [[ -n "${SERVE:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
     -cp "$ROOT/work/apksim.jar" dev.apksim.serve.Serve "$@"
+fi
+# The JVM starts with LC_NUMERIC en_US.UTF-8. Robolectric's libandroid_runtime sets it when it loads
+# (AndroidRuntime::onStarted, setlocale(LC_NUMERIC, "en_US.UTF-8")), on the main thread with the JIT compilers running.
+# macOS's setlocale swaps the global locale's numeric part under any thread formatting a number or string:
+# localeconv_l read it half replaced and a compiler thread crashed in vsnprintf (now and then, under load; even the
+# crash report then deadlocked, so no hs_err). libjava already calls setlocale(LC_ALL, "") once while the VM is
+# single-threaded; with the variable set it takes en_US.UTF-8 then, and the later call finds the same name and changes
+# nothing. LC_ALL would override it, so it is split into the categories it stands for. Java's Locale does not follow
+# LC_NUMERIC. Not on Linux: the image may have no en_US.UTF-8, and glibc fails a whole setlocale(LC_ALL, "") over one
+# category it cannot load.
+if [[ "$OS" == Darwin ]]; then
+  if [[ -n "${LC_ALL:-}" ]]; then
+    export LC_COLLATE="$LC_ALL" LC_CTYPE="$LC_ALL" LC_MESSAGES="$LC_ALL" LC_MONETARY="$LC_ALL" LC_TIME="$LC_ALL"
+    unset LC_ALL
+  fi
+  export LC_NUMERIC=en_US.UTF-8
 fi
 # APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
 [[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")

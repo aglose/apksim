@@ -17,6 +17,12 @@ import java.util.stream.Stream;
  */
 final class Storage {
   private static FileLock held; // Kept for the life of the process.
+  private static volatile String heldSlot;
+
+  /** The name of the data slot this process holds (default, instance-1, serve-0...), or null before one is taken. */
+  static String heldSlot() {
+    return heldSlot;
+  }
   private static Path scratch;
 
   private Storage() {}
@@ -103,6 +109,7 @@ final class Storage {
       FileLock l = lock.tryLock();
       if (l != null) {
         held = l;
+        heldSlot = slotName;
         return dir;
       }
       lock.close();
