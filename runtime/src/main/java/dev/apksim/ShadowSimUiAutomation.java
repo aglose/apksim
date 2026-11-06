@@ -222,8 +222,14 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       while (!main.isIdle() && System.nanoTime() < until) main.runOneTask();
       return;
     }
-    main.idle();
+    // Not main.idle(): with Robolectric's Choreographer unpaused, as in test runs, a frame asked for runs at once, so an
+    // endless frame loop never leaves idle(). A Compose Popup has one (it polls where its anchor is on screen with
+    // withInfiniteAnimationFrameNanos), and UiAutomator's every query waited for idle forever once one was shown; a
+    // device's wait gives up after its timeout. So what is due runs for the quiet time at most, in simulated time (each
+    // such frame moves the clock) and in real time.
     long end = SystemClock.uptimeMillis() + quietMillis;
+    long realEnd = System.nanoTime() + quietMillis * 1_000_000L;
+    while (!main.isIdle() && SystemClock.uptimeMillis() < end && System.nanoTime() < realEnd) main.runOneTask();
     while (SystemClock.uptimeMillis() < end) {
       long next = main.getNextScheduledTaskTime().toMillis();
       if (next == 0) break;  // nothing scheduled
