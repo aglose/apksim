@@ -83,8 +83,9 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
-        <!-- apksim://crash?kind=coroutine|post|worker|bare|handled|chained: an uncaught exception (issue 104). -->
-        <activity android:name=".CrashActivity" android:exported="true">
+        <!-- apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained: an uncaught exception (issue 104). -->
+        <activity android:name=".CrashActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

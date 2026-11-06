@@ -23,6 +23,15 @@ import android.widget.FrameLayout
  * (AnimScaleOptionTest).
  */
 open class ComposeApp : Application() {
+  /**
+   * With `--jvm -Ddev.apksim.testapp.crash_in_attach=true` (apksim only: a device has no such property), throws here,
+   * before onCreate: apksim must crash as a device does, FATAL EXCEPTION and the process ended (issue 104).
+   */
+  override fun attachBaseContext(base: android.content.Context) {
+    super.attachBaseContext(base)
+    if (System.getProperty(CRASH_IN_ATTACH).toBoolean()) throw IllegalStateException("thrown in attachBaseContext")
+  }
+
   @SuppressLint("HardwareIds", "MissingPermission")
   override fun onCreate() {
     super.onCreate()
@@ -64,6 +73,7 @@ open class ComposeApp : Application() {
 
   companion object {
     const val LAUNCH_OVERLAY = "dev.apksim.testapp.launch_overlay"
+    const val CRASH_IN_ATTACH = "dev.apksim.testapp.crash_in_attach"
     /** ConnectivityManager's default network in Application.onCreate, or null before it ran. */
     @JvmStatic var networkAtStart: String? = null
     /** ValueAnimator's duration scale in onCreate (AnimScaleOptionTest: apksim's --anim-scale holds from before it). */

@@ -43,7 +43,15 @@ final class Crashes {
   private static final byte[] LOG_FAILED =
       "E/AndroidRuntime: FATAL EXCEPTION (logging it failed: out of memory?)\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
+  private static volatile boolean installed;
+
+  /** Whether this is a running instance with the device's handler (not a test run, not a standby's warm-up). */
+  static boolean installed() {
+    return installed;
+  }
+
   static void install() {
+    installed = true;
     keepRunning = "log".equals(System.getProperty("apksim.crashes"));
     failCleanupForTest = Boolean.getBoolean("apksim.crashTest.failCleanup");
     processLine = "\nProcess: " + System.getProperty("apksim.package") + ", PID: " + ProcessHandle.current().pid();
@@ -87,6 +95,7 @@ final class Crashes {
    * gone on a device (nothing would run again), so the process ends.
    */
   static void mainThreadDied(Throwable e) {
+    if (e instanceof AppCrash && e.getCause() != null) e = e.getCause();
     Thread t = Thread.currentThread();
     log(t, e);
     try {
@@ -133,7 +142,51 @@ final class Crashes {
 
   /** Whether this exception was already logged as FATAL here. */
   static boolean wasLogged(Throwable e) {
-    return logged == e;
+    int depth = 0;
+    for (Throwable x = e; x != null && depth++ < 20; x = x.getCause()) {
+      if (x == logged) return true;
+    }
+    return false;
+  }
+
+  /**
+   * What app code threw during a lifecycle transition a control command ran (restart, recreate, process-death, a
+   * configuration change, home/resume, memory): Host's command loop lets it through to its crash path (mainThreadDied)
+   * rather than answering `error: ...`, which left a half-made app running. Errors in a command's own arguments are not
+   * wrapped and stay answers.
+   */
+  static final class AppCrash extends RuntimeException {
+    AppCrash(Throwable cause) {
+      super(String.valueOf(cause), cause, false, false);
+    }
+  }
+
+  interface AppCode<T> {
+    T run() throws Exception;
+  }
+
+  /** Runs app code (activity lifecycle, callbacks) for a command: in a running instance what it throws is a crash. */
+  static <T> T app(AppCode<T> code) throws Exception {
+    try {
+      return code.run();
+    } catch (AppCrash c) {
+      throw c;
+    } catch (Throwable t) {
+      if (installed) throw new AppCrash(t);
+      throw t;
+    }
+  }
+
+  /** {@link #app} for code that throws nothing checked. */
+  static void app(Runnable code) {
+    try {
+      code.run();
+    } catch (AppCrash c) {
+      throw c;
+    } catch (Throwable t) {
+      if (installed) throw new AppCrash(t);
+      throw t;
+    }
   }
 
   /** Logs the crash once; never throws (a minimal line on stderr if logging it failed). */

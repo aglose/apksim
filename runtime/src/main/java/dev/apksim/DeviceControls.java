@@ -424,12 +424,14 @@ final class DeviceControls {
           case "low" -> ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW;
           default -> ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL;
         };
-        app.onTrimMemory(trim);
-        for (ActivityController<? extends Activity> c : stack) c.get().onTrimMemory(trim);
-        if (trim == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
-          app.onLowMemory();
-          for (ActivityController<? extends Activity> c : stack) c.get().onLowMemory();
-        }
+        Crashes.app(() -> {
+          app.onTrimMemory(trim);
+          for (ActivityController<? extends Activity> c : stack) c.get().onTrimMemory(trim);
+          if (trim == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            app.onLowMemory();
+            for (ActivityController<? extends Activity> c : stack) c.get().onLowMemory();
+          }
+        });
         return "ok";
       }
       case "home", "lock" -> {
@@ -637,9 +639,11 @@ final class DeviceControls {
     if (hiddenBy != null) return "already " + hiddenBy;
     ActivityController<? extends Activity> top = stack.peek();
     if (top == null) return "no activity";
-    if (why.equals("home")) top.userLeaving();
-    Host.arrange(new java.util.ArrayList<>(stack), true);  // every visible one stopped and hidden
-    if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
+    Crashes.app(() -> {
+      if (why.equals("home")) top.userLeaving();
+      Host.arrange(new java.util.ArrayList<>(stack), true);  // every visible one stopped and hidden
+      if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
+    });
     hiddenBy = why;
     SimWindow.present(placeholder(why));
     return "ok";
@@ -829,6 +833,16 @@ final class DeviceControls {
    * survive, which a real process death would reset; what this catches is state that is not saved and restored.
    */
   private String processDeath() {
+    try {
+      return Crashes.app((Crashes.AppCode<String>) this::rebuildFromSavedState);
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private String rebuildFromSavedState() {
     java.util.List<ActivityController<? extends Activity>> old = new java.util.ArrayList<>(stack);
     java.util.Collections.reverse(old);  // bottom first
     java.util.List<android.os.Bundle> states = new java.util.ArrayList<>();
@@ -911,13 +925,15 @@ final class DeviceControls {
    * recreates an activity into the resumed state whatever it was, and leaves the new window detached.
    */
   private int changeConfiguration(Configuration config, int changed) {
-    int n = 0;
-    for (ActivityController<? extends Activity> c : stack) {
-      c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-      n++;
-    }
-    Host.arrange(new java.util.ArrayList<>(stack), hiddenBy != null);
-    return n;
+    int[] n = {0};
+    Crashes.app(() -> {
+      for (ActivityController<? extends Activity> c : stack) {
+        c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
+        n[0]++;
+      }
+      Host.arrange(new java.util.ArrayList<>(stack), hiddenBy != null);
+    });
+    return n[0];
   }
 
   /**

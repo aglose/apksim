@@ -603,7 +603,7 @@ public final class TestActivities {
       } catch (java.lang.reflect.InvocationTargetException e) {
         // A running instance's Application.onCreate threw: on a device the main thread dies with it (Crashes). Returns
         // only with -Dapksim.crashes=log; the launch then fails as before.
-        if (!testRun() && System.getProperty("apksim.package") != null) Crashes.mainThreadDied(e.getCause());
+        if (Crashes.installed()) Crashes.mainThreadDied(e.getCause());
         if (e.getCause() instanceof RuntimeException r) throw r;
         if (e.getCause() instanceof Error r) throw r;
         throw new IllegalStateException(e.getCause());

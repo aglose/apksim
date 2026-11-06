@@ -54,7 +54,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     AndroidRuntime: FATAL EXCEPTION: <thread>` (the main looper's is `main`), `Process: PKG, PID: N` and the stack through
     android.util.Log (`adb logcat`; stderr too when logcat is off), then exit 10 (RuntimeInit's System.exit(10); warm,
     the client's). An app's own default handler replaces it, as on a device; one that passes the exception on reaches
-    it. An exception leaving the main looper (Host's loop, the first activity's start, Application.onCreate) is logged
+    it. An exception leaving the main looper (Host's loop, the first activity's start, the Application's construction,
+    attachBaseContext and onCreate (SimRunner, TestActivities), and app code a command's lifecycle transition runs:
+    `Crashes.app` around restart, recreate, process-death, configuration changes, home/resume, memory, `Host.arrange`;
+    a command's bad arguments stay `error:`/usage answers) is logged
     first, as the device's pre-handler does, then goes to the thread's handler, and the process ends even if that
     returns (the main thread is dead on a device). Not a device's: an app thread whose exception reaches the app's own
     non-passing handler is not logged (no pre-handler for JVM-dispatched exceptions). apksim's own threads (every thread
@@ -384,11 +387,13 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
-`apksim://crash?kind=coroutine|post|worker|bare|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
+`apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
 viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
-(`bare`); `handled` first sets a default handler that keeps the app
+(`bare`); `resume`, `config`, `destroy` throw from the second onResume (`recreate`, `restart URL`), onConfigurationChanged
+(`appearance dark`, `rotate`) and onDestroy (`restart`); `handled` first sets a default handler that keeps the app
 running ("crash: handled by the app ..."), `chained` one that passes it on (`--activity .CrashActivity` is `coroutine`;
-`ci-smoke.sh` checks it exits 10 with FATAL EXCEPTION, and `handled`).
+`ci-smoke.sh` checks it exits 10 with FATAL EXCEPTION, `handled`, and the test app's attachBaseContext throwing with
+`--jvm -Ddev.apksim.testapp.crash_in_attach=true`).
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,

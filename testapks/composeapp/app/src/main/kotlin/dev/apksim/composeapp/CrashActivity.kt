@@ -31,6 +31,10 @@ import kotlinx.coroutines.launch
  * - `worker`: thrown on a thread of the app's own ("crash-worker").
  * - `bare`: thrown on a thread of the app's own ("crash-bare"), an exception made without a stack trace, so nothing in
  *   it says the app's code ran.
+ * - `resume`: thrown from onResume after the first (a `restart` or `recreate` resumes it again).
+ * - `config`: thrown from onConfigurationChanged (the activity handles configuration changes itself, so `rotate`
+ *   or `appearance dark` reach it; `recreate` recreates it whatever it handles).
+ * - `destroy`: thrown from onDestroy (`restart` or `process-death` destroys it).
  * - `handled`: the app installs a default handler of its own that does not pass the exception on, then crashes as
  *   `coroutine`: the app keeps running and the screen says what its handler got.
  * - `chained`: the app installs a handler that records the crash and passes it on to the one before it, as crash
@@ -81,6 +85,7 @@ class CrashActivity : androidx.activity.ComponentActivity() {
         }
         model.crashSoon(0)
       }
+      "resume", "config", "destroy" -> {}
       else -> status = "crash: unknown kind $kind"
     }
     setContent {
@@ -95,10 +100,29 @@ class CrashActivity : androidx.activity.ComponentActivity() {
     }
   }
 
+  private val kind: String get() = intent.data?.getQueryParameter("kind") ?: "coroutine"
+
+  override fun onResume() {
+    super.onResume()
+    if (kind == "resume" && resumes++ > 0) throw IllegalStateException("thrown from onResume")
+  }
+
+  override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+    super.onConfigurationChanged(newConfig)
+    if (kind == "config") throw IllegalStateException("thrown from onConfigurationChanged")
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()
+    if (kind == "destroy") throw IllegalStateException("thrown from onDestroy")
+  }
+
   /** An exception with no stack trace (writableStackTrace false). */
   class Bare : RuntimeException("thrown without a stack trace", null, false, false)
 
   private companion object {
     const val TAG = "CrashActivity"
+    /** onResume calls of every CrashActivity: `restart` and `recreate` make a new one. */
+    var resumes = 0
   }
 }

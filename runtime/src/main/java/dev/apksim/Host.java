@@ -195,6 +195,8 @@ public class Host {
           String reply;
           try {
             reply = runCommand(cmd.args);
+          } catch (Crashes.AppCrash crash) {
+            throw crash;  // app code threw in a transition the command ran: a crash, as on a device (below)
           } catch (Exception ex) {
             // A bad command (or one the framework rejects) is an answer, not a crash of the app.
             ex.printStackTrace();
@@ -386,8 +388,10 @@ public class Host {
       // Starts not yet acted on belong to the activities being dropped.
     }
     ActivityController<? extends Activity> top = stack.peek();
-    if (top != null) top.pause().stop();
-    while (!stack.isEmpty()) stack.pop().destroy();
+    Crashes.app(() -> {
+      if (top != null) top.pause().stop();
+      while (!stack.isEmpty()) stack.pop().destroy();
+    });
     controls.results().clear();
     pendingScript.clear();
     drags.clear();
@@ -602,15 +606,19 @@ public class Host {
    * implicit intent gets the component it resolved to, on a copy, as a device's activity gets it (TestActivities.launch).
    */
   private void start(String name, Intent intent) throws Exception {
-    if (intent.getComponent() == null) intent = new Intent(intent).setComponent(new ComponentName(System.getProperty("apksim.package"), name));
+    Intent started = intent.getComponent() == null
+        ? new Intent(intent).setComponent(new ComponentName(System.getProperty("apksim.package"), name)) : intent;
     String className = AppInfo.activityClass(name);
-    Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
-    ActivityController<? extends Activity> top = stack.peek();
-    if (top != null) top.pause();
-    ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intent);
-    stack.push(c);
-    c.setup();
-    arrange(new ArrayList<>(stack), false);
+    Crashes.app(() -> {
+      Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
+      ActivityController<? extends Activity> top = stack.peek();
+      if (top != null) top.pause();
+      ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, started);
+      stack.push(c);
+      c.setup();
+      arrange(new ArrayList<>(stack), false);
+      return null;
+    });
   }
 
   /**
@@ -695,6 +703,10 @@ public class Host {
    * what a finish needs in a test run, whose activities a test may have launched side by side with ActivityScenario.
    */
   static void arrange(List<? extends ActivityController<?>> topFirst, boolean backgrounded, boolean onlyUp) {
+    Crashes.app(() -> arrangeNow(topFirst, backgrounded, onlyUp));
+  }
+
+  private static void arrangeNow(List<? extends ActivityController<?>> topFirst, boolean backgrounded, boolean onlyUp) {
     boolean shown = !backgrounded;
     boolean first = true;
     List<Activity> order = new ArrayList<>();

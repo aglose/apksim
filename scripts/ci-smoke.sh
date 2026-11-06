@@ -127,15 +127,32 @@ echo "--activity: started and kept $started of 3 times, running after back: $run
 [[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
   || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
 
-# An exception escaping a coroutine on the main thread (viewModelScope.launch) crashes the app as on a device (issue
-# 104): FATAL EXCEPTION in the log with the stack, and the process ends with RuntimeInit's exit status 10.
-code=0
-limit 300 docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --activity .CrashActivity app.apk \
-  > "$OUT/crash.log" 2>&1 || code=$?
+# Uncaught exceptions crash the app as on a device (issue 104): FATAL EXCEPTION in the log with the stack, and the
+# process ends with RuntimeInit's exit status 10. One escaping a coroutine on the main thread (viewModelScope.launch),
+# and one thrown in the Application's attachBaseContext, before onCreate. Named containers, removed after each timed
+# run and by the trap meanwhile: `limit` ends only the docker client if the handler hangs, and --rm acts only on exit.
+CRASH_NAME=$NAME-crash
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" "$CRASH_NAME" >/dev/null 2>&1 || true' EXIT
+crash_run() {  # crash_run LOG APKSIM_ARGS...: the exit status in $code
+  local log="$1"; shift
+  code=0
+  limit 300 docker run --rm --name "$CRASH_NAME" --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless "$@" app.apk \
+    > "$OUT/$log" 2>&1 || code=$?
+  docker rm -f "$CRASH_NAME" >/dev/null 2>&1 || true
+}
+crashed() {  # crashed LOG EXCEPTION_LINE: exit 10 with the device's FATAL EXCEPTION lines and the exception
+  [[ "$code" == 10 ]] && grep -q 'E/AndroidRuntime: FATAL EXCEPTION: main' "$OUT/$1" \
+    && grep -q 'Process: dev.apksim.composeapp, PID: ' "$OUT/$1" && grep -qF "$2" "$OUT/$1"
+}
+crash_run crash.log --activity .CrashActivity
 echo "Uncaught coroutine exception: exit $code, $(grep -c 'FATAL EXCEPTION: main' "$OUT/crash.log" || true) FATAL EXCEPTION line(s)"
-[[ "$code" == 10 ]] && grep -q 'E/AndroidRuntime: FATAL EXCEPTION: main' "$OUT/crash.log" \
-  && grep -q 'Process: dev.apksim.composeapp, PID: ' "$OUT/crash.log" && grep -q 'java.lang.ArithmeticException: / by zero' "$OUT/crash.log" \
+crashed crash.log 'java.lang.ArithmeticException: / by zero' \
   || { echo "an uncaught coroutine exception did not crash the app" >&2; tail -40 "$OUT/crash.log" >&2; exit 1; }
+crash_run crash-attach.log --jvm -Ddev.apksim.testapp.crash_in_attach=true
+echo "Exception in Application.attachBaseContext: exit $code"
+crashed crash-attach.log 'thrown in attachBaseContext' \
+  || { echo "an exception in attachBaseContext did not crash the app" >&2; tail -40 "$OUT/crash-attach.log" >&2; exit 1; }
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
