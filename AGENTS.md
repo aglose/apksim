@@ -126,7 +126,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
-  - `AdbServer`, `AdbShell`, `AdbLog`: the adb device (`--adb PORT`, see "adb device").
+  - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
   - `FrameStream`: the screen as JPEG frames for `apksim serve` (see "apksim serve"). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
@@ -508,6 +508,11 @@ the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
 back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
+`adb shell uiautomator dump [--compressed] [--windows] [FILE]` (`UiDump`: the stock tool's XML and its "UI hierchary
+dumped to: FILE" line, AOSP's AccessibilityNodeInfoDumper attribute for attribute, NAF included, from the active
+window's tree as UiAutomation reads it here, so Compose nodes and testTagsAsResourceId ids show; default
+/sdcard/window_dump.xml, `/dev/tty` prints it, so `adb exec-out uiautomator dump /dev/tty`; `--compressed` drops views
+not important for accessibility, lifting their children; it waits up to 1 s for the main thread to go idle first),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`

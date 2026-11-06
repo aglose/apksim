@@ -6,8 +6,9 @@ then finish and uninstall. The server is the test app project's `uiserver` modul
 
   scripts/adb-check.py SERIAL UISERVER_APK      (SERIAL: localhost:PORT, an instance started with --adb PORT)
 
-Runs against the test app (phone device): it opens the Home tab, taps the FAB, then presses and holds it with
-`input swipe`. Exits non-zero with the reason on
+Runs against the test app (phone device): it opens the Home tab, reads it with `uiautomator dump` (to /sdcard and to
+/dev/tty, full and --compressed), taps the FAB, then presses and holds it with `input swipe`. Exits non-zero with the
+reason on
 the first failure. adb comes from PATH, or $ADB.
 """
 import os
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 PKG = "dev.apksim.uiserver"
 SOCKET = "dev.apksim.uiserver"
@@ -52,6 +54,50 @@ def request(port, line):
         return f.readline().strip()
 
 
+def uiautomator_dump(serial):
+    """`uiautomator dump` as scripts use it on a device: the stock XML, parsed, against what `apksim nodes` reports."""
+    adb(serial, "shell", "input", "tap", "130", "1690")  # the Home tab
+    time.sleep(1)
+    out = adb(serial, "shell", "uiautomator", "dump").strip()
+    if out != "UI hierchary dumped to: /sdcard/window_dump.xml":
+        fail(f"uiautomator dump said {out!r}")
+    text = adb(serial, "exec-out", "cat", "/sdcard/window_dump.xml")
+    if not text.startswith("<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation=\"0\">"):
+        fail(f"uiautomator dump's file does not start as the stock tool's: {text[:120]!r}")
+    root = ET.fromstring(text)
+    nodes = list(root.iter("node"))
+    attrs = ["index", "text", "resource-id", "class", "package", "content-desc", "checkable", "checked", "clickable",
+             "enabled", "focusable", "focused", "scrollable", "long-clickable", "password", "selected", "bounds"]
+    for n in nodes:
+        if [k for k in n.attrib if k != "NAF"] != attrs or not re.fullmatch(r"\[-?\d+,-?\d+\]\[-?\d+,-?\d+\]", n.get("bounds")):
+            fail(f"a dumped node differs from the stock tool's: {n.attrib}")
+    if not any(re.fullmatch(r"FAB clicks: \d+", n.get("text")) for n in nodes):
+        fail("uiautomator dump has no 'FAB clicks' text")
+    if not any(n.get("resource-id") == "android:id/content" for n in nodes):
+        fail("uiautomator dump leaves out views not important for accessibility (android:id/content)")
+    # The FAB: Modifier.testTag("fab") under testTagsAsResourceId, its Icon's description "Add".
+    fab = [n for n in nodes if n.get("resource-id") == "fab"]
+    if not fab or fab[0].get("clickable") != "true":
+        fail(f"uiautomator dump has no clickable node with resource-id 'fab': {[n.attrib for n in fab]}")
+    if not any(n.get("content-desc") == "Add" for n in fab[0].iter("node")):
+        fail("uiautomator dump has no content-desc 'Add' in the FAB")
+    # Every element `nodes` lists is in the dump, with the same bounds.
+    bounds = {n.get("bounds") for n in nodes}
+    listed = re.findall(r"\[(\d+),(\d+),(\d+),(\d+)\]", adb(serial, "shell", "apksim", "nodes"))
+    missing = [b for b in listed if "[%s,%s][%s,%s]" % b not in bounds]
+    if not listed or missing:
+        fail(f"uiautomator dump lacks bounds that `nodes` reports: {missing or 'nodes listed nothing'}")
+    # To /dev/tty, as `adb exec-out uiautomator dump /dev/tty` is used: the XML, then the line.
+    out = adb(serial, "exec-out", "uiautomator", "dump", "--compressed", "/dev/tty")
+    xml, _, tail = out.rpartition("UI hierchary dumped to: ")
+    if tail.strip() != "/dev/tty":
+        fail(f"uiautomator dump /dev/tty ended {out[-80:]!r}")
+    compressed = list(ET.fromstring(xml).iter("node"))
+    if not compressed or len(compressed) >= len(nodes) or any(n.get("class") == "android.widget.LinearLayout" for n in compressed):
+        fail(f"uiautomator dump --compressed kept views not important for accessibility ({len(compressed)} of {len(nodes)})")
+    adb(serial, "shell", "rm", "/sdcard/window_dump.xml")
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -59,6 +105,7 @@ def main():
     serial, apk = sys.argv[1], sys.argv[2]
     subprocess.run([ADB, "connect", serial], capture_output=True, timeout=30)
     adb(serial, "wait-for-device")
+    uiautomator_dump(serial)
 
     out = adb(serial, "install", "-t", "-g", apk)
     if "Success" not in out:
@@ -135,8 +182,8 @@ def main():
     time.sleep(1)
     if "Success" not in adb(serial, "uninstall", PKG, check=False):
         fail("adb uninstall failed")
-    print("adb check passed: install, am instrument, am broadcast, forward to a local socket, UiAutomation read and tap,"
-          " input swipe hold")
+    print("adb check passed: uiautomator dump, install, am instrument, am broadcast, forward to a local socket,"
+          " UiAutomation read and tap, input swipe hold")
 
 
 if __name__ == "__main__":
