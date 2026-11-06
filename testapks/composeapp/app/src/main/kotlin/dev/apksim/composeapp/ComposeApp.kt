@@ -3,6 +3,7 @@ package dev.apksim.composeapp
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
+import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.os.Build
@@ -33,8 +34,9 @@ open class ComposeApp : Application() {
     serialAtCreate = try { Build.getSerial() } catch (e: SecurityException) { null }
     cameraAnyAtCreate = packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
     modelAtCreate = Build.MODEL
+    bluetoothOnAtCreate = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
     Log.i("ComposeApp", "identity: serial=$serialAtCreate SERIAL=${Build.SERIAL} camera.any=$cameraAnyAtCreate " +
-        "model=$modelAtCreate release=${Build.VERSION.RELEASE}")
+        "model=$modelAtCreate release=${Build.VERSION.RELEASE} bluetooth=$bluetoothOnAtCreate")
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
   }
 
@@ -70,5 +72,7 @@ open class ComposeApp : Application() {
     @Volatile var serialAtCreate: String? = null
     @Volatile var cameraAnyAtCreate: Boolean? = null
     @Volatile var modelAtCreate: String? = null
+    /** BluetoothAdapter.isEnabled() in onCreate (null: no adapter). */
+    @Volatile var bluetoothOnAtCreate: Boolean? = null
   }
 }

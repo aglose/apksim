@@ -1,11 +1,14 @@
 package dev.apksim.composeapp
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -48,6 +51,24 @@ class DeviceIdentityTest {
     val pm = InstrumentationRegistry.getInstrumentation().targetContext.packageManager
     assertTrue(feature, pm.hasSystemFeature(feature!!))
     if (feature == PackageManager.FEATURE_CAMERA_ANY) assertEquals(true, ComposeApp.cameraAnyAtCreate)
+  }
+
+  @Test
+  fun aDefaultFeatureTakenAwayAtLaunchIsGone() {
+    val feature = args.getString("absentFeature")
+    assumeTrue("run with -e absentFeature NAME and --feature NAME=false", feature != null)
+    val pm = InstrumentationRegistry.getInstrumentation().targetContext.packageManager
+    assertFalse(feature, pm.hasSystemFeature(feature!!))
+    assertFalse(feature, pm.systemAvailableFeatures.any { it.name == feature })
+  }
+
+  @Test
+  fun bluetoothOffAtLaunchIsOffBeforeTheApplicationStarts() {
+    assumeTrue("run with -e bluetooth off and --bluetooth off", args.getString("bluetooth") == "off")
+    val adapter = InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(BluetoothManager::class.java).adapter
+    assertFalse(adapter.isEnabled)
+    assertEquals(BluetoothAdapter.STATE_OFF, adapter.state)
+    assertEquals(false, ComposeApp.bluetoothOnAtCreate)
   }
 
   @Test

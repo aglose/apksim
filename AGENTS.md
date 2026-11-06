@@ -244,7 +244,12 @@ window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|r
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
-`biometrics [enroll|unenroll|match|nomatch|cancel]`, `recreate` (as a configuration change: ViewModels kept),
+`biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
+launch as an emulator boots, `--bluetooth off` otherwise; each switch goes TURNING_ON then ON, or TURNING_OFF then OFF,
+with an ACTION_STATE_CHANGED broadcast for each and Settings.Global `bluetooth_on` following; name Build.MODEL, address
+02:00:00:00:00:00 as a device tells apps; Robolectric's LE scanner, which finds nothing; no adapter at all without
+android.hardware.bluetooth; in test runs each test starts with the launch's state, and `executeShellCommand("svc
+bluetooth disable")` switches it, `BluetoothTest`), `recreate` (as a configuration change: ViewModels kept),
 `process-death` (state saved, activities destroyed and rebuilt from it; statics and the Application survive, so this
 tests state saving, not a cold start), `debug layout on|off|toggle` (Show layout bounds, Views and Compose; minified
 Compose apps need a `recreate`), `a11y [show]` (unlabeled controls, touch targets under 48 dp), `pick FILE...|cancel`
@@ -321,12 +326,17 @@ each only while the device has it and the app has not hidden it (`wshot` shows t
 app opens outside itself go to the Mac's browser/mail app. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--biometrics enrolled`, `--bluetooth on|off`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
 digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get
-the `default` slot's: Robolectric's `unknown` failed a backend's format check), `--feature NAME[=false]` (repeatable,
-ShadowPackageManager.setSystemFeature: Robolectric reports no hardware features, FEATURE_CAMERA_ANY included) and
+the `default` slot's: Robolectric's `unknown` failed a backend's format check), system features (`Features`:
+Robolectric's few (touchscreen, wifi*, telephony*), then what an emulator of the device's kind lists for what apksim
+simulates: bluetooth, bluetooth_le, location*, multitouch*, faketouch, fingerprint, audio.output, both screen
+orientations; a TV drops touchscreen, telephony, GPS and fingerprint and has leanback and type.television, a desktop
+adds type.pc; no camera*, as apksim has none: the Settings tab's Camera button only asks the permission. The `device`
+command re-applies them for the new kind. `pm list features` and getSystemAvailableFeatures list them), `--feature
+NAME[=false]` (repeatable, after the defaults: `=false` takes one away, a default too) and
 `--build FIELD=VALUE` (repeatable: any public static Build or Build.VERSION field, `MODEL=Pixel 9`,
 `VERSION.SECURITY_PATCH=...`, typed by the field; not VERSION.SDK_INT, and leave FINGERPRINT alone in test runs,
 see "Instrumentation tests"; Robolectric resets them between tests, and they are set again for each). `DeviceIdentityTest`
@@ -348,6 +358,8 @@ imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` de
 CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
 still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
 `--device tablet`.
+`apksim://bluetooth` opens `BluetoothActivity`: "bluetooth: on, scanner yes", the ACTION_STATE_CHANGED broadcasts
+received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/adb-check.py` switches it with `svc`).
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
@@ -513,8 +525,10 @@ back/home/lock/unlock; key codes by number too), `input tap|swipe` return once t
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (app pixels, as `shot`; without `-p` raw RGBA),
 `adb shell am start -a android.intent.action.VIEW -d apksim://composeapp/trips` (= `open URL`), `am start [-W] -n
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
-PKG 1`, `pm list packages|path|grant|revoke`, `wm size|density`, `settings get|put global|system|secure`
-(`animator_duration_scale` = `animscale`, `font_scale` = `fontscale`), `cmd uimode night yes|no`, `getprop`
+PKG 1`, `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `wm size|density`, `settings get|put
+global|system|secure` (`animator_duration_scale` = `animscale`, `font_scale` = `fontscale`, global `bluetooth_on` =
+`bluetooth`), `svc bluetooth enable|disable` and `cmd bluetooth_manager enable|disable|wait-for-state:STATE_X` (=
+`bluetooth`), `dumpsys bluetooth_manager` (enabled, state, address, name), `cmd uimode night yes|no`, `getprop`
 (`sys.boot_completed=1` once the app is up), `run-as PKG`, `ls/cat/rm/mkdir`, `dumpsys activity top`, and
 `adb shell apksim CMD...` for any control command. `adb logcat` reads `AdbLog`: ShadowLog.stream is replaced by a
 tee that timestamps lines into a 20k-line ring and still passes them on (`logcat on` keeps working; a watcher puts the
