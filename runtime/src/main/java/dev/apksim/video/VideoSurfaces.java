@@ -3,23 +3,24 @@ package dev.apksim.video;
 import android.graphics.Bitmap;
 import android.graphics.SurfaceTexture;
 import android.view.TextureView;
+import android.view.View;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.robolectric.util.ReflectionHelpers;
 
 /**
  * Where decoded pictures meet the views showing them. There is no GL here, so a TextureView's SurfaceTexture
- * is only a name ({@link ShadowSimTextureView} makes it), and a renderer drawing "into" it publishes a
- * Bitmap under that name instead; the view draws the latest one.
+ * is only a name ({@link ShadowSimTextureView} makes it, and {@link ShadowSimSurfaceView} one for a SurfaceView's
+ * holder), and a renderer drawing "into" it publishes a Bitmap under that name instead; the view draws the latest one.
  */
 public final class VideoSurfaces {
   private VideoSurfaces() {}
 
   private static final class Entry {
-    final TextureView view;
+    final View view;
     volatile Bitmap picture;
 
-    Entry(TextureView view) {
+    Entry(View view) {
       this.view = view;
     }
   }
@@ -46,7 +47,7 @@ public final class VideoSurfaces {
     return b.toString();
   }
 
-  static void attach(SurfaceTexture surface, TextureView view) {
+  static void attach(SurfaceTexture surface, View view) {
     ENTRIES.put(surface, new Entry(view));
   }
 
@@ -87,8 +88,10 @@ public final class VideoSurfaces {
     e.picture = picture;
     e.view.post(() -> {
       if (ENTRIES.get(surface) != e) return;
-      TextureView.SurfaceTextureListener l = ReflectionHelpers.getField(e.view, "mListener");
-      if (l != null) l.onSurfaceTextureUpdated(surface);
+      if (e.view instanceof TextureView) {
+        TextureView.SurfaceTextureListener l = ReflectionHelpers.getField(e.view, "mListener");
+        if (l != null) l.onSurfaceTextureUpdated(surface);
+      }
       e.view.invalidate();
     });
   }
