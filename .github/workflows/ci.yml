@@ -85,6 +85,13 @@ jobs:
             --xml tests/junit-badlistener.xml -e class dev.apksim.composeapp.RunnerListenersTest \
             -e listener does.not.Exist || status=$?
           test "$status" = 1
+      # --start-activities (opt-in): an activity the app starts comes up, and the one below it is stopped with its
+      # window hidden until it is back on top.
+      - name: Test run with activities started
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-start.xml -e startActivities true \
+            -e class dev.apksim.composeapp.StartActivityTest,dev.apksim.composeapp.StackWindowsTest -- --start-activities
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.
       - name: Test run with the network replayed

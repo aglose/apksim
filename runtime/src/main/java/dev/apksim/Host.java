@@ -455,10 +455,23 @@ public class Host {
    * removed. Robolectric's controller leaves it visible, so every activity below the top was drawn each frame: a
    * large app 4 activities deep drew at 3 fps.
    */
-  private static void setWindowVisible(Activity a, boolean visible) {
+  static void setWindowVisible(Activity a, boolean visible) {
     android.view.Window w = a.getWindow();
     View decor = w == null ? null : w.peekDecorView();
     if (decor != null) decor.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+  }
+
+  /**
+   * A stopped activity coming back to the front (the one above finished, or the app returns from the home screen):
+   * restarted, resumed, and its window shown. An activity recreated or rebuilt while stopped (a configuration change,
+   * `recreate`, `process-death`) has never had a window: it gets one now, as ActivityThread adds the window of an
+   * activity it resumes. Before, the stack was left with no window at all once its top finished.
+   */
+  static void bringToFront(ActivityController<? extends Activity> c) {
+    setWindowVisible(c.get(), true);
+    c.restart().resume();
+    View decor = c.get().getWindow().peekDecorView();
+    if (decor == null || decor.getViewRootImpl() == null) c.visible();
   }
 
   /**
@@ -512,10 +525,7 @@ public class Host {
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
-      if (below != null) {
-        setWindowVisible(below.get(), true);
-        below.restart().resume();
-      }
+      if (below != null) bringToFront(below);
     }
     // An activity below the top that finished (startActivity(next) then finish(), the usual hand-off) is destroyed
     // too, as the system server would. It stayed stopped instead, its window up and its ViewModels alive.
@@ -908,13 +918,16 @@ public class Host {
       }
       case "windows" -> {
         StringBuilder b = new StringBuilder();
-        for (View r : rootViews()) {
-          int[] at = position(r);
-          b.append(r.getClass().getSimpleName()).append('@').append(at[0]).append(',').append(at[1])
-              .append(' ').append(r.getWidth()).append('x').append(r.getHeight()).append(r.hasWindowFocus() ? " focused" : "")
-              .append(r.getVisibility() == View.VISIBLE ? "" : r.getVisibility() == View.INVISIBLE ? " invisible" : " gone").append("; ");
-        }
+        for (View r : rootViews()) b.append(ViewTree.window(r, position(r))).append("; ");
         return b.toString();
+      }
+      case "viewtree" -> {
+        // viewtree [FILE]: every view of every window, one per line (ViewTree). A reply is one line, so it joins them
+        // with "; " (indentation kept); FILE gets them as lines.
+        String tree = ViewTree.dump(rootViews(), this::position);
+        if (a.length < 2) return tree.strip().replace("\n", "; ");
+        Files.writeString(Storage.absolute(a[1]), tree);
+        return "ok, " + tree.lines().count() + " lines in " + Storage.absolute(a[1]);
       }
       case "selftest" -> {
         // selftest [file]: libwebrtc's native scaler (19 arguments: stack arguments must be translated; needs an APK with

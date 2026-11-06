@@ -26,7 +26,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
-    commands (`runCommand`).
+    commands (`runCommand`). A stopped activity's window is hidden, as ActivityThread hides it, so only the top
+    one draws and takes touches; one coming back to the front (`bringToFront`: its top finished, `resume`) is shown
+    again, and gets a window if it was recreated or rebuilt while stopped (configuration change, `recreate`,
+    `process-death`): before, finishing the top of such a stack left nothing on screen.
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows.
@@ -154,7 +157,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
-  reads; Settings shows the wall clock in the locale's format. `snapshots/` has its screenshot-test specs
+  reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
+colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks. `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
 - `work/` (not source): `lib/` jars, `runtime/` dylibs, fonts and ICU, `apksim.jar`, `app.aot`, `cache/` (per-APK
@@ -176,7 +180,12 @@ repo): read it before working with that app.
 
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a slow drag that holds before lifting, no fling),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
-`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`,
+`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
+(each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.
+`.MainActivity{stopped}`), `viewtree [FILE]` (`ViewTree`: every view of every window, indented: class, id name, screen
+position and size, and only what differs from a plain view: invisible/gone, alpha, translate, z, scale, rotation,
+click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[AndroidView]` the holders of its
+AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`.
@@ -652,6 +661,9 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 - `--start-activities` (opt-in, `-Dapksim.startActivities`): a start of one of the app's activities that no running
   one takes launches it, as ActivityThread does (the one below is paused, then stopped), and NEW_TASK | CLEAR_TASK
   finishes the task's others; by default Robolectric only records the start, which Robolectric-style suites check.
+  The stopped activity's window is hidden until it comes back (also for back on a launcher root, which sends the task
+  to the background), so UiAutomator, UiAutomation's windows and screenshots, and failure bundles see only the top
+  one (`StackWindowsTest`). Robolectric's own stops (ActivityScenario.moveToState) leave windows as they were.
   Not yet: a start for a result (startActivityForResult, ActivityResultContracts) is still only recorded, so a flow
   that waits for the started activity's result needs the test to supply it, as with Robolectric.
 - Mockito (`MockMakers`, `--mock-maker MODE`, `-Dapksim.mockMaker`): a test APK's

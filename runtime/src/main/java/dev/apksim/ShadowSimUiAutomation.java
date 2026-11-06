@@ -406,8 +406,10 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
           ActivityController<?> c = ReflectionHelpers.getField(Shadow.extract(a), "controller");
           if (c == null) continue;
           c.configurationChange(config, app.getResources().getDisplayMetrics(), changed);
-          // A recreated activity's window is left detached by Robolectric (setup() would call visible()).
+          // A recreated activity's window is left detached by Robolectric (setup() would call visible()). A stopped
+          // one's is added hidden, as before the change: TestActivities finds the stack by its windows.
           if (c.get().getWindow().getDecorView().getViewRootImpl() == null) c.visible();
+          Host.setWindowVisible(c.get(), !(boolean) ReflectionHelpers.getField(c.get(), "mStopped"));
         }
       }
       settle(100);

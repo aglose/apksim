@@ -605,6 +605,7 @@ final class DeviceControls {
     if (top == null) return "no activity";
     if (why.equals("home")) top.userLeaving();
     top.pause().stop();
+    Host.setWindowVisible(top.get(), false);  // as every stopped activity's (Host.start)
     if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
     hiddenBy = why;
     SimWindow.present(placeholder(why));
@@ -617,7 +618,7 @@ final class DeviceControls {
     hiddenBy = null;
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) {
-      top.restart().resume();
+      Host.bringToFront(top);
       top.get().getWindow().getDecorView().invalidate();
     }
     return "ok";
