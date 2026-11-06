@@ -44,7 +44,7 @@ import org.robolectric.shadows.ShadowChoreographer;
 import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.util.ReflectionHelpers;
 
-/** The Android "main thread": launches the APK's launcher activity and pumps looper, input and frames. */
+/** The Android "main thread": launches the APK's start activity (launcher or --activity) and pumps looper, input and frames. */
 @RunWith(SimRunner.class)
 @Config(sdk = 36) // Fixed, whatever the APK targets: it is the framework this runtime ships.
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -54,7 +54,10 @@ import org.robolectric.util.ReflectionHelpers;
 public class Host {
   private static final long IDLE_POLL_NANOS = 2_000_000L;
   private static final long FRAME_NANOS = 1_000_000_000L / 120;
-  private static final long VSYNC_HZ = 120;
+  /** The frame grid's rate: 120 Hz, or what --max-fps / the maxfps command cap it at (Features). */
+  private static long gridHz() {
+    return Features.maxFps();
+  }
   private static final long MAX_CATCH_UP_MS = 50;
   private static final long VSYNC_SLACK_NANOS = 300_000L;
   /**
@@ -104,7 +107,7 @@ public class Host {
     // By default Robolectric's vsync fires at once and advances the clock itself, which suits tests but
     // spins forever inside the looper on any endless animation. Paused mode fires only when the clock
     // passes the next frame, and this loop moves the clock in real time.
-    ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+    applyFrameDelay(true);
     ShadowChoreographer.setPaused(true);
     usePersistentDataDir();
     if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
@@ -125,11 +128,7 @@ public class Host {
     controls.showTitle();
     Timing.detail("controls");
 
-    String launcher = System.getProperty("apksim.launcher");
-    Intent intent = new Intent(Intent.ACTION_MAIN)
-        .addCategory(Intent.CATEGORY_LAUNCHER)
-        .setComponent(new ComponentName(System.getProperty("apksim.package"), launcher));
-    start(launcher, intent);
+    start(System.getProperty("apksim.startActivity"), startIntent());
     Timing.mark("activity-resumed");
     // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
     Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
@@ -141,7 +140,7 @@ public class Host {
     clockBaseMs = SystemClock.uptimeMillis();
     clockBaseNanos = last;
     ShadowRealSleep.takeMainAdvancedMs();  // the standby's warm-up, or the app's start before the loop: real time
-    boolean firstFrame = true;
+    firstFrame = true;
     boolean closed = false;
     while (!closed) {
       long start = System.nanoTime();
@@ -208,18 +207,24 @@ public class Host {
         if (frameAtNanos != 0) {
           // Following the display: the frame waits for its vsync, then the clock catches up to now.
           if (System.nanoTime() < frameAtNanos) stepMs = 0;
+        } else if (gridHz() < 120 && !firstFrame) {
+          // Under a frame rate cap the clock follows real time, and the Choreographer's frame delay (the cap's interval,
+          // applyFrameDelay) spaces the frames: moving the clock only to the cap's grid lines froze uptime between
+          // frames, so at 1 fps one turn jumped a second, running a tap's long-press timeout before its UP.
         } else {
           // Something is animating. Like a display's vsync, frames happen on a fixed grid, so while one
           // is wanted the clock moves only to grid lines: to the latest that has passed, dropping
           // any others, as a device does under load.
-          long passed = lineAtOrBefore(nowMs + availableMs);
+          // (On the 120 Hz grid: under a cap only the first frame comes here.)
+          long passed = lineAtOrBefore(nowMs + availableMs, 120);
           stepMs = passed > nowMs ? passed - nowMs : 0;
           // The first frame does not wait for a grid line: nothing is on screen yet to keep in step with. The clock
           // runs up to one frame ahead of real time, and waits for it afterwards (last is then in the future).
-          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs) + 1000 / VSYNC_HZ + 1 - nowMs;
+          if (firstFrame && stepMs == 0) stepMs = lineAtOrBefore(nowMs, 120) + 1000 / 120 + 1 - nowMs;
         }
       }
       long looperStart = System.nanoTime();
+      if (!firstFrame && gridHz() < 120) alignFrameDelay();
       if (availableMs > MAX_CATCH_UP_MS) {
         // A long stall: time spent stalled is not replayed.
         last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
@@ -236,10 +241,11 @@ public class Host {
       if (stack.isEmpty()) break;
       if (Snapshot.ON) focusTopWindow();
       List<View> roots = rootViews();
-      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots))) {
+      if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots) && capAllowsFrame())) {
         render(roots);
         if (firstFrame) {
           firstFrame = false;
+          applyFrameDelay(false);
           Timing.mark("first-frame");
           Standby.spawnNextSoon();
           String shot = System.getProperty("apksim.screenshot");
@@ -349,21 +355,21 @@ public class Host {
   }
 
   /**
-   * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the launcher activity started
-   * again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
+   * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the start activity (--activity,
+   * else the launcher one) started again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
    * Application and data persist. Screenshot tests start every screen this way, so none sees what another left.
    */
   private String restart(String url) throws Exception {
     String pkg = System.getProperty("apksim.package");
-    String cls = System.getProperty("apksim.launcher");
-    Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+    Intent intent = startIntent();
     if (url != null) {
       // Resolved first: with no activity left the process would end.
       intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(pkg);
       android.content.pm.ResolveInfo r = app.getPackageManager().resolveActivity(intent, 0);
       if (r == null || r.activityInfo == null) return "error: no activity in " + pkg + " handles " + url;
-      cls = r.activityInfo.name;
+      intent.setComponent(new ComponentName(pkg, r.activityInfo.name));  // an alias stays the alias (see start)
     }
+    String name = intent.getComponent().getClassName();
     if (controls.hidden()) controls.show();
     while (shadowOf(app).getNextStartedActivity() != null) {
       // Starts not yet acted on belong to the activities being dropped.
@@ -375,9 +381,9 @@ public class Host {
     pendingScript.clear();
     drags.clear();
     drag = null;
-    intent.setComponent(new ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-    start(cls, intent);
-    return "ok, " + cls;
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    start(name, intent);
+    return "ok, " + AppInfo.activityClass(name);
   }
 
   /**
@@ -392,15 +398,61 @@ public class Host {
     if (decor != null && decor.getViewRootImpl() != null && !decor.hasWindowFocus()) top.windowFocusChanged(true);
   }
 
-  /** The last line of the 120 Hz grid at or before this time. Lines fall on 8, 16, 25, 33... ms. */
-  private static long lineAtOrBefore(long ms) {
-    return (ms * VSYNC_HZ / 1000) * 1000 / VSYNC_HZ;
+  /**
+   * The last line of the frame grid at or before this time. Line k falls on k * 1000 / hz ms, rounded down: at 120 Hz
+   * 8, 16, 25, 33... Rounding ms * hz / 1000 down is not its inverse (8 ms gives 0.96, line 0), and the loop used to
+   * take the line it stood on for the one before it: it waited for a line already passed and spun until the next,
+   * a core busy for as long as anything animated on the grid (headless, hidden windows, under a cap).
+   */
+  static long lineAtOrBefore(long ms, long hz) {
+    long k = ms * hz / 1000;
+    if ((k + 1) * 1000 / hz <= ms) k++;
+    return k * 1000 / hz;
   }
+
+  /** The first line of the frame grid after this time. */
+  static long lineAfter(long ms, long hz) {
+    long k = ms * hz / 1000 + 1;
+    if (k * 1000 / hz <= ms) k++;
+    return k * 1000 / hz;
+  }
+
+  /**
+   * The Choreographer's frame delay: how long after a frame is asked for its vsync comes. 1 ms (Host's own grid paces
+   * frames, and the first frame comes at once), or under a frame rate cap whatever puts that vsync on the next line of
+   * the cap's grid, as an N Hz display's would be: so the clock follows real time while frames come N a second on
+   * average and never faster. A fixed delay of the interval ran slow (each frame is asked for when the last one ran,
+   * a little after its vsync: 56 fps at a cap of 60, 85 at 101), and rounded down ran fast (16 ms at 60: 62.5 fps).
+   * Set every loop turn under a cap ({@link #alignFrameDelay}).
+   */
+  static void applyFrameDelay(boolean beforeFirstFrame) {
+    if (beforeFirstFrame || gridHz() >= 120) {
+      ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+    } else {
+      alignFrameDelay();
+    }
+  }
+
+  /**
+   * Under a cap: a frame asked for next is asked for during the pending vsync's frame, at its time, or with none pending
+   * about now; its vsync then falls on the grid line after that.
+   */
+  private static void alignFrameDelay() {
+    long pending = ShadowChoreographer.getNextVsyncTimeNanos();
+    long nowMs = SystemClock.uptimeMillis();
+    long askedMs = pending != 0 ? Math.max(nowMs, (pending + 999_999) / 1_000_000) : nowMs;
+    ShadowChoreographer.setFrameDelay(Duration.ofMillis(Math.max(1, lineAfter(askedMs, gridHz()) - askedMs)));
+  }
+
+  /** No frame drawn yet. Main thread only. */
+  private boolean firstFrame = true;
 
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced) {
     long wait = IDLE_POLL_NANOS;
-    long untilVsync = FOLLOW_DISPLAY && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
+    // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
+    long hz = gridHz();
+    long untilVsync = FOLLOW_DISPLAY && hz >= 120 && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
     if (untilVsync >= 0) {
       // Just after the vsync, so the frame is ready well before the next one, where the screen shows it.
       long now = System.nanoTime();
@@ -409,8 +461,15 @@ public class Host {
     } else if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
       frameAtNanos = 0;
       long nowMs = SystemClock.uptimeMillis();
-      long nextLine = (nowMs * VSYNC_HZ / 1000 + 1) * 1000 / VSYNC_HZ + 1;
-      wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
+      if (hz < 120 && !firstFrame) {
+        // Under a cap: until the vsync the frame delay put off (applyFrameDelay), but at most a 120 Hz interval, since
+        // input and commands go out once a loop turn (a whole interval at 1 fps put a tap's DOWN and UP a second apart).
+        long vsyncMs = (ShadowChoreographer.getNextVsyncTimeNanos() + 999_999) / 1_000_000;
+        wait = Math.min(1_000_000_000L / 120, (vsyncMs - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced));
+      } else {
+        long nextLine = lineAfter(nowMs, 120) + 1;
+        wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
+      }
     }
     if (wait > 50_000L) LockSupport.parkNanos(wait);
   }
@@ -513,7 +572,27 @@ public class Host {
 
   // ---------------------------------------------------------------- activities
 
-  private void start(String className, Intent intent) throws Exception {
+  /**
+   * What the instance starts, and `restart` starts again: --activity's activity, else the manifest's first MAIN/LAUNCHER
+   * one (else MAIN/HOME, see AppInfo), with the intent a device gives it: MAIN and its filter's category (LAUNCHER, or
+   * HOME for a home app), or the component alone for an activity with no MAIN filter, as `am start -n` sends. An
+   * alias stays the component; start() makes its targetActivity.
+   */
+  private static Intent startIntent() {
+    String category = System.getProperty("apksim.startCategory", "");
+    Intent intent = category.isEmpty() ? new Intent()
+        : new Intent(Intent.ACTION_MAIN).addCategory("android.intent.category." + category);
+    String pkg = System.getProperty("apksim.package");
+    return intent.setComponent(new ComponentName(pkg, System.getProperty("apksim.startActivity")));
+  }
+
+  /**
+   * Starts the app's activity component NAME (an alias makes its targetActivity, the intent keeps the alias). An
+   * implicit intent gets the component it resolved to, on a copy, as a device's activity gets it (TestActivities.launch).
+   */
+  private void start(String name, Intent intent) throws Exception {
+    if (intent.getComponent() == null) intent = new Intent(intent).setComponent(new ComponentName(System.getProperty("apksim.package"), name));
+    String className = AppInfo.activityClass(name);
     Class<? extends Activity> cls = Class.forName(className, true, Host.class.getClassLoader()).asSubclass(Activity.class);
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null) top.pause();
@@ -993,7 +1072,27 @@ public class Host {
     return new int[] {x, y};
   }
 
+  /** The clock when the last frame was drawn (ms). */
+  private long lastRenderMs;
+
+  /**
+   * Under a frame rate cap, a frame only once the clock reaches the cap's grid line after the last one. The
+   * Choreographer's frames fall on those lines already (alignFrameDelay); this holds back the rest, windows dirtied
+   * outside a traversal (a View invalidated from another handler, a TextureView's new picture), which otherwise drew
+   * on any loop turn, up to 120 a second.
+   */
+  private static boolean capAllowsFrame(long lastMs) {
+    long hz = gridHz();
+    if (hz >= 120) return true;
+    return SystemClock.uptimeMillis() >= lineAfter(lineAtOrBefore(lastMs, hz), hz);
+  }
+
+  private boolean capAllowsFrame() {
+    return capAllowsFrame(lastRenderMs);
+  }
+
   private void render(List<View> roots) {
+    lastRenderMs = SystemClock.uptimeMillis();
     lastDrawn = roots.stream().filter(HwRenderer::drawn).toList();
     hw.draw(roots, this::position);
     frames++;
@@ -1191,7 +1290,13 @@ public class Host {
         return "ok";
       }
       case "video" -> {
-        return dev.apksim.video.VideoSurfaces.report();
+        // video: decode and draw counts; video on|blank: the mode codecs configured from now on take (Features).
+        return a.length > 1 ? Features.videoCommand(a[1]) : Features.describe() + " | " + dev.apksim.video.VideoSurfaces.report();
+      }
+      case "maxfps" -> {
+        String r = Features.maxFpsCommand(a);
+        applyFrameDelay(firstFrame);
+        return r;
       }
       case "webrtclog" -> {
         // libwebrtc's own log (ICE, networks, codecs) to stderr: webrtclog [verbose|info|warning|error].

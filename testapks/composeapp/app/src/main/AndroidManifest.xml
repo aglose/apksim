@@ -121,6 +121,8 @@
                 <data android:scheme="apksim" android:host="stack" />
             </intent-filter>
         </activity>
+        <!-- For apksim's activity option (.SecondAlias): an alias keeps its own name as the intent's component (no filter: nothing else reaches it). -->
+        <activity-alias android:name=".SecondAlias" android:targetActivity=".SecondActivity" android:exported="false" />
         <provider android:name=".StartupProvider" android:authorities="${applicationId}.startup" android:exported="false" />
         <service android:name=".UploadService" android:exported="false" />
         <service android:name=".NullBindingService" android:exported="false" />
