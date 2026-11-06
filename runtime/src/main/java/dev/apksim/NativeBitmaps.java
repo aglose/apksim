@@ -110,7 +110,7 @@ final class NativeBitmaps {
 
   /** The bitmap's colour space as an ADataSpace; ADATASPACE_UNKNOWN (0) for none or one without a data space. */
   static int dataSpace(Bitmap b) {
-    if (b == null) return BAD_PARAMETER;
+    if (b == null) return 0;
     ColorSpace cs = b.getColorSpace();
     if (cs == null) return 0;
     for (Object[] s : SPACES) {

@@ -2,8 +2,10 @@
 // copy of one bitmap into another (lock both, copy rows), OpenCV's and ML helpers' reads. NativeBitmapTest runs it; a
 // device passes every check. Built by build.sh into the test app's jniLibs.
 #include <android/bitmap.h>
+#include <android/data_space.h>
 #include <jni.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -164,12 +166,13 @@ JNIEXPORT jbyteArray JNICALL Java_dev_apksim_composeapp_BitmapFixture_compress(J
   return out;
 }
 
-// The NDK's answers to null arguments: 0 when each is BAD_PARAMETER.
+// The NDK's answers to null arguments: 0 when each result is BAD_PARAMETER and the data space UNKNOWN (0).
 JNIEXPORT jint JNICALL Java_dev_apksim_composeapp_BitmapFixture_badParameters(JNIEnv *env, jclass c) {
   AndroidBitmapInfo info;
   void *px;
   if (AndroidBitmap_getInfo(env, NULL, &info) != ANDROID_BITMAP_RESULT_BAD_PARAMETER) return 1;
   if (AndroidBitmap_lockPixels(env, NULL, &px) != ANDROID_BITMAP_RESULT_BAD_PARAMETER) return 2;
   if (AndroidBitmap_unlockPixels(env, NULL) != ANDROID_BITMAP_RESULT_BAD_PARAMETER) return 3;
+  if (AndroidBitmap_getDataSpace(env, NULL) != ADATASPACE_UNKNOWN) return 4;
   return 0;
 }

@@ -35,7 +35,10 @@ object BitmapFixture {
   /** The pixels encoded by AndroidBitmap_compress (0 JPEG, 1 PNG, 3 WEBP_LOSSY, 4 WEBP_LOSSLESS), or null. */
   external fun compress(bitmap: Bitmap, format: Int, quality: Int): ByteArray?
 
-  /** 0 when getInfo, lockPixels and unlockPixels each answer BAD_PARAMETER for a null bitmap. */
+  /**
+   * 0 when getInfo, lockPixels and unlockPixels each answer BAD_PARAMETER for a null bitmap and getDataSpace
+   * ADATASPACE_UNKNOWN; else which of them did not (1-4).
+   */
   external fun badParameters(): Int
 
   external fun lastResult(): Int

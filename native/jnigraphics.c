@@ -107,6 +107,10 @@ static int bm_get_info(JNIEnv *env, jobject bitmap, BitmapInfo *info) {
   if (r == RESULT_SUCCESS) {
     jint v[5];
     (*env)->GetIntArrayRegion(env, out, 0, 5, v);
+    if (threw(env, "AndroidBitmap_getInfo")) {
+      (*env)->DeleteLocalRef(env, out);
+      return RESULT_JNI_EXCEPTION;
+    }
     info->width = (uint32_t)v[0];
     info->height = (uint32_t)v[1];
     info->stride = (uint32_t)v[2];
@@ -155,6 +159,7 @@ static int bm_lock_pixels(JNIEnv *env, jobject bitmap, void **addr) {
     }
     l->bitmap = (*env)->NewGlobalRef(env, bitmap);
     if (!l->bitmap) {
+      threw(env, "AndroidBitmap_lockPixels");
       r = RESULT_ALLOCATION_FAILED;
       goto fail;
     }
@@ -207,8 +212,9 @@ out:
   return r;
 }
 
+// An ADataSpace, not a result: ADATASPACE_UNKNOWN (0) for anything that fails.
 static int32_t bm_get_data_space(JNIEnv *env, jobject bitmap) {
-  if (!env || !bitmap) return RESULT_BAD_PARAMETER;
+  if (!env || !bitmap) return 0;
   if (!helper) return 0;
   jvalue a[1] = {{.l = bitmap}};
   int r = call_int(env, "AndroidBitmap_getDataSpace", m_data_space, a);
@@ -253,7 +259,12 @@ static int bm_compress(const BitmapInfo *info, int32_t data_space, const void *p
   } else {
     jsize n = (*env)->GetArrayLength(env, out);
     jbyte *bytes = n ? (*env)->GetByteArrayElements(env, out, NULL) : NULL;
-    r = n && bytes && write(context, bytes, (size_t)n) ? RESULT_SUCCESS : RESULT_JNI_EXCEPTION;
+    if (n && !bytes) {
+      threw(env, "AndroidBitmap_compress");
+      r = RESULT_ALLOCATION_FAILED;
+    } else {
+      r = n && write(context, bytes, (size_t)n) ? RESULT_SUCCESS : RESULT_JNI_EXCEPTION;
+    }
     if (bytes) (*env)->ReleaseByteArrayElements(env, out, bytes, JNI_ABORT);
     (*env)->DeleteLocalRef(env, out);
   }
