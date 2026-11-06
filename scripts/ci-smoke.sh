@@ -1,6 +1,6 @@
 #!/bin/bash
 # UI smoke test against the Linux image, for CI: the first frame, then a scripted session over the control
-# channel (switch to Trips, rename a trip in SQLite, check the list changed). With UISERVER_APK (the test app
+# channel (switch to Trips, rename a trip in SQLite, check the list changed), and `--activity`. With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
 # (scripts/adb-check.py). Then the network check (scripts/network-check.sh), screenshot tests on a small matrix
 # (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught, and `apksim serve` in the
@@ -19,6 +19,18 @@ docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-fir
   > "$OUT/first.log" 2>&1 || { cat "$OUT/first.log"; exit 1; }
 grep first-frame "$OUT/first.log"
 test -s "$OUT/first.png" || { echo "no screenshot after the first frame" >&2; exit 1; }
+# An overlay window the app adds before its activity and never sizes (0x0) is the bottom window: the first frame must
+# not wait for it (issue 83, the screen stayed black). The test app adds one with this feature. Without the fix the run
+# never ends, hence the timeout (where there is one: macOS has no timeout).
+OVERLAY_NAME=apksim-overlay-smoke-$$
+limit() { if command -v timeout >/dev/null; then timeout "$@"; else shift; "$@"; fi; }
+if ! limit 300 docker run --rm --name "$OVERLAY_NAME" --platform "$PLATFORM" -e APKSIM_LOGCAT=1 -v "$OUT:/work" "$IMAGE" \
+    --exit-after-first-frame --feature dev.apksim.testapp.launch_overlay app.apk > "$OUT/overlay.log" 2>&1; then
+  docker rm -f "$OVERLAY_NAME" >/dev/null 2>&1 || true
+  tail -20 "$OUT/overlay.log"; echo "no first frame with an unsized overlay window at the bottom" >&2; exit 1
+fi
+grep -q "launch overlay added" "$OUT/overlay.log" || { echo "the test app added no launch overlay" >&2; exit 1; }
+grep first-frame "$OUT/overlay.log"
 
 docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
   -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
@@ -71,11 +83,56 @@ echo "Install state: $installed"
 [[ "$installed" == 'text="install: vibrate granted at create" text="android id: set at create" text="provider: before create" text="bind missing: false, unbound, 0 callbacks" ' ]] \
   || { echo "the app did not start with what installing gives it, or a bind to nothing called back" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+
+# A frame rate cap (maxfps, as --max-fps): the Shader tab animates without end, and draws no faster than the cap.
+# Counted from `stats` over a timed window, not `frames`: that leaves out intervals of 100 ms or more, and under
+# Rosetta a CPU-drawn Shader frame can take that long.
+cap=20
+drive "maxfps $cap" 'tap 720 1690' 'wait 1500' >/dev/null
+capped="$(python3 - "$ROOT/scripts/drive.py" "$PORT" "$cap" <<'EOF'
+import re, subprocess, sys, time
+drive, port, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def frames():
+    out = subprocess.run(["python3", drive, port, "stats"], capture_output=True, text=True).stdout
+    return int(re.search(r"frames=(\d+)", out).group(1))
+f0, t0 = frames(), time.monotonic()
+time.sleep(4)
+n, secs = frames() - f0, time.monotonic() - t0
+print(f"{n} frames in {secs:.1f} s ({n / secs:.1f} fps)")
+assert 0 < n <= cap * secs + 2, f"not capped at {cap} fps: {n} frames in {secs:.1f} s"
+EOF
+)" || { echo "$capped" >&2; exit 1; }
+drive 'maxfps 120' 'tap 130 1690' 'wait 1000' >/dev/null
+echo "Capped at $cap fps: $capped"
 if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
 drive quit >/dev/null || true
+
+# --activity: a non-exported activity started instead of the launcher one, kept by restart and process-death; back on
+# it ends the app. One the manifest lacks stops the launch with exit 2 and the manifest's activities.
+ACT_PORT=7403 ACT_NAME=$NAME-activity
+# Its log saved and the container removed once checked (act_done), and by the trap meanwhile: later stages replace it.
+act_done() { docker logs "$ACT_NAME" > "$OUT/activity.log" 2>&1 || true; docker rm -f "$ACT_NAME" >/dev/null 2>&1 || true; }
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true; act_done' EXIT
+docker run -d --name "$ACT_NAME" --platform "$PLATFORM" -p "127.0.0.1:$ACT_PORT:$ACT_PORT" -v "$OUT:/work" "$IMAGE" \
+  --activity .TripChooserActivity --control "$ACT_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
+act() { python3 "$ROOT/scripts/drive.py" "$ACT_PORT" "$@"; }
+for _ in $(seq 1 120); do act ping 2>/dev/null | grep -q pong && break; sleep 1; done
+started="$(act activity restart 'wait 1500' activity process-death 'wait 1500' activity | grep -c '^activity -> dev.apksim.composeapp.TripChooserActivity$' || true)"
+act back >/dev/null || true
+for _ in $(seq 1 30); do [[ "$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")" == false ]] && break; sleep 1; done
+running="$(docker inspect -f '{{.State.Running}}' "$ACT_NAME")"
+act_done
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+code=0
+docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --headless --activity .NoSuchActivity app.apk \
+  > "$OUT/activity-missing.log" 2>&1 || code=$?
+echo "--activity: started and kept $started of 3 times, running after back: $running, missing one: exit $code"
+[[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
+  || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
+
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
 
