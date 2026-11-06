@@ -43,7 +43,7 @@ final class UiDump {
       if (windows.isEmpty()) return null;
       s.startTag("", "displays");
       s.startTag("", "display");
-      s.attribute("", "id", Integer.toString(Display.DEFAULT_DISPLAY));
+      attr(s, "id", Integer.toString(Display.DEFAULT_DISPLAY));
       for (int i = 0; i < windows.size(); i++) window(windows.get(i), s, i, size, rotation, compressed);
       s.endTag("", "display");
       s.endTag("", "displays");
@@ -60,7 +60,7 @@ final class UiDump {
       if (root == null) root = ShadowSimUiAutomation.activeRoot();
       if (root == null) return null;
       s.startTag("", "hierarchy");
-      s.attribute("", "rotation", Integer.toString(rotation));
+      attr(s, "rotation", Integer.toString(rotation));
       node(root, s, 0, size, compressed);
       s.endTag("", "hierarchy");
     }
@@ -71,22 +71,22 @@ final class UiDump {
   private static void window(AccessibilityWindowInfo win, XmlSerializer s, int index, Point size, int rotation,
       boolean compressed) throws IOException {
     s.startTag("", "window");
-    s.attribute("", "index", Integer.toString(index));
+    attr(s, "index", Integer.toString(index));
     CharSequence title = win.getTitle();
-    s.attribute("", "title", title != null ? title.toString() : "");
+    attr(s, "title", title != null ? title.toString() : "");
     Rect bounds = new Rect();
     win.getBoundsInScreen(bounds);
-    s.attribute("", "bounds", bounds.toShortString());
-    s.attribute("", "active", Boolean.toString(win.isActive()));
-    s.attribute("", "focused", Boolean.toString(win.isFocused()));
-    s.attribute("", "accessibility-focused", Boolean.toString(win.isAccessibilityFocused()));
-    s.attribute("", "id", Integer.toString(win.getId()));
-    s.attribute("", "layer", Integer.toString(win.getLayer()));
-    s.attribute("", "type", AccessibilityWindowInfo.typeToString(win.getType()));
+    attr(s, "bounds", bounds.toShortString());
+    attr(s, "active", Boolean.toString(win.isActive()));
+    attr(s, "focused", Boolean.toString(win.isFocused()));
+    attr(s, "accessibility-focused", Boolean.toString(win.isAccessibilityFocused()));
+    attr(s, "id", Integer.toString(win.getId()));
+    attr(s, "layer", Integer.toString(win.getLayer()));
+    attr(s, "type", AccessibilityWindowInfo.typeToString(win.getType()));
     AccessibilityNodeInfo root = win.getRoot();
     if (root != null) {
       s.startTag("", "hierarchy");
-      s.attribute("", "rotation", Integer.toString(rotation));
+      attr(s, "rotation", Integer.toString(rotation));
       node(root, s, 0, size, compressed);
       s.endTag("", "hierarchy");
     }
@@ -96,24 +96,24 @@ final class UiDump {
   private static void node(AccessibilityNodeInfo n, XmlSerializer s, int index, Point size, boolean compressed)
       throws IOException {
     s.startTag("", "node");
-    if (!nafExcluded(n) && !nafCheck(n)) s.attribute("", "NAF", "true");
-    s.attribute("", "index", Integer.toString(index));
-    s.attribute("", "text", safe(n.getText()));
-    s.attribute("", "resource-id", safe(n.getViewIdResourceName()));
-    s.attribute("", "class", safe(n.getClassName()));
-    s.attribute("", "package", safe(n.getPackageName()));
-    s.attribute("", "content-desc", safe(n.getContentDescription()));
-    s.attribute("", "checkable", Boolean.toString(n.isCheckable()));
-    s.attribute("", "checked", Boolean.toString(n.isChecked()));
-    s.attribute("", "clickable", Boolean.toString(n.isClickable()));
-    s.attribute("", "enabled", Boolean.toString(n.isEnabled()));
-    s.attribute("", "focusable", Boolean.toString(n.isFocusable()));
-    s.attribute("", "focused", Boolean.toString(n.isFocused()));
-    s.attribute("", "scrollable", Boolean.toString(n.isScrollable()));
-    s.attribute("", "long-clickable", Boolean.toString(n.isLongClickable()));
-    s.attribute("", "password", Boolean.toString(n.isPassword()));
-    s.attribute("", "selected", Boolean.toString(n.isSelected()));
-    s.attribute("", "bounds", visibleBounds(n, size).toShortString());
+    if (!nafExcluded(n) && !nafCheck(n)) attr(s, "NAF", "true");
+    attr(s, "index", Integer.toString(index));
+    attr(s, "text", safe(n.getText()));
+    attr(s, "resource-id", safe(n.getViewIdResourceName()));
+    attr(s, "class", safe(n.getClassName()));
+    attr(s, "package", safe(n.getPackageName()));
+    attr(s, "content-desc", safe(n.getContentDescription()));
+    attr(s, "checkable", Boolean.toString(n.isCheckable()));
+    attr(s, "checked", Boolean.toString(n.isChecked()));
+    attr(s, "clickable", Boolean.toString(n.isClickable()));
+    attr(s, "enabled", Boolean.toString(n.isEnabled()));
+    attr(s, "focusable", Boolean.toString(n.isFocusable()));
+    attr(s, "focused", Boolean.toString(n.isFocused()));
+    attr(s, "scrollable", Boolean.toString(n.isScrollable()));
+    attr(s, "long-clickable", Boolean.toString(n.isLongClickable()));
+    attr(s, "password", Boolean.toString(n.isPassword()));
+    attr(s, "selected", Boolean.toString(n.isSelected()));
+    attr(s, "bounds", visibleBounds(n, size).toShortString());
     List<AccessibilityNodeInfo> kids = children(n, compressed);
     for (int i = 0; i < kids.size(); i++) {
       AccessibilityNodeInfo c = kids.get(i);
@@ -121,6 +121,14 @@ final class UiDump {
       if (c != null && c.isVisibleToUser()) node(c, s, i, size, compressed);
     }
     s.endTag("", "node");
+  }
+
+  /**
+   * Every attribute goes through here: its value made legal XML ({@link #safe}), whatever it came from (an app's
+   * window title, a class or package name), so no attribute can break the serializer or the parse.
+   */
+  private static void attr(XmlSerializer s, String name, String value) throws IOException {
+    s.attribute("", name, safe(value));
   }
 
   /**
