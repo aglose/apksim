@@ -20,8 +20,8 @@ Both headless and with `--no-network`. The two installs are:
 - **this commit**, built (`scripts/setup.sh --no-train`) and packaged (`scripts/package-release.sh`) as a release
   would be.
 
-Both are trained the same way (`apksim --train --headless`, each with its own `APKSIM_HOME`) and both launch the
-anchor's own test app (`apksim-testapp-VERSION.apk` from the same release), so the APK never changes under the
+Both are trained the same way, on the same APK (`apksim --train --headless APK`, each with its own `APKSIM_HOME`), and
+both launch the anchor's own test app (`apksim-testapp-VERSION.apk` from the same release), so the APK never changes under the
 numbers: only the runtime does.
 
 ## Why against an anchor, and why it is reliable
@@ -32,19 +32,47 @@ see the same machine, so the gate judges only how they compare:
 
 - Rounds of four launches (anchor and this commit, warm and cold) in a shuffled order, so a slow stretch of the
   machine hits both sides alike. Before each launch every standby of both installs must be ready: a warm launch is
-  followed by the next standby booting, seconds of CPU that would otherwise slow whichever launch came next.
+  followed by the next standby booting, seconds of CPU that would otherwise slow whichever launch came next. Then the
+  machine must be at least 80% idle over 0.3 s (up to 5 s of waiting); each launch's record keeps the figure
+  (`cpu-idle-before` in the JSON).
 - Two launches of each kind per side first, not counted (the class cache for the APK, the first standby).
 - Medians, not means: one stalled launch moves a median by one place.
 - A metric is **over budget** when this commit's median exceeds `anchor median × (1 + max_slower) + slack_ms` **and** a
-  one-sided Mann-Whitney test gives p < `alpha` (0.01): slower, and not by chance.
-- Over budget after the first `runs` rounds is measured again with as many rounds and must hold on all of them. A
-  median over budget that is not yet significant (a noisy machine) gets up to two more batches; if it stays unclear it
-  is reported as inconclusive and does not fail the job.
+  one-sided Mann-Whitney test gives p < `alpha` (0.05): slower, and not by chance.
+- Rounds come in batches of `runs`, and each batch is judged on its own launches, never pooled with earlier ones: a
+  metric fails when **two** batches are over budget. A batch over its limit (significant or not) is followed by
+  another, at most three in all, so a slow stretch of the machine during one batch does not fail the job, and a fresh
+  batch within budget clears it. A median still over its limit after three batches without a second significant one is
+  reported as inconclusive and does not fail the job. (On a machine overloaded about 30 times over, load average 100,
+  a 50 ms regression, +28-43% warm, stayed inconclusive this way. Pooling the batches or pairing each round's two
+  launches did not separate it either: the machine's speed changed by 2x between batches. A hosted runner running
+  only this job is far from that.)
+- A gated metric no launch printed (a mark that needs `-Dapksim.timing=verbose`, a typo) ends the run with exit 2
+  rather than passing unchecked.
 - A standby that dies while booting is started again and reported; it is a crash to look into, not a startup time.
 
 Why a fixed anchor and not the pull request's merge base: comparing with the merge base catches a single large
 regression but lets startup creep up by a few percent per pull request for ever. Against a fixed anchor the budget is
 for the total, so creep adds up until it fails, and moving the anchor is a decision someone makes in a pull request.
+
+On GitHub's `macos-15` runner (3 cores, 2026-11-06, PR #53, this commit identical to the anchor, 12 rounds): warm
+774 against 714 ms (-7.8%), cold 3124 against 3300 ms (+5.6%), passed. Launches there are ~3.5 times slower than on the
+development Mac and spread more: ±16% warm, ±11% cold (half the interquartile range), from launch to launch rather
+than drifting (pairing each round's two launches left it at ±18% and ±10%). Hence the idle wait, and batches of 20
+rounds judged at p < 0.05: two batches must agree, so false failures stay rare at that level. Simulated by resampling
+that run's 24 launches of each kind (both sides) (500 runs of the gate's whole decision per cell), the share of runs that fail:
+
+| change | warm | cold |
+|---|---:|---:|
+| none | 0% | 0% |
+| +5% | 1.4% | 0.2% |
+| +10% (the budget) | 7.6% | 11% |
+| +15% | 43% | 60% |
+| +20% | 76% | 90% |
+| +30% | 99% | 99% |
+
+(At p < 0.01 with 16 rounds, +20% warm failed only 34% of the time.) So a single pull request has to cost about a
+fifth of the launch time to be caught every time; smaller slowdowns add up against the fixed anchor until they are.
 
 Measured on the development Mac (2026-11-05), 10 rounds, this commit identical to the anchor: warm 216 against 222 ms (+3%),
 cold 1272 against 1278 ms (+0.4%), each ± 3-4% (half the interquartile range). With a 50 ms `Thread.sleep` added to
@@ -59,8 +87,8 @@ grew to ±115 ms and the first batch was not significant, which is what the extr
 ```jsonc
 {
   "anchor": "v0.11.0",        // the release measured against
-  "runs": 12,                 // rounds per batch
-  "alpha": 0.01,
+  "runs": 20,                 // rounds per batch
+  "alpha": 0.05,              // per batch; two batches must be over budget
   "metrics": {"warm first frame": {"mode": "warm", "mark": "first-frame", "max_slower": 0.10, "slack_ms": 15}, ...}
 }
 ```
@@ -80,12 +108,15 @@ as `activity-resumed` can be gated too. `"gate": false` reports a metric without
 ```bash
 gh release download v0.11.0 -D /tmp/anchor -p 'apksim-0.11.0-macos-arm64.tar.gz' -p 'apksim-testapp-0.11.0.apk'
 tar -xzf /tmp/anchor/apksim-0.11.0-macos-arm64.tar.gz -C /tmp/anchor
-APKSIM_STANDBY=0 APKSIM_HOME=/tmp/anchor/state /tmp/anchor/apksim-0.11.0-macos-arm64/apksim --train --headless
+APKSIM_STANDBY=0 APKSIM_HOME=/tmp/anchor/state /tmp/anchor/apksim-0.11.0-macos-arm64/apksim --train --headless \
+  /tmp/anchor/apksim-testapp-0.11.0.apk
 python3 scripts/startup-gate.py --base /tmp/anchor/apksim-0.11.0-macos-arm64 --base-home /tmp/anchor/state \
   --head . --apk /tmp/anchor/apksim-testapp-0.11.0.apk
 ```
 
-`--head .` measures this checkout as it is (after `scripts/build.sh` and `scripts/train.sh`); a source checkout and a
+`--head .` measures this checkout as it is (after `scripts/build.sh` and `scripts/train.sh --headless APK`, the
+benchmark APK, as CI trains); a source checkout and a
 packaged release can differ by a few percent (the release's jlink'ed JDK), so for numbers that compare with CI's,
 package it first as the job does. Close other heavy work first: the gate tolerates noise by measuring longer, not by
-ignoring it. `--json FILE` keeps every launch's marks; `--runs N` overrides the rounds.
+ignoring it. `--json FILE` keeps every launch's marks, batch by batch; `--runs N` overrides the rounds.
+`startup-gate.py --self-test` checks the decision rules on synthetic numbers (CI runs it first).

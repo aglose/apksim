@@ -211,12 +211,15 @@ jobs:
           scripts/package-release.sh 0.0.0-gate "$RUNNER_TEMP/dist"
           tar -xzf "$RUNNER_TEMP/dist/apksim-0.0.0-gate-macos-arm64.tar.gz" -C "$RUNNER_TEMP/inst"
           echo "HEAD_DIR=$RUNNER_TEMP/inst/apksim-0.0.0-gate-macos-arm64" >> "$GITHUB_ENV"
+      # On the benchmark APK, not each install's own test app (this commit's may differ from the anchor's): the cache
+      # holds what training touched, so the workload must be the same on both sides.
       - name: Train both startup caches
         run: |
-          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-anchor" "$ANCHOR_DIR/apksim" --train --headless
-          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-head" "$HEAD_DIR/apksim" --train --headless
+          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-anchor" "$ANCHOR_DIR/apksim" --train --headless "$BENCH_APK"
+          APKSIM_STANDBY=0 APKSIM_HOME="$RUNNER_TEMP/state-head" "$HEAD_DIR/apksim" --train --headless "$BENCH_APK"
       - name: Startup gate
         run: |
+          python3 scripts/startup-gate.py --self-test
           python3 scripts/startup-gate.py --base "$ANCHOR_DIR" --base-home "$RUNNER_TEMP/state-anchor" \
             --head "$HEAD_DIR" --head-home "$RUNNER_TEMP/state-head" --apk "$BENCH_APK" --base-name "$ANCHOR" \
             --head-name "${GITHUB_SHA::7}" --json startup-gate.json --summary "$GITHUB_STEP_SUMMARY"
