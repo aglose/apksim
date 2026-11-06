@@ -55,7 +55,6 @@ final class DeviceControls {
   private LocationSim location;
   private BackgroundWork background;
   private final long createdNanos = System.nanoTime();
-  private boolean slowAnimations;
   private String recording;
   private ClipboardManager clipboard;
   private long clipboardSeen = -1;
@@ -410,9 +409,10 @@ final class DeviceControls {
       case "animscale" -> {
         // animscale 10 slows animations tenfold, 0 turns them off, 1 is normal. Views read ValueAnimator's scale;
         // Compose reads the global setting and watches it.
-        float scale = a.length < 2 ? 1f : a[1].equals("toggle") ? (slowAnimations ? 1f : 10f) : Float.parseFloat(a[1]);
-        slowAnimations = scale > 1f;
-        SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, slowAnimations);
+        // toggle goes by the scale in force, which --anim-scale or `settings put` may have set as well.
+        float scale = a.length < 2 ? 1f : a[1].equals("toggle") ? (ValueAnimator.getDurationScale() > 1f ? 1f : 10f)
+            : Float.parseFloat(a[1]);
+        SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, scale > 1f);
         setAnimatorScale(app, scale);
         return "ok";
       }
@@ -820,6 +820,7 @@ final class DeviceControls {
     for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
+    SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, ValueAnimator.getDurationScale() > 1f);  // --anim-scale 10
   }
 
   /**
