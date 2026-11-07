@@ -9,5 +9,5 @@ source "$ROOT/scripts/jdk.sh"
 CP="$ROOT/work/apksim.jar:$(ls "$ROOT"/work/lib/*.jar | tr '\n' ':')"
 CACHE="$(mktemp -d)"
 trap 'rm -rf "$CACHE"' EXIT
-exec "$JDK/bin/java" -cp "$CP" "$ROOT/scripts/LaunchPriorityCheck.java" \
+"$JDK/bin/java" -cp "$CP" "$ROOT/scripts/LaunchPriorityCheck.java" \
   "$ROOT/testapks/launch-priority/launch-priority.apk" "$CACHE"
