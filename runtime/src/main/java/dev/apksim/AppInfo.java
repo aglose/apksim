@@ -25,6 +25,7 @@ final class AppInfo {
   static void load(Path apk, Path cache) throws Exception {
     Files.createDirectories(cache);
     String xml;
+    Resources arsc = new Resources(apk);  // resources.arsc, read only if a launch filter's attribute names a resource
     try (ZipFile zip = new ZipFile(apk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
       xml = Axml.decode(in.readAllBytes());
     }
@@ -36,16 +37,23 @@ final class AppInfo {
     Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
         .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
     String pkg = doc.getDocumentElement().getAttribute("package");
-    Element launcher = null;  // the first MAIN/LAUNCHER activity or alias, as a device's launcher starts it
-    Element home = null;  // the first MAIN/HOME one, as a device starts its home app
+    // The MAIN/LAUNCHER activity or alias a device's launcher starts, the MAIN/HOME one its home app: the way
+    // PackageManager orders matches, highest intent-filter priority first, then CATEGORY_DEFAULT, then manifest order.
+    Element launcher = null;
+    long launcherRank = Long.MIN_VALUE;
+    Element home = null;
+    long homeRank = Long.MIN_VALUE;
     Map<String, Element> activities = new LinkedHashMap<>();  // full name -> element, aliases too
-    for (String tag : new String[] {"activity", "activity-alias"}) {
-      NodeList list = doc.getElementsByTagName(tag);
-      for (int i = 0; i < list.getLength(); i++) {
-        Element a = (Element) list.item(i);
+    {  // every activity and alias in the manifest's order, as PackageManager's ties are broken
+      NodeList all = doc.getElementsByTagName("*");
+      for (int i = 0; i < all.getLength(); i++) {
+        Element a = (Element) all.item(i);
+        if (!a.getTagName().equals("activity") && !a.getTagName().equals("activity-alias")) continue;
         activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
-        if (launcher == null && hasMain(a, "android.intent.category.LAUNCHER")) launcher = a;
-        if (home == null && hasMain(a, "android.intent.category.HOME")) home = a;
+        long l = mainRank(a, "android.intent.category.LAUNCHER", arsc);
+        if (l > launcherRank) { launcher = a; launcherRank = l; }
+        long h = mainRank(a, "android.intent.category.HOME", arsc);
+        if (h > homeRank) { home = a; homeRank = h; }
       }
     }
     // A test run needs none: a library's test APK (KMP androidDeviceTest, a library's androidTest) is its own app.
@@ -147,6 +155,66 @@ final class AppInfo {
       if (has(f, "action", "android.intent.action.MAIN") && has(f, "category", category)) return true;
     }
     return false;
+  }
+
+  /**
+   * The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE.
+   * A disabled activity or alias is never a candidate: PackageManager leaves it out, and Host would start it anyway.
+   */
+  private static long mainRank(Element activity, String category, Resources arsc) {
+    String en = activity.getAttribute(NS + "enabled");
+    Long enabled = "false".equals(en) ? Long.valueOf(0) : intAttr(en, arsc);
+    if (enabled != null && enabled == 0) return Long.MIN_VALUE;  // an unresolvable value counts as the default, enabled
+    long best = Long.MIN_VALUE;
+    NodeList filters = activity.getElementsByTagName("intent-filter");
+    for (int i = 0; i < filters.getLength(); i++) {
+      Element f = (Element) filters.item(i);
+      if (!has(f, "action", "android.intent.action.MAIN") || !has(f, "category", category)) continue;
+      Long v = intAttr(f.getAttribute(NS + "priority"), arsc);
+      int priority = v == null ? 0 : v.intValue();  // unreadable or unresolvable (a framework resource): 0
+      long rank = priority * 2L + (has(f, "category", "android.intent.category.DEFAULT") ? 1 : 0);
+      best = Math.max(best, rank);
+    }
+    return best;
+  }
+
+  /** An integer attribute's value: a literal, or a resource of the APK (Axml prints its id as `@0x7f...`); else null. */
+  private static Long intAttr(String s, Resources arsc) {
+    if (s.isEmpty()) return null;
+    try {
+      if (s.startsWith("@0x")) return arsc.intValue((int) Long.decode(s.substring(1)).longValue());
+      return Long.decode(s);
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  /** The APK's resources.arsc, read on first use: most launches name no resource. A missing or bad one is absent. */
+  private static final class Resources {
+    private final Path apk;
+    private byte[] data;
+    private boolean tried;
+
+    Resources(Path apk) {
+      this.apk = apk;
+    }
+
+    Long intValue(int resId) {
+      if (!tried) {
+        tried = true;
+        try (ZipFile zip = new ZipFile(apk.toFile())) {
+          java.util.zip.ZipEntry e = zip.getEntry("resources.arsc");
+          if (e != null) {
+            try (InputStream r = zip.getInputStream(e)) {
+              data = r.readAllBytes();
+            }
+          }
+        } catch (java.io.IOException | RuntimeException | OutOfMemoryError e) {
+          data = null;
+        }
+      }
+      return data == null ? null : Arsc.intValue(data, resId);
+    }
   }
 
   private static boolean has(Element filter, String tag, String value) {
