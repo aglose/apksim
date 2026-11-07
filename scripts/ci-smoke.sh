@@ -104,7 +104,8 @@ drive back 'wait 1000' >/dev/null
 # ACTION_TIME_TICK (issue 109): a receiver registered at runtime hears one tick when the app's clock crosses a minute,
 # and none more within that minute (the test app's apksim://timezone counts them as "ticks: N").
 ticks() { drive nodes | grep -oE 'text="ticks: [0-9]+"'; }
-drive 'clock 2026-01-01T09:41:30Z' 'open apksim://timezone' 'wait 2000' >/dev/null
+drive 'clock 2026-01-01T09:41:30Z' 'wait 1000' >/dev/null  # the clock change settles before the receiver registers
+drive 'open apksim://timezone' 'wait 2000' >/dev/null
 before="$(ticks)"
 drive 'clock 2026-01-01T09:42:05Z' 'wait 1000' >/dev/null
 crossed="$(ticks)"
