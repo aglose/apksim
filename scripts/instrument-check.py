@@ -137,7 +137,7 @@ def hang(state, c, m):
         f.write(f"{os.getpid()}\n{child.pid}\n")
 
     sc = os.environ["CHECK_SCENARIO"]
-    deep = sc in ("hang-long-stack", "hang-deep-cause")
+    deep = sc in ("hang-long-stack", "hang-deep-cause", "hang-long-frame")
     # hang-long-chars: the first JUnit thread's 90 lines are over 45,000 characters (long qualified names).
     wide = sc == "hang-long-chars"
     if wide:
@@ -162,6 +162,9 @@ def hang(state, c, m):
             print("noise before\njava.lang.RuntimeException: wrapper\n\tat p.Waiter.wrap(Waiter.java:7)\n" + bottom
                   + "Caused by: java.io.IOException: root cause message\n\tat p.Root.thrown(Root.java:9)\n",
                   file=sys.stderr, end="", flush=True)
+        elif sc == "hang-long-frame":  # the stack ends in one frame longer than the tail kept of stderr
+            print("noise before\njava.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n"
+                  + bottom + f"\tat p.{'G' * 5000}.last(Gen.java:1)\n", file=sys.stderr, end="", flush=True)
         else:
             print("noise before\njava.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n"
                   + bottom, file=sys.stderr, end="", flush=True)
@@ -255,6 +258,7 @@ SCENARIOS = {
     # As hang, the stacks on stderr and in the thread dump deeper than what is kept: each kept from its header down.
     "hang-long-stack": (1, 3, 9, ["p.C000#m1"]),
     "hang-long-chars": (1, 3, 9, ["p.C000#m1"]),  # the first JUnit thread alone is over the character limit
+    "hang-long-frame": (1, 3, 9, ["p.C000#m1"]),  # the stack's last frame alone is longer than the tail kept
     "hang-deep-cause": (1, 3, 9, ["p.C000#m1"]),  # a wrapper deeper than the lines kept, then a cause of one frame
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
@@ -386,6 +390,8 @@ def main():
             wanted = TIMED_OUT if "client-exits" not in sc else [w for w in TIMED_OUT if "java:" not in w]
             if sc == "hang-long-stack":
                 wanted = TIMED_OUT[:2] + LONG_STACK
+            elif sc == "hang-long-frame":
+                wanted = TIMED_OUT[:2] + LONG_STACK[:2]
             elif sc == "hang-deep-cause":
                 wanted = TIMED_OUT[:1] + DEEP_CAUSE
             elif sc == "hang-long-chars":

@@ -363,7 +363,12 @@ def stderr_tail(text, n=4000):
         start -= 1
         size += len(lines[start])
     if start == len(lines):  # one last line longer than n
-        return text[-n:]
+        if not is_frame(lines[-1]):
+            return text[-n:]
+        # A frame (a generated class's name can be longer than n): the stack's header and top frames matter more than
+        # its end, so recover them as below, with this frame cut at the end of its first n characters.
+        start -= 1
+        lines[-1] = lines[-1][:n] + "\t[...]\n"
     if start == 0 or not is_frame(lines[start]):
         return "".join(lines[start:])
     head = start
