@@ -36,6 +36,8 @@ public final class Main {
       Standby.halt(2);
       return;
     }
+    // The APK's cache entry (a content key, locks, ~2 ms) while the ports and the window open.
+    ApkCache.Taking taking = ApkCache.start(Path.of(System.getProperty("apksim.cacheRoot")), Path.of(args[0]).toAbsolutePath());
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");
@@ -53,7 +55,9 @@ public final class Main {
     java.nio.file.Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "launch.info"),
         "apk=" + apk + "\ndevice=" + System.getProperty("apksim.device", "phone") + "\n");
     try {
-      AppInfo.load(apk, Path.of(System.getProperty("apksim.cacheRoot"), apk.getFileName() + "-" + apk.toFile().lastModified()));
+      Path entry = taking.await();
+      Timing.detail("apkcache");
+      AppInfo.load(apk, entry);
     } catch (AppInfo.LaunchError e) {
       System.err.println("[apksim] " + e.getMessage());
       Storage.deleteScratch();

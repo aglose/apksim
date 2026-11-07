@@ -3,7 +3,7 @@
 # channel (switch to Trips, rename a trip in SQLite, check the list changed), and `--activity`. With UISERVER_APK (the test app
 # project's uiserver module) and adb on the PATH, also the adb device as a tool's on-device server uses it
 # (scripts/adb-check.py). Then the network check (scripts/network-check.sh), what a data slot keeps across launches
-# (scripts/slot-check.sh), screenshot tests on a small matrix
+# (scripts/slot-check.sh), the per-APK cache folder staying bounded (scripts/apk-cache-check.sh), screenshot tests on a small matrix
 # (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught, and `apksim serve` in the
 # image, driven as a browser tab would (scripts/serve-check.py). Screens, logs and snapshot reports go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
@@ -222,6 +222,7 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
 # A data slot's /sdcard and Settings values across launches, a container each, the app data on a shared volume.
 SLOTCHECK_PORT=7480 "$ROOT/scripts/slot-check.sh" "$APK" "$OUT/slot" "$IMAGE"
+APKCACHECHECK_PORT=7490 "$ROOT/scripts/apk-cache-check.sh" "$APK" "$OUT/apk-cache" "$IMAGE"
 
 # Screenshot tests in the image (scripts/snapshot.py, docs/snapshots.md), on a small matrix: record goldens, run again
 # against them (the image must give the same pixels), then a spec whose home screen shows something else (one FAB tap)

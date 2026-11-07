@@ -22,6 +22,8 @@ import org.junit.runner.notification.Failure;
  */
 final class Standby {
   private static boolean adopted;
+  /** Set before the client is told the exit code: its hanging up is then expected, not an interrupted launch. */
+  private static volatile boolean exiting;
   private static boolean spawned;
 
   private Standby() {}
@@ -95,6 +97,8 @@ final class Standby {
       Timing.mark("handoff");
       Thread hangup = new Thread(() -> {
         nativeAwaitHangup();
+        // Told the exit code, the client hangs up: halt goes on (ApkCache.beforeExit's sweep) and ends the process.
+        if (exiting) return;
         // The launch was interrupted (Ctrl-C, terminal closed, killed): the instance goes with it.
         SlotDevice.flush();
         ClassCache.flush();
@@ -159,6 +163,7 @@ final class Standby {
       // Ending anyway.
     }
     try {
+      exiting = true;
       if (adopted) nativeSendExit(code);
     } catch (Throwable ignored) {
       // The client then reports that the instance died without an exit code.
@@ -173,6 +178,10 @@ final class Standby {
     spawnNext();
     System.err.flush();
     System.out.flush();
+    // A short launch's cache sweep (at most once an hour), before the client is told: once told, the next launch may
+    // start while this process still holds its data slot, and take instance-1 instead of default.
+    ApkCache.beforeExit();
+    exiting = true;
     if (adopted) nativeSendExit(code);
     Runtime.getRuntime().halt(code);
   }
