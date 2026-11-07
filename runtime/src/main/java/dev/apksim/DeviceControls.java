@@ -518,6 +518,10 @@ final class DeviceControls {
         // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).
         return Bluetooth.command(a);
       }
+      case "thermal" -> {
+        // thermal [none|light|moderate|severe|critical|emergency|shutdown]: PowerManager's thermal status (Thermal).
+        return Thermal.command(a);
+      }
       case "location" -> {
         return location().run(a);
       }

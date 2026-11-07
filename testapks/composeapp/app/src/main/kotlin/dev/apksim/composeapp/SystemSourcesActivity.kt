@@ -103,8 +103,20 @@ object SystemSources {
     "audio devices" to { audioDevices(context).first() },
     "volume" to { volumeChange(context) },
     "brightness" to { brightnessChange(context) },
+    "thermal" to { thermalStatus(context) },
     "bluetooth profile" to { profileProxy(context) },
   )
+
+  /** A thermal listener (issue 149: the Executor overload threw "Thermal status listener failed to set"): called at once with the status, as the thermal service does. */
+  suspend fun thermalStatus(context: Context): String {
+    val pm = context.getSystemService(android.os.PowerManager::class.java)
+    val flow = callbackFlow {
+      val l = android.os.PowerManager.OnThermalStatusChangedListener { trySend(it) }
+      pm.addThermalStatusListener(context.mainExecutor, l)
+      awaitClose { pm.removeThermalStatusListener(l) }
+    }
+    return "status ${flow.first()}, current ${pm.currentThermalStatus}"
+  }
 
   /**
    * The signal bucketed as code written for API 31+ does (issue 96): levels 0..getMaxSignalLevel() cut into four. A WifiManager whose getMaxSignalLevel() is under 4 makes that a division by zero.
