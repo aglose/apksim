@@ -1344,10 +1344,14 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeDisplayImage(JNIEnv *env,
     CGContextRef ctx = CGBitmapContextCreate(dst, w, h, 8, (size_t)w * 4, cs,
                                              kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     if (ctx) {
-      for (int i = 0; i < 2; i++) fingerLayers[i].hidden = YES;
+      BOOL fingerHidden[2];  // a finger dot still down (or hidden after its gesture) keeps its own visibility
+      for (int i = 0; i < 2; i++) {
+        fingerHidden[i] = fingerLayers[i].hidden;
+        fingerLayers[i].hidden = YES;
+      }
       CGContextScaleCTM(ctx, deviceScale, deviceScale);
       [frameLayer renderInContext:ctx];
-      for (int i = 0; i < 2; i++) fingerLayers[i].hidden = NO;
+      for (int i = 0; i < 2; i++) fingerLayers[i].hidden = fingerHidden[i];
       CGContextRelease(ctx);
     }
     CGColorSpaceRelease(cs);
