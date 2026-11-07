@@ -2,6 +2,7 @@
 """Checks a running `apksim serve` end to end, as a browser tab uses it (docs/serve.md), with only the standard library.
 
     scripts/serve-check.py URL [--token FILE] [--app ID] [--upload APK] [--device phone] [--max-upload-mb N]
+                           [--allow-origin ORIGIN] [--add-url URL [--add-options JSON]]
 
 URL is the server (http://localhost:8080). It checks that the token is required (when given), that a cross-origin
 WebSocket and a command outside the allowed set are refused, an upload over the size limit (when given) is refused,
@@ -9,7 +10,14 @@ then starts a session with --app (or the first listed app, or --upload's APK), w
 test app's FAB, drags, scrolls, types and switches tabs, and checks that new frames follow each. It prints the time to
 the first frame, fps while dragging, frame and input latency (this machine's clock against the instance's: the
 same machine, or a container's clock) and the session's memory. Exits 1 on any failure.
+
+It also checks that /api/health answers without the token, that an upload sent chunked is stored, and that a URL add
+with a launch option outside the allowed set is refused. With --allow-origin (the server's own), that origin may open a
+WebSocket and frame the page, and an embedded page's token link is served rather than redirected. With --add-url, the
+session runs that APK, added with POST /api/apps (and --add-options, a JSON list of launch options), once it has
+downloaded.
 """
+import http.client as httpc
 import argparse
 import base64
 import hashlib
@@ -165,6 +173,9 @@ def main():
     ap.add_argument("--device", default="phone")
     ap.add_argument("--max-upload-mb", type=int)
     ap.add_argument("--first-frame-timeout", type=int, default=180)
+    ap.add_argument("--allow-origin")
+    ap.add_argument("--add-url")
+    ap.add_argument("--add-options", default="[]")
     a = ap.parse_args()
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
@@ -179,6 +190,8 @@ def main():
         check(status == 401, f"no token: refused ({status})")
         status, _ = http(url, "/api/apps", token="wrong-" + token)
         check(status == 401, f"wrong token: refused ({status})")
+    status, body = http(url, "/api/health")
+    check(status == 200 and body.strip() == b"ok", f"/api/health answers without the token ({status} {body.strip()[:60]!r})")
     status, body = http(url, "/api/apps", token)
     check(status == 200, f"apps listed ({status})")
     apps = json.loads(body) if status == 200 else []
@@ -188,6 +201,28 @@ def main():
 
     evil = WS(url, "/ws?app=x", {"Origin": "http://evil.example", **({"Cookie": "apksim_token=" + token} if token else {})})
     check(evil.status == 403, f"cross-origin WebSocket refused ({evil.status})")
+    if a.allow_origin:
+        friend = WS(url, "/ws?app=x", {"Origin": a.allow_origin, **({"Cookie": "apksim_token=" + token} if token else {})})
+        check(friend.status == 101, f"a WebSocket from an --allow-origin page is accepted ({friend.status})")
+        friend.s.close()
+        hostport = url.split("//")[1]
+        c = httpc.HTTPConnection(hostport, timeout=30)
+        c.request("GET", "/", headers={"Authorization": "Bearer " + token} if token else {})
+        r = c.getresponse()
+        csp, xfo = r.getheader("Content-Security-Policy", ""), r.getheader("X-Frame-Options")
+        r.read()
+        check(a.allow_origin in csp and "frame-ancestors" in csp and xfo is None,
+              f"the page may be framed by the allowed origin (X-Frame-Options {xfo})")
+        if token:
+            c = httpc.HTTPConnection(hostport, timeout=30)
+            c.request("GET", "/?embed=1&app=x&token=" + urllib.parse.quote(token))
+            r = c.getresponse()
+            r.read()
+            check(r.status == 200, f"an embedded page's token link is served, not redirected ({r.status})")
+    else:
+        page_hdrs = urllib.request.urlopen(urllib.request.Request(
+            url + "/", headers={"Authorization": "Bearer " + token} if token else {}), timeout=30).headers
+        check(page_hdrs.get("X-Frame-Options") == "DENY", "without --allow-origin the page cannot be framed")
     if a.max_upload_mb:
         too_big = (a.max_upload_mb << 20) + 1
         hostport = url.split("//")[1]
@@ -207,8 +242,35 @@ def main():
           f"an upload named outside Latin-1 is stored ({status} {body[:60]!r})")
     status, _ = http(url, "/api/upload", token, data=b"not a zip file", headers={"X-Filename": "x.apk"})
     check(status == 400, f"an upload that is not an APK is refused ({status})")
+    # A streamed body (fetch with a ReadableStream, curl -T -) comes chunked, without Content-Length.
+    c = httpc.HTTPConnection(url.split("//")[1], timeout=60)
+    c.request("POST", "/api/upload", body=iter([tiny.getvalue()[:10], tiny.getvalue()[10:]]), encode_chunked=True,
+              headers={"X-Filename": "chunked.apk", "Transfer-Encoding": "chunked",
+                       **({"Authorization": "Bearer " + token} if token else {})})
+    r = c.getresponse()
+    body = r.read()
+    check(r.status == 200 and json.loads(body).get("name") == "chunked.apk", f"a chunked upload is stored ({r.status} {body[:60]!r})")
+    status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/a.apk",
+                                                                  "options": ["--jvm", "-Dx=1"]}).encode())
+    check(status == 400 and b"not allowed" in body, f"a URL add with a launch option outside the allowed set is refused ({status})")
+    status, body = http(url, "/api/apps", token, data=json.dumps({"url": "file:///etc/passwd"}).encode())
+    check(status == 400, f"a URL add that is not http(s) is refused ({status})")
 
     app = a.app
+    if a.add_url:
+        status, body = http(url, "/api/apps", token, data=json.dumps({"url": a.add_url, "options": json.loads(a.add_options)}).encode(),
+                            headers={"Content-Type": "application/json"})
+        check(status == 200, f"URL add accepted ({status} {body[:80]!r})")
+        app = json.loads(body)["id"] if status == 200 else None
+        state = {}
+        t_add = time.time()
+        while app and time.time() - t_add < 300:
+            _, body = http(url, "/api/apps/" + app, token)
+            state = json.loads(body)
+            if state.get("state") != "downloading":
+                break
+            time.sleep(0.5)
+        check(state.get("state") == "ready", f"the added app downloaded ({state}) in {time.time() - t_add:.1f} s")
     if a.upload:
         with open(a.upload, "rb") as f:
             status, body = http(url, "/api/upload", token, data=f.read(), headers={"X-Filename": os.path.basename(a.upload)})

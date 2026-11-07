@@ -803,6 +803,13 @@ its tab closes, after `--idle` seconds without input, or when the app exits; its
 run with `--no-autofill` (never the owner's saved sign-ins) and `--data-slots serve` (`Storage.dataDir`: slots
 `serve-N`, so `--fresh` never empties an ordinary launch's `default`), and the control log shows typed text only as its
 length.
+`/api/health` needs no token (503 with the reason when a session could not start). `--allow-origin ORIGIN` lets a
+trusted page frame it (`/?embed=1&app=ID&token=...`: screen and device controls only, the token kept in memory and sent
+as `?token=`, since a cross-site frame gets no SameSite cookie) and open its WebSockets. `POST /api/apps {"url",
+"headers", "options"}` downloads an APK in the background and answers its id at once (`GET /api/apps/ID` for its state;
+a session opened on it meanwhile shows `p downloading N%`); uploads may be chunked; catalog lines take ` -- ` launch
+options. Apps' launch options are limited to `Catalog.LAUNCH_OPTIONS` (activity, Build fields, settings...: nothing
+that touches files, ports or the JVM).
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--quality Q] [--no-network]""";
+                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -53,6 +53,8 @@ public final class Serve {
   boolean noNetwork;
   boolean loopbackBind;
   private final List<String> apps = new ArrayList<>();
+  /** Pages on these origins may frame serve's page and open its WebSockets and POSTs (`--allow-origin`). */
+  final List<String> allowedOrigins = new ArrayList<>();
   private final Map<String, Session> sessions = new ConcurrentHashMap<>();
   /** Connections open at once (open sessions' WebSockets among them). */
   private final java.util.concurrent.Semaphore connections = new java.util.concurrent.Semaphore(128);
@@ -83,6 +85,14 @@ public final class Serve {
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
+        case "--allow-origin" -> {
+          String o = origin(need(a, v));
+          if (o == null) {
+            System.err.println("--allow-origin takes an origin such as https://dashboard.example.com (no path)\n" + USAGE);
+            System.exit(2);
+          }
+          s.allowedOrigins.add(o);
+        }
         case "--no-network" -> {
           s.noNetwork = true;
           i--;
@@ -99,6 +109,71 @@ public final class Serve {
       i++;
     }
     s.run();
+  }
+
+  /**
+   * An origin as a browser sends it in `Origin`, or null when it is not one: lower case, no default port
+   * (`https://a.example:443` is sent as `https://a.example`), an IPv6 address in its short form (RFC 5952:
+   * `[0:0:0:0:0:0:0:1]` is sent as `[::1]`). Headers are compared with it as they come.
+   */
+  static String origin(String given) {
+    java.net.URI u;
+    try {
+      u = new java.net.URI(given.strip().replaceFirst("/$", ""));
+    } catch (java.net.URISyntaxException e) {
+      return null;
+    }
+    String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
+    if (!scheme.equals("http") && !scheme.equals("https") || u.getHost() == null || u.getRawUserInfo() != null
+        || !(u.getRawPath() == null || u.getRawPath().isEmpty()) || u.getRawQuery() != null || u.getRawFragment() != null) {
+      return null;
+    }
+    String host = u.getHost().toLowerCase(Locale.ROOT);
+    if (host.startsWith("[")) {
+      try {
+        byte[] b = InetAddress.getByName(host.substring(1, host.length() - 1)).getAddress();
+        if (b.length != 16) return null;
+        host = "[" + ipv6(b) + "]";
+      } catch (java.io.IOException e) {
+        return null;
+      }
+    } else if (!host.matches("[a-z0-9.-]+")) {
+      return null;
+    }
+    int port = u.getPort();
+    boolean usual = port == -1 || scheme.equals("http") && port == 80 || scheme.equals("https") && port == 443;
+    return scheme + "://" + host + (usual ? "" : ":" + port);
+  }
+
+  /** RFC 5952's form: hex groups without leading zeros, the longest run of two or more zero groups as "::". */
+  private static String ipv6(byte[] b) {
+    int[] g = new int[8];
+    for (int i = 0; i < 8; i++) g[i] = ((b[2 * i] & 0xff) << 8) | (b[2 * i + 1] & 0xff);
+    int best = -1, bestLen = 0;
+    for (int i = 0; i < 8; ) {
+      if (g[i] != 0) {
+        i++;
+        continue;
+      }
+      int j = i;
+      while (j < 8 && g[j] == 0) j++;
+      if (j - i > bestLen && j - i >= 2) {
+        best = i;
+        bestLen = j - i;
+      }
+      i = j;
+    }
+    StringBuilder s = new StringBuilder();
+    for (int i = 0; i < 8; i++) {
+      if (i == best) {
+        s.append("::");
+        i += bestLen - 1;
+        continue;
+      }
+      if (s.length() > 0 && s.charAt(s.length() - 1) != ':') s.append(':');
+      s.append(Integer.toHexString(g[i]));
+    }
+    return s.toString();
   }
 
   private static String need(String option, String value) {
@@ -133,6 +208,7 @@ public final class Serve {
     String host = loopbackBind ? (addr instanceof java.net.Inet6Address ? "[::1]" : "localhost") : bind;
     System.err.printf("[serve] http://%s:%d/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
         host, server.getLocalPort(), token == null ? "" : "?token=...", catalog.listed().size(), max, idleSeconds, maxUploadMb);
+    if (!allowedOrigins.isEmpty()) System.err.println("[serve] pages on " + String.join(", ", allowedOrigins) + " may embed it");
     warmStandby();
     ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
       Thread t = new Thread(r, "serve-timer");
@@ -202,9 +278,15 @@ public final class Serve {
       Http.Request r = Http.read(in, System.nanoTime() + 10_000_000_000L);
       if (r == null) return;
       s.setSoTimeout(30_000);
-      route(r, s, in, out);
-    } catch (IOException | RuntimeException e) {
+      try {
+        route(r, s, in, out);
+      } finally {
+        Http.CORS_ORIGIN.remove();
+      }
+    } catch (IOException e) {
       // the client went away
+    } catch (RuntimeException e) {
+      System.err.println("[serve] request failed: " + e);
     }
   }
 
@@ -213,8 +295,27 @@ public final class Serve {
       Http.text(out, 403, "this server answers only to localhost");
       return;
     }
-    // The one-time link: keep the token as a cookie and take it out of the address bar.
-    if (r.method().equals("GET") && r.path().equals("/") && r.param("token") != null) {
+    // An --allow-origin page's requests: their responses say it may read them (health included), and its preflights (a
+    // JSON POST with a bearer token sends one, without the token) are answered before authentication. The request
+    // itself still needs the token.
+    String origin = r.header("origin");
+    if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
+      Http.CORS_ORIGIN.set(origin);
+      if (r.method().equals("OPTIONS")) {
+        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
+        return;
+      }
+    }
+    // Health probes (Kubernetes, load balancers) cannot send a token: "ok" or why not, nothing more.
+    if (r.method().equals("GET") && r.path().equals("/api/health")) {
+      String why = notReady();
+      Http.text(out, why == null ? 200 : 503, why == null ? "ok" : "not ready: " + why);
+      return;
+    }
+    // The one-time link: keep the token as a cookie and take it out of the address bar. An embedded page (embed=1)
+    // keeps it instead, in memory, and sends it with its own requests: a cross-site frame gets no SameSite cookie.
+    if (r.method().equals("GET") && r.path().equals("/") && r.param("token") != null && !"1".equals(r.param("embed"))) {
       if (!tokenMatches(r.param("token"))) {
         Http.text(out, 401, "wrong token");
         return;
@@ -235,16 +336,22 @@ public final class Serve {
       return;
     }
     boolean write = !r.method().equals("GET") || r.path().equals("/ws");
-    if (write && !sameOrigin(r)) {
+    if (write && !originAllowed(r)) {
       Http.text(out, 403, "cross-origin request refused");
       return;
     }
+    if (r.method().equals("GET") && r.path().startsWith("/api/apps/")) {
+      appState(r.path().substring("/api/apps/".length()), out);
+      return;
+    }
     switch (r.method() + " " + r.path()) {
-      case "GET /" -> Http.respond(out, 200, "text/html; charset=utf-8", page,
-          "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:; "
-              + "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-          "X-Frame-Options: DENY");
-      case "GET /api/health" -> Http.text(out, 200, "ok");
+      case "GET /" -> {
+        String csp = "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:; "
+            + "base-uri 'none'; form-action 'none'; frame-ancestors ";
+        // Framed only by the origins named (--allow-origin), and then without X-Frame-Options, which cannot name them.
+        if (allowedOrigins.isEmpty()) Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'none'", "X-Frame-Options: DENY");
+        else Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'self' " + String.join(" ", allowedOrigins));
+      }
       case "GET /api/apps" -> {
         StringBuilder b = new StringBuilder("[");
         for (Catalog.App a : catalog.listed()) {
@@ -255,15 +362,16 @@ public final class Serve {
       }
       case "GET /api/status" -> Http.json(out, 200, status());
       case "POST /api/upload" -> upload(r, out);
+      case "POST /api/apps" -> addApp(r, out);
       case "GET /ws" -> websocket(r, s, in, out);
       default -> Http.text(out, 404, "not found");
     }
   }
 
   private void upload(Http.Request r, OutputStream out) throws IOException {
-    long length = r.contentLength();
-    if (length < 0) {
-      Http.text(out, 411, "send the APK as the request body, with Content-Length");
+    long length = r.chunked() ? -1 : r.contentLength();
+    if (length < 0 && !r.chunked()) {
+      Http.text(out, 411, "send the APK as the request body, with Content-Length or Transfer-Encoding: chunked");
       return;
     }
     if (length > maxUploadMb << 20) {
@@ -278,12 +386,107 @@ public final class Serve {
       } catch (IllegalArgumentException e) {
         name = null;
       }
-      Catalog.App a = catalog.upload(r.body(), length, name);
-      System.err.printf("[serve] upload %s (%d MB)%n", a.name(), length >> 20);
+      Catalog.App a = catalog.upload(r.content(), length, name, List.of());
+      System.err.printf("[serve] upload %s (%d MB)%n", a.name(), Files.size(a.path()) >> 20);
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + "}");
     } catch (IOException e) {
       Http.text(out, 400, e.getMessage());
     }
+  }
+
+  /**
+   * `POST /api/apps` `{"url": "https://...", "name": "...", "headers": {...}, "options": ["--activity", ".Main", ...]}`:
+   * serve downloads the APK itself and answers its id at once (docs/serve.md).
+   */
+  private void addApp(Http.Request r, OutputStream out) throws IOException {
+    if (r.contentLength() < 0 && !r.chunked()) {
+      Http.text(out, 411, "send a JSON body, with Content-Length or Transfer-Encoding: chunked");
+      return;
+    }
+    long length = r.chunked() ? -1 : r.contentLength();
+    byte[] raw = r.content().readNBytes((int) Math.min(64 * 1024 + 1, length < 0 ? Long.MAX_VALUE : length));
+    if (raw.length > 64 * 1024) {
+      Http.text(out, 413, "the request body is limited to 64 KB");
+      return;
+    }
+    try {
+      if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
+      if (!(body.get("url") instanceof String url)) throw new IOException("\"url\" is required");
+      String name = body.get("name") instanceof String n ? n : null;
+      Map<String, String> headers = new LinkedHashMap<>();
+      if (body.get("headers") instanceof Map<?, ?> h) {
+        for (Map.Entry<?, ?> e : h.entrySet()) {
+          String k = String.valueOf(e.getKey());
+          if (!(e.getValue() instanceof String v) || !k.matches("[A-Za-z0-9-]{1,64}") || v.chars().anyMatch(c -> c < 0x20)) {
+            throw new IOException("\"headers\" takes names and string values");
+          }
+          headers.put(k, v);
+        }
+      } else if (body.get("headers") != null) {
+        throw new IOException("\"headers\" must be an object");
+      }
+      List<String> given = new ArrayList<>();
+      if (body.get("options") instanceof List<?> l) {
+        for (Object o : l) {
+          if (!(o instanceof String x)) throw new IOException("\"options\" takes strings");
+          given.add(x);
+        }
+      } else if (body.get("options") != null) {
+        throw new IOException("\"options\" must be an array, e.g. [\"--activity\", \".MainActivity\"]");
+      }
+      Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given));
+      Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"downloading\"}");
+    } catch (Catalog.Busy e) {
+      Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
+    } catch (IOException e) {
+      Http.text(out, 400, e.getMessage());
+    }
+  }
+
+  /** `GET /api/apps/ID`: an uploaded or added app's state (downloading, ready, failed), for a service that added it. */
+  private void appState(String id, OutputStream out) throws IOException {
+    Catalog.Download d = catalog.download(id);
+    if (d != null) {
+      StringBuilder b = new StringBuilder("{\"id\":").append(Http.q(id)).append(",\"name\":").append(Http.q(d.app.name()));
+      if (!d.done.isDone()) b.append(",\"state\":\"downloading\"");
+      else if (d.done.isCompletedExceptionally()) {
+        String why;
+        try {
+          d.done.join();
+          why = "";
+        } catch (java.util.concurrent.CompletionException e) {
+          why = String.valueOf(e.getCause().getMessage());
+        }
+        b.append(",\"state\":\"failed\",\"error\":").append(Http.q(why));
+      } else b.append(",\"state\":\"ready\"");
+      Http.json(out, 200, b.append(",\"received\":").append(d.received).append(",\"total\":").append(d.total).append('}').toString());
+      return;
+    }
+    Catalog.App a = catalog.find(id);
+    if (a == null) {
+      Http.text(out, 404, "no such app (an upload is kept for a day after its last use)");
+      return;
+    }
+    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"ready\"}");
+  }
+
+  /** Why a session could not start now (the launcher, the state folder, disk space), or null when it could. */
+  private String notReady() {
+    if (!Files.isExecutable(launcher)) return "no launcher at " + launcher;
+    Path dir = state.resolve("serve");
+    // Where sessions write: their logs, uploads and downloads (each made at startup).
+    for (Path d : List.of(dir, logs, dir.resolve("uploads"), dir.resolve("downloads"))) {
+      if (!Files.isDirectory(d) || !Files.isWritable(d)) return "the state folder " + d + " is not writable";
+    }
+    try {
+      long free = Files.getFileStore(dir).getUsableSpace();
+      // An instance's data slot and caches, and an upload of the largest size allowed.
+      long need = (512L << 20) + (maxUploadMb << 20);
+      if (free < need) return "low disk space: " + (free >> 20) + " MB free in " + dir + ", need " + (need >> 20);
+    } catch (IOException e) {
+      return "cannot read the disk's free space: " + e.getMessage();
+    }
+    return null;
   }
 
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
@@ -351,12 +554,16 @@ public final class Serve {
     return h.equals("localhost") || h.equals("127.0.0.1") || h.equals("[::1]") || h.endsWith(".localhost");
   }
 
-  /** A browser names the page a request came from: refuse WebSockets and POSTs from any page but this server's. */
-  private static boolean sameOrigin(Http.Request r) {
+  /**
+   * A browser names the page a request came from: refuse WebSockets and POSTs from any page but this server's and the
+   * `--allow-origin` ones.
+   */
+  private boolean originAllowed(Http.Request r) {
     String origin = r.header("origin");
     if (origin == null) return true;  // not a browser (curl, scripts): nothing to forge
     String host = r.header("host");
-    return host != null && (origin.equals("http://" + host) || origin.equals("https://" + host));
+    if (host != null && (origin.equals("http://" + host) || origin.equals("https://" + host))) return true;
+    return allowedOrigins.contains(origin.toLowerCase(Locale.ROOT));
   }
 
   private boolean authorized(Http.Request r) {
@@ -364,7 +571,9 @@ public final class Serve {
     String auth = r.header("authorization");
     if (auth != null && auth.startsWith("Bearer ") && tokenMatches(auth.substring(7).strip())) return true;
     String cookie = r.cookie("apksim_token");
-    return cookie != null && tokenMatches(cookie);
+    if (cookie != null && tokenMatches(cookie)) return true;
+    // An embedded page's own requests (embed=1 keeps the token out of cookies: see route).
+    return tokenMatches(r.param("token"));
   }
 
   private boolean tokenMatches(String given) {
