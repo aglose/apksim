@@ -460,6 +460,9 @@ standby's JVM had set it to the host's, so Joda dates were a day off), the statu
 `timezone ZONE` does the same while the app runs and broadcasts ACTION_TIMEZONE_CHANGED with EXTRA_TIMEZONE, as a
 device does (joda-time-android sets Joda's default from it; plain Joda keeps its cached zone, as on a device). Without
 `--timezone` nothing is changed.
+`apksim://composeapp/trips?overlay=1` adds an empty, non-focusable overlay window after the activity's window (issue 123);
+`scripts/overlay-input-check.py PORT` types into the Trip note field under it over `--control` and expects "ab", so typing
+that reaches the wrong window fails it (`keyTarget` in `Host`: keys go to the topmost shown, sized, focusable window).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
