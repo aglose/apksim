@@ -117,7 +117,10 @@ final class Arsc {
   }
 
   private static int chunkSize(ByteBuffer b, int at) {
-    return b.getInt(at + 4);
+    int size = b.getInt(at + 4);
+    // A chunk smaller than its own 8-byte header would never advance the walk: treat the table as malformed
+    if (size < 8) throw new IllegalStateException("resource chunk size " + size);
+    return size;
   }
 
   private static int chunkEnd(ByteBuffer b, int at) {
