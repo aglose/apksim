@@ -89,6 +89,18 @@ def container_run(cmd):
     return None
 
 
+def fit_chars(t, limit):
+    """[t], a stack's text, cut at the bottom at a line boundary to at most [limit] characters (and the marker)."""
+    lines = t.split("\n")
+    out, size, n = [], 0, 0
+    while n < len(lines) - 1 and size + len(lines[n]) + 1 <= limit - 80:
+        out.append(lines[n])
+        size += len(lines[n]) + 1
+        n += 1
+    out = out or [lines[0][:limit - 80]]
+    return "\n".join(out) + f"\n\t[... {len(lines) - len(out)} more lines of this stack]"
+
+
 def thread_dump_tests(dump):
     """From a JVM thread dump, the stacks of the threads in JUnit code (the hung test's, a timeout's watchdog), else all."""
     threads = [t for t in "\n".join(dump).split("\n\n") if t.lstrip().startswith('"')]
@@ -98,6 +110,8 @@ def thread_dump_tests(dump):
     picked = [trimmed_stack([line + "\n" for line in t.split("\n")]).rstrip("\n") for t in picked]
     text, kept = "", 0
     for t in picked:
+        if not text and len(t) > 30_000:  # even the first: 100 lines of long names can pass the limit
+            t = fit_chars(t, 30_000)
         if text and len(text) + 2 + len(t) > 30_000:
             break
         text, kept = (text + "\n\n" + t if text else t), kept + 1
@@ -308,6 +322,7 @@ def warn(text):
 WATCHDOGS = ("[apksim] test still running ", "[apksim] listener call still running")
 # A line inside a stack trace, after its header (an exception's or a thread's line).
 FRAME = re.compile(r"\s+at |\s*\.\.\. \d+ more|\s*Caused by: |\s*Suppressed: |\s+- (locked|waiting|parking) |\t\[\.\.\.")
+NESTED = re.compile(r"\s*(Caused by|Suppressed): ")
 # Lines of a stack trace kept from its top when the tail would start inside it (and of a thread in a thread dump).
 STACK_LINES = 100
 
@@ -319,9 +334,14 @@ def is_frame(line):
 def trimmed_stack(lines, keep=STACK_LINES):
     """A stack trace's lines (its header first) cut to its first [keep] lines, saying how many went: the top of a
     stack says what the thread is doing, the bottom is how it got there (the runner's frames, the same every time)."""
-    if len(lines) <= keep:
-        return "".join(lines)
-    return "".join(lines[:keep]) + f"\t[... {len(lines) - keep} more lines of this stack]\n"
+    # An exception's `Caused by:` and `Suppressed:` each start a stack of their own (a message, a throw site): each is
+    # cut by itself, so a deep wrapper does not take the cause's header and frames with it.
+    starts = [i for i, line in enumerate(lines) if i > 0 and NESTED.match(line)]
+    out = []
+    for a, b in zip([0] + starts, starts + [len(lines)]):
+        seg = lines[a:b]
+        out += seg if len(seg) <= keep else seg[:keep] + [f"\t[... {len(seg) - keep} more lines of this stack]\n"]
+    return "".join(out)
 
 
 def stderr_tail(text, n=4000):

@@ -136,11 +136,20 @@ def hang(state, c, m):
     with open(os.path.join(state, "pids"), "a") as f:
         f.write(f"{os.getpid()}\n{child.pid}\n")
 
-    deep = os.environ["CHECK_SCENARIO"] == "hang-long-stack"
+    sc = os.environ["CHECK_SCENARIO"]
+    deep = sc in ("hang-long-stack", "hang-deep-cause")
+    # hang-long-chars: the first JUnit thread's 90 lines are over 45,000 characters (long qualified names).
+    wide = sc == "hang-long-chars"
+    if wide:
+        deep_c = "".join(f"\tat org.robolectric.{'x' * 500}.frame{k}(Deep.java:{k})\n" for k in range(90))
     # hang-long-stack: stacks deeper than the text kept of them (issue 115), whose tops must survive the cut.
     bottom = "".join(f"\tat org.robolectric.Deep.frame{k}(Deep.java:{k})\n" for k in range(200)) if deep else ""
 
     def dump(*_):
+        if wide:
+            print(f'Full thread dump Fake VM:\n\n"main" #1 prio=5\n\tat {c}.{m}({c}.java:1)\n{deep_c}'
+                  f'\tat org.junit.runners.ParentRunner.run(ParentRunner.java:1)\n\nJNI global refs: 1', flush=True)
+            return
         print(f'Full thread dump Fake VM:\n\n"main" #1 prio=5\n   java.lang.Thread.State: TIMED_WAITING\n'
               f'\tat {c}.{m}({c}.java:1)\n{bottom}\tat org.junit.runners.ParentRunner.run(ParentRunner.java:1)\n\n'
               + (f'"SDK 36 Main Thread" #3 prio=5\n   java.lang.Thread.State: WAITING\n\tat p.Waiter.parked(Waiter.java:1)\n'
@@ -149,8 +158,13 @@ def hang(state, c, m):
               flush=True)
     signal.signal(signal.SIGQUIT, dump)
     if deep:  # a stack on stderr longer than the tail kept of it, then quiet: the tail starts inside it
-        print("noise before\njava.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n"
-              + bottom, file=sys.stderr, end="", flush=True)
+        if sc == "hang-deep-cause":  # a deep wrapper, then a one-frame cause
+            print("noise before\njava.lang.RuntimeException: wrapper\n\tat p.Waiter.wrap(Waiter.java:7)\n" + bottom
+                  + "Caused by: java.io.IOException: root cause message\n\tat p.Root.thrown(Root.java:9)\n",
+                  file=sys.stderr, end="", flush=True)
+        else:
+            print("noise before\njava.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n"
+                  + bottom, file=sys.stderr, end="", flush=True)
     else:
         print("hangs in a test", file=sys.stderr, flush=True)
     sys.stdout.flush()
@@ -240,6 +254,8 @@ SCENARIOS = {
     "hang-startup": (1, 1, 1, ["(run)#incomplete"]),
     # As hang, the stacks on stderr and in the thread dump deeper than what is kept: each kept from its header down.
     "hang-long-stack": (1, 3, 9, ["p.C000#m1"]),
+    "hang-long-chars": (1, 3, 9, ["p.C000#m1"]),  # the first JUnit thread alone is over the character limit
+    "hang-deep-cause": (1, 3, 9, ["p.C000#m1"]),  # a wrapper deeper than the lines kept, then a cause of one frame
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
@@ -279,6 +295,9 @@ TIMED_OUT = ["timed out after 2 s", "at p.C000.m1(p.C000.java:1)", "hangs in a t
 # hang-long-stack's: the stderr stack's header and top frame, its bottom cut, and the second JUnit thread's top.
 LONG_STACK = ["java.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n",
               "more lines of this stack]", '"SDK 36 Main Thread" #3', "at p.Waiter.parked(Waiter.java:1)"]
+# hang-deep-cause's: the wrapper's header, and the cause's header and frame past the wrapper's cut lines.
+DEEP_CAUSE = ["java.lang.RuntimeException: wrapper\n", "more lines of this stack]",
+              "Caused by: java.io.IOException: root cause message\n\tat p.Root.thrown(Root.java:9)\n"]
 
 
 def extra_args(sc, d):
@@ -367,6 +386,10 @@ def main():
             wanted = TIMED_OUT if "client-exits" not in sc else [w for w in TIMED_OUT if "java:" not in w]
             if sc == "hang-long-stack":
                 wanted = TIMED_OUT[:2] + LONG_STACK
+            elif sc == "hang-deep-cause":
+                wanted = TIMED_OUT[:1] + DEEP_CAUSE
+            elif sc == "hang-long-chars":
+                wanted = TIMED_OUT[:1] + ["more lines of this stack]"]
             missing = [w for t in hung for w in (wanted if t == "p.C000#m1" else wanted[:1]) if w not in texts.get(t, "")]
             pids_file = os.path.join(d, "pids")
             pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
@@ -393,6 +416,8 @@ def main():
                 (f"the failure text lacks {missing}", bool(missing)),
                 ("the stderr tail before the thread dump's JUnit threads", sc == "hang-long-stack" and not missing
                  and texts["p.C000#m1"].find("at p.C000.m1(") > texts["p.C000#m1"].find("listener waited here")),
+                ("the first thread's text over 30,000 characters", sc == "hang-long-chars"
+                 and len(texts["p.C000#m1"].split("\n\nthe end of the process")[0]) > 31_000),
                 (f"processes left running: {alive}", bool(alive)),
                 ("no process that hung", sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and not pids),
                 ("no container ID in the user's --cidfile", sc.startswith("cidfile")
