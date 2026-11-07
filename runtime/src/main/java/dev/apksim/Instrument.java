@@ -472,6 +472,7 @@ final class Instrument {
       failure = null;
       dev.apksim.net.Net.testStarted();
       Bundles.testStarted(d);
+      TestRecorder.testStarted(d);
       String stream = "";
       if (!d.getClassName().equals(lastClass)) {
         stream = "\n" + d.getClassName() + ":";
@@ -520,6 +521,7 @@ final class Instrument {
         Bundles.listenerFailure(d, failure.getException());
       }
       Bundles.testFinished(d, code == OK, code == FAILURE);
+      TestRecorder.testFinished(d, code == FAILURE);
       String stream = code == FAILURE ? "\nError in " + d.getMethodName() + "(" + d.getClassName() + "):\n" + trace(failure) : ".";
       status(d, code, stream, code == FAILURE || code == ASSUMPTION ? trace(failure) : null);
     }
@@ -528,6 +530,8 @@ final class Instrument {
       // Where this test's failure bundle is (--bundles): an extra key, which am instrument parsers keep or ignore.
       String bundle = statusCode == START ? null : Bundles.bundleOf(d);
       if (bundle != null) out.println("INSTRUMENTATION_STATUS: apksim_bundle=" + bundle);
+      String recording = statusCode == START ? null : TestRecorder.recordingOf(d);
+      if (recording != null) out.println("INSTRUMENTATION_STATUS: apksim_recording=" + recording);
       out.println("INSTRUMENTATION_STATUS: class=" + d.getClassName());
       out.println("INSTRUMENTATION_STATUS: current=" + current);
       out.println("INSTRUMENTATION_STATUS: id=" + id);

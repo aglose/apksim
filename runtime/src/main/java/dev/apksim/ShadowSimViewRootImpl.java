@@ -28,7 +28,10 @@ public class ShadowSimViewRootImpl extends ShadowViewRootImpl {
   @Override
   protected boolean draw(boolean fullRedrawNeeded, Object activeSyncGroup, boolean syncBuffer) {
     boolean drew = super.draw(fullRedrawNeeded, activeSyncGroup, syncBuffer);
-    if (TestActivities.testRun()) record();
+    if (TestActivities.testRun()) {
+      record();
+      TestRecorder.onDraw();  // --record: a frame of the test's movie, when one is due
+    }
     return drew;
   }
 

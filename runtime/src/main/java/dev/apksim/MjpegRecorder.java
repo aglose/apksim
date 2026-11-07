@@ -15,12 +15,13 @@ import java.util.List;
  * second (repeating it while nothing changes), so the movie keeps real timing. JPEG comes from Android's own encoder.
  */
 final class MjpegRecorder {
-  private static final int FPS = 30;
+  private static final int DEFAULT_FPS = 30;
   private static volatile MjpegRecorder active;
 
   private final RandomAccessFile out;
   private final int w;
   private final int h;
+  private final int fps;
   private final List<int[]> index = new ArrayList<>();  // offset, size
   private final Thread writer;
   private final long startNanos = System.nanoTime();
@@ -31,7 +32,8 @@ final class MjpegRecorder {
   private long moviStart;
   private int frames;
 
-  private MjpegRecorder(String path, int w, int h) throws IOException {
+  private MjpegRecorder(String path, int w, int h, int fps) throws IOException {
+    this.fps = fps;
     this.w = w;
     this.h = h;
     out = new RandomAccessFile(path, "rw");
@@ -42,10 +44,15 @@ final class MjpegRecorder {
     writer.start();
   }
 
-  static synchronized String start(String path, int w, int h) {
+  static String start(String path, int w, int h) {
+    return start(path, w, h, DEFAULT_FPS);
+  }
+
+  /** Test runs (TestRecorder) pass the frame rate they were asked for. */
+  static synchronized String start(String path, int w, int h, int fps) {
     if (active != null) return "already recording";
     try {
-      active = new MjpegRecorder(path, w, h);
+      active = new MjpegRecorder(path, w, h, fps);
       return null;
     } catch (IOException e) {
       return e.toString();
@@ -78,35 +85,52 @@ final class MjpegRecorder {
   private void loop() {
     Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     ByteArrayOutputStream jpeg = new ByteArrayOutputStream(1 << 20);
-    long next = System.nanoTime();
-    while (running) {
-      next += 1_000_000_000L / FPS;
-      byte[] raw = null;
+    try {
+      long next = System.nanoTime();
+      while (running) {
+        next += 1_000_000_000L / fps;
+        if (!step(bitmap, jpeg)) return;
+        long wait = next - System.nanoTime();
+        if (wait > 0) java.util.concurrent.locks.LockSupport.parkNanos(wait);
+      }
+      // A frame that arrived since the last step (a short test's only one) still goes in.
+      boolean pending;
       synchronized (this) {
-        if (fresh) {
-          raw = latest.clone();
-          fresh = false;
-        }
+        pending = fresh;
       }
-      try {
-        if (raw != null && raw.length == w * h * 4) {
-          bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(raw));
-          jpeg.reset();
-          bitmap.compress(Bitmap.CompressFormat.JPEG, 80, jpeg);
-          lastJpeg = jpeg.toByteArray();
-        }
-        if (lastJpeg != null) writeFrame(lastJpeg);
-      } catch (IOException e) {
-        System.err.println("[apksim] recording stopped: " + e);
-        return;
+      if (pending) step(bitmap, jpeg);
+    } finally {
+      bitmap.recycle();  // native pixels: HotSpot does not collect for them
+    }
+  }
+
+  /** Encodes the newest frame if there is one and writes the latest picture; false when the file cannot be written. */
+  private boolean step(Bitmap bitmap, ByteArrayOutputStream jpeg) {
+    byte[] raw = null;
+    synchronized (this) {
+      if (fresh) {
+        raw = latest.clone();
+        fresh = false;
       }
-      long wait = next - System.nanoTime();
-      if (wait > 0) java.util.concurrent.locks.LockSupport.parkNanos(wait);
+    }
+    try {
+      if (raw != null && raw.length == w * h * 4) {
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(raw));
+        jpeg.reset();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, jpeg);
+        lastJpeg = jpeg.toByteArray();
+      }
+      if (lastJpeg != null) writeFrame(lastJpeg);
+      return true;
+    } catch (IOException e) {
+      System.err.println("[apksim] recording stopped: " + e);
+      return false;
     }
   }
 
   private long finish() {
     running = false;
+    java.util.concurrent.locks.LockSupport.unpark(writer);
     try {
       writer.join(2000);
       writeIndexAndPatch();
@@ -124,13 +148,13 @@ final class MjpegRecorder {
     b.put(fourcc("RIFF")).putInt(0).put(fourcc("AVI "));                     // size patched at the end
     b.put(fourcc("LIST")).putInt(4 + 64 + 8 + 116).put(fourcc("hdrl"));  // avih chunk, strl LIST
     b.put(fourcc("avih")).putInt(56);
-    b.putInt(1_000_000 / FPS).putInt(0).putInt(0).putInt(0x10);              // us per frame, max bytes/s, padding, AVIF_HASINDEX
+    b.putInt(1_000_000 / fps).putInt(0).putInt(0).putInt(0x10);              // us per frame, max bytes/s, padding, AVIF_HASINDEX
     b.putInt(0).putInt(0).putInt(1).putInt(0).putInt(w).putInt(h);           // frames (patched), initial, streams, buffer, size
     b.putInt(0).putInt(0).putInt(0).putInt(0);
     b.put(fourcc("LIST")).putInt(4 + 64 + 48).put(fourcc("strl"));
     b.put(fourcc("strh")).putInt(56).put(fourcc("vids")).put(fourcc("MJPG"));
     b.putInt(0).putShort((short) 0).putShort((short) 0).putInt(0);           // flags, priority, language, initial frames
-    b.putInt(1).putInt(FPS).putInt(0).putInt(0);                             // scale, rate, start, length (patched)
+    b.putInt(1).putInt(fps).putInt(0).putInt(0);                             // scale, rate, start, length (patched)
     b.putInt(0).putInt(-1).putInt(0);                                        // buffer, quality, sample size
     b.putShort((short) 0).putShort((short) 0).putShort((short) w).putShort((short) h);
     b.put(fourcc("strf")).putInt(40);                                        // BITMAPINFOHEADER
