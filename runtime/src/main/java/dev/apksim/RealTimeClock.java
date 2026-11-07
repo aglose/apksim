@@ -76,6 +76,7 @@ final class RealTimeClock {
     handler = new Handler(Looper.getMainLooper());
     vsyncPosted = false;
     barrierSince = -1;
+    barrierSeen = -1;
     ShadowChoreographer.setPaused(true);
     simBaseNanos = ApksimClock.uptimeNanos();
     elapsedBaseNanos = ApksimClock.elapsedRealtimeNanos();
@@ -190,8 +191,13 @@ final class RealTimeClock {
     }
   }
 
-  /** Main thread only: since when (System.nanoTime) every look at the queue has found a barrier at its head, or -1. */
+  /**
+   * Main thread only: since when (System.nanoTime) the looper's looks at the queue have kept finding a barrier at its
+   * head, none more than BARRIER_WAIT_MS after the one before, or -1.
+   */
   private static long barrierSince = -1;
+  /** Main thread only: when a look last found a barrier at the head, or -1. */
+  private static long barrierSeen = -1;
   private static final long BARRIER_STREAK_MS = 250;
 
   /**
@@ -214,10 +220,18 @@ final class RealTimeClock {
     try {
       synchronized (q) {
         Message m = (Message) MESSAGES.get(q);
+        long nowNanos = System.nanoTime();
+        // A streak ends only once no barrier has been seen for longer than a frame could take (BARRIER_WAIT_MS), not
+        // at the first look that finds something else at the head: a screen that changes a view from a message
+        // between frames (a ticker, a post from each frame) has that message at the head between every two
+        // barriers, and resetting there kept the streak from ever reaching BARRIER_STREAK_MS (issue 131).
+        boolean gap = barrierSeen < 0 || nowNanos - barrierSeen > BARRIER_WAIT_MS * 1_000_000L;
         if (m == null || m.getTarget() != null) {  // no barrier at the head
-          barrierSince = -1;
+          if (gap) barrierSince = -1;
           return;
         }
+        if (gap || barrierSince < 0) barrierSince = nowNanos;
+        barrierSeen = nowNanos;
         boolean waiting = false;  // work held behind the barrier that is due now (an Espresso check, a posted task)
         long nowMs = ApksimClock.uptimeNanos() / 1_000_000L;
         for (Message n = (Message) NEXT.get(m); n != null; n = (Message) NEXT.get(n)) {
@@ -230,11 +244,10 @@ final class RealTimeClock {
         // An endless animation keeps a barrier up frame after frame, and waiting each one out kept the looper from ever
         // being idle. Past BARRIER_STREAK_MS of barriers with nothing due behind them, a barrier counts as idle, as
         // Espresso counts it on a device; frames still come as the clock catches up. Work due behind the barrier keeps
-        // the wait: Espresso blocks the main thread on its check's result once the queue is idle.
-        long nowNanos = System.nanoTime();
-        if (waiting) barrierSince = -1;
-        else if (barrierSince < 0) barrierSince = nowNanos;
-        else if (nowNanos - barrierSince > BARRIER_STREAK_MS * 1_000_000L) return;
+        // the wait for this frame (Espresso blocks the main thread on its check's result once the queue is idle) but
+        // does not start the streak again: a 16 ms ticker has its next tick due behind nearly every barrier, and
+        // restarting there made one idle wait out frame after frame for as long as the screen ran (issue 131).
+        if (!waiting && nowNanos - barrierSince > BARRIER_STREAK_MS * 1_000_000L) return;
       }
     } catch (IllegalAccessException e) {
       return;

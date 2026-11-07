@@ -994,7 +994,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   With the switch the Choreographer is paused as Host runs it, each frame asked for queues an asynchronous vsync
   message (`ShadowRealTimeDisplayEventReceiver`), a main-thread clock read moves the clock up to real time
   (`ShadowRealTimeSystemClock`), a looper held by a traversal's sync barrier waits up to 100 ms for that frame
-  (Espresso posts its check behind the barrier, drains, then blocks on it: without the wait it never ran), and
+  (Espresso posts its check behind the barrier, drains, then blocks on it: without the wait it never ran) until
+  barriers have kept coming back for 250 ms with gaps under 100 ms (an endless animation), after which a barrier with
+  nothing due behind it counts as idle, as on a device; neither a message at the head between frames nor work due
+  behind one barrier starts that streak again (issue 131: a 16 ms ticker made an Espresso swipe's nested idle wait
+  frame after frame until the test's timeout; `RealTimeSwipeTest`), and
   anything moving the clock past real time (idleFor, SystemClock.sleep) waits for it. Off, nothing is registered.
   The test app's suite takes 13 s with it against 5.6 s (`RealTimeClockTest`, run with `-e realtimeClock true`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
