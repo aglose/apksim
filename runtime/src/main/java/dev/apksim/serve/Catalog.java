@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 
@@ -68,6 +69,16 @@ final class Catalog {
   private final Path downloads;
   private final long maxBytes;
   private final Map<String, Download> downloading = new ConcurrentHashMap<>();
+  /** Downloads running at once (`POST /api/apps`): each holds a connection out and a temporary file. */
+  static final int MAX_DOWNLOADS = 4;
+  private final java.util.concurrent.Semaphore downloadSlots = new java.util.concurrent.Semaphore(MAX_DOWNLOADS);
+
+  /** Too many downloads are running: try again later (503). */
+  static final class Busy extends IOException {
+    Busy(String message) {
+      super(message);
+    }
+  }
 
   Catalog(List<String> sources, Path state, long maxBytes) throws IOException {
     this.uploads = state.resolve("serve/uploads");
@@ -175,11 +186,18 @@ final class Catalog {
    * The APK file to launch: downloading a configured URL the first time, or waiting for an added URL still downloading.
    * `progress` hears what is happening ("downloading 40%"), at most once a second.
    */
-  Path file(App a, Consumer<String> progress) throws IOException {
+  Path file(App a, Consumer<String> progress, BooleanSupplier stopped) throws IOException {
     Download d = a.path() == null ? downloading.get(a.id()) : null;
+    if (d == null && a.path() == null && a.uploaded()) {
+      // An added app whose download finished (and left the map) after find() answered: its published ref.
+      App published = find(a.id());
+      if (published == null || published.path() == null) throw new IOException("no such app: " + a.name());
+      return file(published, progress, stopped);
+    }
     if (d != null) {
       String last = "";
       while (true) {
+        if (stopped.getAsBoolean()) throw new IOException("the session ended while the app downloaded");
         try {
           return d.done.get(1, TimeUnit.SECONDS).path();
         } catch (TimeoutException e) {
@@ -237,6 +255,9 @@ final class Catalog {
     if (!"https".equals(u.getScheme()) && !"http".equals(u.getScheme()) || u.getHost() == null) {
       throw new IOException("only http(s) URLs");
     }
+    if (!downloadSlots.tryAcquire()) {
+      throw new Busy(MAX_DOWNLOADS + " downloads are running: try again when one has finished");
+    }
     String path = u.getPath() == null ? "" : u.getPath();
     String clean = clean(name == null || name.isBlank() ? path.substring(path.lastIndexOf('/') + 1) : name);
     App pending = new App(newId(), clean, null, url, true, launch);
@@ -244,6 +265,7 @@ final class Catalog {
     downloading.put(pending.id(), d);
     Thread.ofVirtual().name("serve-download").start(() -> {
       try {
+        if (downloading.size() > 1000) throw new IOException("too many added apps waiting");
         HttpURLConnection c = connect(url, headers);
         d.total = c.getContentLengthLong();
         Path tmp;
@@ -256,6 +278,8 @@ final class Catalog {
       } catch (Exception e) {
         d.done.completeExceptionally(e);
         System.err.printf("[serve] could not add %s from %s: %s%n", clean, u.getHost(), e.getMessage());
+      } finally {
+        downloadSlots.release();
       }
       // Sessions waiting on it have its file (or its failure) by now; later ones find the stored ref (or nothing).
       if (!d.done.isCompletedExceptionally()) downloading.remove(pending.id());

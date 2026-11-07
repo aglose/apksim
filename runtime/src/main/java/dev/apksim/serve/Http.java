@@ -114,6 +114,8 @@ final class Http {
 
     @Override
     public int read(byte[] b, int off, int len) throws IOException {
+      java.util.Objects.checkFromIndexSize(off, len, b.length);
+      if (len == 0) return 0;  // never read (or wait for) the next chunk's header for nothing
       if (done) return -1;
       if (left == 0) {
         String size = line();
@@ -150,6 +152,12 @@ final class Http {
     }
   }
 
+  /**
+   * The `--allow-origin` origin the current request came from, or null: its responses carry Access-Control-Allow-Origin
+   * so the page can read them. Each connection is handled on its own thread (Serve.route sets and clears it).
+   */
+  static final ThreadLocal<String> CORS_ORIGIN = new ThreadLocal<>();
+
   static void respond(OutputStream out, int status, String type, byte[] body, String... extraHeaders) throws IOException {
     StringBuilder h = new StringBuilder("HTTP/1.1 ").append(status).append(' ').append(reason(status)).append("\r\n");
     h.append("Content-Type: ").append(type).append("\r\n");
@@ -158,6 +166,8 @@ final class Http {
     h.append("X-Content-Type-Options: nosniff\r\n");
     h.append("Referrer-Policy: no-referrer\r\n");
     for (String e : extraHeaders) h.append(e).append("\r\n");
+    String cors = CORS_ORIGIN.get();
+    if (cors != null) h.append("Access-Control-Allow-Origin: ").append(cors).append("\r\nVary: Origin\r\n");
     h.append("Connection: close\r\n\r\n");
     out.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
     out.write(body);
@@ -176,6 +186,7 @@ final class Http {
     return switch (status) {
       case 101 -> "Switching Protocols";
       case 200 -> "OK";
+      case 204 -> "No Content";
       case 302 -> "Found";
       case 400 -> "Bad Request";
       case 401 -> "Unauthorized";

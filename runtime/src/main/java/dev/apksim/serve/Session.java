@@ -110,7 +110,8 @@ final class Session {
   }
 
   private void start() throws Exception {
-    Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what));
+    // Waits for an added app's download; a closed tab or the idle limit stops the wait (not the shared download).
+    Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);

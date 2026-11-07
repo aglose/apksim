@@ -77,7 +77,8 @@ Only these are accepted, each with one plain value (no value starting with `-` e
   `url` is required): serve downloads the APK itself and answers `{"id", "name", "state": "downloading"}` at once.
   `headers` go with the download only (an artifact store's `Authorization`) and are never stored; `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
-  rules: listed nowhere, deleted a day after its last use. A failed download is reported for an hour.
+  rules: listed nowhere, deleted a day after its last use. A failed download is reported for an hour. At most 4
+  downloads run at once; another add gets `503` with `Retry-After`.
 - `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
   last three while it is downloading or has failed).
 - A tab (or `/ws?app=ID`) may open the id while it is still downloading: the session waits for it and sends `p
@@ -90,7 +91,9 @@ inside itself:
 
 - Start serve with `--allow-origin https://dashboard.example.com`. That origin is added to the page's
   `frame-ancestors` (with `'self'`; `X-Frame-Options` is then not sent, since it cannot name an origin), and its
-  WebSocket upgrades and POSTs are accepted like serve's own.
+  WebSocket upgrades and POSTs are accepted like serve's own. Responses to its requests carry
+  `Access-Control-Allow-Origin`, and its CORS preflights (`OPTIONS`, which carry no token) are answered; the requests
+  themselves still need the token.
 - Frame `/?embed=1&app=ID[&device=...&appearance=...&locale=...&fontscale=...&open=...&orientation=...]`. The embedded
   page shows only the screen, the device controls and permission prompts (no catalog, upload, start/stop or numbers),
   and starts the session at once. `&controls=0` leaves out the device controls as well.

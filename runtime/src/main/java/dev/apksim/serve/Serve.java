@@ -214,7 +214,11 @@ public final class Serve {
       Http.Request r = Http.read(in, System.nanoTime() + 10_000_000_000L);
       if (r == null) return;
       s.setSoTimeout(30_000);
-      route(r, s, in, out);
+      try {
+        route(r, s, in, out);
+      } finally {
+        Http.CORS_ORIGIN.remove();
+      }
     } catch (IOException e) {
       // the client went away
     } catch (RuntimeException e) {
@@ -250,6 +254,17 @@ public final class Serve {
       Http.respond(out, 302, "text/plain", new byte[0], "Location: " + to,
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;
+    }
+    // An --allow-origin page's requests: their responses say it may read them, and its preflights (a JSON POST with a
+    // bearer token sends one, without the token) are answered before authentication. The request itself still needs it.
+    String origin = r.header("origin");
+    if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
+      Http.CORS_ORIGIN.set(origin);
+      if (r.method().equals("OPTIONS")) {
+        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
+        return;
+      }
     }
     if (!authorized(r)) {
       Http.text(out, 401, "this server needs its token: open the link with ?token=... once (or send Authorization: Bearer ...)");
@@ -356,6 +371,8 @@ public final class Serve {
       }
       Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given));
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"downloading\"}");
+    } catch (Catalog.Busy e) {
+      Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
     } catch (IOException e) {
       Http.text(out, 400, e.getMessage());
     }
