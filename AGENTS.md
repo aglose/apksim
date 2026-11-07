@@ -951,7 +951,10 @@ libraries); the loader once skipped them and called an unrelocated initialiser. 
 libraries linked for 4 KB pages: `libpagefixture4k.so` (code and RELRO on one 16 KB page: must load and run on the
 Mac) and `libpagefixturenorelro.so` (`-z norelro`: code and writable data on one page, which the loader moves on the
 Mac), checked by `NativeLoaderTest` too (relocated pointers, .data, .bss, an exported variable through the GOT and
-dlsym; issue 137). When the loader or a bionic
+dlsym, a load (literal) and an adr in assembly, and through dl_iterate_phdr: .data's PT_LOAD, PT_DYNAMIC, DT_PLTGOT's
+live GOT and the symbol's st_value); `pagefixturefar.c` (moved data out of an adr's reach: an UnsatisfiedLinkError
+naming the entry on every try) and `pagefixturecxx.cpp` (a C++ exception caught with its personality slot moved).
+`build.sh` checks each still has code and data on one 16 KB page (issue 137). When the loader or a bionic
 shim gets a new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
 Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
@@ -1239,7 +1242,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   libevent's in a Flipper debug build, or `-z norelro`) is moved (`plan_data_move`): from its 4 KB page to the end of
   the image, everything is copied to pages after the image, a multiple of 16 KB on, so low 12 bits stay; the code's
   adrp (and adr/ldr-literal, if still within 1 MB) of moved pages is repointed (`patch_moved_refs`, executable
-  sections only), and relocations, symbol lookups and the dynamic section go through `at()`; the program headers dl_iterate_phdr gives describe the moved layout. A line on stderr says so
+  sections only), and relocations, symbol lookups and the dynamic section go through `at()`; dl_iterate_phdr's view follows the move (program headers, the dynamic
+  section's address entries, moved symbols' st_value, then read as they are: `symbols_moved`), and .eh_frame's
+  PC-relative personality and LSDA pointers into moved data are repointed (`move_eh_frame`; one that cannot be, or an
+  .eh_frame inside the moved range, refuses the library). A failed load gives its range back. A line on stderr says so
   per library. Code after the moved data, or an adr/ldr out of reach, fails the load with an UnsatisfiedLinkError
   naming the APK entry, which the app's `System.loadLibrary` can catch. Not covered: an address computed into a moved
   page from outside it (a one-past-the-end pointer of an object ending at that page boundary would be moved too).

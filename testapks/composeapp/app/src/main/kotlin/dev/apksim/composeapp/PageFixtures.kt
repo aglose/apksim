@@ -10,7 +10,17 @@ object PageFixtures {
 
   fun loadNoRelro() = System.loadLibrary("pagefixturenorelro")
 
+  /** libpagefixturefar.so: on macOS its moved data is beyond an adr's reach, so it must not load. */
+  fun loadFar() = System.loadLibrary("pagefixturefar")
+
+  /** libpagefixturecxx.so: a C++ exception thrown and caught with its personality slot moved. */
+  fun loadCxx() = System.loadLibrary("pagefixturecxx")
+
   external fun check4k(): String
 
   external fun checkNoRelro(): String
+
+  external fun checkFar(): String
+
+  external fun checkCxx(): String
 }

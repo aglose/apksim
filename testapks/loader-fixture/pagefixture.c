@@ -36,9 +36,26 @@ static char scratch[4096];              // .bss
 static char message[160];
 __attribute__((visibility("default"))) int pagefixture_exported = 7;  // through the GOT, and dlsym
 
+// Reached only from assembly (arm64): a load (literal) and an adr, PC-relative within 1 MB, which the loader repoints
+// at the moved copy. x86_64 has no such instructions; there the same functions are plain C.
+__attribute__((used, visibility("hidden"))) unsigned long pagefixture_literal = 0x1122334455667788UL;
+unsigned long pagefixture_ldr_literal(void);
+unsigned long *pagefixture_adr(void);
+#if defined(__aarch64__)
+__asm__(".text\n.p2align 2\n.hidden pagefixture_ldr_literal\n.globl pagefixture_ldr_literal\n"
+        ".type pagefixture_ldr_literal, %function\npagefixture_ldr_literal:\n  ldr x0, pagefixture_literal\n  ret\n"
+        ".hidden pagefixture_adr\n.globl pagefixture_adr\n.type pagefixture_adr, %function\n"
+        "pagefixture_adr:\n  adr x0, pagefixture_literal\n  ret\n");
+#else
+__attribute__((noinline, visibility("hidden"))) unsigned long pagefixture_ldr_literal(void) {
+  return *(volatile unsigned long *)&pagefixture_literal;
+}
+__attribute__((noinline, visibility("hidden"))) unsigned long *pagefixture_adr(void) { return &pagefixture_literal; }
+#endif
+
 // dl_iterate_phdr (unwinders and crash reporters walk it) must describe the library as it is in memory: counter
 // inside one of its PT_LOADs, and its PT_DYNAMIC where the dynamic section is.
-struct phdr_seen { int found, counter_in_load, dynamic_right, pltgot_live; };
+struct phdr_seen { int found, counter_in_load, dynamic_right, pltgot_live, symbol_live; };
 
 // DT_PLTGOT read from the PT_DYNAMIC dl_iterate_phdr gives, plus dlpi_addr, must be the live GOT: one of its jump
 // slots holds memset as resolved (a stale copy holds the file's unrelocated words).
@@ -56,6 +73,39 @@ static void check_pltgot(struct dl_phdr_info *info, const ElfW(Dyn) *dyn, struct
   }
 }
 
+// pagefixture_exported looked up in the dynamic symbol table dl_iterate_phdr leads to: dlpi_addr + st_value must be
+// where dlsym says it is (the live variable, not the file's place for it).
+static void check_symbol(struct dl_phdr_info *info, const ElfW(Dyn) *dyn, struct phdr_seen *seen) {
+  const ElfW(Sym) *syms = NULL;
+  const char *strs = NULL;
+  const uint32_t *gnu = NULL, *sysv = NULL;
+  for (const ElfW(Dyn) *e = dyn; e->d_tag != DT_NULL; e++) {
+    if (e->d_tag == DT_SYMTAB) syms = (const ElfW(Sym) *)(info->dlpi_addr + e->d_un.d_ptr);
+    if (e->d_tag == DT_STRTAB) strs = (const char *)(info->dlpi_addr + e->d_un.d_ptr);
+    if (e->d_tag == DT_GNU_HASH) gnu = (const uint32_t *)(info->dlpi_addr + e->d_un.d_ptr);
+    if (e->d_tag == DT_HASH) sysv = (const uint32_t *)(info->dlpi_addr + e->d_un.d_ptr);
+  }
+  if (!syms || !strs) return;
+  uint32_t n = 0;
+  if (sysv) {
+    n = sysv[1];
+  } else if (gnu) {
+    const uint32_t *buckets = (const uint32_t *)((const uint64_t *)(gnu + 4) + gnu[2]), *chain = buckets + gnu[0];
+    for (uint32_t b = 0; b < gnu[0]; b++) {
+      if (buckets[b] + 1 > n) n = buckets[b] + 1;
+    }
+    if (n > gnu[1]) {
+      while (!(chain[n - 1 - gnu[1]] & 1)) n++;
+    }
+  }
+  void *h = dlopen(STR(FIXTURE_LIB), RTLD_NOW);
+  uintptr_t want = h ? (uintptr_t)dlsym(h, "pagefixture_exported") : 0;
+  for (uint32_t i = 1; i < n; i++) {
+    if (syms[i].st_shndx && !strcmp(strs + syms[i].st_name, "pagefixture_exported"))
+      seen->symbol_live = want && info->dlpi_addr + syms[i].st_value == want;
+  }
+}
+
 static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
   (void)size;
   struct phdr_seen *seen = data;
@@ -69,7 +119,9 @@ static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
   }
   for (int i = 0; mine && i < info->dlpi_phnum; i++) {
     const ElfW(Phdr) *p = &info->dlpi_phdr[i];
-    if (p->p_type == PT_DYNAMIC) check_pltgot(info, (const ElfW(Dyn) *)(info->dlpi_addr + p->p_vaddr), seen);
+    if (p->p_type != PT_DYNAMIC) continue;
+    check_pltgot(info, (const ElfW(Dyn) *)(info->dlpi_addr + p->p_vaddr), seen);
+    check_symbol(info, (const ElfW(Dyn) *)(info->dlpi_addr + p->p_vaddr), seen);
   }
   if (mine) seen->found = 1;
   return mine;
@@ -106,10 +158,15 @@ JNIEXPORT jstring JNICALL JNI_NAME(FIXTURE_METHOD)(JNIEnv *env, jobject self) {
   pagefixture_exported++;
   if (*e != 8) return fail(env, "an exported variable did not take a write");
   pagefixture_exported = 7;
-  struct phdr_seen seen = {0, 0, 0, 0};
+  pagefixture_literal = 0x0102030405060708UL + (unsigned long)counter;  // the live copy, through adrp
+  if (pagefixture_ldr_literal() != pagefixture_literal) return fail(env, "a load (literal) read the old place");
+  if (pagefixture_adr() != &pagefixture_literal) return fail(env, "an adr gave the old place");
+  pagefixture_literal = 0x1122334455667788UL;
+  struct phdr_seen seen = {0, 0, 0, 0, 0};
   dl_iterate_phdr(phdr_callback, &seen);
   if (!seen.found) return fail(env, "dl_iterate_phdr has no PT_LOAD holding .data");
   if (!seen.dynamic_right) return fail(env, "dl_iterate_phdr's PT_DYNAMIC is not where the dynamic section is");
   if (!seen.pltgot_live) return fail(env, "DT_PLTGOT through dl_iterate_phdr is not the live GOT");
+  if (!seen.symbol_live) return fail(env, "st_value through dl_iterate_phdr is not where dlsym finds the symbol");
   return fail(env, "ok");
 }

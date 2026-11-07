@@ -162,9 +162,15 @@ static const Sym *find_sym(Module *m, const char *name) {
   return NULL;
 }
 
+// A defined symbol's address. Once move_symbol_values has given moved symbols their new values (symbols_moved), the
+// value is the address; before that, the file's, which at() moves.
+static uintptr_t symbol_address(const Module *m, const Sym *s) {
+  return m->symbols_moved ? m->base + s->value : at(m, m->base + s->value);
+}
+
 static void *lookup_in(Module *m, const char *name) {
   const Sym *s = find_sym(m, name);
-  return s ? (void *)at(m, m->base + s->value) : NULL;
+  return s ? (void *)symbol_address(m, s) : NULL;
 }
 
 void *elf_find(Module *m, const char *name) { return lookup_in(m, name); }
@@ -188,7 +194,7 @@ Module *elf_module_for(const void *addr) {
 /** Resolves an import: other loaded libraries, then the C library shim, then the host. */
 static void *resolve(Module *self, const Sym *sym, int is_call) {
   const char *name = self->strtab + sym->name;
-  if (sym->shndx != 0) return (void *)at(self, self->base + sym->value);
+  if (sym->shndx != 0) return (void *)symbol_address(self, sym);
   void *p = elf_find_global(name);
   if (p) return p;
   p = bionic_lookup(name);
@@ -532,6 +538,188 @@ static void move_dynamic_addresses(const Module *m, uint64_t *d) {
     }
   }
 }
+
+// How many entries the dynamic symbol table has: DT_HASH's nchain, else past the highest GNU hash chain.
+static uint32_t symbol_count(const Module *m) {
+  if (m->sysv_hash) return m->sysv_hash[1];
+  if (!m->gnu_hash) return 0;
+  const uint32_t *h = m->gnu_hash;
+  uint32_t nbuckets = h[0], symoff = h[1];
+  const uint32_t *buckets = (const uint32_t *)((const uint64_t *)(h + 4) + h[2]);
+  const uint32_t *chain = buckets + nbuckets;
+  uint32_t last = 0;
+  for (uint32_t i = 0; i < nbuckets; i++) {
+    if (buckets[i] > last) last = buckets[i];
+  }
+  if (last < symoff) return symoff;
+  while (!(chain[last - symoff] & 1)) last++;
+  return last + 1;
+}
+
+// The dynamic symbols as dl_iterate_phdr's callers read them (dlpi_addr + st_value): defined, non-TLS symbols in the
+// moved range get their new values. From then on the loader's own lookups take the values as they are
+// (symbols_moved), so dlsym and other libraries' relocations still find the live data.
+static void move_symbol_values(Module *m) {
+  uint64_t lo = m->moved_lo - m->base, hi = m->moved_hi - m->base;
+  uint32_t n = symbol_count(m);
+  Sym *syms = (Sym *)m->symtab;
+  for (uint32_t i = 1; i < n; i++) {
+    Sym *s = &syms[i];
+    if (s->shndx == 0 || s->shndx == 0xfff1 /* SHN_ABS */ || (s->info & 0xf) == 6 /* STT_TLS */) continue;
+    if (s->value >= lo && s->value < hi) s->value += m->moved_by;
+  }
+  m->symbols_moved = 1;
+}
+
+static uint64_t uleb(const uint8_t **pp) {
+  const uint8_t *p = *pp;
+  uint64_t r = 0;
+  int s = 0;
+  uint8_t b;
+  do {
+    b = *p++;
+    if (s < 64) r |= (uint64_t)(b & 0x7f) << s;
+    s += 7;
+  } while (b & 0x80);
+  *pp = p;
+  return r;
+}
+
+// One encoded pointer of .eh_frame (DW_EH_PE_*) at file address `fa`, live at `p`: a PC-relative one whose target
+// (the address, or with DW_EH_PE_indirect the slot holding it, as a C++ personality's DW.ref.__gxx_personality_v0)
+// is in the moved range is rewritten to reach the moved copy. Absolute ones are relocations, which at() already
+// moves; other kinds (data-, text- or function-relative) are not used by arm64 Android code and are left alone.
+// Returns the field's size, or -1 for a pointer that would need moving but cannot be.
+static int eh_pointer(const Module *m, uint8_t enc, uint8_t *p, uint64_t fa, int write) {
+  if (enc == 0xff) return 0;  // DW_EH_PE_omit
+  int size;
+  int64_t v;
+  switch (enc & 0x0f) {
+    case 0x00: case 0x04: case 0x0c: size = 8; memcpy(&v, p, 8); break;
+    case 0x03: { uint32_t u; memcpy(&u, p, 4); v = u; size = 4; break; }
+    case 0x0b: { int32_t s; memcpy(&s, p, 4); v = s; size = 4; break; }
+    case 0x02: { uint16_t u; memcpy(&u, p, 2); v = u; size = 2; break; }
+    case 0x0a: { int16_t s; memcpy(&s, p, 2); v = s; size = 2; break; }
+    case 0x01: case 0x09: {  // LEB128: no room to rewrite in place
+      const uint8_t *q = p;
+      v = (enc & 0x0f) == 0x01 ? (int64_t)uleb(&q) : (int64_t)sleb(&q);
+      size = (int)(q - p);
+      break;
+    }
+    default: return -1;
+  }
+  if (!write || (enc & 0x70) != 0x10) return size;  // only its size wanted, or not PC-relative
+  uint64_t target = fa + (uint64_t)v, lo = m->moved_lo - m->base, hi = m->moved_hi - m->base;
+  if (target < lo || target >= hi) return size;
+  int64_t nv = v + (int64_t)m->moved_by;
+  switch (enc & 0x0f) {
+    case 0x00: case 0x04: case 0x0c: memcpy(p, &nv, 8); return size;
+    case 0x0b: if (nv != (int32_t)nv) return -1; { int32_t s = (int32_t)nv; memcpy(p, &s, 4); } return size;
+    case 0x03: if (nv < 0 || nv > 0xffffffffLL) return -1; { uint32_t u = (uint32_t)nv; memcpy(p, &u, 4); } return size;
+    default: return -1;
+  }
+}
+
+// Finds .eh_frame: by section name when the file has section headers, else from PT_GNU_EH_FRAME's header to the end
+// of the segment holding it. Returns 0 when there is none.
+static int find_eh_frame(const Module *m, const uint8_t *file, size_t file_size, const Phdr *ph, int phnum,
+                         uint64_t *start, uint64_t *end) {
+  uint64_t shoff = *(const uint64_t *)(file + 40);
+  uint16_t shentsize = *(const uint16_t *)(file + 58), shnum = *(const uint16_t *)(file + 60);
+  uint16_t shstrndx = *(const uint16_t *)(file + 62);
+  if (shoff && shentsize == 64 && shoff + (uint64_t)shnum * 64 <= file_size && shstrndx < shnum) {
+    const uint8_t *strs = file + shoff + (uint64_t)shstrndx * 64;
+    uint64_t stroff = *(const uint64_t *)(strs + 24), strsize = *(const uint64_t *)(strs + 32);
+    for (int i = 0; i < shnum && stroff + strsize <= file_size; i++) {
+      const uint8_t *s = file + shoff + (uint64_t)i * 64;
+      uint32_t name = *(const uint32_t *)s;
+      if (name + 10 > strsize || memcmp(file + stroff + name, ".eh_frame", 10)) continue;
+      *start = *(const uint64_t *)(s + 16);
+      *end = *start + *(const uint64_t *)(s + 32);
+      return *start != 0;
+    }
+    return 0;
+  }
+  for (int i = 0; i < phnum; i++) {
+    if (ph[i].type != 0x6474e550 /* PT_GNU_EH_FRAME */) continue;
+    const uint8_t *hdr = (const uint8_t *)(m->base + ph[i].vaddr);
+    if (hdr[0] != 1 || hdr[1] != 0x1b) return 0;  // version 1, eh_frame_ptr pcrel|sdata4
+    int32_t rel;
+    memcpy(&rel, hdr + 4, 4);
+    *start = ph[i].vaddr + 4 + (int64_t)rel;
+    for (int j = 0; j < phnum; j++) {
+      if (ph[j].type == PT_LOAD && *start >= ph[j].vaddr && *start < ph[j].vaddr + ph[j].filesz) {
+        *end = ph[j].vaddr + ph[j].filesz;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+// Points .eh_frame's personality and LSDA pointers into moved data at the moved copy, so a C++ exception unwinds
+// through this library: the personality slot DW.ref.__gxx_personality_v0 is writable data (relocated), reached
+// PC-relative and indirect from each CIE. Returns -1 (with *bad_at) when a pointer cannot be moved, or .eh_frame
+// itself lies in the moved range: such a library is refused before it is registered.
+static int move_eh_frame(const Module *m, const uint8_t *file, size_t file_size, const Phdr *ph, int phnum,
+                         uint64_t *bad_at) {
+  uint64_t start, end, lo = m->moved_lo - m->base, hi = m->moved_hi - m->base;
+  if (!find_eh_frame(m, file, file_size, ph, phnum, &start, &end)) return 0;
+  if (start < hi && end > lo) return *bad_at = start, -1;
+  uint64_t at_ = start;
+  while (at_ + 4 <= end) {
+    uint8_t *rec = (uint8_t *)(m->base + at_);
+    uint64_t len = *(uint32_t *)rec, hdr = 4;
+    if (len == 0) break;  // terminator
+    if (len == 0xffffffff) len = *(uint64_t *)(rec + 4), hdr = 12;
+    uint64_t next = at_ + hdr + len;
+    if (next > end) break;
+    uint8_t *body = rec + hdr;
+    uint32_t id = *(uint32_t *)body;
+    uint64_t cie_at = id == 0 ? at_ : at_ + hdr - id;
+    // The CIE's augmentation: which encodings follow, and where.
+    const uint8_t *c = (const uint8_t *)(m->base + cie_at);
+    uint64_t chdr = *(const uint32_t *)c == 0xffffffff ? 12 : 4;
+    const uint8_t *q = c + chdr + 4;
+    uint8_t version = *q++;
+    const char *aug = (const char *)q;
+    q += strlen(aug) + 1;
+    if (aug[0] == 'e' && aug[1] == 'h') q += 8;
+    uleb(&q);
+    sleb(&q);
+    if (version == 1) q++;
+    else uleb(&q);
+    uint8_t fde_enc = 0, lsda_enc = 0xff;
+    if (aug[0] == 'z') {
+      uleb(&q);
+      for (const char *a = aug + 1; *a; a++) {
+        if (*a == 'R') fde_enc = *q++;
+        else if (*a == 'L') lsda_enc = *q++;
+        else if (*a == 'P') {
+          uint8_t enc = *q++;
+          // Rewritten when the CIE itself is walked, not again for each FDE that refers to it.
+          int n = eh_pointer(m, enc, (uint8_t *)q, (uint64_t)((uintptr_t)q - m->base), id == 0);
+          if (n < 0) return *bad_at = (uint64_t)((uintptr_t)q - m->base), -1;
+          q += n;
+        } else if (*a != 'S' && *a != 'B') break;
+      }
+    }
+    if (id != 0 && aug[0] == 'z' && lsda_enc != 0xff) {
+      // FDE: pc_begin, pc_range (code: never moved), augmentation length, then the LSDA pointer.
+      const uint8_t *f = body + 4;
+      for (int k = 0; k < 2; k++) {
+        int n = eh_pointer(m, (uint8_t)(fde_enc & 0x0f), (uint8_t *)f, 0, 0);
+        if (n < 0) return *bad_at = (uint64_t)((uintptr_t)f - m->base), -1;
+        f += n;
+      }
+      uleb(&f);
+      int n = eh_pointer(m, lsda_enc, (uint8_t *)f, (uint64_t)((uintptr_t)f - m->base), 1);
+      if (n < 0) return *bad_at = (uint64_t)((uintptr_t)f - m->base), -1;
+    }
+    at_ = next;
+  }
+  return 0;
+}
 #endif
 
 static int is_system_lib(const char *n) {
@@ -654,6 +842,17 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
                base_name, (unsigned long long)bad_at);
       goto done;
     }
+    if (move_eh_frame(m, file, st.st_size, ph, phnum, &bad_at) < 0) {
+      munmap(file, st.st_size);
+      free(m);
+      release_range(base, total, page);
+      snprintf(err, errlen,
+               APK_ENTRY " is 4 KB aligned with writable data on a 16 KB page with code, which macOS cannot map; moving"
+               " the data would leave its unwind information at 0x%llx pointing at the old place. Rebuild it for 16 KB"
+               " pages (NDK r27 or later, or -Wl,-z,max-page-size=16384)",
+               base_name, (unsigned long long)bad_at);
+      goto done;
+    }
     // Said once per library: if such a library misbehaves, this is where to look first.
     fprintf(stderr, "[apksim] " APK_ENTRY " is 4 KB aligned: its data at 0x%llx-0x%llx moved off a 16 KB page with code,"
             " %ld instructions repointed\n", base_name, (unsigned long long)move_lo, (unsigned long long)move_hi, patched);
@@ -745,7 +944,10 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + rela) + i);
   for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + jmprel) + i);
 #ifdef __APPLE__
-  if (m->moved_by) move_dynamic_addresses(m, (uint64_t *)d);
+  if (m->moved_by) {
+    move_dynamic_addresses(m, (uint64_t *)d);
+    if (m->symtab) move_symbol_values(m);
+  }
 #endif
 
   for (int i = 0; i < phnum; i++) {

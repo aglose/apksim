@@ -53,6 +53,31 @@ class NativeLoaderTest {
     assertEquals("ok", PageFixtures.checkNoRelro())
   }
 
+  // Moved data a C++ exception's unwinding needs (the personality slot .eh_frame reaches indirectly): thrown three
+  // frames deep and caught in the same library.
+  @Test fun aCppExceptionIsCaughtWithItsPersonalitySlotMoved() {
+    PageFixtures.loadCxx()
+    assertEquals("ok", PageFixtures.checkCxx())
+    assertEquals("ok", PageFixtures.checkCxx())
+  }
+
+  // On the Mac, moving libpagefixturefar.so's data puts it out of an adr's reach: every try is an
+  // UnsatisfiedLinkError naming the APK entry that the app can catch (the failed load gives its address space back).
+  // Elsewhere it loads and runs.
+  @Test fun dataMovedOutOfReachIsALinkErrorEveryTime() {
+    if (!System.getProperty("os.name").orEmpty().startsWith("Mac")) {
+      PageFixtures.loadFar()
+      assertEquals("ok", PageFixtures.checkFar())
+      return
+    }
+    repeat(5) {
+      val e = assertThrows(UnsatisfiedLinkError::class.java) { PageFixtures.loadFar() }
+      val message = e.message.orEmpty()
+      assertTrue(message, message.contains("lib/arm64-v8a/libpagefixturefar.so is 4 KB aligned"))
+      assertTrue(message, message.contains("out of reach"))
+    }
+  }
+
   // --skip-library: the app's System.loadLibrary throws as for a library the APK lacks (run with
   // `--skip-library pagefixtureskipped -e skipLibrary true`; on a device the library does not exist at all).
   @Test fun aSkippedLibraryIsALinkErrorNamingItsEntry() {

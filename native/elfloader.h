@@ -47,6 +47,7 @@ typedef struct Module {
   // file puts at [moved_lo, moved_hi) lives moved_by bytes further on.
   uintptr_t moved_lo, moved_hi;
   uintptr_t moved_by;
+  int symbols_moved;  // the dynamic symbols' values were moved too: they are addresses as they are
 } Module;
 
 // Bounds of the address range all loaded ELF code lives in; read by the JNI bridge's assembly.
