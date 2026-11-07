@@ -47,7 +47,14 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
       int w = Integer.parseInt(m.group(1));
       int h = Integer.parseInt(m.group(2));
       float density = m.group(3) == null ? 2f : Float.parseFloat(m.group(3));
-      if (w < 160 || h < 160 || density < 0.75f || density > 4f) throw new IllegalArgumentException("bad size: " + name);
+      if (w < 160 || h < 160) throw new IllegalArgumentException("bad size " + name + ": " + w + "x" + h + " is below 160 dp");
+      if (density < 0.75f || density > 4f) {
+        // A density is a scale factor (1 = 160 dpi): a value such as 240 is probably dpi, so say what it would be.
+        String hint = "";
+        float scale = density / 160f;
+        if (density > 4f && scale >= 0.75f && scale <= 4f) hint = " (a scale factor, not dpi: " + m.group(3) + " dpi is " + scale + ")";
+        throw new IllegalArgumentException("bad size " + name + ": density " + m.group(3) + " is out of range 0.75-4" + hint);
+      }
       // A custom size is a phone below 600 dp (the compact width class), otherwise a tablet: both have system bars.
       return new Device(name, Math.min(w, h) < 600 ? "phone" : "tablet", w, h, density);
     }

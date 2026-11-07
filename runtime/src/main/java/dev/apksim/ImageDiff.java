@@ -4,6 +4,8 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * `diff GOLDEN ACTUAL [MAP] [DELTA]` for screenshot tests (scripts/snapshot.py): compares two PNGs pixel by pixel
@@ -13,6 +15,28 @@ import java.io.IOException;
  */
 final class ImageDiff {
   private ImageDiff() {}
+
+  /** The folders under $HOME the launcher's sandbox denies reads of (apksim's sandbox profile). */
+  private static final String[] SANDBOXED_READS = {
+    ".ssh", ".aws", ".gnupg", ".config", "Documents", "Desktop",
+    "Library/Keychains", "Library/Cookies", "Library/Application Support/Google", "Library/Application Support/Firefox",
+  };
+
+  /** Why a PNG could not be read: outside the sandbox's reads when it runs sandboxed, else missing or not a PNG. */
+  static String unreadableReason(String path) {
+    Path p = Storage.absolute(path).normalize();
+    String home = System.getenv("HOME");
+    if (System.getenv("APKSIM_SANDBOXED") != null && home != null) {
+      Path h = Path.of(home).toAbsolutePath().normalize();
+      for (String d : SANDBOXED_READS) {
+        if (p.startsWith(h.resolve(d))) {
+          return " (outside what the sandbox lets apksim read: ~/" + d + " is blocked; copy the file to /tmp or the"
+              + " state folder, or launch with --no-sandbox)";
+        }
+      }
+    }
+    return Files.exists(p) ? " (not a readable PNG)" : " (no such file)";
+  }
 
   static String compare(String golden, String actual, String map, int delta) throws IOException {
     BitmapFactory.Options o = new BitmapFactory.Options();
@@ -26,7 +50,8 @@ final class ImageDiff {
     try {
       g = BitmapFactory.decodeFile(Storage.absolute(golden).toString(), o);
       c = BitmapFactory.decodeFile(Storage.absolute(actual).toString(), o);
-      if (g == null || c == null) return "error: cannot read " + (g == null ? golden : actual);
+      if (g == null) return "error: cannot read " + golden + unreadableReason(golden);
+      if (c == null) return "error: cannot read " + actual + unreadableReason(actual);
       int w = g.getWidth();
       int h = g.getHeight();
       if (w != c.getWidth() || h != c.getHeight()) {
