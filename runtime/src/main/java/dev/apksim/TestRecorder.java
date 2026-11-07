@@ -39,8 +39,10 @@ final class TestRecorder {
   private static final int FPS = Math.max(1, Math.min(30, Integer.getInteger("apksim.record.fps", 15)));
   private static final int[] MAX = size(System.getProperty("apksim.record.size", "1280x720"));
   /** A frame that took this long stops the test's movie (the rest of the test runs without one). */
-  static final long SLOW_MS = 2_000;
+  static final long SLOW_MS = Long.getLong("apksim.record.slowMs", 2_000);  // a property for the check of this path
   private static boolean posted;  // a capture message is queued
+  private static boolean cutOff;  // the writer was stopped mid-test (a slow frame): finish() keeps its result
+  private static long cutOffMs;
 
   private static Description current;
   private static Path file;
@@ -79,6 +81,7 @@ final class TestRecorder {
     active = true;
     pending = false;
     failed = false;
+    cutOff = false;
   }
 
   /**
@@ -151,10 +154,9 @@ final class TestRecorder {
       if (gen != generation) return;  // queued by an earlier test
       posted = false;
       if (!ON || !active || failed || capturing || !pending) return;
-      if (ShadowSimViewRootImpl.drawing > 0) {
-        post();  // run from a looper nested inside a draw: later
-        return;
-      }
+      // Run from a looper drained inside a draw: not now, and not posted again (that drain would never go idle).
+      // `pending` stays set, and the outer draw's onDraw, once it returns, posts the capture.
+      if (ShadowSimViewRootImpl.drawing > 0) return;
       capture(System.nanoTime());
     });
   }
@@ -211,6 +213,10 @@ final class TestRecorder {
       long took = (System.nanoTime() - now) / 1_000_000;
       if (took > SLOW_MS) {
         failed = true;
+        // Finished now (index written), not left to repeat its last frame until the test ends: finish() keeps or
+        // deletes it as for any other movie.
+        cutOffMs = MjpegRecorder.stop();
+        cutOff = true;
         System.err.println("[apksim] recording " + (current == null ? "" : current.getClassName() + "#"
             + current.getMethodName() + " ") + "stopped: a frame took " + took + " ms (the test goes on without it)");
       }
@@ -255,7 +261,8 @@ final class TestRecorder {
     keptFor = null;
     if (!started) return;
     started = false;
-    long ms = MjpegRecorder.stop();
+    long ms = cutOff ? cutOffMs : MjpegRecorder.stop();
+    cutOff = false;
     try {
       if (keep && ms >= 0) {
         keptFor = file;
