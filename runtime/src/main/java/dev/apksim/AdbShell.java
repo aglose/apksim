@@ -1423,7 +1423,7 @@ final class AdbShell {
     return r < 0 ? 0 : r;
   }
 
-  // screencap [-p] [FILE]: the app's pixels as Host's `shot` saves them; raw RGBA unless -p (or a .png file).
+  // screencap [-p] [FILE]: the display as Host's `shot --display` saves it (app pixels with the drawn keyboard and bars over them); raw RGBA unless -p (or a .png file).
   private int screencap(List<String> a) throws Exception {
     boolean png = false;
     String file = null;
@@ -1435,7 +1435,7 @@ final class AdbShell {
     }
     Path shot = Path.of(System.getProperty("java.io.tmpdir"), "screencap-" + SHOTS.incrementAndGet() + ".png");
     try {
-      String r = control("shot", shot.toString());
+      String r = control("shot", "--display", shot.toString());
       if (!r.equals("ok")) {
         print(r + "\n");
         return 1;

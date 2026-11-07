@@ -71,6 +71,22 @@ final class SimWindow {
 
   private static native void nativeWindowSnapshot(String path);
 
+  /**
+   * The display as a device's screencap shows it, the app's frame with the drawn system UI over it (bars, software
+   * keyboard, banner), into a w x h direct buffer of BGRA pixels. False when there is no window or it is another
+   * size (the caller then has only the app's pixels).
+   */
+  static boolean displayImage(ByteBuffer bgra, int w, int h) {
+    return displayAvailable() && nativeDisplayImage(bgra, w, h) != 0;
+  }
+
+  /** Whether there is a window to draw the display from (none headless: a caller need not allocate a buffer). */
+  static boolean displayAvailable() {
+    return !headless;
+  }
+
+  private static native int nativeDisplayImage(ByteBuffer bgra, int w, int h);
+
   private static native String nativeDisplayInfo();
 
   private static native void nativeBoostThread();
