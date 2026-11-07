@@ -7,6 +7,7 @@
 // on a device both load as they are.
 #include <dlfcn.h>
 #include <jni.h>
+#include <link.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,12 +26,34 @@ static int twice(int x) { return x * 2; }
 typedef int (*op)(int);
 static op const table[2048] = {[0 ... 2046] = add_one, [2047] = twice};
 
-static int counter = 5;                 // .data
-static int *counter_ptr = &counter;     // .data, relocated to point into .data
-static int *const counter_ro = &counter;  // .data.rel.ro (RELRO unless -z norelro)
+// The pointers are volatile objects, so they are read at run time rather than folded into &counter: each is a
+// relocation (R_AARCH64_RELATIVE or a RELR entry) whose value points into .data.
+static int counter = 5;                              // .data
+static int *volatile counter_ptr = &counter;         // .data
+static int *const volatile counter_ro = &counter;    // .data.rel.ro (RELRO unless -z norelro)
+extern const char _DYNAMIC[];                        // the linker's: where this library's dynamic section is
 static char scratch[4096];              // .bss
 static char message[160];
 __attribute__((visibility("default"))) int pagefixture_exported = 7;  // through the GOT, and dlsym
+
+// dl_iterate_phdr (unwinders and crash reporters walk it) must describe the library as it is in memory: counter
+// inside one of its PT_LOADs, and its PT_DYNAMIC where the dynamic section is.
+struct phdr_seen { int found, counter_in_load, dynamic_right; };
+
+static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  struct phdr_seen *seen = data;
+  uintptr_t c = (uintptr_t)&counter, dyn = (uintptr_t)_DYNAMIC;
+  int mine = 0;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *p = &info->dlpi_phdr[i];
+    uintptr_t at = info->dlpi_addr + p->p_vaddr;
+    if (p->p_type == PT_LOAD && c >= at && c < at + p->p_memsz) mine = seen->counter_in_load = 1;
+    if (p->p_type == PT_DYNAMIC && at == dyn) seen->dynamic_right = 1;
+  }
+  if (mine) seen->found = 1;
+  return mine;
+}
 
 static jstring fail(JNIEnv *env, const char *what) {
   snprintf(message, sizeof message, "%s", what);
@@ -63,5 +86,9 @@ JNIEXPORT jstring JNICALL JNI_NAME(FIXTURE_METHOD)(JNIEnv *env, jobject self) {
   pagefixture_exported++;
   if (*e != 8) return fail(env, "an exported variable did not take a write");
   pagefixture_exported = 7;
+  struct phdr_seen seen = {0, 0, 0};
+  dl_iterate_phdr(phdr_callback, &seen);
+  if (!seen.found) return fail(env, "dl_iterate_phdr has no PT_LOAD holding .data");
+  if (!seen.dynamic_right) return fail(env, "dl_iterate_phdr's PT_DYNAMIC is not where the dynamic section is");
   return fail(env, "ok");
 }

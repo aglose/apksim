@@ -73,16 +73,17 @@ final class ElfLoader {
     }
   }
 
-  /** Whether -Dapksim.skipLibraries (comma-separated: libfoo.so, libfoo or foo) names this library. */
+  /**
+   * Whether -Dapksim.skipLibraries (comma-separated) names this library: as System.loadLibrary would ("foo" is
+   * libfoo.so, and "libfoo" liblibfoo.so), else as its file name, with or without ".so" (libfoo.so, libfoo).
+   */
   static boolean skipped(String soName) {
     String list = System.getProperty("apksim.skipLibraries", "");
     if (list.isEmpty()) return false;
     for (String n : list.split(",")) {
       n = n.trim();
       if (n.isEmpty()) continue;
-      if (!n.endsWith(".so")) n = n + ".so";
-      if (!n.startsWith("lib")) n = "lib" + n;
-      if (n.equals(soName)) return true;
+      if (soName.equals("lib" + n + ".so") || soName.equals(n) || soName.equals(n + ".so")) return true;
     }
     return false;
   }

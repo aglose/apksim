@@ -1239,7 +1239,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   libevent's in a Flipper debug build, or `-z norelro`) is moved (`plan_data_move`): from its 4 KB page to the end of
   the image, everything is copied to pages after the image, a multiple of 16 KB on, so low 12 bits stay; the code's
   adrp (and adr/ldr-literal, if still within 1 MB) of moved pages is repointed (`patch_moved_refs`, executable
-  sections only), and relocations, symbol lookups and the dynamic section go through `at()`. A line on stderr says so
+  sections only), and relocations, symbol lookups and the dynamic section go through `at()`; the program headers dl_iterate_phdr gives describe the moved layout. A line on stderr says so
   per library. Code after the moved data, or an adr/ldr out of reach, fails the load with an UnsatisfiedLinkError
   naming the APK entry, which the app's `System.loadLibrary` can catch. Not covered: an address computed into a moved
   page from outside it (a one-past-the-end pointer of an object ending at that page boundary would be moved too).

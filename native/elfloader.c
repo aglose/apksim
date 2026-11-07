@@ -442,56 +442,63 @@ static int plan_data_move(const Phdr *ph, int phnum, size_t page, uint64_t span,
 
 static int64_t sign_extend(uint64_t v, int bits) { return (int64_t)(v << (64 - bits)) >> (64 - bits); }
 
-// Points the module's code at its moved data: an adrp of a moved 4 KB page gets that page's new place, and an adr or
-// a load (literal) into the moved range its new address when still within their reach (1 MB); one that is not fails
-// the load. Only executable sections are read when the file has section headers, else the executable segments.
-// Returns how many instructions changed, or -1.
+// Points one range of the module's code at its moved data: an adrp of a moved 4 KB page gets that page's new place,
+// and an adr or a load (literal) into the moved range its new address when still within their reach (1 MB); one that
+// is not fails the load. Returns how many instructions changed, or -1 with *bad_at set.
+static long patch_moved_range(const Module *m, uint64_t from, uint64_t to, uint64_t *bad_at) {
+  long patched = 0;
+  int64_t pages = (int64_t)(m->moved_by >> 12);
+  for (uint64_t va = (from + 3) & ~(uint64_t)3; va + 4 <= to; va += 4) {
+    uint32_t *insn = (uint32_t *)(m->base + va), i = *insn;
+    uintptr_t pc = m->base + va;
+    if ((i & 0x9f000000) == 0x90000000) {  // adrp
+      int64_t imm = sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21);
+      uintptr_t target = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);
+      if (target < m->moved_lo || target >= m->moved_hi) continue;
+      int64_t v = imm + pages;
+      if (v != sign_extend((uint64_t)v, 21)) return *bad_at = va, -1;
+      *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+      patched++;
+    } else if ((i & 0x9f000000) == 0x10000000 || (i & 0x3b000000) == 0x18000000) {  // adr, load (literal)
+      int adr = (i & 0x9f000000) == 0x10000000;
+      int64_t imm = adr ? sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21)
+                        : sign_extend((i >> 5) & 0x7ffff, 19) * 4;
+      uintptr_t target = pc + (uintptr_t)imm;
+      if (target < m->moved_lo || target >= m->moved_hi) continue;
+      int64_t v = imm + (int64_t)m->moved_by;
+      if (v < -(1 << 20) || v >= (1 << 20)) return *bad_at = va, -1;
+      if (adr) *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+      else *insn = (i & 0xff00001f) | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+      patched++;
+    }
+  }
+  return patched;
+}
+
+// Every executable section when the file has section headers (however many: a library built with one section per
+// function has thousands), else every executable segment. Returns how many instructions changed, or -1.
 static long patch_moved_refs(const Module *m, const uint8_t *file, size_t file_size, const Phdr *ph, int phnum,
                              uint64_t *bad_at) {
-  uint64_t ranges[64][2];
-  int n = 0;
+  long patched = 0, r;
+  int sections = 0;
   uint64_t shoff = *(const uint64_t *)(file + 40);
   uint16_t shentsize = *(const uint16_t *)(file + 58), shnum = *(const uint16_t *)(file + 60);
   if (shoff && shentsize == 64 && shoff + (uint64_t)shnum * 64 <= file_size) {
-    for (int i = 0; i < shnum && n < 64; i++) {
+    for (int i = 0; i < shnum; i++) {
       const uint8_t *s = file + shoff + (uint64_t)i * 64;
       uint32_t type = *(const uint32_t *)(s + 4);
       uint64_t flags = *(const uint64_t *)(s + 8), addr = *(const uint64_t *)(s + 16), size = *(const uint64_t *)(s + 32);
-      if (type == 1 /* PROGBITS */ && (flags & 4 /* EXECINSTR */) && addr && size) ranges[n][0] = addr, ranges[n++][1] = addr + size;
+      if (type != 1 /* PROGBITS */ || !(flags & 4 /* EXECINSTR */) || !addr || !size) continue;
+      sections++;
+      if ((r = patch_moved_range(m, addr, addr + size, bad_at)) < 0) return -1;
+      patched += r;
     }
   }
-  if (!n) {
-    for (int i = 0; i < phnum && n < 64; i++) {
-      if (ph[i].type == PT_LOAD && (ph[i].flags & 1)) ranges[n][0] = ph[i].vaddr, ranges[n++][1] = ph[i].vaddr + ph[i].filesz;
-    }
-  }
-  long patched = 0;
-  int64_t pages = (int64_t)(m->moved_by >> 12);
-  for (int r = 0; r < n; r++) {
-    for (uint64_t va = (ranges[r][0] + 3) & ~(uint64_t)3; va + 4 <= ranges[r][1]; va += 4) {
-      uint32_t *insn = (uint32_t *)(m->base + va), i = *insn;
-      uintptr_t pc = m->base + va;
-      if ((i & 0x9f000000) == 0x90000000) {  // adrp
-        int64_t imm = sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21);
-        uintptr_t target = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);
-        if (target < m->moved_lo || target >= m->moved_hi) continue;
-        int64_t v = imm + pages;
-        if (v != sign_extend((uint64_t)v, 21)) return *bad_at = va, -1;
-        *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
-        patched++;
-      } else if ((i & 0x9f000000) == 0x10000000 || (i & 0x3b000000) == 0x18000000) {  // adr, load (literal)
-        int adr = (i & 0x9f000000) == 0x10000000;
-        int64_t imm = adr ? sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21)
-                          : sign_extend((i >> 5) & 0x7ffff, 19) * 4;
-        uintptr_t target = pc + (uintptr_t)imm;
-        if (target < m->moved_lo || target >= m->moved_hi) continue;
-        int64_t v = imm + (int64_t)m->moved_by;
-        if (v < -(1 << 20) || v >= (1 << 20)) return *bad_at = va, -1;
-        if (adr) *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
-        else *insn = (i & 0xff00001f) | (uint32_t)((v >> 2) & 0x7ffff) << 5;
-        patched++;
-      }
-    }
+  if (sections) return patched;
+  for (int i = 0; i < phnum; i++) {
+    if (ph[i].type != PT_LOAD || !(ph[i].flags & 1)) continue;
+    if ((r = patch_moved_range(m, ph[i].vaddr, ph[i].vaddr + ph[i].filesz, bad_at)) < 0) return -1;
+    patched += r;
   }
   return patched;
 }
@@ -620,9 +627,34 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 #endif
   m->phdr = (const void *)(base + *(uint64_t *)(file + 32) - ph[0].offset + ph[0].vaddr);
   m->phnum = phnum;
-  m->phdr_copy = malloc(sizeof(Phdr) * phnum);
+  m->phdr_copy = malloc(sizeof(Phdr) * phnum * 2);
   memcpy(m->phdr_copy, ph, sizeof(Phdr) * phnum);
   m->phdr = m->phdr_copy;
+#ifdef __APPLE__
+  // dl_iterate_phdr's view (bionic.c) of moved data: what starts in the moved range is at its new address, and a
+  // PT_LOAD the move cuts through becomes two, the part before it and the moved rest.
+  if (move_by) {
+    Phdr *out = m->phdr_copy;
+    int n = phnum;
+    for (int i = 0; i < phnum; i++) {
+      Phdr *p = &out[i];
+      if (p->vaddr >= move_lo && p->vaddr < move_hi) {
+        p->vaddr += move_by, p->paddr += move_by;
+      } else if (p->type == PT_LOAD && p->vaddr < move_lo && p->vaddr + p->memsz > move_lo) {
+        uint64_t head = move_lo - p->vaddr;
+        Phdr tail = *p;
+        tail.vaddr = tail.paddr = move_lo + move_by;
+        tail.offset += head;
+        tail.memsz -= head;
+        tail.filesz = p->filesz > head ? p->filesz - head : 0;
+        p->memsz = head;
+        if (p->filesz > head) p->filesz = head;
+        out[n++] = tail;
+      }
+    }
+    m->phnum = n;
+  }
+#endif
 
   const uint64_t *d = (const uint64_t *)at(m, base + dyn->vaddr);
   uint64_t rela = 0, relasz = 0, jmprel = 0, pltsz = 0, relr = 0, relrsz = 0, arela = 0, arelasz = 0, init = 0, inita = 0, initasz = 0;
