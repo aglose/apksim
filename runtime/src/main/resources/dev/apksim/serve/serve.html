@@ -56,6 +56,12 @@ dd { margin: 0; text-align: right; }
 #permission[hidden] { display: none; }
 #linkbox[hidden] { display: none; }
 .hint { color: var(--muted); font-size: 12px; }
+/* Embedded in another page (?embed=1): only the screen and the device controls; controls=0 leaves the screen alone. */
+body.embed header, body.embed .stats, body.embed .hint, body.embed #copyRow, body.embed #linkbox { display: none; }
+body.embed main { padding: 8px; gap: 8px; }
+body.embed aside { width: 200px; }
+body.embed.bare aside > .card:not(#permission) { display: none; }
+body.embed.bare aside { width: auto; }
 @media (max-width: 760px) {
   /* The page scrolls instead: the screen keeps most of the viewport, the controls come below it. */
   html, body { height: auto; }
@@ -109,10 +115,10 @@ dd { margin: 0; text-align: right; }
         <input id="locale" type="text" placeholder="Locale, e.g. fr-FR" aria-label="Locale">
       </div>
       <div class="row"><input id="url" type="text" placeholder="Deep link, e.g. myapp://screen" aria-label="Deep link"><button id="go" style="flex:0">Open</button></div>
-      <div class="row"><button id="copy">Copy link to this state</button></div>
+      <div class="row" id="copyRow"><button id="copy">Copy link to this state</button></div>
       <div class="row" id="linkbox" hidden><input id="link" type="text" readonly aria-label="Link"></div>
     </div>
-    <div class="card">
+    <div class="card stats">
       <h2>Stream</h2>
       <dl>
         <dt>Frames/s</dt><dd id="fps">–</dd>
@@ -122,7 +128,7 @@ dd { margin: 0; text-align: right; }
         <dt>Frame size</dt><dd id="kb">–</dd>
       </dl>
     </div>
-    <div class="card">
+    <div class="card stats">
       <h2>Session</h2>
       <dl>
         <dt>Started in</dt><dd id="ff">–</dd>
@@ -146,6 +152,12 @@ const state = { app: params.get("app") || "", device: params.get("device") || "p
   locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
   orientation: params.get("orientation") || "" };
 let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
+// Embedded (?embed=1, docs/serve.md): the host page picks the app; a token in the frame's URL is kept in memory and
+// sent with this page's own requests (a cross-site frame gets no SameSite cookie), and taken out of the address.
+const embed = params.get("embed") === "1", token = params.get("token");
+if (embed) { document.body.classList.add("embed"); if (params.get("controls") === "0") document.body.classList.add("bare"); }
+if (token) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
+const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
 const now = () => performance.timeOrigin + performance.now();
 
 // ---------------------------------------------------------------- setup
@@ -169,9 +181,12 @@ function addApp(id, name) {
 }
 async function loadApps() {
   try {
-    const r = await fetch("/api/apps");
-    for (const a of await r.json()) addApp(a.id, a.name);
+    if (!embed) {
+      const r = await fetch(withToken("/api/apps"));
+      for (const a of await r.json()) addApp(a.id, a.name);
+    }
   } catch (e) { log("could not list apps: " + e); }
+  if (embed && !state.app) $("empty").textContent = "No app: the page embedding this one names it (?app=ID).";
   if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
   $("device").value = state.device;
   $("dark").checked = state.appearance === "dark";
@@ -193,7 +208,7 @@ $("file").onchange = () => {
   const f = $("file").files[0];
   if (!f) return;
   const x = new XMLHttpRequest();
-  x.open("POST", "/api/upload");
+  x.open("POST", withToken("/api/upload"));
   x.setRequestHeader("X-Filename", encodeURIComponent(f.name));  // a header value must be Latin-1
   x.upload.onprogress = e => { if (e.lengthComputable) $("uploadBtn").textContent = "Uploading " + Math.round(100 * e.loaded / e.total) + "%"; };
   x.onload = () => {
@@ -219,7 +234,7 @@ function start() {
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?" + q);
+  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + withToken("/ws?" + q));
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
   // Every handler first checks that its socket is still the current one: a stopped session's socket may still be

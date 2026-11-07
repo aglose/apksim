@@ -110,7 +110,7 @@ final class Session {
   }
 
   private void start() throws Exception {
-    Path apk = serve.catalog.file(app);
+    Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what));
     if (ended) return;  // the tab left while the APK downloaded
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
@@ -128,6 +128,7 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
+    cmd.addAll(app.launch());  // the app's own (catalog line or URL add), checked by Catalog.launchOptions
     cmd.add(apk.toString());
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))

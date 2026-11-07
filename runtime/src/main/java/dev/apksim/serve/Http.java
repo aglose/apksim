@@ -34,6 +34,16 @@ final class Http {
       }
     }
 
+    boolean chunked() {
+      String v = header("transfer-encoding");
+      return v != null && v.toLowerCase(Locale.ROOT).contains("chunked");
+    }
+
+    /** The body as sent: chunked bodies decoded (their length is then unknown, -1 from contentLength). */
+    InputStream content() {
+      return chunked() ? new Chunked(body) : body;
+    }
+
     String cookie(String name) {
       String c = header("cookie");
       if (c == null) return null;
@@ -86,6 +96,60 @@ final class Http {
     return new Request(first[0], path, query, headers, in);
   }
 
+  /** A `Transfer-Encoding: chunked` body, decoded; ends at the last chunk (trailers are read and dropped). */
+  static final class Chunked extends InputStream {
+    private final InputStream in;
+    private long left;
+    private boolean done;
+
+    Chunked(InputStream in) {
+      this.in = in;
+    }
+
+    @Override
+    public int read() throws IOException {
+      byte[] one = new byte[1];
+      return read(one, 0, 1) < 0 ? -1 : one[0] & 0xff;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      if (done) return -1;
+      if (left == 0) {
+        String size = line();
+        int semi = size.indexOf(';');  // chunk extensions
+        try {
+          left = Long.parseLong((semi < 0 ? size : size.substring(0, semi)).trim(), 16);
+        } catch (NumberFormatException e) {
+          throw new IOException("bad chunk size");
+        }
+        if (left < 0) throw new IOException("bad chunk size");
+        if (left == 0) {
+          while (!line().isEmpty()) {
+            // trailers
+          }
+          done = true;
+          return -1;
+        }
+      }
+      int n = in.read(b, off, (int) Math.min(len, left));
+      if (n < 0) throw new IOException("the body ended inside a chunk");
+      left -= n;
+      if (left == 0 && !line().isEmpty()) throw new IOException("no line break after a chunk");
+      return n;
+    }
+
+    private String line() throws IOException {
+      StringBuilder b = new StringBuilder();
+      for (int c; (c = in.read()) != '\n'; ) {
+        if (c < 0) throw new IOException("the body ended inside a chunk header");
+        if (b.length() > 1024) throw new IOException("chunk header too long");
+        if (c != '\r') b.append((char) c);
+      }
+      return b.toString();
+    }
+  }
+
   static void respond(OutputStream out, int status, String type, byte[] body, String... extraHeaders) throws IOException {
     StringBuilder h = new StringBuilder("HTTP/1.1 ").append(status).append(' ').append(reason(status)).append("\r\n");
     h.append("Content-Type: ").append(type).append("\r\n");
@@ -117,7 +181,9 @@ final class Http {
       case 401 -> "Unauthorized";
       case 403 -> "Forbidden";
       case 404 -> "Not Found";
+      case 202 -> "Accepted";
       case 405 -> "Method Not Allowed";
+      case 409 -> "Conflict";
       case 411 -> "Length Required";
       case 413 -> "Content Too Large";
       case 503 -> "Service Unavailable";

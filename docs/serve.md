@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--quality Q] [--no-network]
+             [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -24,10 +24,18 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - `--max N` (default 4): sessions at once. One more gets "all N sessions are busy".
 - `--idle SECONDS` (default 600): a session with no input for that long is stopped and its tab told so.
 - `--apps`: the catalog. A folder lists its `*.apk` files; a file lists one APK per line, a path or an `https://`
-  URL (downloaded once, at first use), optionally followed by a display name. Repeatable.
+  URL (downloaded once, at first use), optionally followed by a display name and then ` -- ` and launch options of
+  that app's own (below). Repeatable. For example:
+
+  ```
+  builds/app-debug.apk Debug build -- --activity .DebugLauncherActivity --build MODEL=Pixel_9
+  https://ci.example.com/artifacts/app.apk Nightly -- --setting global:onboarding_done=1
+  ```
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
+- `--allow-origin ORIGIN` (repeatable, e.g. `https://dashboard.example.com`): pages on that origin may embed serve's
+  page in a frame and open its WebSockets and POSTs (see "Embedding"). Without it, nothing may frame the page.
 
 ### Sessions
 
@@ -48,6 +56,51 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
+
+### Launch options per app
+
+A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch options that every session of it
+gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
+Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
+`--build`, `--setting`, `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
+`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, and the flag
+`--soft-keyboard`. Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
+`--adb`, `--no-sandbox`...): serve refuses a catalog with one at startup and a URL add with one with a 400. A bad value
+(an activity the manifest lacks) ends that session with the launcher's message, as a launch would.
+
+### Adding apps at run time
+
+- `POST /api/upload`: the APK as the body, with `Content-Length` or `Transfer-Encoding: chunked` (a `fetch` with a
+  streamed body, `curl -T -`); `--max-upload` holds either way, while reading. `X-Filename` (URL-encoded) names it.
+  Answers `{"id", "name"}`.
+- `POST /api/apps` with a JSON body `{"url": "https://...", "name": "...", "headers": {...}, "options": [...]}` (only
+  `url` is required): serve downloads the APK itself and answers `{"id", "name", "state": "downloading"}` at once.
+  `headers` go with the download only (an artifact store's `Authorization`) and are never stored; `options` are the
+  app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
+  rules: listed nowhere, deleted a day after its last use. A failed download is reported for an hour.
+- `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
+  last three while it is downloading or has failed).
+- A tab (or `/ws?app=ID`) may open the id while it is still downloading: the session waits for it and sends `p
+  downloading N%` messages (at most one a second) before `p launching ...`.
+
+### Embedding
+
+A trusted page (a team dashboard that picks the build, e.g. the APK CI built for a pull request) can show a session
+inside itself:
+
+- Start serve with `--allow-origin https://dashboard.example.com`. That origin is added to the page's
+  `frame-ancestors` (with `'self'`; `X-Frame-Options` is then not sent, since it cannot name an origin), and its
+  WebSocket upgrades and POSTs are accepted like serve's own.
+- Frame `/?embed=1&app=ID[&device=...&appearance=...&locale=...&fontscale=...&open=...&orientation=...]`. The embedded
+  page shows only the screen, the device controls and permission prompts (no catalog, upload, start/stop or numbers),
+  and starts the session at once. `&controls=0` leaves out the device controls as well.
+- With a token, put it in the frame's URL (`&token=...`): an embedded page is served, not redirected, keeps the token
+  in memory, takes it out of its address and sends it with its own requests as `?token=`. A cookie would not do: the
+  `SameSite=Strict` cookie is not sent to a frame on another site. (A host page on the same site, e.g.
+  `serve.example.com` inside `dashboard.example.com`, could use the cookie too.) The host page needs the token, so
+  only embed serve in a page whose viewers may have it.
+- To draw the stream with your own client instead, the protocol is the page's (`serve.html`): open `/ws?app=ID` from
+  an allowed origin and speak it as above.
 
 ### Stream
 
@@ -91,23 +144,29 @@ that no deep link names, data entered).
 
 - `GET /api/status`: limits, the standby (Mac), and each session: app, device, PID, resident memory (RSS), Java heap
   in use, time to first frame, idle time, frames sent.
+- `GET /api/health`: needs no token, for HTTP readiness and liveness probes and load balancers. `200 ok`, or `503 not
+  ready: REASON` when a session could not start: no launcher, the state folder (`STATE/serve`) not writable, or less
+  free disk there than 512 MB plus `--max-upload`. It says nothing else; `/api/status` stays behind the token.
 - The tab shows its own session's numbers in a bar under the screen, and the stream's fps and latency.
 
 ### Security
 
-- Loopback by default; any other bind address needs `--token`. With a token, every request needs it (cookie,
-  `Authorization: Bearer`, or the one-time `?token=` link).
+- Loopback by default; any other bind address needs `--token`. With a token, every request but `/api/health` needs it
+  (cookie, `Authorization: Bearer`, the one-time `?token=` link, or `?token=` on an embedded page's own requests).
 - Instances' control channels stay on loopback, and serve never starts them with `--adb` (the adb device has no AUTH).
   In a container, only serve's port is published.
 - At most 128 connections at once (open sessions' included), taken before anything is allocated for one; a request's
   head must arrive within 10 s in all, so idle or trickling connections cannot use up memory or descriptors. (They
   can still keep others out while they last: put a server open to the internet behind a proxy that limits per client.)
 - The page cannot be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`): no clickjacking of
-  its controls.
+  its controls. `--allow-origin` lets only the origins it names frame it.
 - What a visitor types is not kept: the instance logs `type (N characters)`, not the text (passwords, pasted tokens).
-- WebSocket upgrades and POSTs must come from serve's own page: an `Origin` other than serve's own is refused (a web
-  page elsewhere cannot drive a local session), and on a loopback bind the `Host` header must name a loopback address
-  (DNS rebinding).
+- WebSocket upgrades and POSTs must come from serve's own page or an `--allow-origin` one: any other `Origin` is
+  refused (a web page elsewhere cannot drive a local session), and on a loopback bind the `Host` header must name a
+  loopback address (DNS rebinding).
+- `POST /api/apps` makes serve fetch a URL anyone with the token names, from serve's network (http and https only).
+  That is no more than an app run there can do, but on a server whose network reaches internal services, keep the
+  token to people trusted with that. Launch options are limited to the list above.
 - Uploads: at most `--max-upload` MB, must be a ZIP (an APK), stored by content hash under `STATE/serve/uploads`,
   reachable only through an unguessable id that is not listed anywhere (only the uploader's tab, and links it copies,
   know it). Uploads unused for a day are deleted.
@@ -146,7 +205,11 @@ that no deep link names, data entered).
 `scripts/serve-check.py URL [--token FILE] [--upload APK]` drives a running server as a tab does (WebSocket, frame
 acknowledgements, the same commands) with the test app: it checks the token, a cross-origin WebSocket, a refused
 command, the upload limits, then taps the FAB, drags, scrolls, types, switches tabs, turns on dark mode and rotates,
-checking that frames follow each, and that closing the tab ends the session. It prints the numbers below.
+checking that frames follow each, and that closing the tab ends the session. It also checks `/api/health` without the
+token, a chunked upload, and that URL adds with a disallowed launch option or a non-http URL are refused; with
+`--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; with
+`--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. It prints the
+numbers below.
 `scripts/ci-smoke.sh` runs it against the Linux image with a token on a non-loopback bind, as CI does.
 
 ## Measured (2026-11-05, test app, phone 822x1782)
