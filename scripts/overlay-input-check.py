@@ -13,20 +13,24 @@ import sys
 import time
 
 
-def send(sock, cmd):
+def send(sock, cmd, timeout=10.0):
+    """Sends one control command and returns its reply: the bytes up to the terminating newline.
+
+    The control protocol ends each reply with a newline. A timeout or a closed connection is an error, not the end of
+    a reply, so a slow command cannot leave its reply to be read as the next command's.
+    """
     sock.sendall((cmd + "\n").encode())
-    time.sleep(0.4)
-    sock.settimeout(0.5)
+    sock.settimeout(timeout)
     buf = b""
-    try:
-        while True:
+    while not buf.endswith(b"\n"):
+        try:
             chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    except OSError:
-        pass
-    return buf.decode(errors="replace")
+        except OSError as e:
+            raise RuntimeError(f"no reply to {cmd!r} within {timeout} s: {e}")
+        if not chunk:
+            raise RuntimeError(f"connection closed before the reply to {cmd!r}")
+        buf += chunk
+    return buf.decode(errors="replace").rstrip("\n")
 
 
 def field_text(reply):
@@ -36,7 +40,7 @@ def field_text(reply):
 
 def main():
     port = int(sys.argv[1])
-    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
     send(sock, "open apksim://composeapp/trips?overlay=1")
     time.sleep(1.2)
     send(sock, "tap 408 1486")
