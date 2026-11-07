@@ -22,10 +22,18 @@ import org.joda.time.DateTimeZone
  * with the zone it names ("tz changes: 1 to Asia/Tokyo" after `timezone Asia/Tokyo`).
  */
 class TimeZoneActivity : Activity() {
-  private val lines = List(5) { lazy { TextView(this).apply { textSize = 18f; gravity = Gravity.CENTER } } }
+  private val lines = List(6) { lazy { TextView(this).apply { textSize = 18f; gravity = Gravity.CENTER } } }
   private val handler = Handler(Looper.getMainLooper())
   private var changes = "tz changes: 0"
   private var count = 0
+  private var ticks = 0
+  // ACTION_TIME_TICK to a receiver registered at runtime: one at each minute of the app's clock (issue 109).
+  private val tickReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+      ticks++
+      show()
+    }
+  }
   private val receiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
       val zone = intent.getStringExtra(Intent.EXTRA_TIMEZONE)
@@ -53,12 +61,14 @@ class TimeZoneActivity : Activity() {
       lines.forEach { addView(it.value) }
     })
     registerReceiver(receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED), Context.RECEIVER_EXPORTED)
+    registerReceiver(tickReceiver, IntentFilter(Intent.ACTION_TIME_TICK), Context.RECEIVER_EXPORTED)
     tick.run()
   }
 
   override fun onDestroy() {
     handler.removeCallbacks(tick)
     unregisterReceiver(receiver)
+    unregisterReceiver(tickReceiver)
     super.onDestroy()
   }
 
@@ -69,6 +79,7 @@ class TimeZoneActivity : Activity() {
       "user.timezone: " + System.getProperty("user.timezone"),
       "joda zone: " + DateTimeZone.getDefault().id,
       changes,
+      "ticks: $ticks",
     )
     lines.forEachIndexed { i, l -> l.value.text = text[i] }
   }
