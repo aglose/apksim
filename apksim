@@ -104,6 +104,25 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # classes translated with line numbers and local variables (their own class cache).
     --debug) EXTRA+=("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=$2" "-Dapksim.debugInfo=true"); shift 2 ;;
     --device) EXTRA+=("-Dapksim.device=$2"); shift 2 ;;
+    # A device profile (scripts/device-profile.py): display, Build fields, features and settings of a real device,
+    # expanded into --device, --build, --feature and --setting options (later options on the command line win).
+    --device-profile)
+      [[ -r "$2" ]] || { echo "--device-profile: cannot read $2" >&2; exit 2; }
+      PROFILE_ARGS=(); PSIZE=""; PDPI=""; PFILE="$2"
+      while IFS= read -r PLINE || [[ -n "$PLINE" ]]; do
+        [[ -z "$PLINE" || "$PLINE" == \#* || "$PLINE" != *=* ]] && continue
+        PK="${PLINE%%=*}"; PV="${PLINE#*=}"
+        case "$PK" in
+          display.size) PSIZE="$PV" ;;
+          display.density) PDPI="$PV" ;;
+          build.*) PROFILE_ARGS+=(--build "${PK#build.}=$PV") ;;
+          feature.*) if [[ "$PV" == false ]]; then PROFILE_ARGS+=(--feature "${PK#feature.}=false"); else PROFILE_ARGS+=(--feature "${PK#feature.}"); fi ;;
+          setting.*) PROFILE_ARGS+=(--setting "${PK#setting.}=$PV") ;;
+        esac
+      done < "$PFILE"
+      if [[ -n "$PSIZE" && -n "$PDPI" ]]; then PROFILE_ARGS+=(--device "${PSIZE}px@${PDPI}dpi")
+      elif [[ -n "$PSIZE$PDPI" ]]; then echo "--device-profile: display.size and display.density go together" >&2; exit 2; fi
+      shift 2; set -- "${PROFILE_ARGS[@]}" "$@" ;;
     --appearance) EXTRA+=("-Dapksim.appearance=$2"); shift 2 ;;
     --locale) EXTRA+=("-Dapksim.locale=$2"); shift 2 ;;
     --timezone) EXTRA+=("-Dapksim.timezone=$2"); shift 2 ;;

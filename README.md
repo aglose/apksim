@@ -126,7 +126,8 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | Area | Option | Effect |
 |---|---|---|
 | Start | `--activity PKG/.Act\|.Act\|CLASS` | Start this activity instead of the manifest's first launcher one, as `am start -n` would: exported or not, by package and class, `.Act`, a full class name, or a simple name when one activity has it. For a home app whose debug manifest lists a test launcher first, or a screen deep inside the app. `restart` starts it again. An activity the manifest lacks stops the launch with the list of those it has. (An app with no launcher activity starts its MAIN/HOME one.) |
-| Display | `--device NAME\|WxH[@density]` | The device to simulate (table above) |
+| Display | `--device NAME\|WxH[@density]\|WxHpx@Ndpi` | The device to simulate (table above); `1920x1080px@240dpi` takes `wm size`/`wm density` output |
+| Device profile | `--device-profile FILE` | Display, `Build` fields, features and settings of a real device, captured with `scripts/device-profile.py [-s SERIAL] > FILE` over adb; options after it win |
 | | `--headless` | No window; the app still runs and renders |
 | | `--window-x N` | The window's horizontal position on screen |
 | | `--window front\|nofocus\|background\|minimized\|hidden` | How the window shows itself. `front` (default) takes focus like any app; the others never take focus from the app you are in: `nofocus` shows it on top, `background` behind your other windows, `minimized` in the Dock, `hidden` not at all. The app runs and renders the same; click the Dock icon to bring the window forward. `APKSIM_WINDOW=MODE` sets a default for every launch |
