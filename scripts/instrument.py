@@ -4,6 +4,7 @@
 Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
+                     [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
                      [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
@@ -43,6 +44,15 @@ gets failure.txt (if apksim wrote none) and process.txt (exit status, stderr tai
 them all. With --apksim, DIR is the path that apksim sees (relative to the mounted folder) and --bundles-local the
 same folder here. apksim's other bundle options (--bundles-on all, --bundles-max N, --bundles-redact REGEX) go after --
 (the redactions apply to process.txt too). An earlier run's bundles in DIR are removed first.
+--record failed|all --record-dir DIR: a movie of each test (apksim's TestRecorder, issue 132), headless: Motion-JPEG
+DIR/<class>/<method>-<hash>.avi (the bundle folder's name), kept for a failed test, or for every test with `all`, and
+linked from the JUnit XML (a property, and a [[ATTACHMENT|...]] in system-out, relative to the XML). It works with or
+without --isolate and --bundles (the movie may share the bundles folder). A test run has no display loop: a frame is
+drawn after a window traversal, at most --record-fps (default 15, up to 30) times a second of real time, fitted into
+--record-size WxH (default 1280x720, never enlarged); a still screen repeats its last frame, so the movie runs in real
+time, and a test that never shows a window has none. The movie of a test whose process died or was killed is
+unfinished (no index). With --apksim, DIR is the path apksim sees and --record-local the same folder here. An earlier
+run's movies in DIR are removed first.
 Test impact and balanced shards (docs/affected-tests.md):
 --record-deps FILE records which of the app's and the tests' classes each test runs code of, into FILE.
 --affected-by FILE with --changed PATH... (or @LIST, a file of paths) or --diff REV (`git diff --name-only REV`, e.g.
@@ -540,6 +550,31 @@ def clear_bundles(local):
             os.rmdir(cdir)
 
 
+def clear_recordings(local):
+    """Removes an earlier run's movies from DIR (<class>/<method>-<8 hex>.avi), once before this run starts."""
+    if not os.path.isdir(local):
+        return
+    for c in os.listdir(local):
+        cdir = os.path.join(local, c)
+        if os.path.islink(cdir) or not os.path.isdir(cdir):
+            continue
+        for f in os.listdir(cdir):
+            if re.search(r"-[0-9a-f]{8}\.avi$", f) and os.path.isfile(os.path.join(cdir, f)):
+                os.remove(os.path.join(cdir, f))
+        if not os.listdir(cdir):
+            os.rmdir(cdir)
+
+
+def collect_recordings(local, results):
+    """{(class, method): path} of the movies this run kept."""
+    out = {}
+    for c, m, *_ in results:
+        f = os.path.join(local, bundle_folder(c, m) + ".avi")
+        if c and os.path.isfile(f):
+            out[(c, m)] = f
+    return out
+
+
 def java_regex(rx):
     """A --bundles-redact pattern (Java's syntax, which apksim compiles) for Python's re: Java's \\Q...\\E quoting
     becomes re.escape. Other syntax must be what both read; redactions() checks that before the run starts."""
@@ -680,6 +715,11 @@ def main():
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
     p.add_argument("--bundles")
     p.add_argument("--bundles-local")
+    p.add_argument("--record", choices=["failed", "all"])
+    p.add_argument("--record-dir", metavar="DIR")
+    p.add_argument("--record-local", metavar="PATH")
+    p.add_argument("--record-size", metavar="WxH")
+    p.add_argument("--record-fps", type=int, metavar="N")
     p.add_argument("--record-deps", metavar="FILE")
     p.add_argument("--affected-by", metavar="FILE")
     p.add_argument("--changed", nargs="+", action="extend", default=[], metavar="PATH")
@@ -704,6 +744,22 @@ def main():
         passthrough = passthrough + ["--bundles", a.bundles]
         clear_bundles(a.bundles_local or a.bundles)
         os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
+    if a.record:
+        if not a.record_dir:
+            p.error("--record needs --record-dir DIR")
+        if a.record_size and not re.fullmatch(r"\d+x\d+", a.record_size):
+            p.error("--record-size WxH, e.g. 1280x720")
+        if a.record_fps is not None and not 1 <= a.record_fps <= 30:
+            p.error("--record-fps N: 1 to 30")
+        passthrough = passthrough + ["--record", a.record, "--record-dir", a.record_dir]
+        if a.record_size:
+            passthrough += ["--record-size", a.record_size]
+        if a.record_fps:
+            passthrough += ["--record-fps", str(a.record_fps)]
+        os.makedirs(a.record_local or a.record_dir, exist_ok=True)
+        clear_recordings(a.record_local or a.record_dir)
+    elif a.record_dir or a.record_local or a.record_size or a.record_fps:
+        p.error("--record-dir, --record-local, --record-size and --record-fps need --record failed|all")
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
 
@@ -823,6 +879,9 @@ def main():
     if a.bundles:
         write_index(a.bundles_local or a.bundles, results, bundles, redact)
         print(f"{len(bundles)} failure bundles: {os.path.join(a.bundles_local or a.bundles, 'index.html')}", file=sys.stderr)
+    recordings = collect_recordings(a.record_local or a.record_dir, results) if a.record else {}
+    if a.record:
+        print(f"{len(recordings)} recordings in {a.record_local or a.record_dir}", file=sys.stderr)
     if a.xml:
         xml_dir = os.path.dirname(os.path.abspath(a.xml))
         with open(a.xml, "w") as f:
@@ -834,16 +893,26 @@ def main():
                         + (f' time="{sec:.3f}"' if sec is not None else "") + ">")
                 bundle = bundles.get((c, m))
                 rel = os.path.relpath(bundle, xml_dir) if bundle else None
-                if rel:
-                    f.write(f'<properties><property name="apksim.bundle" value={quoteattr(rel)}/></properties>')
+                movie = recordings.get((c, m))
+                mrel = os.path.relpath(movie, xml_dir) if movie else None
+                if rel or mrel:
+                    f.write("<properties>"
+                            + (f'<property name="apksim.bundle" value={quoteattr(rel)}/>' if rel else "")
+                            + (f'<property name="apksim.recording" value={quoteattr(mrel)}/>' if mrel else "")
+                            + "</properties>")
                 if s == "failed":
                     f.write(f"<failure message={quoteattr(st.splitlines()[0] if st else '')}>{escape(st)}</failure>")
                 elif s in ("ignored", "skipped"):
                     f.write("<skipped/>")
-                if rel:
-                    # GitLab's and Jenkins' JUnit attachments: a screenshot shown with the test.
-                    shot = "screen.png" if os.path.exists(os.path.join(bundle, "screen.png")) else "failure.txt"
-                    f.write(f"<system-out>{escape(f'[[ATTACHMENT|{os.path.join(rel, shot)}]]')}</system-out>")
+                if rel or mrel:
+                    # GitLab's and Jenkins' JUnit attachments: a screenshot, and the movie, shown with the test.
+                    att = []
+                    if rel:
+                        shot = "screen.png" if os.path.exists(os.path.join(bundle, "screen.png")) else "failure.txt"
+                        att.append(f"[[ATTACHMENT|{os.path.join(rel, shot)}]]")
+                    if mrel:
+                        att.append(f"[[ATTACHMENT|{mrel}]]")
+                    f.write(f"<system-out>{escape(chr(10).join(att))}</system-out>")
                 f.write("</testcase>\n")
             f.write("</testsuite>\n")
     if a.record_deps:

@@ -693,10 +693,20 @@ public final class Bundles {
    * root through HWUI where Robolectric can (its HardwareRenderingScreenshot), else drawn in software.
    */
   private static void screen(Path file) throws Exception {
+    Bitmap out = screenBitmap();
+    try (FileOutputStream f = new FileOutputStream(file.toFile())) {
+      out.compress(Bitmap.CompressFormat.PNG, 100, f);
+    } finally {
+      out.recycle();
+    }
+  }
+
+  /** The screen as {@link #screen} draws it: a new bitmap the caller recycles. Main thread; throws when no window shows. */
+  static Bitmap screenBitmap() throws Exception {
     List<Win> wins = visibleWindows();
     if (wins.isEmpty()) throw new IllegalStateException("no visible windows");
     Point size = displaySize();
-    // Recycled in finally: pixels are native memory, which HotSpot's GC does not count (AGENTS.md), and a capture that
+    // Recycled on failure: pixels are native memory, which HotSpot's GC does not count (AGENTS.md), and a capture that
     // throws must not leave a screen's worth behind each time.
     Bitmap out = Bitmap.createBitmap(size.x, size.y, Bitmap.Config.ARGB_8888);
     try {
@@ -713,11 +723,10 @@ public final class Bundles {
           one.recycle();
         }
       }
-      try (FileOutputStream f = new FileOutputStream(file.toFile())) {
-        out.compress(Bitmap.CompressFormat.PNG, 100, f);
-      }
-    } finally {
+      return out;
+    } catch (Throwable t) {
       out.recycle();
+      throw t;
     }
   }
 
@@ -922,7 +931,7 @@ public final class Bundles {
       String[] a = argv.split("\u001f", -1);
       for (int i = 0; i < a.length; i++) {
         String s = a[i];
-        if (s.startsWith("--bundles")) {
+        if (s.startsWith("--bundles") || List.of("--record", "--record-dir", "--record-size", "--record-fps").contains(s)) {
           i++;
         } else if (s.equals("-e") && i + 2 < a.length
             && List.of("class", "notClass", "package", "notPackage", "numShards", "shardIndex", "log").contains(a[i + 1])) {

@@ -132,6 +132,12 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
     # Made here, as --bundles is: under the sandbox only the folder itself is writable, not a missing parent.
     --test-outputs) mkdir -p "$2" && TEST_OUTPUTS="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.testOutputs=$TEST_OUTPUTS"); shift 2 ;;
+    # Test runs: a movie of each test (TestRecorder), kept for failed tests (--record failed) or all. The folder is
+    # made here, as --bundles' is; --record-size caps the frame size, --record-fps the frame rate.
+    --record) EXTRA+=("-Dapksim.record=$2"); shift 2 ;;
+    --record-dir) mkdir -p "$2" && RECORD_DIR="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.record.dir=$RECORD_DIR"); shift 2 ;;
+    --record-size) EXTRA+=("-Dapksim.record.size=$2"); shift 2 ;;
+    --record-fps) EXTRA+=("-Dapksim.record.fps=$2"); shift 2 ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     # Device identity (DeviceIdentity.java): Build.getSerial(), a system feature (repeatable; NAME=false removes one),
@@ -338,7 +344,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
-(allow file-write* (subpath \"$BUNDLES\"))}${NET_RECORD_FILE:+
+(allow file-write* (subpath \"$BUNDLES\"))}${RECORD_DIR:+
+(allow file-write* (subpath \"$RECORD_DIR\"))}${NET_RECORD_FILE:+
 (allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${TEST_OUTPUTS:+
 (allow file-write* (subpath \"$TEST_OUTPUTS\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")

@@ -910,6 +910,14 @@ starts). A bundle follows the test's outcome: a different exception ending the t
 (Espresso's handler throws its own exception for what it got, which counts as the same failure); with
 `--bundles-on all` a test that passed, including one whose class has its own runner or whose body threw what
 `@Test(expected)` expected, ends with a bundle that says passed.
+**Test movies** (`--record failed|all --record-dir DIR [--record-size WxH] [--record-fps N]`, also `instrument.py`, which
+links them from the JUnit XML like bundles; `TestRecorder`, `scripts/record-check.py`, issue 132): Motion-JPEG
+`DIR/<class>/<method>-<hash>.avi` (`MjpegRecorder`, so headless and in the Linux image too), kept for a failed test (all
+with `all`) and deleted otherwise. A test run has no display loop, so `ShadowSimViewRootImpl` offers a frame after each
+window traversal and `TestRecorder` draws the screen as a bundle's screen.png (`Bundles.screenBitmap`) at most N (default
+15) times a second of real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a
+movie runs in real time (the simulated clock's idle jumps do not show), and a test that never shows a window has none.
+Not done: H.264/mp4, `adb shell screenrecord`; a process that dies mid-test leaves an unfinished (index-less) movie.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
 `--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,
