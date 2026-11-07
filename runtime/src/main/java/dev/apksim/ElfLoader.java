@@ -66,6 +66,8 @@ final class ElfLoader {
       Path dir = extracted();
       Path so = dir.resolve(soName);
       if (!Files.exists(so)) throw new UnsatisfiedLinkError(ABI_DIR + soName + " is not in the APK");
+      // --move-shared-data, read at each load (a warm launch's properties arrive after the standby booted).
+      if (HostOs.MAC) nativeSetMoveSharedData(Boolean.getBoolean("apksim.moveSharedData"));
       long handle = nativeLoad(so.toString(), dir.toString());
       bindJavaSymbols(handle);
     } catch (IOException e) {
@@ -187,6 +189,9 @@ final class ElfLoader {
   private static native long nativeLoad(String path, String searchDir);
 
   private static native void nativeSetOffline(boolean offline);
+
+  /** macOS only (native/jnibridge.c): move writable data off pages it shares with code instead of refusing. */
+  private static native void nativeSetMoveSharedData(boolean on);
 
   private static native String nativeJavaSymbols(long handle);
 

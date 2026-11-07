@@ -1,5 +1,5 @@
 // libpagefixturefar.so (build.sh: 4 KB pages, -z norelro), for NativeLoaderTest. On macOS its writable data shares
-// a 16 KB page with its code and must move past the image, which a 2 MB .bss makes more than 1 MB away: the adr below
+// a 16 KB page with its code and, with --move-shared-data, must move past the image, which a 2 MB .bss makes more than 1 MB away: the adr below
 // (arm64 assembly) can then no longer reach it, so the load must fail with an UnsatisfiedLinkError naming the APK
 // entry, every time it is tried. Elsewhere it loads and the check passes. x86_64 has no adr: a plain C stand-in.
 #include <jni.h>

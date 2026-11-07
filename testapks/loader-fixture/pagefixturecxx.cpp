@@ -1,5 +1,5 @@
 // libpagefixturecxx.so (build.sh: 4 KB pages, -z norelro, libc++ linked in), for NativeLoaderTest. Its writable data,
-// DW.ref.__gxx_personality_v0 among it, shares a 16 KB page with its code, so on macOS the loader moves it; .eh_frame
+// DW.ref.__gxx_personality_v0 among it, shares a 16 KB page with its code, so on macOS --move-shared-data moves it; .eh_frame
 // reaches that personality slot PC-relative and indirect, and must be pointed at the moved copy or a C++ exception
 // thrown here is never caught (std::terminate). Elsewhere it loads as it is.
 #include <jni.h>

@@ -55,6 +55,9 @@ extern uintptr_t elf_arena_lo, elf_arena_hi;
 
 Module *elf_load(const char *path, char *err, size_t errlen);
 void elf_set_search_dir(const char *dir);
+#ifdef __APPLE__
+void elf_set_move_shared_data(int on);  // --move-shared-data
+#endif
 Module *elf_modules(void);
 Module *elf_loaded(const char *basename);
 Module *elf_module_for(const void *addr);

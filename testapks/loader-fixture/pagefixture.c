@@ -2,8 +2,8 @@
 // macOS maps 16 KB pages, none writable and executable at once, so the end of this library's code shares a page with
 // what the linker put after it. In libpagefixture4k.so that is RELRO (a table of function pointers, 16 KB of it, so
 // .data and .bss start past that page): apksim makes the page read+execute once relocated. In
-// libpagefixturenorelro.so (-z norelro) it is writable data, which apksim moves to pages of its own and repoints the
-// code at. Either way the code, relocated pointers, .data, .bss and an exported variable must all agree. On Linux and
+// libpagefixturenorelro.so (-z norelro) it is writable data: refused by default, and with --move-shared-data moved to pages of its own, the
+// code repointed at it. Either way the code, relocated pointers, .data, .bss and an exported variable must all agree. On Linux and
 // on a device both load as they are.
 #include <dlfcn.h>
 #include <jni.h>

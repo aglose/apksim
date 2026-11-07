@@ -842,6 +842,13 @@ static int is_system_lib(const char *n) {
 
 static char search_dir[1024];
 
+#ifdef __APPLE__
+// --move-shared-data (ElfLoader sets it before each load): move writable data off pages it shares with code
+// (plan_data_move). Off by default: such a library is refused instead.
+static int move_shared_data;
+void elf_set_move_shared_data(int on) { move_shared_data = on; }
+#endif
+
 void elf_set_search_dir(const char *dir) { strlcpy(search_dir, dir, sizeof search_dir); }
 
 Module *elf_loaded(const char *basename) {
@@ -892,6 +899,19 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 #ifdef __APPLE__
   uint64_t move_lo = 0, move_hi = 0, move_by = 0;
   int plan = plan_data_move(ph, phnum, page, span, &move_lo, &move_hi, &move_by);
+  if (plan && !move_shared_data) {
+    // The default: moving data cannot find every reference to it (relative lookup tables and other link-time offsets
+    // carry no relocation), so a library that needs it is refused, catchably, unless the launch asked for the move.
+    close(fd);
+    munmap(file, st.st_size);
+    snprintf(err, errlen,
+             APK_ENTRY " is 4 KB aligned and its writable data at 0x%llx shares a 16 KB page with its code, which macOS"
+             " cannot map (no page is writable and executable at once). Rebuild it for 16 KB pages (NDK r27 or later,"
+             " or -Wl,-z,max-page-size=16384), or launch with --move-shared-data to have apksim move the data"
+             " (experimental)",
+             base_name, (unsigned long long)move_lo);
+    goto done;
+  }
   if (plan < 0) {
     close(fd);
     munmap(file, st.st_size);
