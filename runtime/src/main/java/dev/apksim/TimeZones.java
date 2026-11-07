@@ -4,6 +4,10 @@ import android.content.Context;
 import android.content.Intent;
 import java.time.ZoneId;
 import java.util.TimeZone;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.shadows.ShadowAlarmManager;
 
 /**
  * The device's time zone: `--timezone ZONE` (-Dapksim.timezone) at each setup, before the Application exists, and the
@@ -86,5 +90,26 @@ final class TimeZones {
     System.setProperty("user.timezone", tz.getID());
     android.icu.util.TimeZone.setICUDefault(null);
     SimWindow.setTimeZone(tz.getID());
+  }
+
+  /**
+   * AlarmManager.setTimeZone as the system server runs it: any ID the JDK knows becomes the device's zone, as the
+   * `timezone` command does (ACTION_TIMEZONE_CHANGED included). The framework's own check asks libcore's zone database,
+   * which is not here, so every ID was "not an Olson ID" and a setup wizard's zone picker crashed the app. An unknown
+   * ID throws IllegalArgumentException, as on a device.
+   */
+  @Implements(android.app.AlarmManager.class)
+  public static class ShadowSimAlarmManager extends ShadowAlarmManager {
+    @Implementation
+    @Override
+    protected void setTimeZone(String timeZone) {
+      if (timeZone == null || timeZone.isEmpty()) return;  // AlarmManager ignores an empty ID
+      try {
+        parse(timeZone);
+      } catch (java.time.DateTimeException e) {
+        throw new IllegalArgumentException("Timezone: " + timeZone + " is not an Olson ID");
+      }
+      change(RuntimeEnvironment.getApplication(), timeZone);
+    }
   }
 }
