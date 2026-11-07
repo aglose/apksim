@@ -105,8 +105,11 @@ public final class Serve {
         }
         case "--base-path" -> {
           String b = need(a, v).replaceFirst("/+$", "");
-          if (!b.isEmpty() && !b.matches("(/[A-Za-z0-9._~-]+)+")) {
-            System.err.println("--base-path takes a path such as /sim\n" + USAGE);
+          // No "." or ".." segments (a browser resolves them, so the prefix it asks for would not be this one), and not
+          // serve's own routes: behind a proxy that strips the prefix, /api/apps or /ws would be taken for prefixed.
+          if (!b.isEmpty() && (!b.matches("(/[A-Za-z0-9._~-]+)+") || b.matches(".*/\\.{1,2}(/.*)?")
+              || b.equals("/ws") || b.equals("/api") || b.startsWith("/api/"))) {
+            System.err.println("--base-path takes a path such as /sim (no . or .. segments, not /ws or /api...)\n" + USAGE);
             System.exit(2);
           }
           s.basePath = b;

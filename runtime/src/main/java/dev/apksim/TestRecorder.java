@@ -220,8 +220,11 @@ final class TestRecorder {
         System.err.println("[apksim] recording " + (current == null ? "" : current.getClassName() + "#"
             + current.getMethodName() + " ") + "stopped: a frame took " + took + " ms (the test goes on without it)");
       }
-    } catch (Exception e) {
-      // No window yet (or any more): the movie keeps its last frame. A failing frame never fails the test.
+    } catch (VirtualMachineError e) {
+      throw e;  // out of memory and the like: not the recorder's to hide
+    } catch (Throwable e) {
+      // No window yet (or any more), or a view that cannot draw on a CPU canvas (an AssertionError): the movie keeps
+      // its last frame. A failing frame never fails the test.
       lastNanos = now;
     } finally {
       if (screen != null) screen.recycle();

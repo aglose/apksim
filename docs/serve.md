@@ -74,7 +74,8 @@ origin. Proxies usually rewrite `Host` to the upstream, keep the browser's `Orig
   own for WebSockets and POSTs whatever the headers say, its host passes the loopback `Host` check (a proxy that keeps
   `Host`), and the link serve prints at startup uses it. The simpler choice when there is one public origin.
 - `--base-path /sim`: the page, `/ws` and `/api/*` are served under `/sim/` (`/sim` redirects there). A proxy that
-  strips the prefix itself works too, with or without the option. The page builds every URL relative to its own
+  strips the prefix itself works too, with or without the option. The path may not have `.` or `..` segments, nor be
+  one of serve's own (`/ws`, `/api`, `/api/...`): behind a stripping proxy those requests would look prefixed. The page builds every URL relative to its own
   folder, the token link's redirect is relative, and "Copy link" uses the page's own address, so links keep the
   proxy's origin and prefix.
 - Keepalive: serve sends a WebSocket ping every 20 s to every session (the browser answers by itself), so proxies and
