@@ -30,6 +30,26 @@ KEY="$ROOT"; [[ "$STATE" != "$ROOT/work" ]] && KEY="$ROOT:$STATE"
 CLIENT="$ROOT/work/runtime/apksim-client"
 case "${1:-}" in
   --version) if [[ -f "$ROOT/work/release" ]]; then echo "apksim $(< "$ROOT/work/release")"; else echo "apksim (source checkout $ROOT)"; fi; exit 0 ;;
+  -h|--help)
+    cat <<'EOF'
+Usage: apksim [options] APP.apk
+       apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...
+       apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
+       apksim --version | --train | --stop-standbys
+
+Common options (each is listed with its values in the README, "Devices and launch options"):
+  --device NAME|WxH[@density]   phone, foldable, tablet, desktop, tv, or a size in dp (density 0.75-4)
+  --activity PKG/.Act           start this activity instead of the launcher one
+  --appearance dark|light, --locale xx-YY, --timezone ZONE, --font-scale N
+  --control PORT|auto           command channel (scripts/drive.py, scripts/ctl.py)
+  --adb PORT|auto               adb device (adb connect localhost:PORT)
+  --headless, --window front|nofocus|background|minimized|hidden
+  --network record|replay FILE, --network-profile offline|3g|lossy
+  --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
+
+Full reference: https://github.com/aglose/apksim#devices-and-launch-options
+EOF
+    exit 0 ;;
   # Builds the startup cache now, in the foreground (an installed release otherwise builds it in the background on
   # its first launch).
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;

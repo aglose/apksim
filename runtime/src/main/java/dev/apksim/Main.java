@@ -27,6 +27,15 @@ public final class Main {
     dev.apksim.net.Net.configure();  // --network options: before any app code makes a connection
     String zone = System.getProperty("apksim.timezone");
     if (zone != null) TimeZones.parse(zone);  // an unknown zone stops the launch here (TimeZones applies it)
+    // A bad --device stops the launch here, one line and exit 2, before any port is opened or announced.
+    Device device;
+    try {
+      device = Device.current();
+    } catch (IllegalArgumentException e) {
+      System.err.println("[apksim] --device: " + e.getMessage());
+      Standby.halt(2);
+      return;
+    }
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");
@@ -34,7 +43,6 @@ public final class Main {
     String testApk = System.getProperty("apksim.instrument");
     // A test run draws nothing (tests run on a simulated clock, see Instrument), so it needs no window.
     if (testApk != null) System.setProperty("apksim.headless", "true");
-    Device device = Device.current();
     System.setProperty("apksim.qualifiers", device.qualifiers());
     System.setProperty("apksim.windowTitle", Path.of(args[0]).getFileName().toString());
     SimWindow.open(device.widthPx(), device.heightPx(), device.density(),
