@@ -23,8 +23,9 @@ process does; their results make one report. A shard's tests share its process (
 suite that passes in one process passes sharded unless its tests depend on running after one another.
 --test-timeout SEC (default 900, 0 for none): a process that goes SEC seconds without a test starting or ending (a
 test hung past its own JUnit timeout: in teardown, or ignoring interrupts where apksim's watchdog cannot see it) is
-killed and handled as one that died: the running test fails "timed out after SEC s" with the stderr tail and the
-stacks of the threads running JUnit code (a SIGQUIT thread dump taken just before), and the rest run in a new process.
+killed and handled as one that died: the running test fails "timed out after SEC s" with the stacks of the threads
+running JUnit code (a SIGQUIT thread dump taken just before; each from its header down, cut at the bottom) and then
+the stderr tail (a stack it would start inside of is kept from its header too), and the rest run in a new process.
 The kill takes the process group (each process gets one of its own) and, when --apksim is `docker|podman run`, the
 container too (`docker rm -f`, by a --cidfile this script adds): killing the client leaves a container running. Every
 process gets its own cidfile (docker refuses one that exists): a --cidfile in --apksim is taken out, and the ID of the
@@ -88,12 +89,33 @@ def container_run(cmd):
     return None
 
 
+def fit_chars(t, limit):
+    """[t], a stack's text, cut at the bottom at a line boundary to at most [limit] characters (and the marker)."""
+    lines = t.split("\n")
+    out, size, n = [], 0, 0
+    while n < len(lines) - 1 and size + len(lines[n]) + 1 <= limit - 80:
+        out.append(lines[n])
+        size += len(lines[n]) + 1
+        n += 1
+    out = out or [lines[0][:limit - 80]]
+    return "\n".join(out) + f"\n\t[... {len(lines) - len(out)} more lines of this stack]"
+
+
 def thread_dump_tests(dump):
     """From a JVM thread dump, the stacks of the threads in JUnit code (the hung test's, a timeout's watchdog), else all."""
     threads = [t for t in "\n".join(dump).split("\n\n") if t.lstrip().startswith('"')]
     picked = [t.strip("\n") for t in threads if "org.junit." in t] or [t.strip("\n") for t in threads]
-    text = "\n\n".join(picked)
-    return text if len(text) <= 30_000 else text[:30_000] + f"\n... ({len(text) - 30_000} more characters)"
+    # Each thread whole at the top (its header and top frames: what it is doing), cut at the bottom, so that one deep
+    # stack does not push the others' tops out of the text.
+    picked = [trimmed_stack([line + "\n" for line in t.split("\n")]).rstrip("\n") for t in picked]
+    text, kept = "", 0
+    for t in picked:
+        if not text and len(t) > 30_000:  # even the first: 100 lines of long names can pass the limit
+            t = fit_chars(t, 30_000)
+        if text and len(text) + 2 + len(t) > 30_000:
+            break
+        text, kept = (text + "\n\n" + t if text else t), kept + 1
+    return text if kept == len(picked) else text + f"\n\n[... {len(picked) - kept} more threads]"
 
 
 def apksim(app, test, extra_args, apksim_opts):
@@ -295,28 +317,148 @@ def warn(text):
     os.write(2, (text + "\n").encode(errors="replace"))
 
 
-# FailOnTimeout's line before it ends the process, followed by the stuck test's stack.
-WATCHDOG = "[apksim] test still running "
+# The watchdogs' lines, each followed by the stuck thread's stack: FailOnTimeout's before it ends the process, and
+# TestRunnerSetup.ListenerWatch's for a run listener's call that does not return (issue 115).
+WATCHDOGS = ("[apksim] test still running ", "[apksim] listener call still running")
+# A line inside a stack trace, after its header (an exception's or a thread's line).
+FRAME = re.compile(r"\s+at |\s*\.\.\. \d+ more|\s*Caused by: |\s*Suppressed: |\s+- (locked|waiting|parking) |\t\[\.\.\.")
+NESTED = re.compile(r"\s*(Caused by|Suppressed): ")
+# The first line of a stack's header: a thread dump's thread, an exception (a class name, then its message or
+# nothing; "Exception in thread" first when the JVM printed it), or a nested cause. The message may go on over more
+# lines, up to the first frame (a VerifyError's "Exception Details:").
+HEADER = re.compile(r'"[^"]*" |(Exception in thread "[^"]*" )?([A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*(:|\s*$)'
+                    r"|\s*(Caused by|Suppressed): ")
+# Lines of a stack trace kept from its top when the tail would start inside it (and of a thread in a thread dump).
+STACK_LINES = 100
+# How far a header's message may reach above its first frame, in lines.
+HEADER_LINES = 60
+
+
+def is_frame(line):
+    return bool(FRAME.match(line))
+
+
+def is_call(line):
+    """A frame proper: a line of a stack after its header and message (not a nested cause's header)."""
+    return is_frame(line) and not NESTED.match(line)
+
+
+def header_start(lines, f):
+    """Where the header of the stack whose frames start at [f] begins: the nearest header line above it, across its
+    message's lines, else the line just above (an unknown header)."""
+    for j in range(f - 1, max(f - 1 - HEADER_LINES, -1), -1):
+        if HEADER.match(lines[j]):
+            return j
+        if is_call(lines[j]):
+            break
+    return max(f - 1, 0)
+
+
+def stack_head(lines, i):
+    """The first line of the outermost stack that line [i] belongs to: back over its frames to its header, and
+    from a nested cause's header on to the stack that it is the cause of."""
+    while True:
+        while i > 0 and is_frame(lines[i - 1]):
+            i -= 1
+        h = header_start(lines, i) if i > 0 else 0
+        if h == 0 or not NESTED.match(lines[h]):
+            return h
+        i = h
+
+
+def stack_end(lines, h):
+    """Past the last line of the stack that starts at header line [h]: its message, frames and nested causes."""
+    j, in_header = h + 1, True
+    while j < len(lines):
+        if is_frame(lines[j]):
+            in_header = bool(NESTED.match(lines[j]))
+        elif not in_header:
+            break
+        j += 1
+    return j
+
+
+def cap_line(line, limit):
+    """[line] at most about [limit] characters, its middle cut: a generated class's name can be longer than a tail."""
+    if len(line) <= limit:
+        return line
+    nl = "\n" if line.endswith("\n") else ""
+    return line[:limit * 3 // 4] + " [...] " + line[len(line) - len(nl) - limit // 4:len(line) - len(nl)] + nl
+
+
+def trimmed_stack(lines, keep=STACK_LINES, chars=None):
+    """A stack trace's lines (its header first) cut at the bottom to [keep] lines (and, given [chars], about that many
+    characters), saying how many went: the top of a stack says what the thread is doing, the bottom is how it got
+    there (the runner's frames, the same every time)."""
+    # An exception's `Caused by:` and `Suppressed:` each start a stack of their own (a message, a throw site): each is
+    # cut by itself, so a deep wrapper does not take the cause's header and frames with it. A header and its message
+    # are kept whole, and at least one frame after them.
+    starts = [i for i, line in enumerate(lines) if i > 0 and NESTED.match(line)]
+    budget = chars // (len(starts) + 1) if chars else None
+    out = []
+    for a, b in zip([0] + starts, starts + [len(lines)]):
+        seg = lines[a:b]
+        n = next((k for k, line in enumerate(seg) if is_call(line)), len(seg))  # the header's lines
+        size = sum(len(line) for line in seg[:n])
+        stop = n
+        while stop < len(seg) and (stop == n or (stop < max(keep, n + 1)
+                                                 and (budget is None or size + len(seg[stop]) <= budget))):
+            size += len(seg[stop])
+            stop += 1
+        out += seg if stop == len(seg) else seg[:stop] + [f"\t[... {len(seg) - stop} more lines of this stack]\n"]
+    return "".join(out)
 
 
 def stderr_tail(text, n=4000):
-    """The last n characters of a process's stderr, but from the start of the watchdog's line when it is further back:
-    the stuck test's stack after it can be longer than n (one caught inside a StackWalker was), which cut the line
-    that says why the process ended. Past 4n, the middle of the stack goes."""
-    i = text.rfind(WATCHDOG)
-    if i < 0 or i >= len(text) - n:
-        return text[-n:]
-    t = text[text.rfind("\n", 0, i) + 1:]
-    return t if len(t) <= 4 * n else t[:3 * n] + "\n\t[...]\n" + t[-n:]
+    """The end of a process's stderr, about n characters, from the start of a line. From the start of a watchdog's
+    line when that is further back: the stuck test's stack after it can be longer than n (one caught inside a
+    StackWalker was), which cut the line that says why the process ended; past 4n, the middle of the stack goes. And
+    when the tail would start inside a stack trace, it starts at that stack's header instead, the stack cut at the
+    bottom: cut at the top (issue 115), it began mid-frame and lost the thread or exception and the frames that showed
+    what it waited on."""
+    # One rule for every shape of stack: each line is first capped at n/4 characters (its middle cut), so the tail
+    # always holds several whole lines, whatever follows the stack. If the first of them is part of a stack (a frame,
+    # a nested cause, or a header's message line above its first frame), the tail starts at that stack's outermost
+    # header (its first line, the message whole), and the stack is cut at the bottom of each of its segments
+    # (trimmed_stack, to 4n characters in all), never at its top.
+    limit = max(n // 4, 80)
+    lines = [cap_line(line, limit) for line in text.splitlines(keepends=True)]
+    text = "".join(lines)
+    i = max(text.rfind(w) for w in WATCHDOGS)
+    if i >= 0 and i < len(text) - n:
+        t = text[text.rfind("\n", 0, i) + 1:]
+        return t if len(t) <= 4 * n else t[:3 * n] + "\n\t[...]\n" + t[-n:]
+    if len(text) <= n:
+        return text
+    start, size = len(lines), 0
+    while start > 0 and size + len(lines[start - 1]) <= n:
+        start -= 1
+        size += len(lines[start])
+    # Does the tail start inside a stack? At a frame, or above one within a header's reach (in its message).
+    f = start
+    while f < len(lines) and f - start < HEADER_LINES and not is_frame(lines[f]):
+        f += 1
+    if f == len(lines) or not is_frame(lines[f]):
+        return "".join(lines[start:])
+    head = stack_head(lines, f)
+    if head >= start:  # the tail holds that stack's header already
+        return "".join(lines[start:])
+    end = stack_end(lines, head)
+    if head > 0 and lines[head - 1].strip() and not is_frame(lines[head - 1]):
+        head -= 1  # and the line before it, which may say what the stack is about
+        # (CloseGuard's "A resource was acquired at attached stack trace but never released")
+    return trimmed_stack(lines[head:end], chars=4 * n) + "".join(lines[end:])
 
 
 def tail(r):
     """What a failure that this script reports for a process shows of it: the tail of its stderr (stderr_tail), and
-    after a --test-timeout kill the stacks of the threads running JUnit code when it was killed."""
+    after a --test-timeout kill the stacks of the threads running JUnit code when it was killed, first: they are where
+    the process was stuck. A stack at the end of stderr need not be (issue 115's was a CloseGuard report, printed at a
+    GC, of a descriptor a listener's executeShellCommand returned and never closed: that call had long returned)."""
     t = stderr_tail(r.stderr)
     if r.threads:
-        t = (t.rstrip("\n") + "\n\nthreads in JUnit code when instrument.py killed the process (from the JVM's thread "
-             "dump):\n" + r.threads)
+        t = ("threads in JUnit code when instrument.py killed the process (from the JVM's thread dump):\n"
+             + r.threads.rstrip("\n") + "\n\nthe end of the process's stderr:\n" + t)
     return t
 
 
