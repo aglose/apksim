@@ -323,24 +323,89 @@ WATCHDOGS = ("[apksim] test still running ", "[apksim] listener call still runni
 # A line inside a stack trace, after its header (an exception's or a thread's line).
 FRAME = re.compile(r"\s+at |\s*\.\.\. \d+ more|\s*Caused by: |\s*Suppressed: |\s+- (locked|waiting|parking) |\t\[\.\.\.")
 NESTED = re.compile(r"\s*(Caused by|Suppressed): ")
+# The first line of a stack's header: a thread dump's thread, an exception (a class name, then its message or
+# nothing; "Exception in thread" first when the JVM printed it), or a nested cause. The message may go on over more
+# lines, up to the first frame (a VerifyError's "Exception Details:").
+HEADER = re.compile(r'"[^"]*" |(Exception in thread "[^"]*" )?([A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*(:|\s*$)'
+                    r"|\s*(Caused by|Suppressed): ")
 # Lines of a stack trace kept from its top when the tail would start inside it (and of a thread in a thread dump).
 STACK_LINES = 100
+# How far a header's message may reach above its first frame, in lines.
+HEADER_LINES = 60
 
 
 def is_frame(line):
     return bool(FRAME.match(line))
 
 
-def trimmed_stack(lines, keep=STACK_LINES):
-    """A stack trace's lines (its header first) cut to its first [keep] lines, saying how many went: the top of a
-    stack says what the thread is doing, the bottom is how it got there (the runner's frames, the same every time)."""
+def is_call(line):
+    """A frame proper: a line of a stack after its header and message (not a nested cause's header)."""
+    return is_frame(line) and not NESTED.match(line)
+
+
+def header_start(lines, f):
+    """Where the header of the stack whose frames start at [f] begins: the nearest header line above it, across its
+    message's lines, else the line just above (an unknown header)."""
+    for j in range(f - 1, max(f - 1 - HEADER_LINES, -1), -1):
+        if HEADER.match(lines[j]):
+            return j
+        if is_call(lines[j]):
+            break
+    return max(f - 1, 0)
+
+
+def stack_head(lines, i):
+    """The first line of the outermost stack that line [i] belongs to: back over its frames to its header, and
+    from a nested cause's header on to the stack that it is the cause of."""
+    while True:
+        while i > 0 and is_frame(lines[i - 1]):
+            i -= 1
+        h = header_start(lines, i) if i > 0 else 0
+        if h == 0 or not NESTED.match(lines[h]):
+            return h
+        i = h
+
+
+def stack_end(lines, h):
+    """Past the last line of the stack that starts at header line [h]: its message, frames and nested causes."""
+    j, in_header = h + 1, True
+    while j < len(lines):
+        if is_frame(lines[j]):
+            in_header = bool(NESTED.match(lines[j]))
+        elif not in_header:
+            break
+        j += 1
+    return j
+
+
+def cap_line(line, limit):
+    """[line] at most about [limit] characters, its middle cut: a generated class's name can be longer than a tail."""
+    if len(line) <= limit:
+        return line
+    nl = "\n" if line.endswith("\n") else ""
+    return line[:limit * 3 // 4] + " [...] " + line[len(line) - len(nl) - limit // 4:len(line) - len(nl)] + nl
+
+
+def trimmed_stack(lines, keep=STACK_LINES, chars=None):
+    """A stack trace's lines (its header first) cut at the bottom to [keep] lines (and, given [chars], about that many
+    characters), saying how many went: the top of a stack says what the thread is doing, the bottom is how it got
+    there (the runner's frames, the same every time)."""
     # An exception's `Caused by:` and `Suppressed:` each start a stack of their own (a message, a throw site): each is
-    # cut by itself, so a deep wrapper does not take the cause's header and frames with it.
+    # cut by itself, so a deep wrapper does not take the cause's header and frames with it. A header and its message
+    # are kept whole, and at least one frame after them.
     starts = [i for i, line in enumerate(lines) if i > 0 and NESTED.match(line)]
+    budget = chars // (len(starts) + 1) if chars else None
     out = []
     for a, b in zip([0] + starts, starts + [len(lines)]):
         seg = lines[a:b]
-        out += seg if len(seg) <= keep else seg[:keep] + [f"\t[... {len(seg) - keep} more lines of this stack]\n"]
+        n = next((k for k, line in enumerate(seg) if is_call(line)), len(seg))  # the header's lines
+        size = sum(len(line) for line in seg[:n])
+        stop = n
+        while stop < len(seg) and (stop == n or (stop < max(keep, n + 1)
+                                                 and (budget is None or size + len(seg[stop]) <= budget))):
+            size += len(seg[stop])
+            stop += 1
+        out += seg if stop == len(seg) else seg[:stop] + [f"\t[... {len(seg) - stop} more lines of this stack]\n"]
     return "".join(out)
 
 
@@ -351,36 +416,38 @@ def stderr_tail(text, n=4000):
     when the tail would start inside a stack trace, it starts at that stack's header instead, the stack cut at the
     bottom: cut at the top (issue 115), it began mid-frame and lost the thread or exception and the frames that showed
     what it waited on."""
+    # One rule for every shape of stack: each line is first capped at n/4 characters (its middle cut), so the tail
+    # always holds several whole lines, whatever follows the stack. If the first of them is part of a stack (a frame,
+    # a nested cause, or a header's message line above its first frame), the tail starts at that stack's outermost
+    # header (its first line, the message whole), and the stack is cut at the bottom of each of its segments
+    # (trimmed_stack, to 4n characters in all), never at its top.
+    limit = max(n // 4, 80)
+    lines = [cap_line(line, limit) for line in text.splitlines(keepends=True)]
+    text = "".join(lines)
     i = max(text.rfind(w) for w in WATCHDOGS)
     if i >= 0 and i < len(text) - n:
         t = text[text.rfind("\n", 0, i) + 1:]
         return t if len(t) <= 4 * n else t[:3 * n] + "\n\t[...]\n" + t[-n:]
     if len(text) <= n:
         return text
-    lines = text.splitlines(keepends=True)
     start, size = len(lines), 0
     while start > 0 and size + len(lines[start - 1]) <= n:
         start -= 1
         size += len(lines[start])
-    if start == len(lines):  # one last line longer than n
-        if not is_frame(lines[-1]):
-            return text[-n:]
-        # A frame (a generated class's name can be longer than n): the stack's header and top frames matter more than
-        # its end, so recover them as below, with this frame cut at the end of its first n characters.
-        start -= 1
-        lines[-1] = lines[-1][:n] + "\t[...]\n"
-    if start == 0 or not is_frame(lines[start]):
+    # Does the tail start inside a stack? At a frame, or above one within a header's reach (in its message).
+    f = start
+    while f < len(lines) and f - start < HEADER_LINES and not is_frame(lines[f]):
+        f += 1
+    if f == len(lines) or not is_frame(lines[f]):
         return "".join(lines[start:])
-    head = start
-    while head > 0 and is_frame(lines[head - 1]):
-        head -= 1
-    head = max(head - 1, 0)  # the header: the exception's or the thread's line
-    if head > 0 and lines[head - 1].strip():  # and the line before it, which may say what the stack is about
-        head -= 1  # (CloseGuard's "A resource was acquired at attached stack trace but never released")
-    end = start
-    while end < len(lines) and is_frame(lines[end]):
-        end += 1
-    return trimmed_stack(lines[head:end]) + "".join(lines[end:])
+    head = stack_head(lines, f)
+    if head >= start:  # the tail holds that stack's header already
+        return "".join(lines[start:])
+    end = stack_end(lines, head)
+    if head > 0 and lines[head - 1].strip() and not is_frame(lines[head - 1]):
+        head -= 1  # and the line before it, which may say what the stack is about
+        # (CloseGuard's "A resource was acquired at attached stack trace but never released")
+    return trimmed_stack(lines[head:end], chars=4 * n) + "".join(lines[end:])
 
 
 def tail(r):
