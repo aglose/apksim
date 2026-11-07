@@ -16,5 +16,14 @@ for pair in arm64-v8a:aarch64 x86_64:x86_64; do
   "$BIN/clang" --target="$arch-linux-android29" -O2 -fPIC -shared -fstack-protector-all -Wall -Werror \
     -Wl,-z,max-page-size=16384 -Wl,--build-id=none -o "$OUT/$abi/libloaderfixture.so" "$HERE/loaderfixture.c"
   "$BIN/llvm-strip" --strip-unneeded "$OUT/$abi/libloaderfixture.so"
+  # 4 KB pages on purpose (pagefixture.c): code sharing a 16 KB page with RELRO, and with writable data (-z norelro),
+  # which the loader moves on macOS.
+  for v in 4k:check4k: norelro:checkNoRelro:-Wl,-z,norelro; do
+    name="${v%%:*}" rest="${v#*:}"
+    method="${rest%%:*}" extra="${rest#*:}"
+    "$BIN/clang" --target="$arch-linux-android29" -O2 -fPIC -shared -Wall -Werror -DFIXTURE_METHOD="$method" -DFIXTURE_LIB="libpagefixture$name.so" \
+      -Wl,-z,max-page-size=4096 ${extra:+"$extra"} -Wl,--build-id=none -o "$OUT/$abi/libpagefixture$name.so" "$HERE/pagefixture.c"
+    "$BIN/llvm-strip" --strip-unneeded "$OUT/$abi/libpagefixture$name.so"
+  done
 done
-echo "wrote libloaderfixture.so for arm64-v8a and x86_64 with NDK $(basename "$NDK")"
+echo "wrote libloaderfixture.so, libpagefixture4k.so and libpagefixturenorelro.so for arm64-v8a and x86_64 with NDK $(basename "$NDK")"

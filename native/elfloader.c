@@ -4,6 +4,7 @@
 #include "elfloader.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
@@ -23,6 +24,9 @@
 #define PT_LOAD 1
 #define PT_DYNAMIC 2
 #define PT_TLS 7
+#define PT_GNU_RELRO 0x6474e552
+// Error messages name the APK entry a library came from, so it is clear which dependency brought it.
+#define APK_ENTRY "lib/" ELF_ABI "/%s"
 #define DT_NULL 0
 #define DT_NEEDED 1
 #define DT_PLTRELSZ 2
@@ -47,6 +51,7 @@
 #if defined(__x86_64__)
 #define ELF_MACHINE 62
 #define ELF_ARCH "x86_64"
+#define ELF_ABI "x86_64"
 #define R_ABS64 1
 #define R_GLOB_DAT 6
 #define R_JUMP_SLOT 7
@@ -59,6 +64,7 @@
 #else
 #define ELF_MACHINE 183
 #define ELF_ARCH "arm64"
+#define ELF_ABI "arm64-v8a"
 #define R_ABS64 257
 #define R_GLOB_DAT 1025
 #define R_JUMP_SLOT 1026
@@ -87,6 +93,12 @@ static pthread_mutex_t load_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 static void *lookup_in(Module *m, const char *name);
 
 Module *elf_modules(void) { return modules; }
+
+// Where an address the file gives (base + vaddr) is in memory: the same, except in data moved off a page shared with
+// code (plan_data_move, macOS only). Every data address the loader computes or hands out goes through it.
+static inline uintptr_t at(const Module *m, uintptr_t a) {
+  return a >= m->moved_lo && a < m->moved_hi ? a + m->moved_by : a;
+}
 
 static int init_arena(void) {
   if (elf_arena_lo) return 0;
@@ -152,7 +164,7 @@ static const Sym *find_sym(Module *m, const char *name) {
 
 static void *lookup_in(Module *m, const char *name) {
   const Sym *s = find_sym(m, name);
-  return s ? (void *)(m->base + s->value) : NULL;
+  return s ? (void *)at(m, m->base + s->value) : NULL;
 }
 
 void *elf_find(Module *m, const char *name) { return lookup_in(m, name); }
@@ -176,7 +188,7 @@ Module *elf_module_for(const void *addr) {
 /** Resolves an import: other loaded libraries, then the C library shim, then the host. */
 static void *resolve(Module *self, const Sym *sym, int is_call) {
   const char *name = self->strtab + sym->name;
-  if (sym->shndx != 0) return (void *)(self->base + sym->value);
+  if (sym->shndx != 0) return (void *)at(self, self->base + sym->value);
   void *p = elf_find_global(name);
   if (p) return p;
   p = bionic_lookup(name);
@@ -203,13 +215,13 @@ static uint64_t sleb(const uint8_t **pp) {
 static void apply_rela(Module *m, const Rela *r) {
   uint32_t type = (uint32_t)r->info;
   uint32_t symi = (uint32_t)(r->info >> 32);
-  uint64_t *where = (uint64_t *)(m->base + r->offset);
+  uint64_t *where = (uint64_t *)at(m, m->base + r->offset);
   const Sym *sym = symi ? &((const Sym *)m->symtab)[symi] : NULL;
   switch (type) {
     case 0:
       break;
     case R_RELATIVE:
-      *where = m->base + r->addend;
+      *where = at(m, m->base + r->addend);
       break;
     case R_ABS64:
     case R_GLOB_DAT:
@@ -278,18 +290,24 @@ static void apply_android_rela(Module *m, const uint8_t *p, size_t size) {
   }
 }
 
+static void relr_word(Module *m, uintptr_t a) {
+  uint64_t *w = (uint64_t *)at(m, a);
+  *w = at(m, *w + m->base);
+}
+
 static void apply_relr(Module *m, const uint64_t *r, size_t bytes) {
-  uint64_t *where = NULL;
+  uintptr_t where = 0;  // the file's address, not moved: a bitmap's run may cross into moved data
   for (size_t i = 0; i < bytes / 8; i++) {
     uint64_t e = r[i];
     if (!(e & 1)) {
-      where = (uint64_t *)(m->base + e);
-      *where++ += m->base;
+      where = m->base + e;
+      relr_word(m, where);
+      where += 8;
     } else {
       for (int j = 0; (e >>= 1); j++) {
-        if (e & 1) where[j] += m->base;
+        if (e & 1) relr_word(m, where + 8 * (uintptr_t)j);
       }
-      where += 63;
+      where += 63 * 8;
     }
   }
 }
@@ -367,6 +385,118 @@ static void load_segment(uintptr_t base, const Phdr *p, const uint8_t *file, int
   memcpy((void *)seg, file + p->offset, p->filesz);
 }
 
+#ifdef __APPLE__
+// macOS on Apple Silicon maps memory in 16 KB pages and never makes a page writable and executable at once: mprotect
+// and mmap refuse RWX, and MAP_JIT memory is writable or executable per thread, never both (checked on macOS 26). A
+// library linked for 4 KB pages (an NDK before r27, -z max-page-size=4096) has 16 KB pages that hold the end of its
+// code and the start of the segment after it. That segment starts with RELRO (GOT, vtables, .init_array, .dynamic),
+// which a device's linker makes read-only once relocated, so such a page becomes read+execute after relocation and
+// nothing is lost. Writable data outside RELRO (.data, .bss) on a page with code cannot stay there (a write to it
+// would fault): plan_data_move moves it. Finds the lowest such byte of the file's addresses, or returns 0.
+static int code_page_conflict(const Phdr *ph, int phnum, size_t page, uint64_t *lo) {
+  uint64_t rl = 0, rh = 0;
+  int found = 0;
+  for (int i = 0; i < phnum; i++) {
+    if (ph[i].type == PT_GNU_RELRO) rl = ph[i].vaddr, rh = ph[i].vaddr + ph[i].memsz;
+  }
+  for (int i = 0; i < phnum; i++) {
+    if (ph[i].type != PT_LOAD || !(ph[i].flags & 1)) continue;
+    uint64_t from = ph[i].vaddr & ~(uint64_t)(page - 1);
+    uint64_t to = (ph[i].vaddr + ph[i].memsz + page - 1) & ~(uint64_t)(page - 1);
+    for (int j = 0; j < phnum; j++) {
+      if (ph[j].type != PT_LOAD || !(ph[j].flags & 2)) continue;
+      uint64_t ws = ph[j].vaddr > from ? ph[j].vaddr : from;
+      uint64_t we = ph[j].vaddr + ph[j].memsz < to ? ph[j].vaddr + ph[j].memsz : to;
+      uint64_t bad = we;
+      if (ws >= we) continue;
+      if (rh <= rl || ws < rl) bad = ws;              // writable bytes before RELRO (or no RELRO at all)
+      else if (we > rh) bad = ws > rh ? ws : rh;      // writable bytes after RELRO
+      if (bad < we && (!found || bad < *lo)) *lo = bad, found = 1;
+    }
+  }
+  return found;
+}
+
+// Such data (libevent's in a 4 KB-aligned debug build, a few hundred bytes of .data and .bss after a small RELRO) is
+// moved, with everything writable after it, to fresh pages after the image: [lo, hi) of the file's addresses lives
+// `by` bytes on (Module.moved_*, `at`). lo is the conflict's 4 KB page (lld starts each segment on a 4 KB page of its
+// own, so no code is on it) and `by` a multiple of 16 KB, so an address's low 12 bits stay: code reaches its data with
+// adrp (the 4 KB page) plus an add or load of those bits, and only the adrp needs another page (patch_moved_refs).
+// Relocations, symbol lookups and the dynamic section go through `at`. Returns 0 with nothing to move, 1 with a plan,
+// -1 when code lies after lo (code cannot move: its PC-relative references would all change).
+static int plan_data_move(const Phdr *ph, int phnum, size_t page, uint64_t span, uint64_t *lo, uint64_t *hi, uint64_t *by) {
+  uint64_t c;
+  if (!code_page_conflict(ph, phnum, page, &c)) return 0;
+  *lo = c & ~(uint64_t)0xfff;
+  *hi = 0;
+  for (int i = 0; i < phnum; i++) {
+    if (ph[i].type != PT_LOAD) continue;
+    uint64_t end = ph[i].vaddr + ph[i].memsz;
+    if (end <= *lo) continue;
+    if (ph[i].flags & 1) return -1;
+    if (end > *hi) *hi = end;
+  }
+  *by = span - (*lo & ~(uint64_t)(page - 1));
+  return 1;
+}
+
+static int64_t sign_extend(uint64_t v, int bits) { return (int64_t)(v << (64 - bits)) >> (64 - bits); }
+
+// Points the module's code at its moved data: an adrp of a moved 4 KB page gets that page's new place, and an adr or
+// a load (literal) into the moved range its new address when still within their reach (1 MB); one that is not fails
+// the load. Only executable sections are read when the file has section headers, else the executable segments.
+// Returns how many instructions changed, or -1.
+static long patch_moved_refs(const Module *m, const uint8_t *file, size_t file_size, const Phdr *ph, int phnum,
+                             uint64_t *bad_at) {
+  uint64_t ranges[64][2];
+  int n = 0;
+  uint64_t shoff = *(const uint64_t *)(file + 40);
+  uint16_t shentsize = *(const uint16_t *)(file + 58), shnum = *(const uint16_t *)(file + 60);
+  if (shoff && shentsize == 64 && shoff + (uint64_t)shnum * 64 <= file_size) {
+    for (int i = 0; i < shnum && n < 64; i++) {
+      const uint8_t *s = file + shoff + (uint64_t)i * 64;
+      uint32_t type = *(const uint32_t *)(s + 4);
+      uint64_t flags = *(const uint64_t *)(s + 8), addr = *(const uint64_t *)(s + 16), size = *(const uint64_t *)(s + 32);
+      if (type == 1 /* PROGBITS */ && (flags & 4 /* EXECINSTR */) && addr && size) ranges[n][0] = addr, ranges[n++][1] = addr + size;
+    }
+  }
+  if (!n) {
+    for (int i = 0; i < phnum && n < 64; i++) {
+      if (ph[i].type == PT_LOAD && (ph[i].flags & 1)) ranges[n][0] = ph[i].vaddr, ranges[n++][1] = ph[i].vaddr + ph[i].filesz;
+    }
+  }
+  long patched = 0;
+  int64_t pages = (int64_t)(m->moved_by >> 12);
+  for (int r = 0; r < n; r++) {
+    for (uint64_t va = (ranges[r][0] + 3) & ~(uint64_t)3; va + 4 <= ranges[r][1]; va += 4) {
+      uint32_t *insn = (uint32_t *)(m->base + va), i = *insn;
+      uintptr_t pc = m->base + va;
+      if ((i & 0x9f000000) == 0x90000000) {  // adrp
+        int64_t imm = sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21);
+        uintptr_t target = (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);
+        if (target < m->moved_lo || target >= m->moved_hi) continue;
+        int64_t v = imm + pages;
+        if (v != sign_extend((uint64_t)v, 21)) return *bad_at = va, -1;
+        *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+        patched++;
+      } else if ((i & 0x9f000000) == 0x10000000 || (i & 0x3b000000) == 0x18000000) {  // adr, load (literal)
+        int adr = (i & 0x9f000000) == 0x10000000;
+        int64_t imm = adr ? sign_extend(((i >> 29) & 3) | ((uint64_t)((i >> 5) & 0x7ffff) << 2), 21)
+                          : sign_extend((i >> 5) & 0x7ffff, 19) * 4;
+        uintptr_t target = pc + (uintptr_t)imm;
+        if (target < m->moved_lo || target >= m->moved_hi) continue;
+        int64_t v = imm + (int64_t)m->moved_by;
+        if (v < -(1 << 20) || v >= (1 << 20)) return *bad_at = va, -1;
+        if (adr) *insn = (i & 0x9f00001f) | (uint32_t)(v & 3) << 29 | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+        else *insn = (i & 0xff00001f) | (uint32_t)((v >> 2) & 0x7ffff) << 5;
+        patched++;
+      }
+    }
+  }
+  return patched;
+}
+#endif
+
 static int is_system_lib(const char *n) {
   static const char *sys[] = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv1_CM.so",
                               "libGLESv2.so", "libGLESv3.so", "libOpenSLES.so", "libjnigraphics.so", "libz.so", "libstdc++.so",
@@ -400,7 +530,8 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   }
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
-    snprintf(err, errlen, "cannot open %s", path);
+    if (errno == ENOENT) snprintf(err, errlen, APK_ENTRY " is not in the APK", base_name);
+    else snprintf(err, errlen, APK_ENTRY " cannot be opened: %s", base_name, strerror(errno));
     goto done;
   }
   struct stat st;
@@ -408,7 +539,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   uint8_t *file = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (file == MAP_FAILED || memcmp(file, "\177ELF", 4) || file[4] != 2 || *(uint16_t *)(file + 18) != ELF_MACHINE) {
     close(fd);
-    snprintf(err, errlen, "%s is not an " ELF_ARCH " ELF", path);
+    snprintf(err, errlen, APK_ENTRY " is not an " ELF_ARCH " ELF", base_name);
     goto done;
   }
   const Phdr *ph = (const Phdr *)(file + *(uint64_t *)(file + 32));
@@ -424,17 +555,32 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 #else
   size_t page = (size_t)sysconf(_SC_PAGESIZE);
 #endif
-  size_t span = (max_va + page - 1) & ~(page - 1);
-  uintptr_t base = arena_next;
-  if (base + span > elf_arena_hi) {
+  size_t span = (max_va + page - 1) & ~(page - 1), total = span;
+#ifdef __APPLE__
+  uint64_t move_lo = 0, move_hi = 0, move_by = 0;
+  int plan = plan_data_move(ph, phnum, page, span, &move_lo, &move_hi, &move_by);
+  if (plan < 0) {
     close(fd);
-    snprintf(err, errlen, "arena exhausted");
+    munmap(file, st.st_size);
+    snprintf(err, errlen,
+             APK_ENTRY " is 4 KB aligned with writable data at 0x%llx on a 16 KB page with code and more code after it,"
+             " which macOS cannot map (no page is writable and executable at once); rebuild it for 16 KB pages (NDK r27"
+             " or later, or -Wl,-z,max-page-size=16384)",
+             base_name, (unsigned long long)move_lo);
     goto done;
   }
-  arena_next = base + span + page;
-  if (mprotect((void *)base, span, PROT_READ | PROT_WRITE)) {
+  if (plan) total = (move_hi + move_by + page - 1) & ~(page - 1);
+#endif
+  uintptr_t base = arena_next;
+  if (base + total > elf_arena_hi) {
     close(fd);
-    snprintf(err, errlen, "mprotect failed");
+    snprintf(err, errlen, APK_ENTRY ": no address space left for native libraries", base_name);
+    goto done;
+  }
+  arena_next = base + total + page;
+  if (mprotect((void *)base, total, PROT_READ | PROT_WRITE)) {
+    close(fd);
+    snprintf(err, errlen, APK_ENTRY ": mprotect failed", base_name);
     goto done;
   }
   for (int i = 0; i < phnum; i++) {
@@ -444,7 +590,30 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   Module *m = calloc(1, sizeof(Module));
   strlcpy(m->name, base_name, sizeof m->name);
   m->base = base;
-  m->size = span;
+  m->size = total;
+#ifdef __APPLE__
+  if (move_by) {
+    m->moved_lo = base + move_lo;
+    m->moved_hi = base + move_hi;
+    m->moved_by = move_by;
+    memcpy((void *)(m->moved_lo + move_by), (void *)m->moved_lo, move_hi - move_lo);
+    uint64_t bad_at = 0;
+    long patched = patch_moved_refs(m, file, st.st_size, ph, phnum, &bad_at);
+    if (patched < 0) {
+      munmap(file, st.st_size);
+      free(m);
+      snprintf(err, errlen,
+               APK_ENTRY " is 4 KB aligned with writable data on a 16 KB page with code, which macOS cannot map; moving"
+               " the data left the instruction at 0x%llx out of reach of it. Rebuild it for 16 KB pages (NDK r27 or"
+               " later, or -Wl,-z,max-page-size=16384)",
+               base_name, (unsigned long long)bad_at);
+      goto done;
+    }
+    // Said once per library: if such a library misbehaves, this is where to look first.
+    fprintf(stderr, "[apksim] " APK_ENTRY " is 4 KB aligned: its data at 0x%llx-0x%llx moved off a 16 KB page with code,"
+            " %ld instructions repointed\n", base_name, (unsigned long long)move_lo, (unsigned long long)move_hi, patched);
+  }
+#endif
 #if !defined(__APPLE__) && defined(__aarch64__)
   m->tp = base + span;  // the guard page arena_next leaves after every module; before relocations (TLSDESC)
   map_tp_page(m, page);
@@ -455,14 +624,14 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   memcpy(m->phdr_copy, ph, sizeof(Phdr) * phnum);
   m->phdr = m->phdr_copy;
 
-  const uint64_t *d = (const uint64_t *)(base + dyn->vaddr);
+  const uint64_t *d = (const uint64_t *)at(m, base + dyn->vaddr);
   uint64_t rela = 0, relasz = 0, jmprel = 0, pltsz = 0, relr = 0, relrsz = 0, arela = 0, arelasz = 0, init = 0, inita = 0, initasz = 0;
   for (const uint64_t *e = d; e[0] != DT_NULL; e += 2) {
     switch (e[0]) {
-      case DT_STRTAB: m->strtab = (const char *)(base + e[1]); break;
-      case DT_SYMTAB: m->symtab = (const void *)(base + e[1]); break;
-      case DT_HASH: m->sysv_hash = (const uint32_t *)(base + e[1]); break;
-      case DT_GNU_HASH: m->gnu_hash = (const uint32_t *)(base + e[1]); break;
+      case DT_STRTAB: m->strtab = (const char *)at(m, base + e[1]); break;
+      case DT_SYMTAB: m->symtab = (const void *)at(m, base + e[1]); break;
+      case DT_HASH: m->sysv_hash = (const uint32_t *)at(m, base + e[1]); break;
+      case DT_GNU_HASH: m->gnu_hash = (const uint32_t *)at(m, base + e[1]); break;
       case DT_RELA: rela = e[1]; break;
       case DT_RELASZ: relasz = e[1]; break;
       case DT_JMPREL: jmprel = e[1]; break;
@@ -478,7 +647,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   }
   for (int i = 0; i < phnum; i++) {
     if (ph[i].type == PT_TLS) {
-      m->tls_image = (const void *)(base + ph[i].vaddr);
+      m->tls_image = (const void *)at(m, base + ph[i].vaddr);
       m->tls_filesz = ph[i].filesz;
       m->tls_memsz = ph[i].memsz;
     }
@@ -495,10 +664,10 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   m->next = modules;
   modules = m;
 
-  if (relr) apply_relr(m, (const uint64_t *)(base + relr), relrsz);
-  if (arela) apply_android_rela(m, (const uint8_t *)(base + arela), arelasz);
-  for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)(base + rela) + i);
-  for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)(base + jmprel) + i);
+  if (relr) apply_relr(m, (const uint64_t *)at(m, base + relr), relrsz);
+  if (arela) apply_android_rela(m, (const uint8_t *)at(m, base + arela), arelasz);
+  for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + rela) + i);
+  for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + jmprel) + i);
 
   for (int i = 0; i < phnum; i++) {
     if (ph[i].type != PT_LOAD) continue;
@@ -509,16 +678,9 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 #ifdef __APPLE__
       patch_thread_pointer((uint8_t *)(base + ph[i].vaddr), ph[i].filesz);
       sys_icache_invalidate((void *)from, to - from);
-      // Apple Silicon forbids writable+executable pages, so code cannot share a 16 KB host page with
-      // writable data. Current libraries are 16 KB aligned (a Play requirement since 2025).
-      for (int j = 0; j < phnum; j++) {
-        if (ph[j].type != PT_LOAD || !(ph[j].flags & 2)) continue;
-        uintptr_t ws = base + ph[j].vaddr, we = ws + ph[j].memsz;
-        if (ws < to && we > from) {
-          snprintf(err, errlen, "%s is not 16 KB aligned: code and data share a page, which macOS cannot map", base_name);
-          goto done;
-        }
-      }
+      // Read+execute for every 16 KB page with code in it. In a 4 KB-aligned library that takes in the neighbouring
+      // segments' bytes on the same pages: read-only data before, RELRO after (relocated by now, and read-only on a
+      // device too). Other writable data that shared such a page was moved (plan_data_move).
 #else
 #ifdef __aarch64__
       patch_thread_pointer(m, (uint8_t *)(base + ph[i].vaddr), ph[i].filesz);
@@ -533,7 +695,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
       }
 #endif
       if (mprotect((void *)from, to - from, prot) && (make_anonymous(from, to - from) || mprotect((void *)from, to - from, prot))) {
-        snprintf(err, errlen, "cannot make %s executable", base_name);
+        snprintf(err, errlen, "cannot make " APK_ENTRY " executable", base_name);
         goto done;
       }
     }
@@ -542,7 +704,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 
   if (init) ((void (*)(int, char **, char **))(base + init))(0, NULL, NULL);
   if (inita) {
-    void (**fn)(int, char **, char **) = (void *)(base + inita);
+    void (**fn)(int, char **, char **) = (void *)at(m, base + inita);
     for (size_t i = 0; i < initasz / 8; i++) {
       if (fn[i] && (uintptr_t)fn[i] != (uintptr_t)-1) fn[i](0, NULL, NULL);
     }

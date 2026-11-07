@@ -56,15 +56,35 @@ final class ElfLoader {
   }
 
   static synchronized void load(String soName) {
+    // --skip-library NAME: the app's System.loadLibrary throws as for a library the APK lacks, which an SDK that
+    // treats its native part as optional catches (a debug-only one that cannot load here, say). Only the app's own
+    // loads: a library another one needs, or dlopens, still loads.
+    if (skipped(soName)) {
+      throw new UnsatisfiedLinkError(ABI_DIR + soName + " is skipped (--skip-library)");
+    }
     try {
       Path dir = extracted();
       Path so = dir.resolve(soName);
-      if (!Files.exists(so)) throw new UnsatisfiedLinkError("no " + soName + " for " + HostOs.apkAbi() + " in the APK");
+      if (!Files.exists(so)) throw new UnsatisfiedLinkError(ABI_DIR + soName + " is not in the APK");
       long handle = nativeLoad(so.toString(), dir.toString());
       bindJavaSymbols(handle);
     } catch (IOException e) {
       throw new UnsatisfiedLinkError(e.toString());
     }
+  }
+
+  /** Whether -Dapksim.skipLibraries (comma-separated: libfoo.so, libfoo or foo) names this library. */
+  static boolean skipped(String soName) {
+    String list = System.getProperty("apksim.skipLibraries", "");
+    if (list.isEmpty()) return false;
+    for (String n : list.split(",")) {
+      n = n.trim();
+      if (n.isEmpty()) continue;
+      if (!n.endsWith(".so")) n = n + ".so";
+      if (!n.startsWith("lib")) n = "lib" + n;
+      if (n.equals(soName)) return true;
+    }
+    return false;
   }
 
   /** JNI's by-name lookup cannot see ELF symbols, so register each exported Java_* function explicitly. */
