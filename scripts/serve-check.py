@@ -39,7 +39,12 @@ FAILED = []
 def parts(url):
     """(host:port, path prefix, origin) of a server URL, which may have a path (a proxy's prefix, --base-path)."""
     u = urllib.parse.urlsplit(url)
-    return u.netloc, u.path.rstrip("/"), f"{u.scheme}://{u.netloc}"
+    # Origin as a browser sends it: lower case, no default port.
+    scheme, host = u.scheme.lower(), u.netloc.lower()
+    if (scheme, u.port) in (("http", 80), ("https", 443)):
+        host = host.rsplit(":", 1)[0]
+    netloc = u.netloc if u.port else u.netloc + (":443" if scheme == "https" else ":80")
+    return netloc, u.path.rstrip("/"), f"{scheme}://{host}"
 
 
 def check(ok, what):
