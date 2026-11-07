@@ -97,6 +97,15 @@
                 <data android:scheme="apksim" android:host="popup-trace" />
             </intent-filter>
         </activity>
+        <!-- apksim://cyclic-nodes: an accessibility provider that lists nodes under several parents and an ancestor as a child (issue 114). -->
+        <activity android:name=".CyclicNodesActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="cyclic-nodes" />
+            </intent-filter>
+        </activity>
         <!-- apksim://dialogs: full-screen, modal and non-modal dialogs over an activity (issue 97). -->
         <activity android:name=".DialogsActivity" android:exported="true">
             <intent-filter>
