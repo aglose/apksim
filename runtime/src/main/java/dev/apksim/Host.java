@@ -23,6 +23,7 @@ import android.window.OnBackInvokedCallback;
 import dev.apksim.gpu.TrackedRuntimeShader;
 import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -262,7 +263,7 @@ public class Host {
             Timing.mark("first-frame");
             Standby.spawnNextSoon();
             String shot = System.getProperty("apksim.screenshot");
-            if (shot != null) saveFrame(shot);
+            if (shot != null) saveFrame(shot, false);
             if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
               Timing.done();
               exit(0);
@@ -1149,12 +1150,20 @@ public class Host {
     hw.resize(w, h, actualSize);
   }
 
-  private void saveFrame(String path) throws Exception {
+  /** {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window. */
+  private void saveFrame(String path, boolean display) throws Exception {
     hw.withLatestFrame(pixels -> {
       pixels.rewind();
       bitmap.copyPixelsFromBuffer(pixels);
       pixels.rewind();
     });
+    if (display) {
+      ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
+      if (SimWindow.displayImage(shot, w, h)) {
+        shot.rewind();
+        bitmap.copyPixelsFromBuffer(shot);
+      }
+    }
     try (FileOutputStream out = new FileOutputStream(path)) {
       bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
     }
@@ -1350,7 +1359,10 @@ public class Host {
         }
         return "pasted " + n + " characters";
       }
-      case "shot" -> saveFrame(a[1]);
+      case "shot" -> {
+        boolean display = a.length > 2 && a[1].equals("--display");
+        saveFrame(display ? a[2] : a[1], display);
+      }
       case "restart" -> {
         return restart(a.length > 1 ? a[1] : null);
       }
