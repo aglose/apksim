@@ -1057,21 +1057,20 @@ public class Host {
   }
 
   /**
-   * The window key events go to, as a device's input dispatcher picks the focused one: the topmost window that is shown
-   * and has a size and takes focus (no FLAG_NOT_FOCUSABLE), preferring one that has the window focus. An empty overlay
-   * added after the activity's window (issue 123) is hidden or zero-sized, so it gets no keys. Null when none qualifies.
+   * The window key events go to: the topmost window that is shown, has a size and takes focus (no FLAG_NOT_FOCUSABLE),
+   * as a device's input dispatcher gives keys to the focused window. An empty overlay added after the activity's window
+   * (issue 123) is hidden or zero-sized, so it gets no keys, and a focusable dialog above the activity gets them. Window
+   * focus is not used: in a snapshot run the activity's window keeps it while a dialog is on top. Null when none qualifies.
    */
   static View keyTarget(List<View> roots) {
-    View fallback = null;
     for (int i = roots.size() - 1; i >= 0; i--) {
       View r = roots.get(i);
       if (r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
       ViewGroup.LayoutParams lp = r.getLayoutParams();
       if (lp instanceof WindowManager.LayoutParams wl && (wl.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0) continue;
-      if (r.hasWindowFocus()) return r;
-      if (fallback == null) fallback = r;
+      return r;
     }
-    return fallback;
+    return null;
   }
 
   private void sendChar(char ch, long now) {

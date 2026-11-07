@@ -62,6 +62,19 @@ class MainActivity : ComponentActivity() {
     setContent {
       MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) { Root(db, startTab) }
     }
+    // apksim://composeapp/trips?overlay=1 adds an empty overlay window after this activity's window, as some apps do
+    // (issue 123): hidden, 0x0, not focusable. Typing must still reach the focused field below it.
+    if (intent?.data?.getQueryParameter("overlay") == "1") {
+      window.decorView.post {
+        val params = android.view.WindowManager.LayoutParams(
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            android.graphics.PixelFormat.TRANSLUCENT)
+        getSystemService(android.view.WindowManager::class.java).addView(android.widget.FrameLayout(this), params)
+        Log.i("ComposeApp", "after-activity overlay added")
+      }
+    }
   }
 }
 
