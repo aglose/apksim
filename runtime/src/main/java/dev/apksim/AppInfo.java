@@ -43,10 +43,11 @@ final class AppInfo {
     Element home = null;
     long homeRank = Long.MIN_VALUE;
     Map<String, Element> activities = new LinkedHashMap<>();  // full name -> element, aliases too
-    for (String tag : new String[] {"activity", "activity-alias"}) {
-      NodeList list = doc.getElementsByTagName(tag);
-      for (int i = 0; i < list.getLength(); i++) {
-        Element a = (Element) list.item(i);
+    {  // every activity and alias in the manifest's order, as PackageManager's ties are broken
+      NodeList all = doc.getElementsByTagName("*");
+      for (int i = 0; i < all.getLength(); i++) {
+        Element a = (Element) all.item(i);
+        if (!a.getTagName().equals("activity") && !a.getTagName().equals("activity-alias")) continue;
         activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
         long l = mainRank(a, "android.intent.category.LAUNCHER");
         if (l > launcherRank) { launcher = a; launcherRank = l; }
