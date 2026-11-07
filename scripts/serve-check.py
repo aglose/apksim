@@ -61,7 +61,8 @@ class WS:
         self.s = socket.create_connection((host, int(port)), timeout=30)
         self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         key = base64.b64encode(os.urandom(16)).decode()
-        req = f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
+        authority = parts(url)[2].split("//", 1)[1]  # Host as a browser sends it: no default port
+        req = f"GET {path} HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
         for k, v in headers.items():
             req += f"{k}: {v}\r\n"

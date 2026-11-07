@@ -615,7 +615,8 @@ public final class Serve {
       return allowedOrigins.contains(o);
     }
     String host = r.header("host");
-    if (host != null && (origin.equals("http://" + host) || origin.equals("https://" + host))) return true;
+    // This server's own page: compared in the browser's form (a client may send Host localhost:80 for localhost).
+    if (host != null && (o.equals(origin("http://" + host)) || o.equals(origin("https://" + host)))) return true;
     return allowedOrigins.contains(o);
   }
 
