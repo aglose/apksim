@@ -25,8 +25,14 @@ final class AppInfo {
   static void load(Path apk, Path cache) throws Exception {
     Files.createDirectories(cache);
     String xml;
+    byte[] arsc = null;  // resources.arsc: a priority may name an integer resource
     try (ZipFile zip = new ZipFile(apk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
       xml = Axml.decode(in.readAllBytes());
+      if (zip.getEntry("resources.arsc") != null) {
+        try (InputStream r = zip.getInputStream(zip.getEntry("resources.arsc"))) {
+          arsc = r.readAllBytes();
+        }
+      }
     }
     Path manifest = cache.resolve("AndroidManifest.xml");
     // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
@@ -49,9 +55,9 @@ final class AppInfo {
         Element a = (Element) all.item(i);
         if (!a.getTagName().equals("activity") && !a.getTagName().equals("activity-alias")) continue;
         activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
-        long l = mainRank(a, "android.intent.category.LAUNCHER");
+        long l = mainRank(a, "android.intent.category.LAUNCHER", arsc);
         if (l > launcherRank) { launcher = a; launcherRank = l; }
-        long h = mainRank(a, "android.intent.category.HOME");
+        long h = mainRank(a, "android.intent.category.HOME", arsc);
         if (h > homeRank) { home = a; homeRank = h; }
       }
     }
@@ -160,7 +166,7 @@ final class AppInfo {
    * The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE.
    * A disabled activity or alias is never a candidate: PackageManager leaves it out, and Host would start it anyway.
    */
-  private static long mainRank(Element activity, String category) {
+  private static long mainRank(Element activity, String category, byte[] arsc) throws LaunchError {
     if ("false".equals(activity.getAttribute(NS + "enabled"))) return Long.MIN_VALUE;
     long best = Long.MIN_VALUE;
     NodeList filters = activity.getElementsByTagName("intent-filter");
@@ -168,11 +174,20 @@ final class AppInfo {
       Element f = (Element) filters.item(i);
       if (!has(f, "action", "android.intent.action.MAIN") || !has(f, "category", category)) continue;
       int priority = 0;
-      try {
-        String p = f.getAttribute(NS + "priority");
-        if (!p.isEmpty()) priority = (int) Long.decode(p).longValue();
-      } catch (NumberFormatException e) {
-        // an unreadable priority counts as 0
+      String p = f.getAttribute(NS + "priority");
+      if (p.startsWith("@0x")) {  // a resource: Axml prints its id, the value is in resources.arsc
+        Long v = arsc == null ? null : Arsc.intValue(arsc, (int) Long.decode(p.substring(1)).longValue());
+        if (v == null) {
+          throw new LaunchError("intent-filter priority " + p + " in " + activity.getAttribute(NS + "name")
+              + " is not an integer resource");
+        }
+        priority = v.intValue();
+      } else {
+        try {
+          if (!p.isEmpty()) priority = (int) Long.decode(p).longValue();
+        } catch (NumberFormatException e) {
+          // an unreadable priority counts as 0
+        }
       }
       long rank = priority * 2L + (has(f, "category", "android.intent.category.DEFAULT") ? 1 : 0);
       best = Math.max(best, rank);

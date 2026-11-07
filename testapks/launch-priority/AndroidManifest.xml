@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launch-selection fixture (scripts/launch-priority-check.sh). Built with aapt2 from the sources beside it:
+     the launcher is .High: its priority is an integer resource, 10 in the default configuration (100 on sw600dp,
+     which would make .Low win if a non-default value were taken). .Disabled has a higher priority but is disabled,
+     so PackageManager leaves it out. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.apksim.launchpriority">
+    <application android:label="launch priority">
+        <activity android:name=".Low" android:exported="true">
+            <intent-filter android:priority="@integer/low">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".High" android:exported="true">
+            <intent-filter android:priority="@integer/high">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".Disabled" android:enabled="false" android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
