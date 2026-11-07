@@ -136,13 +136,23 @@ def hang(state, c, m):
     with open(os.path.join(state, "pids"), "a") as f:
         f.write(f"{os.getpid()}\n{child.pid}\n")
 
+    deep = os.environ["CHECK_SCENARIO"] == "hang-long-stack"
+    # hang-long-stack: stacks deeper than the text kept of them (issue 115), whose tops must survive the cut.
+    bottom = "".join(f"\tat org.robolectric.Deep.frame{k}(Deep.java:{k})\n" for k in range(200)) if deep else ""
+
     def dump(*_):
         print(f'Full thread dump Fake VM:\n\n"main" #1 prio=5\n   java.lang.Thread.State: TIMED_WAITING\n'
-              f'\tat {c}.{m}({c}.java:1)\n\tat org.junit.runners.ParentRunner.run(ParentRunner.java:1)\n\n'
-              f'"Reference Handler" #2 daemon\n   java.lang.Thread.State: RUNNABLE\n\nJNI global refs: 1, weak refs: 0',
+              f'\tat {c}.{m}({c}.java:1)\n{bottom}\tat org.junit.runners.ParentRunner.run(ParentRunner.java:1)\n\n'
+              + (f'"SDK 36 Main Thread" #3 prio=5\n   java.lang.Thread.State: WAITING\n\tat p.Waiter.parked(Waiter.java:1)\n'
+                 f'{bottom}\tat org.junit.runners.ParentRunner.run(ParentRunner.java:2)\n\n' if deep else "")
+              + f'"Reference Handler" #2 daemon\n   java.lang.Thread.State: RUNNABLE\n\nJNI global refs: 1, weak refs: 0',
               flush=True)
     signal.signal(signal.SIGQUIT, dump)
-    print("hangs in a test", file=sys.stderr, flush=True)
+    if deep:  # a stack on stderr longer than the tail kept of it, then quiet: the tail starts inside it
+        print("noise before\njava.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n"
+              + bottom, file=sys.stderr, end="", flush=True)
+    else:
+        print("hangs in a test", file=sys.stderr, flush=True)
     sys.stdout.flush()
     while True:
         time.sleep(1)
@@ -228,6 +238,8 @@ SCENARIOS = {
     # --test-timeout 2: C000#m1 hangs the first time it runs. As during-test, with "timed out" for the reason.
     "hang": (1, 3, 9, ["p.C000#m1"]),
     "hang-startup": (1, 1, 1, ["(run)#incomplete"]),
+    # As hang, the stacks on stderr and in the thread dump deeper than what is kept: each kept from its header down.
+    "hang-long-stack": (1, 3, 9, ["p.C000#m1"]),
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
@@ -264,6 +276,9 @@ INTERRUPT_AFTER = {"interrupt-spawn": (0.1, None), "interrupt-parallel": (0.1, N
                    "interrupt-docker-cleanup": (1.0, 0.3)}  # (the client dies 0.5 s after the hang; cleanup holds 2 s)
 # The failure text expected of a test that timed out: the reason, and the thread dump's JUnit thread (not the other).
 TIMED_OUT = ["timed out after 2 s", "at p.C000.m1(p.C000.java:1)", "hangs in a test"]
+# hang-long-stack's: the stderr stack's header and top frame, its bottom cut, and the second JUnit thread's top.
+LONG_STACK = ["java.lang.IllegalStateException: listener waited here\n\tat p.Waiter.stuckHere(Waiter.java:7)\n",
+              "more lines of this stack]", '"SDK 36 Main Thread" #3', "at p.Waiter.parked(Waiter.java:1)"]
 
 
 def extra_args(sc, d):
@@ -350,6 +365,8 @@ def main():
                     if sc.startswith(("hang", "cidfile-hang")) else [])
             # (A client that ends at the SIGQUIT passes on no thread dump.)
             wanted = TIMED_OUT if "client-exits" not in sc else [w for w in TIMED_OUT if "java:" not in w]
+            if sc == "hang-long-stack":
+                wanted = TIMED_OUT[:2] + LONG_STACK
             missing = [w for t in hung for w in (wanted if t == "p.C000#m1" else wanted[:1]) if w not in texts.get(t, "")]
             pids_file = os.path.join(d, "pids")
             pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
@@ -374,6 +391,8 @@ def main():
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),
+                ("the stderr tail before the thread dump's JUnit threads", sc == "hang-long-stack" and not missing
+                 and texts["p.C000#m1"].find("at p.C000.m1(") > texts["p.C000#m1"].find("listener waited here")),
                 (f"processes left running: {alive}", bool(alive)),
                 ("no process that hung", sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and not pids),
                 ("no container ID in the user's --cidfile", sc.startswith("cidfile")
