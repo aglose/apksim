@@ -64,6 +64,10 @@ once a second.log
 echo "ok: one entry, $A"
 
 echo "== eviction keeps the entry a running instance holds"
+if drive ping 2>/dev/null | grep -q pong; then
+  echo "port $PORT already has an apksim instance on it; set APKCACHECHECK_PORT to a free one" >&2
+  exit 1
+fi
 if [[ -z "$IMAGE" ]]; then
   (cd "$OUT/a" && APKSIM_HOME="$OUT/state" APKSIM_STANDBY=0 "$ROOT/apksim" --headless --control "$PORT" app.apk > "$OUT/held.log" 2>&1 &)
 else

@@ -143,12 +143,14 @@ final class ApkCache {
     }
   }
 
-  /** At most once an hour across processes (`cache/apk-cache.swept`'s mtime), then {@link #evict}. */
+  /** At most once an hour across processes (`cache/apk-cache.swept`'s mtime, read and set under the global lock), then {@link #evict}. */
   private static void sweep(Path root, Path current) throws IOException {
     Path swept = root.resolve(SWEPT);
-    long now = System.currentTimeMillis();
-    if (Files.exists(swept) && now - Files.getLastModifiedTime(swept).toMillis() < SWEEP_EVERY_MS) return;
-    touch(swept);
+    try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+         FileLock g = global.lock()) {
+      if (Files.exists(swept) && System.currentTimeMillis() - Files.getLastModifiedTime(swept).toMillis() < SWEEP_EVERY_MS) return;
+      touch(swept);
+    }
     evict(root, current);
   }
 
@@ -213,22 +215,20 @@ final class ApkCache {
     entries.sort((x, y) -> Long.compare(x.lastUsed, y.lastUsed));
     long total = 0;
     for (Entry e : entries) total += e.bytes;
-    List<Entry> candidates = new ArrayList<>();
-    for (Entry e : entries) {
-      if (now - e.lastUsed <= STALE_MS && total <= capBytes) break;
-      if (e.dir.equals(current) || now - e.lastUsed < RECENT_MS) continue;
-      candidates.add(e);
-      total -= e.bytes;  // as if it goes: one in use stays, and the cap is then exceeded by it alone
-    }
-    if (!candidates.isEmpty()) {
+    if (total > capBytes || entries.stream().anyMatch(e -> now - e.lastUsed > STALE_MS)) {
       Files.createDirectories(trash);
       try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
            FileLock g = global.lock()) {
-        for (Entry e : candidates) {
-          // Used since it was listed (a launch took it, or holds it now): it stays.
-          if (!Files.isDirectory(e.dir) || System.currentTimeMillis() - lastUsed(e.dir) < RECENT_MS || inUse(e.dir)) continue;
+        for (Entry e : entries) {
+          boolean stale = now - e.lastUsed > STALE_MS;
+          if (!stale && total <= capBytes) break;
+          // This process's, used since it was listed (a launch took it), or held by a process: it stays, and the
+          // next one in line is considered instead.
+          if (e.dir.equals(current) || !Files.isDirectory(e.dir) || System.currentTimeMillis() - lastUsed(e.dir) < RECENT_MS
+              || inUse(e.dir)) continue;
           try {
             Files.move(e.dir, trash.resolve(e.dir.getFileName() + Storage.tmpTag()), StandardCopyOption.ATOMIC_MOVE);
+            total -= e.bytes;
           } catch (IOException ex) {
             // Next sweep.
           }
