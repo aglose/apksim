@@ -2585,6 +2585,17 @@ final class MethodTranslator implements Opcodes {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "sleep", m.descriptor(), false);
       return;
     }
+    if (opcode == INVOKESTATIC && "java/lang/System".equals(ownerName) && "exit".equals(m.name()) && "(I)V".equals(m.descriptor())) {
+      // The app ending its process: said in the log with the caller, and the code reaches a warm client (dev.apksim.Exits).
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Exits", "systemExit", "(I)V", false);
+      return;
+    }
+    if (opcode == INVOKEVIRTUAL && "java/lang/Runtime".equals(ownerName) && ("exit".equals(m.name()) || "halt".equals(m.name()))
+        && "(I)V".equals(m.descriptor())) {
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Exits", "exit".equals(m.name()) ? "runtimeExit" : "runtimeHalt",
+          "(Ljava/lang/Runtime;I)V", false);
+      return;
+    }
     if (clock(opcode, ownerName, m)) return;
     if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && "(Z)V".equals(m.descriptor())
         && "androidx/compose/foundation/text/input/internal/CursorAnimationState".equals(ownerName)) {

@@ -125,6 +125,15 @@
                 <data android:scheme="apksim" android:host="crash" />
             </intent-filter>
         </activity>
+        <!-- apksim://exit?kind=finish|affinity|handoff|exit|halt|kill: the app ends itself; apksim says why (issue 116). -->
+        <activity android:name=".ExitActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="exit" />
+            </intent-filter>
+        </activity>
         <!-- apksim://install: install-time state the app's onCreate saw, and a bind to a service nothing provides. -->
         <activity android:name=".InstallStateActivity" android:exported="true">
             <intent-filter>

@@ -76,6 +76,19 @@ Read README.md for results and limits; this file covers how to work on the code.
     be the crash) and `Standby.haltNow` always halts with 10, the client told first; `-Dapksim.crashTest.failCleanup=true`
     makes the cache save throw, to check it. Test runs install nothing: AndroidJUnitRunner's handler
     (MonitoringInstrumentation's, set in its onCreate) logs and the test goes on (`UncaughtExceptionTest`).
+  - `Exits`: why a running instance ends, one `[apksim] exit N: REASON` line on stderr for every way (issue 116: a
+    process ended 0 with nothing in the log). The last activity finishing names it and the call, with the stack of
+    the code that made it (`finish`, `finishAffinity`, `finishAndRemoveTask` shadows in `TestActivities.ShadowSimActivity`,
+    back included); the window closing, `quit`, `--exit-after-first-frame`, the launcher's client going away (130) and
+    crashes (10) say so. Host's loop ends only once no activity has been left for `Exits.LINGER_MS` (1 s) of real
+    time, the app running meanwhile: a device's process lingers, and a hand-off that finished first and started the
+    next activity from a posted message or coroutine exited 0 before it landed. The app's own `System.exit`,
+    `Runtime.exit` and `Runtime.halt` go here through the translator: logged with the code and caller, and that code
+    reaches a warm launch's client (the standby's shutdown hook sent 0 for every exit, and a halt sent nothing: 134).
+    `Process.killProcess(myPid())` and `sendSignal(myPid, SIGNAL_KILL)` end a running instance with 137, as a device
+    kills the process (Robolectric only recorded the pid and the app ran on; test runs keep that). The test app's
+    `apksim://exit?kind=finish|affinity|handoff|exit|halt|kill` does each (`ci-smoke.sh`). `-Dapksim.traceExit=true`
+    still prints every thread's stack at a JVM shutdown.
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers
     extra shadows. In running instances (not test runs) `android.os.Trace` is a device nobody traces
@@ -289,7 +302,8 @@ dirty or wanting a frame and no main-thread message is due within HORIZON_MS, fo
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or
 `--activity`) or the URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
-`back` on the last activity finishes it and the process exits: there is no soft keyboard for it to dismiss.
+`back` on the last activity finishes it and the process exits a second later (`[apksim] exit 0: the last activity,
+...`, see `Exits`): there is no soft keyboard for it to dismiss.
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
 launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),

@@ -134,6 +134,7 @@ final class Crashes {
     } catch (Throwable ignored) {
       // Swept at the next launch.
     }
+    Exits.log(10, "the app crashed (FATAL EXCEPTION above)");
     Standby.haltNow(10);
   }
 
