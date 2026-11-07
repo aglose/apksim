@@ -148,6 +148,7 @@ public class Host {
     ShadowRealSleep.takeMainAdvancedMs();  // the standby's warm-up, or the app's start before the loop: real time
     firstFrame = true;
     boolean closed = false;
+    long emptySince = 0;
     while (!closed) {
       try {
         long start = System.nanoTime();
@@ -252,7 +253,16 @@ public class Host {
         }
         looperNanos += System.nanoTime() - looperStart;
         updateActivityStack();
-        if (stack.isEmpty()) break;
+        if (stack.isEmpty()) {
+          // The last activity finished. A device's process lingers, and a hand-off that finished first may start the
+          // next activity from a posted message or a coroutine: the app runs on for a moment before apksim ends.
+          if (emptySince == 0) emptySince = System.nanoTime();
+          if (System.nanoTime() - emptySince >= Exits.LINGER_MS * 1_000_000L) break;
+          pace(last);
+          continue;
+        }
+        emptySince = 0;
+        lastFinished = null;  // only the exit line needs it, once nothing is left
         if (Snapshot.ON) focusTopWindow();
         List<View> roots = rootViews();
         syncWindowPositions(roots);
@@ -267,7 +277,7 @@ public class Host {
             if (shot != null) saveFrame(shot, false);
             if (Boolean.getBoolean("apksim.exitAfterFirstFrame")) {
               Timing.done();
-              exit(0);
+              exit(0, "--exit-after-first-frame");
             }
           }
         }
@@ -279,7 +289,7 @@ public class Host {
         Crashes.mainThreadDied(crash);
       }
     }
-    exit(0);
+    exit(0, closed ? "the window was closed (or Cmd+Q)" : Exits.lastActivityFinished(lastFinished));
   }
 
   // ---------------------------------------------------------------- settle: the idle signal for screenshots
@@ -588,7 +598,8 @@ public class Host {
     Files.createSymbolicLink(link, data);
   }
 
-  private static void exit(int code) {
+  private static void exit(int code, String reason) {
+    Exits.log(code, reason);
     SlotDevice.flush();
     ClassCache.flush();
     Storage.deleteScratch();
@@ -791,6 +802,9 @@ public class Host {
   }
 
   /** Honours startActivity() and finish(), which the framework leaves to the system server. */
+  /** The activity that last left the top of the stack by finishing: the exit line names it once none is left. */
+  private Activity lastFinished;
+
   private void updateActivityStack() throws Exception {
     Intent next;
     ActivityResults results = controls.results();
@@ -824,6 +838,7 @@ public class Host {
     }
     while (!stack.isEmpty() && stack.peek().get().isFinishing()) {
       ActivityController<? extends Activity> done = stack.pop();
+      lastFinished = done.get();
       done.pause().stop().destroy();
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
@@ -919,6 +934,7 @@ public class Host {
         touchTarget = r;
         if (inside || !isTouchThrough(r)) break;
       }
+      if (touchTarget == null) return;  // no window (the last activity finished, a start may follow): nothing to touch
       int[] at = position(touchTarget);
       touchDx = at[0];
       touchDy = at[1];
@@ -1389,7 +1405,7 @@ public class Host {
         return ImageDiff.compare(a[1], a[2], a.length > 3 ? a[3] : null, a.length > 4 ? Integer.parseInt(a[4]) : 0);
       }
       case "wshot" -> SimWindow.windowSnapshot(a[1]);
-      case "quit" -> exit(0);
+      case "quit" -> exit(0, "quit command");
       case "ping" -> {
         return "pong";
       }

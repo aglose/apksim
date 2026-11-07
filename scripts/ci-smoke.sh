@@ -216,6 +216,20 @@ crash_run crash-attach.log --jvm -Ddev.apksim.testapp.crash_in_attach=true
 echo "Exception in Application.attachBaseContext: exit $code"
 crashed crash-attach.log 'thrown in attachBaseContext' \
   || { echo "an exception in attachBaseContext did not crash the app" >&2; tail -40 "$OUT/crash-attach.log" >&2; exit 1; }
+# Every way the app ends itself says so in one `[apksim] exit N: ...` line (issue 116: a process ended with status 0
+# and nothing in the log). The test app's ExitActivity: finishAffinity() on the only activity names the call and
+# exits 0; finish() then a start 200 ms later from a posted message lands, as a device's process lingers (that
+# ExitActivity calls System.exit(3)); Runtime.halt(4); Process.killProcess(myPid()) ends the process (137).
+exit_run() {  # exit_run KIND STATUS LINE
+  crash_run "exit-$1.log" --activity .ExitActivity --jvm "-Ddev.apksim.testapp.exit_kind=$1"
+  echo "ExitActivity $1: exit $code"
+  [[ "$code" == "$2" ]] && grep -qF "[apksim] exit $2: $3" "$OUT/exit-$1.log" \
+    || { echo "ExitActivity $1 did not exit $2 saying '$3'" >&2; tail -40 "$OUT/exit-$1.log" >&2; exit 1; }
+}
+exit_run affinity 0 'the last activity, dev.apksim.composeapp.ExitActivity, finished (Activity.finishAffinity() from dev.apksim.composeapp.ExitActivity'
+exit_run handoff 3 'the app called System.exit(3) on thread'
+exit_run halt 4 'the app called Runtime.halt(4) on thread'
+exit_run kill 137 'the app called Process.killProcess(myPid()) on thread'
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).

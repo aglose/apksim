@@ -380,6 +380,7 @@ public class SimRunner extends RobolectricTestRunner {
       shadows.add(RealTimeClock.ShadowRealTimeDisplayEventReceiver.class);
     } else if (!TestActivities.testRun()) {
       shadows.add(ShadowRealSleep.class);  // running instances: SystemClock.sleep takes real time, not simulated
+      shadows.add(Exits.ShadowKillableProcess.class);  // running instances: killing the app's own process ends it
     }
     if (Snapshot.ON) shadows.add(Snapshot.ShadowSteadyCaret.class);  // --snapshot: carets that do not blink
     return shadows.toArray(new Class<?>[0]);

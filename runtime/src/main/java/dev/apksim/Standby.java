@@ -100,6 +100,11 @@ final class Standby {
         // Told the exit code, the client hangs up: halt goes on (ApkCache.beforeExit's sweep) and ends the process.
         if (exiting) return;
         // The launch was interrupted (Ctrl-C, terminal closed, killed): the instance goes with it.
+        try {
+          if (!Exits.ending) Exits.log(130, "the launcher's client went away (Ctrl-C, its terminal closed, or killed)");
+        } catch (Throwable ignored) {
+          // Going anyway.
+        }
         SlotDevice.flush();
         ClassCache.flush();
         Storage.deleteScratch();
@@ -107,8 +112,9 @@ final class Standby {
       }, "apksim-client");
       hangup.setDaemon(true);
       hangup.start();
-      // An app's own System.exit: the code is not known here, so the client gets 0.
-      Runtime.getRuntime().addShutdownHook(new Thread(() -> nativeSendExit(0)));
+      // A JVM exit apksim did not make itself (Halt reports its own): the app's System.exit or Runtime.exit, whose code
+      // Exits noted, or a SIGTERM.
+      Runtime.getRuntime().addShutdownHook(new Thread(() -> nativeSendExit(exitCode), "apksim-exit-code"));
       return args.toArray(new String[0]);
     }
   }
@@ -140,6 +146,9 @@ final class Standby {
     }
     Timing.mark("standby-jit-idle");
   }
+
+  /** The status an exit through the JVM's shutdown (no halt of ours) gives the client: the app's System.exit code. */
+  static volatile int exitCode;
 
   /**
    * As {@link #halt}, for a crash: every step best-effort (an OutOfMemoryError may be why it ends), and whatever fails,

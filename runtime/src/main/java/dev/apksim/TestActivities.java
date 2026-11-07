@@ -342,12 +342,27 @@ public final class TestActivities {
     @Implementation
     @Override
     protected void finish() {
+      Exits.finishing(realActivity, "finish");  // who, for the exit line if it was the last activity
       Bundles.finishing(realActivity);  // a failure bundle's tree, while this activity's windows are still there
       super.finish();
       if (testRun()) {
         Activity a = realActivity;
         post(() -> finished(a));
       }
+    }
+
+    @Implementation
+    @Override
+    protected void finishAffinity() {
+      Exits.finishing(realActivity, "finishAffinity");
+      super.finishAffinity();
+    }
+
+    @Implementation
+    @Override
+    protected void finishAndRemoveTask() {
+      Exits.finishing(realActivity, "finishAndRemoveTask");
+      super.finishAndRemoveTask();
     }
 
     @org.robolectric.util.reflector.ForType(Activity.class)
