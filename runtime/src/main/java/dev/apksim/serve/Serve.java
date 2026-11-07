@@ -359,8 +359,9 @@ public final class Serve {
       }
       Map<String, String> rest = new LinkedHashMap<>(r.query());
       rest.remove("token");
-      // Relative: the page as the browser addressed it, under a proxy's prefix or --base-path too.
-      String to = "./" + (rest.isEmpty() ? "" : "?" + Http.query(rest));
+      // A query-only reference: the page's own path as the browser addressed it, under a proxy's prefix or
+      // --base-path too, with or without its trailing slash ("./" from /sim would go to the proxy's root).
+      String to = "?" + Http.query(rest);
       Http.respond(out, 302, "text/plain", new byte[0], "Location: " + to,
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;

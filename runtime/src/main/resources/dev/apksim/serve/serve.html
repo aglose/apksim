@@ -143,6 +143,10 @@ body.embed.bare aside { width: auto; }
 </main>
 <script>
 "use strict";
+// The page is only ever served at a folder ("/", "/sim/"): reached as "/sim" through a proxy that strips its prefix,
+// add the slash first, or every relative URL below would resolve against the proxy's root.
+const redirecting = !location.pathname.endsWith("/");
+if (redirecting) location.replace(location.pathname + "/" + location.search + location.hash);
 const $ = id => document.getElementById(id);
 const canvas = $("screen"), ctx = canvas.getContext("2d");
 const KEYS = { Backspace: "DEL", Delete: "FORWARD_DEL", Enter: "ENTER", Tab: "TAB", ArrowLeft: "DPAD_LEFT", ArrowRight: "DPAD_RIGHT",
@@ -156,7 +160,7 @@ let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
 // sent with this page's own requests (a cross-site frame gets no SameSite cookie), and taken out of the address.
 const embed = params.get("embed") === "1", token = params.get("token");
 if (embed) { document.body.classList.add("embed"); if (params.get("controls") === "0") document.body.classList.add("bare"); }
-if (token) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
+if (token && !redirecting) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
 // Every URL relative to the page's folder, so serve works under --base-path or a proxy's prefix ("/sim/").
 const base = location.pathname.replace(/[^/]*$/, "");
 const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
@@ -458,7 +462,7 @@ $("copy").onclick = async () => {
   catch (e) { $("linkbox").hidden = false; $("link").select(); log("copy the link from the box"); }
 };
 addEventListener("beforeunload", () => { if (ws) ws.close(); });
-loadApps();
+if (!redirecting) loadApps();
 </script>
 </body>
 </html>
