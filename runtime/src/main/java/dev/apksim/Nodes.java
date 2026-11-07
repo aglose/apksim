@@ -75,7 +75,7 @@ final class Nodes {
     if (v.getVisibility() != View.VISIBLE) return;
     AccessibilityNodeProvider p = v.getAccessibilityNodeProvider();
     if (p != null) {
-      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, visit, 0, new java.util.HashSet<>());
+      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, visit);
       return;
     }
     visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, v.createAccessibilityNodeInfo()));
@@ -84,16 +84,22 @@ final class Nodes {
     }
   }
 
-  private static void walkVirtual(View host, AccessibilityNodeProvider p, int id, Consumer<Node> visit, int depth,
-      java.util.Set<Integer> seen) {
-    // A provider may list a node under several parents or an ancestor as a child (issue 114): visit each id once.
-    if (depth > 64 || !seen.add(id)) return;
-    AccessibilityNodeInfo info = p.createAccessibilityNodeInfo(id);
-    if (info == null) return;
-    visit.accept(new Node(host, id, info));
-    for (int i = 0; i < info.getChildCount(); i++) {
-      long child = info.getChildId(i);  // Hidden API: the child's id within the provider.
-      walkVirtual(host, p, AccessibilityNodeInfo.getVirtualDescendantId(child), visit, depth + 1, seen);
+  private static void walkVirtual(View host, AccessibilityNodeProvider p, int root, Consumer<Node> visit) {
+    // Depth first, each virtual id once (issue 114): a provider may list a node under several parents or an ancestor
+    // as a child. The visited set bounds the walk, so no depth cap (which could hide a node a shorter path reaches).
+    java.util.Set<Integer> seen = new java.util.HashSet<>();
+    java.util.ArrayDeque<Integer> todo = new java.util.ArrayDeque<>();
+    todo.push(root);
+    while (!todo.isEmpty()) {
+      int id = todo.pop();
+      if (!seen.add(id)) continue;
+      AccessibilityNodeInfo info = p.createAccessibilityNodeInfo(id);
+      if (info == null) continue;
+      visit.accept(new Node(host, id, info));
+      for (int i = info.getChildCount() - 1; i >= 0; i--) {
+        long child = info.getChildId(i);  // Hidden API: the child's id within the provider.
+        todo.push(AccessibilityNodeInfo.getVirtualDescendantId(child));
+      }
     }
   }
 
