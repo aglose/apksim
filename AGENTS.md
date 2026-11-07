@@ -1244,7 +1244,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   adrp (and adr/ldr-literal, if still within 1 MB) of moved pages is repointed (`patch_moved_refs`, executable
   sections only), and relocations, symbol lookups and the dynamic section go through `at()`; dl_iterate_phdr's view follows the move (program headers, the dynamic
   section's address entries, moved symbols' st_value, then read as they are: `symbols_moved`), and .eh_frame's
-  PC-relative personality and LSDA pointers into moved data are repointed (`move_eh_frame`; one that cannot be, or an
+  PC-relative personality and LSDA pointers, and each LSDA's type-table entries (typed catches), into moved data are repointed (`move_eh_frame`, `move_lsda`; one that cannot be, or an
   .eh_frame inside the moved range, refuses the library). A failed load gives its range back. A line on stderr says so
   per library. Code after the moved data, or an adr/ldr out of reach, fails the load with an UnsatisfiedLinkError
   naming the APK entry, which the app's `System.loadLibrary` can catch. Not covered: an address computed into a moved

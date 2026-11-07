@@ -657,6 +657,88 @@ static int find_eh_frame(const Module *m, const uint8_t *file, size_t file_size,
   return 0;
 }
 
+// The file address a PC-relative pointer of fixed size points at, for reading where an LSDA is. Returns its size, or
+// -1 for any other encoding.
+static int eh_target(uint8_t enc, const uint8_t *p, uint64_t fa, uint64_t *target, int64_t *raw) {
+  int64_t v;
+  int size;
+  if ((enc & 0x70) != 0x10) return -1;
+  switch (enc & 0x0f) {
+    case 0x0b: { int32_t s; memcpy(&s, p, 4); v = s; size = 4; break; }
+    case 0x03: { uint32_t u; memcpy(&u, p, 4); v = u; size = 4; break; }
+    case 0x00: case 0x04: case 0x0c: memcpy(&v, p, 8); size = 8; break;
+    default: return -1;
+  }
+  *raw = v;
+  *target = fa + (uint64_t)v;
+  return size;
+}
+
+// One LSDA (a function's .gcc_except_table entry: call sites, actions, and the type table a typed catch or an
+// exception specification names its std::type_info by): its type-table entries are encoded pointers, PC-relative
+// and usually indirect through a DW.ref.<typeinfo> slot, which is writable data and may have moved. Each entry an
+// action or exception specification uses is repointed (eh_pointer), once per LSDA. Returns -1 (with *bad_at) for
+// what cannot be followed or rewritten.
+static int move_lsda(const Module *m, uint64_t lsda, uint64_t *bad_at) {
+  const uint8_t *p = (const uint8_t *)(m->base + lsda);
+  uint8_t lpstart_enc = *p++;
+  if (lpstart_enc != 0xff) {
+    int n = eh_pointer(m, lpstart_enc, (uint8_t *)p, 0, 0);
+    if (n < 0) return *bad_at = lsda, -1;
+    p += n;
+  }
+  uint8_t ttype_enc = *p++;
+  const uint8_t *ttype_base = NULL;
+  if (ttype_enc != 0xff) {
+    uint64_t off = uleb(&p);
+    ttype_base = p + off;
+  }
+  uint8_t cs_enc = *p++;
+  uint64_t cs_len = uleb(&p);
+  const uint8_t *cs = p, *cs_end = p + cs_len, *actions = cs_end;
+  uint64_t max_index = 0;
+  while (cs < cs_end) {
+    for (int k = 0; k < 3; k++) {  // start, length, landing pad
+      int n = eh_pointer(m, cs_enc, (uint8_t *)cs, 0, 0);
+      if (n <= 0) return *bad_at = lsda, -1;
+      cs += n;
+    }
+    uint64_t action = uleb(&cs);
+    if (!action) continue;
+    const uint8_t *a = actions + action - 1;
+    for (int guard = 0; guard < 4096; guard++) {
+      int64_t filter = (int64_t)sleb(&a);
+      const uint8_t *disp_at = a;
+      int64_t disp = (int64_t)sleb(&a);
+      if (filter > 0 && (uint64_t)filter > max_index) max_index = (uint64_t)filter;
+      if (filter < 0 && ttype_base) {  // an exception specification: type indices after the type table's base
+        const uint8_t *spec = ttype_base + (-filter - 1);
+        for (uint64_t i; (i = uleb(&spec)) != 0;) {
+          if (i > max_index) max_index = i;
+        }
+      }
+      if (!disp) break;
+      a = disp_at + disp;
+    }
+  }
+  if (!max_index) return 0;
+  if (!ttype_base) return *bad_at = lsda, -1;
+  int size;
+  switch (ttype_enc & 0x0f) {
+    case 0x02: case 0x0a: size = 2; break;
+    case 0x03: case 0x0b: size = 4; break;
+    case 0x00: case 0x04: case 0x0c: size = 8; break;
+    default: return *bad_at = lsda, -1;
+  }
+  for (uint64_t i = 1; i <= max_index; i++) {
+    uint8_t *e = (uint8_t *)ttype_base - i * (uint64_t)size;
+    if (eh_pointer(m, ttype_enc, e, (uint64_t)((uintptr_t)e - m->base), 1) < 0) {
+      return *bad_at = (uint64_t)((uintptr_t)e - m->base), -1;
+    }
+  }
+  return 0;
+}
+
 // Points .eh_frame's personality and LSDA pointers into moved data at the moved copy, so a C++ exception unwinds
 // through this library: the personality slot DW.ref.__gxx_personality_v0 is writable data (relocated), reached
 // PC-relative and indirect from each CIE. Returns -1 (with *bad_at) when a pointer cannot be moved, or .eh_frame
@@ -666,7 +748,8 @@ static int move_eh_frame(const Module *m, const uint8_t *file, size_t file_size,
   uint64_t start, end, lo = m->moved_lo - m->base, hi = m->moved_hi - m->base;
   if (!find_eh_frame(m, file, file_size, ph, phnum, &start, &end)) return 0;
   if (start < hi && end > lo) return *bad_at = start, -1;
-  uint64_t at_ = start;
+  uint64_t at_ = start, *seen = NULL;
+  size_t nseen = 0, capseen = 0;
   while (at_ + 4 <= end) {
     uint8_t *rec = (uint8_t *)(m->base + at_);
     uint64_t len = *(uint32_t *)rec, hdr = 4;
@@ -699,7 +782,7 @@ static int move_eh_frame(const Module *m, const uint8_t *file, size_t file_size,
           uint8_t enc = *q++;
           // Rewritten when the CIE itself is walked, not again for each FDE that refers to it.
           int n = eh_pointer(m, enc, (uint8_t *)q, (uint64_t)((uintptr_t)q - m->base), id == 0);
-          if (n < 0) return *bad_at = (uint64_t)((uintptr_t)q - m->base), -1;
+          if (n < 0) return free(seen), *bad_at = (uint64_t)((uintptr_t)q - m->base), -1;
           q += n;
         } else if (*a != 'S' && *a != 'B') break;
       }
@@ -709,15 +792,40 @@ static int move_eh_frame(const Module *m, const uint8_t *file, size_t file_size,
       const uint8_t *f = body + 4;
       for (int k = 0; k < 2; k++) {
         int n = eh_pointer(m, (uint8_t)(fde_enc & 0x0f), (uint8_t *)f, 0, 0);
-        if (n < 0) return *bad_at = (uint64_t)((uintptr_t)f - m->base), -1;
+        if (n < 0) return free(seen), *bad_at = (uint64_t)((uintptr_t)f - m->base), -1;
         f += n;
       }
       uleb(&f);
-      int n = eh_pointer(m, lsda_enc, (uint8_t *)f, (uint64_t)((uintptr_t)f - m->base), 1);
-      if (n < 0) return *bad_at = (uint64_t)((uintptr_t)f - m->base), -1;
+      uint64_t fa = (uint64_t)((uintptr_t)f - m->base), lsda;
+      int64_t raw;
+      // The LSDA (.gcc_except_table) is read-only data, never moved: its type table is what may point into moved
+      // data. Each is walked once, as functions can share one.
+      if (eh_target(lsda_enc, f, fa, &lsda, &raw) < 0 || (raw && lsda >= lo && lsda < hi)) {
+        free(seen);
+        return *bad_at = fa, -1;
+      }
+      int again = 0;
+      for (size_t i = 0; i < nseen && !again; i++) again = seen[i] == lsda;
+      if (raw && !again) {
+        if (nseen == capseen) {
+          capseen = capseen ? capseen * 2 : 64;
+          uint64_t *grown = realloc(seen, capseen * sizeof *seen);
+          if (!grown) {
+            free(seen);
+            return *bad_at = fa, -1;
+          }
+          seen = grown;
+        }
+        seen[nseen++] = lsda;
+        if (move_lsda(m, lsda, bad_at) < 0) {
+          free(seen);
+          return -1;
+        }
+      }
     }
     at_ = next;
   }
+  free(seen);
   return 0;
 }
 #endif

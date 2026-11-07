@@ -24,8 +24,13 @@ __attribute__((noinline)) static int thrower(int n) {
 
 extern "C" JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_PageFixtures_checkCxx(JNIEnv *env, jobject) {
   std::string result = "not thrown";
+  // Typed catches: each names its std::type_info through the LSDA's type table, PC-relative and indirect through a
+  // DW.ref slot in .data, which moves. A type table left pointing at the old slots reads zeros there, which the
+  // personality takes as catch (...): the first clause would then catch what is not a logic_error.
   try {
     thrower(depth);
+  } catch (const std::logic_error &) {
+    result = "caught as std::logic_error";
   } catch (const std::runtime_error &e) {
     result = std::string(e.what()) == "thrown in libpagefixturecxx" ? "ok" : std::string("caught ") + e.what();
   }
