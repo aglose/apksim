@@ -36,16 +36,22 @@ final class AppInfo {
     Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
         .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
     String pkg = doc.getDocumentElement().getAttribute("package");
-    Element launcher = null;  // the first MAIN/LAUNCHER activity or alias, as a device's launcher starts it
-    Element home = null;  // the first MAIN/HOME one, as a device starts its home app
+    // The MAIN/LAUNCHER activity or alias a device's launcher starts, the MAIN/HOME one its home app: the way
+    // PackageManager orders matches, highest intent-filter priority first, then CATEGORY_DEFAULT, then manifest order.
+    Element launcher = null;
+    long launcherRank = Long.MIN_VALUE;
+    Element home = null;
+    long homeRank = Long.MIN_VALUE;
     Map<String, Element> activities = new LinkedHashMap<>();  // full name -> element, aliases too
     for (String tag : new String[] {"activity", "activity-alias"}) {
       NodeList list = doc.getElementsByTagName(tag);
       for (int i = 0; i < list.getLength(); i++) {
         Element a = (Element) list.item(i);
         activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
-        if (launcher == null && hasMain(a, "android.intent.category.LAUNCHER")) launcher = a;
-        if (home == null && hasMain(a, "android.intent.category.HOME")) home = a;
+        long l = mainRank(a, "android.intent.category.LAUNCHER");
+        if (l > launcherRank) { launcher = a; launcherRank = l; }
+        long h = mainRank(a, "android.intent.category.HOME");
+        if (h > homeRank) { home = a; homeRank = h; }
       }
     }
     // A test run needs none: a library's test APK (KMP androidDeviceTest, a library's androidTest) is its own app.
@@ -147,6 +153,26 @@ final class AppInfo {
       if (has(f, "action", "android.intent.action.MAIN") && has(f, "category", category)) return true;
     }
     return false;
+  }
+
+  /** The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE. */
+  private static long mainRank(Element activity, String category) {
+    long best = Long.MIN_VALUE;
+    NodeList filters = activity.getElementsByTagName("intent-filter");
+    for (int i = 0; i < filters.getLength(); i++) {
+      Element f = (Element) filters.item(i);
+      if (!has(f, "action", "android.intent.action.MAIN") || !has(f, "category", category)) continue;
+      int priority = 0;
+      try {
+        String p = f.getAttribute(NS + "priority");
+        if (!p.isEmpty()) priority = (int) Long.decode(p).longValue();
+      } catch (NumberFormatException e) {
+        // an unreadable priority counts as 0
+      }
+      long rank = priority * 2L + (has(f, "category", "android.intent.category.DEFAULT") ? 1 : 0);
+      best = Math.max(best, rank);
+    }
+    return best;
   }
 
   private static boolean has(Element filter, String tag, String value) {
