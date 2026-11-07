@@ -873,7 +873,10 @@ lock, and none starts once a stop has begun), and with `--apksim "docker|podman 
 killed and the client killed before `rm -f`, and a client that dies of any signal has its container removed too; each
 process gets a cidfile of its own, as docker refuses one that exists, so a `--cidfile` in `--apksim` is taken out and
 gets the ID of the last container to end); the test
-fails "timed out after SEC s" with the stderr tail, and with `--bundles` gets process.txt. Test runs launch cold, so
+fails "timed out after SEC s" with the dump's JUnit threads first (each whole from its header down, cut at the
+bottom), then the stderr tail, which starts at a stack's header rather than inside it; a stack at the end of stderr
+need not be where the process is stuck (issue 115's was CloseGuard reporting, at a GC, a descriptor a listener's
+executeShellCommand returned and never closed), and with `--bundles` gets process.txt. Test runs launch cold, so
 the process is the JVM itself (the launcher execs it), never a standby's client.
 `ProcessDeathTest` checks it with `-e crashOnPurpose true` (otherwise its two crashing tests are skipped): one halts
 the process, one ignores interrupts past its timeout, and the tests after each still pass; with `-e hangOnPurpose
