@@ -77,21 +77,28 @@ public final class Exits {
 
   /** The app's {@code runtime.exit(code)}. */
   public static void runtimeExit(Runtime runtime, int code) {
+    java.util.Objects.requireNonNull(runtime);  // as the call would throw, before anything is logged
     appExit("Runtime.exit", code);
     runtime.exit(code);
   }
 
   /** The app's {@code runtime.halt(code)}: no shutdown hooks, so the warm client is told here. */
   public static void runtimeHalt(Runtime runtime, int code) {
+    java.util.Objects.requireNonNull(runtime);
     appExit("Runtime.halt", code);
     Standby.haltNow(code);
   }
 
+  /** Logs and saves best-effort: an app exiting from an OutOfMemoryError handler still exits. */
   private static void appExit(String call, int code) {
-    StackTraceElement[] st = new Throwable().getStackTrace();
-    log(code, "the app called " + call + "(" + code + ") on thread " + Thread.currentThread().getName() + caller(st, 2)
-        + stack(st, 2));
     Standby.exitCode = code;
+    try {
+      StackTraceElement[] st = new Throwable().getStackTrace();
+      log(code, "the app called " + call + "(" + code + ") on thread " + Thread.currentThread().getName() + caller(st, 2)
+          + stack(st, 2));
+    } catch (Throwable ignored) {
+      // Exiting anyway.
+    }
     try {
       SlotDevice.flush();
       ClassCache.flush();
@@ -120,8 +127,12 @@ public final class Exits {
   }
 
   private static void killed(String call) {
-    StackTraceElement[] st = new Throwable().getStackTrace();
-    log(KILLED, "the app called " + call + " on thread " + Thread.currentThread().getName() + caller(st, 2) + stack(st, 2));
+    try {
+      StackTraceElement[] st = new Throwable().getStackTrace();
+      log(KILLED, "the app called " + call + " on thread " + Thread.currentThread().getName() + caller(st, 2) + stack(st, 2));
+    } catch (Throwable ignored) {
+      // Killed anyway.
+    }
     try {
       SlotDevice.flush();  // what a device has already written to disk (its settings provider) survives
     } catch (Throwable ignored) {

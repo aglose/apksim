@@ -96,7 +96,11 @@ final class Standby {
       Thread hangup = new Thread(() -> {
         nativeAwaitHangup();
         // The launch was interrupted (Ctrl-C, terminal closed, killed): the instance goes with it.
-        if (!Exits.ending) Exits.log(130, "the launcher's client went away (Ctrl-C, its terminal closed, or killed)");
+        try {
+          if (!Exits.ending) Exits.log(130, "the launcher's client went away (Ctrl-C, its terminal closed, or killed)");
+        } catch (Throwable ignored) {
+          // Going anyway.
+        }
         SlotDevice.flush();
         ClassCache.flush();
         Storage.deleteScratch();

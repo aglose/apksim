@@ -134,7 +134,11 @@ final class Crashes {
     } catch (Throwable ignored) {
       // Swept at the next launch.
     }
-    Exits.log(10, "the app crashed (FATAL EXCEPTION above)");
+    try {
+      Exits.log(10, "the app crashed (FATAL EXCEPTION above)");
+    } catch (Throwable ignored) {
+      // Exits may not initialize (out of memory): the halt below must still run.
+    }
     Standby.haltNow(10);
   }
 
