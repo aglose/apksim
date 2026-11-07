@@ -217,6 +217,12 @@ public final class Serve {
       System.err.println("apksim serve: binding to " + bind + " needs --token FILE (a shared secret every request must carry)");
       System.exit(2);
     }
+    if (trustProxy && (token == null || token.isEmpty())) {
+      // Any loopback connection counts as the proxy: without a token, a DNS-rebinding page reaching loopback could
+      // send its own X-Forwarded-Host and pass as one.
+      System.err.println("apksim serve: --trust-proxy needs --token FILE (any loopback connection is taken for the proxy)");
+      System.exit(2);
+    }
     if (token != null && token.length() < 16) {
       System.err.println("apksim serve: the token must be at least 16 characters");
       System.exit(2);
@@ -579,6 +585,8 @@ public final class Serve {
     if (r.headers().containsKey(PROXIED)) return true;  // a loopback proxy's request (--trust-proxy): see forwarded()
     String host = r.header("host");
     if (host == null) return false;
+    // The public origin's own host (--public-origin), as a proxy that keeps Host sends it.
+    if (publicOrigin != null && publicOrigin.equals(origin(publicOrigin.substring(0, publicOrigin.indexOf(':')) + "://" + host))) return true;
     String h = host.startsWith("[") ? host.substring(0, host.indexOf(']') + 1) : host.replaceFirst(":\\d+$", "");
     return h.equals("localhost") || h.equals("127.0.0.1") || h.equals("[::1]") || h.endsWith(".localhost");
   }
@@ -598,6 +606,9 @@ public final class Serve {
       // In the browser's form, as Origin is sent: X-Forwarded-Host app.example.com:443 over https is https://app.example.com.
       String forwarded = origin((proto == null ? "http" : proto.toLowerCase(Locale.ROOT)) + "://" + fwHost);
       if (forwarded != null && o.equals(forwarded)) return true;
+      // Through a proxy, the upstream Host (127.0.0.1:8080) is not the page's origin: only the forwarded one, the
+      // public one and the allowed ones are.
+      return allowedOrigins.contains(o);
     }
     String host = r.header("host");
     if (host != null && (origin.equals("http://" + host) || origin.equals("https://" + host))) return true;

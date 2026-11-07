@@ -67,10 +67,12 @@ origin. Proxies usually rewrite `Host` to the upstream, keep the browser's `Orig
 - `--trust-proxy`: a request from a loopback peer (a proxy beside serve, in the same pod or host) that carries
   `X-Forwarded-Host` is taken as addressed to that host. Its `Origin` is checked against `X-Forwarded-Proto://X-Forwarded-Host`
   (the first value of each, for a chain of proxies), and the loopback `Host` check (DNS rebinding) does not apply to
-  it. The headers are ignored from any other peer, so a client cannot claim them. Serve itself then listens on loopback.
+  it, and an `Origin` matching only serve's upstream `Host` is refused. The headers are ignored from any other peer, so
+  a client cannot claim them. Serve itself then listens on loopback. It needs `--token`: any loopback connection is
+  taken for the proxy, so without one a DNS-rebinding page could pass as it.
 - `--public-origin URL` (e.g. `https://app.example.com`): the origin browsers reach serve at. It is accepted as serve's
-  own for WebSockets and POSTs whatever the headers say, and the link serve prints at startup uses it. The simpler
-  choice when there is one public origin.
+  own for WebSockets and POSTs whatever the headers say, its host passes the loopback `Host` check (a proxy that keeps
+  `Host`), and the link serve prints at startup uses it. The simpler choice when there is one public origin.
 - `--base-path /sim`: the page, `/ws` and `/api/*` are served under `/sim/` (`/sim` redirects there). A proxy that
   strips the prefix itself works too, with or without the option. The page builds every URL relative to its own
   folder, the token link's redirect is relative, and "Copy link" uses the page's own address, so links keep the
