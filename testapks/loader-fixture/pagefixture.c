@@ -38,7 +38,23 @@ __attribute__((visibility("default"))) int pagefixture_exported = 7;  // through
 
 // dl_iterate_phdr (unwinders and crash reporters walk it) must describe the library as it is in memory: counter
 // inside one of its PT_LOADs, and its PT_DYNAMIC where the dynamic section is.
-struct phdr_seen { int found, counter_in_load, dynamic_right; };
+struct phdr_seen { int found, counter_in_load, dynamic_right, pltgot_live; };
+
+// DT_PLTGOT read from the PT_DYNAMIC dl_iterate_phdr gives, plus dlpi_addr, must be the live GOT: one of its jump
+// slots holds memset as resolved (a stale copy holds the file's unrelocated words).
+static void check_pltgot(struct dl_phdr_info *info, const ElfW(Dyn) *dyn, struct phdr_seen *seen) {
+  uintptr_t pltgot = 0, pltrelsz = 0;
+  for (const ElfW(Dyn) *e = dyn; e->d_tag != DT_NULL; e++) {
+    if (e->d_tag == DT_PLTGOT) pltgot = e->d_un.d_ptr;
+    if (e->d_tag == DT_PLTRELSZ) pltrelsz = e->d_un.d_val;
+  }
+  if (!pltgot) return;
+  void *volatile want = (void *)memset;
+  void *const *got = (void *const *)(info->dlpi_addr + pltgot);
+  for (size_t i = 3; i < 3 + pltrelsz / sizeof(ElfW(Rela)); i++) {
+    if (got[i] == want) seen->pltgot_live = 1;
+  }
+}
 
 static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
   (void)size;
@@ -50,6 +66,10 @@ static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
     uintptr_t at = info->dlpi_addr + p->p_vaddr;
     if (p->p_type == PT_LOAD && c >= at && c < at + p->p_memsz) mine = seen->counter_in_load = 1;
     if (p->p_type == PT_DYNAMIC && at == dyn) seen->dynamic_right = 1;
+  }
+  for (int i = 0; mine && i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *p = &info->dlpi_phdr[i];
+    if (p->p_type == PT_DYNAMIC) check_pltgot(info, (const ElfW(Dyn) *)(info->dlpi_addr + p->p_vaddr), seen);
   }
   if (mine) seen->found = 1;
   return mine;
@@ -86,9 +106,10 @@ JNIEXPORT jstring JNICALL JNI_NAME(FIXTURE_METHOD)(JNIEnv *env, jobject self) {
   pagefixture_exported++;
   if (*e != 8) return fail(env, "an exported variable did not take a write");
   pagefixture_exported = 7;
-  struct phdr_seen seen = {0, 0, 0};
+  struct phdr_seen seen = {0, 0, 0, 0};
   dl_iterate_phdr(phdr_callback, &seen);
   if (!seen.found) return fail(env, "dl_iterate_phdr has no PT_LOAD holding .data");
   if (!seen.dynamic_right) return fail(env, "dl_iterate_phdr's PT_DYNAMIC is not where the dynamic section is");
+  if (!seen.pltgot_live) return fail(env, "DT_PLTGOT through dl_iterate_phdr is not the live GOT");
   return fail(env, "ok");
 }

@@ -504,6 +504,36 @@ static long patch_moved_refs(const Module *m, const uint8_t *file, size_t file_s
 }
 #endif
 
+// Gives back a failed load's address range: its pages (file mappings, both copies of moved data) dropped for an
+// inaccessible reservation again, and the arena's next address put back when nothing was placed after it, so a
+// library whose System.loadLibrary keeps failing does not use up the arena.
+static void release_range(uintptr_t base, size_t total, size_t page) {
+  // The page after the range too: arm64 Linux keeps the module's thread-pointer page there (map_tp_page).
+  size_t len = base + total + page <= elf_arena_hi ? total + page : total;
+  mmap((void *)base, len, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+  if (arena_next == base + total + page) arena_next = base;
+}
+
+#ifdef __APPLE__
+// The dynamic section as dl_iterate_phdr's callers read it (DT_PLTGOT, DT_SYMTAB, ... plus dlpi_addr): entries that
+// hold addresses in the moved range get their new ones. Sizes, offsets and flags stay. Done once the loader has
+// finished reading the entries through at(), which expects the file's addresses.
+static void move_dynamic_addresses(const Module *m, uint64_t *d) {
+  uint64_t lo = m->moved_lo - m->base, hi = m->moved_hi - m->base;
+  for (uint64_t *e = d; e[0] != DT_NULL; e += 2) {
+    switch (e[0]) {
+      case 3:  /* DT_PLTGOT */ case DT_HASH: case DT_STRTAB: case DT_SYMTAB: case DT_RELA: case DT_INIT:
+      case 13: /* DT_FINI */ case DT_JMPREL: case DT_INIT_ARRAY: case 26: /* DT_FINI_ARRAY */
+      case 32: /* DT_PREINIT_ARRAY */ case DT_RELR: case DT_GNU_HASH: case DT_ANDROID_RELA: case DT_ANDROID_RELR:
+      case 0x6ffffef6: /* DT_TLSDESC_PLT */ case 0x6ffffef7: /* DT_TLSDESC_GOT */
+      case 0x6ffffff0: /* DT_VERSYM */ case 0x6ffffffc: /* DT_VERDEF */ case 0x6ffffffe: /* DT_VERNEED */
+        if (e[1] >= lo && e[1] < hi) e[1] += m->moved_by;
+        break;
+    }
+  }
+}
+#endif
+
 static int is_system_lib(const char *n) {
   static const char *sys[] = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv1_CM.so",
                               "libGLESv2.so", "libGLESv3.so", "libOpenSLES.so", "libjnigraphics.so", "libz.so", "libstdc++.so",
@@ -587,6 +617,7 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   arena_next = base + total + page;
   if (mprotect((void *)base, total, PROT_READ | PROT_WRITE)) {
     close(fd);
+    release_range(base, total, page);
     snprintf(err, errlen, APK_ENTRY ": mprotect failed", base_name);
     goto done;
   }
@@ -603,12 +634,19 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
     m->moved_lo = base + move_lo;
     m->moved_hi = base + move_hi;
     m->moved_by = move_by;
-    memcpy((void *)(m->moved_lo + move_by), (void *)m->moved_lo, move_hi - move_lo);
+    // Only the file's bytes: .bss and gaps stay as the fresh mapping has them, zero and untouched.
+    for (int i = 0; i < phnum; i++) {
+      if (ph[i].type != PT_LOAD) continue;
+      uint64_t s = ph[i].vaddr > move_lo ? ph[i].vaddr : move_lo;
+      uint64_t e = ph[i].vaddr + ph[i].filesz < move_hi ? ph[i].vaddr + ph[i].filesz : move_hi;
+      if (s < e) memcpy((void *)(base + s + move_by), file + ph[i].offset + (s - ph[i].vaddr), e - s);
+    }
     uint64_t bad_at = 0;
     long patched = patch_moved_refs(m, file, st.st_size, ph, phnum, &bad_at);
     if (patched < 0) {
       munmap(file, st.st_size);
       free(m);
+      release_range(base, total, page);
       snprintf(err, errlen,
                APK_ENTRY " is 4 KB aligned with writable data on a 16 KB page with code, which macOS cannot map; moving"
                " the data left the instruction at 0x%llx out of reach of it. Rebuild it for 16 KB pages (NDK r27 or"
@@ -691,7 +729,13 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
     if (is_system_lib(dep) || elf_loaded(dep)) continue;
     char dep_path[1200];
     snprintf(dep_path, sizeof dep_path, "%s/%s", search_dir, dep);
-    if (!elf_load(dep_path, err, errlen)) goto done;  // err says why; same outcome as on a device.
+    if (!elf_load(dep_path, err, errlen)) {  // err says why; same outcome as on a device.
+      munmap(file, st.st_size);
+      free(m->phdr_copy);
+      free(m);
+      release_range(base, total, page);
+      goto done;
+    }
   }
   m->next = modules;
   modules = m;
@@ -700,6 +744,9 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   if (arela) apply_android_rela(m, (const uint8_t *)at(m, base + arela), arelasz);
   for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + rela) + i);
   for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + jmprel) + i);
+#ifdef __APPLE__
+  if (m->moved_by) move_dynamic_addresses(m, (uint64_t *)d);
+#endif
 
   for (int i = 0; i < phnum; i++) {
     if (ph[i].type != PT_LOAD) continue;
@@ -728,6 +775,14 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
 #endif
       if (mprotect((void *)from, to - from, prot) && (make_anonymous(from, to - from) || mprotect((void *)from, to - from, prot))) {
         snprintf(err, errlen, "cannot make " APK_ENTRY " executable", base_name);
+        munmap(file, st.st_size);
+        // Not loaded after all: out of the list (it is the newest unless a relocation loaded more) and the range back.
+        if (modules == m) {
+          modules = m->next;
+          free(m->phdr_copy);
+          free(m);
+          release_range(base, total, page);
+        }
         goto done;
       }
     }
