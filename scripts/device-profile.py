@@ -53,7 +53,7 @@ def main():
         if not m:
             sys.exit(f"--setting takes global|secure|system:KEY, not {s}")
         v = sh("settings", "get", m.group(1), m.group(2))
-        if v and v != "null":
+        if v != "null":  # `settings get` prints "null" for an unset key; an empty value is still a value
             out.append(f"setting.{s}={v}")
     print("\n".join(out))
 
