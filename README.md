@@ -64,7 +64,7 @@ That trade is where both the speed and the limits come from.
 
 | | apksim | Android emulator |
 |---|---|---|
-| **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its arm64 native libraries loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
+| **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its native libraries for the host's ABI loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
 | **To first frame** | ~0.2-0.5 s warm, ~1.4-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
 | **Memory** | ~550-780 MB per instance | 3-4 GB |
 | **Install step** | None: `apksim app.apk` | `adb install` onto a booted device |
