@@ -262,6 +262,7 @@ public class Host {
           continue;
         }
         emptySince = 0;
+        lastFinished = null;  // only the exit line needs it, once nothing is left
         if (Snapshot.ON) focusTopWindow();
         List<View> roots = rootViews();
         syncWindowPositions(roots);
@@ -933,6 +934,7 @@ public class Host {
         touchTarget = r;
         if (inside || !isTouchThrough(r)) break;
       }
+      if (touchTarget == null) return;  // no window (the last activity finished, a start may follow): nothing to touch
       int[] at = position(touchTarget);
       touchDx = at[0];
       touchDy = at[1];

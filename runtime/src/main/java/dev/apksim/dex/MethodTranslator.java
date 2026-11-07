@@ -2733,6 +2733,16 @@ final class MethodTranslator implements Opcodes {
       default -> H_INVOKEINTERFACE;
     };
     String o = m.ownerInternal();
+    // The app's own exits, as for a call (dev.apksim.Exits): a handle to Runtime's takes the receiver first.
+    if ("(I)V".equals(m.descriptor())) {
+      if (kind == 4 && "java/lang/System".equals(o) && "exit".equals(m.name())) {
+        return new Handle(H_INVOKESTATIC, "dev/apksim/Exits", "systemExit", "(I)V", false);
+      }
+      if (kind == 5 && "java/lang/Runtime".equals(o) && ("exit".equals(m.name()) || "halt".equals(m.name()))) {
+        return new Handle(H_INVOKESTATIC, "dev/apksim/Exits", "exit".equals(m.name()) ? "runtimeExit" : "runtimeHalt",
+            "(Ljava/lang/Runtime;I)V", false);
+      }
+    }
     return new Handle(tag, o, m.name(), m.descriptor(), kind == 8 || (kind != 6 && isInterface.test(o)));
   }
 
