@@ -1339,11 +1339,13 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeDisplayImage(JNIEnv *env,
   uint8_t *dst = (*env)->GetDirectBufferAddress(env, buffer);
   if (!dst || !frameLayer || w != devW || h != devH) return 0;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  __block int rendered = 0;  // 0 when no context could be made: the caller keeps its own image
   onMain(^{
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(dst, w, h, 8, (size_t)w * 4, cs,
                                              kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     if (ctx) {
+      rendered = 1;
       BOOL fingerHidden[2];  // a finger dot still down (or hidden after its gesture) keeps its own visibility
       for (int i = 0; i < 2; i++) {
         fingerHidden[i] = fingerLayers[i].hidden;
@@ -1358,7 +1360,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeDisplayImage(JNIEnv *env,
     dispatch_semaphore_signal(done);
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
-  return 1;
+  return rendered;
 }
 
 // What the screen can do, and how many frames reached Core Animation, on the thread that shows them.
