@@ -100,7 +100,7 @@ Only these are accepted, each with one plain value (no value starting with `-` e
   `headers` go with the download only (an artifact store's `Authorization`) and are never stored; `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
   rules: listed nowhere, deleted a day after its last use. A failed download is reported for an hour. At most 4
-  downloads run at once; another add gets `503` with `Retry-After`.
+  downloads run at once; another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
 - `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
   last three while it is downloading or has failed).
 - A tab (or `/ws?app=ID`) may open the id while it is still downloading: the session waits for it and sends `p
@@ -111,7 +111,8 @@ Only these are accepted, each with one plain value (no value starting with `-` e
 A trusted page (a team dashboard that picks the build, e.g. the APK CI built for a pull request) can show a session
 inside itself:
 
-- Start serve with `--allow-origin https://dashboard.example.com`. That origin is added to the page's
+- Start serve with `--allow-origin https://dashboard.example.com` (written as a browser sends it in `Origin` or not:
+  serve compares the canonical form, so `https://dashboard.example.com:443` works too). That origin is added to the page's
   `frame-ancestors` (with `'self'`; `X-Frame-Options` is then not sent, since it cannot name an origin), and its
   WebSocket upgrades and POSTs are accepted like serve's own. Responses to its requests carry
   `Access-Control-Allow-Origin`, and its CORS preflights (`OPTIONS`, which carry no token) are answered; the requests
@@ -170,8 +171,9 @@ that no deep link names, data entered).
 - `GET /api/status`: limits, the standby (Mac), and each session: app, device, PID, resident memory (RSS), Java heap
   in use, time to first frame, idle time, frames sent.
 - `GET /api/health`: needs no token, for HTTP readiness and liveness probes and load balancers. `200 ok`, or `503 not
-  ready: REASON` when a session could not start: no launcher, the state folder (`STATE/serve`) not writable, or less
-  free disk there than 512 MB plus `--max-upload`. It says nothing else; `/api/status` stays behind the token.
+  ready: REASON` when a session could not start: no launcher, `STATE/serve` or its `logs`, `uploads` or `downloads`
+  folder not writable, or less
+  free disk there than 512 MB plus `--max-upload`. It says nothing else; `/api/status` stays behind the token. An `--allow-origin` page can read it.
 - The tab shows its own session's numbers in a bar under the screen, and the stream's fps and latency.
 
 ### Security

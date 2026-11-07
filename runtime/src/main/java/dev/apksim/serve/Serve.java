@@ -112,13 +112,12 @@ public final class Serve {
           s.basePath = b;
         }
         case "--allow-origin" -> {
-          String o = need(a, v);
-          // An origin as a browser sends it: scheme, host, optional port; no path, no wildcard.
-          if (!o.matches("https?://[A-Za-z0-9.-]+(:\\d{1,5})?|https?://\\[[0-9A-Fa-f:]+\\](:\\d{1,5})?")) {
+          String o = origin(need(a, v));
+          if (o == null) {
             System.err.println("--allow-origin takes an origin such as https://dashboard.example.com (no path)\n" + USAGE);
             System.exit(2);
           }
-          s.allowedOrigins.add(o.toLowerCase(Locale.ROOT));
+          s.allowedOrigins.add(o);
         }
         case "--no-network" -> {
           s.noNetwork = true;
@@ -136,6 +135,71 @@ public final class Serve {
       i++;
     }
     s.run();
+  }
+
+  /**
+   * An origin as a browser sends it in `Origin`, or null when it is not one: lower case, no default port
+   * (`https://a.example:443` is sent as `https://a.example`), an IPv6 address in its short form (RFC 5952:
+   * `[0:0:0:0:0:0:0:1]` is sent as `[::1]`). Headers are compared with it as they come.
+   */
+  static String origin(String given) {
+    java.net.URI u;
+    try {
+      u = new java.net.URI(given.strip().replaceFirst("/$", ""));
+    } catch (java.net.URISyntaxException e) {
+      return null;
+    }
+    String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
+    if (!scheme.equals("http") && !scheme.equals("https") || u.getHost() == null || u.getRawUserInfo() != null
+        || !(u.getRawPath() == null || u.getRawPath().isEmpty()) || u.getRawQuery() != null || u.getRawFragment() != null) {
+      return null;
+    }
+    String host = u.getHost().toLowerCase(Locale.ROOT);
+    if (host.startsWith("[")) {
+      try {
+        byte[] b = InetAddress.getByName(host.substring(1, host.length() - 1)).getAddress();
+        if (b.length != 16) return null;
+        host = "[" + ipv6(b) + "]";
+      } catch (java.io.IOException e) {
+        return null;
+      }
+    } else if (!host.matches("[a-z0-9.-]+")) {
+      return null;
+    }
+    int port = u.getPort();
+    boolean usual = port == -1 || scheme.equals("http") && port == 80 || scheme.equals("https") && port == 443;
+    return scheme + "://" + host + (usual ? "" : ":" + port);
+  }
+
+  /** RFC 5952's form: hex groups without leading zeros, the longest run of two or more zero groups as "::". */
+  private static String ipv6(byte[] b) {
+    int[] g = new int[8];
+    for (int i = 0; i < 8; i++) g[i] = ((b[2 * i] & 0xff) << 8) | (b[2 * i + 1] & 0xff);
+    int best = -1, bestLen = 0;
+    for (int i = 0; i < 8; ) {
+      if (g[i] != 0) {
+        i++;
+        continue;
+      }
+      int j = i;
+      while (j < 8 && g[j] == 0) j++;
+      if (j - i > bestLen && j - i >= 2) {
+        best = i;
+        bestLen = j - i;
+      }
+      i = j;
+    }
+    StringBuilder s = new StringBuilder();
+    for (int i = 0; i < 8; i++) {
+      if (i == best) {
+        s.append("::");
+        i += bestLen - 1;
+        continue;
+      }
+      if (s.length() > 0 && s.charAt(s.length() - 1) != ':') s.append(':');
+      s.append(Integer.toHexString(g[i]));
+    }
+    return s.toString();
   }
 
   private static String need(String option, String value) {
@@ -262,6 +326,18 @@ public final class Serve {
       Http.text(out, 403, "this server answers only to localhost");
       return;
     }
+    // An --allow-origin page's requests: their responses say it may read them (health included), and its preflights (a
+    // JSON POST with a bearer token sends one, without the token) are answered before authentication. The request
+    // itself still needs the token.
+    String origin = r.header("origin");
+    if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
+      Http.CORS_ORIGIN.set(origin);
+      if (r.method().equals("OPTIONS")) {
+        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
+        return;
+      }
+    }
     // Health probes (Kubernetes, load balancers) cannot send a token: "ok" or why not, nothing more.
     if (r.method().equals("GET") && r.path().equals("/api/health")) {
       String why = notReady();
@@ -282,17 +358,6 @@ public final class Serve {
       Http.respond(out, 302, "text/plain", new byte[0], "Location: " + to,
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;
-    }
-    // An --allow-origin page's requests: their responses say it may read them, and its preflights (a JSON POST with a
-    // bearer token sends one, without the token) are answered before authentication. The request itself still needs it.
-    String origin = r.header("origin");
-    if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
-      Http.CORS_ORIGIN.set(origin);
-      if (r.method().equals("OPTIONS")) {
-        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
-            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
-        return;
-      }
     }
     if (!authorized(r)) {
       Http.text(out, 401, "this server needs its token: open the link with ?token=... once (or send Authorization: Bearer ...)");
@@ -437,7 +502,10 @@ public final class Serve {
   private String notReady() {
     if (!Files.isExecutable(launcher)) return "no launcher at " + launcher;
     Path dir = state.resolve("serve");
-    if (!Files.isDirectory(dir) || !Files.isWritable(dir)) return "the state folder " + dir + " is not writable";
+    // Where sessions write: their logs, uploads and downloads (each made at startup).
+    for (Path d : List.of(dir, logs, dir.resolve("uploads"), dir.resolve("downloads"))) {
+      if (!Files.isDirectory(d) || !Files.isWritable(d)) return "the state folder " + d + " is not writable";
+    }
     try {
       long free = Files.getFileStore(dir).getUsableSpace();
       // An instance's data slot and caches, and an upload of the largest size allowed.

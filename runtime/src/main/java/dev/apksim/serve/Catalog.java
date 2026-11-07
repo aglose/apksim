@@ -235,7 +235,17 @@ final class Catalog {
     c.setConnectTimeout(15_000);
     c.setReadTimeout(60_000);
     headers.forEach(c::setRequestProperty);
-    if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode() + " from " + URI.create(url).getHost());
+    int code;
+    try {
+      code = c.getResponseCode();
+    } catch (IOException e) {
+      c.disconnect();
+      throw e;
+    }
+    if (code != 200) {
+      c.disconnect();  // not left open until a GC: a failed download releases its slot at once
+      throw new IOException("HTTP " + code + " from " + URI.create(url).getHost());
+    }
     return c;
   }
 
@@ -255,6 +265,7 @@ final class Catalog {
     if (!"https".equals(u.getScheme()) && !"http".equals(u.getScheme()) || u.getHost() == null) {
       throw new IOException("only http(s) URLs");
     }
+    pruneFailures();
     if (!downloadSlots.tryAcquire()) {
       throw new Busy(MAX_DOWNLOADS + " downloads are running: try again when one has finished");
     }
@@ -265,7 +276,6 @@ final class Catalog {
     downloading.put(pending.id(), d);
     Thread.ofVirtual().name("serve-download").start(() -> {
       try {
-        if (downloading.size() > 1000) throw new IOException("too many added apps waiting");
         HttpURLConnection c = connect(url, headers);
         d.total = c.getContentLengthLong();
         Path tmp;
@@ -285,6 +295,19 @@ final class Catalog {
       if (!d.done.isCompletedExceptionally()) downloading.remove(pending.id());
     });
     return pending;
+  }
+
+  /** Failed downloads kept for their ids to answer why (an hour, at most {@link #MAX_FAILURES}): the oldest go first. */
+  static final int MAX_FAILURES = 100;
+
+  private void pruneFailures() {
+    long hourAgo = System.currentTimeMillis() - 3_600_000L;
+    downloading.values().removeIf(d -> d.done.isCompletedExceptionally() && d.started < hourAgo);
+    List<Download> failed = new ArrayList<>();
+    for (Download d : downloading.values()) if (d.done.isCompletedExceptionally()) failed.add(d);
+    if (failed.size() <= MAX_FAILURES) return;
+    failed.sort(java.util.Comparator.comparingLong(d -> d.started));
+    for (Download d : failed.subList(0, failed.size() - MAX_FAILURES)) downloading.remove(d.app.id(), d);
   }
 
   /** An added app's download: null when it is not one (or finished long ago). */
@@ -368,8 +391,7 @@ final class Catalog {
 
   /** Deletes uploads not used for this long, and stored APKs no upload refers to any more. */
   void sweep(long maxAgeMillis) {
-    // Failed downloads are kept an hour, so a tab that opens the id hears why.
-    downloading.values().removeIf(d -> d.done.isCompletedExceptionally() && d.started < System.currentTimeMillis() - 3_600_000L);
+    pruneFailures();
     synchronized (uploadsLock) {
       sweepLocked(maxAgeMillis);
     }
