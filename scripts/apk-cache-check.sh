@@ -78,17 +78,22 @@ LAUNCHED=1
 for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
 drive ping | grep -q pong || { echo "the held instance never answered" >&2; exit 1; }
 sleep 4  # past its own sweep (skipped: the earlier launches swept within the hour)
-# Old enough to go, but in use; and an entry from an older apksim (no markers) and a half-deleted one, both to go.
+# Old enough to go, but in use; an entry from an older apksim (no markers) unused for 15 days and a left-over in the
+# trash, both to go; and one from an older apksim used 2 hours ago, which may be running and stays even over the cap.
 age 7200 "$CACHE/${A% }/last-used"
 mkdir -p "$CACHE/old.apk-1700000000000/lib" "$CACHE/.apk-cache-trash/left-over/dex"
 echo '<manifest/>' > "$CACHE/old.apk-1700000000000/AndroidManifest.xml"
-age 7200 "$CACHE/old.apk-1700000000000/AndroidManifest.xml"
+age $((15 * 86400)) "$CACHE/old.apk-1700000000000/AndroidManifest.xml"
+mkdir -p "$CACHE/recent.apk-1700000000001"
+echo '<manifest/>' > "$CACHE/recent.apk-1700000000001/AndroidManifest.xml"
+age 7200 "$CACHE/recent.apk-1700000000001/AndroidManifest.xml"
 rm -f "$CACHE/apk-cache.swept"
 once b third.log --jvm -Dapksim.apkCacheMB=0
 NOW="$(entries)"
 [[ "$NOW" == *"${A% }"* ]] || fail "the running instance's entry was evicted: $NOW"
 [[ "$(echo $NOW | wc -w)" -eq 2 ]] || fail "wanted the held entry and the new one, got: $NOW"
-[[ ! -e "$CACHE/old.apk-1700000000000" ]] || fail "an unused old-format entry was kept"
+[[ ! -e "$CACHE/old.apk-1700000000000" ]] || fail "an old-format entry unused for 15 days was kept"
+[[ -e "$CACHE/recent.apk-1700000000001" ]] || fail "an old-format entry used 2 hours ago was evicted"
 [[ ! -e "$CACHE/.apk-cache-trash/left-over" ]] || fail "a left-over in the trash was kept"
 echo "ok: kept $NOW, evicted the unused ones"
 drive quit >/dev/null 2>&1 || true

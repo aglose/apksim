@@ -28,12 +28,15 @@ import java.util.stream.Stream;
  * `<entry>/in-use.lock` for as long as the process lives (released by the OS when it dies, in a container on a
  * shared volume too) and touches `<entry>/last-used`. A sweep runs at most once an hour across processes
  * (`cache/apk-cache.swept`), 3 s after startup on a background thread, or on the way out if the launch ends sooner
- * (`beforeExit`, from Standby.halt, after the launcher's client has been told the exit code). It lists and sizes the
+ * (`beforeExit`, from Standby.halt, before the launcher's client is told the exit code: once told, the next launch may
+ * start while this process still holds its data slot). It lists and sizes the
  * entries without a lock: an entry is a candidate when it is not this process's and was not used in the last 10
  * minutes; those unused for 14 days go, then the least recently used until the rest fit in `-Dapksim.apkCacheMB`
  * (default 2048). Under the global lock held exclusively each candidate is checked again (used since, or locked by a
  * process: it stays) and moved into `cache/.apk-cache-trash/`, which is emptied after the lock is released, so a
- * launch never waits for a deletion and never finds a half-deleted entry.
+ * launch never waits for a deletion and never finds a half-deleted entry. An entry from an apksim before content keys
+ * (no `in-use.lock`, judged by its manifest's mtime) may be in use with nothing to show it, so it goes only once
+ * unused for 14 days, never for the cap.
  */
 final class ApkCache {
   static final String LOCK = "apk-cache.lock";
@@ -209,7 +212,11 @@ final class ApkCache {
       for (Path d : (Iterable<Path>) dirs::iterator) {
         // An entry has a manifest; classes/, data/, test-outputs/, the trash and the lock file do not.
         if (!Files.isRegularFile(d.resolve("AndroidManifest.xml"))) continue;
-        entries.add(new Entry(d, lastUsed(d), size(d)));
+        try {
+          entries.add(new Entry(d, lastUsed(d), size(d)));
+        } catch (IOException | java.io.UncheckedIOException e) {
+          // Moved or changing meanwhile (another launch's temp + rename): left for the next sweep.
+        }
       }
     }
     entries.sort((x, y) -> Long.compare(x.lastUsed, y.lastUsed));
@@ -224,12 +231,15 @@ final class ApkCache {
           if (!stale && total <= capBytes) break;
           // This process's, used since it was listed (a launch took it), or held by a process: it stays, and the
           // next one in line is considered instead.
-          if (e.dir.equals(current) || !Files.isDirectory(e.dir) || System.currentTimeMillis() - lastUsed(e.dir) < RECENT_MS
-              || inUse(e.dir)) continue;
           try {
+            if (e.dir.equals(current) || !Files.isDirectory(e.dir) || System.currentTimeMillis() - lastUsed(e.dir) < RECENT_MS
+                || inUse(e.dir)) continue;
+            // From an apksim before content keys (no lock file): one may be running it now, and nothing shows that,
+            // so it goes only once 14 days unused, never for the cap.
+            if (!stale && !Files.exists(e.dir.resolve(IN_USE))) continue;
             Files.move(e.dir, trash.resolve(e.dir.getFileName() + Storage.tmpTag()), StandardCopyOption.ATOMIC_MOVE);
             total -= e.bytes;
-          } catch (IOException ex) {
+          } catch (IOException | java.io.UncheckedIOException ex) {
             // Next sweep.
           }
         }
@@ -238,7 +248,13 @@ final class ApkCache {
     // What this or an earlier sweep (one that ended mid-deletion) moved there.
     if (Files.isDirectory(trash)) {
       try (Stream<Path> dirs = Files.list(trash)) {
-        for (Path d : (Iterable<Path>) dirs::iterator) Storage.deleteTree(d);
+        for (Path d : (Iterable<Path>) dirs::iterator) {
+          try {
+            Storage.deleteTree(d);
+          } catch (java.io.UncheckedIOException e) {
+            // Next sweep.
+          }
+        }
       }
     }
   }
@@ -269,7 +285,7 @@ final class ApkCache {
       return files.filter(Files::isRegularFile).mapToLong(p -> p.toFile().length()).sum();
     } catch (IOException e) {
       return 0;
-    }
+    }  // an UncheckedIOException (a file renamed during the walk) goes to evict's listing, which skips the entry
   }
 
   private static void touch(Path file) throws IOException {

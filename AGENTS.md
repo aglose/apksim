@@ -96,13 +96,15 @@ Read README.md for results and limits; this file covers how to work on the code.
     ~60 ms of a cold JVM, CRC32C and String.format ~3 ms interpreted), under a shared lock on `cache/apk-cache.lock`;
     the process then holds a shared lock on `<entry>/in-use.lock` until it dies and touches `<entry>/last-used`.
     A sweep runs at most once an hour (`cache/apk-cache.swept`), 3 s after startup on a background thread, or from
-    `Standby.halt` (after the client has its exit code, up to 10 s) when the launch ends sooner: Runtime.halt would
-    kill the thread, and short test listings never swept. It lists and sizes entries without a lock (a launch's take
+    `Standby.halt` (before the client gets its exit code, up to 10 s: told first, the next launch could start while
+    this process still held the data slot) when the launch ends sooner: Runtime.halt would kill the thread, and short
+    test listings never swept. It lists and sizes entries without a lock (a launch's take
     waits for an exclusive holder), picks those not this process's and unused for 10 minutes (unused 14 days first,
     then least recently used until the rest fit in `-Dapksim.apkCacheMB`, default 2048), then under the global lock
     held exclusively checks each again (used since, or locked: kept) and moves it into `cache/.apk-cache-trash/`,
     emptied after the lock (no entry can be named that: an entry's name ends in -16 hex). Old
-    mtime-named entries (no markers) go by their manifest's mtime. File locks, not PIDs, as containers sharing a cache
+    mtime-named entries (no lock file, so one may be running unseen) go only once 14 days unused by their manifest's
+    mtime, never for the cap. File locks, not PIDs, as containers sharing a cache
     volume repeat PIDs. `scripts/apk-cache-check.sh` checks it (CI: `ci-smoke.sh`).
   - `ClassCache`: translated classes kept between launches in `work/cache/classes/<runtime hash>/<dex crc>.pack`.
     An entry is used only while the "is X an interface?" answers it was translated with still hold (the

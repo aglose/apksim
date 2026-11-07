@@ -178,9 +178,11 @@ final class Standby {
     spawnNext();
     System.err.flush();
     System.out.flush();
+    // A short launch's cache sweep (at most once an hour), before the client is told: once told, the next launch may
+    // start while this process still holds its data slot, and take instance-1 instead of default.
+    ApkCache.beforeExit();
     exiting = true;
     if (adopted) nativeSendExit(code);
-    ApkCache.beforeExit();  // a short launch's cache sweep, once the client has its exit code
     Runtime.getRuntime().halt(code);
   }
 
