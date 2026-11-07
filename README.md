@@ -75,7 +75,7 @@ That trade is where both the speed and the limits come from.
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
 | **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop and TV profiles | Any system image, many API levels |
 | **System services** | Stand-ins: no Play Services, Health Connect, camera or sensors; no other apps | The real ones, and Google Play images |
-| **Native libraries** | arm64-v8a, 16 KB-aligned on macOS | arm64 or x86_64 images, 4 KB or 16 KB pages |
+| **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
 
 In practice:
