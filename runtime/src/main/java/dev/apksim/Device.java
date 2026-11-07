@@ -42,6 +42,15 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     for (Device d : ALL) {
       if (d.name.equals(name)) return d;
     }
+    // WxHpx@Ndpi: pixels and dpi as `wm size` and `wm density` report them (1920x1080px@240dpi).
+    java.util.regex.Matcher px = java.util.regex.Pattern.compile("(\\d+)x(\\d+)px@([\\d.]+)dpi").matcher(name);
+    if (px.matches()) {
+      float density = Float.parseFloat(px.group(3)) / 160f;
+      int w = Math.round(Integer.parseInt(px.group(1)) / density);
+      int h = Math.round(Integer.parseInt(px.group(2)) / density);
+      if (w < 160 || h < 160 || density < 0.75f || density > 4f) throw new IllegalArgumentException("bad size: " + name);
+      return new Device(name, Math.min(w, h) < 600 ? "phone" : "tablet", w, h, density);
+    }
     java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)x(\\d+)(?:@([\\d.]+))?").matcher(name);
     if (m.matches()) {
       int w = Integer.parseInt(m.group(1));
@@ -51,7 +60,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
       // A custom size is a phone below 600 dp (the compact width class), otherwise a tablet: both have system bars.
       return new Device(name, Math.min(w, h) < 600 ? "phone" : "tablet", w, h, density);
     }
-    throw new IllegalArgumentException("unknown device: " + name + " (" + names() + ", or WxH[@density] in dp)");
+    throw new IllegalArgumentException("unknown device: " + name + " (" + names() + ", or WxH[@density] in dp, or WxHpx@Ndpi)");
   }
 
   static String names() {
