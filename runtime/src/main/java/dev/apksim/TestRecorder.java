@@ -39,6 +39,8 @@ final class TestRecorder {
   private static boolean started, capturing, active, pending, scheduled, failed;
   private static android.os.Handler main;
   private static java.util.concurrent.ScheduledExecutorService timer;
+  private static java.util.concurrent.ScheduledFuture<?> timerTask;
+  private static int generation;  // bumped at each test boundary: a callback from an earlier test does nothing
   private static long lastNanos;
   private static int w, h;
   private static Bitmap scaled;
@@ -61,6 +63,7 @@ final class TestRecorder {
   static void testStarted(Description d) {
     if (!ON) return;
     finish(false);
+    resetScheduling();
     current = d;
     file = Paths.get(DIR, d.getClassName(), Bundles.folder(d.getClassName(), d.getMethodName()) + ".avi");
     started = false;
@@ -68,6 +71,22 @@ final class TestRecorder {
     active = true;
     pending = false;
     failed = false;
+  }
+
+  /**
+   * Robolectric's reset between tests discards messages queued on the main looper, so a deadline callback posted by an
+   * earlier test may never run: forget it (and the timer entry that would post it) so this test can schedule its own.
+   * The handler is dropped too, in case the looper was replaced.
+   */
+  private static void resetScheduling() {
+    generation++;
+    scheduled = false;
+    pending = false;
+    main = null;
+    if (timerTask != null) {
+      timerTask.cancel(false);
+      timerTask = null;
+    }
   }
 
   /** The path of the movie a finished test kept, for its status block, or null. */
@@ -97,14 +116,23 @@ final class TestRecorder {
             return t;
           });
         }
-        timer.schedule(() -> main.post(TestRecorder::onDeadline), lastNanos + interval - now, java.util.concurrent.TimeUnit.NANOSECONDS);
+        final int gen = generation;
+        final android.os.Handler handler = main;
+        timerTask = timer.schedule(() -> {
+          try {
+            handler.post(() -> onDeadline(gen));
+          } catch (RuntimeException e) {
+            // The looper went away with its test: nothing to capture.
+          }
+        }, lastNanos + interval - now, java.util.concurrent.TimeUnit.NANOSECONDS);
       }
       return;
     }
     capture(now);
   }
 
-  private static void onDeadline() {
+  private static void onDeadline(int gen) {
+    if (gen != generation) return;  // a callback that outlived its test's boundary
     scheduled = false;
     if (!ON || !active || !pending || !started || capturing) return;
     // A traversal may have captured since this was scheduled (lastNanos moved): decide against the latest one, which
