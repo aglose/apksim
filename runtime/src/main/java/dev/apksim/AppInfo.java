@@ -155,8 +155,12 @@ final class AppInfo {
     return false;
   }
 
-  /** The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE. */
+  /**
+   * The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE.
+   * A disabled activity or alias is never a candidate: PackageManager leaves it out, and Host would start it anyway.
+   */
   private static long mainRank(Element activity, String category) {
+    if ("false".equals(activity.getAttribute(NS + "enabled"))) return Long.MIN_VALUE;
     long best = Long.MIN_VALUE;
     NodeList filters = activity.getElementsByTagName("intent-filter");
     for (int i = 0; i < filters.getLength(); i++) {
