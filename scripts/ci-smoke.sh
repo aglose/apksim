@@ -76,12 +76,13 @@ echo "Popup and Trace: $shown-> $tapped"
 drive back 'wait 1000' >/dev/null
 # An accessibility provider that lists nodes under several parents and an ancestor as a child must not hang `nodes`
 # (issue 114: the walk repeated every listing down to its depth cap). Each node is listed once.
-drive 'open apksim://cyclic-nodes' 'wait 1500' >/dev/null
-cyc="$(perl -e 'alarm 20; exec @ARGV' python3"$ROOT/scripts/drive.py" "$PORT" nodes | grep -oE 'text="cyclic: [a-z0-9 ]+"' | tr '\n' ' ')" \
+drive 'open apksim://cyclic-nodes' 'wait 4000' >/dev/null
+raw="$(perl -e 'alarm 20; exec @ARGV' python3 "$ROOT/scripts/drive.py" "$PORT" nodes)" \
   || { echo "nodes hung on a provider with repeated nodes" >&2; exit 1; }
+cyc="$(echo "$raw" | grep -oE 'text="cyclic: [a-z0-9 ]+"' | tr '\n' ' ' || true)"
 echo "Cyclic nodes: $cyc"
 [[ "$cyc" == 'text="cyclic: root" text="cyclic: node 1" text="cyclic: node 2" text="cyclic: node 3" ' ]] \
-  || { echo "nodes did not list each node of a repeating provider once" >&2; exit 1; }
+  || { echo "$raw" | cut -c1-400; echo "nodes did not list each node of a repeating provider once" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 # System state as apps read it and await it in coroutines (issue 96): Wi-Fi's signal level bucketed as
 # level / (max / 4) (getMaxSignalLevel() was 0: a division by zero), Wi-Fi's, the network's and the battery's sticky
