@@ -84,11 +84,22 @@ Read README.md for results and limits; this file covers how to work on the code.
     async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
-    (APKs for older Android versions) are inflated once into `work/cache/<apk>-<mtime>/dex/` and mapped from there
+    (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there
     (inflating the test app's 36 MB took ~60 ms a launch). Classes are found by binary search of the DEX's sorted
     type_ids (`DexFile.findClassType`), not a map of every class name (~80 ms for 21k classes). `loadAhead` defines
     the classes the app loaded last time (no static initializers, so no app code) on 2 threads while the main thread
     starts the framework: ~100 ms off a launch.
+  - `ApkCache`: the per-APK folder in `STATE/cache` (manifest, extracted `.so` files, inflated DEX), named
+    `<file name>-<16 hex>`: CRC32 and Adler32 of the APK's ZIP central directory and its length, so a copy, `touch` or
+    re-download of the same build reuses it (keyed by mtime, every rebuild and CI run left another, ~370 MB for a large
+    app, for good: issue 125). Taken on a thread of its own at the top of `Main` (~2 ms: SHA-256's provider lookup was
+    ~60 ms of a cold JVM, CRC32C and String.format ~3 ms interpreted), under a shared lock on `cache/apk-cache.lock`;
+    the process then holds a shared lock on `<entry>/in-use.lock` until it dies and touches `<entry>/last-used`.
+    3 s later a background thread evicts under the global lock held exclusively: entries no process has locked and
+    not used for 10 minutes, those unused 14 days first, then least recently used until they fit in
+    `-Dapksim.apkCacheMB` (default 2048); each is renamed to `.evict-*` under the lock and deleted after it. Old
+    mtime-named entries (no markers) go by their manifest's mtime. File locks, not PIDs, as containers sharing a cache
+    volume repeat PIDs. `scripts/apk-cache-check.sh` checks it (CI: `ci-smoke.sh`).
   - `ClassCache`: translated classes kept between launches in `work/cache/classes/<runtime hash>/<dex crc>.pack`.
     An entry is used only while the "is X an interface?" answers it was translated with still hold (the
     translator's only input from other classes). `<package>.classes` lists what the app loaded, so worker threads
@@ -965,7 +976,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   The test app's suite takes 13 s with it against 5.6 s (`RealTimeClockTest`, run with `-e realtimeClock true`).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
-- Processes started together share one per-APK cache folder (`work/cache/<apk>-<mtime>`, new for every rebuild):
+- Processes started together share one per-APK cache folder (`work/cache/<apk name>-<content key>`, `ApkCache`):
   `ElfLoader` extracts each `.so` to a per-process temporary file and renames it into place (and skips it by the
   entry's CRC, kept in `<name>.so.crc`), and `AppInfo` writes the manifest the same way. Copying in place let one of
   four `--isolate` processes load a library another was rewriting (`NoClassDefFoundError` for a bundled SQLite

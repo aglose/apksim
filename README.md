@@ -489,6 +489,7 @@ because the standby read them when it booted. Of the switches above, only `timin
 |---|---|
 | `app.aot` | The JVM startup cache (`apksim --train` builds it) |
 | `cache/classes/` | Translated app classes, per DEX file |
+| `cache/NAME.apk-KEY/` | Each APK's manifest, native libraries and inflated DEX files, keyed by the APK's contents (a copy or re-download of the same build reuses it). Entries unused for 14 days go, then the least recently used until they fit in 2 GB (`--jvm -Dapksim.apkCacheMB=N`); one a running instance uses is never removed. Safe to delete while nothing runs |
 | `cache/data/PKG/` | Each app's persistent data (`default`, or `instance-N` for extra instances) |
 | `cache/data/PKG/SLOT.device/` | What that data slot keeps of the device: `sdcard/` (the app's `/sdcard`) and `settings.properties` (Settings values that differ from the defaults) |
 | `tmp/PID/` | Per-instance scratch, including `control.port` and `adb.port` |

@@ -86,7 +86,8 @@ relaunch), so a `--cidfile` given in `--apksim` is taken out of the command, and
 is written there.
 
 Keep the cache between runs with a volume at `/opt/apksim/work/cache` (translated classes, the per-APK manifest and
-native libraries, app data). Without one every `docker run` translates the app's classes again: for a large app's
+native libraries, app data). Per-APK entries are keyed by the APK's contents and evicted past 2 GB or 14 days unused
+(`-Dapksim.apkCacheMB`), never while a container on the volume uses one. Without one every `docker run` translates the app's classes again: for a large app's
 journey run alone (one container per test, `instrument.py --isolate`) that was 15.6 s a test against 10.4-10.6 s with
 the cache warm, under Rosetta.
 
