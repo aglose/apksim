@@ -101,6 +101,20 @@ echo "Time zones: $launched-> $changed"
   || { echo "the app's time zones did not follow --timezone or the timezone command" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 
+# ACTION_TIME_TICK (issue 109): a receiver registered at runtime hears one tick when the app's clock crosses a minute,
+# and none more within that minute (the test app's apksim://timezone counts them as "ticks: N").
+ticks() { drive nodes | grep -oE 'text="ticks: [0-9]+"'; }
+drive 'clock 2026-01-01T09:41:30Z' 'open apksim://timezone' 'wait 2000' >/dev/null
+before="$(ticks)"
+drive 'clock 2026-01-01T09:42:05Z' 'wait 1000' >/dev/null
+crossed="$(ticks)"
+drive 'clock 2026-01-01T09:42:20Z' 'wait 1000' >/dev/null
+same="$(ticks)"
+echo "Time ticks: $before -> $crossed -> $same"
+[[ "$before" == 'text="ticks: 0"' && "$crossed" == 'text="ticks: 1"' && "$same" == 'text="ticks: 1"' ]] \
+  || { echo "the app did not hear one ACTION_TIME_TICK at the minute boundary" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
+
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
 # to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
 # (the test app's apksim://install, issues 76 and 81).
