@@ -42,12 +42,13 @@ class RealTimeSwipeTest {
   /** A ValueAnimator that never ends: the barrier comes back every frame with nothing between (worked before). */
   @Test
   fun aSwipeOverAnEndlessAnimationReturns() = swipeWhile { ticker, _ ->
-    ValueAnimator.ofFloat(0f, 1f).apply {
+    val animator = ValueAnimator.ofFloat(0f, 1f).apply {
       duration = 1_000
       repeatCount = ValueAnimator.INFINITE
       addUpdateListener { ticker.alpha = 0.5f + 0.5f * it.animatedFraction }
       start()
     }
+    return@swipeWhile { animator.cancel() }
   }
 
   /** A Handler ticker changing a text every 16 ms: its next tick is due behind nearly every barrier. */
@@ -61,6 +62,7 @@ class RealTimeSwipeTest {
       }
     }
     handler.post(tick)
+    return@swipeWhile { handler.removeCallbacks(tick) }
   }
 
   /** Each frame posts a message that changes a view: that message is at the queue's head between frames. */
@@ -74,28 +76,39 @@ class RealTimeSwipeTest {
       }
     }
     Choreographer.getInstance().postFrameCallback(callback)
+    return@swipeWhile {
+      Choreographer.getInstance().removeFrameCallback(callback)
+      handler.removeCallbacksAndMessages(null)
+    }
   }
 
-  private fun swipeWhile(start: (TextView, Handler) -> Unit) {
+  /** [start] begins the changing view's work and returns what stops it: run on the main thread before the scenario closes. */
+  private fun swipeWhile(start: (TextView, Handler) -> () -> Unit) {
     assumeTrue(!onApksim || InstrumentationRegistry.getArguments().getString("realtimeClock") == "true")
     ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-      scenario.onActivity { activity ->
-        val rows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        repeat(200) { rows.addView(TextView(activity).apply { text = "row $it"; textSize = 24f }) }
-        val decor = activity.window.decorView as ViewGroup
-        decor.addView(ScrollView(activity).apply { tag = SCROLL; addView(rows) },
-            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        // A fixed size, so a new text only invalidates it: Espresso's root picker waits for a root with no layout
-        // requested, which a view relaid out on every tick seldom is.
-        val ticker = TextView(activity).apply { text = "ticker"; textSize = 24f }
-        decor.addView(ticker, ViewGroup.LayoutParams(400, 100))
-        start(ticker, Handler(Looper.getMainLooper()))
-      }
-      repeat(3) { i ->
-        val startedAt = System.nanoTime()
-        onView(withTagValue(`is`(SCROLL))).perform(swipeUp())
-        val ms = (System.nanoTime() - startedAt) / 1_000_000
-        assertTrue("swipe $i took $ms ms", ms < 10_000)
+      var stop: () -> Unit = {}
+      try {
+        scenario.onActivity { activity ->
+          val rows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+          repeat(200) { rows.addView(TextView(activity).apply { text = "row $it"; textSize = 24f }) }
+          val decor = activity.window.decorView as ViewGroup
+          decor.addView(ScrollView(activity).apply { tag = SCROLL; addView(rows) },
+              ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+          // A fixed size, so a new text only invalidates it: Espresso's root picker waits for a root with no layout
+          // requested, which a view relaid out on every tick seldom is.
+          val ticker = TextView(activity).apply { text = "ticker"; textSize = 24f }
+          decor.addView(ticker, ViewGroup.LayoutParams(400, 100))
+          stop = start(ticker, Handler(Looper.getMainLooper()))
+        }
+        repeat(3) { i ->
+          val startedAt = System.nanoTime()
+          onView(withTagValue(`is`(SCROLL))).perform(swipeUp())
+          val ms = (System.nanoTime() - startedAt) / 1_000_000
+          assertTrue("swipe $i took $ms ms", ms < 10_000)
+        }
+      } finally {
+        // Nothing may outlive the scenario: the callbacks would keep the destroyed activity and run in later tests.
+        scenario.onActivity { stop() }
       }
     }
   }
