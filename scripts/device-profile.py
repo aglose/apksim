@@ -47,7 +47,7 @@ def main():
     for line in sh("pm", "list", "features").splitlines():
         m = re.match(r"feature:([\w.]+)", line.strip())
         if m:
-            out.append(f"feature.{m.group(1)}")
+            out.append(f"feature.{m.group(1)}=true")
     for s in a.setting:
         m = re.fullmatch(r"(global|secure|system):(\S+)", s)
         if not m:

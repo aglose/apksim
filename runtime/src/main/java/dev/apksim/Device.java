@@ -8,7 +8,12 @@ import java.util.List;
  * an optional "@density" (e.g. 1024x768@1.5). The kind decides what the app is told besides the size: a TV has no
  * touchscreen, a D-pad and UI_MODE_TYPE_TELEVISION; desktop and TV have no status or navigation bar.
  */
-record Device(String name, String kind, int widthDp, int heightDp, float density) {
+record Device(String name, String kind, int widthDp, int heightDp, float density, int exactWidthPx, int exactHeightPx) {
+  /** A device whose pixels are the dp times the density (0 = derive them). */
+  Device(String name, String kind, int widthDp, int heightDp, float density) {
+    this(name, kind, widthDp, heightDp, density, 0, 0);
+  }
+
   private static final Device[] ALL = {
     new Device("phone", "phone", 411, 891, 2f),
     new Device("foldable", "foldable", 841, 701, 2f),
@@ -49,7 +54,8 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
       int w = Math.round(Integer.parseInt(px.group(1)) / density);
       int h = Math.round(Integer.parseInt(px.group(2)) / density);
       if (w < 160 || h < 160 || density < 0.75f || density > 4f) throw new IllegalArgumentException("bad size: " + name);
-      return new Device(name, Math.min(w, h) < 600 ? "phone" : "tablet", w, h, density);
+      return new Device(name, Math.min(w, h) < 600 ? "phone" : "tablet", w, h, density,
+          Integer.parseInt(px.group(1)), Integer.parseInt(px.group(2)));
     }
     java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)x(\\d+)(?:@([\\d.]+))?").matcher(name);
     if (m.matches()) {
@@ -74,12 +80,13 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     return new Device(name, kind, wDp, hDp, density);
   }
 
+  // A WxHpx@Ndpi device keeps the pixels it was given: its dp rounds, and the window must be the display's size.
   int widthPx() {
-    return Math.round(widthDp * density);
+    return exactWidthPx > 0 ? exactWidthPx : Math.round(widthDp * density);
   }
 
   int heightPx() {
-    return Math.round(heightDp * density);
+    return exactHeightPx > 0 ? exactHeightPx : Math.round(heightDp * density);
   }
 
   /** Phones, foldables and tablets have a status bar and gesture navigation; desktop and TV have neither. */

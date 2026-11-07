@@ -96,7 +96,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
           display.size) PSIZE="$PV" ;;
           display.density) PDPI="$PV" ;;
           build.*) PROFILE_ARGS+=(--build "${PK#build.}=$PV") ;;
-          feature.*) PROFILE_ARGS+=(--feature "${PK#feature.}") ;;
+          feature.*) if [[ "$PV" == false ]]; then PROFILE_ARGS+=(--feature "${PK#feature.}=false"); else PROFILE_ARGS+=(--feature "${PK#feature.}"); fi ;;
           setting.*) PROFILE_ARGS+=(--setting "${PK#setting.}=$PV") ;;
         esac
       done < "$PFILE"
