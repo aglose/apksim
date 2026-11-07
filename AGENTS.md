@@ -52,6 +52,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
     up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
     (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
+  - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
     coroutine's exception to the thread's handler itself (traced: `propagateExceptionFinalResort`, ThreadGroup, no

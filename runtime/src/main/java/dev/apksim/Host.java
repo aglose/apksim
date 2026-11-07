@@ -174,6 +174,7 @@ public class Host {
         if (autofill != null) autofill.tick(Host::rootViews);
         controls.tick();
         SlotDevice.tick();
+        TimeTick.tick(app);
         Control.Pending cmd;
         while ((cmd = Control.QUEUE.poll()) != null) {
           // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
