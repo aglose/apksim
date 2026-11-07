@@ -13,6 +13,9 @@ final class Arsc {
   private static final int TYPE_RESOURCE = 0x0201;
   private static final int NO_ENTRY = -1;
   private static final int FLAG_COMPLEX = 0x0001;
+  private static final int FLAG_COMPACT = 0x0008;  // ResTable_entry: key index in the first short, type in flags' high byte, value at +4
+  private static final int TYPE_FLAG_SPARSE = 0x01;   // ResTable_type: (index, offset/4) shorts for the entries that exist
+  private static final int TYPE_FLAG_OFFSET16 = 0x02;  // ResTable_type: 16-bit offsets in 4-byte units, 0xffff for none
   private static final int DATA_REFERENCE = 0x01;
   private static final int DATA_INT_DEC = 0x10;
   private static final int DATA_INT_HEX = 0x11;
@@ -23,7 +26,11 @@ final class Arsc {
 
   /** The integer resource {@code resId} (as printed, `0x7f0a0001`), or null when it is not an integer. */
   static Long intValue(byte[] arsc, int resId) {
-    return value(ByteBuffer.wrap(arsc).order(ByteOrder.LITTLE_ENDIAN), resId, 0);
+    try {
+      return value(ByteBuffer.wrap(arsc).order(ByteOrder.LITTLE_ENDIAN), resId, 0);
+    } catch (RuntimeException e) {
+      return null;  // a malformed table: the value is unknown
+    }
   }
 
   private static Long value(ByteBuffer b, int resId, int depth) {
@@ -39,8 +46,25 @@ final class Arsc {
         if (chunkType(b, t) != TYPE_RESOURCE || (b.get(t + 8) & 0xff) != typeId) continue;
         int entryCount = b.getInt(t + 12);
         int entriesStart = b.getInt(t + 16);
-        if (entryIndex >= entryCount) continue;
-        int offset = b.getInt(t + headerSize(b, t) + entryIndex * 4);
+        int flags = b.get(t + 9) & 0xff;
+        int offsets = t + headerSize(b, t);
+        int offset = NO_ENTRY;
+        if ((flags & TYPE_FLAG_SPARSE) != 0) {
+          // entryCount is the number of pairs here, not the type's size: find this entry's index among them
+          for (int i = 0; i < entryCount; i++) {
+            if ((b.getShort(offsets + i * 4) & 0xffff) == entryIndex) {
+              offset = (b.getShort(offsets + i * 4 + 2) & 0xffff) * 4;
+              break;
+            }
+          }
+        } else if (entryIndex >= entryCount) {
+          continue;
+        } else if ((flags & TYPE_FLAG_OFFSET16) != 0) {
+          int o = b.getShort(offsets + entryIndex * 2) & 0xffff;
+          offset = o == 0xffff ? NO_ENTRY : o * 4;
+        } else {
+          offset = b.getInt(offsets + entryIndex * 4);
+        }
         if (offset == NO_ENTRY) continue;
         Long v = entryValue(b, t + entriesStart + offset, depth);
         if (v == null) continue;
@@ -55,10 +79,18 @@ final class Arsc {
 
   /** An entry's value when it is an integer (or a reference to one), else null (a bag, a string, a file...). */
   private static Long entryValue(ByteBuffer b, int entry, int depth) {
-    if ((b.getShort(entry + 2) & FLAG_COMPLEX) != 0) return null;
-    int valueAt = entry + (b.getShort(entry) & 0xffff);
-    int dataType = b.get(valueAt + 3) & 0xff;
-    int data = b.getInt(valueAt + 4);
+    int entryFlags = b.getShort(entry + 2) & 0xffff;
+    int dataType;
+    int data;
+    if ((entryFlags & FLAG_COMPACT) != 0) {
+      dataType = entryFlags >>> 8;
+      data = b.getInt(entry + 4);
+    } else {
+      if ((entryFlags & FLAG_COMPLEX) != 0) return null;
+      int valueAt = entry + (b.getShort(entry) & 0xffff);
+      dataType = b.get(valueAt + 3) & 0xff;
+      data = b.getInt(valueAt + 4);
+    }
     if (dataType == DATA_INT_DEC || dataType == DATA_INT_HEX || dataType == DATA_INT_BOOLEAN) {
       return data & 0xffffffffL;
     }

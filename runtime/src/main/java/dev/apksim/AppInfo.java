@@ -25,14 +25,9 @@ final class AppInfo {
   static void load(Path apk, Path cache) throws Exception {
     Files.createDirectories(cache);
     String xml;
-    byte[] arsc = null;  // resources.arsc: a priority may name an integer resource
+    Resources arsc = new Resources(apk);  // resources.arsc, read only if a launch filter's attribute names a resource
     try (ZipFile zip = new ZipFile(apk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
       xml = Axml.decode(in.readAllBytes());
-      if (zip.getEntry("resources.arsc") != null) {
-        try (InputStream r = zip.getInputStream(zip.getEntry("resources.arsc"))) {
-          arsc = r.readAllBytes();
-        }
-      }
     }
     Path manifest = cache.resolve("AndroidManifest.xml");
     // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
@@ -166,33 +161,60 @@ final class AppInfo {
    * The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE.
    * A disabled activity or alias is never a candidate: PackageManager leaves it out, and Host would start it anyway.
    */
-  private static long mainRank(Element activity, String category, byte[] arsc) throws LaunchError {
-    if ("false".equals(activity.getAttribute(NS + "enabled"))) return Long.MIN_VALUE;
+  private static long mainRank(Element activity, String category, Resources arsc) {
+    String en = activity.getAttribute(NS + "enabled");
+    Long enabled = "false".equals(en) ? Long.valueOf(0) : intAttr(en, arsc);
+    if (enabled != null && enabled == 0) return Long.MIN_VALUE;  // an unresolvable value counts as the default, enabled
     long best = Long.MIN_VALUE;
     NodeList filters = activity.getElementsByTagName("intent-filter");
     for (int i = 0; i < filters.getLength(); i++) {
       Element f = (Element) filters.item(i);
       if (!has(f, "action", "android.intent.action.MAIN") || !has(f, "category", category)) continue;
-      int priority = 0;
-      String p = f.getAttribute(NS + "priority");
-      if (p.startsWith("@0x")) {  // a resource: Axml prints its id, the value is in resources.arsc
-        Long v = arsc == null ? null : Arsc.intValue(arsc, (int) Long.decode(p.substring(1)).longValue());
-        if (v == null) {
-          throw new LaunchError("intent-filter priority " + p + " in " + activity.getAttribute(NS + "name")
-              + " is not an integer resource");
-        }
-        priority = v.intValue();
-      } else {
-        try {
-          if (!p.isEmpty()) priority = (int) Long.decode(p).longValue();
-        } catch (NumberFormatException e) {
-          // an unreadable priority counts as 0
-        }
-      }
+      Long v = intAttr(f.getAttribute(NS + "priority"), arsc);
+      int priority = v == null ? 0 : v.intValue();  // unreadable or unresolvable (a framework resource): 0
       long rank = priority * 2L + (has(f, "category", "android.intent.category.DEFAULT") ? 1 : 0);
       best = Math.max(best, rank);
     }
     return best;
+  }
+
+  /** An integer attribute's value: a literal, or a resource of the APK (Axml prints its id as `@0x7f...`); else null. */
+  private static Long intAttr(String s, Resources arsc) {
+    if (s.isEmpty()) return null;
+    try {
+      if (s.startsWith("@0x")) return arsc.intValue((int) Long.decode(s.substring(1)).longValue());
+      return Long.decode(s);
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  /** The APK's resources.arsc, read on first use: most launches name no resource. A missing or bad one is absent. */
+  private static final class Resources {
+    private final Path apk;
+    private byte[] data;
+    private boolean tried;
+
+    Resources(Path apk) {
+      this.apk = apk;
+    }
+
+    Long intValue(int resId) {
+      if (!tried) {
+        tried = true;
+        try (ZipFile zip = new ZipFile(apk.toFile())) {
+          java.util.zip.ZipEntry e = zip.getEntry("resources.arsc");
+          if (e != null) {
+            try (InputStream r = zip.getInputStream(e)) {
+              data = r.readAllBytes();
+            }
+          }
+        } catch (java.io.IOException | RuntimeException | OutOfMemoryError e) {
+          data = null;
+        }
+      }
+      return data == null ? null : Arsc.intValue(data, resId);
+    }
   }
 
   private static boolean has(Element filter, String tag, String value) {
