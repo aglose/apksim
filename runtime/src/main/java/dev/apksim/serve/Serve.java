@@ -595,7 +595,9 @@ public final class Serve {
     String fwHost = r.header(PROXIED);
     if (fwHost != null) {
       String proto = first(r.header("x-forwarded-proto"));
-      if (o.equals((proto == null ? "http" : proto.toLowerCase(Locale.ROOT)) + "://" + fwHost.toLowerCase(Locale.ROOT))) return true;
+      // In the browser's form, as Origin is sent: X-Forwarded-Host app.example.com:443 over https is https://app.example.com.
+      String forwarded = origin((proto == null ? "http" : proto.toLowerCase(Locale.ROOT)) + "://" + fwHost);
+      if (forwarded != null && o.equals(forwarded)) return true;
     }
     String host = r.header("host");
     if (host != null && (origin.equals("http://" + host) || origin.equals("https://" + host))) return true;
