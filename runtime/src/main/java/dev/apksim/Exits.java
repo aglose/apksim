@@ -71,27 +71,35 @@ public final class Exits {
 
   /** The app's {@code System.exit(code)}. */
   public static void systemExit(int code) {
-    appExit("System.exit", code);
+    appExit("System.exit", code, true);
     Runtime.getRuntime().exit(code);
   }
 
   /** The app's {@code runtime.exit(code)}. */
   public static void runtimeExit(Runtime runtime, int code) {
     java.util.Objects.requireNonNull(runtime);  // as the call would throw, before anything is logged
-    appExit("Runtime.exit", code);
+    appExit("Runtime.exit", code, true);
     runtime.exit(code);
   }
 
   /** The app's {@code runtime.halt(code)}: no shutdown hooks, so the warm client is told here. */
   public static void runtimeHalt(Runtime runtime, int code) {
     java.util.Objects.requireNonNull(runtime);
-    appExit("Runtime.halt", code);
+    appExit("Runtime.halt", code, false);
     Standby.haltNow(code);
   }
 
-  /** Logs and saves best-effort: an app exiting from an OutOfMemoryError handler still exits. */
-  private static void appExit(String call, int code) {
-    Standby.exitCode = code;
+  /** Whether a System.exit or Runtime.exit has begun the JVM's shutdown, whose status a later one cannot change. */
+  private static final java.util.concurrent.atomic.AtomicBoolean SHUTTING_DOWN = new java.util.concurrent.atomic.AtomicBoolean();
+
+  /**
+   * Logs and saves best-effort: an app exiting from an OutOfMemoryError handler still exits. Only the exit that starts
+   * the shutdown sets the client's status (a later one blocks in Runtime.exit, and the JVM ends with the first's code);
+   * a halt reports its own, as it ends the process with it (Standby.haltNow).
+   */
+  private static void appExit(String call, int code, boolean graceful) {
+    if (graceful && !SHUTTING_DOWN.compareAndSet(false, true)) return;
+    if (graceful) Standby.exitCode = code;
     try {
       StackTraceElement[] st = new Throwable().getStackTrace();
       log(code, "the app called " + call + "(" + code + ") on thread " + Thread.currentThread().getName() + caller(st, 2)
