@@ -75,7 +75,7 @@ final class Nodes {
     if (v.getVisibility() != View.VISIBLE) return;
     AccessibilityNodeProvider p = v.getAccessibilityNodeProvider();
     if (p != null) {
-      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, visit, 0);
+      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, visit, 0, new java.util.HashSet<>());
       return;
     }
     visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, v.createAccessibilityNodeInfo()));
@@ -84,13 +84,16 @@ final class Nodes {
     }
   }
 
-  private static void walkVirtual(View host, AccessibilityNodeProvider p, int id, Consumer<Node> visit, int depth) {
+  private static void walkVirtual(View host, AccessibilityNodeProvider p, int id, Consumer<Node> visit, int depth,
+      java.util.Set<Integer> seen) {
+    // A provider may list a node under several parents or an ancestor as a child (issue 114): visit each id once.
+    if (depth > 64 || !seen.add(id)) return;
     AccessibilityNodeInfo info = p.createAccessibilityNodeInfo(id);
-    if (info == null || depth > 64) return;
+    if (info == null) return;
     visit.accept(new Node(host, id, info));
     for (int i = 0; i < info.getChildCount(); i++) {
       long child = info.getChildId(i);  // Hidden API: the child's id within the provider.
-      walkVirtual(host, p, AccessibilityNodeInfo.getVirtualDescendantId(child), visit, depth + 1);
+      walkVirtual(host, p, AccessibilityNodeInfo.getVirtualDescendantId(child), visit, depth + 1, seen);
     }
   }
 
