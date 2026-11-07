@@ -36,7 +36,9 @@ final class TestRecorder {
 
   private static Description current;
   private static Path file;
-  private static boolean started, capturing;
+  private static boolean started, capturing, active, pending, scheduled;
+  private static android.os.Handler main;
+  private static java.util.concurrent.ScheduledExecutorService timer;
   private static long lastNanos;
   private static int w, h;
   private static Bitmap scaled;
@@ -63,6 +65,8 @@ final class TestRecorder {
     file = Paths.get(DIR, d.getClassName(), Bundles.folder(d.getClassName(), d.getMethodName()) + ".avi");
     started = false;
     lastNanos = 0;
+    active = true;
+    pending = false;
   }
 
   /** The path of the movie a finished test kept, for its status block, or null. */
@@ -74,14 +78,40 @@ final class TestRecorder {
 
   /** After a window traversal: takes a frame if the current test's movie is due one. */
   static void onDraw() {
-    if (!ON || current == null || capturing || Looper.myLooper() != Looper.getMainLooper()) return;
+    if (!ON || !active || capturing || Looper.myLooper() != Looper.getMainLooper()) return;
     long now = System.nanoTime();
-    if (started && now - lastNanos < 1_000_000_000L / FPS) return;
+    long interval = 1_000_000_000L / FPS;
+    if (started && now - lastNanos < interval) {
+      // Too soon: keep the update and capture it at the next allowed time, so a screen that then goes idle still
+      // reaches the movie. A timer thread only posts to the main looper (no clock advance; the capture runs when the
+      // looper next runs).
+      pending = true;
+      if (!scheduled) {
+        scheduled = true;
+        if (main == null) main = new android.os.Handler(Looper.getMainLooper());
+        if (timer == null) {
+          timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "apksim-record-timer");
+            t.setDaemon(true);
+            return t;
+          });
+        }
+        timer.schedule(() -> main.post(TestRecorder::onDeadline), lastNanos + interval - now, java.util.concurrent.TimeUnit.NANOSECONDS);
+      }
+      return;
+    }
     capture(now);
+  }
+
+  private static void onDeadline() {
+    scheduled = false;
+    if (!ON || !active || !pending || !started || capturing) return;
+    capture(System.nanoTime());
   }
 
   private static void capture(long now) {
     capturing = true;
+    pending = false;
     Bitmap screen = null;
     try {
       screen = Bundles.screenBitmap();
@@ -122,6 +152,10 @@ final class TestRecorder {
   static void testFinished(Description d, boolean failed) {
     if (!ON || !d.equals(current)) return;
     if (started) capture(System.nanoTime());
+    // Capture ends here: a traversal in class-level cleanup must not reopen this test's file. `current` stays for
+    // recordingOf().
+    active = false;
+    pending = false;
     finish(failed || ALL);
   }
 

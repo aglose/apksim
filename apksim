@@ -134,7 +134,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --test-outputs) mkdir -p "$2" && TEST_OUTPUTS="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.testOutputs=$TEST_OUTPUTS"); shift 2 ;;
     # Test runs: a movie of each test (TestRecorder), kept for failed tests (--record failed) or all. The folder is
     # made here, as --bundles' is; --record-size caps the frame size, --record-fps the frame rate.
-    --record) EXTRA+=("-Dapksim.record=$2"); shift 2 ;;
+    --record) [[ "$2" == failed || "$2" == all ]] || { echo "--record takes failed or all" >&2; exit 2; }
+      RECORD_MODE="$2"; EXTRA+=("-Dapksim.record=$2"); shift 2 ;;
     --record-dir) mkdir -p "$2" && RECORD_DIR="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.record.dir=$RECORD_DIR"); shift 2 ;;
     --record-size) EXTRA+=("-Dapksim.record.size=$2"); shift 2 ;;
     --record-fps) EXTRA+=("-Dapksim.record.fps=$2"); shift 2 ;;
@@ -228,6 +229,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+[[ -n "${RECORD_MODE:-}" && -z "${RECORD_DIR:-}" ]] && { echo "--record needs --record-dir DIR" >&2; exit 2; }
 [[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
 [[ -n "${FEATURES:-}" ]] && EXTRA+=("-Dapksim.features=$FEATURES")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.

@@ -85,19 +85,23 @@ final class MjpegRecorder {
   private void loop() {
     Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     ByteArrayOutputStream jpeg = new ByteArrayOutputStream(1 << 20);
-    long next = System.nanoTime();
-    while (running) {
-      next += 1_000_000_000L / fps;
-      if (!step(bitmap, jpeg)) return;
-      long wait = next - System.nanoTime();
-      if (wait > 0) java.util.concurrent.locks.LockSupport.parkNanos(wait);
+    try {
+      long next = System.nanoTime();
+      while (running) {
+        next += 1_000_000_000L / fps;
+        if (!step(bitmap, jpeg)) return;
+        long wait = next - System.nanoTime();
+        if (wait > 0) java.util.concurrent.locks.LockSupport.parkNanos(wait);
+      }
+      // A frame that arrived since the last step (a short test's only one) still goes in.
+      boolean pending;
+      synchronized (this) {
+        pending = fresh;
+      }
+      if (pending) step(bitmap, jpeg);
+    } finally {
+      bitmap.recycle();  // native pixels: HotSpot does not collect for them
     }
-    // A frame that arrived since the last step (a short test's only one) still goes in.
-    boolean pending;
-    synchronized (this) {
-      pending = fresh;
-    }
-    if (pending) step(bitmap, jpeg);
   }
 
   /** Encodes the newest frame if there is one and writes the latest picture; false when the file cannot be written. */
