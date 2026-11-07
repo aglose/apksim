@@ -36,7 +36,7 @@ final class TestRecorder {
 
   private static Description current;
   private static Path file;
-  private static boolean started, capturing, active, pending, scheduled;
+  private static boolean started, capturing, active, pending, scheduled, failed;
   private static android.os.Handler main;
   private static java.util.concurrent.ScheduledExecutorService timer;
   private static long lastNanos;
@@ -67,6 +67,7 @@ final class TestRecorder {
     lastNanos = 0;
     active = true;
     pending = false;
+    failed = false;
   }
 
   /** The path of the movie a finished test kept, for its status block, or null. */
@@ -78,7 +79,7 @@ final class TestRecorder {
 
   /** After a window traversal: takes a frame if the current test's movie is due one. */
   static void onDraw() {
-    if (!ON || !active || capturing || Looper.myLooper() != Looper.getMainLooper()) return;
+    if (!ON || !active || failed || capturing || Looper.myLooper() != Looper.getMainLooper()) return;
     long now = System.nanoTime();
     long interval = 1_000_000_000L / FPS;
     if (started && now - lastNanos < interval) {
@@ -106,7 +107,9 @@ final class TestRecorder {
   private static void onDeadline() {
     scheduled = false;
     if (!ON || !active || !pending || !started || capturing) return;
-    capture(System.nanoTime());
+    // A traversal may have captured since this was scheduled (lastNanos moved): decide against the latest one, which
+    // captures if due and otherwise schedules the new deadline.
+    onDraw();
   }
 
   private static void capture(long now) {
@@ -119,9 +122,19 @@ final class TestRecorder {
         double k = Math.min(1.0, Math.min(MAX[0] / (double) screen.getWidth(), MAX[1] / (double) screen.getHeight()));
         w = Math.max(16, (int) (screen.getWidth() * k) & ~1);
         h = Math.max(16, (int) (screen.getHeight() * k) & ~1);
-        Files.createDirectories(file.getParent());
-        String err = MjpegRecorder.start(file.toString(), w, h, FPS);
-        if (err != null) throw new IOException(err);
+        try {
+          Files.createDirectories(file.getParent());
+          shareWithHost(file.getParent());
+          String err = MjpegRecorder.start(file.toString(), w, h, FPS);
+          if (err != null) throw new IOException(err);
+        } catch (IOException | RuntimeException e) {
+          // Not the expected no-window case: say why there is no movie, and do not retry for this test.
+          failed = true;
+          pending = false;
+          System.err.println("[apksim] cannot record " + (current == null ? "" : current.getClassName() + "#"
+              + current.getMethodName() + " ") + "to " + file + ": " + e);
+          return;
+        }
         started = true;
         if (scaled == null || scaled.getWidth() != w || scaled.getHeight() != h) {
           if (scaled != null) scaled.recycle();
@@ -157,6 +170,23 @@ final class TestRecorder {
     active = false;
     pending = false;
     finish(failed || ALL);
+  }
+
+  /**
+   * In a container apksim runs as root over a mounted folder, and the host's instrument.py deletes earlier movies
+   * from it: make the class folder (and the record folder) writable by everyone, as {@link Bundles} does for bundles.
+   */
+  private static void shareWithHost(Path dir) {
+    if (!"root".equals(System.getProperty("user.name"))) return;
+    var all = java.nio.file.attribute.PosixFilePermissions.fromString("rwxrwxrwx");
+    Path root = Paths.get(DIR).toAbsolutePath();
+    for (Path p = dir.toAbsolutePath(); p != null && p.startsWith(root); p = p.getParent()) {
+      try {
+        Files.setPosixFilePermissions(p, all);
+      } catch (IOException | UnsupportedOperationException e) {
+        return;
+      }
+    }
   }
 
   private static void finish(boolean keep) {
