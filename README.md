@@ -56,6 +56,38 @@ apksim app-debug.apk
 It is a fast UI and logic check, not a compatibility guarantee: system services are stand-ins (see
 [Limitations](#limitations)).
 
+### Compared with the Android emulator
+
+An emulator boots a whole virtual device and runs the app inside it. apksim runs the app's code and Android's own
+framework as one process on the Mac's CPU, and replaces the parts of a device that are not the app with stand-ins.
+That trade is where both the speed and the limits come from.
+
+| | apksim | Android emulator |
+|---|---|---|
+| **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its arm64 native libraries loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
+| **To first frame** | ~0.2-0.5 s warm, ~1.4-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
+| **Memory** | ~550-780 MB per instance | 3-4 GB |
+| **Install step** | None: `apksim app.apk` | `adb install` onto a booted device |
+| **Many at once** | 32 headless instances of the test app ran at once in about 7 GB on a 12-core Mac ([docs/parallel.md](docs/parallel.md)) | A few, each with its own multi-GB VM |
+| **Frame rate** | Up to 120 fps, paced to the display's vsync | Depends on the host's GPU emulation |
+| **Device tests** | Same test APKs, JUnit XML; a large app's 4,107 device tests took ~4.7 min on a Mac and 8.3 min in the Linux image under Rosetta, against ~19 min on two CI emulators | Runs the tests as a device does |
+| **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
+| **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
+| **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop and TV profiles | Any system image, many API levels |
+| **System services** | Stand-ins: no Play Services, Health Connect, camera or sensors; no other apps | The real ones, and Google Play images |
+| **Native libraries** | arm64-v8a, 16 KB-aligned on macOS | arm64 or x86_64 images, 4 KB or 16 KB pages |
+| **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
+
+In practice:
+- **Use apksim** for the inner loop (launch, look, tap, rotate, repeat), for UI and logic tests in CI, for screenshot
+  tests, for hermetic runs with recorded network, for trying a build in a browser tab, and wherever you want many
+  instances at once.
+- **Keep an emulator** for anything that depends on the real system or on timing a real device would show: Play
+  Services, the camera and sensors, other apps, older API levels, measured startup time, or a final check of a
+  release. On the large app's suite the two agreed on every test, but a pass here is not a promise about a device.
+- **They coexist.** An apksim instance with `--adb` shows up in `adb devices`, so tools that expect a device work
+  against either, and `scripts/both.py` sends the same input to both and diffs the screens.
+
 ## Installation
 
 **Requirements:** an Apple Silicon Mac. For CI, a Linux host with Docker, x86_64 or arm64 (see [Linux and Docker](#linux-and-docker)).
