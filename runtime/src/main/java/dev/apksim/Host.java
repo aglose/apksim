@@ -1157,7 +1157,7 @@ public class Host {
       bitmap.copyPixelsFromBuffer(pixels);
       pixels.rewind();
     });
-    if (display) {
+    if (display && SimWindow.displayAvailable()) {
       ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
       if (SimWindow.displayImage(shot, w, h)) {
         shot.rewind();

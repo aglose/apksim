@@ -77,7 +77,12 @@ final class SimWindow {
    * size (the caller then has only the app's pixels).
    */
   static boolean displayImage(ByteBuffer bgra, int w, int h) {
-    return !headless && nativeDisplayImage(bgra, w, h) != 0;
+    return displayAvailable() && nativeDisplayImage(bgra, w, h) != 0;
+  }
+
+  /** Whether there is a window to draw the display from (none headless: a caller need not allocate a buffer). */
+  static boolean displayAvailable() {
+    return !headless;
   }
 
   private static native int nativeDisplayImage(ByteBuffer bgra, int w, int h);
