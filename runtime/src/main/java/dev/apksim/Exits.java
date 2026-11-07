@@ -71,15 +71,13 @@ public final class Exits {
 
   /** The app's {@code System.exit(code)}. */
   public static void systemExit(int code) {
-    appExit("System.exit", code, true);
-    Runtime.getRuntime().exit(code);
+    Runtime.getRuntime().exit(appExit("System.exit", code, true));
   }
 
   /** The app's {@code runtime.exit(code)}. */
   public static void runtimeExit(Runtime runtime, int code) {
     java.util.Objects.requireNonNull(runtime);  // as the call would throw, before anything is logged
-    appExit("Runtime.exit", code, true);
-    runtime.exit(code);
+    runtime.exit(appExit("Runtime.exit", code, true));
   }
 
   /** The app's {@code runtime.halt(code)}: no shutdown hooks, so the warm client is told here. */
@@ -93,13 +91,18 @@ public final class Exits {
   private static final java.util.concurrent.atomic.AtomicBoolean SHUTTING_DOWN = new java.util.concurrent.atomic.AtomicBoolean();
 
   /**
-   * Logs and saves best-effort: an app exiting from an OutOfMemoryError handler still exits. Only the exit that starts
-   * the shutdown sets the client's status (a later one blocks in Runtime.exit, and the JVM ends with the first's code);
-   * a halt reports its own, as it ends the process with it (Standby.haltNow).
+   * Logs and saves best-effort: an app exiting from an OutOfMemoryError handler still exits. Returns the code to exit
+   * with: the first exit's, which alone sets the client's status, so an exit racing it (or one from a shutdown hook)
+   * ends the JVM with that same code whichever thread reaches Runtime.exit first. A halt reports its own, as it ends
+   * the process with it (Standby.haltNow).
    */
-  private static void appExit(String call, int code, boolean graceful) {
-    if (graceful && !SHUTTING_DOWN.compareAndSet(false, true)) return;
-    if (graceful) Standby.exitCode = code;
+  private static int appExit(String call, int code, boolean graceful) {
+    if (graceful) {
+      synchronized (SHUTTING_DOWN) {
+        if (!SHUTTING_DOWN.compareAndSet(false, true)) return Standby.exitCode;
+        Standby.exitCode = code;
+      }
+    }
     try {
       StackTraceElement[] st = new Throwable().getStackTrace();
       log(code, "the app called " + call + "(" + code + ") on thread " + Thread.currentThread().getName() + caller(st, 2)
@@ -113,6 +116,7 @@ public final class Exits {
     } catch (Throwable ignored) {
       // Best-effort, as on the way out of Host.
     }
+    return code;
   }
 
   // ---------------------------------------------------------------- Process.killProcess(myPid)
