@@ -5,22 +5,29 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import androidx.test.espresso.Espresso
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.TimeZone
 import org.junit.Assert.assertEquals
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import androidx.test.ext.junit.runners.AndroidJUnit4
 
-/** AlarmManager.setTimeZone called directly, as a setup wizard's zone picker calls it (issue 113). */
+/**
+ * AlarmManager.setTimeZone called directly, as a setup wizard's zone picker calls it (issue 113). Only apksim's
+ * shadow takes it here: a device's app holds no SET_TIME_ZONE, so the tests are apksim-only, as WallClockTest's are.
+ */
 @RunWith(AndroidJUnit4::class)
 class AlarmTimeZoneTest {
+  private val onApksim = Build.FINGERPRINT == "robolectric"
   private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
   private val alarms = context.getSystemService(AlarmManager::class.java)
 
   @Test
   fun setTimeZoneWithAValidIdChangesEveryZoneSourceAndBroadcastsIt() {
+    assumeTrue("AlarmManager.setTimeZone is apksim's shadow here", onApksim)
     val original = TimeZone.getDefault().id
     val zone = if (original == "America/Los_Angeles") "Europe/Paris" else "America/Los_Angeles"
     val heard = mutableListOf<String?>()
@@ -45,6 +52,7 @@ class AlarmTimeZoneTest {
 
   @Test
   fun setTimeZoneRejectsAnUnknownIdAndKeepsTheZone() {
+    assumeTrue("AlarmManager.setTimeZone is apksim's shadow here", onApksim)
     val before = TimeZone.getDefault().id
     try {
       alarms.setTimeZone("Not/AZone")
@@ -57,6 +65,7 @@ class AlarmTimeZoneTest {
 
   @Test
   fun setTimeZoneIgnoresNullAndEmptyIds() {
+    assumeTrue("AlarmManager.setTimeZone is apksim's shadow here", onApksim)
     val before = TimeZone.getDefault().id
     alarms.setTimeZone(null as String?)
     alarms.setTimeZone("")
