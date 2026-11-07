@@ -1026,8 +1026,8 @@ public class Host {
   /** A raw key press; the window sends meta 0, and the `key` command can add modifiers. */
   private void sendKey(int code, int meta, long now) {
     List<View> roots = rootViews();
-    if (roots.isEmpty()) return;
-    View root = roots.get(roots.size() - 1);
+    View root = keyTarget(roots);
+    if (root == null) return;
     // As a hardware keyboard sends a shortcut: each modifier pressed first and released last, and every event
     // marked as coming from a keyboard. Compose ignores Ctrl+A and the like without that.
     int[] modifiers = {KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_META_LEFT};
@@ -1056,10 +1056,27 @@ public class Host {
     return new KeyEvent(now, now, action, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
   }
 
+  /**
+   * The window key events go to: the topmost window that is shown, has a size and takes focus (no FLAG_NOT_FOCUSABLE),
+   * as a device's input dispatcher gives keys to the focused window. An empty overlay added after the activity's window
+   * (issue 123) is hidden or zero-sized, so it gets no keys, and a focusable dialog above the activity gets them. Window
+   * focus is not used: in a snapshot run the activity's window keeps it while a dialog is on top. Null when none qualifies.
+   */
+  static View keyTarget(List<View> roots) {
+    for (int i = roots.size() - 1; i >= 0; i--) {
+      View r = roots.get(i);
+      if (r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
+      ViewGroup.LayoutParams lp = r.getLayoutParams();
+      if (lp instanceof WindowManager.LayoutParams wl && (wl.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0) continue;
+      return r;
+    }
+    return null;
+  }
+
   private void sendChar(char ch, long now) {
     List<View> roots = rootViews();
-    if (roots.isEmpty()) return;
-    View root = roots.get(roots.size() - 1);
+    View root = keyTarget(roots);
+    if (root == null) return;
     KeyEvent[] events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(new char[] {ch});
     if (events != null) {
       for (KeyEvent k : events) root.dispatchKeyEvent(k);
