@@ -16,12 +16,17 @@ import org.junit.runner.Description;
  * A movie of each test in an `--instrument` run (`--record failed|all --record-dir DIR`, issue 132): Motion-JPEG in
  * DIR/&lt;class&gt;/&lt;method&gt;-&lt;hash&gt;.avi ({@link Bundles#folder}'s name), kept for a failed test (or every test with
  * `all`) and deleted otherwise. A test run has no window or Host loop, so frames are not presented: after each window
- * traversal ({@link ShadowSimViewRootImpl}) the screen is drawn as a failure bundle's screen.png is
+ * traversal ({@link ShadowSimViewRootImpl}) the screen is drawn, as a failure bundle's screen.png is but on a CPU canvas
  * ({@link Bundles#screenBitmap}), at most {@code --record-fps} (default 15) times a second of real time, scaled to fit
  * {@code --record-size} (default 1280x720, never up). {@link MjpegRecorder} repeats the last frame at that rate while
  * nothing changes, so the movie runs in real time; the simulated clock's jumps over idle time do not show in it.
  * The recorder starts at a test's first frame (a test that never shows a window leaves no file) and ends at its end.
  * A process that dies mid-test leaves its movie unfinished (no index): players that can read AVI streams still play it.
+ *
+ * <p>A recording must never be what fails a test (issue 144: a capture taken inside ViewRootImpl.performDraw, through
+ * HWUI's HardwareRenderingScreenshot, never returned from nSyncAndDrawFrame and held the test past its timeout). So a
+ * frame is taken from a main-thread message posted after the traversal, never inside a window draw, and drawn in
+ * software, never through the render thread. A frame slower than {@link #SLOW_MS} ends that test's movie there.
  */
 final class TestRecorder {
   private TestRecorder() {}
@@ -33,6 +38,9 @@ final class TestRecorder {
   private static final boolean ALL = "all".equals(MODE);
   private static final int FPS = Math.max(1, Math.min(30, Integer.getInteger("apksim.record.fps", 15)));
   private static final int[] MAX = size(System.getProperty("apksim.record.size", "1280x720"));
+  /** A frame that took this long stops the test's movie (the rest of the test runs without one). */
+  static final long SLOW_MS = 2_000;
+  private static boolean posted;  // a capture message is queued
 
   private static Description current;
   private static Path file;
@@ -81,6 +89,7 @@ final class TestRecorder {
   private static void resetScheduling() {
     generation++;
     scheduled = false;
+    posted = false;
     pending = false;
     main = null;
     if (timerTask != null) {
@@ -128,7 +137,26 @@ final class TestRecorder {
       }
       return;
     }
-    capture(now);
+    // Due: take it once this draw has returned (a posted message, not now: see the class comment).
+    pending = true;
+    post();
+  }
+
+  private static void post() {
+    if (posted) return;
+    if (main == null) main = new android.os.Handler(Looper.getMainLooper());
+    posted = true;
+    final int gen = generation;
+    main.post(() -> {
+      if (gen != generation) return;  // queued by an earlier test
+      posted = false;
+      if (!ON || !active || failed || capturing || !pending) return;
+      if (ShadowSimViewRootImpl.drawing > 0) {
+        post();  // run from a looper nested inside a draw: later
+        return;
+      }
+      capture(System.nanoTime());
+    });
   }
 
   private static void onDeadline(int gen) {
@@ -136,7 +164,7 @@ final class TestRecorder {
     scheduled = false;
     if (!ON || !active || !pending || !started || capturing) return;
     // A traversal may have captured since this was scheduled (lastNanos moved): decide against the latest one, which
-    // captures if due and otherwise schedules the new deadline.
+    // posts the capture if due and otherwise schedules the new deadline.
     onDraw();
   }
 
@@ -145,7 +173,7 @@ final class TestRecorder {
     pending = false;
     Bitmap screen = null;
     try {
-      screen = Bundles.screenBitmap();
+      screen = Bundles.screenBitmap(true);
       if (!started) {
         double k = Math.min(1.0, Math.min(MAX[0] / (double) screen.getWidth(), MAX[1] / (double) screen.getHeight()));
         w = Math.max(16, (int) (screen.getWidth() * k) & ~1);
@@ -180,6 +208,12 @@ final class TestRecorder {
       pixels.flip();
       MjpegRecorder.frame(pixels);
       lastNanos = now;
+      long took = (System.nanoTime() - now) / 1_000_000;
+      if (took > SLOW_MS) {
+        failed = true;
+        System.err.println("[apksim] recording " + (current == null ? "" : current.getClassName() + "#"
+            + current.getMethodName() + " ") + "stopped: a frame took " + took + " ms (the test goes on without it)");
+      }
     } catch (Exception e) {
       // No window yet (or any more): the movie keeps its last frame. A failing frame never fails the test.
       lastNanos = now;
@@ -192,7 +226,7 @@ final class TestRecorder {
   /** The test's end: one last frame if a window still shows, then the movie is kept (failed, or all) or deleted. */
   static void testFinished(Description d, boolean failed) {
     if (!ON || !d.equals(current)) return;
-    if (started) capture(System.nanoTime());
+    if (started && !TestRecorder.failed && ShadowSimViewRootImpl.drawing == 0) capture(System.nanoTime());
     // Capture ends here: a traversal in class-level cleanup must not reopen this test's file. `current` stays for
     // recordingOf().
     active = false;

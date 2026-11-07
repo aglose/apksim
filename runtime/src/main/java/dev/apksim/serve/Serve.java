@@ -9,7 +9,6 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,7 +33,8 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...""";
+                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
+                          [--trust-proxy] [--public-origin URL] [--base-path /PATH]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -55,6 +55,12 @@ public final class Serve {
   private final List<String> apps = new ArrayList<>();
   /** Pages on these origins may frame serve's page and open its WebSockets and POSTs (`--allow-origin`). */
   final List<String> allowedOrigins = new ArrayList<>();
+  /** Behind a reverse proxy: take X-Forwarded-Host/-Proto from a loopback peer as the request's own (`--trust-proxy`). */
+  boolean trustProxy;
+  /** The origin browsers reach serve at through a proxy (`--public-origin`): accepted as serve's own, used in links. */
+  String publicOrigin;
+  /** The path serve's page, /ws and /api/* are under (`--base-path /sim`): "" for none, else "/sim". */
+  String basePath = "";
   private final Map<String, Session> sessions = new ConcurrentHashMap<>();
   /** Connections open at once (open sessions' WebSockets among them). */
   private final java.util.concurrent.Semaphore connections = new java.util.concurrent.Semaphore(128);
@@ -85,6 +91,26 @@ public final class Serve {
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
+        case "--trust-proxy" -> {
+          s.trustProxy = true;
+          i--;
+        }
+        case "--public-origin" -> {
+          String o = need(a, v).replaceFirst("/$", "");
+          if (!o.matches("https?://[A-Za-z0-9.-]+(:\\d{1,5})?")) {
+            System.err.println("--public-origin takes an origin such as https://app.example.com (no path)\n" + USAGE);
+            System.exit(2);
+          }
+          s.publicOrigin = o.toLowerCase(Locale.ROOT);
+        }
+        case "--base-path" -> {
+          String b = need(a, v).replaceFirst("/+$", "");
+          if (!b.isEmpty() && !b.matches("(/[A-Za-z0-9._~-]+)+")) {
+            System.err.println("--base-path takes a path such as /sim\n" + USAGE);
+            System.exit(2);
+          }
+          s.basePath = b;
+        }
         case "--allow-origin" -> {
           String o = need(a, v);
           // An origin as a browser sends it: scheme, host, optional port; no path, no wildcard.
@@ -142,8 +168,10 @@ public final class Serve {
     server.setReuseAddress(true);
     server.bind(new InetSocketAddress(addr, port), 64);
     String host = loopbackBind ? (addr instanceof java.net.Inet6Address ? "[::1]" : "localhost") : bind;
-    System.err.printf("[serve] http://%s:%d/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
-        host, server.getLocalPort(), token == null ? "" : "?token=...", catalog.listed().size(), max, idleSeconds, maxUploadMb);
+    String at = publicOrigin != null ? publicOrigin + basePath : "http://" + host + ":" + server.getLocalPort() + basePath;
+    System.err.printf("[serve] %s/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
+        at, token == null ? "" : "?token=...", catalog.listed().size(), max, idleSeconds, maxUploadMb);
+    if (trustProxy) System.err.println("[serve] trusting X-Forwarded-Host/-Proto from loopback proxies");
     if (!allowedOrigins.isEmpty()) System.err.println("[serve] pages on " + String.join(", ", allowedOrigins) + " may embed it");
     warmStandby();
     ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -215,7 +243,10 @@ public final class Serve {
       if (r == null) return;
       s.setSoTimeout(30_000);
       try {
-        route(r, s, in, out);
+        r = underBase(r, out);
+      if (r == null) return;
+      r = forwarded(r, s);
+      route(r, s, in, out);
       } finally {
         Http.CORS_ORIGIN.remove();
       }
@@ -246,11 +277,8 @@ public final class Serve {
       }
       Map<String, String> rest = new LinkedHashMap<>(r.query());
       rest.remove("token");
-      StringBuilder to = new StringBuilder("/");
-      for (Map.Entry<String, String> e : rest.entrySet()) {
-        to.append(to.length() == 1 ? '?' : '&').append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)).append('=')
-            .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
-      }
+      // Relative: the page as the browser addressed it, under a proxy's prefix or --base-path too.
+      String to = "./" + (rest.isEmpty() ? "" : "?" + Http.query(rest));
       Http.respond(out, 302, "text/plain", new byte[0], "Location: " + to,
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;
@@ -480,6 +508,7 @@ public final class Serve {
   /** On a loopback bind, only requests addressed to a loopback name (a DNS-rebinding page names its own host). */
   private boolean hostAllowed(Http.Request r) {
     if (!loopbackBind) return true;
+    if (r.headers().containsKey(PROXIED)) return true;  // a loopback proxy's request (--trust-proxy): see forwarded()
     String host = r.header("host");
     if (host == null) return false;
     String h = host.startsWith("[") ? host.substring(0, host.indexOf(']') + 1) : host.replaceFirst(":\\d+$", "");
@@ -487,15 +516,65 @@ public final class Serve {
   }
 
   /**
-   * A browser names the page a request came from: refuse WebSockets and POSTs from any page but this server's and the
-   * `--allow-origin` ones.
+   * A browser names the page a request came from: refuse WebSockets and POSTs from any page but this server's (its
+   * Host, the forwarded host and scheme from a trusted proxy, or `--public-origin`) and the `--allow-origin` ones.
    */
   private boolean originAllowed(Http.Request r) {
     String origin = r.header("origin");
     if (origin == null) return true;  // not a browser (curl, scripts): nothing to forge
+    String o = origin.toLowerCase(Locale.ROOT);
+    if (o.equals(publicOrigin)) return true;
+    String fwHost = r.header(PROXIED);
+    if (fwHost != null) {
+      String proto = first(r.header("x-forwarded-proto"));
+      if (o.equals((proto == null ? "http" : proto.toLowerCase(Locale.ROOT)) + "://" + fwHost.toLowerCase(Locale.ROOT))) return true;
+    }
     String host = r.header("host");
     if (host != null && (origin.equals("http://" + host) || origin.equals("https://" + host))) return true;
-    return allowedOrigins.contains(origin.toLowerCase(Locale.ROOT));
+    return allowedOrigins.contains(o);
+  }
+
+  /** Set on a request a trusted loopback proxy forwarded: the browser's host, from X-Forwarded-Host. */
+  private static final String PROXIED = "x-apksim-forwarded-host";
+
+  /**
+   * `--trust-proxy`: a request from a loopback peer that carries X-Forwarded-Host came through a proxy beside serve.
+   * Its forwarded host is what the browser addressed (Origin is checked against it), and the loopback Host check does
+   * not apply. From any other peer the headers are ignored, so a remote client cannot claim them; a header of that name
+   * sent by anyone is dropped first.
+   */
+  private Http.Request forwarded(Http.Request r, Socket s) {
+    r.headers().remove(PROXIED);
+    if (!trustProxy || !s.getInetAddress().isLoopbackAddress()) return r;
+    String host = first(r.header("x-forwarded-host"));
+    if (host == null || host.isEmpty() || !host.matches("[A-Za-z0-9.:\\[\\]-]{1,255}")) return r;
+    r.headers().put(PROXIED, host);
+    return r;
+  }
+
+  /** The first of a comma-separated header's values (a chain of proxies appends theirs). */
+  private static String first(String v) {
+    if (v == null) return null;
+    int comma = v.indexOf(',');
+    return (comma < 0 ? v : v.substring(0, comma)).strip();
+  }
+
+  /**
+   * `--base-path`: the request with the prefix taken off its path, or null when it was answered here (outside the
+   * prefix: 404; the prefix alone: a redirect to it with a slash, which the page's relative URLs need). A proxy that
+   * strips the prefix itself works too: a request without it is taken as is.
+   */
+  private Http.Request underBase(Http.Request r, OutputStream out) throws IOException {
+    if (basePath.isEmpty()) return r;
+    String p = r.path();
+    if (p.equals(basePath)) {
+      Http.respond(out, 302, "text/plain", new byte[0], "Location: " + basePath + "/" + (r.query().isEmpty() ? "" : "?" + Http.query(r.query())));
+      return null;
+    }
+    if (p.startsWith(basePath + "/")) {
+      return new Http.Request(r.method(), p.substring(basePath.length()), r.query(), r.headers(), r.body());
+    }
+    return r;
   }
 
   private boolean authorized(Http.Request r) {

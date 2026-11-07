@@ -809,7 +809,11 @@ as `?token=`, since a cross-site frame gets no SameSite cookie) and open its Web
 "headers", "options"}` downloads an APK in the background and answers its id at once (`GET /api/apps/ID` for its state;
 a session opened on it meanwhile shows `p downloading N%`); uploads may be chunked; catalog lines take ` -- ` launch
 options. Apps' launch options are limited to `Catalog.LAUNCH_OPTIONS` (activity, Build fields, settings...: nothing
-that touches files, ports or the JVM).
+that touches files, ports or the JVM). Behind a reverse proxy (issue 143): `--trust-proxy` takes X-Forwarded-Host/-Proto
+from a loopback peer as the browser's (Origin is checked against them, and the loopback Host check is skipped),
+`--public-origin URL` accepts that origin as serve's own and prints links with it, `--base-path /sim` serves everything
+under a prefix (a proxy that strips it works too); the page builds every URL relative to its folder, and the token
+redirect is relative. WebSocket pings go to every session every 20 s.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;
@@ -924,9 +928,13 @@ starts). A bundle follows the test's outcome: a different exception ending the t
 links them from the JUnit XML like bundles; `TestRecorder`, `scripts/record-check.py`, issue 132): Motion-JPEG
 `DIR/<class>/<method>-<hash>.avi` (`MjpegRecorder`, so headless and in the Linux image too), kept for a failed test (all
 with `all`) and deleted otherwise. A test run has no display loop, so `ShadowSimViewRootImpl` offers a frame after each
-window traversal and `TestRecorder` draws the screen as a bundle's screen.png (`Bundles.screenBitmap`) at most N (default
-15) times a second of real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a
-movie runs in real time (the simulated clock's idle jumps do not show), and a test that never shows a window has none.
+window traversal and `TestRecorder` draws the screen (`Bundles.screenBitmap`) at most N (default 15) times a second of
+real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
+(the simulated clock's idle jumps do not show), and a test that never shows a window has none. A recording must never
+fail a test (issue 144: a capture taken inside `ViewRootImpl.performDraw` through HWUI's `HardwareRenderingScreenshot`
+never returned from `nSyncAndDrawFrame`), so a frame is taken from a main-thread message posted after the window's draw
+(never inside one: `ShadowSimViewRootImpl.drawing`), drawn on a CPU canvas (no render thread; elevation shadows are not
+drawn, unlike a bundle's screen.png), and a frame slower than 2 s ends that test's movie with a line on stderr.
 Not done: H.264/mp4, `adb shell screenrecord`; a process that dies mid-test leaves an unfinished (index-less) movie.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from

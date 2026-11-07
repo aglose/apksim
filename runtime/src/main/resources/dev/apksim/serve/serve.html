@@ -157,6 +157,8 @@ let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
 const embed = params.get("embed") === "1", token = params.get("token");
 if (embed) { document.body.classList.add("embed"); if (params.get("controls") === "0") document.body.classList.add("bare"); }
 if (token) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
+// Every URL relative to the page's folder, so serve works under --base-path or a proxy's prefix ("/sim/").
+const base = location.pathname.replace(/[^/]*$/, "");
 const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
 const now = () => performance.timeOrigin + performance.now();
 
@@ -182,7 +184,7 @@ function addApp(id, name) {
 async function loadApps() {
   try {
     if (!embed) {
-      const r = await fetch(withToken("/api/apps"));
+      const r = await fetch(withToken("api/apps"));
       for (const a of await r.json()) addApp(a.id, a.name);
     }
   } catch (e) { log("could not list apps: " + e); }
@@ -208,7 +210,7 @@ $("file").onchange = () => {
   const f = $("file").files[0];
   if (!f) return;
   const x = new XMLHttpRequest();
-  x.open("POST", withToken("/api/upload"));
+  x.open("POST", withToken("api/upload"));
   x.setRequestHeader("X-Filename", encodeURIComponent(f.name));  // a header value must be Latin-1
   x.upload.onprogress = e => { if (e.lengthComputable) $("uploadBtn").textContent = "Uploading " + Math.round(100 * e.loaded / e.total) + "%"; };
   x.onload = () => {
@@ -234,7 +236,7 @@ function start() {
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + withToken("/ws?" + q));
+  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q));
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
   // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
@@ -450,7 +452,7 @@ $("copy").onclick = async () => {
   for (const k of ["locale", "fontscale", "open"]) if (state[k]) q.set(k, state[k]);
   // Always the screen's current orientation: some devices start in landscape (foldable, tablet), others in portrait.
   if (frameW && frameH) q.set("orientation", frameW > frameH ? "landscape" : "portrait");
-  const link = location.origin + "/?" + q;
+  const link = location.origin + base + "?" + q;
   $("link").value = link;
   try { await navigator.clipboard.writeText(link); log("link copied (people without the token cookie need the token link once)"); }
   catch (e) { $("linkbox").hidden = false; $("link").select(); log("copy the link from the box"); }

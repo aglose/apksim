@@ -380,8 +380,17 @@ final class Session {
    * Called every few seconds from serve's one timer: stats, and the idle timeout. The work runs on a thread of this
    * session's own, as anything written to a tab may block (a tab that stopped reading) and the timer serves them all.
    */
+  /** WebSocket pings at this interval (WebSocket#ping), under the 60-100 s idle limits of common proxies. */
+  static final long PING_MS = 20_000;
+  private volatile long lastPing = System.currentTimeMillis();
+
   void tick() {
     if (ended) return;
+    long now = System.currentTimeMillis();
+    if (now - lastPing >= PING_MS) {
+      lastPing = now;
+      ws.ping();
+    }
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
     // must not keep the session alive.
     if (System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
