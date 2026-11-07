@@ -96,12 +96,12 @@ public final class Serve {
           i--;
         }
         case "--public-origin" -> {
-          String o = need(a, v).replaceFirst("/$", "");
-          if (!o.matches("https?://[A-Za-z0-9.-]+(:\\d{1,5})?")) {
+          String o = origin(need(a, v));  // as a browser sends it, as for --allow-origin
+          if (o == null) {
             System.err.println("--public-origin takes an origin such as https://app.example.com (no path)\n" + USAGE);
             System.exit(2);
           }
-          s.publicOrigin = o.toLowerCase(Locale.ROOT);
+          s.publicOrigin = o;
         }
         case "--base-path" -> {
           String b = need(a, v).replaceFirst("/+$", "");
