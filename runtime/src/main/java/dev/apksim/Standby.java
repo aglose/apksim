@@ -174,6 +174,7 @@ final class Standby {
     System.err.flush();
     System.out.flush();
     if (adopted) nativeSendExit(code);
+    ApkCache.beforeExit();  // a short launch's cache sweep, once the client has its exit code
     Runtime.getRuntime().halt(code);
   }
 

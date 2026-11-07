@@ -1,6 +1,8 @@
 #!/bin/bash
 # The per-APK cache folder stays bounded (ApkCache.java, issue 125): the same bytes under a new mtime reuse their entry,
-# and eviction (here with a 0 MB cap) removes entries nobody uses, but never one a running instance holds.
+# and eviction (here with a 0 MB cap) removes entries nobody uses, but never one a running instance holds. The sweep
+# runs as it does by default: at most once an hour (so the check removes cache/apk-cache.swept first), and on the way
+# out of a launch shorter than its 3 s delay, which every launch here is.
 #   scripts/apk-cache-check.sh APK OUT [IMAGE]
 # Without IMAGE: ./apksim on this Mac, with its own state folder (APKSIM_HOME=OUT/state, cold launches). With IMAGE: the
 # Linux image, a container per launch, the cache on a volume in OUT shared by them, as containers sharing a cache
@@ -71,17 +73,19 @@ fi
 LAUNCHED=1
 for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
 drive ping | grep -q pong || { echo "the held instance never answered" >&2; exit 1; }
+sleep 4  # past its own sweep (skipped: the earlier launches swept within the hour)
 # Old enough to go, but in use; and an entry from an older apksim (no markers) and a half-deleted one, both to go.
 age 7200 "$CACHE/${A% }/last-used"
-mkdir -p "$CACHE/old.apk-1700000000000/lib" "$CACHE/.evict-left-over/dex"
+mkdir -p "$CACHE/old.apk-1700000000000/lib" "$CACHE/.apk-cache-trash/left-over/dex"
 echo '<manifest/>' > "$CACHE/old.apk-1700000000000/AndroidManifest.xml"
 age 7200 "$CACHE/old.apk-1700000000000/AndroidManifest.xml"
-once b third.log --jvm -Dapksim.apkCacheMB=0 --jvm -Dapksim.apkCacheSync=true
+rm -f "$CACHE/apk-cache.swept"
+once b third.log --jvm -Dapksim.apkCacheMB=0
 NOW="$(entries)"
 [[ "$NOW" == *"${A% }"* ]] || fail "the running instance's entry was evicted: $NOW"
 [[ "$(echo $NOW | wc -w)" -eq 2 ]] || fail "wanted the held entry and the new one, got: $NOW"
 [[ ! -e "$CACHE/old.apk-1700000000000" ]] || fail "an unused old-format entry was kept"
-[[ ! -e "$CACHE/.evict-left-over" ]] || fail "a left-over .evict folder was kept"
+[[ ! -e "$CACHE/.apk-cache-trash/left-over" ]] || fail "a left-over in the trash was kept"
 echo "ok: kept $NOW, evicted the unused ones"
 drive quit >/dev/null 2>&1 || true
 LAUNCHED=""
@@ -91,7 +95,8 @@ else for _ in $(seq 1 20); do drive ping >/dev/null 2>&1 || break; sleep 0.5; do
 echo "== once it has quit, its entry goes"
 B="${NOW/${A% }/}"; B="${B// /}"
 age 7200 "$CACHE/${A% }/last-used"
-once b fourth.log --jvm -Dapksim.apkCacheMB=0 --jvm -Dapksim.apkCacheSync=true
+rm -f "$CACHE/apk-cache.swept"
+once b fourth.log --jvm -Dapksim.apkCacheMB=0
 [[ "$(entries)" == "$B " ]] || fail "wanted only $B, got: $(entries)"
 echo "ok: only $B left"
 echo "apk cache check passed"

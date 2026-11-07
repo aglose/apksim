@@ -26,11 +26,14 @@ import java.util.stream.Stream;
  *
  * <p>Each launch takes its entry while holding a shared lock on `cache/apk-cache.lock`, then holds a shared lock on
  * `<entry>/in-use.lock` for as long as the process lives (released by the OS when it dies, in a container on a
- * shared volume too) and touches `<entry>/last-used`. Eviction runs on a background thread, under the global lock
- * held exclusively: an entry is a candidate when it is not locked by any process and was not used in the last 10
- * minutes; candidates unused for 14 days go, then the least recently used until the entries fit in
- * `-Dapksim.apkCacheMB` (default 2048). An evicted entry is renamed to `.evict-...` under the lock and deleted after
- * it, so a launch never waits for a deletion and never finds a half-deleted entry.
+ * shared volume too) and touches `<entry>/last-used`. A sweep runs at most once an hour across processes
+ * (`cache/apk-cache.swept`), 3 s after startup on a background thread, or on the way out if the launch ends sooner
+ * (`beforeExit`, from Standby.halt, after the launcher's client has been told the exit code). It lists and sizes the
+ * entries without a lock: an entry is a candidate when it is not this process's and was not used in the last 10
+ * minutes; those unused for 14 days go, then the least recently used until the rest fit in `-Dapksim.apkCacheMB`
+ * (default 2048). Under the global lock held exclusively each candidate is checked again (used since, or locked by a
+ * process: it stays) and moved into `cache/.apk-cache-trash/`, which is emptied after the lock is released, so a
+ * launch never waits for a deletion and never finds a half-deleted entry.
  */
 final class ApkCache {
   static final String LOCK = "apk-cache.lock";
@@ -38,6 +41,13 @@ final class ApkCache {
   private static final String LAST_USED = "last-used";
   private static final long RECENT_MS = 10 * 60_000L;
   private static final long STALE_MS = 14 * 24 * 3600_000L;
+  private static final long SWEEP_EVERY_MS = 3600_000L;
+  static final String SWEPT = "apk-cache.swept";
+  /** Evicted entries are moved in here, then deleted: no entry can have this name (an entry's ends in -16 hex). */
+  static final String TRASH = ".apk-cache-trash";
+  private static final Object WAKE = new Object();
+  private static volatile boolean exiting;
+  private static volatile Thread sweeper;
   /** The whole process's hold on its entry: never closed, the OS releases it at exit. */
   private static FileChannel held;
   private static FileLock heldLock;
@@ -92,30 +102,54 @@ final class ApkCache {
       held = ch;
       touch(entry.resolve(LAST_USED));
     }
-    Runnable evict = () -> {
-      try {
-        evict(root, entry);
-      } catch (Throwable t) {
-        System.err.println("[apksim] apk cache eviction: " + t);
-      }
-    };
-    if (Boolean.getBoolean("apksim.apkCacheSync")) {
-      evict.run();  // scripts/apk-cache-check.sh: deterministic, before the run goes on
-    } else {
-      // After startup: listing and sizing the entries must not compete with the launch.
-      Thread t = new Thread(() -> {
-        try {
-          Thread.sleep(Long.getLong("apksim.apkCacheEvictDelay", 3000));
-        } catch (InterruptedException e) {
-          return;
+    // After startup: listing and sizing the entries must not compete with the launch. A launch that ends sooner runs
+    // it on the way out (beforeExit), as Standby.halt's Runtime.halt would end this thread.
+    Thread t = new Thread(() -> {
+      synchronized (WAKE) {
+        long until = System.currentTimeMillis() + 3000;
+        for (long left; !exiting && (left = until - System.currentTimeMillis()) > 0; ) {
+          try {
+            WAKE.wait(left);
+          } catch (InterruptedException e) {
+            return;
+          }
         }
-        evict.run();
-      }, "apksim-apk-cache-evict");
-      t.setDaemon(true);
-      t.setPriority(Thread.MIN_PRIORITY);
-      t.start();
-    }
+      }
+      try {
+        sweep(root, entry);
+      } catch (Throwable e) {
+        System.err.println("[apksim] apk cache eviction: " + e);
+      }
+    }, "apksim-apk-cache-evict");
+    t.setDaemon(true);
+    t.setPriority(Thread.MIN_PRIORITY);
+    t.start();
+    sweeper = t;
     return entry;
+  }
+
+  /** Lets a sweep not yet run (at most once an hour) finish before the process halts: up to 10 s. */
+  static void beforeExit() {
+    Thread t = sweeper;
+    if (t == null || !t.isAlive()) return;
+    synchronized (WAKE) {
+      exiting = true;
+      WAKE.notifyAll();
+    }
+    try {
+      t.join(10_000);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** At most once an hour across processes (`cache/apk-cache.swept`'s mtime), then {@link #evict}. */
+  private static void sweep(Path root, Path current) throws IOException {
+    Path swept = root.resolve(SWEPT);
+    long now = System.currentTimeMillis();
+    if (Files.exists(swept) && now - Files.getLastModifiedTime(swept).toMillis() < SWEEP_EVERY_MS) return;
+    touch(swept);
+    evict(root, current);
   }
 
   /** CRCs of the central directory and the file's length; for a file it cannot read as a ZIP, of its length and mtime. */
@@ -166,41 +200,52 @@ final class ApkCache {
   static void evict(Path root, Path current) throws IOException {
     long capBytes = Long.getLong("apksim.apkCacheMB", 2048) * 1024 * 1024;
     long now = System.currentTimeMillis();
-    List<Path> doomed = new ArrayList<>();
-    try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-         FileLock g = global.lock()) {
-      List<Entry> entries = new ArrayList<>();
-      try (Stream<Path> dirs = Files.list(root)) {
-        for (Path d : (Iterable<Path>) dirs::iterator) {
-          String name = d.getFileName().toString();
-          if (name.startsWith(".evict-")) {
-            doomed.add(d);  // left by a process that ended mid-deletion
-            continue;
-          }
-          // An entry has a manifest; classes/, data/, test-outputs/ and the lock file do not.
-          if (!Files.isRegularFile(d.resolve("AndroidManifest.xml"))) continue;
-          Path marker = Files.exists(d.resolve(LAST_USED)) ? d.resolve(LAST_USED) : d.resolve("AndroidManifest.xml");
-          entries.add(new Entry(d, Files.getLastModifiedTime(marker).toMillis(), size(d)));
-        }
-      }
-      entries.sort((a, b) -> Long.compare(a.lastUsed, b.lastUsed));
-      long total = 0;
-      for (Entry e : entries) total += e.bytes;
-      for (Entry e : entries) {
-        boolean stale = now - e.lastUsed > STALE_MS;
-        if (!stale && total <= capBytes) break;
-        if (e.dir.equals(current) || now - e.lastUsed < RECENT_MS || inUse(e.dir)) continue;
-        Path to = root.resolve(".evict-" + e.dir.getFileName() + Storage.tmpTag());
-        try {
-          Files.move(e.dir, to, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException ex) {
-          continue;
-        }
-        doomed.add(to);
-        total -= e.bytes;
+    Path trash = root.resolve(TRASH);
+    // Listed and sized without the lock (a launch's take needs it shared); each one is checked again under it.
+    List<Entry> entries = new ArrayList<>();
+    try (Stream<Path> dirs = Files.list(root)) {
+      for (Path d : (Iterable<Path>) dirs::iterator) {
+        // An entry has a manifest; classes/, data/, test-outputs/, the trash and the lock file do not.
+        if (!Files.isRegularFile(d.resolve("AndroidManifest.xml"))) continue;
+        entries.add(new Entry(d, lastUsed(d), size(d)));
       }
     }
-    for (Path d : doomed) Storage.deleteTree(d);
+    entries.sort((x, y) -> Long.compare(x.lastUsed, y.lastUsed));
+    long total = 0;
+    for (Entry e : entries) total += e.bytes;
+    List<Entry> candidates = new ArrayList<>();
+    for (Entry e : entries) {
+      if (now - e.lastUsed <= STALE_MS && total <= capBytes) break;
+      if (e.dir.equals(current) || now - e.lastUsed < RECENT_MS) continue;
+      candidates.add(e);
+      total -= e.bytes;  // as if it goes: one in use stays, and the cap is then exceeded by it alone
+    }
+    if (!candidates.isEmpty()) {
+      Files.createDirectories(trash);
+      try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+           FileLock g = global.lock()) {
+        for (Entry e : candidates) {
+          // Used since it was listed (a launch took it, or holds it now): it stays.
+          if (!Files.isDirectory(e.dir) || System.currentTimeMillis() - lastUsed(e.dir) < RECENT_MS || inUse(e.dir)) continue;
+          try {
+            Files.move(e.dir, trash.resolve(e.dir.getFileName() + Storage.tmpTag()), StandardCopyOption.ATOMIC_MOVE);
+          } catch (IOException ex) {
+            // Next sweep.
+          }
+        }
+      }
+    }
+    // What this or an earlier sweep (one that ended mid-deletion) moved there.
+    if (Files.isDirectory(trash)) {
+      try (Stream<Path> dirs = Files.list(trash)) {
+        for (Path d : (Iterable<Path>) dirs::iterator) Storage.deleteTree(d);
+      }
+    }
+  }
+
+  private static long lastUsed(Path entry) throws IOException {
+    Path marker = Files.exists(entry.resolve(LAST_USED)) ? entry.resolve(LAST_USED) : entry.resolve("AndroidManifest.xml");
+    return Files.getLastModifiedTime(marker).toMillis();
   }
 
   /** Whether a process holds the entry's lock: a dead one's lock is gone with it. */
@@ -228,7 +273,8 @@ final class ApkCache {
   }
 
   private static void touch(Path file) throws IOException {
-    if (!Files.exists(file)) Files.createFile(file);
+    // CREATE, not exists-then-createFile: processes starting together take one new entry at once.
+    Files.newOutputStream(file, StandardOpenOption.CREATE, StandardOpenOption.APPEND).close();
     Files.setLastModifiedTime(file, FileTime.fromMillis(System.currentTimeMillis()));
   }
 }

@@ -95,9 +95,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     app, for good: issue 125). Taken on a thread of its own at the top of `Main` (~2 ms: SHA-256's provider lookup was
     ~60 ms of a cold JVM, CRC32C and String.format ~3 ms interpreted), under a shared lock on `cache/apk-cache.lock`;
     the process then holds a shared lock on `<entry>/in-use.lock` until it dies and touches `<entry>/last-used`.
-    3 s later a background thread evicts under the global lock held exclusively: entries no process has locked and
-    not used for 10 minutes, those unused 14 days first, then least recently used until they fit in
-    `-Dapksim.apkCacheMB` (default 2048); each is renamed to `.evict-*` under the lock and deleted after it. Old
+    A sweep runs at most once an hour (`cache/apk-cache.swept`), 3 s after startup on a background thread, or from
+    `Standby.halt` (after the client has its exit code, up to 10 s) when the launch ends sooner: Runtime.halt would
+    kill the thread, and short test listings never swept. It lists and sizes entries without a lock (a launch's take
+    waits for an exclusive holder), picks those not this process's and unused for 10 minutes (unused 14 days first,
+    then least recently used until the rest fit in `-Dapksim.apkCacheMB`, default 2048), then under the global lock
+    held exclusively checks each again (used since, or locked: kept) and moves it into `cache/.apk-cache-trash/`,
+    emptied after the lock (no entry can be named that: an entry's name ends in -16 hex). Old
     mtime-named entries (no markers) go by their manifest's mtime. File locks, not PIDs, as containers sharing a cache
     volume repeat PIDs. `scripts/apk-cache-check.sh` checks it (CI: `ci-smoke.sh`).
   - `ClassCache`: translated classes kept between launches in `work/cache/classes/<runtime hash>/<dex crc>.pack`.
