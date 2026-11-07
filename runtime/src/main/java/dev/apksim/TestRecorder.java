@@ -210,16 +210,6 @@ final class TestRecorder {
       pixels.flip();
       MjpegRecorder.frame(pixels);
       lastNanos = now;
-      long took = (System.nanoTime() - now) / 1_000_000;
-      if (took > SLOW_MS) {
-        failed = true;
-        // Finished now (index written), not left to repeat its last frame until the test ends: finish() keeps or
-        // deletes it as for any other movie.
-        cutOffMs = MjpegRecorder.stop();
-        cutOff = true;
-        System.err.println("[apksim] recording " + (current == null ? "" : current.getClassName() + "#"
-            + current.getMethodName() + " ") + "stopped: a frame took " + took + " ms (the test goes on without it)");
-      }
     } catch (VirtualMachineError e) {
       throw e;  // out of memory and the like: not the recorder's to hide
     } catch (Throwable e) {
@@ -229,7 +219,31 @@ final class TestRecorder {
     } finally {
       if (screen != null) screen.recycle();
       capturing = false;
+      // Slow, whether the frame made it or the draw threw after a while: the movie ends here.
+      long took = (System.nanoTime() - now) / 1_000_000;
+      if (took > SLOW_MS && !failed) cutOff(took);
     }
+  }
+
+  /**
+   * Stops this test's movie after a slow frame: finished now (index written), not left to repeat its last frame until
+   * the test ends; finish() keeps or deletes it as for any other movie. Nothing here may fail the test.
+   */
+  private static void cutOff(long took) {
+    failed = true;
+    pending = false;
+    if (started) {
+      try {
+        cutOffMs = MjpegRecorder.stop();
+      } catch (VirtualMachineError e) {
+        throw e;
+      } catch (Throwable e) {
+        cutOffMs = -1;  // nothing usable to keep
+      }
+      cutOff = true;
+    }
+    System.err.println("[apksim] recording " + (current == null ? "" : current.getClassName() + "#"
+        + current.getMethodName() + " ") + "stopped: a frame took " + took + " ms (the test goes on without it)");
   }
 
   /** The test's end: one last frame if a window still shows, then the movie is kept (failed, or all) or deleted. */
@@ -264,7 +278,15 @@ final class TestRecorder {
     keptFor = null;
     if (!started) return;
     started = false;
-    long ms = cutOff ? cutOffMs : MjpegRecorder.stop();
+    long ms;
+    try {
+      ms = cutOff ? cutOffMs : MjpegRecorder.stop();
+    } catch (VirtualMachineError e) {
+      throw e;
+    } catch (Throwable e) {
+      ms = -1;  // a writer that cannot finish: the movie is not kept
+      System.err.println("[apksim] could not finish the recording " + file + ": " + e);
+    }
     cutOff = false;
     try {
       if (keep && ms >= 0) {
