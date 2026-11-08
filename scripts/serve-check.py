@@ -23,6 +23,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import socket
@@ -483,7 +484,8 @@ def custom_device_check(url, token, app, a):
     name, size = a.device_size.split("=")
     m = re.fullmatch(r"(\d+)x(\d+)(?:@([\d.]+))?", size)
     density = float(m.group(3) or 2)
-    px = (round(int(m.group(1)) * density), round(int(m.group(2)) * density))
+    f32 = lambda x: struct.unpack(">f", struct.pack(">f", x))[0]  # Java's float arithmetic, Math.round: floor(x + 0.5)
+    px = tuple(math.floor(f32(int(m.group(i)) * f32(density)) + 0.5) for i in (1, 2))
     s = Session(url, token, app, name)
     s.pump(a.first_frame_timeout, until=lambda: len(s.frames) > 0)
     got = (s.frames[0][4], s.frames[0][5]) if s.frames else None
@@ -496,7 +498,9 @@ def custom_device_check(url, token, app, a):
     got = (s.frames[-1][4], s.frames[-1][5])
     check(got == px, f"device {name} shows {px[0]}x{px[1]} again (got {got})")
     n = len(s.texts)
-    s.ws.send(f"device {size}")  # the spec itself is not a name: never passed on as given
+    spelled = "1111x777@1.25"  # not a name, nor the app's default or any --device-size's: refused, never passed on as given
+    assert spelled != size
+    s.ws.send(f"device {spelled}")
     s.ws.send("device nosuchsize")
     s.pump(1)
     refused = [t for t in s.texts[n:] if t.startswith("r refused")]

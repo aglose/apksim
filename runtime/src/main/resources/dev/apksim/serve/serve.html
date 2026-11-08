@@ -196,6 +196,21 @@ function setDevice(name) {
   }
   $("device").value = name;
 }
+// The app's own default device (launch option --device) joins the menu without changing what is selected.
+async function offerAppDevice() {
+  if (!state.app) return;
+  const app = state.app;
+  try {
+    const r = await fetch(withToken("api/apps/" + encodeURIComponent(app)));
+    if (!r.ok || app !== state.app) return;
+    const d = (await r.json()).device;
+    if (d && ![...$("device").options].some(o => o.value === d)) {
+      const o = document.createElement("option");
+      o.value = o.textContent = d;
+      $("device").appendChild(o);
+    }
+  } catch (e) { /* the menu keeps what it has */ }
+}
 async function loadDevices() {
   try {
     const r = await fetch(withToken("api/devices"));
@@ -217,6 +232,7 @@ async function loadApps() {
   if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
   await loadDevices();
   if (state.device) setDevice(state.device);
+  offerAppDevice();
   $("dark").checked = state.appearance === "dark";
   if (state.fontscale) $("fontscale").value = state.fontscale;
   $("locale").value = state.locale;
@@ -231,7 +247,7 @@ function refresh() {
   $("stop").disabled = !running;
   for (const id of ["back", "home", "rotl", "rotr", "go", "copy"]) $(id).disabled = !running;
 }
-$("app").onchange = () => { state.app = $("app").value; state.device = ""; refresh(); };
+$("app").onchange = () => { state.app = $("app").value; refresh(); offerAppDevice(); };
 $("uploadBtn").onclick = () => $("file").click();
 $("file").onchange = () => {
   const f = $("file").files[0];

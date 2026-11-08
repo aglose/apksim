@@ -116,7 +116,7 @@ final class Session {
   /** The device size the app's launch options give (`--device`, checked by Catalog.launchOptions), or null. */
   static String appDevice(Catalog.App app) {
     List<String> l = app.launch();
-    int i = l.indexOf("--device");
+    int i = l.lastIndexOf("--device");  // the last, as the launcher takes it
     return i >= 0 && i + 1 < l.size() ? l.get(i + 1) : null;
   }
 

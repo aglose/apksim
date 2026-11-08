@@ -580,6 +580,7 @@ public final class Serve {
     Catalog.Download d = catalog.download(id);
     if (d != null) {
       StringBuilder b = new StringBuilder("{\"id\":").append(Http.q(id)).append(",\"name\":").append(Http.q(d.app.name()));
+      if (Session.appDevice(d.app) != null) b.append(",\"device\":").append(Http.q(Session.appDevice(d.app)));
       if (!d.done.isDone()) b.append(",\"state\":\"downloading\"");
       else if (d.done.isCompletedExceptionally()) {
         String why;
@@ -601,7 +602,8 @@ public final class Serve {
       return;
     }
     String detail = warmer.detail(a);
-    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"ready\",\"cache\":"
+    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name())
+        + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "") + ",\"state\":\"ready\",\"cache\":"
         + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + "}");
   }
 
