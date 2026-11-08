@@ -26,14 +26,36 @@ public final class Thermal {
 
   private record Entry(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {}
 
+  // Registration and changes go through one lock, and each hands its callback to the executor inside it, so a listener
+  // hears statuses in the order they were set and ends on the latest (an executor runs its tasks in the order given).
+  private static final Object LOCK = new Object();
+
   static void add(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {
-    LISTENERS.add(new Entry(executor, listener));
-    int now = status;
-    executor.execute(() -> listener.onThermalStatusChanged(now));
+    synchronized (LOCK) {
+      LISTENERS.add(new Entry(executor, listener));
+      int now = status;
+      executor.execute(() -> listener.onThermalStatusChanged(now));
+    }
   }
 
   static void remove(PowerManager.OnThermalStatusChangedListener listener) {
-    LISTENERS.removeIf(e -> e.listener() == listener);
+    synchronized (LOCK) {
+      LISTENERS.removeIf(e -> e.listener() == listener);
+    }
+  }
+
+  /** Between tests (SimTestEnvironment.resetState): no listeners, status NONE, as a new device. */
+  static void reset() {
+    synchronized (LOCK) {
+      LISTENERS.clear();
+      status = PowerManager.THERMAL_STATUS_NONE;
+    }
+  }
+
+  /** The callback executor of the deprecated one-argument overload: the main looper, as PowerManager's main executor. */
+  private static Executor mainExecutor() {
+    android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+    return h::post;
   }
 
   /** thermal [STATUS]: reports the status, or sets it and tells the listeners. */
@@ -45,9 +67,11 @@ public final class Thermal {
       if (NAMES[i].equals(v) || Integer.toString(i).equals(v)) s = i;
     }
     if (s < 0) return "error: usage: thermal [none|light|moderate|severe|critical|emergency|shutdown]";
-    status = s;
     final int now = s;
-    for (Entry e : LISTENERS) e.executor().execute(() -> e.listener().onThermalStatusChanged(now));
+    synchronized (LOCK) {
+      status = s;
+      for (Entry e : LISTENERS) e.executor().execute(() -> e.listener().onThermalStatusChanged(now));
+    }
     return "thermal: " + NAMES[s];
   }
 
@@ -61,7 +85,7 @@ public final class Thermal {
     @Implementation
     @Override
     protected void addThermalStatusListener(@ClassName("android.os.PowerManager$OnThermalStatusChangedListener") Object listener) {
-      add(Runnable::run, (PowerManager.OnThermalStatusChangedListener) listener);
+      add(mainExecutor(), (PowerManager.OnThermalStatusChangedListener) listener);
     }
 
     @Implementation

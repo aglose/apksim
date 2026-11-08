@@ -345,6 +345,7 @@ public class SimRunner extends RobolectricTestRunner {
     public void resetState() {
       SlotDevice.close();  // a running instance's settings are written, and no longer, before the reset empties them
       RealTimeClock.endTest();
+      Thermal.reset();
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));
       FakeMediaProvider media = ReflectionHelpers.getField(this, "fakeMediaProvider");
