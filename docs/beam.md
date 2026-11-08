@@ -486,9 +486,11 @@ extracted `.so` planted there would run in another app, the owner's own included
 sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named with `b`, `BeamSandbox`):
 
 - **Writes**: everything denied first, then only its own scratch (`STATE/tmp/<pid>`: the JVM keeps the launcher's PID,
-  so the profile can name it), its own out folder (`STATE/beam/out/<pid>`), `beam-N` data slots with their `.device`
-  folders (and making an app's folder for them, create only: a write on the folder would let it rename another app's
-  folder into its scratch), its standby's socket, Metal's shader cache and `/dev/null`: not apksim's own files wherever it is installed
+  so the profile can name it), its own out folder (`STATE/beam/out/<pid>`), `beam-N` and `bm<12 hex>-N` data slots with their
+  `.device` folders (and making an app's folder for them, create only: a write on the folder would let it rename another
+  app's folder into its scratch; and a folder only (`vnode-type DIRECTORY`): a link named for an app would lead the
+  agent, which unpacks a moved session's data there, into the home folder, so the agent also refuses an app folder that
+  is a link or resolves elsewhere), its standby's socket, Metal's shader cache and `/dev/null`: not apksim's own files wherever it is installed
   (a Homebrew install is outside the home folder), the temp folder (the launcher's link to its libraries is there),
   `/tmp`, or anything another process runs or loads.
 - **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a

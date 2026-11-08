@@ -1051,7 +1051,15 @@ public final class Serve {
       byte[] rnd = new byte[6];
       RANDOM.nextBytes(rnd);
       String name = "bm" + HexFormat.of().formatHex(rnd);
-      SlotPack.unpack(zip, state.resolve("cache/data").resolve(pkg).resolve(name + "-0"));
+      // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the
+      // sandbox lets them make a folder only, but one made before that rule, or by anything else, is checked here).
+      Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
+      Files.createDirectories(pkgDir);
+      if (!Files.isDirectory(data, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(pkgDir, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+          || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
+        throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
+      }
+      SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
       System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%n", origin, Files.size(zip) >> 10, name);
       return name;
     } finally {

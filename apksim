@@ -394,7 +394,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     # A beamed instance runs an APK a web site sent (docs/beam.md "The beam sandbox"). Rules name real paths (the
     # sandbox matches resolved ones); later rules win.
     # Writes: nothing but its own scratch and out folder (this PID: exec keeps it for the JVM), beam-N data slots (and
-    # making an app's folder for them, create only: write on a folder would let it rename another app's away), its
+    # making an app's folder for them, create only and a folder only: write on a folder would let it rename another
+    # app's away, and a link there would lead the agent, which unpacks a moved session's data into it, elsewhere), its
     # standby's socket (bound as SOCK.PID, then renamed) and its .pid file (both removed as it takes a launch), Metal's
     # shader cache and /dev/null: not apksim's own files (an install outside the home folder), the temp folder (the
     # launcher's link to its libraries is there), the caches other launches load code from, or anything else another
@@ -417,7 +418,7 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     mkdir -p "$STATE/beam/out" "$STATE/cache/data"  # made here: the instance may make only what is inside them
     PROFILE="$PROFILE
 (deny file-write*)
-(allow file-write-create (regex #\"^$QS/cache/data/[^/]+\$\"))
+(allow file-write-create (require-all (regex #\"^$QS/cache/data/[^/]+\$\") (vnode-type DIRECTORY)))
 (allow file-write* (subpath \"$RS/tmp/$$\") (subpath \"$RS/beam/out/$$\") (regex #\"$SLOTS\")
   (literal \"/dev/null\") (literal \"/dev/tty\")${UCACHE:+ (subpath \"$UCACHE/com.apple.metal\")}${STANDBY_SOCK:+ (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK")\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").$$\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").pid\")})
 (deny file-read* (subpath \"$RH\"))

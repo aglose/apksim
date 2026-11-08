@@ -190,6 +190,12 @@ def sandbox_checks(apksim, apk):
         ("allowed", "make a new app's data folder", "mkdir $S/cache/data/dev.example.new$$"),
         ("denied", "rename another app's data folder into its scratch", "mv $S/cache/data/dev.example $S/tmp/$$/stolen"),
         ("denied", "remove another app's data folder", "rmdir $S/cache/data/dev.example.empty"),
+        # Only a folder: a link named for an app would lead the agent, which unpacks a moved session's data there,
+        # into the home folder.
+        ("denied", "make an app's data folder a link (to the home folder)", "ln -s $HOME $S/cache/data/dev.example.link$$"),
+        ("denied", "make a file where an app's data folder goes", "touch $S/cache/data/dev.example.file$$"),
+        ("allowed", "write a moved session's slot (bm + 12 hex)", "mkdir -p $S/cache/data/dev.example/bm0123456789ab-0 && touch $S/cache/data/dev.example/bm0123456789ab-0/.lock"),
+        ("denied", "write a slot named like one but not (bm + 11 hex)", "mkdir -p $S/cache/data/dev.example/bm0123456789a-0"),
     ]
     script = "S=$1; R=$2\n" + "\n".join(
         f"if ( {cmd} ) >/dev/null 2>&1; then echo 'allowed {i}'; else echo 'denied {i}'; fi" for i, (_, _, cmd) in enumerate(probes))
