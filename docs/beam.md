@@ -508,6 +508,10 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   would read whatever the visitor copies, passwords included, and could write to it. The profile also refuses the
   pasteboard service itself, so native code or reflection past apksim's own check reaches nothing; Cmd+V in the shown
   simulator window does not paste either (the tab's keyboard types text in).
+- **No terminal**: `/dev/tty` and `/dev/ttysN` are neither read nor written (the profile once allowed writing
+  `/dev/tty`). A cold-launched instance is in the agent's terminal session, so a site's app could otherwise read what
+  the visitor types in the terminal running `apksim beam` and write escape sequences into it. Its stdin is
+  `/dev/null` and its output a pipe either way.
 - **Signals and other systems**: signals only to itself (`target self`: no other process of the visitor's, the agent
   included, and no other beamed instance: they share one sandbox, as each spawns the next standby inside its own, so
   `same-sandbox` let one site's app end another's session). The launcher's standby check, which runs inside it, takes

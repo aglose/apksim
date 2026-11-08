@@ -149,6 +149,8 @@ def sandbox_checks(apksim, apk):
         pass
     agent_like.bind(other_sock)
     agent_like.listen(1)
+    import glob as _glob
+    tty = next((t for t in sorted(_glob.glob("/dev/ttys[0-9]*")) if os.stat(t).st_uid == os.getuid() and os.access(t, os.R_OK)), None)
     os.makedirs(os.path.join(STATE, "beam"), exist_ok=True)
     os.makedirs(os.path.join(STATE, "autofill"), exist_ok=True)
     other = os.path.join(STATE, "cache", "data", "dev.example", "default")
@@ -176,7 +178,9 @@ def sandbox_checks(apksim, apk):
         ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
         ("denied", "connect to any other local socket (an ssh-agent's, a container engine's)", f"nc -U -z {other_sock}"),
         ("denied", "signal another of the visitor's processes", f"kill -0 {victim.pid}"),
-        ("allowed", "signal itself", "sh -c 'kill -0 $$'"),  # its own pid: the ( ) the probe runs in is a child
+        ("allowed", "signal itself", "sh -c 'kill -0 $$'"),
+        # A terminal of the visitor's (opened, not read): a cold-launched instance shares the agent's terminal session.
+        *([("denied", f"open a terminal of the visitor's ({tty})", f"exec 3< {tty}")] if tty else []),  # its own pid: the ( ) the probe runs in is a child
         # Its own sandbox is every warm beamed instance's (each spawns the next standby inside its own): a child stands
         # in for another site's session in it.
         ("denied", "signal a process in its own sandbox (another beamed session)", "sleep 3 & kill -0 $!"),

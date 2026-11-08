@@ -411,6 +411,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     # Network: what the Mac reaches over IPv4, but not loopback (other instances' control ports, the agent) and no
     # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets); no
     # local socket but the resolver's and syslog's (not ssh-agent's, a container engine's or a standby's).
+    # No terminal: a cold-launched instance is in the agent's terminal session, so /dev/tty (or the terminal's
+    # /dev/ttysN) would let a site's app read what the visitor types there and write into it.
     # Signals only to itself: not even its own sandbox, which every warm beamed instance shares (each spawns the next
     # standby inside its own), so one site's app could otherwise end another's session. No pasteboard (the Mac's clipboard, even through
     # native code or reflection past SimWindow's own check).
@@ -426,9 +428,10 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
 (deny file-write*)
 (allow file-write-create (require-all (regex #\"^$QS/cache/data/[^/]+\$\") (vnode-type DIRECTORY)))
 (allow file-write* (subpath \"$RS/tmp/$$\") (subpath \"$RS/beam/out/$$\") (regex #\"$SLOTS\")
-  (literal \"/dev/null\") (literal \"/dev/tty\")${UCACHE:+ (subpath \"$UCACHE/com.apple.metal\")}${STANDBY_SOCK:+ (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK")\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").$$\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").pid\")})
+  (literal \"/dev/null\")${UCACHE:+ (subpath \"$UCACHE/com.apple.metal\")}${STANDBY_SOCK:+ (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK")\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").$$\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").pid\")})
 (deny file-read* (subpath \"$RH\"))
 (allow file-read-metadata (subpath \"$RH\"))
+(deny file-read* file-write* (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+\$\"))
 (allow file-read* (subpath \"$RR\") (subpath \"$RL\") (subpath \"$RJ\") (subpath \"$RS\"))
 (deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\") (subpath \"$RS/tmp\"))
 (allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (subpath \"$RS/tmp/$$\") (regex #\"$SLOTS\"))
