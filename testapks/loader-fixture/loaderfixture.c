@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <zlib.h>
 
 static char err[256];
 #define FAIL(...) do { snprintf(err, sizeof err, __VA_ARGS__); return err; } while (0)
@@ -715,6 +716,35 @@ static const char *check_setjmp(void) {
   return "ok";
 }
 
+// ---------------------------------------------------------------- zlib (libz.so is a system library: the host's)
+// Linked with -lz, so the library imports deflateInit2_, deflate, inflate... from libz.so, which the loader resolves by
+// name in the host (issue 148: on Linux they fell to stubs).
+static const char *check_zlib(void) {
+  if (!zlibVersion() || zlibVersion()[0] < '1') FAIL("zlibVersion gave nothing");
+  static unsigned char in[20000], packed[20000], out[20000];
+  for (size_t i = 0; i < sizeof in; i++) in[i] = (unsigned char)("apksim zlib check "[i % 18] + (i / 1000));
+  z_stream d;
+  memset(&d, 0, sizeof d);
+  if (deflateInit2(&d, 6, Z_DEFLATED, 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) FAIL("deflateInit2 failed");
+  d.next_in = in; d.avail_in = sizeof in; d.next_out = packed; d.avail_out = sizeof packed;
+  int r = deflate(&d, Z_FINISH);
+  size_t n = d.total_out;
+  if (r != Z_STREAM_END) FAIL("deflate returned %d", r);
+  if (deflateReset(&d) != Z_OK) FAIL("deflateReset failed");
+  deflateEnd(&d);
+  if (n >= sizeof in) FAIL("deflate did not compress (%zu bytes)", n);
+  z_stream f;
+  memset(&f, 0, sizeof f);
+  if (inflateInit2(&f, 15) != Z_OK) FAIL("inflateInit2 failed");
+  f.next_in = packed; f.avail_in = (uInt)n; f.next_out = out; f.avail_out = sizeof out;
+  r = inflate(&f, Z_FINISH);
+  size_t m = f.total_out;
+  inflateEnd(&f);
+  if (r != Z_STREAM_END) FAIL("inflate returned %d", r);
+  if (m != sizeof in || memcmp(in, out, m)) FAIL("inflate gave back different bytes (%zu of %zu)", m, sizeof in);
+  return "ok";
+}
+
 // ---------------------------------------------------------------- JNI
 JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_LoaderFixture_check(JNIEnv *env, jobject self, jstring jname) {
   (void)self;
@@ -726,6 +756,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_LoaderFixture_check(JNIEnv 
                   : !strcmp(name, "threadAttr") ? check_thread_attr()
                   : !strcmp(name, "barrier")  ? check_barrier()
                   : !strcmp(name, "setjmp")   ? check_setjmp()
+                  : !strcmp(name, "zlib")     ? check_zlib()
                                               : "no such check";
   (*env)->ReleaseStringUTFChars(env, jname, name);
   return (*env)->NewStringUTF(env, r);
