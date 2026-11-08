@@ -29,7 +29,7 @@ trap 'rm -rf "$STAGE"' EXIT
 D="$STAGE/$NAME"
 mkdir -p "$D/scripts" "$D/work/lib"
 
-cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/README.md" "$D/"
+cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" "$ROOT/README.md" "$D/"
 # train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py (with affected.py) runs
 # test suites; snapshot.py screenshot tests.
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" \
