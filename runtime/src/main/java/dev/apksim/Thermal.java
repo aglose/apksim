@@ -44,16 +44,26 @@ public final class Thermal {
   }
 
   private static void drain() {
-    while (true) {
-      Runnable r;
-      synchronized (LOCK) {
-        r = QUEUE.poll();
-        if (r == null) {
+    boolean clean = false;
+    try {
+      while (true) {
+        Runnable r;
+        synchronized (LOCK) {
+          r = QUEUE.poll();
+          if (r == null) {
+            draining = false;
+            clean = true;
+            return;
+          }
+        }
+        r.run();
+      }
+    } finally {
+      if (!clean) {  // an Error from a listener: give up ownership so later notifications still run, then propagate
+        synchronized (LOCK) {
           draining = false;
-          return;
         }
       }
-      r.run();
     }
   }
 
@@ -86,6 +96,7 @@ public final class Thermal {
     synchronized (LOCK) {
       LISTENERS.clear();
       QUEUE.clear();
+      draining = false;
       status = PowerManager.THERMAL_STATUS_NONE;
     }
   }
