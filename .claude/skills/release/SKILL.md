@@ -22,7 +22,7 @@ Rules from AGENTS.md apply throughout (read "Git and pull requests" if unsure):
 ## 1. Survey
 ```bash
 git fetch origin --tags --prune
-gh pr list --state open --json number,title,headRefName,isDraft,mergeable,statusCheckRollup,reviewDecision
+gh pr list --state open --limit 200 --json number,title,headRefName,isDraft,mergeable,statusCheckRollup,reviewDecision
 git tag --sort=-v:refname | head -3
 ```
 Note the last tag and the open PRs. Skip drafts (list them in the report).

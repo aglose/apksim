@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   # A change to only docs and text files (Markdown, .txt, docs/, licence and notice files, .claude/) needs no build, no
-  # Mac runner and no test run. Skipped jobs count as passed for the required checks (a path filter on the workflow
+  # Mac runner and no test run. If this job itself fails, its output is empty and everything runs. Skipped jobs count as passed for the required checks (a path filter on the workflow
   # would leave them pending for ever), and linux-smoke still runs its personal-information check on such a change.
   changes:
     runs-on: ubuntu-latest
@@ -42,8 +42,8 @@ jobs:
         run: |
           code=true
           if [ "${{ github.event_name }}" = pull_request ]; then
-            files=$(git diff --name-only "$BASE...$HEAD_SHA")
-            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '(\.md|\.txt)$|^docs/|^\.claude/|^(LICENSE|NOTICE)'; then
+            files=$(git diff --no-renames --name-only "$BASE...$HEAD_SHA")
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '(\.md|\.txt)$|^docs/|^\.claude/|^(LICENSE|NOTICE)(\.md|\.txt)?$'; then
               code=false
             fi
           fi
@@ -52,6 +52,7 @@ jobs:
 
   linux-smoke:
     needs: changes
+    if: always()  # also when `changes` failed: then every step runs, as for a code change
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -78,29 +79,29 @@ jobs:
           printf '%s\n' "$HEAD_REF" | scripts/hooks/check-private --text "branch name" || status=1
           exit $status
       - name: Build the runtime and the test app
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         uses: ./.github/actions/linux-build
       - name: Translator check (R8 and D8 fixtures)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: scripts/check-translator.sh
       - name: Launch selection check (resource intent-filter priorities)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: scripts/launch-priority-check.sh
       - name: instrument.py check (test processes that die, against a stand-in apksim)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: python3 scripts/instrument-check.py
       - name: Build the image
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: scripts/docker-build.sh apksim:ci
       - name: Smoke test
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           # The runner's Android SDK has adb, for the adb device check (adb-check.py).
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
           scripts/ci-smoke.sh apksim:ci testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke \
             testapks/composeapp/uiserver/build/outputs/apk/debug/uiserver-debug.apk
       - name: Test run (androidTest suite, GLES on Mesa)
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           mkdir -p tests
           cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
@@ -120,7 +121,7 @@ jobs:
       # Runner listeners named with -e listener: an InstrumentationRunListener gets the instrumentation, as
       # AndroidJUnitRunner gives it, and a listener that cannot be made fails the run.
       - name: Test run with extra runner listeners
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-listeners.xml -e class dev.apksim.composeapp.RunnerListenersTest \
@@ -133,7 +134,7 @@ jobs:
       # --start-activities (opt-in): an activity the app starts comes up, and the one below it is stopped with its
       # window hidden until it is back on top.
       - name: Test run with activities started
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-start.xml -e startActivities true \
@@ -141,7 +142,7 @@ jobs:
       # Device identity given at launch (--serial, --feature, --build, --bluetooth) and a Settings value (--setting) are what the app
       # sees from Application.onCreate, and --feature NAME=false takes a default feature away.
       - name: Test run with a device identity
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-identity.xml -e class dev.apksim.composeapp.DeviceIdentityTest,dev.apksim.composeapp.SlotStateTest \
@@ -161,7 +162,7 @@ jobs:
           EOF
       # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
       - name: Test run with animations off
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-animscale.xml -e class dev.apksim.composeapp.AnimScaleOptionTest -e animScale 0 \
@@ -176,7 +177,7 @@ jobs:
       # NetworkReplayTest against the committed recording (docs/network.md): every test but the one that leaves an
       # unmatched request on purpose passes, and that one fails with the request named.
       - name: Test run with the network replayed
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           cp testapks/composeapp/app/src/androidTest/network/greeting.har tests/greeting.har
           status=0
@@ -196,7 +197,7 @@ jobs:
       # ProcessDeathTest's two crashing tests end the process (a halt, the Timeout watchdog): instrument.py must
       # report those two failed and still run every other test, in new processes.
       - name: Test run that ends its process on purpose
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           status=0
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
@@ -215,7 +216,7 @@ jobs:
       # ProcessDeathTest's hanging test has nothing in the process to end it: --test-timeout must kill the container
       # (not just the docker client), report that test timed out with its stack, and run the one after it.
       - name: Test run that hangs on purpose
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           status=0
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
@@ -235,7 +236,7 @@ jobs:
           EOF
       # The same suite split over 3 processes at once (-e numShards/shardIndex): every test once, the same results.
       - name: Test run in shards
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-sharded.xml --shards 3 -e timezone America/New_York -- --timezone America/New_York
@@ -251,19 +252,19 @@ jobs:
       # Failure bundles (--bundles): the test app's FailureBundle*Test classes fail on purpose, and each failure must
       # leave its screen, tree, log, threads and repro.sh (scripts/bundle-check.py says what it checks).
       - name: Failure bundles
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         run: |
           python3 scripts/bundle-check.py app.apk test.apk bundle-check \
             --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests
       # Test impact (docs/affected-tests.md): record the suite, break a source file and rebuild it, and check that the
       # tests --affected-by picks include every test the break fails and leave others out; then balanced shards.
       - name: Affected tests and balanced shards
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         env:
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}  # Gradle, for the rebuilds
         run: python3 scripts/affected-check.py --image apksim:ci
       - uses: actions/upload-artifact@v4
-        if: always() && needs.changes.outputs.code == 'true'
+        if: always() && needs.changes.outputs.code != 'false'
         with:
           name: smoke
           path: |
@@ -289,7 +290,7 @@ jobs:
   # either (platform-tools are x86_64), so the smoke test leaves out the adb device check that linux-smoke runs.
   testapp:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: always() && needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -309,7 +310,7 @@ jobs:
 
   linux-smoke-arm64:
     needs: [changes, testapp]
-    if: needs.changes.outputs.code == 'true'
+    if: always() && needs.changes.outputs.code != 'false' && needs.testapp.result == 'success'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -334,7 +335,7 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit.xml -e timezone America/New_York -- --timezone America/New_York --test-outputs /work/outputs
       - uses: actions/upload-artifact@v4
-        if: always() && needs.changes.outputs.code == 'true'
+        if: always() && needs.changes.outputs.code != 'false'
         with:
           name: smoke-arm64
           path: |
@@ -350,7 +351,7 @@ jobs:
   # sides are packaged releases trained the same way, and both launch the anchor's own test app.
   startup-gate:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: always() && needs.changes.outputs.code != 'false'
     runs-on: macos-15  # Apple Silicon: warm launches (standbys) and the startup cache are Mac-only
     timeout-minutes: 60
     env:
