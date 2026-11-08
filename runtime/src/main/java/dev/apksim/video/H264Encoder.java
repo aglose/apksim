@@ -48,7 +48,9 @@ public final class H264Encoder implements AutoCloseable {
         if (e != null) {
           byte[] grey = new byte[64 * 64 * 4];
           java.util.Arrays.fill(grey, (byte) 0x80);
-          byte[] unit = e.encode(grey, 64 * 4, 0, true);
+          // Straight to the native call: the pixel order (VideoToolbox.BITMAP_BGRA) makes a Bitmap, which this
+          // control thread must not do while the app may still be starting; grey is the same either way.
+          byte[] unit = nativeEncode(e.handle, grey, 64 * 4, true, 0, true);
           ok = unit != null && unit.length > 1 && unit[0] == 1;
         }
       } catch (Throwable t) {
