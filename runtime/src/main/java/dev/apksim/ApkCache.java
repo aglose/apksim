@@ -38,7 +38,43 @@ import java.util.stream.Stream;
  * (no `in-use.lock`, judged by its manifest's mtime) may be in use with nothing to show it, so it goes only once
  * unused for 14 days, never for the cap.
  */
-final class ApkCache {
+public final class ApkCache {
+  /**
+   * The package an APK's manifest names (beam's moved data must be the build's: docs/beam.md phase 5). The APK is a
+   * site's, read by the agent outside any sandbox: the manifest at most 1 MB (real ones are tens of KB), and only its
+   * first element decoded (Axml, bounded by its input), its package attribute read from that text.
+   */
+  public static String manifestPackage(Path apk) throws IOException {
+    byte[] raw;
+    try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(apk.toFile())) {
+      java.util.zip.ZipEntry e = zip.getEntry("AndroidManifest.xml");
+      if (e == null) throw new IOException("the APK has no manifest");
+      try (java.io.InputStream in = zip.getInputStream(e)) {
+        raw = in.readNBytes((1 << 20) + 1);
+      }
+    }
+    if (raw.length > 1 << 20) throw new IOException("the APK's manifest is over 1 MB");
+    String first;
+    try {
+      first = Axml.decode(raw, 1);  // the manifest element alone: its package is all this needs
+    } catch (RuntimeException e) {
+      throw new IOException("the APK's manifest could not be read: " + e.getMessage());
+    }
+    // Matched at the one tag's start only: searched for anywhere, a manifest whose names repeated "<manifest" with no
+    // '>' after them took quadratic time (18 s for 350k characters) in the agent, outside any sandbox. Axml escapes
+    // names, so the only '<' and '>' past the declaration are the element's own.
+    int at = first.indexOf("\n<manifest");
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("<manifest\\b[^>]*?\\spackage=\"([^\"]*)\"").matcher(first);
+    // Length first: the name check's repeated group recurses per segment, so a package of thousands ("a.a.a...", 10k
+    // characters) overflowed the stack, an Error no caller catches. 256, as a moved session's data allows (SlotPack).
+    if (at < 0 || !m.region(at + 1, first.length()).lookingAt() || m.group(1).length() > 256
+        || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
+      throw new IOException("the manifest names no package");
+    }
+    return m.group(1);
+  }
+
+
   static final String LOCK = "apk-cache.lock";
   private static final String IN_USE = "in-use.lock";
   private static final String LAST_USED = "last-used";
@@ -95,6 +131,7 @@ final class ApkCache {
 
   /** The entry for this APK, created and marked in use by this process; eviction then runs in the background. */
   static synchronized Path take(Path root, Path apk) throws IOException {
+    if (BeamSandbox.ON) BeamSandbox.seedApkCache(root);
     Path entry = root.resolve(apk.getFileName() + "-" + key(apk));
     Files.createDirectories(root);
     try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
@@ -105,6 +142,8 @@ final class ApkCache {
       held = ch;
       touch(entry.resolve(LAST_USED));
     }
+    // A beamed instance's entry is in its own scratch, and every other is out of its reach (BeamSandbox).
+    if (BeamSandbox.ON) return entry;
     // After startup: listing and sizing the entries must not compete with the launch. A launch that ends sooner runs
     // it on the way out (beforeExit), as Standby.halt's Runtime.halt would end this thread.
     Thread t = new Thread(() -> {
@@ -257,6 +296,48 @@ final class ApkCache {
         }
       }
     }
+  }
+
+  /**
+   * Removes the entries of one APK file name (`<file name>-<16 hex>`), as evict does: under the global lock held
+   * exclusively, an entry a process holds stays; the rest move into the trash, emptied after the lock. For `apksim
+   * beam` (docs/beam.md), whose builds are stored by content hash, so only that build ever used such an entry. Whether
+   * every one went (none left, or none was there).
+   */
+  public static boolean remove(Path root, String apkFileName) throws IOException {
+    if (!Files.isDirectory(root)) return true;
+    List<Path> mine = new ArrayList<>();
+    try (Stream<Path> dirs = Files.list(root)) {
+      for (Path d : (Iterable<Path>) dirs::iterator) {
+        String n = d.getFileName().toString();
+        if (n.length() == apkFileName.length() + 17 && n.startsWith(apkFileName + "-")
+            && n.substring(apkFileName.length() + 1).matches("[0-9a-f]{16}") && Files.isDirectory(d)) mine.add(d);
+      }
+    }
+    if (mine.isEmpty()) return true;
+    boolean all = true;
+    Path trash = root.resolve(TRASH);
+    Files.createDirectories(trash);
+    try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+         FileLock g = global.lock()) {
+      for (Path d : mine) {
+        if (inUse(d)) {
+          all = false;
+          continue;
+        }
+        Files.move(d, trash.resolve(d.getFileName() + Storage.tmpTag()), StandardCopyOption.ATOMIC_MOVE);
+      }
+    }
+    try (Stream<Path> dirs = Files.list(trash)) {
+      for (Path d : (Iterable<Path>) dirs::iterator) {
+        try {
+          Storage.deleteTree(d);
+        } catch (java.io.UncheckedIOException e) {
+          // the next sweep
+        }
+      }
+    }
+    return all;
   }
 
   private static long lastUsed(Path entry) throws IOException {

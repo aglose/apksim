@@ -34,6 +34,14 @@ main { flex: 1; display: flex; min-height: 0; gap: 16px; padding: 16px; }
   line-height: 0; }
 #screen { display: block; border-radius: 12px; background: #000; touch-action: none; outline: none; cursor: default; }
 #bezel.typing { box-shadow: 0 0 0 2px var(--accent), 0 6px 30px rgba(0,0,0,.25); }
+/* Fill (a session on this Mac, docs/beam.md phase 3): the display is the stage's size, one frame pixel per screen pixel,
+   pinned top left (a frame from before a resize is never stretched). */
+body.fill #stage { align-items: flex-start; justify-content: flex-start; overflow: hidden; }
+body.fill #bezel { padding: 0; border-radius: 0; box-shadow: none; background: transparent; }
+body.fill #screen { border-radius: 0; }
+body.fill #overlay { inset: 0; border-radius: 0; }
+#moveChip { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 3; padding: 6px 12px; border-radius: 999px;
+  background: rgba(0,0,0,.72); color: #fff; font-size: 12px; line-height: 1.3; white-space: nowrap; pointer-events: none; }
 #keys { position: absolute; left: 10px; top: 10px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none;
   pointer-events: none; }
 #overlay { position: absolute; inset: 10px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; align-items: center;
@@ -83,6 +91,11 @@ body.embed.bare aside { width: auto; }
     <option value="desktop">Desktop</option><option value="tv">TV</option>
   </select>
   <label><input id="dark" type="checkbox"> Dark</label>
+  <select id="runOn" aria-label="Where the app runs" hidden title="Run the app on this server, or on this Mac with its own apksim (docs/beam.md)">
+    <option value="server">On the server</option><option value="mac">On this Mac</option>
+  </select>
+  <label id="moveDataBox" hidden title="Moving this session to this Mac takes the app's data with it (what it saved: files, databases, settings, /sdcard; not the screen it is on): the app quits on the server first, so its last frame stays still for a moment"><input id="moveData" type="checkbox" checked> With its data</label>
+  <label id="keepBox" hidden title="When this session ends, keep the app and its data on this Mac (its sign-ins too) instead of erasing them; apksim beam saved lists what is kept, apksim beam run ID opens it"><input id="keep" type="checkbox"> Keep on this Mac</label>
   <span class="spacer"></span>
   <button id="start" class="primary" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
@@ -91,6 +104,7 @@ body.embed.bare aside { width: auto; }
   <div id="stage">
     <div id="empty">Choose an app or upload an APK, then Start. The app runs on this server; this page shows its screen and sends
       your clicks, drags, scrolls and typing.</div>
+    <div id="moveChip" hidden></div>
     <div id="bezel" hidden>
       <canvas id="screen" width="822" height="1782"></canvas>
       <textarea id="keys" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Keyboard input to the app"></textarea>
@@ -115,6 +129,11 @@ body.embed.bare aside { width: auto; }
         <input id="locale" type="text" placeholder="Locale, e.g. fr-FR" aria-label="Locale">
       </div>
       <div class="row"><input id="url" type="text" placeholder="Deep link, e.g. myapp://screen" aria-label="Deep link"><button id="go" style="flex:0">Open</button></div>
+      <div class="row" id="macRow" hidden title="On this Mac (docs/beam.md): the display at the device's size, or the page's own, one pixel per screen pixel; the same display in apksim's own window">
+        <select id="fitMode" aria-label="Display size"><option value="device">Device size</option><option value="fill">Fill the page</option></select>
+        <button id="showSim" title="Show this session in apksim's window on this Mac">Show in Simulator</button>
+      </div>
+      <div class="row" id="fitRow" hidden><button id="fitTab" title="The simulator window set the size: take it back to this page's">Fit to tab</button></div>
       <div class="row" id="copyRow"><button id="copy">Copy link to this state</button></div>
       <div class="row" id="linkbox" hidden><input id="link" type="text" readonly aria-label="Link"></div>
     </div>
@@ -249,13 +268,16 @@ async function loadApps() {
   $("url").value = state.open;
   refresh();
   await codecReady;
+  await beamSetup();
   if (state.app) start();
 }
 function refresh() {
-  const running = ws && ws.readyState <= 1 && !ended;
+  // A start on this Mac has no socket while it waits for the agent (its prompt) or sends the APK: it counts as running,
+  // so Stop can drop it.
+  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen;
   $("start").disabled = !$("app").value || running;
   $("stop").disabled = !running;
-  for (const id of ["back", "home", "rotl", "rotr", "go", "copy"]) $(id).disabled = !running;
+  for (const id of ["back", "home", "rotl", "rotr", "go", "copy", "keep"]) $(id).disabled = !running;
 }
 $("app").onchange = () => { state.app = $("app").value; refresh(); offerAppDevice(); };
 $("uploadBtn").onclick = () => $("file").click();
@@ -284,42 +306,198 @@ $("file").onchange = () => {
 // ---------------------------------------------------------------- session
 function start() {
   if (!state.app) return;
+  if (moving) abandonMove(null);
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
-  if (ws) ws.close();
+  // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
+  if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
+  $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
+  if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
+  const q = sessionQuery();
+  mode = "jpeg"; closeDecoder();
+  $("empty").hidden = true; $("bezel").hidden = false;
+  overlay("Starting…");
+  const gen = ++startGen;
+  if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
+  else openSocket(serverSocketUrl(q), false);
+  fit();
+}
+// A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
+let startGen = 0;
+let macStart = 0;  // the start generation asking this Mac (no socket yet), else 0
+function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q); }
+// What a session starts with: the app, the device and settings chosen, the last deep link (a restart or a move to the
+// other side starts the app there again), and H.264 when this browser decodes it.
+function sessionQuery() {
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
-  mode = "jpeg"; closeDecoder();
-  $("empty").hidden = true; $("bezel").hidden = false;
-  overlay("Starting…");
-  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q));
+  return q;
+}
+function openSocket(url, onMac, fallback) {
+  const sock = ws = new WebSocket(url);
+  sock.fallback = fallback || null; sock.gen = startGen;
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
-  // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
-  // closing (or delivering) when Start opens the next.
-  sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
+  sock.onopen = () => {
+    if (sock !== ws) return;
+    refresh();
+    for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i);
+    if (document.visibilityState === "hidden") send("maxfps 1");  // started in a background tab
+  };
+  wire(sock, onMac);
+}
+// The current session's socket. Every handler first checks that its socket is still the current one: a stopped
+// session's socket may still be closing (or delivering) when Start opens the next, or a move replaces it.
+function wire(sock, onMac) {
+  sock.onMac = onMac;
   sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
+    if (sock === ws && macFallback(sock, "the session closed before its first frame")) return;
     socketClosed(sock);
-    if (sock !== ws) return;
-    if (!ended) overlay("Disconnected from the server.", "Start again", start);
+    if (sock !== ws || sock.handedOff) return;  // a server session whose data went to this Mac ends by design
+    // This Mac's agent gone mid-session (quit, the Mac's owner stopped it): the server can run it instead.
+    if (!ended && onMac) overlay("Disconnected from this Mac's apksim.", "Run on the server instead", () => { $("runOn").value = "server"; pref("server"); start(); });
+    else if (!ended) overlay(onMac ? "Disconnected from this Mac's apksim." : "Disconnected from the server.", "Start again", start);
     ended = true;
     refresh();
   };
-  fit();
 }
-function stop() { clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0; if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); } }
+
+// ---------------------------------------------------------------- moving a running session (docs/beam.md, phase 4)
+// Changing where the app runs during a session starts it on the other side beside the running one, which goes on
+// streaming and taking input meanwhile; on the other side's first frame the canvas switches to it (the last frame stays
+// up until the new one is drawn: no blank frame), input goes there, and the old session is closed (on the server its
+// data slot is erased, as for a closed tab). The app starts at its last deep link: what it holds in memory does not move.
+let moving = null;  // { sock, to, texts, gen }
+function chip(text) { $("moveChip").hidden = !text; $("moveChip").textContent = text || ""; }
+async function moveSession(to) {
+  if (moving) abandonMove(null);
+  const gen = startGen, where = to === "mac" ? "this Mac" : "the server", q = sessionQuery();
+  chip("Moving to " + where + "…");
+  let url, data = null, handedOff = false;
+  if (to === "mac" && !$("moveData").checked) log("moving without its data");
+  if (to === "mac" && $("moveData").checked && !ws.onMac) {
+    // Phase 5 (docs/beam.md): the app quits on the server, which packs what it saved and answers a ticket for it; the
+    // agent downloads that into the slot the app starts in here. The server's last frame stays up meanwhile.
+    chip("Moving to this Mac with its data…");
+    const h = await handoff(ws);
+    if (gen !== startGen) return;
+    if (h.ticket) data = { ticket: h.ticket, url: new URL("api/beam/data", location.href).href };
+    else log("its data could not move (" + (h.error || JSON.stringify(h)) + "): it moves without it");
+    if (h.skipped) log("its data moves without " + h.skipped + " links or special files in it (only regular files and folders move)");
+    handedOff = !!h.ticket || h.ended;
+  }
+  if (to === "mac") {
+    try {
+      const g = await macGrant(q, gen, text => chip("Moving to this Mac: " + text), data);
+      if (!g) return;
+      if (data && g.data !== true) log("this Mac's apksim did not take its data: the app starts there without it");
+      const lq = new URLSearchParams(q);
+      lq.set("app", g.app); lq.set("token", g.token); lq.set("protocol", beam.protocol);
+      url = "ws://127.0.0.1:" + beam.port + "/ws?" + lq;
+    } catch (e) {
+      if (gen !== startGen) return;
+      chip(null);
+      $("runOn").value = "server"; pref("server");
+      if (handedOff) restartOnServer(q, "could not move to this Mac: " + e.message, data && data.ticket);
+      else log("could not move to this Mac: " + e.message + "; it stays on the server");
+      return;
+    }
+  } else url = serverSocketUrl(q);
+  if (gen !== startGen || ended) { chip(null); return; }
+  const sock = new WebSocket(url);
+  sock.binaryType = "arraybuffer";
+  const m = moving = { sock, to, texts: [], gen, q, handedOff, restore: data && data.ticket };
+  sock.onmessage = e => {
+    if (moving !== m) return;
+    if (typeof e.data !== "string") { promote(m, e.data); return; }
+    const kind = e.data[0], body = e.data.slice(2);
+    if (kind === "p") chip("Moving to " + where + ": " + body + "…");
+    else if (kind === "x") abandonMove(body);
+    else m.texts.push(e.data);  // the session's i, c, s...: replayed when it takes over
+  };
+  sock.onclose = () => { if (moving === m) abandonMove("the connection closed"); };
+}
+function abandonMove(why) {
+  const m = moving;
+  moving = null; chip(null);
+  if (!m) return;
+  m.sock.onclose = null; m.sock.close();
+  if (why === null) return;
+  const stays = m.to === "mac" ? "server" : "mac";
+  if (m.handedOff) { $("runOn").value = "server"; pref("server"); restartOnServer(m.q, "could not move to this Mac: " + why, m.restore); return; }
+  log("could not move to " + (m.to === "mac" ? "this Mac" : "the server") + ": " + why + "; it stays " + (stays === "mac" ? "on this Mac" : "on the server"));
+  $("runOn").value = stays; pref(stays);
+}
+// `handoff` on a server session's socket: its answer (`h {"ticket","size"}` or `h {"error"}`), or {error} when the
+// socket closes first or the server says nothing for 60 s. Once the server has started on it the session ends.
+function handoff(sock) {
+  return new Promise(done => {
+    let settled = false;
+    const finish = h => { if (settled) return; settled = true; clearTimeout(timer); sock.onHandoff = null; done(h); };
+    const timer = setTimeout(() => finish({ error: "the server did not answer", ended: true }), 60000);
+    sock.handedOff = true;  // its close is the server ending it for the move, not a disconnection
+    sock.onHandoff = h => finish(h.ticket ? h : Object.assign({ ended: !/no data yet/.test(h.error || "") }, h));
+    const closed = sock.onclose;
+    sock.onclose = e => { closed && closed(e); finish({ error: "the server's session closed", ended: true }); };
+    sock.send("handoff");
+  }).then(h => { if (!h.ticket && !h.ended) sock.handedOff = false; return h; });
+}
+// After the server's session handed its data off and this Mac then failed to take it: the app on the server again,
+// with its data when the hand-off's ticket is still good (`restore`: the server keeps the pack until then, and says in
+// an `r` line whether it could), else fresh.
+function restartOnServer(q, why, ticket) {
+  log(why + "; it runs on the server again" + (ticket ? "" : ", without what it had saved"));
+  if (ws) { socketClosed(ws); ws.onclose = null; ws.close(); ws = null; }
+  const rq = new URLSearchParams(q);
+  if (ticket) rq.set("restore", ticket);
+  openSocket(serverSocketUrl(rq), false);
+}
+function promote(m, first) {
+  moving = null;
+  if (m.gen !== startGen || ended) { m.sock.close(); chip(null); return; }
+  const old = ws, sock = m.sock;
+  ws = sock;  // the old socket's handlers now do nothing; its last frame stays on the canvas
+  socketClosed(old); old.onclose = null; old.close();
+  wire(sock, m.to === "mac");
+  sock.fallback = null; sock.gen = startGen;
+  bestRtt = Infinity; clockOffset = 0;
+  for (const t of m.texts) if (t[0] !== "t") onText(t);
+  onFrame(first, sock);
+  for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i);
+  chip(null); log("moved to " + (m.to === "mac" ? "this Mac" : "the server"));
+  refresh();
+}
+function stop() {
+  if (moving) abandonMove(null);
+  const asking = startGen;  // a start still asking this Mac (no socket yet) is dropped too
+  startGen++; clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0;
+  if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
+  else if (asking && !ended) { ended = true; overlay("Stopped.", "Start again", start); refresh(); }
+}
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
 function onText(t) {
   const kind = t[0], body = t.slice(2);
   if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
-  else if (kind === "i") { const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device); }
+  else if (kind === "i") {
+    const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device);
+    // Only the agent says it (docs/beam.md): a session on this Mac may keep its data when it ends.
+    $("keepBox").hidden = typeof i.keep !== "boolean"; $("keep").checked = i.keep === true;
+    $("moveDataBox").hidden = typeof i.keep === "boolean" || $("runOn").hidden;  // a server session's move to this Mac
+    $("macRow").hidden = typeof i.keep !== "boolean";
+    if (typeof i.keep === "boolean" && prefFit() === "fill") setFill(true);
+  }
+  else if (kind === "k") {
+    $("keep").checked = body === "on";
+    log(body === "on" ? "this Mac keeps the app and its data when the session ends (apksim beam saved)" : "this Mac erases the app's data when the session ends");
+  }
   else if (kind === "s") stats(JSON.parse(body));
+  else if (kind === "h") { const f = ws && ws.onHandoff; if (f) { ws.onHandoff = null; f(JSON.parse(body)); } }
   else if (kind === "r") log(body);
   else if (kind === "c") { mode = body === "h264" ? "h264" : "jpeg"; log("stream: " + (mode === "h264" ? "H.264" : "JPEG")); }
   else if (kind === "t") {
@@ -327,6 +505,7 @@ function onText(t) {
     if (rtt < bestRtt) { bestRtt = rtt; clockOffset = server - (sent + rtt / 2); }
   }
   else if (kind === "q") { $("permission").hidden = false; $("permText").textContent = "The app asks for: " + body; }
+  else if (kind === "x" && ws && macFallback(ws, body)) { /* on the server now */ }
   else if (kind === "x" && fallbackTries > 0 && fallbackTries < 6 && /^all \d+ sessions are in use/.test(body)) {
     // The JPEG restart came before the old session let go of its place (it holds it until its instance has exited
     // and its data is erased): try again, a little later each time.
@@ -339,6 +518,7 @@ function onText(t) {
   else if (kind === "x") { ended = true; fallbackTries = 0; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
 }
 function stats(s) {
+  window.apksimSession = s;  // for scripts: the instance's pid among them
   if (s.firstFrameMs >= 0) $("ff").textContent = (s.firstFrameMs / 1000).toFixed(2) + " s";
   $("mem").textContent = s.rssMb > 0 ? s.rssMb + " MB (heap " + s.heapMb + ")" : "–";
   const left = Math.max(0, s.idleLimitS - s.idleS);
@@ -366,20 +546,120 @@ function onFrame(buf, sock) {
   chain = chain.then(() => createImageBitmap(jpeg)).then(bmp => {
     // Decoding takes a moment: by now Stop or a new session may have replaced this frame's socket.
     if (sock !== ws || ended) { bmp.close(); return; }
-    draw(bmp, w, h);
-    bmp.close();
-    shown(presented, encode, buf.byteLength);
+    present(bmp, w, h, presented, encode, buf.byteLength, sock);
   }).catch(() => { if (sock === ws) send("ack"); });
 }
-function draw(image, w, h) {
-  if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); }
-  ctx.drawImage(image, 0, 0, w, h);
+// Decoded frames reach the canvas at the display's refresh (requestAnimationFrame), as the Mac window presents its
+// frames at its vsync. Drawn as soon as decoded, two that the stream's jitter (encode, transport, decode: 5-12 ms
+// between frames sent every 8.3) brought within one refresh interval showed only the second, and the next refresh
+// none. Drawing at the refresh costs no time: a canvas draw is shown at the next refresh either way. The second of two
+// waits for the refresh after (a queue of at most two); one left waiting at every refresh for long means frames come a
+// refresh late, and one is skipped to catch up.
+const ready = [];
+let presenting = false, standing = 0;
+function present(image, w, h, presented, encode, bytes, sock) {
+  paced();
+  send("ack");  // decoded: the server may send the next; the queue below bounds itself
+  ready.push({ image, w, h, presented, encode, bytes, sock });
+  while (ready.length > 2) dropFrame(ready.shift());
+  if (!presenting) { presenting = true; requestAnimationFrame(presentTick); }
 }
+function dropFrame(f) { f.image.close(); drawsSinceVsync++; }  // never shown: apksimPacing counts it as replaced
+function presentTick() {
+  presenting = false;
+  while (ready.length && (ready[0].sock !== ws || ended)) ready.shift().image.close();
+  if (!ready.length) { standing = 0; return; }
+  let f = ready.shift();
+  if (ready.length && standing > 8) { dropFrame(f); f = ready.shift(); standing = 0; }
+  draw(f.image, f.w, f.h);
+  f.image.close();
+  shown(f.presented, f.encode, f.bytes);
+  f.sock.shownFrames = (f.sock.shownFrames || 0) + 1;  // apksimStats' frames: this session's own, from its first
+  standing = ready.length ? standing + 1 : 0;
+  if (ready.length) { presenting = true; requestAnimationFrame(presentTick); }
+}
+function draw(image, w, h) {
+  if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); fillFrame(w, h); }
+  ctx.drawImage(image, 0, 0, w, h);
+  drawsSinceVsync++;
+}
+// What reached the screen per display refresh (requestAnimationFrame), counted as the Mac window counts its display
+// link's vsyncs (`frames`' screen part, native/simwindow.m): a refresh with a new frame drawn since the last is shown
+// (more than one: the rest were replaced before being shown), one without inside an animation (a frame came within
+// 50 ms before) is a repeat. Only while a script asks for it (apksimPacing), so a page left open costs nothing.
+let drawsSinceVsync = 0, pacing = null;
+function pacingTick(t) {
+  const p = pacing;
+  if (!p) return;
+  const n = drawsSinceVsync; drawsSinceVsync = 0;
+  if (p.last) p.periods.push(t - p.last);
+  p.last = t;
+  if (n > 0) { p.shown++; p.replaced += n - 1; p.repeated += p.pendingRepeats; p.pendingRepeats = 0; p.lastFrame = t; }
+  else if (t - p.lastFrame < 50) p.pendingRepeats++;
+  else p.pendingRepeats = 0;
+  requestAnimationFrame(pacingTick);
+}
+window.apksimPacing = ms => new Promise(done => {
+  drawsSinceVsync = 0;
+  pacing = { shown: 0, repeated: 0, replaced: 0, pendingRepeats: 0, lastFrame: -1e9, last: 0, periods: [] };
+  requestAnimationFrame(pacingTick);
+  setTimeout(() => {
+    const p = pacing; pacing = null;
+    const all = p.shown + p.repeated;
+    done({ hz: p.periods.length ? Math.round(1000 / median(p.periods)) : 0, newPct: all ? Math.round(p.shown * 100 / all) : 0,
+      shown: p.shown, repeated: p.repeated, replaced: p.replaced });
+  }, ms);
+});
+// The instance paces its frames to this tab's display (SimWindow.remoteVsync, docs/beam.md "Phase 1b"): a canvas draw
+// reaches the screen at the next refresh (requestAnimationFrame) if it comes before it, so a frame drawn just before a
+// refresh may slip to the one after while the next frame lands in the same one (one replaced, one refresh repeated).
+// With the instance on its own 120 Hz grid the two clocks drifted and some runs showed 91% new frames where the Mac
+// window showed 99%. So the page measures where in its refresh interval frames are decoded and every 500 ms sends its
+// period and how far to move the instance's vsyncs, so they land mid-interval, away from that edge. The loop runs
+// only while frames come (a still screen sends nothing); a hidden tab has no refreshes, and the instance goes back to
+// its own pace.
+const pace = { running: false, last: 0, lastFrame: 0, periods: [], phases: [], target: 0.5 };
+function paceTick() {
+  // When this runs, not the refresh's timestamp: the queue below draws frames here, and a frame decoded after this
+  // point waits a whole refresh, wherever the timestamp says the refresh began.
+  const t = performance.now();
+  if (pace.last) push(pace.periods, t - pace.last, 120);
+  pace.last = t;
+  if (performance.now() - pace.lastFrame > 500) { pace.running = false; pace.last = 0; return; }
+  requestAnimationFrame(paceTick);
+}
+function paced() {
+  const t = performance.now();
+  pace.lastFrame = t;
+  if (!pace.running) { pace.running = true; requestAnimationFrame(paceTick); return; }
+  if (pace.last && pace.periods.length >= 10) {
+    const p = pacePeriod();
+    pace.phases.push((((t - pace.last) % p) + p) % p / p);
+  }
+}
+// The refresh period to the microsecond: the time the last ticks took over the refreshes in it (a gap of two counts
+// two). A median alone is what the timestamps round to (8.3 ms at 120 Hz), and 0.03 ms a refresh is 4 ms a second of
+// drift, more than corrections twice a second hold.
+function pacePeriod() {
+  const m = median(pace.periods);
+  let total = 0, n = 0;
+  for (const d of pace.periods) { const k = Math.round(d / m); if (k >= 1 && k <= 4) { total += d; n += k; } }
+  return n ? total / n : m;
+}
+setInterval(() => {
+  const phases = pace.phases; pace.phases = [];
+  if (!pace.running || phases.length < 20 || document.visibilityState !== "visible") return;
+  const p = pacePeriod();
+  let sx = 0, sy = 0;
+  for (const f of phases) { sx += Math.cos(2 * Math.PI * f); sy += Math.sin(2 * Math.PI * f); }
+  // The mean phase less the target, -0.5..0.5 of a period.
+  const late = ((Math.atan2(sy, sx) / (2 * Math.PI) - pace.target) % 1 + 1.5) % 1 - 0.5;
+  if (p >= 4 && p <= 50) send("vsync " + Math.round(p * 1000) + " " + -Math.round(late * p * 600));  // 0.6 of the error
+}, 500);
 function shown(presented, encode, bytes) {
   fallbackTries = 0;
   if (!onHome) overlay(null);
   const t = now();
-  send("ack");
   push(drawnAt, t, 240); push(frameLat, t - presented, 60); push(encodes, encode, 60); push(sizes, bytes, 60);
   // The first new frame after an input, if it comes within a second (an input that changes nothing on screen is
   // not answered by the next caret blink).
@@ -444,9 +724,7 @@ function onVideo(dv, buf, sock, w, h, presented, encode) {
         output: frame => {
           const m = decoding.shift();
           if (d !== decoder || !m || m.sock !== ws || ended) { frame.close(); if (m && m.sock === ws) send("ack"); return; }
-          draw(frame, m.w, m.h);
-          frame.close();
-          shown(m.presented, m.encode, m.bytes);
+          present(frame, m.w, m.h, m.presented, m.encode, m.bytes, m.sock);
         },
         error: e => { if (d === decoder) e.name === "NotSupportedError" ? unsupported(e.message) : videoLost(e.message); },
       });
@@ -481,15 +759,85 @@ setInterval(() => {
 }, 500);
 // The latency figures for scripts (and the end-to-end check): medians of the last few.
 window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length, inputMs: median(inputLat), frameMs: median(frameLat),
-  encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN, frames: drawnAt.length,
+  // frames: shown from the current socket, all of them: drawnAt keeps only the last 240 (a count compared with an
+  // earlier one stopped growing there), and is not emptied when a move or a restart opens another socket.
+  encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN,
+  frames: (ws && ws.shownFrames) || 0,
   width: frameW, height: frameH, codec: mode });
 function fit() {
+  if (fill.on) { fillFit(); return; }
   const stage = $("stage"), w = frameW || canvas.width, h = frameH || canvas.height;
   const s = Math.max(0.05, Math.min((stage.clientWidth - 20) / w, (stage.clientHeight - 20) / h, 1 / Math.max(1, devicePixelRatio)));
   canvas.style.width = Math.floor(w * s) + "px";
   canvas.style.height = Math.floor(h * s) + "px";
 }
 addEventListener("resize", fit);
+
+// ---------------------------------------------------------------- Fill: the display sized to the page (docs/beam.md, phase 3)
+// The instance's display is the one truth; the tab and apksim's own window are two views of it. The tab sends a size
+// only when its own stage changes (a ResizeObserver, at most every 100 ms and once more at the end) or the window
+// moves to a display of another pixel ratio, never in answer to a frame, so the two never chase each other. A frame of
+// a size the tab did not ask for (the simulator window was dragged) is shown as it is, pinned top left, and "Fit to
+// tab" takes the size back. One dp is one CSS pixel and the density the device pixel ratio, so the canvas's pixels are
+// the frame's and the screen's.
+const fill = { on: false, sent: "", timer: 0, last: 0, changedAt: 0, mq: null, sends: 0 };
+function fillSpec() {
+  const stage = $("stage");
+  const d = Math.max(0.75, Math.min(4, Math.round(devicePixelRatio * 100) / 100));
+  const cap = Math.floor(4096 / d);
+  const w = Math.max(160, Math.min(cap, Math.floor(stage.clientWidth))), h = Math.max(160, Math.min(cap, Math.floor(stage.clientHeight)));
+  return { w, h, d, spec: w + "x" + h + "@" + d, px: Math.round(w * d) + "x" + Math.round(h * d) };
+}
+function fillSend(force) {
+  if (!fill.on || !ws || ws.readyState !== 1 || ended) return;
+  const f = fillSpec();
+  fill.changedAt = performance.now();
+  if (!force && f.spec === fill.sent) return;
+  fill.sent = f.spec; fill.sends++;
+  $("fitRow").hidden = true;
+  send("device " + f.spec);
+}
+function fillResized() {
+  if (!fill.on) return;
+  fit();
+  const t = performance.now();
+  clearTimeout(fill.timer);
+  if (t - fill.last >= 100) { fill.last = t; fillSend(false); }
+  fill.timer = setTimeout(() => { fill.last = performance.now(); fillSend(false); }, 120);  // the size it settled on
+}
+function fillWatchRatio() {
+  if (fill.mq) fill.mq.removeEventListener("change", fill.onRatio);
+  fill.mq = matchMedia("(resolution: " + devicePixelRatio + "dppx)");
+  fill.onRatio = () => { fillWatchRatio(); fit(); fillSend(false); };
+  fill.mq.addEventListener("change", fill.onRatio);
+}
+function fillFit() {
+  const d = fillSpec().d;
+  canvas.style.width = (frameW || canvas.width) / d + "px";
+  canvas.style.height = (frameH || canvas.height) / d + "px";
+}
+// A frame not of the size the tab last sent, once its resizes have settled: the simulator window's.
+function fillFrame(w, h) {
+  if (!fill.on || !fill.sent || performance.now() - fill.changedAt < 500) return;
+  const f = fillSpec();
+  $("fitRow").hidden = f.spec === fill.sent && w + "x" + h === f.px;
+}
+function setFill(on) {
+  fill.on = on; fill.sent = "";
+  document.body.classList.toggle("fill", on);
+  $("fitMode").value = on ? "fill" : "device";
+  $("fitRow").hidden = true;
+  if (on) { fillWatchRatio(); fillSend(true); }
+  else if (ws && ws.readyState === 1 && !ended) send("device " + ($("device").value || "phone"));
+  fit();
+}
+new ResizeObserver(fillResized).observe($("stage"));
+$("fitMode").onchange = () => { setFill($("fitMode").value === "fill"); prefFit($("fitMode").value); };
+function prefFit(v) { try { if (v === undefined) return localStorage.getItem("apksim.fit"); localStorage.setItem("apksim.fit", v); } catch (e) { return null; } }
+$("fitTab").onclick = () => fillSend(true);
+$("showSim").onclick = () => send("window front");
+window.apksimFill = () => ({ on: fill.on, sent: fill.sent, sends: fill.sends, spec: fillSpec(), canvas: canvas.width + "x" + canvas.height,
+  css: canvas.style.width + " " + canvas.style.height, fitShown: !$("fitRow").hidden });
 
 // ---------------------------------------------------------------- input
 function at(e) {
@@ -621,7 +969,149 @@ $("copy").onclick = async () => {
   try { await navigator.clipboard.writeText(link); log("link copied (people without the token cookie need the token link once)"); }
   catch (e) { $("linkbox").hidden = false; $("link").select(); log("copy the link from the box"); }
 };
+
+// ---------------------------------------------------------------- beam (docs/beam.md)
+// With `serve --allow-beam`, a visitor whose Mac runs `apksim beam` may run the app there instead: the page asks the
+// agent on 127.0.0.1 to start it (sending the APK when the agent does not have that build), then draws the agent's
+// stream here exactly as the server's. Offered only where the browser knows the loopback-network permission (Chrome's:
+// what docs/beam.md checked), and never probed before that permission is granted or the visitor picks "On this Mac":
+// a visitor without apksim sees no prompt.
+// The protocols this page speaks (docs/beam.md, "Versions"): the server says them (it is this page's build); the
+// agent says its own; the page uses the newest both speak (beam.protocol) and names it in /beam/start and /ws.
+const beam = { port: 0, url: "", ok: false, min: 1, max: 1, protocol: 0 };
+function pref(v) { try { if (v === undefined) return localStorage.getItem("apksim.runOn"); localStorage.setItem("apksim.runOn", v); } catch (e) { return null; } }
+async function beamSetup() {
+  if (embed && params.get("beam") === "0") return;
+  const mac = navigator.userAgentData ? navigator.userAgentData.platform === "macOS" : /Macintosh/.test(navigator.userAgent);
+  if (!mac) return;
+  let cfg, perm;
+  try {
+    const r = await fetch(withToken("api/beam"));
+    if (!r.ok) return;  // this server does not offer it
+    cfg = await r.json();
+  } catch (e) { return; }
+  if (typeof cfg.protocol !== "number") return;
+  beam.max = cfg.protocol; beam.min = typeof cfg.minProtocol === "number" ? cfg.minProtocol : cfg.protocol;
+  try { perm = (await navigator.permissions.query({ name: "loopback-network" })).state; } catch (e) { return; }
+  if (perm === "denied") return;
+  beam.port = cfg.port; beam.url = "http://127.0.0.1:" + cfg.port;
+  $("runOn").hidden = false;
+  // Already allowed: find the agent now, and run there when the visitor chose it (or this site is allowed there).
+  if (perm === "granted") {
+    const h = await beamHello(false);
+    if (h && (pref() === "mac" || pref() === null && h.trusted)) $("runOn").value = "mac";
+  }
+}
+async function beamHello(asked) {
+  try {
+    // Pending while the browser asks the visitor (Chrome: "apps on this device"): the page waits for the answer.
+    if (asked) overlay("Allow this site to reach apps on this device (the browser asks), then it runs on this Mac.");
+    const r = await fetch(beam.url + "/beam/hello");
+    const h = await r.json();
+    if (asked) overlay(null);
+    const amin = typeof h.minProtocol === "number" ? h.minProtocol : h.protocol, amax = h.protocol;
+    const common = Math.min(beam.max, amax);
+    if (!(common >= Math.max(beam.min, amin))) {
+      // No protocol in common: say which side is behind, in the menu itself, and run on the server.
+      const older = amax < beam.min;
+      macUnavailable(older ? "update apksim (brew upgrade apksim)" : "this site's apksim is older",
+        older ? "This Mac's apksim (" + h.apksim + ") is older than this site's: update it with brew upgrade apksim, then reload"
+          : "This Mac's apksim (" + h.apksim + ") no longer speaks this site's older protocol: the site's apksim needs updating");
+      log("this Mac's apksim " + h.apksim + " speaks protocols " + amin + "-" + amax + ", this page " + beam.min + "-" + beam.max + ": "
+        + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
+      return null;
+    }
+    beam.protocol = common; beam.ok = true;
+    log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
+    return h;
+  } catch (e) {
+    if (asked) { overlay(null); log("no apksim on this Mac (run `apksim beam`, docs/beam.md): " + e.message); }
+    return null;
+  }
+}
+// "On this Mac" in the menu, disabled with the reason (a version mismatch): the session stays on the server.
+function macUnavailable(label, title) {
+  const o = $("runOn").querySelector('option[value="mac"]');
+  o.disabled = true; o.textContent = "On this Mac: " + label; o.title = title;
+  if ($("runOn").value === "mac") { $("runOn").value = "server"; pref("server"); }
+}
+async function okJson(p) {
+  const r = await p;
+  if (!r.ok) throw new Error((await r.text()).trim() || "HTTP " + r.status);
+  return r.json();
+}
+async function startOnMac(q, gen) {
+  macStart = gen; refresh();
+  try {
+    overlay("Starting on this Mac…");
+    const g = await macGrant(q, gen, overlay);
+    if (!g || gen !== startGen) return;
+    log("running on this Mac");
+    const lq = new URLSearchParams(q);
+    lq.set("app", g.app); lq.set("token", g.token); lq.set("protocol", beam.protocol);
+    macStart = 0;
+    openSocket("ws://127.0.0.1:" + beam.port + "/ws?" + lq, true, q);
+  } catch (e) {
+    if (gen !== startGen) return;
+    macStart = 0;
+    log("this Mac: " + e.message + ": running on the server instead");
+    openSocket(serverSocketUrl(q), false);
+  } finally {
+    if (macStart === gen) macStart = 0;
+    refresh();
+  }
+}
+// A session grant from this Mac's agent for the app chosen ({app, token}), or null when a newer start or Stop came
+// meanwhile; throws why not. `say` shows what it is doing.
+async function macGrant(q, gen, say, data) {
+  const app = state.app;
+  const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
+  if (gen !== startGen) return null;  // stopped meanwhile: the agent is not asked (it may prompt its owner)
+  // The agent asks its owner the first time this site runs an app there (a prompt on the Mac): this waits for it.
+  // With the server's ticket and its download address the agent fetches a build it lacks itself (docs/beam.md,
+  // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
+  let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
+      url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
+  if (g.via === "download") log("this Mac downloaded the app from this server");
+  if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");
+  if (gen !== startGen) return null;
+  if (g.need === "upload") {
+    say("Sending the app to this Mac (" + Math.max(1, Math.round(info.size / 1048576)) + " MB)…");
+    const r = await fetch(withToken("api/apps/" + encodeURIComponent(app) + "/apk"));
+    if (!r.ok) throw new Error("the server would not send the APK: " + (await r.text()).trim());
+    const apk = await r.blob();
+    if (gen !== startGen) return null;
+    g = await okJson(fetch(beam.url + "/beam/upload?upload=" + encodeURIComponent(g.upload), { method: "POST", body: apk }));
+  }
+  return gen === startGen ? g : null;
+}
+// A session on this Mac that ends before its first frame (the agent's sessions all in use, the upgrade refused, the
+// instance failing to start) runs on the server instead, once, unless Stop or a newer start came meanwhile.
+function macFallback(sock, why) {
+  if (!sock.fallback || frameW || sock.gen !== startGen || ended) return false;
+  const q = sock.fallback; sock.fallback = null;
+  if (ws === sock) { ws = null; socketClosed(sock); sock.close(); }
+  log("this Mac: " + why + ": running on the server instead");
+  openSocket(serverSocketUrl(q), false);
+  return true;
+}
+$("keep").onchange = () => send("keep " + ($("keep").checked ? "on" : "off"));
+$("runOn").onchange = async () => {
+  if ($("runOn").value === "mac" && !beam.ok && !(await beamHello(true))) $("runOn").value = "server";
+  pref($("runOn").value);
+  // A running session moves to the other side (phase 4: it goes on until the other side's first frame); one still
+  // asking this Mac starts again where it was asked to run.
+  if (ws && ws.readyState <= 1 && !ended && frameW) moveSession($("runOn").value);
+  else if (ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen) start();
+};
 addEventListener("beforeunload", () => { if (ws) ws.close(); });
+// A hidden tab shows nothing (requestAnimationFrame stops, docs/beam.md phase 6): its instance draws one frame a second
+// meanwhile, saving the server or this Mac a core's worth of drawing and encoding on an animated screen, and its own
+// pace again when the tab is back. The app goes on otherwise (timers, sound, network), as one in the foreground.
+document.addEventListener("visibilitychange", () => {
+  if (ws && ws.readyState === 1 && !ended) send(document.visibilityState === "hidden" ? "maxfps 1" : "maxfps 120");
+});
 if (!redirecting) loadApps();
 </script>
 </body>

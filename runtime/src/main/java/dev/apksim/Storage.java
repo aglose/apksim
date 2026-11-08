@@ -31,7 +31,13 @@ final class Storage {
   static void initScratch() throws IOException {
     if (scratch != null) return;  // a standby did it before it waited
     scratch = Path.of(System.getProperty("java.io.tmpdir"));
-    sweepDeadInstances(scratch.getParent());
+    // Not a beamed instance's to do: it may not read the others' (BeamSandbox); ordinary launches and the agent sweep.
+    if (BeamSandbox.ON) return;
+    try {
+      sweepDeadInstances(scratch.getParent());
+    } catch (IOException e) {
+      System.err.println("[apksim] could not sweep old scratch folders: " + e);  // the next launch does
+    }
   }
 
   private static void sweepDeadInstances(Path base) throws IOException {

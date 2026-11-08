@@ -619,8 +619,10 @@ final class DeviceControls {
       }
       case "window" -> {
         // window WxH: sets the Mac window's content size in points as a drag of its corner would (checks that path).
-        // window front|show|background|minimize|hide: how the window shows itself (--window); window: its state.
+        // window front|show|background|minimize|hide: how the window shows itself (--window); window: its state;
+        // window close: as its close button (while a stream viewer is attached it only hides: apksim beam).
         if (a.length == 1) return SimWindow.windowState();
+        if (a[1].equals("close")) return SimWindow.close() ? "ok" : "no window";
         int mode = SimWindow.mode(a[1]);
         if (mode >= 0) return SimWindow.setMode(mode) ? "ok" : "no window";
         String[] wh = a[1].split("x");

@@ -35,13 +35,21 @@ public final class Serve {
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
-                          [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...""";
+                          [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
+                          [--allow-beam] [--beam-port N]
+             apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
+                         [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
+             apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
+             apksim beam saved | run ID [OPTIONS] | forget ID | sweep | status
+             apksim beam install [--port N] [--agent-idle SECONDS] | uninstall   (launchd starts it when a page asks)
+             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
   final Path state;
   final Path launcher;
-  final Path logs;
+  /** Sessions' logs: `STATE/serve/logs`, or `STATE/beam/logs` for the agent. */
+  Path logs;
   Catalog catalog;
   int port = 8080;
   String bind = "127.0.0.1";
@@ -51,8 +59,14 @@ public final class Serve {
   int quality = 80;
   /** `--in-flight N`: the most frames in flight to a tab (the window is sized from the round trip, up to this). */
   int inFlightMax = 8;
-  /** H.264 streams' bit rate in kilobits a second (`--bitrate`). */
+  /** H.264 streams' bit rate in kilobits a second (`--bitrate`; the agent's default is {@link #BEAM_KBPS}). */
   int bitrateKbps = 4000;
+  private boolean bitrateGiven;
+  /**
+   * The agent's stream never leaves the Mac, so it has no network to spare: 20 Mbps gives the Shader tab 16 KB a frame
+   * against 4 (fine detail in motion) for ~0.6 ms more encode, with the same pacing and latency (beam-parity.py).
+   */
+  static final int BEAM_KBPS = 20_000;
   /** Whether a tab may ask for H.264 (`--codec auto`, the default) or always gets JPEG (`--codec jpeg`). */
   boolean allowH264 = true;
   long maxUploadMb = 300;
@@ -82,32 +96,107 @@ public final class Serve {
   private final java.util.concurrent.Semaphore connections = new java.util.concurrent.Semaphore(128);
   private byte[] page;
   private final long startedAt = System.currentTimeMillis();
+  /**
+   * `apksim beam` (docs/beam.md): the agent that runs a browser session's app on this Mac. Loopback only, no page of
+   * its own, and only for page origins its owner allowed ({@link Beam}).
+   */
+  boolean beam;
+  /** The state folder's part (`serve`, or `beam` for the agent) and the instances' data slot name (serve-0, beam-0...). */
+  String home = "serve";
+  Beam agent;
+  /** The agent's builds and saved sessions, and how long it keeps them (docs/beam.md, "What the Mac keeps"). */
+  BeamStore store;
+  /** `apksim beam --keep-days`, `--save-sessions`, `--keep-saved-days`: this run's values over the config file's. */
+  private Double keepDays;
+  private Boolean saveSessions;
+  private Double keepSavedDays;
+  /** `--allow-beam`: this server's page offers "Run on this Mac" and serves its APKs to it (docs/beam.md). */
+  boolean allowBeam;
+  /**
+   * `apksim beam --launchd` (`apksim beam install`): started by launchd on a page's first connection, with the listening
+   * socket on stdin (inetd's way), and gone again after {@link #agentIdleSeconds} with no session or request.
+   */
+  boolean launchd;
+  int agentIdleSeconds = 600;
+  private volatile long lastActivity = System.currentTimeMillis();
+  private final java.util.concurrent.atomic.AtomicInteger busy = new java.util.concurrent.atomic.AtomicInteger();
+  private static final ThreadLocal<Boolean> statusRequest = ThreadLocal.withInitial(() -> false);
+  /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
+  final BeamTicket tickets = new BeamTicket();
+  /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
+  int beamPort = Beam.DEFAULT_PORT;
+  private boolean portGiven, maxGiven;
 
   private Serve(Path root, Path state) {
     this.root = root;
     this.state = state;
     this.launcher = root.resolve("apksim");
-    this.logs = state.resolve("serve/logs");
   }
 
   public static void main(String[] args) throws Exception {
     Path root = Path.of(System.getProperty("apksim.root", ".")).toAbsolutePath().normalize();
     Path state = Path.of(System.getProperty("apksim.state", root.resolve("work").toString())).toAbsolutePath().normalize();
     Serve s = new Serve(root, state);
+    if (args.length > 1 && args[0].equals("--beam") && args[1].equals("trust")) {
+      Beam.trustCommand(state, List.of(args).subList(2, args.length));
+      return;
+    }
+    if (args.length > 1 && args[0].equals("--beam") && List.of("install", "uninstall").contains(args[1])) {
+      System.exit(BeamLaunchd.command(s.launcher, state, args[1], List.of(args).subList(2, args.length)));
+    }
+    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep", "status").contains(args[1])) {
+      System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
+    }
     for (int i = 0; i < args.length; i++) {
       String a = args[i];
       String v = i + 1 < args.length ? args[i + 1] : null;
       switch (a) {
-        case "--port" -> s.port = Integer.parseInt(need(a, v));
+        case "--port" -> {
+          s.port = Integer.parseInt(need(a, v));
+          s.portGiven = true;
+        }
+        // Flags without a value: past the step over a value after the switch, to the next argument.
+        case "--beam" -> {
+          s.beam = true;
+          continue;
+        }
+        case "--allow-beam" -> {
+          s.allowBeam = true;
+          continue;
+        }
+        case "--launchd" -> {
+          s.launchd = true;
+          continue;
+        }
+        case "--agent-idle" -> s.agentIdleSeconds = Math.max(5, Integer.parseInt(need(a, v)));
+        case "--beam-port" -> s.beamPort = Integer.parseInt(need(a, v));
+        case "--keep-days" -> {
+          s.keepDays = BeamStore.days(need(a, v), false);
+          if (s.keepDays == null) usage("--keep-days takes a number of days (0: as soon as the session has ended)");
+        }
+        case "--save-sessions" -> {
+          s.saveSessions = BeamStore.onOff(need(a, v));
+          if (s.saveSessions == null) usage("--save-sessions takes on or off");
+        }
+        case "--keep-saved-days" -> {
+          s.keepSavedDays = BeamStore.days(need(a, v), true);
+          if (s.keepSavedDays == null) usage("--keep-saved-days takes a number of days or never");
+        }
         case "--bind" -> s.bind = need(a, v);
         case "--token" -> s.token = Files.readAllLines(Path.of(need(a, v))).stream().findFirst().orElse("").strip();
-        case "--max" -> s.max = Integer.parseInt(need(a, v));
+        case "--max" -> {
+          s.max = Integer.parseInt(need(a, v));
+          s.maxGiven = true;
+        }
         case "--idle" -> s.idleSeconds = Integer.parseInt(need(a, v));
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
-        case "--bitrate" -> s.bitrateKbps = Math.max(100, Math.min(100_000, Integer.parseInt(need(a, v))));
+        case "--bitrate" -> {
+          s.bitrateKbps = Math.max(100, Math.min(100_000, Integer.parseInt(need(a, v))));
+          s.bitrateGiven = true;
+        }
         case "--codec" -> {
           String c = need(a, v);
           if (!c.equals("auto") && !c.equals("jpeg")) {
@@ -258,6 +347,11 @@ public final class Serve {
     return s.toString();
   }
 
+  private static void usage(String why) {
+    System.err.println(why + "\n" + USAGE);
+    System.exit(2);
+  }
+
   private static String need(String option, String value) {
     if (value == null) {
       System.err.println(option + " needs a value\n" + USAGE);
@@ -267,6 +361,40 @@ public final class Serve {
   }
 
   private void run() throws Exception {
+    if (beam) {
+      // Only what a page on this Mac's own browser needs: loopback, no token (the page's origin is the check), no
+      // catalog, proxy or framing of its own.
+      if (!bind.equals("127.0.0.1") || token != null || !apps.isEmpty() || trustProxy || publicOrigin != null
+          || !basePath.isEmpty() || !allowedOrigins.isEmpty() || allowBeam) {
+        System.err.println("apksim beam: takes only --port, --max, --idle, --quality, --bitrate, --codec, --in-flight,"
+            + " --max-upload, --no-network, --launch-timeout, --keep-days, --save-sessions, --keep-saved-days, --launchd, --agent-idle (it listens"
+            + " on 127.0.0.1 and asks before a site runs an app)");
+        System.exit(2);
+      }
+      if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
+        System.err.println("apksim beam: runs only on macOS for now: a site's app runs in macOS's sandbox (docs/beam.md),"
+            + " and there is none on this system yet");
+        System.exit(2);
+      }
+      home = "beam";
+      if (!portGiven) port = Beam.DEFAULT_PORT;
+      if (!maxGiven) max = 2;
+      if (!bitrateGiven) bitrateKbps = BEAM_KBPS;
+      agent = new Beam(state);
+      store = new BeamStore(state);
+      BeamStore.Config c = store.config;
+      store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays());
+      if (!store.lockAgent(port)) {
+        int other = store.agentPort();
+        System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
+            + "; stop it first (two would delete each other's builds)");
+        System.exit(2);
+      }
+    } else if (keepDays != null || saveSessions != null || keepSavedDays != null) {
+      usage("--keep-days, --save-sessions and --keep-saved-days are apksim beam's");
+    }
+    logs = state.resolve(home + "/logs");
     InetAddress addr = InetAddress.getByName(bind);
     loopbackBind = addr.isLoopbackAddress();
     if (!loopbackBind && (token == null || token.isEmpty())) {
@@ -284,7 +412,7 @@ public final class Serve {
       System.exit(2);
     }
     if (!Files.isExecutable(launcher)) throw new IOException("no launcher at " + launcher);
-    catalog = new Catalog(apps, state, maxUploadMb << 20);
+    catalog = new Catalog(apps, state, home, maxUploadMb << 20);
     try (InputStream in = Serve.class.getResourceAsStream("serve.html")) {
       if (in == null) throw new IOException("serve.html is missing from apksim.jar");
       page = in.readAllBytes();
@@ -293,15 +421,30 @@ public final class Serve {
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
     warmer = new Warmer(this);
     catalog.onReady = warmer::enqueue;
-    ServerSocket server = new ServerSocket();
-    server.setReuseAddress(true);
-    server.bind(new InetSocketAddress(addr, port), 64);
+    ServerSocket server;
+    if (launchd) {
+      // launchd listens and hands the socket over on stdin (inetdCompatibility with Wait): what the plist names.
+      if (!beam || !(System.inheritedChannel() instanceof java.nio.channels.ServerSocketChannel ch)) {
+        System.err.println("apksim beam --launchd: no listening socket on stdin (apksim beam install sets that up)");
+        System.exit(2);
+        return;
+      }
+      server = ch.socket();
+    } else {
+      server = new ServerSocket();
+      server.setReuseAddress(true);
+      server.bind(new InetSocketAddress(addr, port), 64);
+    }
     String host = loopbackBind ? (addr instanceof java.net.Inet6Address ? "[::1]" : "localhost") : bind;
     String at = publicOrigin != null ? publicOrigin + basePath : "http://" + host + ":" + server.getLocalPort() + basePath;
-    System.err.printf("[serve] %s/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
+    if (!beam) System.err.printf("[serve] %s/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
         at, token == null ? "" : "?token=...", catalog.listed().size(), max, idleSeconds, maxUploadMb);
     if (trustProxy) System.err.println("[serve] trusting X-Forwarded-Host/-Proto from loopback proxies");
     if (!allowedOrigins.isEmpty()) System.err.println("[serve] pages on " + String.join(", ", allowedOrigins) + " may embed it");
+    if (allowBeam) System.err.println("[serve] the page offers Run on this Mac (an apksim beam agent on port " + beamPort + ")");
+    if (beam) System.err.printf("[beam] agent on 127.0.0.1:%d (protocol %d), up to %d sessions; sites allowed: %s%n", server.getLocalPort(),
+        Beam.PROTOCOL, max, agent.trust().entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList());
+    if (beam) System.err.println("[beam] keeps: " + store.config.describe() + "; " + store.saved().size() + " saved sessions");
     warmStandby();
     boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
@@ -313,10 +456,45 @@ public final class Serve {
     });
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
     timer.scheduleWithFixedDelay(() -> {
-      catalog.sweep(24 * 3_600_000L);
+      if (beam) sweepBeam();
+      else catalog.sweep(24 * 3_600_000L);
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
+    if (beam) timer.scheduleWithFixedDelay(agent::expire, 1, 1, TimeUnit.MINUTES);  // with the moved data of unused grants
+    if (allowBeam) {
+      // Sessions' data packed for a move (phase 5): gone once their tickets have expired.
+      timer.scheduleWithFixedDelay(() -> {
+        Path dir = state.resolve("serve/handoff");
+        try (var d = Files.newDirectoryStream(dir, "d*.zip")) {
+          long cutoff = System.currentTimeMillis() - (tickets.lifetimeSeconds + 60) * 1000L;
+          for (Path f : d) if (Files.getLastModifiedTime(f).toMillis() < cutoff) Files.deleteIfExists(f);
+        } catch (IOException e) {
+          // none yet, or the next round
+        }
+      }, 1, 1, TimeUnit.MINUTES);
+    }
+    if (launchd) {
+      // Nothing runs until a page asks: launchd starts the agent again on the next connection.
+      // In two steps: first the lock file says "exiting", so `apksim beam status` stops connecting, and requests already
+      // on their way are still answered for one more round; then it ends. A connection queued on launchd's socket as
+      // the agent ended would have launchd start it again at once (a status poll every second kept it up for good). A
+      // page's request meanwhile calls the exit off.
+      long[] exitingSince = {0};
+      timer.scheduleWithFixedDelay(() -> {
+        boolean idle = sessions.isEmpty() && busy.get() == 0 && System.currentTimeMillis() - lastActivity > agentIdleSeconds * 1000L;
+        if (!idle) {
+          if (exitingSince[0] != 0) store.agentState(Integer.toString(port));
+          exitingSince[0] = 0;
+        } else if (exitingSince[0] == 0) {
+          exitingSince[0] = System.currentTimeMillis();
+          store.agentState("exiting");
+        } else {
+          System.err.printf("[beam] idle for %d s: exiting (launchd starts it again for the next page)%n", agentIdleSeconds);
+          System.exit(0);
+        }
+      }, 5, 5, TimeUnit.SECONDS);
+    }
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       List<Thread> stopping = new ArrayList<>();
       stopping.add(Thread.ofVirtual().start(warmer::shutdown));  // ends a running warm-up and erases its data slot
@@ -341,10 +519,15 @@ public final class Serve {
         }
         continue;
       }
+      busy.incrementAndGet();
       Thread.ofVirtual().name("serve-http").start(() -> {
         try {
           handle(c);
         } finally {
+          // A page's request keeps a launchd agent up; `apksim beam status` asking about it does not (statusRequest).
+          if (!statusRequest.get()) lastActivity = System.currentTimeMillis();
+          statusRequest.remove();
+          busy.decrementAndGet();
           connections.release();
         }
       });
@@ -352,12 +535,14 @@ public final class Serve {
   }
 
   /** On the Mac, a warm-launch standby for the first session (each instance starts the next after its first frame). */
-  private void warmStandby() {
+  void warmStandby() {
     if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) return;
     if ("0".equals(System.getenv("APKSIM_STANDBY"))) return;
     try {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
-      ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby", (noNetwork ? "n" : "") + (coreDumps ? "" : "k"))
+      // The agent's instances run in the beam sandbox (b, the launcher's APKSIM_BEAM_SANDBOX), so their standbys too.
+      ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby",
+          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : ""))
           .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
       instanceEnvironment(pb);
       pb.start().waitFor(10, TimeUnit.SECONDS);
@@ -370,10 +555,71 @@ public final class Serve {
   void instanceEnvironment(ProcessBuilder pb) {
     if (coreDumps) pb.environment().remove("APKSIM_NO_CORE");
     else pb.environment().put("APKSIM_NO_CORE", "1");
+    // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
+    if (beam) {
+      pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
+      // Nothing from the agent's own environment that would skip or weaken the sandbox (the launcher refuses then,
+      // but the instance should never get them): it runs outside any sandbox, so none of these describe it.
+      for (String k : List.of("APKSIM_SANDBOXED", "APKSIM_NOCACHE", "APKSIM_SANDBOX_TEST")) pb.environment().remove(k);
+    } else {
+      pb.environment().remove("APKSIM_BEAM_SANDBOX");
+    }
+  }
+
+  /** The agent's cache for one build (translated classes), kept and deleted with it. */
+  Path beamCache(String sha256) {
+    return state.resolve("beam/cache").resolve(sha256);
   }
 
   void ended(Session s) {
     sessions.remove(s.id);
+    if (beam) {
+      // Its build's hold starts now (a saved session's, or another running session's, keeps it anyway).
+      catalog.released(catalog.buildHash(s.app.path()));
+      Thread.ofVirtual().name("beam-sweep").start(this::sweepBeam);
+    }
+  }
+
+  /** The agent's sweep (docs/beam.md): at its start, hourly, and as sessions start and end. */
+  void sweepBeam() {
+    // Moved data (phase 5) left by an agent that ended between unpacking it and its session: no grant or session owns
+    // it, and no instance holds its lock.
+    try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {
+      for (Path pkg : pkgs) {
+        try (var slots = Files.newDirectoryStream(pkg, "bm*-0")) {
+          for (Path slot : slots) {
+            String name = slot.getFileName().toString().replaceFirst("-0$", "");
+            if (!name.matches("bm[0-9a-f]{12}") || agent.ownsSeed(name) || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot))
+                || locked(slot)) continue;
+            SlotPack.dropSeed(state, name, null, System.err::println);
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // no app data yet, or the next round
+    }
+    try {
+      store.sweep(catalog, sha -> agent.holds(sha) || warmer.holds(sha)
+          || sessions.values().stream().anyMatch(x -> sha.equals(catalog.buildHash(x.app.path()))));
+    } catch (RuntimeException e) {
+      System.err.println("[beam] sweep failed: " + e);
+    }
+  }
+
+  /** Whether an instance holds this slot's lock now. */
+  private static boolean locked(Path slot) {
+    Path lock = slot.resolve(".lock");
+    if (!Files.isRegularFile(lock, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(lock, java.nio.file.StandardOpenOption.WRITE)) {
+      java.nio.channels.FileLock l = ch.tryLock();
+      if (l == null) return true;
+      l.release();
+      return false;
+    } catch (java.nio.channels.OverlappingFileLockException e) {
+      return true;
+    } catch (IOException e) {
+      return true;  // unknown: left for the next round
+    }
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -406,6 +652,10 @@ public final class Serve {
   private void route(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
     if (!hostAllowed(r)) {
       Http.text(out, 403, "this server answers only to localhost");
+      return;
+    }
+    if (beam) {
+      beamRoute(r, s, in, out);
       return;
     }
     // An --allow-origin page's requests: their responses say it may read them (health included), and its preflights (a
@@ -442,6 +692,23 @@ public final class Serve {
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;
     }
+    // A visitor's agent downloading the APK of the app its page is starting (docs/beam.md, phase 2): the ticket, which
+    // only a page with the token gets, is the authorization, for that one build and five minutes.
+    if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam/apk")) {
+      beamDownload(r.param("ticket"), out);
+      return;
+    }
+    // A session's data packed for its tab's Mac (phase 5): the ticket that tab got on its own socket, as for the APK.
+    if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam/data")) {
+      String[] t = tickets.check(r.param("ticket"));
+      Path zip = t != null && t[0].matches("d[0-9a-f]{24}") ? state.resolve("serve/handoff").resolve(t[0] + ".zip") : null;
+      if (zip == null || !Files.isRegularFile(zip, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !catalog.sha256(zip).equals(t[1])) {
+        Http.text(out, 403, "no such data, or its ticket has expired");
+        return;
+      }
+      Http.file(out, zip, "application/zip");
+      return;
+    }
     if (!authorized(r)) {
       Http.text(out, 401, "this server needs its token: open the link with ?token=... once (or send Authorization: Bearer ...)");
       return;
@@ -449,6 +716,16 @@ public final class Serve {
     boolean write = !r.method().equals("GET") || r.path().equals("/ws");
     if (write && !originAllowed(r)) {
       Http.text(out, 403, "cross-origin request refused");
+      return;
+    }
+    if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam")) {
+      int[] pr = Beam.protocols();  // the page's own (it is this build's)
+      Http.json(out, 200, "{\"port\":" + beamPort + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + "}");
+      return;
+    }
+    if (allowBeam && r.method().equals("GET") && r.path().matches("/api/apps/[A-Za-z0-9]{1,40}/(beam|apk)")) {
+      String[] parts = r.path().split("/");
+      beamApp(parts[3], parts[4].equals("apk"), out);
       return;
     }
     if (r.method().equals("GET") && r.path().startsWith("/api/apps/")) {
@@ -461,8 +738,10 @@ public final class Serve {
     }
     switch (r.method() + " " + r.path()) {
       case "GET /" -> {
-        String csp = "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:; "
-            + "base-uri 'none'; form-action 'none'; frame-ancestors ";
+        // --allow-beam: the page also asks this Mac's agent (/beam/hello, /beam/start); its WebSocket is under ws: already.
+        String agentSrc = allowBeam ? " http://127.0.0.1:" + beamPort : "";
+        String csp = "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:"
+            + agentSrc + "; base-uri 'none'; form-action 'none'; frame-ancestors ";
         // Framed only by the origins named (--allow-origin), and then without X-Frame-Options, which cannot name them.
         if (allowedOrigins.isEmpty()) Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'none'", "X-Frame-Options: DENY");
         else Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'self' " + String.join(" ", allowedOrigins));
@@ -616,7 +895,7 @@ public final class Serve {
   /** Why a session could not start now (the launcher, the state folder, disk space), or null when it could. */
   private String notReady() {
     if (!Files.isExecutable(launcher)) return "no launcher at " + launcher;
-    Path dir = state.resolve("serve");
+    Path dir = state.resolve(home);
     // Where sessions write: their logs, uploads and downloads (each made at startup).
     for (Path d : List.of(dir, logs, dir.resolve("uploads"), dir.resolve("downloads"))) {
       if (!Files.isDirectory(d) || !Files.isWritable(d)) return "the state folder " + d + " is not writable";
@@ -633,6 +912,11 @@ public final class Serve {
   }
 
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
+    websocket(r, s, in, out, null, null);
+  }
+
+  /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
+  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed) throws IOException {
     String key = r.header("sec-websocket-key");
     if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
       Http.text(out, 400, "expected a WebSocket upgrade");
@@ -645,9 +929,19 @@ public final class Serve {
     WebSocket ws = new WebSocket(s, in, out);
     Catalog.App app = catalog.find(r.param("app"));
     if (app == null) {
+      SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
       return;
+    }
+    String restore = r.param("restore");
+    if (!beam && allowBeam && restore != null && seed == null) {
+      try {
+        seed = restoreSeed(restore, app);
+        ws.sendText("r its data is back on the server: it starts with what it had saved");
+      } catch (IOException e) {
+        ws.sendText("r could not restore its data (" + e.getMessage() + "): it starts without it");
+      }
     }
     Map<String, String> options = new LinkedHashMap<>();
     for (String k : List.of("device", "appearance", "locale", "fontscale", "open", "orientation", "permissions", "codec")) {
@@ -661,6 +955,7 @@ public final class Serve {
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
+        SlotPack.dropSeed(state, seed, null, System.err::println);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
         return;
@@ -668,12 +963,397 @@ public final class Serve {
       byte[] id = new byte[6];
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
+      session.seedSlot = seed;  // the agent's moved data, or the server's restored data
+      if (beam) {
+        session.site = site;
+        session.keep = store.config.saveSessions();
+      }
       sessions.put(session.id, session);
     }
+    if (beam) agent.settled(catalog.buildHash(app.path()));
     System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
-        + ",\"idleLimitS\":" + idleSeconds + "}");
+        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "") + "}");
     session.run();
+  }
+
+  // ---------------------------------------------------------------- beam (docs/beam.md)
+
+  /**
+   * `--allow-beam`: what the page tells this Mac's agent about an app (`GET /api/apps/ID/beam`: name, size, SHA-256,
+   * launch options), and the APK itself (`/apk`), which the page passes on when the agent does not have it. Only for
+   * an app this token holder could open a session on anyway.
+   */
+  private void beamApp(String id, boolean bytes, OutputStream out) throws IOException {
+    Catalog.App a = catalog.find(id);
+    if (a == null) {
+      Http.text(out, 404, "no such app (an upload is kept for a day after its last use)");
+      return;
+    }
+    if (catalog.downloading(a)) {
+      Http.text(out, 409, "this app is still downloading to the server: try again when it is ready");
+      return;
+    }
+    Path apk;
+    try {
+      apk = catalog.file(a, what -> {}, () -> false);
+    } catch (IOException e) {
+      Http.text(out, 409, e.getMessage());
+      return;
+    }
+    if (bytes) {
+      Http.file(out, apk, "application/vnd.android.package-archive");
+      return;
+    }
+    StringBuilder opts = new StringBuilder("[");
+    for (String o : a.launch()) opts.append(opts.length() > 1 ? "," : "").append(Http.q(o));
+    String sha = catalog.sha256(apk);
+    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"size\":" + Files.size(apk)
+        + ",\"sha256\":" + Http.q(sha) + ",\"options\":" + opts.append(']') + ",\"ticket\":" + Http.q(tickets.mint(a.id(), sha))
+        + ",\"ticketSeconds\":" + tickets.lifetimeSeconds + "}");
+  }
+
+  /** `GET /api/beam/apk?ticket=T`: the APK a valid ticket names, while that app's file is still that build. */
+  private void beamDownload(String ticket, OutputStream out) throws IOException {
+    String[] t = tickets.check(ticket);
+    Catalog.App a = t == null ? null : catalog.find(t[0]);
+    if (a == null || catalog.downloading(a)) {
+      Http.text(out, 403, "no such ticket, or it has expired (each lasts " + tickets.lifetimeSeconds / 60 + " minutes): start again");
+      return;
+    }
+    Path apk;
+    try {
+      apk = catalog.file(a, what -> {}, () -> false);
+    } catch (IOException e) {
+      Http.text(out, 409, e.getMessage());
+      return;
+    }
+    if (!catalog.sha256(apk).equals(t[1])) {
+      Http.text(out, 409, "this app's file has changed since the ticket was made: start again");
+      return;
+    }
+    System.err.printf("[serve] beam: %s downloaded by a visitor's agent%n", a.name());
+    Http.file(out, apk, "application/vnd.android.package-archive");
+  }
+
+  /**
+   * Phase 5: a moved session's data (SlotPack) from the page's server, with its ticket, unpacked into a slot of its own
+   * (`cache/data/<pkg>/bm<hex>-0` and its .device), which the session's instance then runs in without --fresh. The
+   * slot's name, or throws why not. `spec` is "TICKET URL".
+   */
+  private String beamSeed(String origin, String spec, Path apk) throws IOException {
+    String[] v = spec.split(" ", 2);
+    if (v.length != 2) throw new IOException("bad data address");
+    java.net.URI u = pageAddress(origin, v[1], "/api/beam/data");
+    java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+        .followRedirects(java.net.http.HttpClient.Redirect.NEVER).connectTimeout(java.time.Duration.ofSeconds(10)).build();
+    java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(u.resolve(u.getRawPath() + "?ticket="
+            + java.net.URLEncoder.encode(v[0], StandardCharsets.UTF_8))).timeout(java.time.Duration.ofMinutes(10)).GET().build();
+    Path dir = state.resolve("beam/import");
+    Files.createDirectories(dir);
+    Path zip = dir.resolve("data-" + Long.toHexString(System.nanoTime()) + ".zip");
+    try {
+      java.net.http.HttpResponse<Path> resp;
+      try {
+        resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofFile(zip));
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted");
+      }
+      if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode() + " for the data");
+      if (Files.size(zip) > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
+      // Until its grant owns it (the caller makes it next), the sweep leaves it.
+      String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
+      System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%n", origin, Files.size(zip) >> 10, name);
+      return name;
+    } finally {
+      Files.deleteIfExists(zip);
+    }
+  }
+
+  /**
+   * A hand-off pack unpacked into a fresh slot (`cache/data/<package>/bm<12 hex>-0`) for a session of `apk`: on the
+   * agent (a moved session), or on the server (a move the Mac could not take, restored). Only the build's own package
+   * (from its manifest), only into a plain app folder. `claim` and `unclaim` are told the slot's name around the
+   * unpack (the agent's sweep must leave it meanwhile). The slot's name, or throws why not.
+   */
+  private String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+      throws IOException {
+    String pkg = SlotPack.packageOf(zip);
+    if (pkg == null) throw new IOException("the data names no app");
+    // Only into the build's own app folder: a pack naming another package (the owner's own app, say) would otherwise
+    // put a site's files in that app's data folder.
+    String own = dev.apksim.ApkCache.manifestPackage(apk);
+    if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
+    byte[] rnd = new byte[6];
+    RANDOM.nextBytes(rnd);
+    String name = "bm" + HexFormat.of().formatHex(rnd);
+    // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
+    // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
+    Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
+    Files.createDirectories(pkgDir);
+    if (!Files.isDirectory(data, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(pkgDir, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
+      throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
+    }
+    claim.accept(name);
+    try {
+      SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
+    } catch (IOException | RuntimeException e) {
+      unclaim.accept(name);
+      throw e;
+    }
+    return name;
+  }
+
+  /**
+   * A hand-off's data back on the server (docs/beam.md phase 5, "a move that fails"): the tab moved a session to its
+   * Mac, the app quit here and its data was packed, then the Mac could not take it. The tab opens a session here again
+   * with the hand-off's ticket (`restore=`), and the pack it names (kept until the ticket expires) is unpacked into
+   * that session's own slot, then deleted: used once. The slot's name, or throws why not.
+   */
+  private String restoreSeed(String ticket, Catalog.App app) throws IOException {
+    String[] t = tickets.check(ticket);
+    if (t == null || !t[0].matches("d[0-9a-f]{24}")) throw new IOException("its ticket has expired");
+    Path zip = state.resolve("serve/handoff").resolve(t[0] + ".zip");
+    synchronized (this) {  // one restore per pack
+      if (!Files.isRegularFile(zip, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !catalog.sha256(zip).equals(t[1])) {
+        throw new IOException("its data is gone (restored already, or expired)");
+      }
+      try {
+        return seedFrom(zip, app.path(), n -> {}, n -> {});
+      } finally {
+        Files.deleteIfExists(zip);
+      }
+    }
+  }
+
+  /**
+   * The agent's routes (`apksim beam`). Any page may ask `/beam/hello` (it says only whether that page's origin is
+   * allowed); `/beam/start` runs the prompt for an origin not yet allowed, and answers a session grant for an APK the
+   * agent has by its hash, else an upload grant; `/beam/upload` takes the APK once and checks its hash; `/ws` opens
+   * the session for its grant only. Every grant is for one origin and one use.
+   */
+  private void beamRoute(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
+    String sent = r.header("origin");
+    String o = sent == null ? null : origin(sent);
+    // A page's own answers only, so any page may read them (each says nothing beyond what that page may know).
+    if (o != null && o.equals(sent)) Http.CORS_ORIGIN.set(o);  // only an origin that is already its validated form
+    if (r.method().equals("OPTIONS")) {
+      // The browser's preflight for the JSON start and the upload; and Private Network Access's, for browsers that send it.
+      Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+          "Access-Control-Allow-Headers: Content-Type, X-Filename", "Access-Control-Allow-Private-Network: true",
+          "Access-Control-Max-Age: 600");
+      return;
+    }
+    if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
+      int[] pr = Beam.protocols();
+      Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
+          + (o != null && agent.trusted(o)) + "}");
+      return;
+    }
+    // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
+    if (sent == null && r.method().equals("GET") && r.path().equals("/beam/status")) {
+      statusRequest.set(true);
+      StringBuilder b = new StringBuilder("{\"port\":" + port + ",\"max\":" + max + ",\"keeps\":" + Http.q(store.config.describe())
+          + ",\"sessions\":[");
+      for (Session x : sessions.values()) {
+        if (b.charAt(b.length() - 1) != '[') b.append(',');
+        b.append("{\"id\":").append(Http.q(x.id)).append(",\"app\":").append(Http.q(x.app.name())).append(",\"site\":")
+            .append(Http.q(String.valueOf(x.site))).append(",\"device\":").append(Http.q(String.valueOf(x.device)))
+            .append(",\"keep\":").append(x.keep).append(",\"pid\":").append(x.pid).append(",\"idleS\":")
+            .append((System.currentTimeMillis() - x.lastInput) / 1000).append('}');
+      }
+      Http.json(out, 200, b.append("]}").toString());
+      return;
+    }
+    if (o == null) {
+      Http.text(out, 403, "the agent runs apps for browser pages only (a request with its page's Origin)");
+      return;
+    }
+    switch (r.method() + " " + r.path()) {
+      case "POST /beam/start" -> beamStart(r, o, out);
+      case "POST /beam/upload" -> {
+        Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
+        if (g == null) {
+          Http.text(out, 403, "no such upload (each start's lasts two minutes and is used once): start again");
+          return;
+        }
+        long length = r.chunked() ? -1 : r.contentLength();
+        if (length < 0 && !r.chunked()) {
+          Http.text(out, 411, "send the APK as the request body");
+          return;
+        }
+        Catalog.App a;
+        try {
+          // The hash checked before the file is stored or the warmer hears of it (it would run it).
+          a = catalog.upload(r.content(), length, g.name(), g.launch(), g.sha256());
+        } catch (IOException e) {
+          Http.text(out, 400, e.getMessage());
+          return;
+        }
+        String got = g.sha256();
+        System.err.printf("[beam] %s sent %s (%d MB)%n", o, a.name(), Files.size(a.path()) >> 20);
+        String seed = null;
+        if (g.extra() != null) {
+          try {
+            seed = beamSeed(o, g.extra(), a.path());
+          } catch (IOException e) {
+            Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
+            return;
+          }
+        }
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed))
+            + (seed == null ? "" : ",\"data\":true") + "}");
+      }
+      case "GET /ws" -> {
+        String why = Beam.protocolProblem(r.param("protocol"));
+        if (why != null) {
+          Http.text(out, 409, why);  // the grant stays for a page that asks again in one this agent speaks
+          return;
+        }
+        Beam.Grant g = agent.take(r.param("token"), Beam.Kind.SESSION, o);
+        if (g == null || !g.app().equals(r.param("app"))) {
+          Http.text(out, 403, "this session was not started by this page (start it again)");
+          return;
+        }
+        websocket(r, s, in, out, o, g.extra());
+      }
+      default -> Http.text(out, 404, "not found");
+    }
+  }
+
+  /** `POST /beam/start {"sha256", "name", "size", "options"}`: the prompt (for a new origin), then a grant. */
+  private void beamStart(Http.Request r, String o, OutputStream out) throws IOException {
+    long length = r.chunked() ? -1 : r.contentLength();
+    byte[] raw = r.content().readNBytes((int) Math.min(64 * 1024 + 1, length < 0 ? Long.MAX_VALUE : length));
+    if (raw.length > 64 * 1024) {
+      Http.text(out, 413, "the request body is limited to 64 KB");
+      return;
+    }
+    String sha, name, ticket, from, data;
+    long size;
+    List<String> launch;
+    try {
+      if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
+      ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
+      from = body.get("url") instanceof String u && u.length() <= 2000 ? u : null;
+      data = body.get("data") instanceof Map<?, ?> d && d.get("ticket") instanceof String dt && dt.length() <= 300
+          && d.get("url") instanceof String du && du.length() <= 2000 && !du.contains(" ") ? dt + " " + du : null;
+      if (!(body.get("sha256") instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
+      sha = h;
+      Object proto = body.get("protocol");
+      String why = Beam.protocolProblem(proto == null ? null : proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
+      if (why != null) {
+        Http.text(out, 409, why);
+        return;
+      }
+      name = body.get("name") instanceof String n ? n : null;
+      size = body.get("size") instanceof Number n ? n.longValue() : -1;
+      List<String> given = new ArrayList<>();
+      if (body.get("options") instanceof List<?> l) {
+        for (Object x : l) {
+          if (!(x instanceof String str)) throw new IOException("\"options\" takes strings");
+          given.add(str);
+        }
+      }
+      launch = Catalog.launchOptions(given);
+    } catch (IOException | RuntimeException e) {
+      Http.text(out, 400, String.valueOf(e.getMessage()));
+      return;
+    }
+    if (size > maxUploadMb << 20) {
+      Http.text(out, 413, "too large: " + (size >> 20) + " MB (this Mac takes up to " + maxUploadMb + " MB)");
+      return;
+    }
+    if (!agent.allowed(o, name, size)) {
+      Http.text(out, 403, "this Mac's owner did not allow " + o + " to run apps here");
+      return;
+    }
+    Catalog.App a = catalog.byHash(sha, name, launch);
+    String via = "cache";
+    String why = null;
+    if (a == null && ticket != null && from != null) {
+      // Phase 2: from the page's own server, with the ticket it was given; the tab relays it only if this fails.
+      try {
+        a = beamFetch(o, from, ticket, sha, name, size, launch);
+        via = "download";
+      } catch (IOException e) {
+        why = e.getMessage();
+        System.err.println("[beam] could not download " + (name == null ? sha.substring(0, 12) : name) + " from " + o + ": " + why);
+      }
+    }
+    if (a != null) {
+      String seed = null;
+      if (data != null) {
+        try {
+          seed = beamSeed(o, data, a.path());
+        } catch (IOException e) {
+          Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
+          return;
+        }
+      }
+      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed))
+          + ",\"via\":" + Http.q(via) + (seed == null ? "" : ",\"data\":true") + "}");
+      sweepBeam();  // after the answer, with this start's grant holding its build
+      return;
+    }
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, data))
+        + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
+  }
+
+  /**
+   * The agent downloads a build from the server the page came from (docs/beam.md, phase 2): only from that page's own
+   * origin (a page could make it fetch nothing it could not fetch itself), only `/api/beam/apk` with the ticket, no
+   * redirects (a sign-in page behind single sign-on is a failure, not a place to go), an APK's content type, within
+   * --max-upload, and the hash the page named checked before the file is stored. Throws why it could not.
+   */
+  /** A download address on the page's own site and at this path only (the page could fetch it itself), or throws. */
+  private static java.net.URI pageAddress(String origin, String from, String path) throws IOException {
+    java.net.URI u;
+    try {
+      u = new java.net.URI(from);
+    } catch (java.net.URISyntaxException e) {
+      throw new IOException("not a URL");
+    }
+    String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
+    if (!(scheme.equals("http") || scheme.equals("https")) || u.getHost() == null || u.getRawUserInfo() != null
+        || u.getRawQuery() != null || u.getRawFragment() != null || u.getRawPath() == null || !u.getRawPath().endsWith(path)) {
+      throw new IOException("not the server's address for it");
+    }
+    int port = u.getPort();
+    boolean defaultPort = port == -1 || scheme.equals("http") && port == 80 || scheme.equals("https") && port == 443;
+    String own = scheme + "://" + u.getHost().toLowerCase(Locale.ROOT) + (defaultPort ? "" : ":" + port);
+    if (!own.equals(origin.toLowerCase(Locale.ROOT))) throw new IOException("the address is not the page's own site (" + own + ")");
+    return u;
+  }
+
+  private Catalog.App beamFetch(String origin, String from, String ticket, String sha, String name, long size, List<String> launch)
+      throws IOException {
+    java.net.URI u = pageAddress(origin, from, "/api/beam/apk");
+    if (size > maxUploadMb << 20) throw new IOException("too large");
+    java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+        .followRedirects(java.net.http.HttpClient.Redirect.NEVER).connectTimeout(java.time.Duration.ofSeconds(10)).build();
+    java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(u.resolve(u.getRawPath() + "?ticket="
+            + java.net.URLEncoder.encode(ticket, StandardCharsets.UTF_8)))
+        .timeout(java.time.Duration.ofMinutes(10)).header("Accept", "application/vnd.android.package-archive").GET().build();
+    java.net.http.HttpResponse<InputStream> resp;
+    try {
+      resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted");
+    }
+    try (InputStream body = resp.body()) {
+      if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode());
+      String type = resp.headers().firstValue("content-type").orElse("");
+      if (!type.startsWith("application/vnd.android.package-archive")) throw new IOException("the server sent " + (type.isEmpty() ? "no content type" : type) + ", not an APK");
+      long length = resp.headers().firstValueAsLong("content-length").orElse(-1);
+      if (length > maxUploadMb << 20) throw new IOException("too large: " + (length >> 20) + " MB");
+      Catalog.App a = catalog.upload(body, length, name, launch, sha);
+      System.err.printf("[beam] %s: downloaded %s (%d MB) itself%n", origin, a.name(), Files.size(a.path()) >> 20);
+      return a;
+    }
   }
 
   /**

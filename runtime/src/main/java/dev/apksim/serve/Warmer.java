@@ -63,6 +63,17 @@ final class Warmer {
     this.serve = serve;
   }
 
+  /**
+   * Whether a warm-up of this build is queued or running: the agent's sweep keeps it (and its cache) meanwhile, as it
+   * keeps one a session or a grant names. A large app's warm-up runs for minutes, past a new build's grace.
+   */
+  synchronized boolean holds(String sha256) {
+    for (Job j : jobs.values()) {
+      if ((j.state == State.QUEUED || j.state == State.WARMING) && sha256.equals(serve.catalog.buildHash(j.apk))) return true;
+    }
+    return false;
+  }
+
   /** Queues an app whose APK is a file now (an upload, a finished download); anything else is ignored. */
   void enqueue(Catalog.App app) {
     if (app.path() == null) return;
@@ -130,10 +141,14 @@ final class Warmer {
     System.err.printf("[serve] warming the cache of %s%n", j.app.name());
     List<String> cmd = new ArrayList<>();
     if (Files.isExecutable(Path.of("/usr/bin/nice"))) cmd.addAll(List.of("/usr/bin/nice", "-n", "10"));
-    cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", "serve",
-        "--exit-after-first-frame"));
+    cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", serve.home,
+        "--exit-after-first-frame", "--control", "auto"));  // its control port: how its JVM is known (below)
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
+    // The agent's warm-up is a beamed instance (instanceEnvironment): it starts from its build's cache and leaves what it
+    // translated in its out folder, which goes into that cache once it has exited (below), as a session's does.
+    String build = serve.beam ? serve.catalog.buildHash(j.apk) : null;
+    if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
     cmd.addAll(j.app.launch());
     cmd.add(j.apk.toString());
     Files.createDirectories(serve.logs);
@@ -155,7 +170,13 @@ final class Warmer {
         p.destroyForcibly();
         p.waitFor(5, TimeUnit.SECONDS);
       }
-      Session.endJvm(j.jvmPid);  // a warm launch: the standby's JVM may still be flushing after its client went
+      Session.endJvm(serve, j.jvmPid, j.apk);  // a warm launch: the standby's JVM may still be flushing after its client went
+      // A cold launch's JVM is the process started here (the launcher and nice exec into it).
+      if (serve.beam) {
+        Session.keepBeamCaches(serve, j.jvmPid > 0 ? j.jvmPid : p.pid(), j.apk, l -> System.err.println(l));
+        String warmed = serve.catalog.buildHash(j.apk);
+        if (warmed != null) serve.catalog.released(warmed);  // its hold (keep-days) starts now, as after a session
+      }
       // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
       if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
     }
@@ -169,9 +190,15 @@ final class Warmer {
         for (String line; (line = r.readLine()) != null; ) {
           reason.line(line);
           Matcher ds = DATA_SLOT.matcher(line);
-          if (ds.find()) {
-            slot.set(Path.of(ds.group(1)));
-            j.jvmPid = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
+          if (ds.find() && slot.get() == null) slot.set(Path.of(ds.group(1)));  // erased only if unlocked and serve's own
+          // The JVM a warm launch runs in (the standby's, not the client started here), for ending it: the process the
+          // kernel says listens on its control port, which Main opens and announces before any app code runs. Never
+          // the pid the data slot line names: app code (attachBaseContext) runs before it and could print another
+          // session's JVM there, which cleanup would then kill.
+          Matcher cp = Session.CONTROL_PORT.matcher(line);
+          if (cp.find() && j.jvmPid < 0) {
+            long pid = Session.listenerPid(Integer.parseInt(cp.group(1)));
+            j.jvmPid = pid > 0 ? pid : 0;  // 0: looked once, unknown (then nothing is ended)
           }
           Matcher m = PROGRESS.matcher(line);
           if (m.find()) j.progress = "translating classes: " + m.group(1);

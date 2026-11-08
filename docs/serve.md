@@ -16,6 +16,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
+             [--allow-beam] [--beam-port N]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -231,7 +232,7 @@ inside itself:
   when a codec was named). Serve relays them to the tab over a WebSocket. Each binary message is the frame's width,
   height, present time (epoch µs) and encode time (µs), big-endian, then the JPEG, or for H.264 a byte (1 for a
   keyframe) and the access unit.
-- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once drawn.
+- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once decoded.
   Two frames in flight cap a stream at about 2 frames per round trip (~20 fps at 100 ms however fast the app renders),
   so the window is sized from what is measured: `clamp(ceil(rtt / frame_interval) + 1, 2, --in-flight)`, where `rtt` is
   the quickest of the last 8 WebSocket ping round trips (serve pings every 0.5 s while frames flow; a browser's pong
@@ -245,6 +246,15 @@ inside itself:
   for serve, past 30 waiting). The window and byte budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
+- The page shows decoded frames at its display's refresh (`requestAnimationFrame`), as the Mac window shows its own at
+  the display's vsync, from a queue of at most two: two frames the stream's jitter brings within one refresh are
+  shown one each, not the first overwritten (docs/beam.md, "Phase 1b as built"). Its present→screen and input→screen
+  figures therefore end at that refresh.
+- Pacing to the tab's display: while frames come, the page measures where in its refresh interval they are decoded
+  and every 500 ms sends `vsync PERIOD_US SHIFT_US` (its refresh period, and how far to move the instance's frames so
+  they land mid-interval). The instance then times its frames to that display instead of its own 120 Hz grid
+  (`SimWindow.remoteVsync`), and goes back to the grid 1.5 s after the last one (a hidden tab sends none). It is not
+  answered and does not count as input for `--idle`.
 
 ### Input
 
@@ -254,6 +264,7 @@ The tab sends commands in the control channel's own words, and serve passes on o
 |---|---|
 | pointer down / drag / up / cancel (mouse, pen, touch) | `touch down\|move\|up\|cancel X Y` (moves at most one per animation frame) |
 | wheel, trackpad scroll | `wheel X Y AMOUNT` (summed per animation frame) |
+| the tab hidden / shown again | `maxfps 1` / `maxfps 120` (a hidden tab shows nothing; not answered, not input for `--idle`) |
 | printable keys, paste, phone keyboards (through a hidden text field: IME, dictation) | `type TEXT`, `key SPACE` |
 | a phone keyboard's delete or return (input events with no key) | `key DEL`, `key FORWARD_DEL`, `key ENTER` |
 | Backspace, Delete, Enter, Tab, arrows, Home/End, Page Up/Down; Ctrl/Cmd and Shift with them | `key NAME 1 [ctrl] [shift] [alt]` |
@@ -310,6 +321,22 @@ that no deep link names, data entered).
   sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
   by different people on one machine, which can read the state folder: give each trust boundary its own serve (its
   own container).
+
+### Run on this Mac (`--allow-beam`)
+
+With `--allow-beam` the page offers "On this Mac" to a visitor whose Mac runs `apksim beam` (docs/beam.md: the
+agent, its prompt, its protocol and what was checked): the app runs there, on their hardware, and the tab draws its
+stream as it draws the server's, so no server session is used. Serve adds `GET /api/beam` (the agent's port,
+`--beam-port`, default 47474), `GET /api/apps/ID/beam` (name, size, SHA-256, launch options) and `GET /api/apps/ID/apk`
+(the APK, which the tab passes on when the agent does not have that build), behind the token like everything else,
+and lets the page reach `http://127.0.0.1:PORT` in its CSP. The beam answer also carries a ticket (HMAC-signed with
+a key serve makes at its start, for that app and its SHA-256, good for 5 minutes), and `GET /api/beam/apk?ticket=T`
+serves that one APK to whoever holds the ticket, without the token: the visitor's agent downloads the build itself
+with it, and only when that fails (a sign-in it cannot pass, a firewall) does the tab relay the APK. Off by default: it
+lets token holders, and the agents they hand a ticket to, download the APKs they can run. A session on the visitor's
+Mac also offers "Fill the page" (the display sized to the stage at the browser's pixel ratio) and "Show in
+Simulator", which only the agent accepts (docs/beam.md, phase 3). Changing where the app runs during a session moves
+it: the other side starts beside it and takes over on its first frame, with no blank frame between (phase 4).
 
 ### Not in scope (yet)
 

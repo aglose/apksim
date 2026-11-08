@@ -44,6 +44,7 @@ static CADisplayLink *vsyncLink;
 static double vsyncTarget, vsyncPeriod, vsyncSeen, lastFrameVsync;  // seconds, CACurrentMediaTime's clock
 static long vsyncCommits;
 static long vsShown, vsRepeated, vsReplaced, vsPendingRepeats;
+static volatile int closeHides;  // SimWindow.closeHides: the close button hides the window (a viewer is attached)
 static AVAssetWriter *recWriter;  // screen recording, below
 static void recordFrame(IOSurfaceRef s);
 
@@ -483,6 +484,15 @@ static int androidMeta(NSEventModifierFlags f) {
   }
   NSString *s = e.characters;
   for (NSUInteger i = 0; i < s.length; i++) post(EV_CHAR, 0, 0, (float)[s characterAtIndex:i]);
+}
+// While a viewer elsewhere is attached (a browser tab streaming this instance: apksim beam's "Show in Simulator"), the
+// close button hides the window and the app runs on in the tab; Quit (Cmd+Q) still ends it.
+- (BOOL)windowShouldClose:(NSWindow *)w {
+  if (closeHides) {
+    [w orderOut:nil];
+    return NO;
+  }
+  return YES;
 }
 - (void)windowWillClose:(NSNotification *)n { post(EV_CLOSE, 0, 0, 0); }
 - (void)windowDidDeminiaturize:(NSNotification *)n {
@@ -1391,6 +1401,26 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeUntilVsync(JNIEnv *env, 
   if (period <= 0 || now - seen > 4 * period + 0.004) return -1;
   while (target < now) target += period;
   return (jlong)((target - now) * 1e9);
+}
+
+// The display's refresh period in nanoseconds while its vsyncs arrive (as nativeUntilVsync), else -1.
+JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeVsyncPeriod(JNIEnv *env, jclass c) {
+  double period, seen, now = CACurrentMediaTime();
+  @synchronized([SimView class]) {
+    period = vsyncPeriod;
+    seen = vsyncSeen;
+  }
+  if (period <= 0 || now - seen > 4 * period + 0.004) return -1;
+  return (jlong)(period * 1e9);
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetCloseHides(JNIEnv *env, jclass c, jboolean on) { closeHides = on; }
+
+// `window close`: what the window's close button does (performClose: asks windowShouldClose, as a click would).
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeClose(JNIEnv *env, jclass c) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (simWindow) [simWindow performClose:nil];
+  });
 }
 
 // What reached the screen since the last call, counted per display vsync.

@@ -29,7 +29,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
-    loop turn draw, 150-400 frames a second on a video screen. The first frame waits for the bottom window that is
+    loop turn draw, 150-400 frames a second on a video screen. It is drawn only on a turn that ran a vsync, or when
+    none is pending (a TextureView's new picture): input dispatched at a turn's start dirtied the window, which was
+    drawn then and again at the vsync (`frames` counts the frames `held for their vsync`). A vsync asked for since the
+    last frame waits for the display's next one, and while a timed drag (`swipe ... MS`) runs the loop turns at each
+    vsync and sends the move there, as a device consumes batched touch input in the vsync's frame; other input goes
+    out 7 ms apart. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
+    twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
+    one. The first frame waits for the bottom window that is
     shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
     never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
@@ -219,7 +227,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
-  - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
+  - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
+    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamSandbox` (in `dev.apksim`): a beamed instance's
+    sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
+    keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
+    saved|run|forget|config|sweep|status`; `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
+    when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
+    zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
@@ -254,7 +268,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
-  bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
+  bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
+  `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
+  against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
+  `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
+  fallback to the server), `beam-size-check.py` (Fill mode and the simulator window as two views of one display, in
+  Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, and
+  with its data, in Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
+  stand-in for launchd; `--real` installs a test LaunchAgent),
+  `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -266,7 +288,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `linux-docker.md`, `ci-testbed.md` (a large app's
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
@@ -316,7 +338,8 @@ AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb she
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
-`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time).
+`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
+`vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or
@@ -331,7 +354,8 @@ launch with `--timezone America/New_York`; see `TimeZones` below), `config` (con
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
 `window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden
-and whether the app is active),
+and whether the app is active), `window close` (as the close button: while a stream viewer is attached, apksim beam's
+tab, it only hides the window),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
 also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
@@ -721,7 +745,8 @@ then three rounds of a framework-only activity (views, text, a RenderNode drawn 
 through `HwRenderer`, touches), so call sites Robolectric links through invokedynamic and framework classes are
 done, plus the codec list, networks, XML parser and runtime hash; Robolectric then resets as between tests. No app
 code runs before the launch. It then waits for the JIT queue to drain (~2.2 s from start to ready, ~410 MB idle).
-- One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`), not per working directory.
+- One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`, and `b` for `apksim beam`'s
+  instances, which the agent starts itself: docs/beam.md "The beam sandbox"), not per working directory.
   Instances start the next one 1 s after their first frame (`--spawn-standby`, inside their own sandbox) or on exit.
   A launch waits for a booting standby only past its first second (a cold launch is ~1.3 s), else launches cold.
 - A standby quits after an hour unused (`-Dapksim.standbyIdle` seconds) and when `work/apksim.jar` or `work/app.aot`
@@ -805,7 +830,8 @@ on its own thread; `redraw` makes the Host draw one for a new subscriber), or as
 (`codec=h264`, sent by the page when WebCodecs decodes it) and the instance has an encoder (VideoToolbox; OpenH264
 in the image), answered `c h264`/`c jpeg`: no reordering, keyframes only at the start, a size change or a `key`
 request, and a still screen encoded twice more to sharpen it; `--bitrate` (4000 kbps), `--codec jpeg` turns it off.
-Serve relays frames with at most two in flight per tab (the page acknowledges each one drawn; with H.264 a tab that
+Serve relays frames with at most two in flight per tab (the page acknowledges each one decoded and shows it at its
+next display refresh, from a queue of at most two, pacing the instance to that display with `vsync`; with H.264 a tab that
 falls behind drops to the next keyframe, which serve asks for), and passes on only input and device commands
 (`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
@@ -826,6 +852,11 @@ from a loopback peer as the browser's (Origin is checked against them, and the l
 `--public-origin URL` accepts that origin as serve's own and prints links with it, `--base-path /sim` serves everything
 under a prefix (a proxy that strips it works too); the page builds every URL relative to its folder, and the token
 redirect is relative. WebSocket pings go to every session every 20 s.
+`--allow-beam` (docs/beam.md): the page offers "On this Mac" when the visitor runs `apksim beam`, which runs the app in
+the beam sandbox and streams it into the same canvas; the server hands the page a signed ticket (`BeamTicket`) with
+which the agent downloads the APK itself (`GET /api/beam/apk`, no token), the tab relaying it when that fails. A move
+to the Mac "With its data" sends `handoff` on the server's socket: the app quits, its slot is packed, and the agent
+downloads it with a ticket (`GET /api/beam/data`) into the slot the app starts in there.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

@@ -104,9 +104,10 @@ final class Catalog {
     }
   }
 
-  Catalog(List<String> sources, Path state, long maxBytes) throws IOException {
-    this.uploads = state.resolve("serve/uploads");
-    this.downloads = state.resolve("serve/downloads");
+  /** `home`: the state folder's part for this server, `serve` (apksim serve) or `beam` (the agent, docs/beam.md). */
+  Catalog(List<String> sources, Path state, String home, long maxBytes) throws IOException {
+    this.uploads = state.resolve(home + "/uploads");
+    this.downloads = state.resolve(home + "/downloads");
     this.maxBytes = maxBytes;
     Files.createDirectories(uploads);
     Files.createDirectories(downloads);
@@ -419,11 +420,69 @@ final class Catalog {
   }
 
   /**
+   * A new id for the APK stored with this content hash, or null when none is (`apksim beam`: a page that sent this
+   * build before sends nothing again). Kept by the same rules as an upload's.
+   */
+  App byHash(String sha256, String name, List<String> launch) throws IOException {
+    if (sha256 == null || !sha256.matches("[0-9a-f]{64}")) return null;
+    Path apk = uploads.resolve(sha256 + ".apk");
+    String id = newId(), clean = clean(name);
+    StringBuilder ref = new StringBuilder(sha256).append(".apk\n").append(clean).append('\n');
+    for (String o : launch) ref.append(o).append('\n');
+    synchronized (uploadsLock) {
+      // A regular file only, never through a link: the APK the agent then runs and serves is the one stored here.
+      if (!Files.isRegularFile(apk, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null;
+      Files.writeString(uploads.resolve(id + ".ref"), ref);
+      inUseAgain(sha256);
+    }
+    return new App(id, clean, apk, null, true, launch);
+  }
+
+  private final Map<Path, String[]> sha256s = new ConcurrentHashMap<>();
+
+  /**
+   * The SHA-256 of an APK file, as hex (`--allow-beam`: the agent is told it, and checks what it gets against it). A
+   * stored upload is named by it; any other file's is worked out once per size and modification time.
+   */
+  String sha256(Path apk) throws IOException {
+    String n = apk.getFileName().toString();
+    if (apk.getParent() != null && apk.getParent().equals(uploads) && n.matches("[0-9a-f]{64}\\.apk")) return n.substring(0, 64);
+    String stamp = Files.size(apk) + ":" + Files.getLastModifiedTime(apk).toMillis();
+    String[] known = sha256s.get(apk);
+    if (known != null && known[0].equals(stamp)) return known[1];
+    try (InputStream f = Files.newInputStream(apk)) {
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] buf = new byte[1 << 16];
+      for (int k; (k = f.read(buf)) > 0; ) md.update(buf, 0, k);
+      String sha = HexFormat.of().formatHex(md.digest());
+      sha256s.put(apk, new String[] {stamp, sha});
+      return sha;
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** Whether this added app's download is still under way (its file is not there yet). */
+  boolean downloading(App a) {
+    Download d = downloading.get(a.id());
+    return d != null && !d.done.isDone();
+  }
+
+  /**
    * Stores an upload of `length` bytes (-1: up to the end, e.g. a chunked body; `--max-upload` still holds); its new
    * id, or throws with the reason it was refused.
    */
   App upload(InputStream in, long length, String name, List<String> launch) throws IOException {
-    App a = publish(store(in, length, n -> {}), newId(), clean(name), launch);
+    return upload(in, length, name, launch, null);
+  }
+
+  /**
+   * An upload that must have this SHA-256 (apksim beam's, named by the page's start), checked while the file is still
+   * staged: one that does not match is deleted before it is stored or announced to anything (the warmer runs what it
+   * is told of).
+   */
+  App upload(InputStream in, long length, String name, List<String> launch, String expectSha256) throws IOException {
+    App a = publish(store(in, length, n -> {}), newId(), clean(name), launch, expectSha256);
     ready(a);
     return a;
   }
@@ -446,6 +505,10 @@ final class Catalog {
 
   /** Moves a stored file into place by its content hash and publishes `id` for it. */
   private App publish(Path tmp, String id, String clean, List<String> launch) throws IOException {
+    return publish(tmp, id, clean, launch, null);
+  }
+
+  private App publish(Path tmp, String id, String clean, List<String> launch, String expectSha256) throws IOException {
     String sha;
     try (InputStream f = Files.newInputStream(tmp)) {
       MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -455,6 +518,10 @@ final class Catalog {
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+    if (expectSha256 != null && !expectSha256.equals(sha)) {
+      Files.deleteIfExists(tmp);
+      throw new IOException("the APK's SHA-256 is " + sha + ", not the " + expectSha256 + " the page named");
+    }
     Path apk = uploads.resolve(sha + ".apk");
     StringBuilder ref = new StringBuilder(sha).append(".apk\n").append(clean).append('\n');
     for (String o : launch) ref.append(o).append('\n');
@@ -463,6 +530,7 @@ final class Catalog {
       if (Files.exists(apk)) Files.delete(tmp);
       else Files.move(tmp, apk);
       Files.writeString(uploads.resolve(id + ".ref"), ref);
+      inUseAgain(sha);
     }
     return new App(id, clean, apk, null, true, launch);
   }
@@ -497,6 +565,106 @@ final class Catalog {
       throw new IOException("not an APK (not a ZIP file)");
     }
     return tmp;
+  }
+
+  // ---------------------------------------------------------------- apksim beam's builds (docs/beam.md)
+  //
+  // A build is `<sha256>.apk`. Its file's mtime is when it was last started or stored, and `<sha256>.released` (the
+  // time in ms) when its last session ended; a start or an upload deletes that file again (the clock stops).
+
+  /** Under uploadsLock: a start or an upload of this build. */
+  private void inUseAgain(String sha) throws IOException {
+    Path apk = uploads.resolve(sha + ".apk");
+    if (Files.exists(apk)) Files.setLastModifiedTime(apk, FileTime.fromMillis(System.currentTimeMillis()));
+    Files.deleteIfExists(uploads.resolve(sha + ".released"));
+  }
+
+  /** Whether this build is stored here. */
+  boolean hasBuild(String sha) {
+    return sha != null && sha.matches("[0-9a-f]{64}") && Files.isRegularFile(uploads.resolve(sha + ".apk"), java.nio.file.LinkOption.NOFOLLOW_LINKS);
+  }
+
+  /** The stored build's file (it may not exist). */
+  Path buildFile(String sha) {
+    return uploads.resolve(sha + ".apk");
+  }
+
+  /** The SHA-256 a stored build's file is named by, or null for any other file. */
+  String buildHash(Path apk) {
+    if (apk == null || apk.getParent() == null || !apk.getParent().equals(uploads)) return null;
+    String n = apk.getFileName().toString();
+    return n.matches("[0-9a-f]{64}\\.apk") ? n.substring(0, 64) : null;
+  }
+
+  /** A session of this build ended, or a saved session naming it was forgotten: its hold starts now. */
+  void released(String sha) {
+    if (sha == null || !sha.matches("[0-9a-f]{64}")) return;
+    synchronized (uploadsLock) {
+      try {
+        if (Files.exists(uploads.resolve(sha + ".apk"))) {
+          Files.writeString(uploads.resolve(sha + ".released"), Long.toString(System.currentTimeMillis()));
+        }
+      } catch (IOException e) {
+        System.err.println("[beam] cannot note the end of " + sha + ": " + e);
+      }
+    }
+  }
+
+  /**
+   * `apksim beam`'s sweep: deletes each stored build `kept` does not name (a running session's, a live grant's, a
+   * saved session's) once `keepMillis` have passed since its last session ended (or since it was last started or
+   * stored, plus `graceMillis`, if no session of it has ended since: a start's grant may still be used), with its ids;
+   * ids whose build is gone, and ids a day old of builds not kept (each start makes one). The deleted builds' file names.
+   */
+  List<String> sweepBuilds(java.util.function.Predicate<String> kept, long keepMillis, long graceMillis) {
+    pruneFailures();
+    List<String> gone = new ArrayList<>();
+    long now = System.currentTimeMillis();
+    synchronized (uploadsLock) {
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads)) {
+        List<Path> all = new ArrayList<>();
+        d.forEach(all::add);
+        for (Path p : all) {
+          String n = p.getFileName().toString();
+          if (!n.matches("[0-9a-f]{64}\\.apk")) continue;
+          String sha = n.substring(0, 64);
+          if (kept.test(sha)) continue;
+          Path rel = uploads.resolve(sha + ".released");
+          long since;
+          if (Files.isRegularFile(rel)) {
+            try {
+              since = Long.parseLong(Files.readString(rel).strip());
+            } catch (NumberFormatException e) {
+              since = Files.getLastModifiedTime(rel).toMillis();
+            }
+          } else {
+            since = Files.getLastModifiedTime(p).toMillis() + graceMillis;
+          }
+          if (now < since + keepMillis) continue;
+          Files.deleteIfExists(p);
+          Files.deleteIfExists(rel);
+          gone.add(n);
+        }
+        for (Path p : all) {
+          String n = p.getFileName().toString();
+          if (n.endsWith(".ref") && Files.exists(p)) {
+            List<String> lines = Files.readAllLines(p);
+            String apk = lines.isEmpty() ? "" : lines.get(0);
+            boolean missing = !Files.exists(uploads.resolve(apk));
+            boolean old = Files.getLastModifiedTime(p).toMillis() < now - 24 * 3_600_000L
+                && !(apk.length() == 68 && kept.test(apk.substring(0, 64)));
+            if (missing || old) Files.delete(p);
+          } else if (n.endsWith(".released") && !Files.exists(uploads.resolve(n.replace(".released", ".apk")))) {
+            Files.deleteIfExists(p);
+          } else if (n.endsWith(".part") && Files.getLastModifiedTime(p).toMillis() < now - 3_600_000L) {
+            Files.deleteIfExists(p);
+          }
+        }
+      } catch (IOException | RuntimeException e) {
+        System.err.println("[beam] could not sweep builds: " + e);
+      }
+    }
+    return gone;
   }
 
   /** Deletes uploads not used for this long, and stored APKs no upload refers to any more. */

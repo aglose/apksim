@@ -2,6 +2,7 @@
 # Usage: apksim [--activity PKG/.Act|.Act|NAME] [--shot FILE] [--exit-after-first-frame] [--debug PORT]
 #               [--instrument test.apk [-e KEY VALUE]...] app.apk
 #        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
+#        apksim beam [--port N] [--max N] | apksim beam trust|saved|run|forget|config|sweep  (docs/beam.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
@@ -34,6 +35,7 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: apksim [options] APP.apk
        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...
+       apksim beam [--port N] [--max N]    run browser sessions' apps on this Mac; beam saved|run ID: kept ones (docs/beam.md)
        apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
        apksim --version | --train | --stop-standbys
 
@@ -57,6 +59,12 @@ EOF
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
+  # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
+  # (The path it was run as, before links are followed: `apksim beam install` writes that into launchd's job, so a
+  # Homebrew upgrade, which moves the install folder, leaves bin/apksim and the job working.)
+  beam) SERVE=1; shift; set -- --beam "$@"
+    APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
+    export APKSIM_LAUNCHER_PATH ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first
@@ -66,18 +74,25 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   FLAGS="${2:-}"
   SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
   [[ -S "$SOCK" ]] && exit 0
-  if [[ -f "$SOCK.pid" ]] && kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
+  # Alive, or there and out of reach: a beamed instance (this runs in its sandbox) may signal only itself, so kill -0
+  # on its booting standby answers "not permitted", which is not a dead one.
+  if [[ -f "$SOCK.pid" ]]; then
+    ALIVE="$(kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>&1)" && exit 0
+    [[ "$ALIVE" == *"not permitted"* ]] && exit 0
+  fi
   rm -f "$SOCK.pid"
   ARGS=(--standby "$SOCK")
   [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
   [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)
   # k: no core dumps (apksim serve): a flag of the standby's name, since its JVM fixes it at its start.
   if [[ "$FLAGS" == *k* ]]; then export APKSIM_NO_CORE=1; else unset APKSIM_NO_CORE; fi
+  # b: a beamed instance's sandbox (docs/beam.md "The beam sandbox"), started only by the agent, outside any sandbox.
+  if [[ "$FLAGS" == *b* ]]; then export APKSIM_BEAM_SANDBOX=1; else unset APKSIM_BEAM_SANDBOX; fi
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
 fi
 if [[ "${1:-}" == --stop-standbys ]]; then
   # This folder's standbys (they also quit after an hour unused, or when work/apksim.jar or work/app.aot change).
-  for FLAGS in "" n s ns k nk sk nsk; do
+  for FLAGS in "" n s ns k nk sk nsk b nb kb nkb; do
     SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
     [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
     rm -f "$SOCK" "$SOCK.pid"
@@ -251,6 +266,14 @@ fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}"
+# A beamed instance (the agent sets APKSIM_BEAM_SANDBOX, docs/beam.md): a sandbox of its own, so standbys of its own.
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+  [[ -n "${NO_SANDBOX:-}" ]] && { echo "a beamed instance always runs sandboxed" >&2; exit 2; }
+  # Its sandbox is macOS's sandbox-exec; elsewhere there is none yet (a Linux agent is docs/beam.md's phase 6).
+  [[ "$OS" == Darwin ]] || { echo "a beamed instance runs only on macOS (its sandbox)" >&2; exit 2; }
+  FLAGS="${FLAGS}b"
+  EXTRA+=("-Dapksim.beamSandbox=true")
+fi
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
 WARM_OK=""
@@ -265,6 +288,9 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
+      # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
+      # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
+      -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*) ;;
       -Dapksim.classCache=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
@@ -339,8 +365,10 @@ fi
 # spares starting python3 just to read the clock.
 [[ "$OS" == Darwin ]] || export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
 # This launch may start the next standby (Standby.spawnNext), which inherits its sandbox.
-[[ -n "$WARM_OK" ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
-[[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK" "-Dapksim.spawnStandby=$FLAGS")
+# Not a beamed one: what it starts would inherit its sandbox, whose rules name this process (the agent starts them).
+[[ -n "$WARM_OK" && "$FLAGS" != *b* ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
+[[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK")
+[[ -n "$STANDBY_SOCK" && "$FLAGS" != *b* ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
 # Robolectric mishandles spaces in its dependency path, so always go through a link without any.
 TMP="${TMPDIR:-/tmp}"
 LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
@@ -352,8 +380,19 @@ mkdir -p "$STATE/tmp/$$"
 # write under its state folder (work/ or ~/.apksim) and temp, and cannot read credentials. Network stays on unless --no-network.
 SANDBOX=()
 # A standby started by a sandboxed instance is already inside the same sandbox (FLAGS are part of its name).
-if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ]]; then
-  export APKSIM_SANDBOXED=1
+# A beamed instance is inside one only when it is the beam sandbox (APKSIM_SANDBOXED=beam, set below): any other
+# value, or APKSIM_NOCACHE, in the agent's environment must not let a site's APK run without it.
+BEAM_INSIDE=""
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" && "${APKSIM_SANDBOXED:-}" == beam ]]; then
+  # Checked, not taken on its word: the beam profile refuses writes in STATE/beam outside out/<pid>, so a write
+  # there that succeeds means this is not inside it.
+  BEAM_INSIDE=1
+  mkdir -p "$STATE/beam" 2>/dev/null
+  if ( : > "$STATE/beam/.sandbox-probe.$$" ) 2>/dev/null; then rm -f "$STATE/beam/.sandbox-probe.$$"; BEAM_INSIDE=""; fi
+fi
+if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}" && -z "$BEAM_INSIDE" \
+      || -z "${APKSIM_BEAM_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ) ]]; then
+  if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then export APKSIM_SANDBOXED=beam; else export APKSIM_SANDBOXED=1; fi
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
@@ -369,7 +408,69 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
 (deny network-outbound (remote ip))
 (allow network-outbound (remote ip \"localhost:*\"))"
   fi
+  if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+    # A beamed instance runs an APK a web site sent (docs/beam.md "The beam sandbox"). Rules name real paths (the
+    # sandbox matches resolved ones); later rules win.
+    # Writes: nothing but its own scratch and out folder (this PID: exec keeps it for the JVM), beam-N data slots (and
+    # making an app's folder for them, create only and a folder only: write on a folder would let it rename another
+    # app's away, and a link there would lead the agent, which unpacks a moved session's data into it, elsewhere), its
+    # standby's socket (bound as SOCK.PID, then renamed) and its .pid file (both removed as it takes a launch), Metal's
+    # shader cache and /dev/null: not apksim's own files (an install outside the home folder), the temp folder (the
+    # launcher's link to its libraries is there), the caches other launches load code from, or anything else another
+    # process would run.
+    # Reads: nothing in the home folder but apksim, its libraries and the JDK; in the state folder not the agent's
+    # trust and settings, saved sessions, serve's files, autofill sign-ins, other apps' data and caches, or another
+    # process's scratch (a path's metadata only: resolving the APK's path stats the folders above it).
+    # Network: what the Mac reaches over IPv4, but not loopback (other instances' control ports, the agent) and no
+    # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets); no
+    # local socket but the resolver's and syslog's (not ssh-agent's, a container engine's or a standby's).
+    # No terminal: a cold-launched instance is in the agent's terminal session, so /dev/tty (or the terminal's
+    # /dev/ttysN) would let a site's app read what the visitor types there and write into it.
+    # Signals only to itself: not even its own sandbox, which every warm beamed instance shares (each spawns the next
+    # standby inside its own), so one site's app could otherwise end another's session. No pasteboard (the Mac's clipboard, even through
+    # native code or reflection past SimWindow's own check).
+    RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
+    RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
+    # The checkout's own work/ too, which is the state folder unless APKSIM_HOME moves it (beam-check.py does): its
+    # sign-ins, app data, scratch and serve's and the agent's files were readable through the apksim folder's rule.
+    RW="$RR/work"; [[ -d "$ROOT/work" ]] && RW="$(cd "$ROOT/work" && pwd -P)"
+    QS="$(printf '%s' "$RS" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+    # bm<12 hex>: a moved session's data (spelled out: the profile language's regex has no {n} quantifier).
+    H12="$(printf '[0-9a-f]%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)"
+    SLOTS="^$QS/cache/data/[^/]+/(beam|bm$H12)-[0-9]+(\\.device)?(/|\$)"
+    UCACHE="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"; UCACHE="${UCACHE:+$(cd "$UCACHE" && pwd -P)}"
+    mkdir -p "$STATE/beam/out" "$STATE/cache/data"  # made here: the instance may make only what is inside them
+    PROFILE="$PROFILE
+(deny file-write*)
+(allow file-write-create (require-all (regex #\"^$QS/cache/data/[^/]+\$\") (vnode-type DIRECTORY)))
+(allow file-write* (subpath \"$RS/tmp/$$\") (subpath \"$RS/beam/out/$$\") (regex #\"$SLOTS\")
+  (literal \"/dev/null\")${UCACHE:+ (subpath \"$UCACHE/com.apple.metal\")}${STANDBY_SOCK:+ (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK")\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").$$\") (literal \"$(cd "$(dirname "$STANDBY_SOCK")" && pwd -P)/$(basename "$STANDBY_SOCK").pid\")})
+(deny file-read* (subpath \"$RH\"))
+(allow file-read-metadata (subpath \"$RH\"))
+(deny file-read* file-write* (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+\$\"))
+(allow file-read* (subpath \"$RR\") (subpath \"$RL\") (subpath \"$RJ\") (subpath \"$RS\"))
+(deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\") (subpath \"$RS/tmp\")
+  (subpath \"$RW/autofill\") (subpath \"$RW/beam\") (subpath \"$RW/serve\") (subpath \"$RW/screenshots\") (subpath \"$RW/cache\") (subpath \"$RW/tmp\"))
+(allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (subpath \"$RS/tmp/$$\") (regex #\"$SLOTS\"))
+(allow file-read-metadata (subpath \"$RS\"))
+(deny network-outbound (remote ip \"localhost:*\"))
+(deny network-outbound (remote tcp6 \"*:*\") (remote udp6 \"*:*\"))
+(deny network-outbound (remote unix-socket))
+(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\") (path-literal \"/private/var/run/syslog\")))
+(deny signal)
+(allow signal (target self))
+(deny mach-lookup (global-name \"com.apple.pasteboard.1\"))"
+    EXTRA+=("-Djava.net.preferIPv4Stack=true")
+    # Its crash report where it may write (its scratch), for the agent to summarise (Session.beamHsErr).
+    EXTRA+=("-XX:ErrorFile=$RS/tmp/$$/hs_err_pid%p.log")
+  fi
   SANDBOX=(sandbox-exec -p "$PROFILE")
+fi
+# Fail closed: a beamed instance runs in the beam profile or inside one, never otherwise (not on Linux either, which
+# has none yet).
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" && ${#SANDBOX[@]} -eq 0 && -z "$BEAM_INSIDE" ]]; then
+  echo "apksim: a beamed instance runs only in the beam sandbox (macOS); refusing to start it without one" >&2
+  exit 2
 fi
 # The JDK reaches 127.0.0.1 as ::ffff:127.0.0.1 on a dual-stack socket, which the rule above cannot allow, so under
 # --no-network libloopback moves those connects to IPv4 sockets. Set through env: dyld drops DYLD_* variables when

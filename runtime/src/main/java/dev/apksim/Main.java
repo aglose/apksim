@@ -37,7 +37,8 @@ public final class Main {
       return;
     }
     // The APK's cache entry (a content key, locks, ~2 ms) while the ports and the window open.
-    ApkCache.Taking taking = ApkCache.start(Path.of(System.getProperty("apksim.cacheRoot")), Path.of(args[0]).toAbsolutePath());
+    ApkCache.Taking taking = ApkCache.start(BeamSandbox.ON ? BeamSandbox.apkCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot")),
+        Path.of(args[0]).toAbsolutePath());
     String control = System.getProperty("apksim.control");
     if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
     String adb = System.getProperty("apksim.adb");

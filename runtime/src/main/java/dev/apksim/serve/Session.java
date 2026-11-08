@@ -36,7 +36,7 @@ import java.util.stream.Stream;
  * commands {@link #check} allows.
  */
 final class Session {
-  private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
+  static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
   private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
@@ -76,6 +76,11 @@ final class Session {
   volatile long bytesSent;
   volatile String device;
   private volatile Path dataDir;
+  /** `apksim beam`: the slot name (`bm<hex>`) the agent unpacked this session's moved data into, else null. */
+  volatile String seedSlot;
+  /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
+  volatile String site;
+  volatile boolean keep;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -105,7 +110,8 @@ final class Session {
     this.serve = serve;
     this.id = id;
     this.app = app;
-    this.options = options;
+    // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
+    this.options = new java.util.concurrent.ConcurrentHashMap<>(options);
     this.ws = ws;
     ws.onPong = this::ponged;
     // The tab's device (checked by Serve), else the app's own default, else the phone.
@@ -181,8 +187,13 @@ final class Session {
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
-    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill",
-        "--data-slots", "serve", "--control", "auto"));
+    // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
+    // display, a second view of it.
+    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString()));
+    cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
+    // A session whose data came from the server (phase 5) runs in the slot the agent unpacked it into, not a fresh one.
+    if (seedSlot != null) cmd.addAll(List.of("--no-autofill", "--data-slots", seedSlot, "--control", "auto"));
+    else cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
     cmd.addAll(List.of("--device", deviceSpec(device)));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -194,6 +205,10 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
+    // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
+    // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
+    String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
+    if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
     // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     List<String> own = app.launch();
     for (int i = 0; i < own.size(); i++) {
@@ -204,7 +219,10 @@ final class Session {
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
-    pb.directory(serve.logs.toFile());  // where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited()
+    // Where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited(). A beamed instance may not
+    // read or write the agent's folders: the state folder's tmp (its report goes to its scratch, -XX:ErrorFile).
+    if (serve.beam) Files.createDirectories(serve.state.resolve("tmp"));  // a fresh state folder has none yet
+    pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
     // process it never saw.
@@ -219,6 +237,19 @@ final class Session {
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
+    // The instance's identity for what serve or the agent does to its process and files (ending it, a beamed one's
+    // caches): the process the kernel says listens on its control port, which Main opens before any app code runs.
+    // Never what it prints: the app's own output could name another process.
+    instancePid = listenerPid(p);
+    if (instancePid <= 0 && !System.getProperty("os.name", "").startsWith("Mac")) {
+      // No lsof (the Linux image), and no standby off the Mac: the launcher execs the JVM, so the process started
+      // here is the instance itself.
+      Process launched;
+      synchronized (this) {
+        launched = process;
+      }
+      if (launched != null) instancePid = launched.pid();
+    }
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
@@ -257,6 +288,211 @@ final class Session {
   private final Object exitLock = new Object();
   private boolean exitHandled;
 
+  /**
+   * `handoff` (docs/beam.md, phase 5): the app quits (so what it wrote is flushed), its data slot and .device folder
+   * are packed (SlotPack) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket", "size"}`, a ticket for
+   * `GET /api/beam/data` the visitor's agent downloads it with; then the session ends without a word (the tab is moving
+   * it), its slot erased as always. The pack is kept until the ticket expires. A tab gets `h {"error"}` when it cannot.
+   */
+  private void handoff() {
+    Path slot = dataDir;
+    if (slot == null || ended) {
+      ws.sendText("h {\"error\":\"the app has no data yet\"}");
+      return;
+    }
+    // The slot comes from the instance's output, which app code (attachBaseContext) can write first: it must be one
+    // of this server's slots, and one the session's own JVM (known by the kernel, not by what it prints) holds open,
+    // checked while it still runs. Else the app could name any folder (the server user's, or another visitor's slot)
+    // for the server to pack and hand to this tab.
+    String why = handoffSlotProblem(slot);
+    if (why != null) {
+      logLine("[serve] no handoff: " + why);
+      ws.sendText("h {\"error\":" + Http.q(why) + "}");
+      return;
+    }
+    synchronized (exitLock) {
+      if (exitHandled) return;
+      exitHandled = true;  // its quit below is not an exit to report: this ends the session itself
+    }
+    try {
+      synchronized (replies) {
+        if (controlOut != null) controlOut.println("quit");
+      }
+      Process p;
+      synchronized (this) {
+        p = process;
+      }
+      if (p != null) p.waitFor(20, TimeUnit.SECONDS);
+      long jvm = instancePid;
+      if (jvm > 0) {
+        ProcessHandle.of(jvm).ifPresent(h -> {
+          try {
+            h.onExit().get(10, TimeUnit.SECONDS);
+          } catch (Exception e) {
+            // packed as far as it was written
+          }
+        });
+      }
+      Path dir = serve.state.resolve("serve/handoff");
+      Files.createDirectories(dir);
+      byte[] rnd = new byte[12];
+      new java.security.SecureRandom().nextBytes(rnd);
+      String hid = "d" + java.util.HexFormat.of().formatHex(rnd);
+      Path zip = dir.resolve(hid + ".zip");
+      long skipped;
+      try {
+        skipped = packWithDeadline(slot, zip);
+      } catch (IOException | RuntimeException e) {
+        Files.deleteIfExists(zip);
+        throw e;
+      }
+      String sha = serve.catalog.sha256(zip);
+      logLine("[serve] handed off its data (" + (Files.size(zip) >> 10) + " KB) to the tab's Mac");
+      if (skipped > 0) logLine("[serve] left out of the handoff: " + skipped + " links or special files");
+      ws.sendText("h {\"ticket\":" + Http.q(serve.tickets.mint(hid, sha)) + ",\"size\":" + Files.size(zip)
+          + (skipped > 0 ? ",\"skipped\":" + skipped : "") + "}");
+    } catch (IOException | RuntimeException e) {
+      logLine("[serve] could not hand off its data: " + e);
+      ws.sendText("h {\"error\":" + Http.q(String.valueOf(e.getMessage())) + "}");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    stop(null);
+  }
+
+  /**
+   * SlotPack.pack on a thread of its own, watched: a process the app left running can swap a file for a named pipe
+   * between the check and the open, and that open blocks (uninterruptibly) until something writes to the pipe, as a
+   * read from a pipe that never ends does. With no progress for 15 s the pack is interrupted (which ends a read) and its
+   * pending open released (Progress.unstick: an open of the same name for writing). That fails when the app has
+   * swapped the name again meanwhile, leaving the open blocked on a pipe nothing can name; so, still stuck 15 s later,
+   * the pack is given up and the handoff fails, and the session still ends and frees its place. The thread is then
+   * left blocked for good, holding only its folder handles (its zip is closed and deleted here).
+   */
+  private long packWithDeadline(Path slot, Path zip) throws IOException, InterruptedException {
+    SlotPack.Progress progress = new SlotPack.Progress();
+    Throwable[] failed = {null};
+    java.io.OutputStream out = Files.newOutputStream(zip);
+    Thread t = Thread.ofPlatform().daemon().name("serve-pack-" + id).start(() -> {
+      try (out) {
+        SlotPack.pack(serve.state, slot, slot.getParent().getFileName().toString(), out, progress);
+      } catch (Throwable e) {
+        failed[0] = e;
+      }
+    });
+    long seenFiles = -1, seenBytes = -1, since = System.currentTimeMillis();
+    boolean nudged = false;
+    while (true) {
+      t.join(1000);
+      if (!t.isAlive()) break;
+      long now = System.currentTimeMillis();
+      if (progress.files != seenFiles || progress.bytes != seenBytes) {
+        seenFiles = progress.files;
+        seenBytes = progress.bytes;
+        since = now;
+        nudged = false;
+      } else if (now - since > STALL_MS && !nudged) {
+        logLine("[serve] packing the app's data has not moved for " + STALL_MS / 1000 + " s: unblocking it");
+        t.interrupt();
+        Thread.ofPlatform().daemon().name("serve-pack-unstick-" + id).start(progress::unstick);
+        nudged = true;
+        since = now;
+      } else if (now - since > STALL_MS) {
+        try {
+          out.close();
+        } catch (IOException e) {
+          // closed either way
+        }
+        throw new IOException("the app's data could not be read (a file that never ends)");
+      }
+    }
+    if (failed[0] instanceof IOException e) throw e;
+    if (failed[0] instanceof RuntimeException e) throw e;
+    if (failed[0] != null) throw new IOException(failed[0]);
+    return progress.skipped;
+  }
+
+  /** How long a pack may go without reading a byte before it is unblocked, then given up (packWithDeadline). */
+  static long STALL_MS = Long.getLong("apksim.packStallMs", 15_000);
+
+  /** Why this session's data slot may not be handed off, or null. */
+  private String handoffSlotProblem(Path slot) {
+    Path dir = slot.toAbsolutePath().normalize();
+    Path data = serve.state.resolve("cache/data").toAbsolutePath().normalize();
+    if (dir.getParent() == null || !data.equals(dir.getParent().getParent())
+        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12})-[0-9]+")) {
+      return "the app's data slot is not one of this server's";
+    }
+    long pid = instancePid;
+    if (pid <= 0) return "the app's process is not known";
+    if (!holdsOpen(pid, dir.resolve(".lock"))) return "the app's data slot is not its own";
+    // Over the limits the agent unpacks within: said now, while the app still runs here, not after it quit. (The
+    // pack itself checks again: this count may change before then.)
+    long[] used = {1, 0};  // entries (the package one), bytes
+    for (Path root : List.of(dir, dir.resolveSibling(dir.getFileName() + ".device"))) {
+      if (!Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+      // Files and folders alike (each is an entry), and no further than the limit: a slot of millions of empty folders
+      // must not keep this walking.
+      try (Stream<Path> all = Files.walk(root)) {
+        var it = all.iterator();
+        long listed = 0;
+        while (it.hasNext() && used[0] <= SlotPack.MAX_FILES && used[1] <= SlotPack.MAX_BYTES) {
+          Path f = it.next();
+          if (f.equals(root)) continue;
+          if (++listed > SlotPack.MAX_LISTED) return "the app's data has more than " + SlotPack.MAX_LISTED + " entries to look at";
+          // As pack and unpack limit them, said now: a pack that fails after the app quit would lose its data.
+          Path rel = root.relativize(f);
+          boolean isDir = Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+          if (rel.getNameCount() - (isDir ? 0 : 1) > SlotPack.MAX_DEPTH) return "the app's data has folders over " + SlotPack.MAX_DEPTH + " deep";
+          if (rel.toString().length() + 8 > SlotPack.MAX_NAME) return "a name in the app's data is over " + SlotPack.MAX_NAME + " characters";
+          if (Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            used[0]++;
+          } else if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            used[0]++;
+            try {
+              used[1] += Files.size(f);
+            } catch (IOException e) {
+              // gone meanwhile
+            }
+          }
+        }
+      } catch (IOException | RuntimeException e) {
+        return "the app's data could not be read: " + e.getMessage();
+      }
+    }
+    if (used[0] > SlotPack.MAX_FILES) return "the app's data has more than " + (SlotPack.MAX_FILES - 1) + " files and folders to move";
+    if (used[1] > SlotPack.MAX_BYTES) return "the app's data is over " + (SlotPack.MAX_BYTES >> 20) + " MB to move";
+    return null;
+  }
+
+  /** Whether process `pid` has `file` open: /proc on Linux, lsof elsewhere. */
+  static boolean holdsOpen(long pid, Path file) {
+    try {
+      Path real = file.toRealPath();
+      Path fds = Path.of("/proc", Long.toString(pid), "fd");
+      if (Files.isDirectory(fds)) {
+        try (Stream<Path> all = Files.list(fds)) {
+          return all.anyMatch(f -> {
+            try {
+              return real.equals(Files.readSymbolicLink(f));
+            } catch (IOException | RuntimeException e) {
+              return false;
+            }
+          });
+        }
+      }
+      Process l = new ProcessBuilder("lsof", "-t", "--", real.toString()).redirectErrorStream(true).start();
+      String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      l.waitFor(5, TimeUnit.SECONDS);
+      return out.lines().map(String::strip).anyMatch(Long.toString(pid)::equals);
+    } catch (IOException | RuntimeException e) {
+      return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
   private void explainExit(Process p) {
     Thread reading = logReader;
     if (reading != null) {
@@ -271,7 +507,7 @@ final class Session {
     if (status != 0) {
       abnormal = true;
       // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
-      List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
+      List<String> hs = serve.beam ? beamHsErr() : Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
       for (String l : hs) logLine(l);
       String reason = Crash.hsErrReason(hs);
       if (reason != null) reason = "crashed: " + reason;
@@ -281,11 +517,29 @@ final class Session {
     stop(why);
   }
 
-  /** After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does. */
-  static void endJvm(long pid) {
-    if (pid <= 0) return;
+  /**
+   * Whether this PID is an apksim JVM that launched this APK: its scratch's launch.info, which Main writes before any app
+   * code runs, names it. A PID read from an instance's output is the app's to forge.
+   */
+  static boolean launched(Serve serve, long pid, Path apk) {
+    try {
+      Path info = serve.state.resolve("tmp").resolve(Long.toString(pid)).resolve("launch.info");
+      if (!Files.isRegularFile(info, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+      List<String> lines = Files.readAllLines(info);
+      return !lines.isEmpty() && lines.get(0).equals("apk=" + apk.toAbsolutePath())
+          && ProcessHandle.of(pid).flatMap(h -> h.info().command()).map(c -> c.contains("java")).orElse(false);
+    } catch (IOException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does; only one that
+   * {@link #launched} this APK.
+   */
+  static void endJvm(Serve serve, long pid, Path apk) {
+    if (pid <= 0 || !launched(serve, pid, apk)) return;
     ProcessHandle.of(pid).ifPresent(h -> {
-      if (!h.info().command().map(c -> c.contains("java")).orElse(false)) return;
       try {
         h.onExit().get(5, TimeUnit.SECONDS);
       } catch (Exception e) {
@@ -319,7 +573,7 @@ final class Session {
         m = CONTROL_PORT.matcher(line);
         if (m.find()) port.complete(Integer.parseInt(m.group(1)));
         m = DATA_SLOT.matcher(line);
-        if (m.find()) {
+        if (m.find() && dataDir == null) {  // the first only: later lines may be the app's own output
           dataDir = Path.of(m.group(1));
           pid = Long.parseLong(m.group(2));
         }
@@ -370,6 +624,15 @@ final class Session {
         if (firstFrameMillis < 0) {
           firstFrameMillis = System.currentTimeMillis() - started;
           ws.sendText("p first frame after " + firstFrameMillis + " ms");
+          // A beamed instance starts no standby itself (it would inherit this one's sandbox): the agent does.
+          if (serve.beam) Thread.ofVirtual().name("beam-standby").start(() -> {
+            try {
+              Thread.sleep(1000);  // as an instance does: not while the app is starting
+            } catch (InterruptedException e) {
+              return;
+            }
+            serve.warmStandby();
+          });
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
         boolean askKey = false;
@@ -533,7 +796,20 @@ final class Session {
       send("stats", this::onStats);
       return;
     }
+    if (text.equals("handoff") && serve.allowBeam && !serve.beam) {
+      // Phase 5: the tab moves this session to its Mac with the app's data. Only this session's own socket asks.
+      Thread.ofVirtual().name("serve-handoff-" + id).start(this::handoff);
+      return;
+    }
+    if (serve.beam && (text.equals("keep on") || text.equals("keep off"))) {
+      // The agent's own, never passed to the instance; only this session's tab reaches this.
+      keep = text.equals("keep on");
+      logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
+      ws.sendText("k " + (keep ? "on" : "off"));
+      return;
+    }
     String cmd = check(text);
+    if (cmd == null && serve.beam) cmd = checkBeam(text);
     if (cmd == null && text.strip().startsWith("device ")) {
       // A size serve names (--device-size) or the app's own default: the name is checked, never passed on as given.
       String name = text.strip().substring(7);
@@ -543,14 +819,17 @@ final class Session {
       ws.sendText("r refused: " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       return;
     }
-    lastInput = System.currentTimeMillis();
+    // The tab's pace and its visibility are not someone using it.
+    if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
+    trackSetting(cmd);
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
       wire = "device " + deviceSpec(device);
     }
     String shown = cmd;
-    boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ");
+    boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
+        || cmd.startsWith("vsync ") || cmd.startsWith("maxfps ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
   }
 
@@ -565,6 +844,15 @@ final class Session {
     if (t.matches("wheel " + NUM + " " + NUM + " " + NUM)) return t;
     if (t.matches("key [A-Z0-9_]{1,24}( [1-9])?( (ctrl|shift|alt|meta)){0,4}")) return t;
     if (t.matches("back|home|resume")) return t;
+    // The tab's display pace (SimWindow.remoteVsync): only how this tab's instance times its frames.
+    if (t.matches("vsync [0-9]{4,5} -?[0-9]{1,5}")) {
+      // The instance's own limits (SimWindow.remoteVsync): it is not answered, so what it would refuse is refused here.
+      String[] v = t.split(" ");
+      int period = Integer.parseInt(v[1]), shift = Integer.parseInt(v[2]);
+      return period >= 4000 && period <= 50000 && Math.abs(shift) <= period ? t : null;
+    }
+    // A frame rate cap: the page asks for 1 while it is hidden (it shows nothing) and 120 when it is back.
+    if (t.matches("maxfps ([1-9]|[1-9][0-9]|1[01][0-9]|120)")) return t;
     if (t.matches("rotate (left|right|portrait|landscape)")) return t;
     if (t.matches("appearance (dark|light|toggle)")) return t;
     if (t.matches("device (" + String.join("|", DEVICES) + ")")) return t;
@@ -577,6 +865,38 @@ final class Session {
       String s = t.substring(5).replaceAll("[\\p{Cntrl}\\s]+", " ").strip();
       return s.isEmpty() ? null : "type " + s;
     }
+    return null;
+  }
+
+  /** The settings a kept session records (BeamStore.Leaving): as the tab last set them, not as it started. */
+  private void trackSetting(String cmd) {
+    if (cmd.startsWith("appearance ")) {
+      String v = cmd.substring(11);
+      if (v.equals("toggle")) v = "dark".equals(options.get("appearance")) ? "light" : "dark";
+      options.put("appearance", v);
+    } else if (cmd.startsWith("locale ")) {
+      options.put("locale", cmd.substring(7));
+    } else if (cmd.startsWith("fontscale ")) {
+      options.put("fontscale", cmd.substring(10));
+    }
+  }
+
+  /**
+   * What only a tab of `apksim beam` may send besides {@link #check} (docs/beam.md, phase 3): the display sized to its
+   * stage (`device WxH@D`, dp and density, 160-4096 dp a side and at most 4096 px, as --device-size takes), the Mac
+   * window shown or hidden ("Show in Simulator"). The instance is the visitor's own: a size costs their memory, not a
+   * server's.
+   */
+  static String checkBeam(String text) {
+    String t = text.strip();
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("device (\\d{3,4})x(\\d{3,4})@(\\d(?:\\.\\d{1,3})?)").matcher(t);
+    if (m.matches()) {
+      int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
+      double d = Double.parseDouble(m.group(3));
+      if (w < 160 || h < 160 || w > 4096 || h > 4096 || d < 0.75 || d > 4 || w * d > 4096 || h * d > 4096) return null;
+      return t;
+    }
+    if (t.matches("window (front|hide)")) return t;
     return null;
   }
 
@@ -755,15 +1075,16 @@ final class Session {
         p.destroy();
         if (!p.waitFor(3, TimeUnit.SECONDS)) p.destroyForcibly();
       }
-      // A warm launch runs in the standby's JVM, outside our child's process tree: make sure it has gone too.
-      if (pid > 0) {
-        ProcessHandle.of(pid).ifPresent(h -> {
-          if (h.info().command().map(c -> c.contains("java")).orElse(false)) {
-            try {
-              h.onExit().get(5, TimeUnit.SECONDS);
-            } catch (Exception e) {
-              h.destroyForcibly();
-            }
+      // A warm launch runs in the standby's JVM, outside our child's process tree: make sure it has gone too. That
+      // JVM as the kernel knows it (the control port's listener), else the one the instance's output named if its own
+      // launch.info says it launched this APK: the output alone is the app's to write, and could name any process.
+      long jvm = instancePid > 0 ? instancePid : pid;
+      if (jvm > 0 && (jvm == instancePid || launched(serve, jvm, app.path()))) {
+        ProcessHandle.of(jvm).ifPresent(h -> {
+          try {
+            h.onExit().get(5, TimeUnit.SECONDS);
+          } catch (Exception e) {
+            h.destroyForcibly();
           }
         });
       }
@@ -782,11 +1103,179 @@ final class Session {
         Thread.currentThread().interrupt();
       }
     }
+    if (serve.beam) beamCaches();
     eraseData();
   }
 
+  /**
+   * A beamed instance's caches (`STATE/beam/out/<pid>`, BeamSandbox) into its build's cache: only that build's, so what
+   * an app wrote there can reach no other app. Translated classes as regular files named as the cache names them, never
+   * a link; the APK cache entry of this build's file as a whole (a link in it stays a link: the next instance's sandbox
+   * reads nothing through it, and the agent never follows one). The out folder goes either way.
+   */
+  /** The PID of the process listening on this loopback port (lsof, the kernel's answer), or -1. */
+  static long listenerPid(int port) {
+    try {
+      Process l = new ProcessBuilder("lsof", "-nP", "-iTCP:" + port, "-sTCP:LISTEN", "-t").redirectErrorStream(true).start();
+      String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+      l.waitFor(5, TimeUnit.SECONDS);
+      return out.matches("\\d{1,10}") ? Long.parseLong(out) : -1;  // one listener, or none known
+    } catch (IOException | RuntimeException e) {
+      return -1;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return -1;
+    }
+  }
+
+  /**
+   * A beamed JVM's crash report (`-XX:ErrorFile` in its scratch, the only place it may write): first renamed into the
+   * agent's own folder (a link moves as a link), then read only if it is a regular file, so the app cannot have the
+   * agent read another file through a link and show its comment lines to the page.
+   */
+  private List<String> beamHsErr() {
+    long bp = instancePid;
+    if (bp <= 0) return List.of();
+    Path src = serve.state.resolve("tmp").resolve(Long.toString(bp)).resolve("hs_err_pid" + bp + ".log");
+    Path dir = serve.state.resolve("beam/import").resolve("crash-" + bp + "-" + Long.toHexString(System.nanoTime()));
+    try {
+      if (!Files.exists(src, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return List.of();
+      Files.createDirectories(dir);
+      Path f = dir.resolve(src.getFileName().toString());
+      Files.move(src, f, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      List<String> hs = Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? Crash.takeHsErr(dir, bp) : List.of();
+      BeamStore.deleteTree(dir);
+      return hs;
+    } catch (IOException | RuntimeException e) {
+      BeamStore.deleteTree(dir);
+      return List.of("[hs_err] unreadable: " + e.getMessage());
+    }
+  }
+
+  /** {@link #listenerPid} of the instance's control port, else -1 (then a beamed one's caches are not kept). */
+  private volatile long instancePid = -1;
+
+  private static final Object BEAM_CACHE_SWAP = new Object();
+
+  private void beamCaches() {
+    keepBeamCaches(serve, instancePid, app.path(), this::logLine);
+  }
+
+  /**
+   * As {@link #beamCaches} for any beamed JVM that has exited (a session's, a cache warm-up's): its out folder's caches
+   * into the build's cache, for the next launch of that build.
+   */
+  static void keepBeamCaches(Serve serve, long pid, Path apk, java.util.function.Consumer<String> log) {
+    if (pid <= 0) {
+      log.accept("[beam] the instance's process was not known: its caches are not kept");
+      return;
+    }
+    Path given = serve.state.resolve("beam/out").resolve(Long.toString(pid));
+    String build = serve.catalog.buildHash(apk);
+    // Out of the instance's reach first: renamed into the agent's own folder, which no beamed instance may write (a
+    // child process the app left running could otherwise swap a folder for a link while this reads it), then used only
+    // if what arrived is a real folder. Renaming a link moves the link, never what it names.
+    Path out = serve.state.resolve("beam/import").resolve(Long.toString(pid) + "-" + Long.toHexString(System.nanoTime()));
+    try {
+      if (!Files.exists(given, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+      Files.createDirectories(out.getParent());
+      Files.move(given, out, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      // A move keeps its time, which the sweep reads (it removes what an ended agent left an hour ago): now, so a
+      // session that ran for hours is not swept while this reads it. A link stays untouched (NOFOLLOW below).
+      if (Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        Files.setLastModifiedTime(out, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+      }
+    } catch (IOException | RuntimeException e) {
+      log.accept("[beam] could not take the instance's caches: " + e);
+      return;
+    }
+    if (!Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      try {
+        Files.deleteIfExists(out);
+      } catch (IOException e) {
+        // the sweep's
+      }
+      return;
+    }
+    try {
+      Path apkCache = out.resolve("apk-cache");
+      if (build != null && Files.isDirectory(apkCache, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        try (var entries = Files.newDirectoryStream(apkCache)) {
+          for (Path e : entries) {
+            if (!e.getFileName().toString().matches(build + "\\.apk-[0-9a-f]{16}") || !Files.isDirectory(e, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+            // Swapped in by renames, not emptied and refilled: another session of this build starting meanwhile
+            // clones `apk` (BeamSandbox.seedApkCache) and would have found it half deleted or empty.
+            Path into = serve.beamCache(build).resolve("apk");
+            String tag = Long.toHexString(System.nanoTime());
+            Path staged = into.resolveSibling("apk.new-" + tag);
+            Path old = into.resolveSibling("apk.old-" + tag);
+            Files.createDirectories(staged);
+            Files.move(e, staged.resolve(e.getFileName().toString()));
+            boolean had;
+            synchronized (BEAM_CACHE_SWAP) {  // two sessions of one build ending together
+              had = Files.exists(into, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+              if (had) Files.move(into, old, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+              Files.move(staged, into, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            }
+            if (had) BeamStore.deleteTree(old);
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      log.accept("[beam] could not keep the APK cache entry: " + e);
+    }
+    try {
+      Path classes = out.resolve("classes");
+      if (build != null && Files.isDirectory(classes, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        Path into = serve.beamCache(build).resolve("classes");
+        try (var runtimes = Files.newDirectoryStream(classes)) {
+          for (Path rt : runtimes) {
+            if (!Files.isDirectory(rt, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !rt.getFileName().toString().matches("[0-9a-zA-Z-]{1,80}")) continue;
+            Path dest = into.resolve(rt.getFileName().toString());
+            Files.createDirectories(dest);
+            int moved = 0;
+            try (var files = Files.newDirectoryStream(rt)) {
+              for (Path f : files) {
+                String n = f.getFileName().toString();
+                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes)")) continue;
+                Files.move(f, dest.resolve(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                moved++;
+              }
+            }
+            if (moved > 0) log.accept("[beam] kept " + moved + " translated class files for the next launch of this build");
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      log.accept("[beam] could not keep translated classes: " + e);
+    }
+    SlotPack.deleteTree(out);  // never through a link
+  }
+
   private void eraseData() {
-    if (dataDir != null) eraseSlot(serve, dataDir, this::logLine);
+    eraseUnusedSeed();
+    if (dataDir == null) return;
+    if (serve.beam && keep) {
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch(),
+          deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
+          options.get("permissions"), site));
+      if (id != null) {
+        logLine("[beam] kept on this Mac as " + id + " (apksim beam run " + id + ")");
+        System.err.printf("[beam] session %s kept as %s: %s from %s%n", this.id, id, app.name(), site);
+        return;
+      }
+      logLine("[beam] could not keep the data: erased");
+    }
+    eraseSlot(serve, dataDir, this::logLine);
+  }
+
+  /**
+   * A moved session's slot (phase 5) the instance did not take: the agent unpacks into the package the pack names,
+   * which it cannot check against the build's (no manifest reader here), so a pack naming another package (or an
+   * instance that never started) leaves its slot unused. It goes with the session, as the slot it ran in would.
+   */
+  private void eraseUnusedSeed() {
+    SlotPack.dropSeed(serve.state, seedSlot, dataDir == null ? null : dataDir.toAbsolutePath().normalize(), this::logLine);
   }
 
   /**
@@ -795,9 +1284,10 @@ final class Session {
    */
   static void eraseSlot(Serve serve, Path dataDir, Consumer<String> logLine) {
     Path dir = dataDir.toAbsolutePath().normalize();
-    // Only a slot of serve's own (serve-N, under the state folder's app data).
+    // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
+    String slotName = dir.getFileName().toString();
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !dir.getFileName().toString().startsWith("serve-")) return;
+        || !(slotName.startsWith(serve.home + "-") || slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;
@@ -807,18 +1297,11 @@ final class Session {
         l = null;  // another session's cleanup in this process holds it
       }
       if (l == null) return;  // another instance took the slot already (with --fresh), or is erasing it
-      try (Stream<Path> all = Files.walk(dir)) {
-        for (Path p : all.filter(p -> !p.equals(dir) && !p.equals(lockFile)).sorted(Comparator.reverseOrder()).toList()) {
-          Files.deleteIfExists(p);
-        }
-      }
+      // Through folder handles, never a link at any level (SlotPack.emptyTree): the instance may have left a process
+      // writing there, which could swap a folder for a link between a walk and a delete by path.
+      SlotPack.emptyTree(dir, java.util.Set.of(".lock"));
       // And what the slot kept of the device beside it (SlotDevice: its /sdcard and Settings values).
-      Path device = dir.resolveSibling(dir.getFileName() + ".device");
-      if (Files.isDirectory(device)) {
-        try (Stream<Path> all = Files.walk(device)) {
-          for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
-        }
-      }
+      SlotPack.deleteTree(dir.resolveSibling(dir.getFileName() + ".device"));
       l.release();
     } catch (IOException | RuntimeException e) {
       logLine.accept("[serve] could not erase " + dir + ": " + e);

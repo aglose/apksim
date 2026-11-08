@@ -420,6 +420,20 @@ def main():
     s.ws.send("shot /tmp/x.png")
     s.pump(0.5)
     check(any(t.startswith("r refused") for t in s.texts), "a command outside the allowed set is refused")
+    # The page's display pace (docs/beam.md "Phase 1b"): taken without a reply, and the instance then paces to it.
+    texts = len(s.texts)
+    s.ws.send("vsync 8333 -1200")
+    s.pump(0.5)
+    # Only an answer to it counts: the server's stats come every 2 s whatever is sent.
+    check(not any(t.startswith(("r vsync", "r refused: vsync")) for t in s.texts[texts:]), "the page's vsync pace is accepted and not answered")
+    s.ws.send("vsync 8333 -1200 x")
+    s.pump(0.5)
+    check(any(t.startswith("r refused: vsync") for t in s.texts[texts:]), "a malformed vsync is refused")
+    texts = len(s.texts)
+    s.ws.send("vsync 3000 0")
+    s.ws.send("vsync 8333 9000")
+    s.pump(0.5)
+    check(sum(t.startswith("r refused: vsync") for t in s.texts[texts:]) == 2, "a vsync out of the instance's range is refused")
 
     # The test app's FAB counts taps: each tap changes the screen.
     taps = []

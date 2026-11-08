@@ -17,9 +17,25 @@ final class Axml {
 
   private Axml() {}
 
+  /**
+   * Bounded by its input, which may be a site's (beam's agent reads a build's package with it, outside any sandbox):
+   * every length and offset is checked against the bytes there before anything is allocated, and what the strings
+   * and the output may add up to is capped relative to the input's size (a real manifest stores each string once; a
+   * crafted one could point a million entries, or attributes, at one long string). Throws IllegalArgumentException
+   * for anything past those bounds.
+   */
   static String decode(byte[] data) {
+    return decode(data, Integer.MAX_VALUE);
+  }
+
+  /** As {@link #decode(byte[])}, stopping after `maxTags` start tags (1: the manifest element alone). */
+  static String decode(byte[] data, int maxTags) {
+    int tags = 0;
     ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
     b.position(8);
+    long[] budget = {2L * data.length + 65_536};  // chars all strings together may decode to
+    // The manifest element alone (maxTags 1) is a few hundred characters in a real APK.
+    long outLimit = maxTags == Integer.MAX_VALUE ? 16L * data.length + (1 << 20) : 1 << 20;
     List<String> strings = new ArrayList<>();
     StringBuilder out = new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     boolean first = true;
@@ -27,15 +43,16 @@ final class Axml {
       int start = b.position();
       int type = b.getShort(start) & 0xffff;
       int size = b.getInt(start + 4);
-      if (size <= 0) break;
+      if (size < 8) break;  // a chunk is at least its header: a smaller size would step through the bytes one by one
+      if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
       if (type == CHUNK_STRING_POOL) {
-        readStrings(b, start, strings);
+        readStrings(b, start, strings, budget);
       } else if (type == CHUNK_START_TAG) {
         int attrStart = start + 16 + (b.getShort(start + 16 + 8) & 0xffff);
         String name = str(strings, b.getInt(start + 16 + 4));
         int count = b.getShort(start + 16 + 12) & 0xffff;
         int attrSize = b.getShort(start + 16 + 10) & 0xffff;
-        out.append('<').append(name);
+        out.append('<').append(escape(name));  // names too: only the decoder writes '<' and '>' (see ApkCache.manifestPackage)
         if (first) {
           out.append(" xmlns:android=\"http://schemas.android.com/apk/res/android\"");
           first = false;
@@ -49,7 +66,7 @@ final class Axml {
           int value = b.getInt(a + 16);
           out.append(' ');
           if (ns != -1) out.append("android:");
-          out.append(attr).append("=\"");
+          out.append(escape(attr)).append("=\"");
           if (rawString != -1) {
             out.append(escape(str(strings, rawString)));
           } else if (dataType == TYPE_STRING) {
@@ -64,10 +81,13 @@ final class Axml {
             out.append(value);
           }
           out.append('"');
+          // Per attribute too: one tag may declare 65,535 of them, all on the same long string (a stride of 0).
+          if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
         }
         out.append(">\n");
+        if (++tags >= maxTags) break;
       } else if (type == CHUNK_END_TAG) {
-        out.append("</").append(str(strings, b.getInt(start + 16 + 4))).append(">\n");
+        out.append("</").append(escape(str(strings, b.getInt(start + 16 + 4)))).append(">\n");
       } else if (type != CHUNK_START_NS && type != 0x0101 && type != 0x0180 && type != 0x0104) {
         // Unknown chunks are skipped by size.
       }
@@ -84,13 +104,18 @@ final class Axml {
     return v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
   }
 
-  private static void readStrings(ByteBuffer b, int start, List<String> out) {
+  private static void readStrings(ByteBuffer b, int start, List<String> out, long[] budget) {
     int count = b.getInt(start + 8);
     int flags = b.getInt(start + 16);
     int stringsStart = b.getInt(start + 20);
     boolean utf8 = (flags & (1 << 8)) != 0;
+    if (count < 0 || (long) start + 28 + 4L * count > b.limit()) throw new IllegalArgumentException("bad string count " + count);
     for (int i = 0; i < count; i++) {
-      int p = start + stringsStart + b.getInt(start + 28 + i * 4);
+      long at = (long) start + stringsStart + b.getInt(start + 28 + i * 4);
+      if (at < 0 || at >= b.limit()) throw new IllegalArgumentException("bad string offset");
+      // Each string costs its object too, not only its chars: a pool of empty strings is not free.
+      if ((budget[0] -= 8) < 0) throw new IllegalArgumentException("too many strings");
+      int p = (int) at;
       if (utf8) {
         p += (b.get(p) & 0x80) != 0 ? 2 : 1; // UTF-16 length
         int len = b.get(p) & 0xff;
@@ -100,6 +125,7 @@ final class Axml {
         } else {
           p += 1;
         }
+        if ((long) p + len > b.limit() || (budget[0] -= len) < 0) throw new IllegalArgumentException("bad string length " + len);
         byte[] bytes = new byte[len];
         b.get(p, bytes);
         out.add(new String(bytes, StandardCharsets.UTF_8));
@@ -110,6 +136,7 @@ final class Axml {
           len = ((len & 0x7fff) << 16) | (b.getShort(p) & 0xffff);
           p += 2;
         }
+        if ((long) p + 2L * len > b.limit() || (budget[0] -= len) < 0) throw new IllegalArgumentException("bad string length " + len);
         char[] chars = new char[len];
         for (int c = 0; c < len; c++) chars[c] = (char) b.getShort(p + c * 2);
         out.add(new String(chars));

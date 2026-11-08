@@ -364,6 +364,31 @@ Each has its spec, checks and measurements in its own doc. Three are in 0.9.0; t
 
 Failure bundles (phase 5, PRs #38 and #43) shipped with them in 0.9.0.
 
+## Phase 7: beam a browser session to the visitor's Mac (planned and started 2026-11-07)
+
+docs/beam.md: when the visitor has apksim installed, the APK runs on their Mac (a loopback-only `apksim beam` agent)
+and streams into the same canvas in the page, so it stays where it was in the tab or iframe. Status: phase 0 (what
+an https page may reach on 127.0.0.1) done for Chrome 156; phase 1 (the agent, its trust prompt, `serve
+--allow-beam`, the page's "On this Mac") built and checked (`scripts/beam-check.py`, and in Chrome: 120 fps, 0.37 s
+to the first frame with the build cached, no server session). 1b, parity with a local launch, is done
+(`scripts/beam-parity.py`): the tab shows a new frame on as many display refreshes as the app's own window (99-100%
+on the Shader tab and slow drags, 88-91% on flings, both), after slow drags stopped drawing ~170 frames a second at
+120 Hz, the page started showing frames at its refresh and the instance paces to the tab's display; one refresh more
+latency than the window is left (the encode). 1c is
+built: builds deleted 2 days (`apksim beam config keep-days N`) after their last session, with their cache entry,
+and sessions erased unless the visitor keeps one ("Keep on this Mac", or `save-sessions on`), which `apksim beam
+run ID` reopens locally with its data (`beam-check.py`). Beamed apps run in a sandbox of their own (nothing of the
+Mac's but their slot, scratch and per-build caches). Phase 2 is built: the agent downloads a build it lacks from the
+page's server with a signed ticket, the tab relaying it only when that fails. Phase 3 is built: Fill mode sizes
+the display to the page at the browser's pixel ratio (one frame pixel per screen pixel), and the simulator window is a
+second view of it ("Show in Simulator"; its close button hides it while the tab is attached). Phase 4 is built: a
+running session moves between the server and the Mac with no blank frame (the old side streams until the new side's
+first frame, ~0.5 s). The launchd agent is built (`apksim beam install`, opt-in). Phase 5 is built: a move to the Mac takes the app's
+data (the app quits on the server, which packs its slot for the agent to download with a ticket). Page and agent now
+say the protocols they speak and use the newest both do; with none in common the menu says which side to update.
+Left: a Linux agent with a sandbox of its own (phase 6, scoped in docs/beam.md: it needs a Linux host install first),
+Safari and Firefox.
+
 ## Not planned
 
 - Rust rewrite of the native C-library shim: safety, not speed, and the shim is small. Revisit only if it keeps
