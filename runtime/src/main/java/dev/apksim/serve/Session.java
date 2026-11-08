@@ -440,6 +440,11 @@ final class Session {
           Path f = it.next();
           if (f.equals(root)) continue;
           if (++listed > SlotPack.MAX_LISTED) return "the app's data has more than " + SlotPack.MAX_LISTED + " entries to look at";
+          // As pack and unpack limit them, said now: a pack that fails after the app quit would lose its data.
+          Path rel = root.relativize(f);
+          boolean isDir = Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+          if (rel.getNameCount() - (isDir ? 0 : 1) > SlotPack.MAX_DEPTH) return "the app's data has folders over " + SlotPack.MAX_DEPTH + " deep";
+          if (rel.toString().length() + 8 > SlotPack.MAX_NAME) return "a name in the app's data is over " + SlotPack.MAX_NAME + " characters";
           if (Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             used[0]++;
           } else if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
