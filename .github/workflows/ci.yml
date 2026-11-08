@@ -52,7 +52,7 @@ jobs:
 
   linux-smoke:
     needs: changes
-    if: always()  # also when `changes` failed: then every step runs, as for a code change
+    if: ${{ !cancelled() }}  # also when `changes` failed: then every step runs, as for a code change
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -290,7 +290,7 @@ jobs:
   # either (platform-tools are x86_64), so the smoke test leaves out the adb device check that linux-smoke runs.
   testapp:
     needs: changes
-    if: always() && needs.changes.outputs.code != 'false'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -310,7 +310,7 @@ jobs:
 
   linux-smoke-arm64:
     needs: [changes, testapp]
-    if: always() && needs.changes.outputs.code != 'false' && needs.testapp.result == 'success'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' && needs.testapp.result == 'success' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -351,7 +351,7 @@ jobs:
   # sides are packaged releases trained the same way, and both launch the anchor's own test app.
   startup-gate:
     needs: changes
-    if: always() && needs.changes.outputs.code != 'false'
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: macos-15  # Apple Silicon: warm launches (standbys) and the startup cache are Mac-only
     timeout-minutes: 60
     env:
