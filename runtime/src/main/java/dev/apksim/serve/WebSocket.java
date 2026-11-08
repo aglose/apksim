@@ -106,6 +106,18 @@ final class WebSocket {
     return b;
   }
 
+  /**
+   * A ping (the browser answers with a pong by itself): sent every {@link Session#PING_MS} so proxies and load balancers
+   * that drop idle WebSockets see traffic both ways, with no help from the client.
+   */
+  void ping() {
+    try {
+      sendFrame(0x9, new byte[0], 0, 0);
+    } catch (IOException e) {
+      closed = true;
+    }
+  }
+
   void sendText(String text) {
     byte[] b = text.getBytes(StandardCharsets.UTF_8);
     try {

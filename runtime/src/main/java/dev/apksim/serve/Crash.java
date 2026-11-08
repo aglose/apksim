@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * ever leaves the machine, never a file as such.
  */
 final class Crash {
-  private static final Pattern EXCEPTION = Pattern.compile("((?:[a-z_]\\w*\\.)+(?:[A-Z][\\w$]*)?(?:Exception|Error|Throwable)\\b.*)");
+  private static final Pattern EXCEPTION = Pattern.compile("(?:^|\\s)((?:[A-Za-z_$][\\w$]*\\.)+[A-Za-z_$][\\w$]*(?::\\s.*)?)$");
   private static final Pattern EXIT = Pattern.compile("\\[apksim\\] exit (\\d+): (.*)");
   private static final Pattern SIGNAL = Pattern.compile("(SIG[A-Z]+) \\(0x[0-9a-f]+\\)");
   /** Longest line the tab or the log endpoint gets. */
@@ -27,6 +27,8 @@ final class Crash {
   static final int TAIL_BYTES = 64 * 1024;
   static final int TAIL_LINES = 200;
   static final int TAB_LINES = 50;
+  /** How much of a JVM crash report is read (its header is a few hundred bytes). */
+  static final int HEADER_BYTES = 16 * 1024;
 
   private Crash() {}
 
@@ -49,8 +51,10 @@ final class Crash {
       }
       if (fatalLeft > 0) {
         fatalLeft--;
+        // A qualified class name, then ": message" or the end of the line (any name: R8 renames `a.b`, and a class need not
+        // end in Exception); the header's own "Process: pkg, PID: n" and stack frames ("at ...") are not it.
         m = EXCEPTION.matcher(line);
-        if (fatal == null && m.find()) {
+        if (fatal == null && !line.contains("Process:") && !line.contains("\tat ") && m.find()) {
           fatal = clip(m.group(1).strip());
           fatalLeft = 0;
         }
@@ -104,8 +108,10 @@ final class Crash {
       if (pid <= 0) continue;
       Path f = dir.resolve("hs_err_pid" + pid + ".log");
       if (!Files.isRegularFile(f)) continue;
-      try {
-        for (String l : Files.readAllLines(f, StandardCharsets.ISO_8859_1)) {
+      try (java.io.InputStream in = Files.newInputStream(f)) {
+        // Only the header is read: the first 16 KB, never the thread stacks and memory map after it.
+        String head = new String(in.readNBytes(HEADER_BYTES), StandardCharsets.ISO_8859_1);
+        for (String l : head.split("\n", -1)) {
           if (l.startsWith("#")) {
             if (out.size() < 20 && !l.equals("#")) out.add("[hs_err] " + clip(l));
           } else if (!out.isEmpty()) {

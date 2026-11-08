@@ -56,15 +56,38 @@ final class ElfLoader {
   }
 
   static synchronized void load(String soName) {
+    // --skip-library NAME: the app's System.loadLibrary throws as for a library the APK lacks, which an SDK that
+    // treats its native part as optional catches (a debug-only one that cannot load here, say). Only the app's own
+    // loads: a library another one needs, or dlopens, still loads.
+    if (skipped(soName)) {
+      throw new UnsatisfiedLinkError(ABI_DIR + soName + " is skipped (--skip-library)");
+    }
     try {
       Path dir = extracted();
       Path so = dir.resolve(soName);
-      if (!Files.exists(so)) throw new UnsatisfiedLinkError("no " + soName + " for " + HostOs.apkAbi() + " in the APK");
+      if (!Files.exists(so)) throw new UnsatisfiedLinkError(ABI_DIR + soName + " is not in the APK");
+      // --move-shared-data, read at each load (a warm launch's properties arrive after the standby booted).
+      if (HostOs.MAC) nativeSetMoveSharedData(Boolean.getBoolean("apksim.moveSharedData"));
       long handle = nativeLoad(so.toString(), dir.toString());
       bindJavaSymbols(handle);
     } catch (IOException e) {
       throw new UnsatisfiedLinkError(e.toString());
     }
+  }
+
+  /**
+   * Whether -Dapksim.skipLibraries (comma-separated) names this library: as System.loadLibrary would ("foo" is
+   * libfoo.so, and "libfoo" liblibfoo.so), else as its file name, with or without ".so" (libfoo.so, libfoo).
+   */
+  static boolean skipped(String soName) {
+    String list = System.getProperty("apksim.skipLibraries", "");
+    if (list.isEmpty()) return false;
+    for (String n : list.split(",")) {
+      n = n.trim();
+      if (n.isEmpty()) continue;
+      if (soName.equals("lib" + n + ".so") || soName.equals(n) || soName.equals(n + ".so")) return true;
+    }
+    return false;
   }
 
   /** JNI's by-name lookup cannot see ELF symbols, so register each exported Java_* function explicitly. */
@@ -166,6 +189,9 @@ final class ElfLoader {
   private static native long nativeLoad(String path, String searchDir);
 
   private static native void nativeSetOffline(boolean offline);
+
+  /** macOS only (native/jnibridge.c): move writable data off pages it shares with code instead of refusing. */
+  private static native void nativeSetMoveSharedData(boolean on);
 
   private static native String nativeJavaSymbols(long handle);
 

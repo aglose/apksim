@@ -132,7 +132,7 @@ final class Session {
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
-    serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended, serve.launchTimeoutSeconds * 5);
+    serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
@@ -194,6 +194,19 @@ final class Session {
 
   /** The instance ended by itself: why, from its log (the whole of it is read first) and the JVM's crash report. */
   private void exited(Process p) {
+    // One handler at a time: the instance's onExit callback and a start that failed because it died both come here, and
+    // the second must wait for the first (which takes the crash report and ends the session) rather than race it.
+    synchronized (exitLock) {
+      if (exitHandled) return;
+      exitHandled = true;
+      explainExit(p);
+    }
+  }
+
+  private final Object exitLock = new Object();
+  private boolean exitHandled;
+
+  private void explainExit(Process p) {
     Thread reading = logReader;
     if (reading != null) {
       try {
@@ -436,6 +449,11 @@ final class Session {
    * Called every few seconds from serve's one timer: stats, and the idle timeout. The work runs on a thread of this
    * session's own, as anything written to a tab may block (a tab that stopped reading) and the timer serves them all.
    */
+  /** WebSocket pings at this interval (WebSocket#ping), under the 60-100 s idle limits of common proxies. */
+  static final long PING_MS = 20_000;
+  private volatile long lastPing = System.currentTimeMillis();
+  private final java.util.concurrent.atomic.AtomicBoolean pinging = new java.util.concurrent.atomic.AtomicBoolean();
+
   void tick() {
     if (ended) return;
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
@@ -445,6 +463,19 @@ final class Session {
         Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("stopped after " + serve.idleSeconds + " s without input"));
       }
       return;
+    }
+    // Pings on a thread of their own, one at a time: a tab that stopped reading blocks its write, and this runs on the
+    // timer every session shares.
+    long now = System.currentTimeMillis();
+    if (now - lastPing >= PING_MS && pinging.compareAndSet(false, true)) {
+      lastPing = now;
+      Thread.ofVirtual().name("serve-ping-" + id).start(() -> {
+        try {
+          ws.ping();
+        } finally {
+          pinging.set(false);
+        }
+      });
     }
     if (!ticking.compareAndSet(false, true)) return;
     Thread.ofVirtual().name("serve-tick-" + id).start(() -> {

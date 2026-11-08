@@ -809,7 +809,11 @@ as `?token=`, since a cross-site frame gets no SameSite cookie) and open its Web
 "headers", "options"}` downloads an APK in the background and answers its id at once (`GET /api/apps/ID` for its state;
 a session opened on it meanwhile shows `p downloading N%`); uploads may be chunked; catalog lines take ` -- ` launch
 options. Apps' launch options are limited to `Catalog.LAUNCH_OPTIONS` (activity, Build fields, settings...: nothing
-that touches files, ports or the JVM).
+that touches files, ports or the JVM). Behind a reverse proxy (issue 143): `--trust-proxy` takes X-Forwarded-Host/-Proto
+from a loopback peer as the browser's (Origin is checked against them, and the loopback Host check is skipped),
+`--public-origin URL` accepts that origin as serve's own and prints links with it, `--base-path /sim` serves everything
+under a prefix (a proxy that strips it works too); the page builds every URL relative to its folder, and the token
+redirect is relative. WebSocket pings go to every session every 20 s.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;
@@ -924,9 +928,13 @@ starts). A bundle follows the test's outcome: a different exception ending the t
 links them from the JUnit XML like bundles; `TestRecorder`, `scripts/record-check.py`, issue 132): Motion-JPEG
 `DIR/<class>/<method>-<hash>.avi` (`MjpegRecorder`, so headless and in the Linux image too), kept for a failed test (all
 with `all`) and deleted otherwise. A test run has no display loop, so `ShadowSimViewRootImpl` offers a frame after each
-window traversal and `TestRecorder` draws the screen as a bundle's screen.png (`Bundles.screenBitmap`) at most N (default
-15) times a second of real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a
-movie runs in real time (the simulated clock's idle jumps do not show), and a test that never shows a window has none.
+window traversal and `TestRecorder` draws the screen (`Bundles.screenBitmap`) at most N (default 15) times a second of
+real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
+(the simulated clock's idle jumps do not show), and a test that never shows a window has none. A recording must never
+fail a test (issue 144: a capture taken inside `ViewRootImpl.performDraw` through HWUI's `HardwareRenderingScreenshot`
+never returned from `nSyncAndDrawFrame`), so a frame is taken from a main-thread message posted after the window's draw
+(never inside one: `ShadowSimViewRootImpl.drawing`), drawn on a CPU canvas (no render thread; elevation shadows are not
+drawn, unlike a bundle's screen.png), and a frame slower than 2 s ends that test's movie with a line on stderr.
 Not done: H.264/mp4, `adb shell screenrecord`; a process that dies mid-test leaves an unfinished (index-less) movie.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
@@ -954,8 +962,16 @@ test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so 
 TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
 variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
 built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
-libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
-new case wrong, add it there; a device passes every check.
+libraries); the loader once skipped them and called an unrelocated initialiser. Beside it, `pagefixture.c` builds two
+libraries linked for 4 KB pages: `libpagefixture4k.so` (code and RELRO on one 16 KB page: must load and run on the
+Mac) and `libpagefixturenorelro.so` (`-z norelro`: code and writable data on one page: refused on the Mac by default,
+moved with `--move-shared-data`), checked by `NativeLoaderTest` too (the move tests run on the Mac only with the switch,
+whose property the test reads; the refusal test only without it) (relocated pointers, .data, .bss, an exported variable through the GOT and
+dlsym, a load (literal) and an adr in assembly, and through dl_iterate_phdr: .data's PT_LOAD, PT_DYNAMIC, DT_PLTGOT's
+live GOT and the symbol's st_value); `pagefixturefar.c` (moved data out of an adr's reach: an UnsatisfiedLinkError
+naming the entry on every try) and `pagefixturecxx.cpp` (a C++ exception caught with its personality slot moved).
+`build.sh` checks each still has code and data on one 16 KB page (issue 137). When the loader or a bionic
+shim gets a new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
 Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
 accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
@@ -1234,7 +1250,28 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   by design. Measure 120 fps on interactions or the test app's Shader tab.
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
   one-offs.
-- macOS forbids W+X pages, so 4 KB-aligned `.so` files (Flipper and its libc++) cannot load. 16 KB-aligned ones work.
+- macOS (16 KB pages) never makes a page writable and executable at once: `mprotect`/`mmap` refuse RWX, and MAP_JIT
+  memory is writable or executable per thread, never both (checked: a thread executing a MAP_JIT page it may write
+  faults). A 4 KB-aligned `.so` (an NDK before r27) has 16 KB pages holding the end of its code and what lld put
+  after it, RELRO first: `elfloader.c` makes such pages read+execute once relocated, which a device's linker does to
+  RELRO anyway. Writable `.data`/`.bss` on a page with code (`code_page_conflict`: a RELRO under ~12 KB, as in
+  libevent's in a Flipper debug build, or `-z norelro`) is refused by default before anything is mapped: a catchable
+  UnsatisfiedLinkError naming the APK entry, the rebuild (16 KB pages) and the switch. `--move-shared-data`
+  (`-Dapksim.moveSharedData`, warm launches too; ElfLoader hands it to the native side before each load) moves it
+  instead (`plan_data_move`): from its 4 KB page to the end of the image, the file's bytes are copied to pages after
+  the image, a multiple of 16 KB on, so low 12 bits stay; the code's adrp (and adr/ldr-literal, if still within 1 MB)
+  of moved pages is repointed (`patch_moved_refs`, executable sections only); relocations, symbol lookups and the
+  dynamic section go through `at()`; dl_iterate_phdr's view follows the move (program headers, the dynamic section's
+  address entries, moved symbols' st_value, then read as they are: `symbols_moved`); .eh_frame's PC-relative
+  personality and LSDA pointers and each LSDA's type-table entries (typed catches) are repointed (`move_eh_frame`,
+  `move_lsda`). What cannot be repointed (code after the moved data, an adr/ldr out of reach, an unwind pointer it
+  cannot rewrite) refuses the library; a failed load gives its range back. A line on stderr names each moved library.
+  Opt-in only because references with no relocation and no recognisable instruction cannot all be found: clang's
+  relative lookup tables (offsets from a table in .rodata to globals), other link-time offsets in data, address
+  differences folded into immediates, a one-past-the-end pointer at the moved boundary, data words in code that look
+  like adrp. Each review of the move found another class. `--skip-library NAME` makes the app's
+  `System.loadLibrary(NAME)` throw without trying (`ElfLoader.skipped`; not DT_NEEDED or dlopen). Every loader error
+  names the library's APK entry (`lib/arm64-v8a/NAME.so`) (issue 137).
 - A `.so`'s code pages are mapped from the extracted file (`elfloader.c` `load_segment`), not copied, so pages nothing
   patches stay clean (a large app's WebRTC library: 6.1 of 10.9 MB). macOS refuses `mmap(PROT_EXEC)` of a file but
   allows `mprotect` to read+execute of a private file mapping; if refused, the range is copied as before. Never rewrite
@@ -1258,7 +1295,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - `testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk`: the main regression app.
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
-- An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
+- An app whose native libraries are 4 KB-aligned (a debug build with Flipper): libflipper and libc++_shared load, but
+  libevent_core/extra need `--move-shared-data`; without it Flipper's uncaught UnsatisfiedLinkError ends the app (exit 10).
 - `testapks/loader-fixture`: a native library of loader and bionic checks inside the test app (see "Instrumentation tests").
 
 ## Open work

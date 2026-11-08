@@ -693,7 +693,7 @@ public final class Bundles {
    * root through HWUI where Robolectric can (its HardwareRenderingScreenshot), else drawn in software.
    */
   private static void screen(Path file) throws Exception {
-    Bitmap out = screenBitmap();
+    Bitmap out = screenBitmap(false);
     try (FileOutputStream f = new FileOutputStream(file.toFile())) {
       out.compress(Bitmap.CompressFormat.PNG, 100, f);
     } finally {
@@ -701,8 +701,12 @@ public final class Bundles {
     }
   }
 
-  /** The screen as {@link #screen} draws it: a new bitmap the caller recycles. Main thread; throws when no window shows. */
-  static Bitmap screenBitmap() throws Exception {
+  /**
+   * The screen as {@link #screen} draws it: a new bitmap the caller recycles. Main thread; throws when no window shows.
+   * `software`: every root drawn on a CPU canvas, never through HWUI's render thread ({@link TestRecorder}: a movie
+   * frame must not be able to wait on it, issue 144); elevation shadows are then not drawn.
+   */
+  static Bitmap screenBitmap(boolean software) throws Exception {
     List<Win> wins = visibleWindows();
     if (wins.isEmpty()) throw new IllegalStateException("no visible windows");
     Point size = displaySize();
@@ -716,7 +720,8 @@ public final class Bundles {
       for (Win w : wins) {
         Bitmap one = Bitmap.createBitmap(w.view.getWidth(), w.view.getHeight(), Bitmap.Config.ARGB_8888);
         try {
-          drawRoot(w.view, one);
+          if (software) w.view.draw(new Canvas(one));
+          else drawRoot(w.view, one);
           w.view.getLocationOnScreen(at);
           canvas.drawBitmap(one, at[0], at[1], null);
         } finally {

@@ -43,6 +43,11 @@ typedef struct Module {
   int tls_key_ready;
   // arm64 Linux only: the page this module's code sees as its thread pointer (see patch_thread_pointer).
   uintptr_t tp;
+  // macOS only: writable data moved off a 16 KB page it shared with code (elfloader.c, plan_data_move): what the
+  // file puts at [moved_lo, moved_hi) lives moved_by bytes further on.
+  uintptr_t moved_lo, moved_hi;
+  uintptr_t moved_by;
+  int symbols_moved;  // the dynamic symbols' values were moved too: they are addresses as they are
 } Module;
 
 // Bounds of the address range all loaded ELF code lives in; read by the JNI bridge's assembly.
@@ -50,6 +55,9 @@ extern uintptr_t elf_arena_lo, elf_arena_hi;
 
 Module *elf_load(const char *path, char *err, size_t errlen);
 void elf_set_search_dir(const char *dir);
+#ifdef __APPLE__
+void elf_set_move_shared_data(int on);  // --move-shared-data
+#endif
 Module *elf_modules(void);
 Module *elf_loaded(const char *basename);
 Module *elf_module_for(const void *addr);

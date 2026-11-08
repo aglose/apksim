@@ -14,7 +14,7 @@ This page is the spec, then how it is built, then what was measured.
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]... [--warm auto|on|off]
-             [--core-dumps]
+             [--core-dumps] [--trust-proxy] [--public-origin URL] [--base-path /PATH]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -108,9 +108,35 @@ the cache itself:
   libraries, keyed by the APK's content). Uploads under `STATE/serve/uploads` are lost on a restart without a volume
   there too, and their ids stop working; mount `/opt/apksim/work/serve` as well if uploaded builds must outlive the
   container.
-- On the Mac the standby serve starts gets the same no-core setting (`APKSIM_NO_CORE`), so sessions taken by it leave no core
-  file either (macOS writes none by default anyway).
+- On the Mac the standby serve starts, and the ones its instances start, carry the no-core setting in their name (`k`:
+  a standby's JVM fixes its flags at its start), so a session is only handed to a standby started with it, never to an
+  ordinary launch's (which may allow cores); with none ready it launches cold and starts one. macOS writes no core by
+  default anyway.
 - Not done: a warm standby for the most recently used APK on Linux.
+
+### Behind a reverse proxy
+
+A web app on its own hostname can forward a path to serve, so the browser's page and WebSocket stay on the app's
+origin. Proxies usually rewrite `Host` to the upstream, keep the browser's `Origin`, and add `X-Forwarded-Host` and
+`X-Forwarded-Proto`.
+
+- `--trust-proxy`: a request from a loopback peer (a proxy beside serve, in the same pod or host) that carries
+  `X-Forwarded-Host` is taken as addressed to that host. Its `Origin` is checked against `X-Forwarded-Proto://X-Forwarded-Host`
+  (the first value of each, for a chain of proxies), and the loopback `Host` check (DNS rebinding) does not apply to
+  it, and an `Origin` matching only serve's upstream `Host` is refused. The headers are ignored from any other peer, so
+  a client cannot claim them. Serve itself then listens on loopback. It needs `--token`: any loopback connection is
+  taken for the proxy, so without one a DNS-rebinding page could pass as it.
+- `--public-origin URL` (e.g. `https://app.example.com`): the origin browsers reach serve at. It is accepted as serve's
+  own for WebSockets and POSTs whatever the headers say, its host passes the loopback `Host` check (a proxy that keeps
+  `Host`), and the link serve prints at startup uses it. The simpler choice when there is one public origin.
+- `--base-path /sim`: the page, `/ws` and `/api/*` are served under `/sim/` (`/sim` redirects there). A proxy that
+  strips the prefix itself works too, with or without the option. The path may not have `.` or `..` segments, nor be
+  one of serve's own (`/ws`, `/api`, `/api/...`): behind a stripping proxy those requests would look prefixed. The page builds every URL relative to its own
+  folder, the token link's redirect is relative, and "Copy link" uses the page's own address, so links keep the
+  proxy's origin and prefix.
+- Keepalive: serve sends a WebSocket ping every 20 s to every session (the browser answers by itself), so proxies and
+  load balancers that drop idle WebSockets (often after 60-100 s) keep it. A client may also send `t <its time>` at
+  any time as a keepalive of its own: serve answers it with its clock and nothing else.
 
 ### Launch options per app
 
@@ -269,7 +295,8 @@ acknowledgements, the same commands) with the test app: it checks the token, a c
 command, the upload limits, then taps the FAB, drags, scrolls, types, switches tabs, turns on dark mode and rotates,
 checking that frames follow each, and that closing the tab ends the session. It also checks `/api/health` without the
 token, a chunked upload, and that URL adds with a disallowed launch option or a non-http URL are refused; with
-`--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; with
+`--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; URL may
+include a path (`http://host:port/sim` for `--base-path` or a proxy's prefix); with
 `--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. It prints the
 numbers below.
 `scripts/ci-smoke.sh` runs it against the Linux image with a token on a non-loopback bind, as CI does.

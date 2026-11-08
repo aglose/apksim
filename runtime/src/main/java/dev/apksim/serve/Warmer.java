@@ -158,12 +158,16 @@ final class Warmer {
   private void run(Job j, Process p, java.util.concurrent.atomic.AtomicReference<Path> slot, long t0) throws Exception {
     List<String> last = new ArrayList<>();
     Crash.Reason reason = new Crash.Reason();
+    long[] jvmPid = {-1};
     Thread reader = Thread.ofVirtual().name("serve-warm-log").start(() -> {
       try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
         for (String line; (line = r.readLine()) != null; ) {
           reason.line(line);
           Matcher ds = DATA_SLOT.matcher(line);
-          if (ds.find()) slot.set(Path.of(ds.group(1)));
+          if (ds.find()) {
+            slot.set(Path.of(ds.group(1)));
+            jvmPid[0] = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
+          }
           Matcher m = PROGRESS.matcher(line);
           if (m.find()) j.progress = "translating classes: " + m.group(1);
           synchronized (last) {
@@ -183,7 +187,7 @@ final class Warmer {
       throw new IOException(closed ? "the server is stopping" : "no first frame after " + limit + " s");
     }
     reader.join(2000);
-    List<String> hs = Crash.takeHsErr(serve.logs, p.pid());
+    List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), jvmPid[0]);
     if (p.exitValue() != 0) {
       String why = Crash.hsErrReason(hs);
       if (why == null) why = reason.text();
@@ -195,9 +199,10 @@ final class Warmer {
 
   /**
    * Before a session launches an app: waits while its APK is being warmed (progress to `progress`, at most once a
-   * second, for at most `maxSeconds`); takes it off the queue when it has not started, so the session warms it itself.
+   * second, until it ends: it always does, in at most 15 minutes, and a session's own idle limit or closed tab stops the
+   * wait too, so a launch never runs beside a warm-up still translating); takes it off the queue when it has not started, so the session warms it itself.
    */
-  void await(Catalog.App app, Path apk, Consumer<String> progress, BooleanSupplier stopped, int maxSeconds) {
+  void await(Catalog.App app, Path apk, Consumer<String> progress, BooleanSupplier stopped) {
     String key = apk.toString();
     Job j;
     synchronized (this) {
@@ -215,7 +220,7 @@ final class Warmer {
     }
     if (j.state != State.WARMING) return;
     String last = "";
-    for (int i = 0; i < maxSeconds && !stopped.getAsBoolean(); i++) {
+    while (!stopped.getAsBoolean()) {
       try {
         j.done.get(1, TimeUnit.SECONDS);
         return;
