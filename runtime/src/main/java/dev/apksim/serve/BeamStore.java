@@ -160,7 +160,24 @@ final class BeamStore {
     return true;
   }
 
-  /** The running agent's port, or -1 when none runs. */
+  /**
+   * What the lock file says while the agent holds it: its port, or "exiting" once a launchd agent has gone idle and is
+   * about to end ({@link #agentPort} then answers -2, so `apksim beam status` does not connect: a connection queued as
+   * it ends makes launchd start it again at once).
+   */
+  void agentState(String s) {
+    FileChannel ch = agentChannel;
+    if (ch == null) return;
+    try {
+      ch.truncate(0);
+      ch.write(java.nio.ByteBuffer.wrap((s + "\n").getBytes(StandardCharsets.UTF_8)), 0);
+      ch.force(false);
+    } catch (IOException e) {
+      // status may then connect once more: harmless
+    }
+  }
+
+  /** The running agent's port, -2 while it is exiting (see {@link #agentState}), or -1 when none runs. */
   int agentPort() {
     Path f = beamDir.resolve("agent.lock");
     if (!Files.exists(f)) return -1;
@@ -171,7 +188,7 @@ final class BeamStore {
         return -1;
       }
       String s = Files.readString(f).strip();
-      return s.matches("\\d{1,5}") ? Integer.parseInt(s) : 0;
+      return s.equals("exiting") ? -2 : s.matches("\\d{1,5}") ? Integer.parseInt(s) : 0;
     } catch (OverlappingFileLockException e) {
       return 0;
     } catch (IOException e) {
@@ -491,6 +508,7 @@ final class BeamStore {
 
   /** Deletes a folder and what is in it; a link is removed, never followed. Best effort. */
   static void deleteTree(Path dir) {
+    if (!Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;  // nothing there yet (a build's first cache entry)
     try (Stream<Path> all = Files.walk(dir)) {
       for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
     } catch (IOException | RuntimeException e) {
@@ -641,7 +659,8 @@ final class BeamStore {
             System.out.println("agent: holds its lock (port " + port + ") but does not answer: " + e.getMessage());
           }
         } else {
-          System.out.println(port == 0 ? "agent: a sweep is running" : "agent: not running (apksim beam starts it)");
+          System.out.println(port == 0 ? "agent: a sweep is running" : port == -2 ? "agent: exiting, idle (launchd starts it again for the next page)"
+              : "agent: not running (apksim beam starts it)");
         }
         Map<String, String> trust = new Beam(state).trust();
         List<String> always = trust.entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList();

@@ -731,8 +731,12 @@ First review:
   next request starts it again. `--real` installs the jobs with launchd itself (a test label, removed after) and runs
   the same (the test site allowed first: launchd's agent has none of the script's environment, so it would show its
   consent dialog): 13 checks passed in three runs in a row, the agent up in 0.1 s on a page's first request through
-  launchd. One earlier run's agent did not idle out within 40 s after its session (cause not found; the check now
-  prints the agent's and the session's logs when that happens).
+  launchd. An idle agent once seemed never to exit, and `bootout` then found it still up: `apksim beam status`
+  connects while the agent's lock is held, and a poll arriving as the agent ended queued on launchd's socket, which
+  started a new agent at once (the check polls every second, so it kept one up for good). Now an idle agent first
+  writes "exiting" into its lock file (status says so and does not connect), answers what is already on its way for
+  one more 5 s round, then ends; a page's request in that round calls the exit off. The idle exit takes 11-16 s for
+  an 8 s idle time, and the check waits until status says "not running", so the next request is a fresh start.
 
 ## Measurements to keep (as serve's table)
 

@@ -45,6 +45,10 @@ def agent_running():
     return "agent: running" in beam("status").stdout
 
 
+def agent_gone():  # not "exiting": an exiting agent still answers, and a page's request calls its exit off
+    return "agent: not running" in beam("status").stdout
+
+
 def answers(port):
     try:
         return bc.req(port, "GET", "/beam/hello", SITE)[0] == 200
@@ -136,7 +140,7 @@ def main():
         check(len(sess.frames) > 0, "the session streams")
         bc.close_session(sess)
         t1 = time.time()
-        exited = until(lambda: not agent_running(), 40)
+        exited = until(agent_gone, 40)
         check(exited, f"with no page for its idle time it exits ({time.time() - t1:.0f} s)")
         if not exited:
             import glob

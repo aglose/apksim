@@ -476,8 +476,20 @@ public final class Serve {
     }
     if (launchd) {
       // Nothing runs until a page asks: launchd starts the agent again on the next connection.
+      // In two steps: first the lock file says "exiting", so `apksim beam status` stops connecting, and requests already
+      // on their way are still answered for one more round; then it ends. A connection queued on launchd's socket as
+      // the agent ended would have launchd start it again at once (a status poll every second kept it up for good). A
+      // page's request meanwhile calls the exit off.
+      long[] exitingSince = {0};
       timer.scheduleWithFixedDelay(() -> {
-        if (sessions.isEmpty() && busy.get() == 0 && System.currentTimeMillis() - lastActivity > agentIdleSeconds * 1000L) {
+        boolean idle = sessions.isEmpty() && busy.get() == 0 && System.currentTimeMillis() - lastActivity > agentIdleSeconds * 1000L;
+        if (!idle) {
+          if (exitingSince[0] != 0) store.agentState(Integer.toString(port));
+          exitingSince[0] = 0;
+        } else if (exitingSince[0] == 0) {
+          exitingSince[0] = System.currentTimeMillis();
+          store.agentState("exiting");
+        } else {
           System.err.printf("[beam] idle for %d s: exiting (launchd starts it again for the next page)%n", agentIdleSeconds);
           System.exit(0);
         }
