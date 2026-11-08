@@ -109,7 +109,7 @@ final class SlotPack {
   private static void add(ZipOutputStream z, SecureDirectoryStream<Path> parent, String name, String prefix, int depth, long[] used,
       Progress progress)
       throws IOException {
-    if (depth > 64) throw new IOException("folders nested too deep to move");
+    if (depth > MAX_DEPTH) throw new IOException("folders nested too deep to move");  // as unpack counts them
     SecureDirectoryStream<Path> d;
     try {
       d = parent.newDirectoryStream(Path.of(name), LinkOption.NOFOLLOW_LINKS);
@@ -239,7 +239,10 @@ final class SlotPack {
           throw new IOException("unexpected entry " + name);
         }
         if (rel.isEmpty() || rel.startsWith("/") || rel.contains("\\") || rel.contains("\0")) throw new IOException("bad entry " + name);
-        if (name.length() > MAX_NAME || rel.split("/").length > MAX_DEPTH) throw new IOException("an entry too long or too deep: " + name.substring(0, Math.min(80, name.length())));
+        // Folders deep, as pack counts them: a folder entry is its own components, a file's are its containing
+        // folders (pack takes a file inside 64 nested folders).
+        int folders = rel.split("/").length - (folder ? 0 : 1);
+        if (name.length() > MAX_NAME || folders > MAX_DEPTH) throw new IOException("an entry too long or too deep: " + name.substring(0, Math.min(80, name.length())));
         Path to = root.resolve(rel).normalize();
         if (!to.startsWith(root) || to.equals(root)) throw new IOException("entry outside its folder: " + name);
         for (String part : rel.split("/")) {
