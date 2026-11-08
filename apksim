@@ -71,11 +71,13 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   ARGS=(--standby "$SOCK")
   [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
   [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)
+  # k: no core dumps (apksim serve): a flag of the standby's name, since its JVM fixes it at its start.
+  if [[ "$FLAGS" == *k* ]]; then export APKSIM_NO_CORE=1; else unset APKSIM_NO_CORE; fi
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
 fi
 if [[ "${1:-}" == --stop-standbys ]]; then
   # This folder's standbys (they also quit after an hour unused, or when work/apksim.jar or work/app.aot change).
-  for FLAGS in "" n s ns; do
+  for FLAGS in "" n s ns k nk sk nsk; do
     SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
     [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
     rm -f "$SOCK" "$SOCK.pid"
@@ -248,7 +250,7 @@ if [[ -n "${BUNDLES:-}" ]]; then
 fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
-FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}"
+FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}"
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
 WARM_OK=""
@@ -393,7 +395,11 @@ elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
 fi
 # A small young generation keeps GC pauses inside a frame: fewer objects live long enough to be copied
 # (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
-exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" \
+# apksim serve sets APKSIM_NO_CORE: a crashed instance (a large app is gigabytes) writes its hs_err report but no core file.
+NOCORE=()
+# The core-size limit too: a native abort (libc abort() from an app's library) never reaches HotSpot's crash handling.
+if [[ -n "${APKSIM_NO_CORE:-}" ]]; then NOCORE=(-XX:-CreateCoredumpOnCrash); ulimit -c 0 2>/dev/null || true; fi
+exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \

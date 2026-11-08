@@ -14,7 +14,8 @@ This page is the spec, then how it is built, then what was measured.
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-             [--allow-origin ORIGIN]... [--trust-proxy] [--public-origin URL] [--base-path /PATH]
+             [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--trust-proxy]
+             [--public-origin URL] [--base-path /PATH]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -38,6 +39,12 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - `--codec auto|jpeg` (default `auto`): `auto` gives a tab H.264 when it asks and the instance has an encoder;
   `jpeg` always streams JPEG.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
+- `--warm auto|on|off` (default `auto`): warm each APK's cache in the background (below). `auto` is on for Linux,
+  where there is no warm standby, and off on the Mac, where a launch is already fast and a warm-up would take the
+  standby a session wants.
+- `--core-dumps`: let a crashed instance write a core file. Off by default (instances run with
+  `-XX:-CreateCoredumpOnCrash`, set through `APKSIM_NO_CORE=1`, which the launcher reads): a large app's core is
+  gigabytes and a few crashes fill a volume. The JVM's crash report is kept in any case, as below.
 - `--allow-origin ORIGIN` (repeatable, e.g. `https://dashboard.example.com`): pages on that origin may embed serve's
   page in a frame and open its WebSockets and POSTs (see "Embedding"). Without it, nothing may frame the page.
 
@@ -60,6 +67,56 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
+
+### When a session ends badly
+
+- The tab gets `x the app exited (status N)` followed, when it can be found, by why: the first exception line of a
+  `FATAL EXCEPTION` the instance logged (`uncaught exception java.lang.IllegalStateException: ...`), the signal and
+  problematic frame of a JVM crash (`crashed: SIGILL (0x4) in [libz.so+0x1234] deflateInit2_+0x10`, from the
+  `hs_err_pid<N>.log` header), or the instance's own `exit N: REASON` / last `[apksim]` message (an `--activity` the
+  manifest lacks). An instance that dies while starting is explained the same way.
+- Before that `x` message, an instance that died (or could not start) sends its last 50 log lines as `r log: LINE`
+  messages, which serve's page shows in its log under the screen. A tab that left, idled out or ended the session
+  normally gets none.
+- `GET /api/sessions/ID/log` (token required, like everything but health): the tail of that session's log as
+  `text/plain`, at most 200 lines and 64 KB, each line cut at 400 characters and control characters replaced. `ID` is
+  the session's id (the `i` message, the `id` in `/api/status`), which only its tab and whoever the tab tells know.
+  Logs are kept in `STATE/serve/logs` for a week (swept hourly), so the reason stays readable after the session is gone;
+  `404` after that or for an id that never was. It is bounded log text only: no file is ever served, and the id is
+  matched as 12 hex digits and never used as a path.
+- The JVM writes `hs_err_pid<N>.log` to its working directory, which is the logs folder. When the instance has gone,
+  serve copies the report's `#` header (the signal, the frame, the JVM's own notes: no registers, memory map or
+  environment variables) into the session's log as `[hs_err]` lines and deletes the file. Leftover `core*` and
+  `hs_err_pid*` files an earlier server run left are removed at start and hourly once a day old.
+
+### Warming an APK's cache
+
+The first launch of a large APK translates its classes and extracts its libraries (a ~220 MB APK with ~13k classes took
+4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and Linux has no standby to hide that. So serve warms
+the cache itself:
+
+- Each APK stored by an upload or a URL add, and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
+  and warmed one at a time at low priority (`nice -n 10`): an ordinary headless launch (`--exit-after-first-frame`,
+  with the app's own launch options) that leaves the same caches a session finds. It does not count against `--max`
+  and takes a data slot (`serve-N`) while it runs, as a session does; the slot is erased when the warm-up ends, fails or
+  is cut short. Stopping serve ends a running warm-up (and erases its slot) and drops the queue. It stops with a failure after 15 minutes.
+- A session opened on an APK while it is warming waits for it instead of translating the same classes beside it, and its
+  tab shows `p warming the app's cache (translating classes: 4200)` meanwhile. One opened while the APK is still queued
+  takes it off the queue and warms it itself. A session that translates for itself (nothing warmed it) also sends
+  `p translating classes: N` every second or so, from the instance's log (the number of classes translated so far; the
+  total is not known before the app has run once, so it is a count, not a percentage).
+- `GET /api/apps/ID` has `"cache"`: `none`, `queued`, `warming`, `ready` or `failed` (and `"cacheDetail"`, the progress
+  or the reason), and `GET /api/status` lists `"apps"` with the same for the catalog's apps only (`--apps`; an upload's or URL add's id is an unlisted capability and never shown there). A failed warm-up
+  only means no head start (an uploaded file that is not a real APK fails it).
+- Keep the cache across container restarts with a volume at `/opt/apksim/work/cache` (translated classes and extracted
+  libraries, keyed by the APK's content). Uploads under `STATE/serve/uploads` are lost on a restart without a volume
+  there too, and their ids stop working; mount `/opt/apksim/work/serve` as well if uploaded builds must outlive the
+  container.
+- On the Mac the standby serve starts, and the ones its instances start, carry the no-core setting in their name (`k`:
+  a standby's JVM fixes its flags at its start), so a session is only handed to a standby started with it, never to an
+  ordinary launch's (which may allow cores); with none ready it launches cold and starts one. macOS writes no core by
+  default anyway.
+- Not done: a warm standby for the most recently used APK on Linux.
 
 ### Behind a reverse proxy
 
@@ -190,8 +247,8 @@ that no deep link names, data entered).
 
 ### Status
 
-- `GET /api/status`: limits, the standby (Mac), and each session: app, device, PID, resident memory (RSS), Java heap
-  in use, time to first frame, idle time, frames sent.
+- `GET /api/status`: limits, the standby (Mac), each APK's cache state (above), and each session: app, device, PID,
+  resident memory (RSS), Java heap in use, time to first frame, idle time, frames sent.
 - `GET /api/health`: needs no token, for HTTP readiness and liveness probes and load balancers. `200 ok`, or `503 not
   ready: REASON` when a session could not start: no launcher, `STATE/serve` or its `logs`, `uploads` or `downloads`
   folder not writable, or less
@@ -219,6 +276,8 @@ that no deep link names, data entered).
 - Uploads: at most `--max-upload` MB, must be a ZIP (an APK), stored by content hash under `STATE/serve/uploads`,
   reachable only through an unguessable id that is not listed anywhere (only the uploader's tab, and links it copies,
   know it). Uploads unused for a day are deleted.
+- The log endpoint serves what the instance printed (its own and the app's log lines), to token holders only, and
+  only that text; sessions' logs can hold whatever an app logs, so treat the token as access to them.
 - The app data slot is erased at the end of a session (above). Apps run in apksim's sandbox on the Mac
   (`sandbox-exec`: no writes outside apksim's state folder, no reads of credentials), and the container is the
   sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run

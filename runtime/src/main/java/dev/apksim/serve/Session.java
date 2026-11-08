@@ -37,6 +37,7 @@ final class Session {
   private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
   private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
+  private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
   private static final String NUM = "-?\\d{1,5}(\\.\\d{1,3})?";
   private static final int MAX_IN_FLIGHT = 2;
   static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv");
@@ -51,6 +52,12 @@ final class Session {
   /** Reads the instance's output, where the data slot is announced: cleanup waits for it to reach the end. */
   private volatile Thread logReader;
   private Writer log;
+  /** The last lines of the log, for the tab when the session ends badly. Guarded by this. */
+  private final ArrayDeque<String> tail = new ArrayDeque<>();
+  private final Crash.Reason crash = new Crash.Reason();
+  /** The session ended because the instance died or could not start, not because the tab left or it idled. */
+  private volatile boolean abnormal;
+  private long lastProgress;
   private Socket control;
   private PrintWriter controlOut;
   private Socket stream;
@@ -104,6 +111,17 @@ final class Session {
       }
     } catch (Exception e) {
       logLine("[serve] " + e);
+      abnormal = true;
+      Process dead;
+      synchronized (this) {
+        dead = process;
+      }
+      try {
+        // An instance that died before its control port (a crash while starting): say how, as for one that ran.
+        if (dead != null && !ended && dead.waitFor(3, TimeUnit.SECONDS)) exited(dead);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+      }
       if (!ended) stop("could not start: " + e.getMessage());
     }
     try {
@@ -120,6 +138,9 @@ final class Session {
     // Waits for an added app's download; a closed tab or the idle limit stops the wait (not the shared download).
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
+    // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
+    serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
+    if (ended) return;
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
@@ -141,7 +162,8 @@ final class Session {
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
-    pb.directory(serve.logs.toFile());
+    pb.directory(serve.logs.toFile());  // where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited()
+    serve.instanceEnvironment(pb);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
     // process it never saw.
     synchronized (this) {
@@ -151,7 +173,7 @@ final class Session {
     logReader = Thread.ofVirtual().name("serve-log-" + id).start(this::readLog);
     Process started = process;
     started.onExit().thenRun(() -> {
-      if (!ended) Thread.ofVirtual().start(() -> stop("the app exited (status " + started.exitValue() + ")"));
+      if (!ended) Thread.ofVirtual().start(() -> exited(started));
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
@@ -179,6 +201,62 @@ final class Session {
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
   }
 
+  /** The instance ended by itself: why, from its log (the whole of it is read first) and the JVM's crash report. */
+  private void exited(Process p) {
+    // One handler at a time: the instance's onExit callback and a start that failed because it died both come here, and
+    // the second must wait for the first (which takes the crash report and ends the session) rather than race it.
+    synchronized (exitLock) {
+      if (exitHandled) return;
+      exitHandled = true;
+      explainExit(p);
+    }
+  }
+
+  private final Object exitLock = new Object();
+  private boolean exitHandled;
+
+  private void explainExit(Process p) {
+    Thread reading = logReader;
+    if (reading != null) {
+      try {
+        reading.join(2000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    int status = p.exitValue();
+    String why = "the app exited (status " + status + ")";
+    if (status != 0) {
+      abnormal = true;
+      // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
+      List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
+      for (String l : hs) logLine(l);
+      String reason = Crash.hsErrReason(hs);
+      if (reason != null) reason = "crashed: " + reason;
+      else if (crash.text() != null) reason = crash.text();
+      if (reason != null) why += ": " + reason;
+    }
+    stop(why);
+  }
+
+  /** After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does. */
+  static void endJvm(long pid) {
+    if (pid <= 0) return;
+    ProcessHandle.of(pid).ifPresent(h -> {
+      if (!h.info().command().map(c -> c.contains("java")).orElse(false)) return;
+      try {
+        h.onExit().get(5, TimeUnit.SECONDS);
+      } catch (Exception e) {
+        h.destroyForcibly();
+        try {
+          h.onExit().get(3, TimeUnit.SECONDS);
+        } catch (Exception e2) {
+          // nothing more to do
+        }
+      }
+    });
+  }
+
   private static Socket connect(int port) throws IOException {
     Socket s = new Socket(InetAddress.getLoopbackAddress(), port);
     s.setTcpNoDelay(true);
@@ -189,7 +267,14 @@ final class Session {
     try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
       for (String line; (line = r.readLine()) != null; ) {
         logLine(line);
-        Matcher m = CONTROL_PORT.matcher(line);
+        crash.line(line);
+        Matcher m = TRANSLATED.matcher(line);
+        if (m.find() && firstFrameMillis < 0 && System.currentTimeMillis() - lastProgress > 1000) {
+          lastProgress = System.currentTimeMillis();
+          String what = "translating classes: " + m.group(1);
+          Thread.ofVirtual().start(() -> ws.sendText("p " + what));
+        }
+        m = CONTROL_PORT.matcher(line);
         if (m.find()) port.complete(Integer.parseInt(m.group(1)));
         m = DATA_SLOT.matcher(line);
         if (m.find()) {
@@ -215,6 +300,8 @@ final class Session {
       log.write(line);
       log.write('\n');
       log.flush();
+      tail.add(Crash.clip(line));
+      if (tail.size() > Crash.TAB_LINES) tail.poll();
     } catch (IOException e) {
       // nothing to do
     }
@@ -506,6 +593,14 @@ final class Session {
     // seconds, then drop the connection, which frees the write, the session's thread and its connection permit.
     if (why != null) {
       Thread notice = Thread.ofVirtual().start(() -> {
+        // An instance that died: its last log lines first, under the screen (bounded; the log is not a file the tab gets).
+        if (abnormal) {
+          List<String> lines;
+          synchronized (this) {
+            lines = new ArrayList<>(tail);
+          }
+          for (String l : lines) ws.sendText("r log: " + l);
+        }
         ws.sendText("x " + why);
         ws.close(why.length() > 60 ? why.substring(0, 60) : why);
       });
@@ -576,9 +671,15 @@ final class Session {
     eraseData();
   }
 
-  /** Empties the data slot the instance held, once nothing holds its lock (Storage.dataDir), within the state folder. */
   private void eraseData() {
-    if (dataDir == null) return;
+    if (dataDir != null) eraseSlot(serve, dataDir, this::logLine);
+  }
+
+  /**
+   * Empties a data slot an instance held (a session's, or a cache warm-up's), once nothing holds its lock
+   * (Storage.dataDir), within the state folder.
+   */
+  static void eraseSlot(Serve serve, Path dataDir, Consumer<String> logLine) {
     Path dir = dataDir.toAbsolutePath().normalize();
     // Only a slot of serve's own (serve-N, under the state folder's app data).
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
@@ -606,7 +707,7 @@ final class Session {
       }
       l.release();
     } catch (IOException | RuntimeException e) {
-      logLine("[serve] could not erase " + dir + ": " + e);
+      logLine.accept("[serve] could not erase " + dir + ": " + e);
     }
   }
 
