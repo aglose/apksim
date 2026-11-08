@@ -134,6 +134,10 @@ final class Warmer {
         "--exit-after-first-frame", "--control", "auto"));  // its control port: how its JVM is known (below)
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
+    // The agent's warm-up is a beamed instance (instanceEnvironment): it starts from its build's cache and leaves what it
+    // translated in its out folder, which goes into that cache once it has exited (below), as a session's does.
+    String build = serve.beam ? serve.catalog.buildHash(j.apk) : null;
+    if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
     cmd.addAll(j.app.launch());
     cmd.add(j.apk.toString());
     Files.createDirectories(serve.logs);
@@ -156,6 +160,8 @@ final class Warmer {
         p.waitFor(5, TimeUnit.SECONDS);
       }
       Session.endJvm(serve, j.jvmPid, j.apk);  // a warm launch: the standby's JVM may still be flushing after its client went
+      // A cold launch's JVM is the process started here (the launcher and nice exec into it).
+      if (serve.beam) Session.keepBeamCaches(serve, j.jvmPid > 0 ? j.jvmPid : p.pid(), j.apk, l -> System.err.println(l));
       // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
       if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
     }

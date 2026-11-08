@@ -386,6 +386,38 @@ def download_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def warm_checks(apksim, apk, sha, size):
+    """`apksim beam --warm on`: a build's warm-up is a beamed instance, and what it translated and extracted goes into
+    that build's cache, as a session's does, so the first session starts from it. A state folder of its own."""
+    state = tempfile.mkdtemp(prefix="beam-check-warm-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    gp, origin = free_port(), "http://warm.beam-check.test"
+    log = open(os.path.join(state, "agent.log"), "w")
+    g = subprocess.Popen([apksim, "beam", "--port", str(gp), "--warm", "on"], stdout=subprocess.DEVNULL, stderr=log, env=env)
+    classes = lambda: glob.glob(os.path.join(state, "beam", "cache", sha, "classes", "*", "*.pack"))
+    entry = lambda: glob.glob(os.path.join(state, "beam", "cache", sha, "apk", sha + ".apk-*"))
+    try:
+        check(wait_up(gp, "/beam/hello"), "warm: an agent with --warm on")
+        with open(apk, "rb") as f:
+            body = f.read()
+        grant, sent = begin(gp, origin, {"sha256": sha, "name": "beam-check.apk", "size": size, "options": []}, body)
+        check(sent and "token" in grant, "warm: the build is sent and stored")
+        warmed = until(lambda: "[serve] warmed" in open(log.name).read() or "warming" in open(log.name).read() and "failed" in open(log.name).read(), 300)
+        text = open(log.name).read()
+        check(warmed and "[serve] warmed" in text, "warm: the agent warms the build (" + next((l for l in text.splitlines() if "warm" in l and "fail" in l), "warmed") + ")")
+        check(until(lambda: bool(classes()) and bool(entry()), 10), f"warm: its translated classes and APK cache entry are the build's ({len(classes())} packs, {len(entry())} entries)")
+        out = os.path.join(state, "beam", "out")
+        check(until(lambda: not os.listdir(out) if os.path.isdir(out) else True, 10), "warm: its out folder is gone")
+    finally:
+        g.terminate()
+        try:
+            g.wait(15)
+        except subprocess.TimeoutExpired:
+            g.kill()
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def data_checks(apksim, apk, sha, size):
     """Phase 5 (docs/beam.md): a session's data moved from the server to this Mac, in a state folder, server and agent
     of their own. On the test app's slot screen the server's session writes a setting and an /sdcard file; its socket's
@@ -603,6 +635,7 @@ def main():
 
     sandbox_checks(apksim, a.apk)
     download_checks(apksim, a.apk, sha, size)
+    warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")
     check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")

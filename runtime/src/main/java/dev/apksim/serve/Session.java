@@ -1158,13 +1158,20 @@ final class Session {
   private static final Object BEAM_CACHE_SWAP = new Object();
 
   private void beamCaches() {
-    long pid = instancePid;
+    keepBeamCaches(serve, instancePid, app.path(), this::logLine);
+  }
+
+  /**
+   * As {@link #beamCaches} for any beamed JVM that has exited (a session's, a cache warm-up's): its out folder's caches
+   * into the build's cache, for the next launch of that build.
+   */
+  static void keepBeamCaches(Serve serve, long pid, Path apk, java.util.function.Consumer<String> log) {
     if (pid <= 0) {
-      logLine("[beam] the instance's process was not known: its caches are not kept");
+      log.accept("[beam] the instance's process was not known: its caches are not kept");
       return;
     }
     Path given = serve.state.resolve("beam/out").resolve(Long.toString(pid));
-    String build = serve.catalog.buildHash(app.path());
+    String build = serve.catalog.buildHash(apk);
     // Out of the instance's reach first: renamed into the agent's own folder, which no beamed instance may write (a
     // child process the app left running could otherwise swap a folder for a link while this reads it), then used only
     // if what arrived is a real folder. Renaming a link moves the link, never what it names.
@@ -1179,7 +1186,7 @@ final class Session {
         Files.setLastModifiedTime(out, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
       }
     } catch (IOException | RuntimeException e) {
-      logLine("[beam] could not take the instance's caches: " + e);
+      log.accept("[beam] could not take the instance's caches: " + e);
       return;
     }
     if (!Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
@@ -1215,7 +1222,7 @@ final class Session {
         }
       }
     } catch (IOException | RuntimeException e) {
-      logLine("[beam] could not keep the APK cache entry: " + e);
+      log.accept("[beam] could not keep the APK cache entry: " + e);
     }
     try {
       Path classes = out.resolve("classes");
@@ -1235,12 +1242,12 @@ final class Session {
                 moved++;
               }
             }
-            if (moved > 0) logLine("[beam] kept " + moved + " translated class files for the next launch of this build");
+            if (moved > 0) log.accept("[beam] kept " + moved + " translated class files for the next launch of this build");
           }
         }
       }
     } catch (IOException | RuntimeException e) {
-      logLine("[beam] could not keep translated classes: " + e);
+      log.accept("[beam] could not keep translated classes: " + e);
     }
     SlotPack.deleteTree(out);  // never through a link
   }

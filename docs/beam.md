@@ -597,6 +597,9 @@ anywhere, a manifest whose names repeated `<manifest` took the agent quadratic t
 decoded element is also capped at 1M characters now).
 A launch given `--jvm -Djava.net.preferIPv4Stack=...` launches cold: the JDK reads it once at JVM start, so a
 standby took the launch and ignored it. A beamed instance's `=true` is its standby's own, set as that JVM starts.
+An agent's cache warm-up (`apksim beam --warm on`) starts from its build's cache and leaves what it translated and
+extracted there once it has exited, as a session does (`Session.keepBeamCaches`): before, it ran in the beam sandbox,
+wrote only its out folder, and the first session translated everything again (`beam-check.py`'s warm checks).
 
 First review:
 
