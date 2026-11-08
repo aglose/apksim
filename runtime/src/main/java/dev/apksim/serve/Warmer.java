@@ -133,6 +133,7 @@ final class Warmer {
     cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", "serve",
         "--exit-after-first-frame"));
     if (serve.noNetwork) cmd.add("--no-network");
+    if (serve.moveSharedData) cmd.add("--move-shared-data");
     cmd.addAll(j.app.launch());
     cmd.add(j.apk.toString());
     Files.createDirectories(serve.logs);

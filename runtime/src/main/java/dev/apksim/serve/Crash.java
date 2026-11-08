@@ -40,8 +40,11 @@ final class Crash {
     private volatile String exit;
     private volatile String said;
     private volatile long hsErrPid = -1;
+    /** The native loader refused a library and named `--move-shared-data` (ElfLoader), which a tab cannot pass itself. */
+    private volatile boolean sharedData;
 
     void line(String line) {
+      if (line.contains("launch with --move-shared-data")) sharedData = true;
       Matcher m = HS_ERR.matcher(line);
       if (m.find()) hsErrPid = Long.parseLong(m.group(1));  // "An error report file ... is saved as: .../hs_err_pid123.log"
       m = EXIT.matcher(line);
@@ -72,9 +75,13 @@ final class Crash {
 
     /** "uncaught exception ...", "exit 137: ...", or null. */
     String text() {
-      if (fatal != null) return "uncaught exception " + fatal;
-      if (exit != null && !exit.endsWith(": ")) return exit;
-      return said;
+      String t = fatal != null ? "uncaught exception " + fatal : exit != null && !exit.endsWith(": ") ? exit : said;
+      // The loader's advice names a launch flag: say where a serve operator sets it instead.
+      if (t != null && sharedData) {
+        t += " (a 4 KB-aligned native library: the server's operator can add --move-shared-data to this app's launch"
+            + " options, or start serve with --move-shared-data)";
+      }
+      return t;
     }
   }
 

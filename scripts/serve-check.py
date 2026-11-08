@@ -305,6 +305,11 @@ def main():
     check(status == 400 and b"not allowed" in body, f"a URL add with a launch option outside the allowed set is refused ({status})")
     status, body = http(url, "/api/apps", token, data=json.dumps({"url": "file:///etc/passwd"}).encode())
     check(status == 400, f"a URL add that is not http(s) is refused ({status})")
+    # --move-shared-data only changes how the app's own libraries are mapped: an app may carry it (issue 161). The add
+    # answers at once; the download from this address then fails in the background, which is fine here.
+    status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/b.apk",
+                                                                  "options": ["--move-shared-data"]}).encode())
+    check(status == 200, f"a URL add with --move-shared-data is accepted ({status} {body[:80]!r})")
 
     # A custom device in a URL add is checked strictly (it comes from the API): sizes and names outside the rules are refused.
     for bad in ["1280x720@5", "1280x720@1.555", "100x100", "9000x720", "1280x720@4", "1280x720 -x", "x", "1280x720px", "$(id)", "phone2"]:
