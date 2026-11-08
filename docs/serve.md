@@ -369,7 +369,9 @@ under Rosetta), the client on the Mac through the published port.
   visibly blockier at 4 Mbps (`--bitrate` raises it).
 - VideoToolbox's encode is waited for on the encoder thread, ~2 ms longer than JPEG on a phone screen, which costs
   some frames while dragging (72 against 82 fps); on a tablet screen it is half JPEG's time.
-- Linux: OpenH264 in software (the image, `SCREEN_CONTENT_REAL_TIME`). Its numbers come from CI's run of the check
-  (`serve-check.log`); not measured on Colima here.
+- Linux: OpenH264 in software (the image, `SCREEN_CONTENT_REAL_TIME`), from CI's run of the check (x86-64 image on
+  a GitHub runner, 2026-11-08): dragging 3.1 MB/s, 75 fps with JPEG, against 0.07 MB/s, 51 fps with H.264; encode
+  17 ms median (JPEG 8 ms). The Shader tab runs on the CPU there (a few frames a second), so it says nothing about
+  the stream. The encode is single-threaded (`iMultipleThreadIdc` 1); not measured on Colima here.
 - The latency figures in the tab (and the check) compare the instance's clock with the tab's after matching them
   over the WebSocket (the quickest of a few round trips), so they hold across machines.
