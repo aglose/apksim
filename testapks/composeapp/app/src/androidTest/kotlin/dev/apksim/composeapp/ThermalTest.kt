@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.FixMethodOrder
 import org.junit.Test
@@ -33,6 +34,15 @@ class ThermalTest {
   private fun shell(command: String): String {
     val pfd = instrumentation.uiAutomation.executeShellCommand(command)
     return ParcelFileDescriptor.AutoCloseInputStream(pfd).use { it.readBytes().decodeToString() }
+  }
+
+  /** addThermalStatusListener with nulls (Kotlin's types forbid them) must throw NullPointerException. */
+  private fun assertNpe(executor: Executor?, listener: PowerManager.OnThermalStatusChangedListener?) {
+    val add = PowerManager::class.java.getMethod(
+      "addThermalStatusListener", Executor::class.java, PowerManager.OnThermalStatusChangedListener::class.java,
+    )
+    val e = assertThrows(java.lang.reflect.InvocationTargetException::class.java) { add.invoke(pm, executor, listener) }
+    assertTrue(e.cause.toString(), e.cause is NullPointerException)
   }
 
   @Test
@@ -106,8 +116,8 @@ class ThermalTest {
   fun e_nullArgumentsAreRejectedAndLeaveNothingBehind() {
     val heard = mutableListOf<Int>()
     val l = PowerManager.OnThermalStatusChangedListener { heard += it }
-    assertThrows(NullPointerException::class.java) { pm.addThermalStatusListener(inline, null as PowerManager.OnThermalStatusChangedListener?) }
-    assertThrows(NullPointerException::class.java) { pm.addThermalStatusListener(null as Executor?, l) }
+    assertNpe(inline, null)
+    assertNpe(null, l)
     assertEquals("a rejected call called nobody", emptyList<Int>(), heard)
     assumeTrue("on a device the callbacks come on a binder thread", onApksim)
     // Later registrations and updates still work.

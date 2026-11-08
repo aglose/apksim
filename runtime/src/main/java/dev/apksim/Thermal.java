@@ -37,46 +37,41 @@ public final class Thermal {
   private static void notify(Entry e, int s) {
     final int gen = generation;  // called under LOCK
     QUEUE.add(() -> {
-      try {
-        // A task an asynchronous executor still holds past a reset is dropped, not delivered to the last test's listener.
-        e.executor().execute(() -> {
-          synchronized (LOCK) {
-            if (gen != generation) return;
-          }
-          e.listener().onThermalStatusChanged(s);
-        });
-      } catch (RuntimeException x) {  // a rejecting executor must not keep the others from hearing
-        System.err.println("[apksim] thermal listener not notified: " + x);
-      }
+      // A task an asynchronous executor still holds past a reset is dropped, not delivered to the last test's listener.
+      e.executor().execute(() -> {
+        synchronized (LOCK) {
+          if (gen != generation) return;
+        }
+        e.listener().onThermalStatusChanged(s);
+      });
     });
   }
 
+  /**
+   * Runs the queue. A listener that throws (inline on its executor) or an executor that rejects is the app's failure, as
+   * on a device: the others are still told, then the first failure propagates to whoever called, as an exception from
+   * a callback on the caller's thread does (the main thread's reaches Crashes).
+   */
   private static void drain(int gen) {
-    boolean clean = false;
-    try {
-      while (true) {
-        Runnable r;
-        synchronized (LOCK) {
-          if (gen != generation) {  // reset while a callback ran: this drainer is retired
-            clean = true;
-            return;
-          }
-          r = QUEUE.poll();
-          if (r == null) {
-            draining = false;
-            clean = true;
-            return;
-          }
-        }
-        r.run();
-      }
-    } finally {
-      if (!clean) {  // an Error from a listener: give up ownership so later notifications still run, then propagate
-        synchronized (LOCK) {
+    Throwable failed = null;
+    while (true) {
+      Runnable r;
+      synchronized (LOCK) {
+        r = gen != generation ? null : QUEUE.poll();  // a reset while a callback ran retires this drainer
+        if (r == null) {
           if (gen == generation) draining = false;
+          break;
         }
+      }
+      try {
+        r.run();
+      } catch (Throwable t) {
+        if (failed == null) failed = t; else failed.addSuppressed(t);
       }
     }
+    if (failed instanceof RuntimeException re) throw re;
+    if (failed instanceof Error err) throw err;
+    if (failed != null) throw new RuntimeException(failed);
   }
 
   private static void startDrain() {
