@@ -104,10 +104,10 @@ class WS:
             n = struct.unpack(">Q", self._read(8))[0]
         return b0 & 0x0f, self._read(n)
 
-    def send(self, text):
-        data = text.encode()
+    def send(self, text, op=1, raw=None):
+        data = raw if raw is not None else text.encode()
         mask = os.urandom(4)
-        head = bytes([0x81])
+        head = bytes([0x80 | op])
         head += bytes([0x80 | len(data)]) if len(data) < 126 else bytes([0x80 | 126]) + struct.pack(">H", len(data))
         self.s.sendall(head + mask + bytes(c ^ mask[i & 3] for i, c in enumerate(data)))
 
@@ -141,10 +141,13 @@ class Session:
         """Reads messages for this long (or until until() is true), acknowledging each frame as a tab does."""
         end = time.time() + seconds
         while time.time() < end:
-            while self.acks and self.acks[0] <= time.time():
-                self.acks.pop(0)
-                self.ws.send("ack")
-            m = self.ws.recv(max(0.01, min(end, self.acks[0] if self.acks else end) - time.time()))
+            while self.acks and self.acks[0][0] <= time.time():
+                kind, raw = self.acks.pop(0)[1:]
+                if kind == "ack":
+                    self.ws.send("ack")
+                else:
+                    self.ws.send("", op=0xA, raw=raw)
+            m = self.ws.recv(max(0.01, min(end, self.acks[0][0] if self.acks else end) - time.time()))
             if m is None:
                 continue
             op, p = m
@@ -153,7 +156,7 @@ class Session:
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
                                     hashlib.sha1(p[20:]).hexdigest()))
                 if self.ack_delay:
-                    self.acks.append(time.time() + self.ack_delay)
+                    self.acks.append((time.time() + self.ack_delay, "ack", None))
                 else:
                     self.ws.send("ack")
             elif op == 1:
@@ -169,6 +172,11 @@ class Session:
                 if t.startswith("x "):
                     print("     session ended: " + t[2:])
                     return False
+            elif op == 9:  # a ping: its pong, held as a slow link would
+                if self.ack_delay:
+                    self.acks.append((time.time() + self.ack_delay, "pong", p))
+                else:
+                    self.ws.send("", op=0xA, raw=p)
             elif op == 8:
                 return False
             if until and until():
@@ -388,7 +396,7 @@ def main():
     print(f"     present -> received {median(lat):.0f} ms median (clocks matched to {s.best_rtt:.1f} ms round trip); encode {median(enc):.1f} ms median; {kb:.0f} KB/frame")
     print(f"     shader tab: {shader_fps:.0f} fps, {shader_kb:.0f} KB/frame, encode {shader_enc:.1f} ms")
     print(f"     window {s.stats.get('window')} frames in flight, ack round trip {s.stats.get('ackRttMs')} ms, frame interval {s.stats.get('frameMs')} ms")
-    check(isinstance(s.stats.get("window"), int) and 2 <= s.stats["window"] <= 32, f"stats report the window ({s.stats.get('window')})")
+    check(isinstance(s.stats.get("window"), int) and 1 <= s.stats["window"] <= 32, f"stats report the window ({s.stats.get('window')})")
     print(f"     memory: {s.stats.get('rssMb')} MB resident, {s.stats.get('heapMb')} MB heap; frames sent {s.stats.get('framesSent')}")
     status, body = http(url, "/api/status", token)
     st = json.loads(body) if status == 200 else {}

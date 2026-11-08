@@ -198,10 +198,11 @@ inside itself:
 - Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once drawn.
   Two frames in flight cap a stream at about 2 frames per round trip (~20 fps at 100 ms however fast the app renders),
   so the window is sized from what is measured: `clamp(ceil(rtt / frame_interval) + 1, 2, --in-flight)`, where `rtt` is
-  the quickest of the last 16 send-to-ack times (queueing and a slow tab only add) and `frame_interval` the smoothed gap
-  between the instance's frames. Past the first two frames a frame is sent only while the bytes in flight stay under
+  the quickest of the last 8 WebSocket ping round trips (serve pings every 0.5 s while frames flow; a browser's pong
+  does not wait for the page, so a tab slow to decode cannot inflate it) and `frame_interval` the smoothed gap between
+  the instance's frames, ignoring gaps over 250 ms (a still screen sends none). Past the first two frames a frame is sent only while the bytes in flight stay under
   1 MB, so a slow link sees current frames rather than a backlog. A slow tab or network sees fewer frames, never older
-  ones: frames that arrive meanwhile replace the waiting one. The `s` stats message has `window` (effective), `ackRttMs`
+  ones: frames that arrive meanwhile replace the waiting one. The `s` stats message has `window` (effective), `pingRttMs`, `ackRttMs`
   (-1 before the first ack; it includes the tab's decode and draw) and `frameMs`, so a client can tell whether the
   network or the app is the limit.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,

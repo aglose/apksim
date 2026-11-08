@@ -30,7 +30,7 @@ import java.util.stream.Stream;
  * One browser tab and the apksim instance it drives. The instance is an ordinary launch (`apksim --headless --fresh
  * --control auto ... APK`, taken by a warm standby on the Mac when one is ready); this reads its control port from its
  * stderr, opens two control connections to it on loopback (commands, pipelined, and a frame stream), and relays: frames
- * to the tab, a window in flight (two to eight, sized from the ack round trip and the frame interval, see {@link #window}; the tab
+ * to the tab, a window in flight (two to eight, sized from the ping round trip and the frame interval, see {@link #window}; the tab
  * acknowledges each one it draws, and newer frames replace the one waiting),
  * and the tab's input to the instance, only as the commands {@link #check} allows.
  */
@@ -86,7 +86,11 @@ final class Session {
   /** Recent ack round trips in ms (a ring of 16), and the smoothed interval between the instance's frames in ms. */
   private final double[] ackRtts = new double[16];
   private int ackCount;
-  private double frameIntervalMs = 1000;
+  /** Recent WebSocket ping round trips in ms (a ring of 8): the link alone, with no queue of frames to decode behind. */
+  private final double[] pingRtts = new double[8];
+  private int pingCount;
+  private long lastProbe;
+  private double frameIntervalMs = 100;
   private long lastFrameNanos;
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
@@ -95,6 +99,7 @@ final class Session {
     this.app = app;
     this.options = options;
     this.ws = ws;
+    ws.onPong = this::ponged;
     this.device = options.getOrDefault("device", "phone");
   }
 
@@ -332,7 +337,9 @@ final class Session {
         }
         synchronized (this) {
           long n = System.nanoTime();
-          if (lastFrameNanos != 0) frameIntervalMs += ((n - lastFrameNanos) / 1e6 - frameIntervalMs) * 0.1;
+          // Gaps over 250 ms are a still screen (unchanged images are not sent), not the app's frame rate.
+          double gap = (n - lastFrameNanos) / 1e6;
+          if (lastFrameNanos != 0 && gap <= 250) frameIntervalMs += (gap - frameIntervalMs) * 0.1;
           lastFrameNanos = n;
           waiting = frame;
           notifyAll();
@@ -355,6 +362,11 @@ final class Session {
           inFlightBytes += f.length;
           flying.add(new long[] {System.nanoTime(), f.length});
         }
+        long now = System.nanoTime();
+        if (now - lastProbe > 500_000_000L) {
+          lastProbe = now;
+          ws.ping(java.nio.ByteBuffer.allocate(8).putLong(now).array());
+        }
         ws.sendBinary(new byte[0], f, 0, f.length);
         framesSent++;
         bytesSent += f.length;
@@ -374,6 +386,23 @@ final class Session {
     notifyAll();
   }
 
+  /** The quickest of the recent ping round trips in ms, or -1 before the first. */
+  private synchronized double pingRttMs() {
+    int n = Math.min(pingCount, pingRtts.length);
+    if (n == 0) return -1;
+    double m = Double.MAX_VALUE;
+    for (int i = 0; i < n; i++) m = Math.min(m, pingRtts[i]);
+    return m;
+  }
+
+  private void ponged(long sentNanos) {
+    double ms = (System.nanoTime() - sentNanos) / 1e6;
+    synchronized (this) {
+      pingRtts[pingCount++ % pingRtts.length] = ms;
+      notifyAll();
+    }
+  }
+
   /** The quickest of the recent ack round trips in ms (queueing and a slow tab only add), or -1 before the first. */
   private synchronized double ackRttMs() {
     int n = Math.min(ackCount, ackRtts.length);
@@ -389,7 +418,9 @@ final class Session {
    */
   private synchronized int window() {
     int cap = serve.inFlightMax, lo = Math.min(MIN_IN_FLIGHT, cap);
-    double rtt = ackRttMs();
+    // The ping's round trip, not the acks': an ack waits behind the tab's decoding of the frames before it, so a tab
+    // limited by its decoder would grow its own window (and latency) without gaining frames.
+    double rtt = pingRttMs();
     if (rtt < 0) return lo;
     return (int) Math.max(lo, Math.min(cap, Math.ceil(rtt / Math.max(frameIntervalMs, 4)) + 1));
   }
@@ -559,7 +590,7 @@ final class Session {
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
         + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
-        + ",\"window\":" + window() + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + "}";
+        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + "}";
   }
 
   // ---------------------------------------------------------------- the end
