@@ -26,16 +26,53 @@ public final class Thermal {
 
   private record Entry(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {}
 
-  // Registration and changes go through one lock, and each hands its callback to the executor inside it, so a listener
-  // hears statuses in the order they were set and ends on the latest (an executor runs its tasks in the order given).
+  // Registration and changes queue their notifications under one lock, in the order they happen, and one drainer runs the
+  // queue outside it (an executor may run its task inline, or call back into add/remove): a listener hears statuses in
+  // the order they were set and ends on the latest. A listener already registered is ignored, as PowerManager does.
   private static final Object LOCK = new Object();
+  private static final java.util.ArrayDeque<Runnable> QUEUE = new java.util.ArrayDeque<>();
+  private static boolean draining;
+
+  private static void notify(Entry e, int s) {
+    QUEUE.add(() -> {
+      try {
+        e.executor().execute(() -> e.listener().onThermalStatusChanged(s));
+      } catch (RuntimeException x) {  // a rejecting executor must not keep the others from hearing
+        System.err.println("[apksim] thermal listener not notified: " + x);
+      }
+    });
+  }
+
+  private static void drain() {
+    while (true) {
+      Runnable r;
+      synchronized (LOCK) {
+        r = QUEUE.poll();
+        if (r == null) {
+          draining = false;
+          return;
+        }
+      }
+      r.run();
+    }
+  }
+
+  private static void startDrain() {
+    synchronized (LOCK) {
+      if (draining) return;  // the running drainer takes what was queued
+      draining = true;
+    }
+    drain();
+  }
 
   static void add(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {
     synchronized (LOCK) {
-      LISTENERS.add(new Entry(executor, listener));
-      int now = status;
-      executor.execute(() -> listener.onThermalStatusChanged(now));
+      for (Entry e : LISTENERS) if (e.listener() == listener) return;
+      Entry e = new Entry(executor, listener);
+      LISTENERS.add(e);
+      notify(e, status);
     }
+    startDrain();
   }
 
   static void remove(PowerManager.OnThermalStatusChangedListener listener) {
@@ -48,6 +85,7 @@ public final class Thermal {
   static void reset() {
     synchronized (LOCK) {
       LISTENERS.clear();
+      QUEUE.clear();
       status = PowerManager.THERMAL_STATUS_NONE;
     }
   }
@@ -67,11 +105,11 @@ public final class Thermal {
       if (NAMES[i].equals(v) || Integer.toString(i).equals(v)) s = i;
     }
     if (s < 0) return "error: usage: thermal [none|light|moderate|severe|critical|emergency|shutdown]";
-    final int now = s;
     synchronized (LOCK) {
       status = s;
-      for (Entry e : LISTENERS) e.executor().execute(() -> e.listener().onThermalStatusChanged(now));
+      for (Entry e : LISTENERS) notify(e, s);
     }
+    startDrain();
     return "thermal: " + NAMES[s];
   }
 
