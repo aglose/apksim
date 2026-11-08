@@ -107,6 +107,9 @@ def main():
     s.close()
     stand_in = None
     jobs = tempfile.mkdtemp(prefix="beam-launchd-jobs-") if not real else AGENTS
+    # The site allowed as a visitor's "Always Allow" would (the agent launchd starts has none of this script's
+    # environment, so it would show its consent dialog and wait).
+    beam("trust", "allow", SITE)
     try:
         r = beam("install", "--label", LABEL, "--port", str(port), "--agent-idle", "8", *([] if real else ["--dry-run", jobs]))
         check(r.returncode == 0, f"install ({r.stdout.strip()[:90]}{r.stderr.strip()[:200]})")
@@ -133,7 +136,13 @@ def main():
         check(len(sess.frames) > 0, "the session streams")
         bc.close_session(sess)
         t1 = time.time()
-        check(until(lambda: not agent_running(), 40), f"with no page for its idle time it exits ({time.time() - t1:.0f} s)")
+        exited = until(lambda: not agent_running(), 40)
+        check(exited, f"with no page for its idle time it exits ({time.time() - t1:.0f} s)")
+        if not exited:
+            import glob
+            for f in [os.path.join(STATE, "beam", "logs", "agent.log"), os.path.join(STATE, "agent.log")] + glob.glob(os.path.join(STATE, "beam", "logs", "*.log")):
+                if os.path.exists(f):
+                    print("     --", f, *open(f).read().splitlines()[-8:], sep="\n     ")
         t2 = time.time()
         check(until(lambda: answers(port), 30), f"and the next request starts it again ({time.time() - t2:.1f} s)")
         if stand_in:
@@ -144,7 +153,8 @@ def main():
             check(r.returncode == 0 and not os.path.exists(os.path.join(AGENTS, LABEL + ".plist"))
                   and not os.path.exists(os.path.join(AGENTS, LABEL + ".sweep.plist")), "uninstall removes both jobs")
             uid = str(os.getuid())
-            check(subprocess.run(["launchctl", "print", f"gui/{uid}/{LABEL}"], capture_output=True).returncode != 0, "launchd no longer has it")
+            check(until(lambda: subprocess.run(["launchctl", "print", f"gui/{uid}/{LABEL}"], capture_output=True).returncode != 0, 10),
+                  "launchd no longer has it")  # bootout finishes in the background
         else:
             stand_in.close() if stand_in else None
             shutil.rmtree(jobs, ignore_errors=True)

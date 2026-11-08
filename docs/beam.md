@@ -13,7 +13,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | Phase | State |
 |---|---|
 | 0 Browser feasibility | Done for Chrome 156 (works behind a one-time `loopback-network` prompt, no speed cost). Safari, Firefox not checked: beam is offered only in Chromium browsers |
-| 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`; the launchd agent (`apksim beam install`, see "The launchd agent"), checked with a stand-in for launchd, not yet installed with launchd itself |
+| 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`; the launchd agent (`apksim beam install`, see "The launchd agent"), checked with launchd itself |
 | 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
@@ -690,8 +690,11 @@ First review:
   socket-activated on its port with the socket handed over inetd's way; with the script standing in for launchd
   (holding the socket and starting `--launchd` when a connection waits): nothing runs until a page asks, the first
   request starts the agent in 0.1 s and is answered, a session streams, with no page for its idle time it exits, the
-  next request starts it again. `--real` installs the jobs with launchd itself (a test label, removed after); not run
-  here yet: installing a LaunchAgent on this Mac needs its owner's go-ahead.
+  next request starts it again. `--real` installs the jobs with launchd itself (a test label, removed after) and runs
+  the same (the test site allowed first: launchd's agent has none of the script's environment, so it would show its
+  consent dialog): 13 checks passed in three runs in a row, the agent up in 0.1 s on a page's first request through
+  launchd. One earlier run's agent did not idle out within 40 s after its session (cause not found; the check now
+  prints the agent's and the session's logs when that happens).
 
 ## Measurements to keep (as serve's table)
 
