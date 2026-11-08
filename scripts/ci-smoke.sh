@@ -284,4 +284,15 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
   --allow-origin https://dash.example | tee "$OUT/serve-check.log"
+# A slow link's window: acks and pongs held 200 ms against a second serve with a cap of 4 (the check looks at the
+# stats' window right after its drag: it must be above 2 and within the cap).
+SERVE2_NAME=apksim-serve-slow-$$ SERVE2_PORT=7403
+docker run -d --name "$SERVE2_NAME" --platform "$PLATFORM" -p "127.0.0.1:$SERVE2_PORT:8080" -v "$OUT:/work" "$IMAGE" \
+  serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --in-flight 4 >/dev/null
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker logs "$SERVE_NAME" > "$OUT/serve.log" 2>&1 || true; docker rm -f "$SERVE_NAME" >/dev/null 2>&1 || true
+  docker rm -f "$SERVE2_NAME" >/dev/null 2>&1 || true' EXIT
+for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE2_PORT/api/health" >/dev/null && break; sleep 1; done
+python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE2_PORT" --token "$OUT/serve.token" --ack-delay 200 --in-flight 4 \
+  | tee "$OUT/serve-check-slow.log"
 echo "smoke test passed"
