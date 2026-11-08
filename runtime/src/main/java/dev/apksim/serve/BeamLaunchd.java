@@ -63,7 +63,8 @@ final class BeamLaunchd {
     Files.createDirectories(logs);
     Files.createDirectories(dir);
     String env = System.getenv("APKSIM_HOME") == null ? ""
-        : "  <key>EnvironmentVariables</key><dict><key>APKSIM_HOME</key>" + str(System.getenv("APKSIM_HOME")) + "</dict>\n";
+        // The resolved folder, not the variable as given: launchd starts the jobs from another working directory.
+        : "  <key>EnvironmentVariables</key><dict><key>APKSIM_HOME</key>" + str(state.toAbsolutePath().normalize().toString()) + "</dict>\n";
     write(agent, plist(label, List.of(exe, "beam", "--launchd", "--port", Integer.toString(port), "--agent-idle", Integer.toString(idle)),
         "  <key>Sockets</key><dict><key>Listeners</key><dict>"
             + "<key>SockNodeName</key><string>127.0.0.1</string><key>SockServiceName</key>" + str(Integer.toString(port))

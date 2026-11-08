@@ -25,13 +25,14 @@ cask "apksim" do
   end
 
   # `apksim beam install` (opt-in) adds these: launchd starts the agent when a browser page asks (docs/beam.md).
-  uninstall launchctl: ["dev.apksim.beam", "dev.apksim.beam.sweep"]
+  # Their files go too: left behind, macOS would load them again at login and start a launcher that is gone.
+  uninstall launchctl: ["dev.apksim.beam", "dev.apksim.beam.sweep"],
+            delete:    [
+              "~/Library/LaunchAgents/dev.apksim.beam.plist",
+              "~/Library/LaunchAgents/dev.apksim.beam.sweep.plist",
+            ]
 
-  zap trash: [
-    "~/.apksim",
-    "~/Library/LaunchAgents/dev.apksim.beam.plist",
-    "~/Library/LaunchAgents/dev.apksim.beam.sweep.plist",
-  ]
+  zap trash: "~/.apksim"
 
   caveats <<~EOS
     The first launch builds a startup cache in ~/.apksim in the background (1-2 minutes, once per version);
