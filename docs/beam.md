@@ -8,6 +8,20 @@ simulator window when either is resized.
 
 This page is the plan: what "seamless" has to mean, the design, then phases with what finishes each.
 
+## Status (2026-11-07)
+
+| Phase | State |
+|---|---|
+| 0 Browser feasibility | Done for Chrome 156 (works behind a one-time `loopback-network` prompt, no speed cost). Safari, Firefox not checked: beam is offered only in Chromium browsers |
+| 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`. Left: the launchd agent (it runs in the foreground) |
+| 1b Parity with a local launch | Next: measure the tab against the app's own window, then close the gap (below) |
+| 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
+| 2 The agent downloads the APK itself | Not started (the tab relays it today) |
+| 3 Sizing, Show in Simulator | Not started |
+| 4 Moving a running session | Not started |
+| 5 The app's data moves with it | Not started (optional) |
+| 6 Polish, Linux agent | Not started |
+
 ## What seamless means (the acceptance checks)
 
 1. Same place: the app draws in the page's own canvas, in the tab, in the iframe of an embedding dashboard, at the
@@ -130,6 +144,50 @@ is in the browser.
      `local-network` alone does not). docs/serve.md's "Embedding" has to say so, and the embedded page shows "Run on
      this Mac" only when the query above does not answer `denied`.
 
+### What the Mac keeps, and for how long
+
+A beamed build and a beamed session are the visitor's to keep or not. By default nothing outlives the page for long;
+keeping a session to use later is the visitor's choice.
+
+- **Builds** (`STATE/beam/uploads/<sha256>.apk`, found by their hash): kept while any session of that build is open.
+  When its last session ends (the page is gone: tab closed, navigated away, Stop, the idle limit, a crash), the
+  build is marked deletable and the clock starts; it is deleted `keep-days` days later (default **2**, any number,
+  `0` for as soon as the session has ended). A session of the same build from any site meanwhile finds it by its
+  hash and stops the clock until that one ends too.
+- **What goes with a build**: its apksim cache entry, `STATE/cache/<sha256>.apk-<key>` (manifest, extracted `.so`
+  files, inflated DEX; only this build uses it, being named after the stored file), removed through `ApkCache`'s own
+  rules (moved to its trash under the global lock, never while a process holds its `in-use.lock`). Not the translated
+  class packs (`cache/classes/<runtime>/<dex crc>.pack`): they are shared by DEX content with any other launch of the
+  same build and keep their own rules.
+- **Sessions**: by default a session's data slot (`beam-N` and its `.device`: app data, /sdcard, Settings) is
+  erased when it ends, as now. Saving one is opt-in, two ways:
+  - per session, "Keep on this Mac" in the page while it runs there (a `keep on|off` message the agent's `Session`
+    takes for itself, never passed to the instance; only from the tab that owns the session);
+  - for every session, the agent's `save-sessions` setting.
+  A saved session's slot is renamed when its instance has exited, to `k<12 hex>-0` (and `.device`) beside it, a name
+  no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
+  appearance, locale, font scale, the site it came from, when, and the package (from the slot's folder).
+- **A saved session holds its build**: the build sweep keeps any build a saved session names, whatever its age, for
+  as long as the session is saved (`keep-saved-days` days after its last use, default: no limit), so it can be
+  recovered. A saved session whose build is gone anyway (deleted by hand, or the cache emptied) waits for that build:
+  beaming it again (same hash) brings it back, and `run` says so meanwhile.
+- **Recovering it locally**:
+  - `apksim beam saved`: each saved session's id, app, site, when, size, and whether its build is still there.
+  - `apksim beam run ID [launch options]`: opens it in apksim's own window as an ordinary local launch of the stored
+    build: `--data-slots k<id>` (its saved data, no `--fresh`), its launch options and device, `--no-autofill`.
+    What it does then is kept in the same slot.
+  - `apksim beam forget ID`: erases its data; its build then gets the ordinary `keep-days` hold from now.
+  - Later: reopening a saved session in the tab (`/beam/start {"saved": ID}` from the site it came from).
+- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]`, kept in
+  `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
+  are not the place); the same as flags on `apksim beam` for a run in the foreground.
+- **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
+  deletes at once). An agent that is not running deletes nothing: the LaunchAgent (phase 1) also runs `apksim beam
+  sweep` once a day (`StartInterval`).
+- **Not kept by default, and why**: a beamed build is another site's APK on the visitor's disk, and a saved session
+  can hold that app's sign-ins and data. So the default is to delete, and the "Keep on this Mac" control says what it
+  keeps.
+
 ### Sizing: one display, two views
 
 The instance's display size is the one truth. The tab and the Mac window are both views of it; each sends a size
@@ -183,8 +241,33 @@ the manual checks listed.
    navigation to the agent's own copy of the page, which loses embedding.
 1. **Agent and start-on-the-Mac.** Built 2026-11-07 (see "Phase 1 as built" below): `apksim beam`, the trust store
    and prompt, `serve --allow-beam`, the page's "On this Mac" choice, `scripts/beam-check.py`. Left from the plan: the
-   LaunchAgent with socket activation in the cask (the agent runs in the foreground for now), the live prompt seen
-   by a person, and instances with a hidden window instead of `--headless` (with "Show in Simulator", phase 3).
+   LaunchAgent with socket activation in the cask (the agent runs in the foreground for now), and instances with a hidden window instead of `--headless` (with "Show in Simulator", phase 3).
+1b. **Parity with a local launch (next).** The goal: once beamed, the app is as fast as `apksim app.apk` in its own
+   window. Already the same: the app's process (the same launcher and JVM, Metal, VideoToolbox, the Mac's memory: the
+   app never runs in the browser, whose tab holds only a video decoder and a canvas) and a warm start (0.37 s to the
+   first frame, against ~0.3 s for a warm launch). What differs is only how a frame reaches the screen:
+   - **Encode and decode**: each frame is H.264-encoded (~5.6 ms, VideoToolbox, waited for on the encoder thread),
+     sent over loopback and decoded in the tab: ~7 ms more from presented to on screen than the window's direct
+     IOSurface present, and 4 Mbps loses detail in fine full-screen motion.
+   - **Two clocks**: a headless instance paces on its own 120 Hz grid, the browser shows frames on the display's
+     vsync. The window's display pacing put a new frame on 98-99% of vsyncs where the grid got 69-100% (AGENTS.md,
+     vsync pacing); the tab has not been measured that way.
+   - **Drags**: serve measured 72 fps with H.264 against 82 with JPEG while dragging (the encode waited for); not yet
+     compared with the window under the same input.
+   Work, in order: (1) measure the tab against the window with the same scripted input (Shader tab, fling, drag,
+   typing): new frames per display vsync (the window's `frames`; the page counting new frames per
+   requestAnimationFrame), input to screen, CPU of instance, agent and browser, memory; (2) loopback bit rates
+   (20-50 Mbps) and quality; (3) the encode pipelined instead of waited for; (4) the instance paced by the browser's
+   vsync (the page sends its frame times, Host's grid locks to them as it locks to CADisplayLink). Done when the tab
+   is within a few percent of the window on each measure and input to screen within one frame (8 ms) of it.
+1c. **What the Mac keeps.** Built 2026-11-07 (see "Phase 1c as built"). The policy above: builds held `keep-days` (default 2) after their last session
+   ends and deleted with their cache entry; sessions erased unless saved ("Keep on this Mac", `save-sessions`);
+   saved sessions holding their build; `apksim beam saved|run|forget|config|sweep`. Done when `beam-check.py`
+   checks: a build kept while its session runs and deleted with its cache entry once `keep-days 0` passes after the
+   session ends (and not before, with a nonzero hold); a second session within the hold finding it by hash; a saved
+   session's slot renamed and listed; `run` reopening it with the data it left (the test app's `apksim://slot`
+   "Write" values); a build a saved session names surviving the sweep; `forget` erasing the data and starting the
+   build's hold; `config` values read at start.
 2. **APK transport (~3 days).** Tickets, `--allow-beam`, `GET /api/beam/apk`, the hash cache, `need-upload` and the
    tab's relay. Done when: the second visit transfers nothing; a server behind an auth proxy (a stand-in in
    `beam-check.py` that wants a cookie) beams through the tab; a wrong hash, an expired or altered ticket, and an app
@@ -256,13 +339,14 @@ waiting on the permission prompt (Chrome draws it, a script cannot see it).
 - **`apksim beam [--port N] [--max N]`** (launcher `beam)`, `Serve --beam`, `Beam.java`): serve in an agent mode on
   127.0.0.1 only (default port 47474, 2 sessions), with no page, catalog or token of its own (it refuses `--bind`,
   `--token`, `--apps` and the proxy options). State in `STATE/beam/` (`trust.json`, `uploads/`, `logs/`); instances in
-  data slots `beam-N`, erased when their session ends, `--headless --no-autofill` as serve's. Builds are kept 14 days
-  after their last use (serve's uploads: a day).
+  data slots `beam-N`, erased when their session ends unless kept (phase 1c), `--headless --no-autofill` as serve's. Builds were kept 14 days
+  after their last use (serve's uploads: a day); since 1c, `keep-days` after their last session.
   - `GET /beam/hello` → `{"apksim", "protocol": 1, "trusted"}`, readable by any origin.
   - `POST /beam/start {"sha256", "name", "size", "options"}` → `{"app", "token"}` when the agent has that build, else
     `{"need": "upload", "upload"}`. Options go through serve's launch option list. An origin not yet allowed gets the
-    prompt first (`osascript`'s dialog: Don't Allow / Allow Once / Always Allow, gives up after 2 minutes); "never"
-    and a "Don't Allow" from the last 10 minutes refuse without asking (403).
+    prompt first (`osascript`'s dialog, brought to the front: Don't Allow / Allow Once / Always Allow); "never" and a
+    "Don't Allow" from the last 10 minutes refuse without asking (403). No answer in 2 minutes refuses that start
+    only, so the page may ask again.
   - `POST /beam/upload?upload=GRANT` with the APK as the body: refused before reading it unless the grant is this
     origin's; an APK whose SHA-256 is not the one the start named is refused and not kept.
   - `GET /ws?app=ID&token=GRANT`: serve's session, protocol and all, for that grant only.
@@ -295,8 +379,39 @@ waiting on the permission prompt (Chrome draws it, a script cannot see it).
   agent with no server session, the Shader tab streamed at 119-120 fps, 7.2 ms from presented to on screen, H.264.
   Start to first frame: 0.76 s the first time (the 36 MB APK went through the tab), 0.37-0.38 s after (found by its
   hash, nothing sent). No console errors; Stop ended the agent's session.
-- **Not tried**: the prompt with a person answering it (the checks answer it through `APKSIM_BEAM_CONSENT`), a
-  cross-site embedded page, a server behind a token (the page's requests carry it as for everything else).
+- **The prompt, answered by the owner** (2026-11-07, a start from a new origin): the first try opened the dialog
+  behind the window in use and nobody saw it (2 minutes, refused, and logged as if refused: fixed by activating
+  `osascript` first and logging no answer apart). Then it came to the front, was answered "Always Allow" in 4 s,
+  the site was saved (`trust list`) and the start answered a session grant; the next start from that site took
+  21 ms with no prompt.
+- **Not tried**: a cross-site embedded page, a server behind a token (the page's requests carry it as for everything
+  else).
+
+## Phase 1c as built (2026-11-07)
+
+- **Builds** (`Catalog.sweepBuilds`, `BeamStore.sweep`): a build's file's mtime is when it was last started or stored,
+  and `uploads/<sha256>.released` holds when its last session ended (a start or an upload deletes it: the clock
+  stops). The sweep keeps a build a running session, an unexpired grant or a saved session names; any other goes
+  once `keep-days` have passed since its `.released` time, or, with none (started but never run: the grant expired),
+  since its last start plus 3 minutes, so a start's grant is never left without its build even with `keep-days 0`.
+  A deleted build's ids go with it, and its cache entry through `ApkCache.remove` (moved to the trash under the
+  global lock, kept while a process holds its `in-use.lock`; one left that way goes at a later sweep).
+- **When**: at the agent's start, hourly, after each `/beam/start` answered from the store, and as each session
+  ends (on its own thread, once its instance has gone and its slot is saved or erased).
+- **One agent per state folder**: the agent holds `STATE/beam/agent.lock` (its port inside) while it runs; a second
+  refuses to start, and `apksim beam sweep` (for launchd's daily run) does nothing while one runs.
+- **Saved sessions** (`BeamStore.save`): with keep on (the tab's `keep on|off`, answered `k on|off`; the `i` message
+  says `"keep"` on the agent only, which is how the page knows to show "Keep on this Mac"), the session's end renames
+  `beam-N` and `beam-N.device` to `k<12 hex>-0` under the slot's lock and writes `saved/<id>.json` (app, SHA-256,
+  package, device as launched, appearance, locale, font scale, permissions, site, launch options, saved, lastUsed). A
+  slot it cannot rename is erased as before. `run` checks the launch options against serve's list again (the record
+  is a file), launches `apksim --data-slots k<id> --no-autofill ...` with the extra options given, and notes lastUsed
+  before and after; a build that is gone says which site to run it from again.
+- **Settings**: `apksim beam config` writes `STATE/beam/config.json`, read at the agent's start (the agent's log
+  line `[beam] keeps: ...` says what it uses); `apksim beam --keep-days N --save-sessions on|off --keep-saved-days
+  N|never` override it for one run. `keep-days` takes fractions.
+- **Checked**: `scripts/beam-check.py APK` now runs in a state folder of its own (`APKSIM_HOME`, removed after), so
+  the Mac's own agent and its sites are never touched, and adds the 1c checks listed in its docstring.
 
 ## Measurements to keep (as serve's table)
 

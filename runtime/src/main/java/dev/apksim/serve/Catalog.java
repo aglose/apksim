@@ -351,6 +351,7 @@ final class Catalog {
     synchronized (uploadsLock) {
       if (!Files.isRegularFile(apk)) return null;
       Files.writeString(uploads.resolve(id + ".ref"), ref);
+      inUseAgain(sha256);
     }
     return new App(id, clean, apk, null, true, launch);
   }
@@ -448,6 +449,7 @@ final class Catalog {
       if (Files.exists(apk)) Files.delete(tmp);
       else Files.move(tmp, apk);
       Files.writeString(uploads.resolve(id + ".ref"), ref);
+      inUseAgain(sha);
     }
     return new App(id, clean, apk, null, true, launch);
   }
@@ -482,6 +484,106 @@ final class Catalog {
       throw new IOException("not an APK (not a ZIP file)");
     }
     return tmp;
+  }
+
+  // ---------------------------------------------------------------- apksim beam's builds (docs/beam.md)
+  //
+  // A build is `<sha256>.apk`. Its file's mtime is when it was last started or stored, and `<sha256>.released` (the
+  // time in ms) when its last session ended; a start or an upload deletes that file again (the clock stops).
+
+  /** Under uploadsLock: a start or an upload of this build. */
+  private void inUseAgain(String sha) throws IOException {
+    Path apk = uploads.resolve(sha + ".apk");
+    if (Files.exists(apk)) Files.setLastModifiedTime(apk, FileTime.fromMillis(System.currentTimeMillis()));
+    Files.deleteIfExists(uploads.resolve(sha + ".released"));
+  }
+
+  /** Whether this build is stored here. */
+  boolean hasBuild(String sha) {
+    return sha != null && sha.matches("[0-9a-f]{64}") && Files.isRegularFile(uploads.resolve(sha + ".apk"));
+  }
+
+  /** The stored build's file (it may not exist). */
+  Path buildFile(String sha) {
+    return uploads.resolve(sha + ".apk");
+  }
+
+  /** The SHA-256 a stored build's file is named by, or null for any other file. */
+  String buildHash(Path apk) {
+    if (apk == null || apk.getParent() == null || !apk.getParent().equals(uploads)) return null;
+    String n = apk.getFileName().toString();
+    return n.matches("[0-9a-f]{64}\\.apk") ? n.substring(0, 64) : null;
+  }
+
+  /** A session of this build ended, or a saved session naming it was forgotten: its hold starts now. */
+  void released(String sha) {
+    if (sha == null || !sha.matches("[0-9a-f]{64}")) return;
+    synchronized (uploadsLock) {
+      try {
+        if (Files.exists(uploads.resolve(sha + ".apk"))) {
+          Files.writeString(uploads.resolve(sha + ".released"), Long.toString(System.currentTimeMillis()));
+        }
+      } catch (IOException e) {
+        System.err.println("[beam] cannot note the end of " + sha + ": " + e);
+      }
+    }
+  }
+
+  /**
+   * `apksim beam`'s sweep: deletes each stored build `kept` does not name (a running session's, a live grant's, a
+   * saved session's) once `keepMillis` have passed since its last session ended (or since it was last started or
+   * stored, plus `graceMillis`, if no session of it has ended since: a start's grant may still be used), with its ids;
+   * ids whose build is gone, and ids a day old of builds not kept (each start makes one). The deleted builds' file names.
+   */
+  List<String> sweepBuilds(java.util.function.Predicate<String> kept, long keepMillis, long graceMillis) {
+    pruneFailures();
+    List<String> gone = new ArrayList<>();
+    long now = System.currentTimeMillis();
+    synchronized (uploadsLock) {
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads)) {
+        List<Path> all = new ArrayList<>();
+        d.forEach(all::add);
+        for (Path p : all) {
+          String n = p.getFileName().toString();
+          if (!n.matches("[0-9a-f]{64}\\.apk")) continue;
+          String sha = n.substring(0, 64);
+          if (kept.test(sha)) continue;
+          Path rel = uploads.resolve(sha + ".released");
+          long since;
+          if (Files.isRegularFile(rel)) {
+            try {
+              since = Long.parseLong(Files.readString(rel).strip());
+            } catch (NumberFormatException e) {
+              since = Files.getLastModifiedTime(rel).toMillis();
+            }
+          } else {
+            since = Files.getLastModifiedTime(p).toMillis() + graceMillis;
+          }
+          if (now < since + keepMillis) continue;
+          Files.deleteIfExists(p);
+          Files.deleteIfExists(rel);
+          gone.add(n);
+        }
+        for (Path p : all) {
+          String n = p.getFileName().toString();
+          if (n.endsWith(".ref") && Files.exists(p)) {
+            List<String> lines = Files.readAllLines(p);
+            String apk = lines.isEmpty() ? "" : lines.get(0);
+            boolean missing = !Files.exists(uploads.resolve(apk));
+            boolean old = Files.getLastModifiedTime(p).toMillis() < now - 24 * 3_600_000L
+                && !(apk.length() == 68 && kept.test(apk.substring(0, 64)));
+            if (missing || old) Files.delete(p);
+          } else if (n.endsWith(".released") && !Files.exists(uploads.resolve(n.replace(".released", ".apk")))) {
+            Files.deleteIfExists(p);
+          } else if (n.endsWith(".part") && Files.getLastModifiedTime(p).toMillis() < now - 3_600_000L) {
+            Files.deleteIfExists(p);
+          }
+        }
+      } catch (IOException | RuntimeException e) {
+        System.err.println("[beam] could not sweep builds: " + e);
+      }
+    }
+    return gone;
   }
 
   /** Deletes uploads not used for this long, and stored APKs no upload refers to any more. */

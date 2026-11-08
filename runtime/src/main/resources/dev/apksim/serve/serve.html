@@ -86,6 +86,7 @@ body.embed.bare aside { width: auto; }
   <select id="runOn" aria-label="Where the app runs" hidden title="Run the app on this server, or on this Mac with its own apksim (docs/beam.md)">
     <option value="server">On the server</option><option value="mac">On this Mac</option>
   </select>
+  <label id="keepBox" hidden title="When this session ends, keep the app and its data on this Mac (its sign-ins too) instead of erasing them; apksim beam saved lists what is kept, apksim beam run ID opens it"><input id="keep" type="checkbox"> Keep on this Mac</label>
   <span class="spacer"></span>
   <button id="start" class="primary" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
@@ -259,7 +260,7 @@ function refresh() {
   const running = ws && ws.readyState <= 1 && !ended;
   $("start").disabled = !$("app").value || running;
   $("stop").disabled = !running;
-  for (const id of ["back", "home", "rotl", "rotr", "go", "copy"]) $(id).disabled = !running;
+  for (const id of ["back", "home", "rotl", "rotr", "go", "copy", "keep"]) $(id).disabled = !running;
 }
 $("app").onchange = () => { state.app = $("app").value; refresh(); offerAppDevice(); };
 $("uploadBtn").onclick = () => $("file").click();
@@ -292,6 +293,7 @@ function start() {
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
   if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
+  $("keepBox").hidden = true;
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
@@ -336,7 +338,15 @@ function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
 function onText(t) {
   const kind = t[0], body = t.slice(2);
   if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
-  else if (kind === "i") { const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device); }
+  else if (kind === "i") {
+    const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device);
+    // Only the agent says it (docs/beam.md): a session on this Mac may keep its data when it ends.
+    $("keepBox").hidden = typeof i.keep !== "boolean"; $("keep").checked = i.keep === true;
+  }
+  else if (kind === "k") {
+    $("keep").checked = body === "on";
+    log(body === "on" ? "this Mac keeps the app and its data when the session ends (apksim beam saved)" : "this Mac erases the app's data when the session ends");
+  }
   else if (kind === "s") stats(JSON.parse(body));
   else if (kind === "r") log(body);
   else if (kind === "c") { mode = body === "h264" ? "h264" : "jpeg"; log("stream: " + (mode === "h264" ? "H.264" : "JPEG")); }
@@ -718,6 +728,7 @@ async function startOnMac(q, gen) {
     openSocket(serverSocketUrl(q), false);
   }
 }
+$("keep").onchange = () => send("keep " + ($("keep").checked ? "on" : "off"));
 $("runOn").onchange = async () => {
   if ($("runOn").value === "mac" && !beam.ok && !(await beamHello(true))) $("runOn").value = "server";
   pref($("runOn").value);

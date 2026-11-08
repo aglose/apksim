@@ -38,7 +38,10 @@ public final class Serve {
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--allow-beam] [--beam-port N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
-             apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]""";
+                         [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
+             apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
+             apksim beam saved | run ID [OPTIONS] | forget ID | sweep
+             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -94,6 +97,12 @@ public final class Serve {
   /** The state folder's part (`serve`, or `beam` for the agent) and the instances' data slot name (serve-0, beam-0...). */
   String home = "serve";
   Beam agent;
+  /** The agent's builds and saved sessions, and how long it keeps them (docs/beam.md, "What the Mac keeps"). */
+  BeamStore store;
+  /** `apksim beam --keep-days`, `--save-sessions`, `--keep-saved-days`: this run's values over the config file's. */
+  private Double keepDays;
+  private Boolean saveSessions;
+  private Double keepSavedDays;
   /** `--allow-beam`: this server's page offers "Run on this Mac" and serves its APKs to it (docs/beam.md). */
   boolean allowBeam;
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -114,6 +123,9 @@ public final class Serve {
       Beam.trustCommand(state, List.of(args).subList(2, args.length));
       return;
     }
+    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep").contains(args[1])) {
+      System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
+    }
     for (int i = 0; i < args.length; i++) {
       String a = args[i];
       String v = i + 1 < args.length ? args[i + 1] : null;
@@ -131,6 +143,18 @@ public final class Serve {
           i--;
         }
         case "--beam-port" -> s.beamPort = Integer.parseInt(need(a, v));
+        case "--keep-days" -> {
+          s.keepDays = BeamStore.days(need(a, v), false);
+          if (s.keepDays == null) usage("--keep-days takes a number of days (0: as soon as the session has ended)");
+        }
+        case "--save-sessions" -> {
+          s.saveSessions = BeamStore.onOff(need(a, v));
+          if (s.saveSessions == null) usage("--save-sessions takes on or off");
+        }
+        case "--keep-saved-days" -> {
+          s.keepSavedDays = BeamStore.days(need(a, v), true);
+          if (s.keepSavedDays == null) usage("--keep-saved-days takes a number of days or never");
+        }
         case "--bind" -> s.bind = need(a, v);
         case "--token" -> s.token = Files.readAllLines(Path.of(need(a, v))).stream().findFirst().orElse("").strip();
         case "--max" -> {
@@ -293,6 +317,11 @@ public final class Serve {
     return s.toString();
   }
 
+  private static void usage(String why) {
+    System.err.println(why + "\n" + USAGE);
+    System.exit(2);
+  }
+
   private static String need(String option, String value) {
     if (value == null) {
       System.err.println(option + " needs a value\n" + USAGE);
@@ -308,13 +337,26 @@ public final class Serve {
       if (!bind.equals("127.0.0.1") || token != null || !apps.isEmpty() || trustProxy || publicOrigin != null
           || !basePath.isEmpty() || !allowedOrigins.isEmpty() || allowBeam) {
         System.err.println("apksim beam: takes only --port, --max, --idle, --quality, --bitrate, --codec, --in-flight,"
-            + " --max-upload, --no-network, --launch-timeout (it listens on 127.0.0.1 and asks before a site runs an app)");
+            + " --max-upload, --no-network, --launch-timeout, --keep-days, --save-sessions, --keep-saved-days (it listens"
+            + " on 127.0.0.1 and asks before a site runs an app)");
         System.exit(2);
       }
       home = "beam";
       if (!portGiven) port = Beam.DEFAULT_PORT;
       if (!maxGiven) max = 2;
       agent = new Beam(state);
+      store = new BeamStore(state);
+      BeamStore.Config c = store.config;
+      store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays());
+      if (!store.lockAgent(port)) {
+        int other = store.agentPort();
+        System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
+            + "; stop it first (two would delete each other's builds)");
+        System.exit(2);
+      }
+    } else if (keepDays != null || saveSessions != null || keepSavedDays != null) {
+      usage("--keep-days, --save-sessions and --keep-saved-days are apksim beam's");
     }
     logs = state.resolve(home + "/logs");
     InetAddress addr = InetAddress.getByName(bind);
@@ -355,6 +397,7 @@ public final class Serve {
     if (allowBeam) System.err.println("[serve] the page offers Run on this Mac (an apksim beam agent on port " + beamPort + ")");
     if (beam) System.err.printf("[beam] agent on 127.0.0.1:%d (protocol %d), up to %d sessions; sites allowed: %s%n", server.getLocalPort(),
         Beam.PROTOCOL, max, agent.trust().entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList());
+    if (beam) System.err.println("[beam] keeps: " + store.config.describe() + "; " + store.saved().size() + " saved sessions");
     warmStandby();
     boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
@@ -366,7 +409,8 @@ public final class Serve {
     });
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
     timer.scheduleWithFixedDelay(() -> {
-      catalog.sweep((beam ? 14 : 1) * 24 * 3_600_000L);  // the agent keeps builds longer: a second visit sends nothing
+      if (beam) sweepBeam();
+      else catalog.sweep(24 * 3_600_000L);
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
@@ -427,6 +471,21 @@ public final class Serve {
 
   void ended(Session s) {
     sessions.remove(s.id);
+    if (beam) {
+      // Its build's hold starts now (a saved session's, or another running session's, keeps it anyway).
+      catalog.released(catalog.buildHash(s.app.path()));
+      Thread.ofVirtual().name("beam-sweep").start(this::sweepBeam);
+    }
+  }
+
+  /** The agent's sweep (docs/beam.md): at its start, hourly, and as sessions start and end. */
+  void sweepBeam() {
+    try {
+      store.sweep(catalog, sha -> agent.holds(sha)
+          || sessions.values().stream().anyMatch(x -> sha.equals(catalog.buildHash(x.app.path()))));
+    } catch (RuntimeException e) {
+      System.err.println("[beam] sweep failed: " + e);
+    }
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -701,6 +760,11 @@ public final class Serve {
   }
 
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
+    websocket(r, s, in, out, null);
+  }
+
+  /** `site`: the agent's session's page origin (beam), else null. */
+  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site) throws IOException {
     String key = r.header("sec-websocket-key");
     if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
       Http.text(out, 400, "expected a WebSocket upgrade");
@@ -736,11 +800,16 @@ public final class Serve {
       byte[] id = new byte[6];
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
+      if (beam) {
+        session.site = site;
+        session.keep = store.config.saveSessions();
+      }
       sessions.put(session.id, session);
     }
+    if (beam) agent.settled(catalog.buildHash(app.path()));
     System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
-        + ",\"idleLimitS\":" + idleSeconds + "}");
+        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "") + "}");
     session.run();
   }
 
@@ -840,7 +909,7 @@ public final class Serve {
           Http.text(out, 403, "this session was not started by this page (start it again)");
           return;
         }
-        websocket(r, s, in, out);
+        websocket(r, s, in, out, o);
       }
       default -> Http.text(out, 404, "not found");
     }
@@ -886,6 +955,7 @@ public final class Serve {
     Catalog.App a = catalog.byHash(sha, name, launch);
     if (a != null) {
       Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch)) + "}");
+      sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
     Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch)) + "}");

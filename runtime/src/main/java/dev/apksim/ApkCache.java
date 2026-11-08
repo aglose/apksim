@@ -38,7 +38,7 @@ import java.util.stream.Stream;
  * (no `in-use.lock`, judged by its manifest's mtime) may be in use with nothing to show it, so it goes only once
  * unused for 14 days, never for the cap.
  */
-final class ApkCache {
+public final class ApkCache {
   static final String LOCK = "apk-cache.lock";
   private static final String IN_USE = "in-use.lock";
   private static final String LAST_USED = "last-used";
@@ -257,6 +257,48 @@ final class ApkCache {
         }
       }
     }
+  }
+
+  /**
+   * Removes the entries of one APK file name (`<file name>-<16 hex>`), as evict does: under the global lock held
+   * exclusively, an entry a process holds stays; the rest move into the trash, emptied after the lock. For `apksim
+   * beam` (docs/beam.md), whose builds are stored by content hash, so only that build ever used such an entry. Whether
+   * every one went (none left, or none was there).
+   */
+  public static boolean remove(Path root, String apkFileName) throws IOException {
+    if (!Files.isDirectory(root)) return true;
+    List<Path> mine = new ArrayList<>();
+    try (Stream<Path> dirs = Files.list(root)) {
+      for (Path d : (Iterable<Path>) dirs::iterator) {
+        String n = d.getFileName().toString();
+        if (n.length() == apkFileName.length() + 17 && n.startsWith(apkFileName + "-")
+            && n.substring(apkFileName.length() + 1).matches("[0-9a-f]{16}") && Files.isDirectory(d)) mine.add(d);
+      }
+    }
+    if (mine.isEmpty()) return true;
+    boolean all = true;
+    Path trash = root.resolve(TRASH);
+    Files.createDirectories(trash);
+    try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+         FileLock g = global.lock()) {
+      for (Path d : mine) {
+        if (inUse(d)) {
+          all = false;
+          continue;
+        }
+        Files.move(d, trash.resolve(d.getFileName() + Storage.tmpTag()), StandardCopyOption.ATOMIC_MOVE);
+      }
+    }
+    try (Stream<Path> dirs = Files.list(trash)) {
+      for (Path d : (Iterable<Path>) dirs::iterator) {
+        try {
+          Storage.deleteTree(d);
+        } catch (java.io.UncheckedIOException e) {
+          // the next sweep
+        }
+      }
+    }
+    return all;
   }
 
   private static long lastUsed(Path entry) throws IOException {

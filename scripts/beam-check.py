@@ -8,8 +8,17 @@ bytes; the agent's /beam/hello, a site that is not allowed refused, `apksim beam
 upload whose hash is not the one named refused, the APK sent once and found by its hash the second time, grants used
 once and only by their own origin, a session that streams frames, takes a tap and ends with its tab, and `revoke`
 refusing the site again. A second agent answers the prompt with "Always Allow" (`APKSIM_BEAM_CONSENT=allow`, for
-checks only) and keeps that, and a site saved as refused stays refused. Uses its own made-up origins and forgets them
-at the end; the agent's other trusted sites are left as they were.
+checks only) and keeps that, and a site saved as refused stays refused.
+
+Then what the Mac keeps (docs/beam.md phase 1c): `config` read at the agent's start; a build kept while a session of
+it runs (another session's end sweeps meanwhile) and deleted with its cache entry once the last ends with `keep-days
+0`; kept with a nonzero hold and found by hash again; a session kept with "keep on" (its slot renamed and listed by
+`saved`, its build surviving the sweep), `run` reopening it with what the test app's slot screen wrote (APK: the test
+app); `forget` erasing it and the next sweep its build; `save-sessions on` keeping every session; one agent per state
+folder; `sweep` leaving a running agent's builds alone.
+
+Everything runs in a state folder of its own (`APKSIM_HOME`, removed at the end), so the Mac's own agent, trusted
+sites and builds are not touched; its instances therefore start without the class cache or startup cache.
 """
 import argparse
 import hashlib
@@ -17,9 +26,13 @@ import http.client
 import importlib.util
 import json
 import os
+import glob
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("servecheck", os.path.join(HERE, "serve-check.py"))
@@ -28,6 +41,11 @@ spec.loader.exec_module(sc)
 check, WS = sc.check, sc.WS
 
 A, B = "https://beam-check-a.example", "https://beam-check-b.example"
+STATE = tempfile.mkdtemp(prefix="beam-check-")
+ENV = dict(os.environ, APKSIM_HOME=STATE)
+PKG = "dev.apksim.composeapp"
+# The test app's slot screen (--activity SlotStateActivity) on the phone: its "Write" button.
+WRITE = (130, 536)
 
 
 def req(port, method, path, origin=None, body=None, headers=None, host=None):
@@ -62,16 +80,93 @@ def wait_up(port, path, seconds=60):
 
 
 def trust(apksim, *args):
-    return subprocess.run([apksim, "beam", "trust", *args], capture_output=True, text=True)
+    return beam(apksim, "trust", *args)
 
 
-def agent(apksim, port, consent):
-    env = dict(os.environ, APKSIM_BEAM_CONSENT=consent)
-    p = subprocess.Popen([apksim, "beam", "--port", str(port)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+def beam(apksim, *args, timeout=60):
+    return subprocess.run([apksim, "beam", *args], capture_output=True, text=True, env=ENV, timeout=timeout)
+
+
+def agent(apksim, port, consent, *extra):
+    env = dict(ENV, APKSIM_BEAM_CONSENT=consent)
+    log = open(os.path.join(STATE, f"agent-{port}-{time.time():.0f}.log"), "w")
+    p = subprocess.Popen([apksim, "beam", "--port", str(port), *extra], env=env, stdout=subprocess.DEVNULL, stderr=log, text=True)
+    p.logfile = log.name
     if not wait_up(port, "/beam/hello"):
         p.kill()
-        sys.exit("the agent did not come up: " + (p.stderr.read() if p.stderr else ""))
+        sys.exit("the agent did not come up: " + open(log.name).read()[-2000:])
     return p
+
+
+def until(pred, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.2)
+    return pred()
+
+
+def build_file(sha):
+    return os.path.join(STATE, "beam", "uploads", sha + ".apk")
+
+
+def cache_entries(sha):
+    return glob.glob(os.path.join(STATE, "cache", sha + ".apk-*"))
+
+
+def begin(gp, origin, start, apk):
+    """A session grant for this build, sending the APK when the agent asks; (grant, sent)."""
+    st, _, body = req(gp, "POST", "/beam/start", origin, start)
+    g = json.loads(body) if st == 200 else {}
+    sent = g.get("need") == "upload"
+    if sent:
+        st, _, body = req(gp, "POST", f"/beam/upload?upload={g['upload']}", origin, apk)
+        g = json.loads(body) if st == 200 else {}
+    return g, sent
+
+
+def open_session(gp, grant, origin):
+    """The session for a grant, pumped to its first frame and its instance's pid."""
+    w = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant.get('app')}&token={grant.get('token')}", {"Origin": origin})
+    s = sc.Session.__new__(sc.Session)
+    s.ws, s.frames, s.codec, s.acking, s.offset, s.best_rtt = w, [], "jpeg", True, 0.0, float("inf")
+    s.texts, s.stats, s.ack_delay, s.acks = [], {}, 0, []
+    if w.status == 101:
+        s.pump(120, until=lambda: len(s.frames) > 0)
+        s.pump(6, until=lambda: s.stats.get("pid", 0) > 0)
+    return s
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def close_session(s):
+    """Closes the tab; whether its instance has gone (the agent then saves or erases its slot and sweeps)."""
+    pid = s.stats.get("pid", 0)
+    s.ws.s.close()
+    return pid > 0 and until(lambda: not alive(pid), 20)
+
+
+def session_info(s):
+    for t in s.texts:
+        if t.startswith("i "):
+            return json.loads(t[2:])
+    return {}
+
+
+def slots(prefix):
+    return glob.glob(os.path.join(STATE, "cache", "data", PKG, prefix + "*"))
+
+
+def saved_ids(apksim):
+    out = beam(apksim, "saved").stdout.splitlines()
+    return [line.split()[0] for line in out[1:] if line.strip()] if out and out[0].startswith("ID") else []
 
 
 def stop(p):
@@ -93,15 +188,16 @@ def main():
     with open(a.apk, "rb") as f:
         apk = f.read()
     sha, size = hashlib.sha256(apk).hexdigest(), len(apk)
-    for o in (A, B):
-        trust(apksim, "revoke", o)
-
+    with zipfile.ZipFile(a.apk) as z:
+        if not any(b"SlotStateActivity" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
+            sys.exit(f"{a.apk} has no SlotStateActivity: build the test app from this checkout "
+                     "(testapks/composeapp: ./gradlew :app:assembleDebug)")
     # An agent refuses anything but loopback.
-    r = subprocess.run([apksim, "beam", "--bind", "0.0.0.0"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run([apksim, "beam", "--bind", "0.0.0.0"], capture_output=True, text=True, timeout=30, env=ENV)
     check(r.returncode == 2, "apksim beam refuses --bind (loopback only)")
 
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV)
     g = None
     try:
         if not wait_up(sp, "/api/health"):
@@ -219,12 +315,111 @@ def main():
         trust(apksim, "deny", A)
         st, _, _ = req(gp, "POST", "/beam/start", A, start)
         check(st == 403, "agent: a site saved as refused is not asked again")
+
+        # ---- what the Mac keeps (phase 1c)
+        r = subprocess.run([apksim, "beam", "--port", str(gp + 2)], capture_output=True, text=True, env=ENV, timeout=30)
+        check(r.returncode == 2 and "already runs" in r.stderr, "keep: one agent per state folder")
+        r = beam(apksim, "sweep")
+        check("sweeps by itself" in r.stdout, "keep: sweep leaves a running agent's builds alone")
+        stop(g)
+        r = beam(apksim, "config", "keep-days", "0")
+        check(r.returncode == 0 and "keep-days 0" in r.stdout, f"keep: config keep-days 0 ({r.stdout.strip()!r})")
+        g = agent(apksim, gp, "allow")
+        check("keep-days 0" in open(g.logfile).read(), "keep: the agent reads the config at its start")
+        g1, _ = begin(gp, B, start, apk)
+        s1 = open_session(gp, g1, B)
+        check(len(s1.frames) > 0 and session_info(s1).get("keep") is False, f"keep: a session runs, not kept by default ({session_info(s1)})")
+        g2, sent = begin(gp, B, start, apk)
+        check(not sent and "token" in g2, "keep: a second session finds the running one's build by its hash")
+        s2 = open_session(gp, g2, B)
+        check(len(s2.frames) > 0, "keep: the second session runs")
+        check(close_session(s2), "keep: the second session ends")
+        time.sleep(2)  # its end's sweep, with keep-days 0
+        check(os.path.exists(build_file(sha)) and cache_entries(sha), "keep: the build and its cache entry stay while a session of it runs")
+        check(close_session(s1), "keep: the first session ends")
+        check(until(lambda: not os.path.exists(build_file(sha)) and not cache_entries(sha), 15),
+              "keep: with keep-days 0 the build and its cache entry go once its last session ends")
+        check(not slots("beam-") or all(not os.listdir(d) or os.listdir(d) == [".lock"] for d in slots("beam-")),
+              "keep: the sessions' data slots are erased")
+        stop(g)
+
+        g = agent(apksim, gp, "allow", "--keep-days", "1")
+        g3, sent = begin(gp, B, start, apk)
+        check(sent and "token" in g3, "keep: a deleted build is asked for again")
+        s3 = open_session(gp, g3, B)
+        check(close_session(s3), "keep: a session with keep-days 1 ends")
+        time.sleep(2)
+        check(os.path.exists(build_file(sha)), "keep: with a nonzero hold the build stays after its session")
+        g4, sent = begin(gp, B, start, apk)
+        check(not sent and "token" in g4, "keep: and a session within the hold finds it by its hash")
+        stop(g)
+
+        # A saved session: "keep on" from the tab, with keep-days 0 (from the config) for its build.
+        g = agent(apksim, gp, "allow")
+        slot_start = dict(start, options=["--activity", "SlotStateActivity"])
+        g5, _ = begin(gp, B, slot_start, apk)
+        s5 = open_session(gp, g5, B)
+        s5.ws.send("keep on")
+        s5.pump(3, until=lambda: "k on" in s5.texts)
+        check("k on" in s5.texts, "keep: the tab's keep on is answered")
+        s5.pump(2)
+        after = s5.after([f"touch down {WRITE[0]} {WRITE[1]}", f"touch up {WRITE[0]} {WRITE[1]}"], 2)
+        check(len(after) > 0, "keep: Write on the slot screen changes it")
+        check(close_session(s5), "keep: the kept session ends")
+        check(until(lambda: len(saved_ids(apksim)) == 1, 10), "keep: apksim beam saved lists it")
+        ids = saved_ids(apksim)
+        sid = ids[0] if ids else "none"
+        check(os.path.isdir(os.path.join(STATE, "cache", "data", PKG, f"k{sid}-0")), f"keep: its slot is renamed to k{sid}-0")
+        time.sleep(2)
+        check(os.path.exists(build_file(sha)), "keep: a saved session's build survives the sweep (keep-days 0)")
+        stop(g)
+        g = None
+        r = beam(apksim, "sweep")
+        check(r.returncode == 0 and os.path.exists(build_file(sha)), "keep: and apksim beam sweep keeps it too")
+
+        # run: the saved session in a headless local launch, with what it left.
+        cp = gp + 3
+        rp = subprocess.Popen([apksim, "beam", "run", sid, "--headless", "--control", str(cp)], env=ENV,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        drive = os.path.join(HERE, "drive.py")
+        nodes = ""
+        for _ in range(60):
+            r = subprocess.run([sys.executable, drive, str(cp), "wait 1500", "nodes"], capture_output=True, text=True, timeout=60)
+            if "at app start" in r.stdout:
+                nodes = r.stdout
+                break
+            time.sleep(1)
+        subprocess.run([sys.executable, drive, str(cp), "quit"], capture_output=True, text=True, timeout=30)
+        try:
+            code = rp.wait(30)
+        except subprocess.TimeoutExpired:
+            rp.kill()
+            code = -1
+        check("at app start: setting=written" in nodes and "sdcard=written" in nodes,
+              f"keep: run reopens it with the data it left ({[x for x in nodes.split(';') if 'app start' in x][:1]})")
+        check(code == 0, f"keep: run ends with the instance's exit code ({code})")
+
+        r = beam(apksim, "forget", sid)
+        check(r.returncode == 0 and not slots(f"k{sid}") and saved_ids(apksim) == [], "keep: forget erases its data")
+        r = beam(apksim, "sweep")
+        check(not os.path.exists(build_file(sha)) and not cache_entries(sha), "keep: and its build goes at the next sweep (keep-days 0)")
+
+        # save-sessions on: every session kept.
+        beam(apksim, "config", "save-sessions", "on")
+        g = agent(apksim, gp, "allow")
+        g6, _ = begin(gp, B, start, apk)
+        s6 = open_session(gp, g6, B)
+        check(session_info(s6).get("keep") is True, "keep: with save-sessions on the tab is told it is kept")
+        check(close_session(s6), "keep: that session ends")
+        check(until(lambda: len(saved_ids(apksim)) == 1, 10), "keep: and is saved without asking")
+        for i in saved_ids(apksim):
+            beam(apksim, "forget", i)
     finally:
         if g:
             stop(g)
         stop(server)
-        for o in (A, B):
-            trust(apksim, "revoke", o)
+        subprocess.run([apksim, "--stop-standbys"], env=ENV, capture_output=True)
+        shutil.rmtree(STATE, ignore_errors=True)
     if sc.FAILED:
         print(f"{len(sc.FAILED)} check(s) failed")
         sys.exit(1)

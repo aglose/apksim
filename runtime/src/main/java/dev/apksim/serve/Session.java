@@ -76,6 +76,9 @@ final class Session {
   volatile long bytesSent;
   volatile String device;
   private volatile Path dataDir;
+  /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
+  volatile String site;
+  volatile boolean keep;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -533,6 +536,13 @@ final class Session {
       send("stats", this::onStats);
       return;
     }
+    if (serve.beam && (text.equals("keep on") || text.equals("keep off"))) {
+      // The agent's own, never passed to the instance; only this session's tab reaches this.
+      keep = text.equals("keep on");
+      logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
+      ws.sendText("k " + (keep ? "on" : "off"));
+      return;
+    }
     String cmd = check(text);
     if (cmd == null && text.strip().startsWith("device ")) {
       // A size serve names (--device-size) or the app's own default: the name is checked, never passed on as given.
@@ -786,7 +796,19 @@ final class Session {
   }
 
   private void eraseData() {
-    if (dataDir != null) eraseSlot(serve, dataDir, this::logLine);
+    if (dataDir == null) return;
+    if (serve.beam && keep) {
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch(),
+          deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
+          options.get("permissions"), site));
+      if (id != null) {
+        logLine("[beam] kept on this Mac as " + id + " (apksim beam run " + id + ")");
+        System.err.printf("[beam] session %s kept as %s: %s from %s%n", this.id, id, app.name(), site);
+        return;
+      }
+      logLine("[beam] could not keep the data: erased");
+    }
+    eraseSlot(serve, dataDir, this::logLine);
   }
 
   /**

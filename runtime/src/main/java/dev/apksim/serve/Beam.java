@@ -45,6 +45,8 @@ final class Beam {
       System.getenv().getOrDefault("APKSIM_BEAM_CONSENT", "ask"));
   private final Map<String, Grant> grants = new ConcurrentHashMap<>();
   private final Map<String, Long> deniedUntil = new ConcurrentHashMap<>();
+  /** Builds whose grant was just used (sha256 -> when): its session is being set up, and the sweep must not miss it. */
+  private final Map<String, Long> justUsed = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
 
   Beam(Path state) {
@@ -124,6 +126,9 @@ final class Beam {
         case "Allow Once" -> {
           return true;
         }
+        case "No Answer" -> {
+          return false;  // this start only: nobody saw it, so the page may ask again
+        }
         default -> {
           deniedUntil.put(origin, System.currentTimeMillis() + DENIED_MS);
           return false;
@@ -139,13 +144,14 @@ final class Beam {
     String text = origin + " wants to run " + what + sz + " on this Mac.\n\n"
         + "The page sends the APK here and shows the app in its tab. The app runs in apksim's sandbox and can reach the "
         + "network this Mac reaches.";
-    String script = "display dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Allow\", \"Allow Once\", "
+    // Brought to the front first: a dialog from a process in the background opens behind the window in use.
+    String script = "tell current application to activate\ndisplay dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Allow\", \"Allow Once\", "
         + "\"Always Allow\"} default button \"Allow Once\" cancel button \"Don't Allow\" with icon caution giving up after 120";
     try {
       Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true).start();
       String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
       if (!p.waitFor(150, TimeUnit.SECONDS)) p.destroyForcibly();
-      if (out.contains("gave up:true")) return "Don't Allow";
+      if (out.contains("gave up:true")) return "No Answer";
       if (out.contains("button returned:Always Allow")) return "Always Allow";
       if (out.contains("button returned:Allow Once")) return "Allow Once";
       return "Don't Allow";
@@ -171,11 +177,24 @@ final class Beam {
     return token;
   }
 
+  /** Whether an unexpired grant names this build (the sweep keeps it: the page is about to use it). */
+  boolean holds(String sha256) {
+    long now = System.currentTimeMillis();
+    justUsed.values().removeIf(t -> t < now - 30_000);
+    return justUsed.containsKey(sha256) || grants.values().stream().anyMatch(g -> g.expires >= now && sha256.equals(g.sha256));
+  }
+
+  /** The session a grant was used for is registered now: it holds its build itself. */
+  void settled(String sha256) {
+    if (sha256 != null) justUsed.remove(sha256);
+  }
+
   /** The grant for this token if it is of this kind, for this origin and unexpired; used up either way. */
   Grant take(String token, Kind kind, String origin) {
     if (token == null || origin == null) return null;
     Grant g = grants.remove(token);
     if (g == null || g.kind != kind || !g.origin.equals(origin) || g.expires < System.currentTimeMillis()) return null;
+    if (g.sha256 != null) justUsed.put(g.sha256, System.currentTimeMillis());
     return g;
   }
 

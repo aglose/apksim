@@ -2,7 +2,7 @@
 # Usage: apksim [--activity PKG/.Act|.Act|NAME] [--shot FILE] [--exit-after-first-frame] [--debug PORT]
 #               [--instrument test.apk [-e KEY VALUE]...] app.apk
 #        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
-#        apksim beam [--port N] [--max N] | apksim beam trust [list|allow ORIGIN|revoke ORIGIN]  (docs/beam.md)
+#        apksim beam [--port N] [--max N] | apksim beam trust|saved|run|forget|config|sweep  (docs/beam.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
@@ -35,7 +35,7 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: apksim [options] APP.apk
        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...
-       apksim beam [--port N] [--max N]    run browser sessions' apps on this Mac (docs/beam.md)
+       apksim beam [--port N] [--max N]    run browser sessions' apps on this Mac; beam saved|run ID: kept ones (docs/beam.md)
        apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
        apksim --version | --train | --stop-standbys
 

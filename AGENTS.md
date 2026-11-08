@@ -220,7 +220,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
-    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; the page is
+    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamStore`: what the agent
+    keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
+    saved|run|forget|config|sweep`; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
