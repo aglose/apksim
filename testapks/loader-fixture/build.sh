@@ -24,7 +24,7 @@ for pair in arm64-v8a:aarch64 x86_64:x86_64; do
   mkdir -p "$OUT/$abi"
   # 16 KB pages: macOS refuses 4 KB-aligned libraries (no W+X pages). No debug info, so no build paths inside.
   "$BIN/clang" --target="$arch-linux-android29" -O2 -fPIC -shared -fstack-protector-all -Wall -Werror \
-    -Wl,-z,max-page-size=16384 -Wl,--build-id=none -o "$OUT/$abi/libloaderfixture.so" "$HERE/loaderfixture.c"
+    -Wl,-z,max-page-size=16384 -Wl,--build-id=none -o "$OUT/$abi/libloaderfixture.so" "$HERE/loaderfixture.c" -lz
   "$BIN/llvm-strip" --strip-unneeded "$OUT/$abi/libloaderfixture.so"
   # 4 KB pages on purpose (pagefixture.c): code sharing a 16 KB page with RELRO, and with writable data (-z norelro),
   # which the loader moves on macOS.
