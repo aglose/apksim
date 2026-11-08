@@ -74,6 +74,8 @@ final class Axml {
             out.append(value);
           }
           out.append('"');
+          // Per attribute too: one tag may declare 65,535 of them, all on the same long string (a stride of 0).
+          if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
         }
         out.append(">\n");
       } else if (type == CHUNK_END_TAG) {

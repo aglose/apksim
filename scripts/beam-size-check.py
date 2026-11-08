@@ -97,13 +97,16 @@ def main():
                 got = until(lambda: app_size() == (f["spec"]["w"], f["spec"]["h"]) and app_size(), 5)
                 check(got, f"  the app's window is the stage's size in dp ({app_size()} for {f['spec']['w']}x{f['spec']['h']})")
 
-        # Another pixel ratio (a display of another density): the display follows.
-        cdp.call("Emulation.setDeviceMetricsOverride", {"width": 0, "height": 0, "deviceScaleFactor": 1, "mobile": False}, s)
-        f = until(lambda: (lambda x: x if x and x["spec"]["d"] == 1 else None)(agrees()), 10)
-        check(f is not None, f"a pixel ratio of 1: the display re-densities to it ({f and f['spec']['spec']})")
+        # Another pixel ratio (a display of another density): the display follows. The other one is chosen from this
+        # display's own (1 on a Retina display, 2 on one that is not), so the check means the same on both.
+        natural = cdp.ev(s, "window.devicePixelRatio")
+        other = 1 if natural != 1 else 2
+        cdp.call("Emulation.setDeviceMetricsOverride", {"width": 0, "height": 0, "deviceScaleFactor": other, "mobile": False}, s)
+        f = until(lambda: (lambda x: x if x and x["spec"]["d"] == other else None)(agrees()), 10)
+        check(f is not None, f"a pixel ratio of {other} (this display's is {natural}): the display re-densities to it ({f and f['spec']['spec']})")
         cdp.call("Emulation.clearDeviceMetricsOverride", {}, s)
-        f = until(lambda: (lambda x: x if x and x["spec"]["d"] != 1 else None)(agrees()), 10)
-        check(f is not None, f"and back ({f and f['spec']['spec']})")
+        f = until(lambda: (lambda x: x if x and x["spec"]["d"] != other else None)(agrees()), 10)
+        check(f is not None, f"and back to this display's ({f and f['spec']['spec']})")
 
         # The simulator window, dragged: the tab shows its size and sends none back.
         before = cdp.ev(s, "window.apksimFill()")
