@@ -155,7 +155,11 @@ final class FrameStream {
     H264Encoder video = null;
     int videoKbps = 0;
     byte[] raw = null;
-    int refines = REFINES;  // H.264 re-encodes of a still screen left
+    int refines = REFINES;  // H.264 re-encodes of a still screen done since the last new frame
+    // When the next refinement and the next retry are due (System.nanoTime): set by the encode that calls for them,
+    // and kept across frames that bring nothing new, so redraws of an unchanged screen do not put them off.
+    long refineAt = 0;
+    long retryAt = 0;
     while (true) {
       int w;
       int h;
@@ -168,9 +172,14 @@ final class FrameStream {
       boolean repeat;
       boolean needy;
       synchronized (LOCK) {
-        long refineAt = System.nanoTime() + REFINE_MS * 1_000_000;
-        long retryAt = System.nanoTime() + RETRY_MS * 1_000_000;
-        while (!fresh && !keyWanted && !wake) {
+        while (true) {
+          // A frame presented again with the same pixels counts as none (unless someone still needs a frame): it
+          // must not hold off a refinement or retry that is due.
+          if (fresh && !keyWanted && !wake && latest != null && lastEncoded != null && latestW == lastW
+              && latestH == lastH && !anyNeedsFrame() && Arrays.equals(lastEncoded, latest)) {
+            fresh = false;
+          }
+          if (fresh || keyWanted || wake) break;
           // No H.264 subscriber left: its encoder (native buffers, a VideoToolbox session) goes now, not at the
           // next frame, which a still screen may never present.
           if (video != null && !hasCodec(true)) {
@@ -266,6 +275,7 @@ final class FrameStream {
           // the stream close) rather than wait on a screen that never comes.
           if (video != null) video.close();
           video = null;
+          retryAt = System.nanoTime() + RETRY_MS * 1_000_000;
           if (++failures > MAX_FAILURES) {
             System.err.println("[apksim] H.264 encoding failed " + failures + " times at " + w + "x" + h
                 + ": ending the H.264 streams");
@@ -274,6 +284,7 @@ final class FrameStream {
           }
         } else {
           failures = 0;
+          refineAt = System.nanoTime() + REFINE_MS * 1_000_000;  // the next refinement, if nothing new comes
           int encodeMicros = (int) ((System.nanoTime() - t0) / 1000);
           Frame f = new Frame(unit, video.width, video.height, micros, encodeMicros, unit[0] == 1);
           for (Subscriber s : SUBSCRIBERS) if (s.h264) s.offer(f);

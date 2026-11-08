@@ -228,14 +228,14 @@ final class Session {
       // "ok stream", or "ok stream h264|jpeg" when a codec was asked for: the tab is told which before any frame.
       StringBuilder line = new StringBuilder();
       for (int c; (c = in.read()) != '\n'; ) {
-        if (c < 0) return;
+        if (c < 0) throw new IOException("the stream ended before its answer");
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
         int len = in.readInt();
-        if (len < 20 || len > 64 << 20) return;
+        if (len < 20 || len > 64 << 20) throw new IOException("a frame of " + len + " bytes");
         byte[] frame = new byte[len];
         in.readFully(frame);
         if (firstFrameMillis < 0) {
@@ -264,8 +264,24 @@ final class Session {
         if (askKey) askKey();
       }
     } catch (IOException e) {
-      // the instance went away
+      // the instance went away, or ended the stream (H.264 that kept failing)
     }
+    streamEnded();
+  }
+
+  /**
+   * The frame stream ended while the session runs: the tab would wait on its last frame (or "Starting...") for good,
+   * so the session stops and says so. An instance that exited says why itself (onExit), so it is given a moment.
+   */
+  private void streamEnded() {
+    if (ended) return;
+    Process p = process;
+    try {
+      if (p != null && p.waitFor(2, TimeUnit.SECONDS)) return;  // onExit's stop has the reason
+    } catch (InterruptedException e) {
+      return;  // the session is being torn down
+    }
+    if (!ended) stop("the screen stream ended (see the server log)");
   }
 
   private void sendFrames() {

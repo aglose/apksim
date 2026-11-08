@@ -150,6 +150,11 @@ JNIEXPORT jbyteArray JNICALL Java_dev_apksim_video_H264Encoder_nativeEncode(JNIE
     return NULL;
   }
   uint8_t *src = (*env)->GetPrimitiveArrayCritical(env, pixels, NULL);
+  if (!src) {  // an exception is pending (out of memory): it reaches Java once this returns
+    CVPixelBufferUnlockBaseAddress(buf, 0);
+    CVPixelBufferRelease(buf);
+    return NULL;
+  }
   for (int y = 0; y < e->h; y++) {
     uint8_t *d = dst + y * dstStride;
     const uint8_t *s = src + (size_t)y * stride;
