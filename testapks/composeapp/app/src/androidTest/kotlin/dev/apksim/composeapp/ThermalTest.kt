@@ -7,6 +7,7 @@ import android.os.PowerManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assume.assumeTrue
 import org.junit.FixMethodOrder
 import org.junit.Test
@@ -99,5 +100,21 @@ class ThermalTest {
     shell("apksim thermal critical")
     assertEquals(2, heard.size)
     assertEquals(PowerManager.THERMAL_STATUS_CRITICAL, pm.currentThermalStatus)
+  }
+
+  @Test
+  fun e_nullArgumentsAreRejectedAndLeaveNothingBehind() {
+    val heard = mutableListOf<Int>()
+    val l = PowerManager.OnThermalStatusChangedListener { heard += it }
+    assertThrows(NullPointerException::class.java) { pm.addThermalStatusListener(inline, null as PowerManager.OnThermalStatusChangedListener?) }
+    assertThrows(NullPointerException::class.java) { pm.addThermalStatusListener(null as Executor?, l) }
+    assertEquals("a rejected call called nobody", emptyList<Int>(), heard)
+    assumeTrue("on a device the callbacks come on a binder thread", onApksim)
+    // Later registrations and updates still work.
+    pm.addThermalStatusListener(inline, l)
+    assertEquals(listOf(PowerManager.THERMAL_STATUS_NONE), heard)
+    shell("apksim thermal light")
+    assertEquals(listOf(PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT), heard)
+    pm.removeThermalStatusListener(l)
   }
 }

@@ -90,6 +90,9 @@ public final class Thermal {
   }
 
   static void add(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {
+    // As PowerManager does, before anything is registered or queued: a failed call leaves nothing behind.
+    java.util.Objects.requireNonNull(executor, "executor cannot be null");
+    java.util.Objects.requireNonNull(listener, "listener cannot be null");
     synchronized (LOCK) {
       for (Entry e : LISTENERS) if (e.listener() == listener) return;
       Entry e = new Entry(executor, listener);
@@ -100,6 +103,7 @@ public final class Thermal {
   }
 
   static void remove(PowerManager.OnThermalStatusChangedListener listener) {
+    java.util.Objects.requireNonNull(listener, "listener cannot be null");
     synchronized (LOCK) {
       LISTENERS.removeIf(e -> e.listener() == listener);
     }
