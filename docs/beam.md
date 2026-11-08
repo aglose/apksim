@@ -607,6 +607,9 @@ segment, so a manifest package of 10k characters ("a.a.a...") overflowed the sta
 The page's `apksimStats().frames`, which the Chrome checks wait on, counts the frames shown from the current socket:
 it was the length of the last 240 frame times, so a count compared with an earlier one stopped growing at 240, and a
 moved or restarted session's `frames > 0` held before the new socket had shown anything.
+The agent's sweep keeps a build while a cache warm-up of it is queued or running (`Warmer.holds`), and its hold starts
+when the warm-up ends: a large app's warm-up runs past a new build's 3-minute grace, and with `keep-days 0` the sweep
+could delete the APK and its cache under it.
 
 First review:
 
@@ -835,8 +838,13 @@ What it would take for `apksim beam` on a Linux desktop (the page offers beam on
 - **`apksim beam install [--port N] [--agent-idle S]`** (`BeamLaunchd`) writes two LaunchAgents to
   ~/Library/LaunchAgents and loads them (`launchctl bootstrap gui/UID`); `apksim beam uninstall` boots them out and
   deletes them; `apksim beam status` says whether it is installed. Opt-in, never done by the installer: an agent any
-  page can reach (behind its consent prompt) is the visitor's choice. The Homebrew cask removes both on uninstall and
-  says how to install it.
+  page can reach (behind its consent prompt) is the visitor's choice. The Homebrew cask says how to install it.
+  - **Removed with apksim, kept across upgrades**: each job runs the launcher through a guard (`BeamLaunchd.guarded`):
+    once the launcher is gone (looked at twice, a minute apart, so an upgrade relinking `bin/apksim` meanwhile does not
+    count) it deletes both jobs' files and boots both out, at the latest at the next daily sweep. The cask's
+    `uninstall` cannot do it: `brew upgrade` runs a cask's uninstall `launchctl` and `delete` too (Homebrew skips only
+    `signal` on upgrade), which took the visitor's opt-in away at every upgrade. `brew uninstall --zap` removes them at
+    once.
   - `dev.apksim.beam`: launchd listens on 127.0.0.1:PORT (47474) and starts `apksim beam --launchd` on a page's first
     connection, handing it the listening socket on stdin (`inetdCompatibility` with `Wait`), which the agent takes as
     `System.inheritedChannel()`: no native code. It exits after `--agent-idle` seconds (600) with no session, no

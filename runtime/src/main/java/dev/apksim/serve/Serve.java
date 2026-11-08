@@ -599,7 +599,7 @@ public final class Serve {
       // no app data yet, or the next round
     }
     try {
-      store.sweep(catalog, sha -> agent.holds(sha)
+      store.sweep(catalog, sha -> agent.holds(sha) || warmer.holds(sha)
           || sessions.values().stream().anyMatch(x -> sha.equals(catalog.buildHash(x.app.path()))));
     } catch (RuntimeException e) {
       System.err.println("[beam] sweep failed: " + e);

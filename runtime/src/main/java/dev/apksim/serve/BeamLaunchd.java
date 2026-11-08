@@ -65,13 +65,14 @@ final class BeamLaunchd {
     String env = System.getenv("APKSIM_HOME") == null ? ""
         // The resolved folder, not the variable as given: launchd starts the jobs from another working directory.
         : "  <key>EnvironmentVariables</key><dict><key>APKSIM_HOME</key>" + str(state.toAbsolutePath().normalize().toString()) + "</dict>\n";
-    write(agent, plist(label, List.of(exe, "beam", "--launchd", "--port", Integer.toString(port), "--agent-idle", Integer.toString(idle)),
+    write(agent, plist(label, guarded(exe, agent, sweep, label, label + ".sweep",
+            List.of("beam", "--launchd", "--port", Integer.toString(port), "--agent-idle", Integer.toString(idle))),
         "  <key>Sockets</key><dict><key>Listeners</key><dict>"
             + "<key>SockNodeName</key><string>127.0.0.1</string><key>SockServiceName</key>" + str(Integer.toString(port))
             + "<key>SockType</key><string>stream</string><key>SockFamily</key><string>IPv4</string></dict></dict>\n"
             + "  <key>inetdCompatibility</key><dict><key>Wait</key><true/></dict>\n"
             + "  <key>ProcessType</key><string>Interactive</string>\n" + env, logs.resolve("agent.log")));
-    write(sweep, plist(label + ".sweep", List.of(exe, "beam", "sweep"),
+    write(sweep, plist(label + ".sweep", guarded(exe, agent, sweep, label + ".sweep", label, List.of("beam", "sweep")),
         "  <key>StartInterval</key><integer>86400</integer>\n" + env, logs.resolve("sweep.log")));
     if (dryRun != null) {
       System.out.println("wrote " + agent + " and " + sweep + " (not loaded)");
@@ -88,6 +89,30 @@ final class BeamLaunchd {
     System.out.printf("installed %s: pages reach the agent on 127.0.0.1:%d (started when one asks, gone after %d s idle);"
         + " builds are swept daily. apksim beam uninstall removes it.%n", label, port, idle);
     return 0;
+  }
+
+  /**
+   * A job's command: the launcher with these arguments, while it is there. Once it is gone (apksim uninstalled), the job
+   * removes both jobs' files and boots both out, so nothing is left for macOS to start at the next login. The Homebrew
+   * cask cannot do that on uninstall: `brew upgrade` runs a cask's uninstall `launchctl` and `delete` too, which took
+   * the jobs away at every upgrade (Homebrew skips only `signal` there), so the cask leaves them to this and to `zap`.
+   * Looked at twice a minute apart (APKSIM_BEAM_GONE_WAIT seconds, for checks), so an upgrade relinking bin/apksim
+   * meanwhile does not count as gone. Paths and labels are arguments, never part of the script.
+   */
+  static List<String> guarded(String exe, Path agentPlist, Path sweepPlist, String self, String other, List<String> args) {
+    String script = """
+        a=$1 s=$2 self=$3 other=$4 l=$5; shift 5
+        [ -x "$l" ] || sleep "${APKSIM_BEAM_GONE_WAIT:-60}"
+        [ -x "$l" ] && exec "$l" "$@"
+        echo "apksim beam: $l is gone (apksim was uninstalled): removing its launchd jobs" >&2
+        rm -f "$a" "$s"
+        launchctl bootout "gui/$(id -u)/$other" 2>/dev/null
+        exec launchctl bootout "gui/$(id -u)/$self"
+        """;
+    List<String> cmd = new ArrayList<>(List.of("/bin/sh", "-c", script, "apksim-beam-job", agentPlist.toString(),
+        sweepPlist.toString(), self, other, exe));
+    cmd.addAll(args);
+    return cmd;
   }
 
   /** Whether launchd has this job loaded in the user's session. */

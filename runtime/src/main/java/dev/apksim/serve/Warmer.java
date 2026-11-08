@@ -63,6 +63,17 @@ final class Warmer {
     this.serve = serve;
   }
 
+  /**
+   * Whether a warm-up of this build is queued or running: the agent's sweep keeps it (and its cache) meanwhile, as it
+   * keeps one a session or a grant names. A large app's warm-up runs for minutes, past a new build's grace.
+   */
+  synchronized boolean holds(String sha256) {
+    for (Job j : jobs.values()) {
+      if ((j.state == State.QUEUED || j.state == State.WARMING) && sha256.equals(serve.catalog.buildHash(j.apk))) return true;
+    }
+    return false;
+  }
+
   /** Queues an app whose APK is a file now (an upload, a finished download); anything else is ignored. */
   void enqueue(Catalog.App app) {
     if (app.path() == null) return;
@@ -161,7 +172,11 @@ final class Warmer {
       }
       Session.endJvm(serve, j.jvmPid, j.apk);  // a warm launch: the standby's JVM may still be flushing after its client went
       // A cold launch's JVM is the process started here (the launcher and nice exec into it).
-      if (serve.beam) Session.keepBeamCaches(serve, j.jvmPid > 0 ? j.jvmPid : p.pid(), j.apk, l -> System.err.println(l));
+      if (serve.beam) {
+        Session.keepBeamCaches(serve, j.jvmPid > 0 ? j.jvmPid : p.pid(), j.apk, l -> System.err.println(l));
+        String warmed = serve.catalog.buildHash(j.apk);
+        if (warmed != null) serve.catalog.released(warmed);  // its hold (keep-days) starts now, as after a session
+      }
       // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
       if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
     }

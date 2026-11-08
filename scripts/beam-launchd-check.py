@@ -69,12 +69,13 @@ class StandIn:
     """launchd's part: listens, and starts the agent with the listening socket on stdin when a connection waits and no
     agent runs (inetdCompatibility with Wait)."""
 
-    def __init__(self, port, idle):
+    def __init__(self, port, idle, args):
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", port))
         self.sock.listen(16)
         self.port, self.idle, self.proc, self.starts, self.stop = port, idle, None, 0, False
+        self.args = args  # the job's ProgramArguments, run as launchd runs them (the guard around the launcher too)
         import threading
         # Held while an agent is started and while closing: a start decided just before close() would otherwise
         # begin after close() looked, and outlive the check (which then deletes its state folder).
@@ -92,8 +93,7 @@ class StandIn:
             with self.lock:
                 if r and not self.stop:
                     self.starts += 1
-                    self.proc = subprocess.Popen([os.path.join(ROOT, "apksim"), "beam", "--launchd", "--port", str(self.port),
-                                                  "--agent-idle", str(self.idle)], stdin=self.sock.fileno(),
+                    self.proc = subprocess.Popen(self.args, stdin=self.sock.fileno(),
                                                  stdout=subprocess.DEVNULL, stderr=open(os.path.join(STATE, "agent.log"), "a"), env=ENV)
 
     def close(self):
@@ -137,7 +137,19 @@ def main():
               and "--launchd" in agent_plist.get("ProgramArguments", []),
               "the agent's job: socket-activated on its port, the socket handed over inetd's way")
         if not real:
-            stand_in = StandIn(port, 8)
+            # Each job runs the launcher only while it is there; once it is gone (apksim uninstalled; `brew upgrade`
+            # must not count) it removes both jobs. Copies of the dry-run jobs, a launcher that is gone, a 1 s wait.
+            gone = tempfile.mkdtemp(prefix="beam-launchd-gone-")
+            for p in plists:
+                shutil.copy(p, gone)
+            sweep_args = json.loads(subprocess.run(["plutil", "-convert", "json", "-o", "-", plists[1]], capture_output=True, text=True).stdout)["ProgramArguments"]
+            sweep_args = [a.replace(jobs, gone) for a in sweep_args]
+            sweep_args[8] = os.path.join(gone, "apksim-that-was")
+            r = subprocess.run(sweep_args, capture_output=True, text=True, env=dict(ENV, APKSIM_BEAM_GONE_WAIT="1"), timeout=30)
+            check(not os.path.exists(os.path.join(gone, LABEL + ".plist")) and not os.path.exists(os.path.join(gone, LABEL + ".sweep.plist"))
+                  and "is gone" in r.stderr, "with the launcher gone a job removes both jobs (" + (r.stderr.strip().splitlines() or ["no output"])[0][-60:] + ")")
+            shutil.rmtree(gone, ignore_errors=True)
+            stand_in = StandIn(port, 8, agent_plist["ProgramArguments"])
         time.sleep(1)
         check(not agent_running(), "nothing runs until a page asks")
         t0 = time.time()

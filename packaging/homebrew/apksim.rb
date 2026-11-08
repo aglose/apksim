@@ -24,15 +24,16 @@ cask "apksim" do
     run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "."], chdir: ".", writable_paths: ["."]
   end
 
-  # `apksim beam install` (opt-in) adds these: launchd starts the agent when a browser page asks (docs/beam.md).
-  # Their files go too: left behind, macOS would load them again at login and start a launcher that is gone.
-  uninstall launchctl: ["dev.apksim.beam", "dev.apksim.beam.sweep"],
-            delete:    [
-              "~/Library/LaunchAgents/dev.apksim.beam.plist",
-              "~/Library/LaunchAgents/dev.apksim.beam.sweep.plist",
-            ]
-
-  zap trash: "~/.apksim"
+  # `apksim beam install` (opt-in) adds two LaunchAgents: launchd starts the agent when a browser page asks
+  # (docs/beam.md). Not removed by `uninstall`: `brew upgrade` runs a cask's uninstall launchctl and delete too, which
+  # took them away at every upgrade. Each job removes itself once bin/apksim is gone (BeamLaunchd.guarded); zap removes
+  # them at once.
+  zap launchctl: ["dev.apksim.beam", "dev.apksim.beam.sweep"],
+      delete:    [
+        "~/Library/LaunchAgents/dev.apksim.beam.plist",
+        "~/Library/LaunchAgents/dev.apksim.beam.sweep.plist",
+      ],
+      trash:     "~/.apksim"
 
   caveats <<~EOS
     The first launch builds a startup cache in ~/.apksim in the background (1-2 minutes, once per version);
