@@ -23,7 +23,9 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
+import re
 import socket
 import struct
 import sys
@@ -129,7 +131,7 @@ class Session:
         hdr = {"Origin": parts(url)[2]}
         if token:
             hdr["Cookie"] = "apksim_token=" + token
-        self.ws = WS(url, f"/ws?app={app}&device={device}" + (f"&codec={codec}" if codec else ""), hdr)
+        self.ws = WS(url, f"/ws?app={app}" + (f"&device={device}" if device else "") + (f"&codec={codec}" if codec else ""), hdr)
         # (arrived, present_ms in this machine's time, encode_ms, size, w, h, payload digest, H.264 keyframe, payload)
         self.frames = []
         self.codec = "jpeg"  # what the server answered ("c h264" or "c jpeg"), when asked
@@ -216,6 +218,9 @@ def main():
     ap.add_argument("--allow-origin")
     ap.add_argument("--ack-delay", type=int, default=0, help="ms to hold each ack: a slow link's return half; the server's window should grow")
     ap.add_argument("--in-flight", type=int, help="the server's --in-flight cap, for the --ack-delay check")
+    ap.add_argument("--device-size", help="NAME=WxH@density, as the server was given: a session on NAME must show that size")
+    ap.add_argument("--app-default-size", help="WxH in pixels: a session that names no device (on the app added with --add-url and"
+                    " --add-options '[\"--device\",\"1280x720@1.5\"]') must show it")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
     ap.add_argument("--h264", choices=["required", "optional", "skip"], default="optional",
@@ -300,6 +305,18 @@ def main():
     check(status == 400 and b"not allowed" in body, f"a URL add with a launch option outside the allowed set is refused ({status})")
     status, body = http(url, "/api/apps", token, data=json.dumps({"url": "file:///etc/passwd"}).encode())
     check(status == 400, f"a URL add that is not http(s) is refused ({status})")
+
+    # A custom device in a URL add is checked strictly (it comes from the API): sizes and names outside the rules are refused.
+    for bad in ["1280x720@5", "1280x720@1.555", "100x100", "9000x720", "1280x720@4", "1280x720 -x", "x", "1280x720px", "$(id)", "phone2"]:
+        status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/a.apk",
+                                                                      "options": ["--device", bad]}).encode())
+        check(status == 400, f"a URL add with --device {bad!r} is refused ({status})")
+    status, body = http(url, "/api/devices", token)
+    named = json.loads(body) if status == 200 else None
+    check(status == 200 and isinstance(named, list), f"/api/devices lists the named sizes ({status} {body[:80]!r})")
+    if a.device_size:
+        name, size = a.device_size.split("=")
+        check({"name": name, "size": size} in (named or []), f"/api/devices has {a.device_size}")
 
     app = a.app
     if a.add_url:
@@ -446,9 +463,55 @@ def main():
                                   "kbPerFrame": round(kb), "shaderFps": round(shader_fps), "shaderKb": round(shader_kb),
                                   "shaderEncodeMs": round(shader_enc, 1), "rssMb": s.stats.get("rssMb"), "heapMb": s.stats.get("heapMb"),
                                   "dragMBps": round(drag_mb_s, 2)}))
+    if a.device_size:
+        custom_device_check(url, token, app, a)
+    if a.app_default_size:
+        px = tuple(int(x) for x in a.app_default_size.split("x"))
+        d = Session(url, token, app, None)  # names no device: the app's own default
+        d.pump(a.first_frame_timeout, until=lambda: len(d.frames) > 0)
+        got = (d.frames[0][4], d.frames[0][5]) if d.frames else None
+        check(got == px, f"a session naming no device shows the app's default size {a.app_default_size} px (got {got})")
+        info = [t for t in d.texts if t.startswith("i ")]
+        check(info and json.loads(info[0][2:]).get("device"), "the session's info says which device it runs on")
+        d.ws.s.close()
     if a.h264 != "skip":
         check_h264(url, token, app, a)
     return finish()
+
+
+def custom_device_check(url, token, app, a):
+    """A named size (serve --device-size NAME=WxH@density): sessions on it show it, and only checked names are accepted."""
+    name, size = a.device_size.split("=")
+    m = re.fullmatch(r"(\d+)x(\d+)(?:@([\d.]+))?", size)
+    density = float(m.group(3) or 2)
+    f32 = lambda x: struct.unpack(">f", struct.pack(">f", x))[0]  # Java's float arithmetic, Math.round: floor(x + 0.5)
+    px = tuple(math.floor(f32(int(m.group(i)) * f32(density)) + 0.5) for i in (1, 2))
+    s = Session(url, token, app, name)
+    s.pump(a.first_frame_timeout, until=lambda: len(s.frames) > 0)
+    got = (s.frames[0][4], s.frames[0][5]) if s.frames else None
+    check(got == px, f"a session on {name} ({size}) shows {px[0]}x{px[1]} px (got {got})")
+    # Switching away and back by name resizes the screen each time.
+    s.after(["device tablet"], 3.0)
+    got = (s.frames[-1][4], s.frames[-1][5])
+    check(got == (2560, 1600), f"device tablet from {name} shows 2560x1600 (got {got})")
+    s.after([f"device {name}"], 3.0)
+    got = (s.frames[-1][4], s.frames[-1][5])
+    check(got == px, f"device {name} shows {px[0]}x{px[1]} again (got {got})")
+    n = len(s.texts)
+    spelled = "1111x777@1.25"  # not a name, nor the app's default or any --device-size's: refused, never passed on as given
+    assert spelled != size
+    s.ws.send(f"device {spelled}")
+    s.ws.send("device nosuchsize")
+    s.pump(1)
+    refused = [t for t in s.texts[n:] if t.startswith("r refused")]
+    check(len(refused) == 2, f"a size the client spells out, and an unknown name, are refused ({refused})")
+    s.ws.s.close()
+    # An unknown name in the URL falls back, never to the string itself.
+    u = Session(url, token, app, "9999x9999")
+    u.pump(a.first_frame_timeout, until=lambda: len(u.frames) > 0)
+    got = (u.frames[0][4], u.frames[0][5]) if u.frames else None
+    check(got != (9999, 9999) and got is not None, f"an unlisted device in /ws is not used as given (got {got})")
+    u.ws.s.close()
 
 
 def nal_types(unit):

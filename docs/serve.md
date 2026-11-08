@@ -15,7 +15,7 @@ This page is the spec, then how it is built, then what was measured.
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--trust-proxy]
-             [--public-origin URL] [--base-path /PATH]
+             [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -24,6 +24,12 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   is opened once as `/?token=...`, which sets an HttpOnly cookie and redirects to strip it from the URL; scripts use
   `Authorization: Bearer ...`.
 - `--max N` (default 4): sessions at once. One more gets "all N sessions are busy".
+- `--device-size NAME=WxH@DENSITY` (repeatable): a named device size besides the built-in ones, for an app built for one
+  fixed panel (`--device-size hd720=1280x720@1.5` is 1920x1080 px). `WxH` is in dp (160-4096 a side), density a scale
+  factor (0.75-4; 1, 1.5, 2, 3; 2 if left out), at most 4096 pixels a side; the name is lower case (`[a-z][a-z0-9-]*`) and
+  not a built-in one. The page's Device menu lists each (`GET /api/devices`), and `/ws?device=NAME` and the tab's
+  `device NAME` accept it. `device` stays a checked name: a size spelled out by a client, or any other name, is refused
+  (`/ws` falls back to the app's default device, else the phone; a command is answered `r refused`).
 - `--idle SECONDS` (default 600): a session with no input for that long is stopped and its tab told so.
 - `--apps`: the catalog. A folder lists its `*.apk` files; a file lists one APK per line, a path or an `https://`
   URL (downloaded once, at first use), optionally followed by a display name and then ` -- ` and launch options of
@@ -149,9 +155,12 @@ A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
-`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, and the flag
+`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, `--device`, and the flag
 `--soft-keyboard`. Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
-`--adb`, `--no-sandbox`...): serve refuses a catalog with one at startup and a URL add with one with a 400. A bad value
+`--adb`, `--no-sandbox`...): serve refuses a catalog with one at startup and a URL add with one with a 400. `--device` takes a built-in
+device or a custom size `WxH[@density]` (`--device 1280x720@1.5`, validated as for `--device-size`; a bad one is refused
+at startup or with a 400): it is that app's default device, used when a tab names none (the page's Device menu then
+shows it, and the tab may switch to it again by that name), and replaces the one a session would otherwise get. A bad value
 (an activity the manifest lacks) ends that session with the launcher's message, as a launch would.
 
 ### Adding apps at run time
@@ -242,7 +251,7 @@ The tab sends commands in the control channel's own words, and serve passes on o
 | Home button / click on the home screen | `home` / `resume` |
 | Rotate buttons | `rotate left\|right` |
 | Dark mode toggle | `appearance dark\|light` |
-| Device menu | `device phone\|foldable\|tablet\|desktop\|tv` |
+| Device menu | `device phone\|foldable\|tablet\|desktop\|tv`, a `--device-size` name or the app's own default size |
 | Open URL field | `open URL` (a URL without spaces) |
 | Locale, text size | `locale xx-YY`, `fontscale N` |
 
@@ -328,7 +337,11 @@ checking that frames follow each, and that closing the tab ends the session. It 
 token, a chunked upload, and that URL adds with a disallowed launch option or a non-http URL are refused; with
 `--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; URL may
 include a path (`http://host:port/sim` for `--base-path` or a proxy's prefix); with
-`--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. Then a second tab
+`--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. It checks that custom
+`--device` values outside the rules are refused and `/api/devices`; with `--device-size NAME=WxH@density` (as the server
+was started) that a session on NAME shows that many pixels, that switching to the tablet and back resizes it, and that a
+spelled-out size or unknown name is refused; with `--app-default-size WXxHY` (pixels, on an app whose launch options have
+`--device`) that a session naming no device shows it. Then a second tab
 asks for H.264 (`--h264 required|optional|skip`; CI requires it): the first frame is a keyframe with SPS, PPS and IDR,
 a drag gives delta frames only, a `key` request on a still screen brings a keyframe, a tab that stops acknowledging
 gets at most two frames, and once it acknowledges again the stream resumes at a keyframe. It prints the numbers

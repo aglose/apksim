@@ -108,7 +108,26 @@ final class Session {
     this.options = options;
     this.ws = ws;
     ws.onPong = this::ponged;
-    this.device = options.getOrDefault("device", "phone");
+    // The tab's device (checked by Serve), else the app's own default, else the phone.
+    String own = appDevice(app);
+    this.device = options.getOrDefault("device", own != null ? own : "phone");
+  }
+
+  /** The device size the app's launch options give (`--device`, checked by Catalog.launchOptions), or null. */
+  static String appDevice(Catalog.App app) {
+    List<String> l = app.launch();
+    int i = l.lastIndexOf("--device");  // the last, as the launcher takes it
+    return i >= 0 && i + 1 < l.size() ? l.get(i + 1) : null;
+  }
+
+  /** Whether a tab may ask for this device: a built-in one, a size serve was given a name for, or the app's own default. */
+  static boolean deviceAllowed(Serve serve, Catalog.App app, String name) {
+    return DEVICES.contains(name) || serve.deviceSizes.containsKey(name) || name.equals(appDevice(app));
+  }
+
+  /** What the instance's `--device` and `device` command take for a device name of this session. */
+  private String deviceSpec(String name) {
+    return serve.deviceSizes.getOrDefault(name, name);
   }
 
   /** Runs the session until the tab closes, the app exits or it times out. */
@@ -164,7 +183,7 @@ final class Session {
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill",
         "--data-slots", "serve", "--control", "auto"));
-    cmd.addAll(List.of("--device", device));
+    cmd.addAll(List.of("--device", deviceSpec(device)));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
     String locale = options.get("locale");
@@ -174,7 +193,12 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
-    cmd.addAll(app.launch());  // the app's own (catalog line or URL add), checked by Catalog.launchOptions
+    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
+    List<String> own = app.launch();
+    for (int i = 0; i < own.size(); i++) {
+      if (own.get(i).equals("--device")) i++;
+      else cmd.add(own.get(i));
+    }
     cmd.add(apk.toString());
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
@@ -509,14 +533,24 @@ final class Session {
       return;
     }
     String cmd = check(text);
+    if (cmd == null && text.strip().startsWith("device ")) {
+      // A size serve names (--device-size) or the app's own default: the name is checked, never passed on as given.
+      String name = text.strip().substring(7);
+      if (deviceAllowed(serve, app, name)) cmd = "device " + name;
+    }
     if (cmd == null) {
       ws.sendText("r refused: " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       return;
     }
     lastInput = System.currentTimeMillis();
-    if (cmd.startsWith("device ")) device = cmd.substring(7);
+    String wire = cmd;
+    if (cmd.startsWith("device ")) {
+      device = cmd.substring(7);
+      wire = "device " + deviceSpec(device);
+    }
+    String shown = cmd;
     boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ");
-    send(cmd, quiet ? null : r -> ws.sendText("r " + cmd.split(" ")[0] + ": " + r));
+    send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
   }
 
   /**

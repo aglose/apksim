@@ -35,7 +35,7 @@ public final class Serve {
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--in-flight N]
-                          [--trust-proxy] [--public-origin URL] [--base-path /PATH]""";
+                          [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -63,6 +63,8 @@ public final class Serve {
   /** `--warm`: warm each APK's cache in the background: on Linux (no warm standby) by default, `on` also on the Mac. */
   String warm = "auto";
   Warmer warmer;
+  /** `--device-size NAME=WxH@density`: named sizes besides the built-in devices, in the order given. */
+  final Map<String, String> deviceSizes = new LinkedHashMap<>();
   boolean loopbackBind;
   private final List<String> apps = new ArrayList<>();
   /** Pages on these origins may frame serve's page and open its WebSockets and POSTs (`--allow-origin`). */
@@ -111,6 +113,18 @@ public final class Serve {
             System.exit(2);
           }
           s.allowH264 = c.equals("auto");
+        }
+        case "--device-size" -> {
+          String d = need(a, v);
+          int eq = d.indexOf('=');
+          String name = eq < 0 ? "" : d.substring(0, eq), size = eq < 0 ? "" : d.substring(eq + 1);
+          if (!name.matches("[a-z][a-z0-9-]{0,23}") || Session.DEVICES.contains(name) || s.deviceSizes.containsKey(name)
+              || Catalog.deviceSize(size) == null) {
+            System.err.println("--device-size takes NAME=WxH[@density] such as hd720=1280x720@1.5 (a new lower-case name; 160-4096 dp a side,"
+                + " density 0.75-4, at most 4096 pixels a side)\n" + USAGE);
+            System.exit(2);
+          }
+          s.deviceSizes.put(name, size);
         }
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
         case "--trust-proxy" -> {
@@ -455,6 +469,14 @@ public final class Serve {
         }
         Http.json(out, 200, b.append(']').toString());
       }
+      case "GET /api/devices" -> {
+        StringBuilder b = new StringBuilder("[");
+        for (Map.Entry<String, String> d : deviceSizes.entrySet()) {
+          if (b.length() > 1) b.append(',');
+          b.append("{\"name\":").append(Http.q(d.getKey())).append(",\"size\":").append(Http.q(d.getValue())).append('}');
+        }
+        Http.json(out, 200, b.append(']').toString());
+      }
       case "GET /api/status" -> Http.json(out, 200, status());
       case "POST /api/upload" -> upload(r, out);
       case "POST /api/apps" -> addApp(r, out);
@@ -558,6 +580,7 @@ public final class Serve {
     Catalog.Download d = catalog.download(id);
     if (d != null) {
       StringBuilder b = new StringBuilder("{\"id\":").append(Http.q(id)).append(",\"name\":").append(Http.q(d.app.name()));
+      if (Session.appDevice(d.app) != null) b.append(",\"device\":").append(Http.q(Session.appDevice(d.app)));
       if (!d.done.isDone()) b.append(",\"state\":\"downloading\"");
       else if (d.done.isCompletedExceptionally()) {
         String why;
@@ -579,7 +602,8 @@ public final class Serve {
       return;
     }
     String detail = warmer.detail(a);
-    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"ready\",\"cache\":"
+    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name())
+        + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "") + ",\"state\":\"ready\",\"cache\":"
         + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + "}");
   }
 
@@ -624,7 +648,10 @@ public final class Serve {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }
-    if (!Session.DEVICES.contains(options.getOrDefault("device", "phone"))) options.put("device", "phone");
+    // Only a device this server names (built in, --device-size, or the app's own default), never a client's own string;
+    // anything else, or none, is the app's default device, else the phone.
+    String device = options.get("device");
+    if (device != null && !Session.deviceAllowed(this, app, device)) options.remove("device");
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
@@ -637,8 +664,9 @@ public final class Serve {
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
       sessions.put(session.id, session);
     }
-    System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), options.getOrDefault("device", "phone"));
-    ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"idleLimitS\":" + idleSeconds + "}");
+    System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
+    ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
+        + ",\"idleLimitS\":" + idleSeconds + "}");
     session.run();
   }
 
