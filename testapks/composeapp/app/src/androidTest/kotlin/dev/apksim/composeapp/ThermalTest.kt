@@ -36,6 +36,7 @@ class ThermalTest {
 
   @Test
   fun a_aListenerIsCalledAtOnceWithNone() {
+    assumeTrue("on a device the first call comes on a binder thread, with whatever status it has", onApksim)
     val heard = mutableListOf<Int>()
     val l = PowerManager.OnThermalStatusChangedListener { heard += it }
     pm.addThermalStatusListener(inline, l)

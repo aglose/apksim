@@ -32,6 +32,7 @@ public final class Thermal {
   private static final Object LOCK = new Object();
   private static final java.util.ArrayDeque<Runnable> QUEUE = new java.util.ArrayDeque<>();
   private static boolean draining;
+  private static int generation;  // each reset starts a new one: a drainer from an earlier one retires without touching the state
 
   private static void notify(Entry e, int s) {
     QUEUE.add(() -> {
@@ -43,12 +44,16 @@ public final class Thermal {
     });
   }
 
-  private static void drain() {
+  private static void drain(int gen) {
     boolean clean = false;
     try {
       while (true) {
         Runnable r;
         synchronized (LOCK) {
+          if (gen != generation) {  // reset while a callback ran: this drainer is retired
+            clean = true;
+            return;
+          }
           r = QUEUE.poll();
           if (r == null) {
             draining = false;
@@ -61,18 +66,20 @@ public final class Thermal {
     } finally {
       if (!clean) {  // an Error from a listener: give up ownership so later notifications still run, then propagate
         synchronized (LOCK) {
-          draining = false;
+          if (gen == generation) draining = false;
         }
       }
     }
   }
 
   private static void startDrain() {
+    int gen;
     synchronized (LOCK) {
       if (draining) return;  // the running drainer takes what was queued
       draining = true;
+      gen = generation;
     }
-    drain();
+    drain(gen);
   }
 
   static void add(Executor executor, PowerManager.OnThermalStatusChangedListener listener) {
@@ -97,6 +104,7 @@ public final class Thermal {
       LISTENERS.clear();
       QUEUE.clear();
       draining = false;
+      generation++;
       status = PowerManager.THERMAL_STATUS_NONE;
     }
   }
