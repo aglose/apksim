@@ -395,7 +395,7 @@ async function moveSession(to) {
       if (!g) return;
       if (data && g.data !== true) log("this Mac's apksim did not take its data: the app starts there without it");
       const lq = new URLSearchParams(q);
-      lq.set("app", g.app); lq.set("token", g.token);
+      lq.set("app", g.app); lq.set("token", g.token); lq.set("protocol", beam.protocol);
       url = "ws://127.0.0.1:" + beam.port + "/ws?" + lq;
     } catch (e) {
       if (gen !== startGen) return;
@@ -968,7 +968,9 @@ $("copy").onclick = async () => {
 // stream here exactly as the server's. Offered only where the browser knows the loopback-network permission (Chrome's:
 // what docs/beam.md checked), and never probed before that permission is granted or the visitor picks "On this Mac":
 // a visitor without apksim sees no prompt.
-const beam = { port: 0, url: "", ok: false };
+// The protocols this page speaks (docs/beam.md, "Versions"): the server says them (it is this page's build); the
+// agent says its own; the page uses the newest both speak (beam.protocol) and names it in /beam/start and /ws.
+const beam = { port: 0, url: "", ok: false, min: 1, max: 1, protocol: 0 };
 function pref(v) { try { if (v === undefined) return localStorage.getItem("apksim.runOn"); localStorage.setItem("apksim.runOn", v); } catch (e) { return null; } }
 async function beamSetup() {
   if (embed && params.get("beam") === "0") return;
@@ -980,7 +982,8 @@ async function beamSetup() {
     if (!r.ok) return;  // this server does not offer it
     cfg = await r.json();
   } catch (e) { return; }
-  if (cfg.protocol !== 1) return;
+  if (typeof cfg.protocol !== "number") return;
+  beam.max = cfg.protocol; beam.min = typeof cfg.minProtocol === "number" ? cfg.minProtocol : cfg.protocol;
   try { perm = (await navigator.permissions.query({ name: "loopback-network" })).state; } catch (e) { return; }
   if (perm === "denied") return;
   beam.port = cfg.port; beam.url = "http://127.0.0.1:" + cfg.port;
@@ -998,14 +1001,31 @@ async function beamHello(asked) {
     const r = await fetch(beam.url + "/beam/hello");
     const h = await r.json();
     if (asked) overlay(null);
-    if (h.protocol !== 1) { log("this Mac's apksim (" + h.apksim + ") speaks another protocol: update it (brew upgrade apksim)"); return null; }
-    beam.ok = true;
+    const amin = typeof h.minProtocol === "number" ? h.minProtocol : h.protocol, amax = h.protocol;
+    const common = Math.min(beam.max, amax);
+    if (!(common >= Math.max(beam.min, amin))) {
+      // No protocol in common: say which side is behind, in the menu itself, and run on the server.
+      const older = amax < beam.min;
+      macUnavailable(older ? "update apksim (brew upgrade apksim)" : "this site's apksim is older",
+        older ? "This Mac's apksim (" + h.apksim + ") is older than this site's: update it with brew upgrade apksim, then reload"
+          : "This Mac's apksim (" + h.apksim + ") no longer speaks this site's older protocol: the site's apksim needs updating");
+      log("this Mac's apksim " + h.apksim + " speaks protocols " + amin + "-" + amax + ", this page " + beam.min + "-" + beam.max + ": "
+        + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
+      return null;
+    }
+    beam.protocol = common; beam.ok = true;
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
   } catch (e) {
     if (asked) { overlay(null); log("no apksim on this Mac (run `apksim beam`, docs/beam.md): " + e.message); }
     return null;
   }
+}
+// "On this Mac" in the menu, disabled with the reason (a version mismatch): the session stays on the server.
+function macUnavailable(label, title) {
+  const o = $("runOn").querySelector('option[value="mac"]');
+  o.disabled = true; o.textContent = "On this Mac: " + label; o.title = title;
+  if ($("runOn").value === "mac") { $("runOn").value = "server"; pref("server"); }
 }
 async function okJson(p) {
   const r = await p;
@@ -1020,7 +1040,7 @@ async function startOnMac(q, gen) {
     if (!g || gen !== startGen) return;
     log("running on this Mac");
     const lq = new URLSearchParams(q);
-    lq.set("app", g.app); lq.set("token", g.token);
+    lq.set("app", g.app); lq.set("token", g.token); lq.set("protocol", beam.protocol);
     macStart = 0;
     openSocket("ws://127.0.0.1:" + beam.port + "/ws?" + lq, true, q);
   } catch (e) {
@@ -1043,7 +1063,7 @@ async function macGrant(q, gen, say, data) {
   // With the server's ticket and its download address the agent fetches a build it lacks itself (docs/beam.md,
   // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
   let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
+    body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
       url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
   if (g.via === "download") log("this Mac downloaded the app from this server");
   if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");

@@ -588,6 +588,14 @@ def main():
         check(r.returncode == 0, "trust allow " + A)
         st, _, body = req(gp, "GET", "/beam/hello", A)
         check(json.loads(body).get("trusted") is True, "agent: hello says the allowed site is trusted")
+        check(hello.get("minProtocol") == 1, f"agent: hello says the range of protocols it speaks (1-{hello.get('protocol')})")
+
+        # Versions (docs/beam.md, "Versions"): a page names the protocol it uses; one the agent does not speak is
+        # refused with which side to update.
+        st, _, body = req(gp, "POST", "/beam/start", A, dict(start, protocol=99))
+        check(st == 409 and b"brew upgrade apksim" in body, f"agent: a newer page's protocol: update this Mac's apksim ({body[:90]!r})")
+        st, _, body = req(gp, "POST", "/beam/start", A, dict(start, protocol=0))
+        check(st == 409 and b"older" in body, f"agent: an older page's protocol: the site's apksim is older ({body[:90]!r})")
 
         # An upload whose bytes are not what the page named.
         fake = hashlib.sha256(b"not this apk").hexdigest()
@@ -623,8 +631,10 @@ def main():
         grant = json.loads(body)
         w = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}", {"Origin": A})
         check(w.status == 403, "agent: a session needs its grant")
-        w = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}&token={grant['token']}", {"Origin": A})
-        check(w.status == 101, "agent: the session opens with its grant")
+        w = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}&token={grant['token']}&protocol=99", {"Origin": A})
+        check(w.status == 409, "agent: a session in a protocol it does not speak is refused")
+        w = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}&token={grant['token']}&protocol=1", {"Origin": A})
+        check(w.status == 101, "agent: the session opens with its grant (in protocol 1; that refusal left the grant usable)")
         s = sc.Session.__new__(sc.Session)
         s.ws, s.frames, s.codec, s.acking, s.offset, s.best_rtt = w, [], "jpeg", True, 0.0, float("inf")
         s.texts, s.stats, s.ack_delay, s.acks = [], {}, 0, []

@@ -713,7 +713,8 @@ public final class Serve {
       return;
     }
     if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam")) {
-      Http.json(out, 200, "{\"port\":" + beamPort + ",\"protocol\":" + Beam.PROTOCOL + "}");
+      int[] pr = Beam.protocols();  // the page's own (it is this build's)
+      Http.json(out, 200, "{\"port\":" + beamPort + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + "}");
       return;
     }
     if (allowBeam && r.method().equals("GET") && r.path().matches("/api/apps/[A-Za-z0-9]{1,40}/(beam|apk)")) {
@@ -1092,7 +1093,8 @@ public final class Serve {
       return;
     }
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
-      Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + Beam.PROTOCOL + ",\"trusted\":"
+      int[] pr = Beam.protocols();
+      Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
           + (o != null && agent.trusted(o)) + "}");
       return;
     }
@@ -1151,6 +1153,11 @@ public final class Serve {
             + (seed == null ? "" : ",\"data\":true") + "}");
       }
       case "GET /ws" -> {
+        String why = Beam.protocolProblem(r.param("protocol"));
+        if (why != null) {
+          Http.text(out, 409, why);  // the grant stays for a page that asks again in one this agent speaks
+          return;
+        }
         Beam.Grant g = agent.take(r.param("token"), Beam.Kind.SESSION, o);
         if (g == null || !g.app().equals(r.param("app"))) {
           Http.text(out, 403, "this session was not started by this page (start it again)");
@@ -1181,6 +1188,12 @@ public final class Serve {
           && d.get("url") instanceof String du && du.length() <= 2000 && !du.contains(" ") ? dt + " " + du : null;
       if (!(body.get("sha256") instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
       sha = h;
+      Object proto = body.get("protocol");
+      String why = Beam.protocolProblem(proto == null ? null : proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
+      if (why != null) {
+        Http.text(out, 409, why);
+        return;
+      }
       name = body.get("name") instanceof String n ? n : null;
       size = body.get("size") instanceof Number n ? n.longValue() : -1;
       List<String> given = new ArrayList<>();

@@ -21,7 +21,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 3 Sizing, Show in Simulator | Done (see "Phase 3 as built"): Fill mode at the browser's pixel ratio, the simulator window as a second view, close hides it |
 | 4 Moving a running session | Done (see "Phase 4 as built"): server to Mac and back with no blank frame; a refused move stays; a dead agent offers the server. Left: reconnecting after sleep |
 | 5 The app's data moves with it | Done (see "Phase 5 as built"): a move from the server to the Mac takes the app's data slot and /sdcard and Settings values ("With its data"); the app quits on the server first |
-| 6 Polish, Linux agent | Partly (see "Phase 6 so far"): hidden tabs throttled, `apksim beam status`, the launchd agent. Left: version messages, a Linux agent |
+| 6 Polish, Linux agent | Partly (see "Phase 6 so far", "Versions"): hidden tabs throttled, `apksim beam status`, the launchd agent, versions. Left: a Linux agent (scoped in "A Linux agent: scope") |
 
 ## What seamless means (the acceptance checks)
 
@@ -726,6 +726,53 @@ First review:
   cold (1.7 s to the first frame) and one failed; `beam-check.py` now checks a beamed session is a warm hand-off.
   The parity bench measured the first frame from a click that came after the page had already started the app (the
   0.17 s above was the end of a start, not a start); it now loads the page without `?app=` and times one Start.
+
+## Versions (2026-11-08)
+
+The page that runs is the server's build and the agent is whatever release the visitor installed, so they can be
+months apart in either direction.
+
+- **Each says the range it speaks**: `GET /api/beam` → `{"port", "protocol", "minProtocol"}` (the page's own: it is
+  the server's build), `GET /beam/hello` → `{"apksim", "protocol", "minProtocol", "trusted"}` (the agent's).
+  `protocol` stays the newest, as the first release's page read it. `Beam.PROTOCOL` / `MIN_PROTOCOL` set them.
+- **The page uses the newest both speak** and names it: `protocol` in `/beam/start`'s body and in `/ws`'s query. The
+  agent refuses one outside its range with 409 and which side to update; a request naming none is protocol 1 (the
+  first release's page). A refused `/ws` leaves the grant usable.
+- **No protocol in common**: "On this Mac" in the menu is disabled and says why, the session runs on the server, and
+  the log gives both ranges. The Mac's apksim older than the page's oldest: "On this Mac: update apksim (brew upgrade
+  apksim)"; the page older than the agent's oldest: "On this Mac: this site's apksim is older".
+- **Policy**: a change the other side would misread raises `PROTOCOL` (and the page and agent then speak both until
+  the old one is dropped); `MIN_PROTOCOL` is raised only once no release that far back still serves pages, keeping at
+  least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
+  know.
+- **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
+  the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
+  (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
+  app on the server).
+
+## A Linux agent: scope (2026-11-08, not started)
+
+What it would take for `apksim beam` on a Linux desktop (the page offers beam only on macOS today, by its user agent):
+
+- **A Linux host install first.** apksim on Linux exists only as the Docker image; nothing builds or runs it on a
+  Linux host (AGENTS.md "Linux / Docker"). The agent needs a tarball (or package) with the launcher, the native
+  libraries and a JDK, as the Mac release has.
+- **A sandbox of its own.** The launcher refuses a beamed instance without one. The Mac profile's rules map to
+  bubblewrap (unprivileged user namespaces): a mount namespace holding only apksim, its libraries, the JDK, the
+  build's caches read-only and the slot and scratch read-write (no home folder, no other slots, no `beam/uploads`);
+  `--unshare-pid` (signals only inside); `--new-session` (no terminal, so no TIOCSTI injection); `--die-with-parent`.
+  The network is the hard part: in the host's namespace loopback is reachable (other instances' control ports, the
+  agent), and `--unshare-net` removes everything; the internet without loopback needs a user-mode stack (pasta, with
+  the host's loopback not mapped). Landlock (kernel 5.13+) could replace the mount rules without namespaces, but its
+  network rules (6.7+) are per port, not per address, so they cannot keep loopback out.
+- **No standbys** on Linux: every beamed launch is cold (1.5-3 s to the first frame against 0.35 s on the Mac) until
+  the standby is ported.
+- **What the Mac has and Linux would not**: Show in Simulator (no window there), VideoToolbox (OpenH264 encodes),
+  Metal shaders (CPU), the launchd agent (a systemd user socket unit would be its equivalent).
+- **Checks**: the sandbox probes in `beam-check.py` are shell commands, so they can run under bubblewrap in the
+  Linux image (Colima here, CI there); a browser on a Linux desktop end to end has no machine here yet.
+- Estimate: the install and the sandbox with its probes are a few days; the network rules and a desktop check decide
+  the rest.
 
 ## The launchd agent (2026-11-08)
 

@@ -22,8 +22,43 @@ import java.util.concurrent.TimeUnit;
  * as a trusted one. A process on this Mac can send any Origin, but it could run apksim itself.
  */
 final class Beam {
-  /** The page's and the agent's protocol: `/beam/hello` says it, and a page that speaks another stays on the server. */
+  /**
+   * The protocols between a page and an agent (docs/beam.md, "Versions"): the page that runs is the server's, the agent
+   * the visitor's installed release, so each says the range it speaks (`/api/beam` the page's, `/beam/hello` the
+   * agent's) and the page uses the newest both do, naming it in `/beam/start` and `/ws`. PROTOCOL is the newest this
+   * build speaks; MIN_PROTOCOL the oldest, raised only once no release that far back still serves pages (keep at
+   * least the last three releases'). With no protocol in common the page stays on the server and says which side to
+   * update. `APKSIM_BEAM_PROTOCOLS=MIN-MAX` overrides the range, for checks only.
+   */
   static final int PROTOCOL = 1;
+  static final int MIN_PROTOCOL = 1;
+
+  /** {min, max} this build speaks (or the checks' override). */
+  static int[] protocols() {
+    String o = System.getenv("APKSIM_BEAM_PROTOCOLS");
+    if (o != null && o.matches("\\d{1,4}-\\d{1,4}")) {
+      String[] v = o.split("-");
+      return new int[] {Integer.parseInt(v[0]), Integer.parseInt(v[1])};
+    }
+    return new int[] {MIN_PROTOCOL, PROTOCOL};
+  }
+
+  /**
+   * Why a page's request in protocol `asked` (null: none named, which is the first release's page, protocol 1) cannot
+   * be served, or null.
+   */
+  static String protocolProblem(String asked) {
+    int p;
+    try {
+      p = asked == null ? 1 : Integer.parseInt(asked);
+    } catch (NumberFormatException e) {
+      return "bad protocol " + asked;
+    }
+    int[] r = protocols();
+    if (p > r[1]) return "this Mac's apksim speaks protocols " + r[0] + "-" + r[1] + ", the page " + p + ": update apksim on this Mac (brew upgrade apksim)";
+    if (p < r[0]) return "this Mac's apksim speaks protocols " + r[0] + "-" + r[1] + ", the page " + p + ": this site's apksim is older than this Mac's";
+    return null;
+  }
   static final int DEFAULT_PORT = 47474;
   /** How long a grant waits to be used: the page uses it at once (an upload of a large APK takes longer: per read). */
   private static final long GRANT_MS = 120_000;

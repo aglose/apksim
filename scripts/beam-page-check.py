@@ -5,7 +5,9 @@
 
 Stop while the agent has not answered yet (its consent prompt: the answer is held in the page), and that a late answer
 then opens no session anywhere; an agent that takes one session (`--max 1`) running a second tab's start on the server
-instead; a hidden tab's instance drawing a frame a second, its own pace again once the tab is back. A serve with
+instead; a hidden tab's instance drawing a frame a second, its own pace again once the tab is back; and with an agent
+that speaks only newer, then only older, protocols than the page (APKSIM_BEAM_PROTOCOLS), "On this Mac" disabled with
+which side to update, the session on the server. A serve with
 --allow-beam and an agent on loopback ports, Chrome with a fresh profile; the page's origin is allowed for the run and
 revoked after.
 """
@@ -142,6 +144,27 @@ def main():
         shown = fps()
         ctl.close()
         check(hidden <= 3 and shown >= 100, f"a hidden tab's instance draws {hidden:.1f} fps, {shown:.1f} once the tab is back in front")
+        for x in (s1, s2, s3):
+            cdp.ev(x, 'document.getElementById("stop").click(); 1')
+
+        # 4. Versions: agents with no protocol in common with the page (docs/beam.md, "Versions").
+        for rng, says in (("2-3", "this site's apksim is older"), ("0-0", "update apksim (brew upgrade apksim)")):
+            agent = procs[1]
+            agent.terminate()
+            agent.wait(20)
+            until(lambda: not up(gp, "/beam/hello"), 10)
+            procs[1] = subprocess.Popen([apksim, "beam", "--port", str(gp), "--max", "1"], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, env=dict(os.environ, APKSIM_BEAM_PROTOCOLS=rng))
+            until(lambda: up(gp, "/beam/hello"), 30)
+            sv = tab()
+            time.sleep(1)
+            label = cdp.ev(sv, 'document.querySelector("#runOn option[value=mac]").textContent')
+            disabled = cdp.ev(sv, 'document.querySelector("#runOn option[value=mac]").disabled')
+            where = cdp.ev(sv, 'document.getElementById("runOn").value')
+            check(disabled and says in label and where == "server", f"an agent speaking only {rng}: \"{label}\", disabled, on the server")
+            cdp.ev(sv, 'document.getElementById("stop").click(); start(); 1')
+            check(until(lambda: cdp.ev(sv, "window.apksimStats().frames > 0 && !ws.onMac"), 40), "  and the app runs on the server")
+            cdp.ev(sv, 'document.getElementById("stop").click(); 1')
     finally:
         for p in procs:
             p.terminate()

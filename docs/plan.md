@@ -384,8 +384,10 @@ the display to the page at the browser's pixel ratio (one frame pixel per screen
 second view of it ("Show in Simulator"; its close button hides it while the tab is attached). Phase 4 is built: a
 running session moves between the server and the Mac with no blank frame (the old side streams until the new side's
 first frame, ~0.5 s). The launchd agent is built (`apksim beam install`, opt-in). Phase 5 is built: a move to the Mac takes the app's
-data (the app quits on the server, which packs its slot for the agent to download with a ticket). Left: a Linux agent
-with a sandbox of its own (phase 6), Safari and Firefox.
+data (the app quits on the server, which packs its slot for the agent to download with a ticket). Page and agent now
+say the protocols they speak and use the newest both do; with none in common the menu says which side to update.
+Left: a Linux agent with a sandbox of its own (phase 6, scoped in docs/beam.md: it needs a Linux host install first),
+Safari and Firefox.
 
 ## Not planned
 
