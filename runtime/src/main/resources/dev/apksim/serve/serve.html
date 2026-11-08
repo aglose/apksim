@@ -276,7 +276,14 @@ function onText(t) {
     if (rtt < bestRtt) { bestRtt = rtt; clockOffset = server - (sent + rtt / 2); }
   }
   else if (kind === "q") { $("permission").hidden = false; $("permText").textContent = "The app asks for: " + body; }
-  else if (kind === "x") { ended = true; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
+  else if (kind === "x" && fallbackTries > 0 && fallbackTries < 6 && /^all \d+ sessions are in use/.test(body)) {
+    // The JPEG restart came before the old session let go of its place (it holds it until its instance has exited
+    // and its data is erased): try again, a little later each time.
+    ended = true;
+    log("waiting for the previous session to end (" + fallbackTries + ")");
+    setTimeout(start, 500 * 2 ** fallbackTries++);
+  }
+  else if (kind === "x") { ended = true; fallbackTries = 0; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
 }
 function stats(s) {
   if (s.firstFrameMs >= 0) $("ff").textContent = (s.firstFrameMs / 1000).toFixed(2) + " s";
@@ -316,6 +323,7 @@ function draw(image, w, h) {
   ctx.drawImage(image, 0, 0, w, h);
 }
 function shown(presented, encode, bytes) {
+  fallbackTries = 0;
   if (!onHome) overlay(null);
   const t = now();
   send("ack");
@@ -364,8 +372,10 @@ function unsupported(why) {
   log("video: this browser cannot decode the stream (" + why + "): starting again with JPEG");
   closeDecoder();
   h264Ok = false;
+  fallbackTries = 1;
   start();
 }
+let fallbackTries = 0;  // > 0 while the JPEG restart waits for a free session (busy answers retried with backoff)
 // The decoder belongs to one socket: when that socket closes (Stop, the session ending, a disconnect) it goes too,
 // and an older socket closing never touches a newer session's decoder.
 let decoderSock = null;
