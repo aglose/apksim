@@ -193,6 +193,7 @@ def main():
     ap.add_argument("--allow-origin")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
+    ap.add_argument("--crash-app", help="id of an app that crashes at start (test app: -- --activity .CrashActivity)")
     a = ap.parse_args()
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
@@ -394,11 +395,37 @@ def main():
             gone = True
             break
     check(gone, "closing the tab ends the session")
+    check("apps" in st, "/api/status lists the apps' cache states")
+    if a.crash_app:
+        crash_check(url, token, a.crash_app, a.device)
     print("RESULT " + json.dumps({"firstFrameMs": round(first_ms), "tapMs": round(median(taps)), "dragFps": round(fps),
                                   "frameLatencyMs": round(median(lat)), "encodeMs": round(median(enc), 1),
                                   "kbPerFrame": round(kb), "shaderFps": round(shader_fps), "shaderKb": round(shader_kb),
                                   "shaderEncodeMs": round(shader_enc, 1), "rssMb": s.stats.get("rssMb"), "heapMb": s.stats.get("heapMb")}))
     return finish()
+
+
+def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:")):
+    """A session whose app crashes: the tab gets the reason and the log's last lines, and the log endpoint the tail."""
+    s = Session(url, token, app, device)
+    check(s.ws.status == 101, "crash app: session WebSocket open")
+    s.pump(120, until=lambda: any(t.startswith("x ") for t in s.texts))
+    ended = [t for t in s.texts if t.startswith("x ")]
+    check(bool(ended) and any(e in ended[0] for e in expect), f"the end message says why: {ended[:1]}")
+    logs = [t for t in s.texts if t.startswith("r log: ")]
+    check(0 < len(logs) <= 50 and any("FATAL EXCEPTION" in t for t in logs), f"the log's last lines reach the tab ({len(logs)})")
+    i = next((json.loads(t[2:]) for t in s.texts if t.startswith("i ")), {})
+    status, body = http(url, "/api/sessions/" + str(i.get("id")) + "/log", token)
+    check(status == 200 and b"FATAL EXCEPTION" in body and len(body) <= 70000, f"GET /api/sessions/ID/log has the tail ({status}, {len(body)} bytes)")
+    if token:
+        status, _ = http(url, "/api/sessions/" + str(i.get("id")) + "/log")
+        check(status == 401, f"the log needs the token ({status})")
+    status, _ = http(url, "/api/sessions/../../etc/passwd/log", token)
+    check(status == 404, f"the log path takes only a session id ({status})")
+    left = [f for f in os.listdir(os.environ.get("APKSIM_SERVE_LOGS", ".")) if f.startswith(("core", "hs_err"))] \
+        if os.environ.get("APKSIM_SERVE_LOGS") else []
+    check(not left, f"no core files or crash reports left in the logs folder ({left})")
+    s.ws.s.close()
 
 
 def finish():
