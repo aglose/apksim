@@ -48,6 +48,14 @@ def until(f, seconds):
     return f()
 
 
+def up(port, path):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=2)
+        return True
+    except OSError:
+        return False
+
+
 def server_sessions(url):
     return len(json.load(urllib.request.urlopen(url + "/api/status"))["sessions"])
 
@@ -67,13 +75,13 @@ def main():
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
              subprocess.Popen([apksim, "beam", "--port", str(gp), "--max", "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
     try:
-        time.sleep(3)
+        check(until(lambda: up(sp, "/api/health") and up(gp, "/beam/hello"), 30), "the server and the agent answer")
         app = json.load(urllib.request.urlopen(url + "/api/apps"))[0]["id"]
         procs.append(subprocess.Popen([bp.CHROME, f"--remote-debugging-port={cp}", f"--user-data-dir={prof}", "--no-first-run",
                                        "--no-default-browser-check", "--disable-backgrounding-occluded-windows",
                                        "--disable-renderer-backgrounding", "--window-size=900,1000", "about:blank"],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        time.sleep(2)
+        until(lambda: up(cp, "/json/version"), 20)
         cdp = bp.Cdp(cp)
         cdp.call("Browser.grantPermissions", {"permissions": ["loopbackNetwork"], "origin": url})
 

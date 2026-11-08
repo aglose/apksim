@@ -911,7 +911,7 @@ public final class Serve {
     String sent = r.header("origin");
     String o = sent == null ? null : origin(sent);
     // A page's own answers only, so any page may read them (each says nothing beyond what that page may know).
-    if (o != null) Http.CORS_ORIGIN.set(sent);
+    if (o != null && o.equals(sent)) Http.CORS_ORIGIN.set(o);  // only an origin that is already its validated form
     if (r.method().equals("OPTIONS")) {
       // The browser's preflight for the JSON start and the upload; and Private Network Access's, for browsers that send it.
       Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
