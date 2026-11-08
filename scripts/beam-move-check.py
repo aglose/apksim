@@ -220,6 +220,7 @@ def main():
                 p.wait(15)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait(10)
         subprocess.run([apksim, "beam", "trust", "revoke", url], capture_output=True)
         shutil.rmtree(prof, ignore_errors=True)
     print("beam move check", "passed" if OK else "FAILED")

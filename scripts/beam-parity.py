@@ -362,6 +362,7 @@ def main():
                 p.wait(15)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait(10)
         if server_url not in trusted_before:
             subprocess.run([apksim, "beam", "trust", "revoke", server_url], capture_output=True)
         shutil.rmtree(profile, ignore_errors=True)

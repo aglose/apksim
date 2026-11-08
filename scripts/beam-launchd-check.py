@@ -76,7 +76,11 @@ class StandIn:
         self.sock.listen(16)
         self.port, self.idle, self.proc, self.starts, self.stop = port, idle, None, 0, False
         import threading
-        threading.Thread(target=self.loop, daemon=True).start()
+        # Held while an agent is started and while closing: a start decided just before close() would otherwise
+        # begin after close() looked, and outlive the check (which then deletes its state folder).
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self.loop, daemon=True)
+        self.thread.start()
 
     def loop(self):
         import select
@@ -85,17 +89,24 @@ class StandIn:
                 time.sleep(0.2)
                 continue
             r, _, _ = select.select([self.sock], [], [], 0.2)
-            if r and not self.stop:
-                self.starts += 1
-                self.proc = subprocess.Popen([os.path.join(ROOT, "apksim"), "beam", "--launchd", "--port", str(self.port),
-                                              "--agent-idle", str(self.idle)], stdin=self.sock.fileno(),
-                                             stdout=subprocess.DEVNULL, stderr=open(os.path.join(STATE, "agent.log"), "a"), env=ENV)
+            with self.lock:
+                if r and not self.stop:
+                    self.starts += 1
+                    self.proc = subprocess.Popen([os.path.join(ROOT, "apksim"), "beam", "--launchd", "--port", str(self.port),
+                                                  "--agent-idle", str(self.idle)], stdin=self.sock.fileno(),
+                                                 stdout=subprocess.DEVNULL, stderr=open(os.path.join(STATE, "agent.log"), "a"), env=ENV)
 
     def close(self):
-        self.stop = True
+        with self.lock:
+            self.stop = True  # no start after this
+        self.thread.join(5)
         if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
-            self.proc.wait(20)
+            try:
+                self.proc.wait(20)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(10)
         self.sock.close()
 
 
@@ -164,6 +175,8 @@ def main():
             shutil.rmtree(jobs, ignore_errors=True)
         check(until(lambda: not answers(port), 10), "and nothing answers on its port")
         subprocess.run([os.path.join(ROOT, "apksim"), "--stop-standbys"], env=ENV, capture_output=True)
+        # Its state folder goes only once no agent of it runs (launchd's bootout ends it in the background).
+        check(until(agent_gone, 30), "no agent is left running before its state folder is removed")
         shutil.rmtree(STATE, ignore_errors=True)
     if bc.sc.FAILED:
         print(f"{len(bc.sc.FAILED)} check(s) failed")

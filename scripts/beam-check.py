@@ -382,6 +382,7 @@ def download_checks(apksim, apk, sha, size):
                 p.wait(15)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait(10)
         subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
         shutil.rmtree(state, ignore_errors=True)
 
@@ -414,6 +415,7 @@ def warm_checks(apksim, apk, sha, size):
             g.wait(15)
         except subprocess.TimeoutExpired:
             g.kill()
+            g.wait(10)
         subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
         shutil.rmtree(state, ignore_errors=True)
 
@@ -540,6 +542,7 @@ def data_checks(apksim, apk, sha, size):
                 p.wait(15)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait(10)
         subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
         shutil.rmtree(state, ignore_errors=True)
 
@@ -612,6 +615,7 @@ def stop(p):
         p.wait(20)
     except subprocess.TimeoutExpired:
         p.kill()
+        p.wait(10)  # ended before anything removes its state folder
 
 
 def main():
