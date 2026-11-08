@@ -138,12 +138,17 @@ def main():
 
         ctl("tap 720 1690")
         time.sleep(2)
+        # This display's refresh rate, as the tab sees it (60 Hz or 120): what "its own pace" can reach.
+        refresh = cdp.ev(s3, """new Promise(r => { let n = 0; const t0 = performance.now();
+          const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n * 1000 / (performance.now() - t0)); };
+          requestAnimationFrame(f); })""")
         hidden = fps()
         cdp.call("Page.bringToFront", {}, s2)
         time.sleep(2)
         shown = fps()
         ctl.close()
-        check(hidden <= 3 and shown >= 100, f"a hidden tab's instance draws {hidden:.1f} fps, {shown:.1f} once the tab is back in front")
+        check(hidden <= 3 and shown >= 0.8 * min(refresh, 120),
+              f"a hidden tab's instance draws {hidden:.1f} fps, {shown:.1f} once the tab is back in front (display {refresh:.0f} Hz)")
         for x in (s1, s2, s3):
             cdp.ev(x, 'document.getElementById("stop").click(); 1')
 

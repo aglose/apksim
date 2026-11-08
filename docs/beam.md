@@ -676,7 +676,8 @@ First review:
   what it wrote is flushed; its data slot and `serve-N.device` folder (/sdcard and the Settings values, `SlotDevice`)
   are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files and folders, empty ones too, not the
   slot's `.lock`; at most 50,000 entries, files and folders alike, and 1 GB, the server's own count stopping at that
-  limit) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
+  limit; at most 100,000 entries looked at in all, links and pipes included, each folder's listing counted as it
+  is read) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
   phase 2's, 5 minutes) for `GET /api/beam/data?ticket=T`, which needs no token and serves that pack once its hash
   matches the ticket's. The session then ends without a word (its slot erased as always); packs older than the ticket
   go with a sweep. A session that has no data slot yet answers `h {"error"}` and runs on; a pack that fails answers
@@ -701,7 +702,7 @@ First review:
   into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and
   without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
   roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread) and 1 GB at
-  most, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket, and so
+  most, a name at most 4,096 characters and 64 folders deep, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket, and so
   does a pack naming another package than the build's (read from its manifest, `ApkCache.manifestPackage`: at most 1 MB, where real ones are 21-39 KB; only the first
   element decoded, by Axml, which checks every length, offset and count against its input and caps what it decodes): a site's
   files never land in another app's data folder, the owner's own apps' included. The

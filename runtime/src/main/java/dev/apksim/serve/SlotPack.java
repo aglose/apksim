@@ -33,6 +33,10 @@ import java.util.zip.ZipOutputStream;
 final class SlotPack {
   static final long MAX_BYTES = 1L << 30;
   static final int MAX_FILES = 50_000;
+  /** Entries listed in all, moved or not (links, pipes): what a walk may look at before it gives up. */
+  static final int MAX_LISTED = 2 * MAX_FILES;
+  /** An entry's name at most this long and this many folders deep (a 64 KB name would nest thousands deep). */
+  static final int MAX_NAME = 4096, MAX_DEPTH = 64;
 
   private SlotPack() {}
 
@@ -92,7 +96,7 @@ final class SlotPack {
         z.putNextEntry(new ZipEntry("package"));
         z.write(pkg.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         z.closeEntry();
-        long[] used = {1, 0};  // entries (the package one counted, as unpack counts it), bytes
+        long[] used = {1, 0, 0};  // entries (the package one counted, as unpack counts it), bytes, entries listed
         String name = rel.getFileName().toString();
         add(z, parent, name, "slot/", 0, used, progress);
         add(z, parent, name + ".device", "device/", 0, used, progress);
@@ -117,7 +121,11 @@ final class SlotPack {
     }
     try (d) {
       List<Path> names = new ArrayList<>();
-      for (Path p : d) names.add(p.getFileName());
+      for (Path p : d) {
+        // Counted as listed, not after: one folder of millions of links (which move as nothing) must not be read whole.
+        if (++used[2] > MAX_LISTED) throw new IOException("the app's data has more than " + MAX_LISTED + " entries to look at");
+        names.add(p.getFileName());
+      }
       names.sort(null);
       for (Path n : names) {
         BasicFileAttributes at;
@@ -127,6 +135,7 @@ final class SlotPack {
           continue;  // gone meanwhile
         }
         String entry = prefix + n;
+        if (entry.length() > MAX_NAME) throw new IOException("a name in the app's data is over " + MAX_NAME + " characters");
         if (at.isDirectory()) {
           // Each folder an entry of its own (an empty one would otherwise be lost), counted as unpack counts it.
           if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files and folders to move");
@@ -230,6 +239,7 @@ final class SlotPack {
           throw new IOException("unexpected entry " + name);
         }
         if (rel.isEmpty() || rel.startsWith("/") || rel.contains("\\") || rel.contains("\0")) throw new IOException("bad entry " + name);
+        if (name.length() > MAX_NAME || rel.split("/").length > MAX_DEPTH) throw new IOException("an entry too long or too deep: " + name.substring(0, Math.min(80, name.length())));
         Path to = root.resolve(rel).normalize();
         if (!to.startsWith(root) || to.equals(root)) throw new IOException("entry outside its folder: " + name);
         for (String part : rel.split("/")) {

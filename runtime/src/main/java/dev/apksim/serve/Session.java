@@ -435,9 +435,11 @@ final class Session {
       // must not keep this walking.
       try (Stream<Path> all = Files.walk(root)) {
         var it = all.iterator();
+        long listed = 0;
         while (it.hasNext() && used[0] <= SlotPack.MAX_FILES && used[1] <= SlotPack.MAX_BYTES) {
           Path f = it.next();
           if (f.equals(root)) continue;
+          if (++listed > SlotPack.MAX_LISTED) return "the app's data has more than " + SlotPack.MAX_LISTED + " entries to look at";
           if (Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             used[0]++;
           } else if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
