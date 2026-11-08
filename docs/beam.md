@@ -522,6 +522,12 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
   the same build's cache, regular files and folders only, so what an app writes reaches only later launches of the
   same build. Deleted with the build.
+- **Deleting what an APK could write**: the agent runs outside any sandbox and erases slots, `.device` folders,
+  out folders and moved data a beamed app wrote, while a process the app left running may still write there. Each
+  is deleted through folder handles from its parent down (unlinkat on a SecureDirectoryStream, `SlotPack.deleteTree`
+  and `emptyTree`), never by path: a folder swapped for a link between a walk and a delete by path led that delete
+  outside (a probe racing swaps against the old code lost a file of another folder's within 107 rounds; none in
+  3,460 now). A link anywhere, the slot itself included, is removed alone.
 - **Fail closed**: the launcher runs a beamed instance in the beam profile or inside one, and refuses it otherwise.
   It used to skip the sandbox whenever `APKSIM_SANDBOXED` (meaning "already in one") or `APKSIM_NOCACHE` (training)
   was set, so an agent started from a shell that had either ran sites' APKs unsandboxed, silently. A standby spawned

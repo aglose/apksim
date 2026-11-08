@@ -310,12 +310,91 @@ final class SlotPack {
     return n;
   }
 
+  /**
+   * Deletes a folder and what is in it, never through a link at any level: from its parent's open handle down, each
+   * entry removed relative to its folder's handle (unlinkat, SecureDirectoryStream). The agent runs outside any
+   * sandbox, and a process an APK left running may still write in what is deleted: by path, a folder swapped for a
+   * link between the walk and a delete led that delete outside (a file of the visitor's). Now a swap can only make it
+   * delete the link. A link where the folder itself was is removed alone. Best effort, logged.
+   */
   static void deleteTree(Path dir) {
-    if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) return;
-    try (Stream<Path> all = Files.walk(dir)) {
-      for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+    try {
+      remove(dir, true, java.util.Set.of());
     } catch (IOException | RuntimeException e) {
       System.err.println("[serve] could not remove " + dir + ": " + e);
     }
   }
+
+  /** As {@link #deleteTree}, but keeps the folder itself and the top-level names in `keep` (a slot's `.lock`). */
+  static void emptyTree(Path dir, java.util.Set<String> keep) throws IOException {
+    remove(dir, false, keep);
+  }
+
+  private static void remove(Path dir, boolean self, java.util.Set<String> keep) throws IOException {
+    Path abs = dir.toAbsolutePath().normalize();
+    Path parent = abs.getParent(), name = abs.getFileName();
+    if (parent == null || name == null) throw new IOException("not a folder to remove: " + dir);
+    DirectoryStream<Path> top;
+    try {
+      top = Files.newDirectoryStream(parent);
+    } catch (java.nio.file.NoSuchFileException e) {
+      return;
+    }
+    try (top) {
+      if (!(top instanceof SecureDirectoryStream<Path> p)) throw new IOException("this system cannot remove a folder without following links");
+      BasicFileAttributes at;
+      try {
+        at = p.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
+      } catch (java.nio.file.NoSuchFileException e) {
+        return;
+      }
+      if (!at.isDirectory()) {  // a link (or a file) where the folder was: it alone goes
+        if (self) p.deleteFile(name);
+        return;
+      }
+      clear(p, name, keep, 0);
+      if (self) p.deleteDirectory(name);
+    }
+  }
+
+  /** Empties `parent`'s folder `name` through handles; passes until it is empty (a listing may miss what a delete moved). */
+  private static void clear(SecureDirectoryStream<Path> parent, Path name, java.util.Set<String> keep, int depth) throws IOException {
+    if (depth > 256) throw new IOException("folders nested too deep to remove");
+    for (int pass = 0; pass < 1000; pass++) {
+      List<Path> names = new ArrayList<>();
+      try (SecureDirectoryStream<Path> d = parent.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)) {
+        for (Path n : d) {
+          if (depth == 0 && keep.contains(n.getFileName().toString())) continue;
+          names.add(n.getFileName());
+          if (names.size() >= 10_000) break;  // in batches: a folder of millions is not listed whole
+        }
+        if (names.isEmpty()) return;
+        for (Path n : names) {
+          BasicFileAttributes at;
+          try {
+            at = d.getFileAttributeView(n, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
+          } catch (java.nio.file.NoSuchFileException e) {
+            continue;
+          }
+          try {
+            if (at.isDirectory()) {
+              clear(d, n, java.util.Set.of(), depth + 1);
+              d.deleteDirectory(n);
+            } else {
+              d.deleteFile(n);  // a link is removed, never what it names
+            }
+          } catch (java.nio.file.NoSuchFileException e) {
+            // gone meanwhile
+          } catch (java.nio.file.FileSystemException e) {
+            if (!at.isDirectory()) throw e;
+            d.deleteFile(n);  // swapped for a link since it was looked at: the link goes
+          }
+        }
+      } catch (java.nio.file.NoSuchFileException e) {
+        return;
+      }
+    }
+    throw new IOException("could not empty " + name);
+  }
+
 }

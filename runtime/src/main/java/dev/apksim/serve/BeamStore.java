@@ -408,11 +408,7 @@ final class BeamStore {
           }
           if (l == null) return "it is open (apksim beam run): quit it first";
         }
-        for (Path p : all) {
-          try (Stream<Path> files = Files.walk(p)) {
-            for (Path f : files.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(f);
-          }
-        }
+        for (Path p : all) SlotPack.deleteTree(p);  // never through a link
       } finally {
         for (FileChannel ch : open) ch.close();
       }
@@ -506,14 +502,10 @@ final class BeamStore {
     }
   }
 
-  /** Deletes a folder and what is in it; a link is removed, never followed. Best effort. */
+  /** Deletes a folder and what is in it, never through a link at any level (SlotPack.deleteTree). Best effort. */
   static void deleteTree(Path dir) {
     if (!Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;  // nothing there yet (a build's first cache entry)
-    try (Stream<Path> all = Files.walk(dir)) {
-      for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
-    } catch (IOException | RuntimeException e) {
-      System.err.println("[beam] could not remove " + dir + ": " + e);
-    }
+    SlotPack.deleteTree(dir);
   }
 
   // ---------------------------------------------------------------- apksim beam saved|run|forget|config|sweep

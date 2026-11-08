@@ -1229,13 +1229,7 @@ final class Session {
     } catch (IOException | RuntimeException e) {
       logLine("[beam] could not keep translated classes: " + e);
     }
-    if (Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-      try (Stream<Path> all = Files.walk(out)) {  // walking follows no link: a link is removed, not what it names
-        for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
-      } catch (IOException | RuntimeException e) {
-        logLine("[beam] could not remove " + out + ": " + e);
-      }
-    }
+    SlotPack.deleteTree(out);  // never through a link
   }
 
   private void eraseData() {
@@ -1283,18 +1277,11 @@ final class Session {
         l = null;  // another session's cleanup in this process holds it
       }
       if (l == null) return;  // another instance took the slot already (with --fresh), or is erasing it
-      try (Stream<Path> all = Files.walk(dir)) {
-        for (Path p : all.filter(p -> !p.equals(dir) && !p.equals(lockFile)).sorted(Comparator.reverseOrder()).toList()) {
-          Files.deleteIfExists(p);
-        }
-      }
+      // Through folder handles, never a link at any level (SlotPack.emptyTree): the instance may have left a process
+      // writing there, which could swap a folder for a link between a walk and a delete by path.
+      SlotPack.emptyTree(dir, java.util.Set.of(".lock"));
       // And what the slot kept of the device beside it (SlotDevice: its /sdcard and Settings values).
-      Path device = dir.resolveSibling(dir.getFileName() + ".device");
-      if (Files.isDirectory(device)) {
-        try (Stream<Path> all = Files.walk(device)) {
-          for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
-        }
-      }
+      SlotPack.deleteTree(dir.resolveSibling(dir.getFileName() + ".device"));
       l.release();
     } catch (IOException | RuntimeException e) {
       logLine.accept("[serve] could not erase " + dir + ": " + e);
