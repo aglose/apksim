@@ -604,7 +604,12 @@ final class Session {
     if (t.matches("key [A-Z0-9_]{1,24}( [1-9])?( (ctrl|shift|alt|meta)){0,4}")) return t;
     if (t.matches("back|home|resume")) return t;
     // The tab's display pace (SimWindow.remoteVsync): only how this tab's instance times its frames.
-    if (t.matches("vsync [0-9]{4,5} -?[0-9]{1,5}")) return t;
+    if (t.matches("vsync [0-9]{4,5} -?[0-9]{1,5}")) {
+      // The instance's own limits (SimWindow.remoteVsync): it is not answered, so what it would refuse is refused here.
+      String[] v = t.split(" ");
+      int period = Integer.parseInt(v[1]), shift = Integer.parseInt(v[2]);
+      return period >= 4000 && period <= 50000 && Math.abs(shift) <= period ? t : null;
+    }
     // A frame rate cap: the page asks for 1 while it is hidden (it shows nothing) and 120 when it is back.
     if (t.matches("maxfps ([1-9]|[1-9][0-9]|1[01][0-9]|120)")) return t;
     if (t.matches("rotate (left|right|portrait|landscape)")) return t;

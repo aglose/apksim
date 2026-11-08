@@ -50,7 +50,7 @@ def main():
     apksim = os.path.join(ROOT, "apksim")
     sp, gp, cp = bp.free_port(), bp.free_port(), bp.free_port()
     url = f"http://127.0.0.1:{sp}"
-    subprocess.run([apksim, "beam", "trust", "allow", url], capture_output=True)
+    subprocess.run([apksim, "beam", "trust", "allow", url], capture_output=True, check=True)  # the rest needs it
     prof = tempfile.mkdtemp(prefix="beam-size-chrome-")
     procs = [subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", apk],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),

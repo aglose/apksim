@@ -376,6 +376,11 @@ def main():
     s.ws.send("vsync 8333 -1200 x")
     s.pump(0.5)
     check(any(t.startswith("r refused: vsync") for t in s.texts[texts:]), "a malformed vsync is refused")
+    texts = len(s.texts)
+    s.ws.send("vsync 3000 0")
+    s.ws.send("vsync 8333 9000")
+    s.pump(0.5)
+    check(sum(t.startswith("r refused: vsync") for t in s.texts[texts:]) == 2, "a vsync out of the instance's range is refused")
 
     # The test app's FAB counts taps: each tap changes the screen.
     taps = []
