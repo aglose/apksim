@@ -528,8 +528,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   folder refused) and asks a running beamed instance
   to write a screenshot into the agent's folder (refused) and into its scratch (works); its 1c checks find nothing a
   beamed instance wrote in the shared caches.
-- **Not covered**: two beamed sessions at once can read each other's `beam-N` slot (a standby's profile cannot name
-  the slot a launch will take); an APK can read other builds' APKs in `beam/uploads` (other sites' published apps);
+- **Not covered**: two beamed sessions at once can read and write each other's `beam-N` and `bm<12 hex>-N` slots
+  (a standby's profile cannot name the slot a launch will take; a moved session's `bm` name is random, and no beamed
+  app can list `cache/data`, so it would have to guess 48 bits); an APK can read other builds' APKs in `beam/uploads` (other sites' published apps);
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)

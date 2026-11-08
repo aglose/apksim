@@ -51,6 +51,8 @@ final class Beam {
   private final Map<String, Long> deniedUntil = new ConcurrentHashMap<>();
   /** Builds whose grant was just used (sha256 -> when): its session is being set up, and the sweep must not miss it. */
   private final Map<String, Long> justUsed = new ConcurrentHashMap<>();
+  /** Moved-data slots being unpacked now, before their grant exists (the sweep must not take them meanwhile). */
+  final java.util.Set<String> importing = ConcurrentHashMap.newKeySet();
   /** Moved-data slots whose grant was just used (name -> when): its session is being set up. */
   private final Map<String, Long> seedsTaken = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
@@ -200,6 +202,7 @@ final class Beam {
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
     grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra));
+    if (kind == Kind.SESSION && extra != null) importing.remove(extra);  // the grant owns it now
     return token;
   }
 
@@ -214,7 +217,7 @@ final class Beam {
   /** Whether a live session grant owns this moved-data slot (the hourly sweep leaves it). */
   boolean ownsSeed(String name) {
     seedsTaken.values().removeIf(t -> t < System.currentTimeMillis() - 30_000);
-    return seedsTaken.containsKey(name) || grants.values().stream().anyMatch(g -> g.kind == Kind.SESSION && name.equals(g.extra));
+    return importing.contains(name) || seedsTaken.containsKey(name) || grants.values().stream().anyMatch(g -> g.kind == Kind.SESSION && name.equals(g.extra));
   }
 
   private void dropSeed(Grant g) {

@@ -1059,7 +1059,13 @@ public final class Serve {
           || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
         throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
       }
-      SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
+      agent.importing.add(name);  // until its grant owns it (the caller makes it next); the sweep leaves it
+      try {
+        SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
+      } catch (IOException | RuntimeException e) {
+        agent.importing.remove(name);
+        throw e;
+      }
       System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%n", origin, Files.size(zip) >> 10, name);
       return name;
     } finally {

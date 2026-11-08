@@ -1013,6 +1013,11 @@ final class Session {
       if (!Files.exists(given, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
       Files.createDirectories(out.getParent());
       Files.move(given, out, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      // A move keeps its time, which the sweep reads (it removes what an ended agent left an hour ago): now, so a
+      // session that ran for hours is not swept while this reads it. A link stays untouched (NOFOLLOW below).
+      if (Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        Files.setLastModifiedTime(out, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+      }
     } catch (IOException | RuntimeException e) {
       logLine("[beam] could not take the instance's caches: " + e);
       return;
