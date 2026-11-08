@@ -108,7 +108,8 @@ final class Session {
     this.serve = serve;
     this.id = id;
     this.app = app;
-    this.options = options;
+    // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
+    this.options = new java.util.concurrent.ConcurrentHashMap<>(options);
     this.ws = ws;
     ws.onPong = this::ponged;
     // The tab's device (checked by Serve), else the app's own default, else the phone.
@@ -232,6 +233,10 @@ final class Session {
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
+    // A beamed instance's identity for what the agent does to its files (its caches, beamCaches): the process the
+    // kernel says listens on its control port, which Main opens before any app code runs. Never what it prints: the
+    // app's own output could name another instance.
+    if (serve.beam) beamPid = listenerPid(p);
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
@@ -332,7 +337,7 @@ final class Session {
         m = CONTROL_PORT.matcher(line);
         if (m.find()) port.complete(Integer.parseInt(m.group(1)));
         m = DATA_SLOT.matcher(line);
-        if (m.find()) {
+        if (m.find() && dataDir == null) {  // the first only: later lines may be the app's own output
           dataDir = Path.of(m.group(1));
           pid = Long.parseLong(m.group(2));
         }
@@ -575,6 +580,7 @@ final class Session {
     }
     // The tab's pace and its visibility are not someone using it.
     if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
+    trackSetting(cmd);
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
@@ -614,6 +620,19 @@ final class Session {
       return s.isEmpty() ? null : "type " + s;
     }
     return null;
+  }
+
+  /** The settings a kept session records (BeamStore.Leaving): as the tab last set them, not as it started. */
+  private void trackSetting(String cmd) {
+    if (cmd.startsWith("appearance ")) {
+      String v = cmd.substring(11);
+      if (v.equals("toggle")) v = "dark".equals(options.get("appearance")) ? "light" : "dark";
+      options.put("appearance", v);
+    } else if (cmd.startsWith("locale ")) {
+      options.put("locale", cmd.substring(7));
+    } else if (cmd.startsWith("fontscale ")) {
+      options.put("fontscale", cmd.substring(10));
+    }
   }
 
   /**
@@ -847,8 +866,30 @@ final class Session {
    * a link; the APK cache entry of this build's file as a whole (a link in it stays a link: the next instance's sandbox
    * reads nothing through it, and the agent never follows one). The out folder goes either way.
    */
+  /** The PID of the process listening on this loopback port (lsof, the kernel's answer), or -1. */
+  private static long listenerPid(int port) {
+    try {
+      Process l = new ProcessBuilder("lsof", "-nP", "-iTCP:" + port, "-sTCP:LISTEN", "-t").redirectErrorStream(true).start();
+      String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+      l.waitFor(5, TimeUnit.SECONDS);
+      return out.matches("\\d{1,10}") ? Long.parseLong(out) : -1;  // one listener, or none known
+    } catch (IOException | RuntimeException e) {
+      return -1;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return -1;
+    }
+  }
+
+  /** {@link #listenerPid} of a beamed instance's control port, else -1 (then its caches are not kept). */
+  private volatile long beamPid = -1;
+
   private void beamCaches() {
-    if (pid <= 0) return;
+    long pid = beamPid;
+    if (pid <= 0) {
+      logLine("[beam] the instance's process was not known: its caches are not kept");
+      return;
+    }
     Path given = serve.state.resolve("beam/out").resolve(Long.toString(pid));
     String build = serve.catalog.buildHash(app.path());
     // Out of the instance's reach first: renamed into the agent's own folder, which no beamed instance may write (a

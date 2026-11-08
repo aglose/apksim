@@ -487,7 +487,8 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
 
 - **Writes**: everything denied first, then only its own scratch (`STATE/tmp/<pid>`: the JVM keeps the launcher's PID,
   so the profile can name it), its own out folder (`STATE/beam/out/<pid>`), `beam-N` data slots with their `.device`
-  folders, its standby's socket, Metal's shader cache and `/dev/null`: not apksim's own files wherever it is installed
+  folders (and making an app's folder for them, create only: a write on the folder would let it rename another app's
+  folder into its scratch), its standby's socket, Metal's shader cache and `/dev/null`: not apksim's own files wherever it is installed
   (a Homebrew install is outside the home folder), the temp folder (the launcher's link to its libraries is there),
   `/tmp`, or anything another process runs or loads.
 - **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a
@@ -509,10 +510,12 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame.
 - **Cost**: none measured. First frame in the tab 0.17 s, as before (0.29 s while the APK cache entry was rebuilt in
   scratch each launch, 0.5 s while a read-only seed's packs were dropped by a write of their modification time).
-- **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (22: its scratch, slot, the jar
+- **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (25: its scratch, slot, a new app
+  folder, the jar
   and the internet allowed; the trust file, autofill, another app's data, the shared class cache, another process's
   scratch (writing and reading), the home folder, apksim's own files, the temp folder, `/tmp`, a listening loopback
-  port over IPv4 and as `::ffff:127.0.0.1` over IPv6, and a standby socket refused) and asks a running beamed instance
+  port over IPv4 and as `::ffff:127.0.0.1` over IPv6, a standby socket, and renaming or removing another app's data
+  folder refused) and asks a running beamed instance
   to write a screenshot into the agent's folder (refused) and into its scratch (works); its 1c checks find nothing a
   beamed instance wrote in the shared caches.
 - **Not covered**: two beamed sessions at once can read each other's `beam-N` slot (a standby's profile cannot name
@@ -520,6 +523,12 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
+
+Third review: package folders are create-only in the beam profile (renaming one into scratch read it); the agent's
+identity for an instance's files is the process the kernel reports on its control port (`lsof`), not a PID the app
+could print; `beam run` holds a lock `forget` and the expiry sweep need exclusively; a kept session records the
+appearance, locale and font scale its tab last set, which `run` applies after the app's own options; the benches make
+sure a session is on this Mac and read the state folder the launcher uses.
 
 Second review: the beam profile denies every write but its own (above), reads of other instances' scratch, and IPv6
 (mapped loopback); the agent renames an instance's out folder into its own `beam/import/` before reading it, so a link

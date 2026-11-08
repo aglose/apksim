@@ -75,7 +75,7 @@ def main():
         t0 = time.time()
         check(until(lambda: _ev(cdp, s, "window.apksimStats().frames > 0 && !document.getElementById('macRow').hidden"), 40),
               f"a session on this Mac ({time.time() - t0:.2f} s), its display controls shown")
-        port, pid = bp.session_port(cdp, s, os.path.join(ROOT, "work"))
+        port, pid = bp.session_port(cdp, s, bp.state_dir())
         ctl = bp.Control(port)
         cdp.ev(s, 'document.getElementById("fitMode").value = "fill"; document.getElementById("fitMode").onchange(); 1')
 

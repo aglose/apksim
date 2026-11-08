@@ -141,6 +141,7 @@ def sandbox_checks(apksim, apk):
     other = os.path.join(STATE, "cache", "data", "dev.example", "default")
     os.makedirs(other, exist_ok=True)
     os.makedirs(os.path.join(STATE, "cache", "data", "dev.example", "beam-0"), exist_ok=True)
+    os.makedirs(os.path.join(STATE, "cache", "data", "dev.example.empty"), exist_ok=True)
     for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x")):
         if not os.path.exists(f):
             open(f, "w").write("secret\n")
@@ -166,6 +167,11 @@ def sandbox_checks(apksim, apk):
         ("denied", "write apksim's own files (an install outside the home folder)", "touch $R/work/beam-check-probe"),
         ("denied", "read another process's scratch", "cat $S/tmp/1/shared.txt"),
         ("denied", "write /tmp", "touch /private/tmp/beam-check-probe"),
+        # A new app's folder may be made (for its beam-N slots), but no app's folder renamed (into its scratch, to read
+        # it there) or removed.
+        ("allowed", "make a new app's data folder", "mkdir $S/cache/data/dev.example.new$$"),
+        ("denied", "rename another app's data folder into its scratch", "mv $S/cache/data/dev.example $S/tmp/$$/stolen"),
+        ("denied", "remove another app's data folder", "rmdir $S/cache/data/dev.example.empty"),
     ]
     script = "S=$1; R=$2\n" + "\n".join(
         f"if ( {cmd} ) >/dev/null 2>&1; then echo 'allowed {i}'; else echo 'denied {i}'; fi" for i, (_, _, cmd) in enumerate(probes))
@@ -582,11 +588,15 @@ def main():
         s5.pump(2)
         after = s5.after([f"touch down {WRITE[0]} {WRITE[1]}", f"touch up {WRITE[0]} {WRITE[1]}"], 2)
         check(len(after) > 0, "keep: Write on the slot screen changes it")
+        s5.ws.send("appearance dark")  # a setting changed in the tab: the record keeps what the session ended with
+        s5.pump(1.5)
         check(close_session(s5), "keep: the kept session ends")
         check(until(lambda: len(saved_ids(apksim)) == 1, 10), "keep: apksim beam saved lists it")
         ids = saved_ids(apksim)
         sid = ids[0] if ids else "none"
         check(os.path.isdir(os.path.join(STATE, "cache", "data", PKG, f"k{sid}-0")), f"keep: its slot is renamed to k{sid}-0")
+        rec = json.load(open(os.path.join(STATE, "beam", "saved", sid + ".json"))) if ids else {}
+        check(rec.get("appearance") == "dark", f"keep: the record has the appearance the tab last set ({rec.get('appearance')})")
         time.sleep(2)
         check(os.path.exists(build_file(sha)), "keep: a saved session's build survives the sweep (keep-days 0)")
         stop(g)

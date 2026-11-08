@@ -254,6 +254,10 @@ def tab_run(cdp, server_url, app_id, scenarios, seconds, state, agent_pid, chrom
         time.sleep(0.05)
     out = {"firstFrameS": round(time.time() - t0, 2), "runOn": cdp.ev(s, 'document.getElementById("runOn").value'),
            "codec": cdp.ev(s, "window.apksimStats().codec")}
+    # On this Mac, not a fallback to the server (the menu would still say "On this Mac").
+    agent_port = cdp.ev(s, "beam.port")
+    if not cdp.ev(s, f"!!(ws && ws.url.startsWith('ws://127.0.0.1:{agent_port}/') && !ended && window.apksimStats().frames > 0)"):
+        raise RuntimeError("the tab's session is not on this Mac: " + cdp.ev(s, 'document.getElementById("log").textContent')[-300:])
     port, pid = session_port(cdp, s, state)
     ctl = Control(port)
     time.sleep(2)

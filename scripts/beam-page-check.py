@@ -74,7 +74,7 @@ try:
           "the second, refused by the full agent, runs on the server (" + log3.replace("\n", " | ")[-160:] + ")")
     # 3. A hidden tab: its instance draws a frame a second; back in front, at its own pace again. The first tab (on this
     # Mac) shows the Shader tab, which never stops animating, while the third is in front.
-    port, pid = bp.session_port(cdp, s2, os.path.join(ROOT, "work"))
+    port, pid = bp.session_port(cdp, s2, bp.state_dir())
     ctl = bp.Control(port)
     import re
 

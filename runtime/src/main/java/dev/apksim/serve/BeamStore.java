@@ -344,11 +344,36 @@ final class BeamStore {
     return total;
   }
 
+  /** `saved/<id>.lock`: shared by each `run` of the session while it runs, exclusive to `forget`. */
+  FileChannel sessionLock(String id) throws IOException {
+    Files.createDirectories(savedDir);
+    return FileChannel.open(savedDir.resolve(id + ".lock"), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+  }
+
   /**
-   * Erases a saved session: its slots (none may be open: `run` holds its slot's lock), then its record. Null when it
-   * is gone, else why it was not.
+   * Erases a saved session: its slots (none may be open: `run` holds the session's lock and its slot's), then its
+   * record. Null when it is gone, else why it was not.
    */
   String forget(Map<String, Object> rec) {
+    String sid = String.valueOf(rec.get("id"));
+    if (!sid.matches("[0-9a-f]{12}")) return "not a saved session";
+    try (FileChannel lockCh = sessionLock(sid)) {
+      FileLock own;
+      try {
+        own = lockCh.tryLock();
+      } catch (OverlappingFileLockException e) {
+        own = null;
+      }
+      if (own == null) return "it is open (apksim beam run): quit it first";
+      String why = forgetLocked(rec);
+      if (why == null) Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
+      return why;
+    } catch (IOException e) {
+      return e.toString();
+    }
+  }
+
+  private String forgetLocked(Map<String, Object> rec) {
     try {
       List<Path> all = slots(rec);
       List<FileChannel> open = new ArrayList<>();
@@ -511,26 +536,36 @@ final class BeamStore {
           return 1;
         }
         List<String> cmdLine = new ArrayList<>(List.of(launcher.toString(), "--data-slots", "k" + r.get("id"), "--no-autofill"));
-        if (r.get("device") instanceof String d) cmdLine.addAll(List.of("--device", d));
-        if (r.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) cmdLine.addAll(List.of("--appearance", a));
-        if (r.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmdLine.addAll(List.of("--locale", l));
-        if (r.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) cmdLine.addAll(List.of("--font-scale", f));
-        if (r.get("permissions") instanceof String p && (p.equals("grant") || p.equals("deny"))) cmdLine.addAll(List.of("--permissions", p));
         List<String> launch = new ArrayList<>();
         if (r.get("launch") instanceof List<?> l) for (Object o : l) launch.add(String.valueOf(o));
-        // Checked again (the record is a file anyone here could edit). As a session ran them: the app's own --device was
-        // its default, and the session's device is the one recorded; options given here come last and win.
+        // Checked again (the record is a file anyone here could edit). First the app's own options (its --device was its
+        // default: the session's device is recorded), then what the session ended with (device, appearance, locale,
+        // font scale, as its tab last set them), then options given here, which win.
         List<String> own = Catalog.launchOptions(launch);
         for (int i = 0; i < own.size(); i++) {
           if (own.get(i).equals("--device") && r.get("device") instanceof String) i++;
           else cmdLine.add(own.get(i));
         }
+        if (r.get("device") instanceof String d) cmdLine.addAll(List.of("--device", d));
+        if (r.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) cmdLine.addAll(List.of("--appearance", a));
+        if (r.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmdLine.addAll(List.of("--locale", l));
+        if (r.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) cmdLine.addAll(List.of("--font-scale", f));
+        if (r.get("permissions") instanceof String p && (p.equals("grant") || p.equals("deny"))) cmdLine.addAll(List.of("--permissions", p));
         cmdLine.addAll(args.subList(1, args.size()));
         cmdLine.add(catalog.buildFile(sha).toString());
-        store.used(String.valueOf(r.get("id")));
-        int code = new ProcessBuilder(cmdLine).inheritIO().start().waitFor();
-        store.used(String.valueOf(r.get("id")));
-        return code;
+        // Held (shared: runs of one session side by side) until the launch ends: forget and the expiry sweep take it
+        // exclusively, so neither erases a session that is open or opening.
+        try (FileChannel ch = store.sessionLock(String.valueOf(r.get("id")))) {
+          FileLock held = ch.tryLock(0, Long.MAX_VALUE, true);
+          if (held == null) {
+            System.err.println("apksim beam run: " + r.get("id") + " is being forgotten");
+            return 1;
+          }
+          store.used(String.valueOf(r.get("id")));
+          int code = new ProcessBuilder(cmdLine).inheritIO().start().waitFor();
+          store.used(String.valueOf(r.get("id")));
+          return code;
+        }
       }
       case "forget" -> {
         if (args.size() != 1) return usage();
