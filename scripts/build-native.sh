@@ -14,6 +14,10 @@ clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -frame
 clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreFoundation -framework Accelerate \
   -o "$ROOT/work/runtime/libvtdecoder.dylib.new" "$ROOT/native/videotoolbox.m"
+# apksim serve's H.264 stream (dev.apksim.video.H264Encoder).
+clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
+  -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreFoundation \
+  -o "$ROOT/work/runtime/libh264enc.dylib.new" "$ROOT/native/h264enc.m"
 clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
   -framework AudioToolbox -framework CoreAudio -framework Foundation \
   -o "$ROOT/work/runtime/libsimaudio.dylib.new" "$ROOT/native/audio.m"
@@ -24,4 +28,4 @@ clang -O2 -o "$ROOT/work/runtime/apksim-client.new" "$ROOT/native/apksim-client.
 clang -O2 -dynamiclib -o "$ROOT/work/runtime/libloopback.dylib.new" "$ROOT/native/loopback.c"
 mv -f "$ROOT/work/runtime/apksim-client.new" "$ROOT/work/runtime/apksim-client"
 # Rename into place, so running instances keep the libraries they mapped.
-for l in libsimwindow libelfloader libgpushader libvtdecoder libsimaudio libstandby libloopback; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
+for l in libsimwindow libelfloader libgpushader libvtdecoder libh264enc libsimaudio libstandby libloopback; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
