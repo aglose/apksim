@@ -233,10 +233,10 @@ final class Session {
     });
     int p = port.get(serve.launchTimeoutSeconds, TimeUnit.SECONDS);
     control = connect(p);
-    // A beamed instance's identity for what the agent does to its files (its caches, beamCaches): the process the
-    // kernel says listens on its control port, which Main opens before any app code runs. Never what it prints: the
-    // app's own output could name another instance.
-    if (serve.beam) beamPid = listenerPid(p);
+    // The instance's identity for what serve or the agent does to its process and files (ending it, a beamed one's
+    // caches): the process the kernel says listens on its control port, which Main opens before any app code runs.
+    // Never what it prints: the app's own output could name another process.
+    instancePid = listenerPid(p);
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
@@ -299,11 +299,29 @@ final class Session {
     stop(why);
   }
 
-  /** After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does. */
-  static void endJvm(long pid) {
-    if (pid <= 0) return;
+  /**
+   * Whether this PID is an apksim JVM that launched this APK: its scratch's launch.info, which Main writes before any app
+   * code runs, names it. A PID read from an instance's output is the app's to forge.
+   */
+  static boolean launched(Serve serve, long pid, Path apk) {
+    try {
+      Path info = serve.state.resolve("tmp").resolve(Long.toString(pid)).resolve("launch.info");
+      if (!Files.isRegularFile(info, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+      List<String> lines = Files.readAllLines(info);
+      return !lines.isEmpty() && lines.get(0).equals("apk=" + apk.toAbsolutePath())
+          && ProcessHandle.of(pid).flatMap(h -> h.info().command()).map(c -> c.contains("java")).orElse(false);
+    } catch (IOException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does; only one that
+   * {@link #launched} this APK.
+   */
+  static void endJvm(Serve serve, long pid, Path apk) {
+    if (pid <= 0 || !launched(serve, pid, apk)) return;
     ProcessHandle.of(pid).ifPresent(h -> {
-      if (!h.info().command().map(c -> c.contains("java")).orElse(false)) return;
       try {
         h.onExit().get(5, TimeUnit.SECONDS);
       } catch (Exception e) {
@@ -834,15 +852,16 @@ final class Session {
         p.destroy();
         if (!p.waitFor(3, TimeUnit.SECONDS)) p.destroyForcibly();
       }
-      // A warm launch runs in the standby's JVM, outside our child's process tree: make sure it has gone too.
-      if (pid > 0) {
-        ProcessHandle.of(pid).ifPresent(h -> {
-          if (h.info().command().map(c -> c.contains("java")).orElse(false)) {
-            try {
-              h.onExit().get(5, TimeUnit.SECONDS);
-            } catch (Exception e) {
-              h.destroyForcibly();
-            }
+      // A warm launch runs in the standby's JVM, outside our child's process tree: make sure it has gone too. That
+      // JVM as the kernel knows it (the control port's listener), else the one the instance's output named if its own
+      // launch.info says it launched this APK: the output alone is the app's to write, and could name any process.
+      long jvm = instancePid > 0 ? instancePid : pid;
+      if (jvm > 0 && (jvm == instancePid || launched(serve, jvm, app.path()))) {
+        ProcessHandle.of(jvm).ifPresent(h -> {
+          try {
+            h.onExit().get(5, TimeUnit.SECONDS);
+          } catch (Exception e) {
+            h.destroyForcibly();
           }
         });
       }
@@ -892,7 +911,7 @@ final class Session {
    * agent read another file through a link and show its comment lines to the page.
    */
   private List<String> beamHsErr() {
-    long bp = beamPid;
+    long bp = instancePid;
     if (bp <= 0) return List.of();
     Path src = serve.state.resolve("tmp").resolve(Long.toString(bp)).resolve("hs_err_pid" + bp + ".log");
     Path dir = serve.state.resolve("beam/import").resolve("crash-" + bp + "-" + Long.toHexString(System.nanoTime()));
@@ -910,11 +929,11 @@ final class Session {
     }
   }
 
-  /** {@link #listenerPid} of a beamed instance's control port, else -1 (then its caches are not kept). */
-  private volatile long beamPid = -1;
+  /** {@link #listenerPid} of the instance's control port, else -1 (then a beamed one's caches are not kept). */
+  private volatile long instancePid = -1;
 
   private void beamCaches() {
-    long pid = beamPid;
+    long pid = instancePid;
     if (pid <= 0) {
       logLine("[beam] the instance's process was not known: its caches are not kept");
       return;

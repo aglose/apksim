@@ -155,7 +155,7 @@ final class Warmer {
         p.destroyForcibly();
         p.waitFor(5, TimeUnit.SECONDS);
       }
-      Session.endJvm(j.jvmPid);  // a warm launch: the standby's JVM may still be flushing after its client went
+      Session.endJvm(serve, j.jvmPid, j.apk);  // a warm launch: the standby's JVM may still be flushing after its client went
       // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
       if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
     }
@@ -169,7 +169,7 @@ final class Warmer {
         for (String line; (line = r.readLine()) != null; ) {
           reason.line(line);
           Matcher ds = DATA_SLOT.matcher(line);
-          if (ds.find()) {
+          if (ds.find() && slot.get() == null) {  // the first only: later lines may be the app's own output
             slot.set(Path.of(ds.group(1)));
             j.jvmPid = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
           }

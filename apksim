@@ -397,7 +397,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     # trust and settings, saved sessions, serve's files, autofill sign-ins, other apps' data and caches, or another
     # process's scratch (a path's metadata only: resolving the APK's path stats the folders above it).
     # Network: what the Mac reaches over IPv4, but not loopback (other instances' control ports, the agent) and no
-    # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets).
+    # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets); no
+    # local socket but the resolver's and syslog's (not ssh-agent's, a container engine's or a standby's).
     RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
     RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
     QS="$(printf '%s' "$RS" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
@@ -417,7 +418,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
 (allow file-read-metadata (subpath \"$RS\"))
 (deny network-outbound (remote ip \"localhost:*\"))
 (deny network-outbound (remote tcp6 \"*:*\") (remote udp6 \"*:*\"))
-(deny network-outbound (remote unix-socket (path-regex #\"/apksim-standby-\")))"
+(deny network-outbound (remote unix-socket))
+(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\") (path-literal \"/private/var/run/syslog\")))"
     EXTRA+=("-Djava.net.preferIPv4Stack=true")
     # Its crash report where it may write (its scratch), for the agent to summarise (Session.beamHsErr).
     EXTRA+=("-XX:ErrorFile=$RS/tmp/$$/hs_err_pid%p.log")

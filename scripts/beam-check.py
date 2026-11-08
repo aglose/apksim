@@ -137,6 +137,14 @@ def sandbox_checks(apksim, apk):
         pass
     unix.bind(standby)
     unix.listen(1)
+    other_sock = os.path.join(tempfile.gettempdir(), f"beam-check-agent{os.getpid()}.sock")
+    agent_like = socket.socket(socket.AF_UNIX)
+    try:
+        os.unlink(other_sock)
+    except OSError:
+        pass
+    agent_like.bind(other_sock)
+    agent_like.listen(1)
     os.makedirs(os.path.join(STATE, "beam"), exist_ok=True)
     os.makedirs(os.path.join(STATE, "autofill"), exist_ok=True)
     other = os.path.join(STATE, "cache", "data", "dev.example", "default")
@@ -162,6 +170,8 @@ def sandbox_checks(apksim, apk):
         ("denied", "list the home folder", "ls $HOME"),
         ("denied", "connect to a loopback port (another instance, the agent)", f"nc -z -w 2 127.0.0.1 {lport}"),
         ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
+        ("denied", "connect to any other local socket (an ssh-agent's, a container engine's)", f"nc -U -z {other_sock}"),
+        ("allowed", "look a name up through the system resolver", "dscacheutil -q host -a name example.com | grep -q ip_address"),
         # The JDK's dual-stack sockets reach 127.0.0.1 as ::ffff:127.0.0.1, which the loopback rule alone let through.
         ("denied", "connect to loopback as ::ffff:127.0.0.1 (IPv6)", f"nc -6 -z -w 2 ::ffff:127.0.0.1 {lport}"),
         ("denied", "write the temp folder (the launcher's link to its libraries is there)", "touch ${TMPDIR:-/tmp}/beam-check-probe"),
@@ -187,6 +197,8 @@ def sandbox_checks(apksim, apk):
     listener.close()
     unix.close()
     os.unlink(standby)
+    agent_like.close()
+    os.unlink(other_sock)
 
 
 def sh_quote(s):

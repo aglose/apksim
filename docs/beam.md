@@ -500,7 +500,8 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   instances' control ports, the agent: a non-browser client could forge an `Origin`), no IPv6 (an IPv6 socket reaches
   loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with
   `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
-  socket (it would run an APK in the ordinary sandbox).
+  socket (it would run an APK in the ordinary sandbox), nor any other local socket but the resolver's
+  (`mDNSResponder`) and `syslog`: not an `ssh-agent`'s (signing with the visitor's keys) or a container engine's.
 - **Clipboard**: the app's clipboard does not follow the Mac's (an ordinary instance's does, both ways): a site's app
   would read whatever the visitor copies, passwords included, and could write to it. Cmd+V in the shown simulator
   window, which only the visitor can press there, still types it in.
@@ -526,6 +527,11 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
+
+Fifth review (its summary): serve and the agent end only the JVM the kernel reports on an instance's control port
+(else one whose own launch.info names this APK), never a PID the app could print (it named any "java" process, the
+IDE's or the agent's own); the beam profile refuses local sockets but the resolver's and syslog's (ssh-agent's or a
+container engine's were open).
 
 Fourth review (its summary, no inline issues): beamed instances, which have a window since phase 3, no longer share
 the Mac's clipboard; `trust.json` is changed under a lock the agent and `apksim beam trust` share.
