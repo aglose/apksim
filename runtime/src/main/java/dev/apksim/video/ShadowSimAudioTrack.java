@@ -30,6 +30,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   private int using;
   private ByteBuffer scratch;
   private int frameBytes;
+  private float volume = 1f;  // guarded by lock
 
   /** The CoreAudio stream, made on first use, or 0 when this track stays with Robolectric. */
   private long out() {
@@ -48,7 +49,10 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       return 0;
     }
     frameBytes = channels * (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : encoding == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2);
-    SimAudio.nativeOutVolume(out, 1f, SimAudio.muted());
+    // Registered before the mute state is read, all under [lock]: a concurrent `audio mute` either finds this track
+    // (and waits for the lock) or ran before the read below, which then sees it.
+    SimAudio.track(this, true);
+    SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
     STATS.incrementAndGet(0);
     return out;
   }
@@ -207,14 +211,20 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     return AudioTrack.SUCCESS;
   }
 
+  /** Applies the mute state in force to this track's stream, if it has one. */
+  void remute() {
+    synchronized (lock) {
+      if (out != 0) SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
+    }
+  }
+
   @Implementation
   protected void native_setVolume(float left, float right) {
-    long o = use();
-    if (o == 0) return;
-    try {
-      SimAudio.nativeOutVolume(o, Math.max(left, right), SimAudio.muted());
-    } finally {
-      done();
+    // The volume, the mute state and the native call under one lock, so a stale mute state cannot land after
+    // `audio mute` has updated the stream (release clears [out] under the same lock).
+    synchronized (lock) {
+      volume = Math.max(left, right);
+      if (out() != 0) SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
     }
   }
 
@@ -230,6 +240,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       o = out;
       if (o == 0) return;
       out = 0;
+      SimAudio.track(this, false);
       SimAudio.nativeOutPlay(o, false);
     }
     synchronized (lock) {

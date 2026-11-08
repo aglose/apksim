@@ -4,8 +4,8 @@ package dev.apksim;
  * Per-instance switches for what an instance spends on things a journey may not need: the frame rate (--max-fps),
  * video (--video on|blank|off) and sound (--audio on|mute|off). Read from the launch's properties on first use, and
  * again by {@link #load} when a standby takes a launch (its warm-up read the standby's own), before the app's
- * Application exists. The {@code maxfps} and {@code video} commands change the first two
- * while the instance runs.
+ * Application exists. The {@code maxfps}, {@code video} and {@code audio} commands change them
+ * while the instance runs (off is launch only), as {@code animscale} does the animation speed.
  *
  * <ul>
  *   <li>max fps: at most this many frames a second (1-120) instead of 120 Hz or the display's vsync, the clock still
@@ -99,6 +99,20 @@ public final class Features {
     }
     video = v;
     return "video " + v.name().toLowerCase(java.util.Locale.ROOT);
+  }
+
+  /** {@code audio [on|mute]}: reports or sets it; open tracks follow at once (off is a launch option, as video off). */
+  static String audioCommand(String[] a) {
+    ensureLoaded();
+    if (a.length > 1) {
+      Audio m = parse(Audio.class, a[1]);
+      if (m == Audio.OFF || audio == Audio.OFF) {
+        return "error: audio off is a launch option (--audio off): players keep the codec list they read";
+      }
+      audio = m;
+      dev.apksim.video.SimAudio.remuteAll();
+    }
+    return "audio " + audio.name().toLowerCase(java.util.Locale.ROOT);
   }
 
   /** One line for `stats`-style reports. */
