@@ -150,6 +150,8 @@ final class Warmer {
     String build = serve.beam ? serve.catalog.buildHash(j.apk) : null;
     if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
     cmd.addAll(j.app.launch());
+    // As the build's sessions get it (issue 171): an app loading such a library at startup would fail its warm-up.
+    if (serve.beam) SharedDataLibs.addFlag(cmd, j.apk, build, j.app.name(), System.err::println);
     cmd.add(j.apk.toString());
     Files.createDirectories(serve.logs);
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))

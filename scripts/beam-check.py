@@ -406,6 +406,10 @@ def warm_checks(apksim, apk, sha, size):
         warmed = until(lambda: "[serve] warmed" in open(log.name).read() or "warming" in open(log.name).read() and "failed" in open(log.name).read(), 300)
         text = open(log.name).read()
         check(warmed and "[serve] warmed" in text, "warm: the agent warms the build (" + next((l for l in text.splitlines() if "warm" in l and "fail" in l), "warmed") + ")")
+        with zipfile.ZipFile(apk) as z:
+            conflict = "lib/arm64-v8a/libpagefixturenorelro.so" in z.namelist()
+        check(("launching with --move-shared-data" in text) == conflict,
+              "warm: the warm-up adds --move-shared-data as a session does" if conflict else "warm: no --move-shared-data")
         check(until(lambda: bool(classes()) and bool(entry()), 10), f"warm: its translated classes and APK cache entry are the build's ({len(classes())} packs, {len(entry())} entries)")
         out = os.path.join(state, "beam", "out")
         check(until(lambda: not os.listdir(out) if os.path.isdir(out) else True, 10), "warm: its out folder is gone")
