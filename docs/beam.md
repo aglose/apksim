@@ -34,7 +34,8 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
    the tab within a frame. Neither view fights the other.
 4. Pixel exact: in Fill mode one Android pixel is one physical screen pixel (density = `devicePixelRatio`, so one dp is
    one CSS pixel), including after the browser moves to a display with another pixel ratio.
-5. Input, keyboard, clipboard and deep links work as in a remote session, with the same page code.
+5. Input, keyboard and deep links work as in a remote session, with the same page code. The clipboard does not
+   follow the Mac's ("The beam sandbox": a site's app would read what the visitor copies).
 6. Nobody without apksim sees a prompt, a probe or a difference. A visitor with apksim chooses once per site.
 7. A web page can never make a Mac run an APK without its owner's consent, and never reaches anything on the Mac
    but the agent's own API.
@@ -222,10 +223,11 @@ loop. (The Mac window already tells its own resizes from the user's apart: `self
 - Sound plays through the Mac (serve has none). It follows the tab: when the page is hidden it sends `maxfps 1`
   and stops acknowledging frames, and `maxfps 120` + `redraw` when it is back; audio keeps playing as an app in the
   foreground would. Whether a hidden tab should also pause the app (`home`) is left to measure on real apps.
-- The Mac clipboard syncs both ways, `http(s)` links open in the Mac's browser, notifications and permission prompts
-  appear as today in the page, file pickers stay `pick`-less as in serve until there is a page-side picker.
-- Networking is the visitor's: the app reaches what their Mac reaches, inside apksim's sandbox (`sandbox-exec`: no
-  writes outside `STATE`, no credential reads). The consent prompt says so.
+- The Mac clipboard does not follow the app's either way (unlike an ordinary instance: see "The beam sandbox"),
+  `http(s)` links open in the Mac's browser, notifications and permission prompts appear as today in the page, file
+  pickers stay `pick`-less as in serve until there is a page-side picker.
+- Networking is the visitor's: the app reaches what their Mac reaches over IPv4, but not loopback, inside the beam
+  sandbox (writes only to its own slot, scratch and out folder; "The beam sandbox"). The consent prompt says so.
 
 ## Phases
 
@@ -840,7 +842,7 @@ What it would take for `apksim beam` on a Linux desktop (the page offers beam on
   - `dev.apksim.beam.sweep`: `apksim beam sweep` once a day, so builds past their hold go while the agent never runs.
   - The job names the launcher as it was run (Homebrew's `bin/apksim`, which an upgrade keeps; the install folder it
     leads to changes with each version), and `APKSIM_HOME` when set.
-- **Checked** (`scripts/beam-launchd-check.py`, 12 checks): both property lists valid (`plutil`), the agent's
+- **Checked** (`scripts/beam-launchd-check.py`, 13 checks, the last that no agent is left once it ends): both property lists valid (`plutil`), the agent's
   socket-activated on its port with the socket handed over inetd's way; with the script standing in for launchd
   (holding the socket and starting `--launchd` when a connection waits): nothing runs until a page asks, the first
   request starts the agent in 0.1 s and is answered, a session streams, with no page for its idle time it exits, the
