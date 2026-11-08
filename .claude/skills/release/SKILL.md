@@ -43,7 +43,7 @@ Leave that PR open, merge the rest, and say which and why.
 ## 3. Choose the version (before the docs)
 Semver on the last `vX.Y.Z` tag, judged from the merged PRs: new features, options or commands → minor bump
 (0.18.0 → 0.19.0); only fixes, docs, CI → patch; a breaking change to the CLI, control commands or file formats →
-say so and use a minor bump while below 1.0. Use the version in the docs of step 3.
+say so and use a minor bump while below 1.0.
 Fix it now: the docs branch, image tags and tag below all use this one VERSION.
 
 ## 4. Docs for what landed
