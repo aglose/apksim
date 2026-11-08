@@ -19,7 +19,8 @@ import java.util.regex.Pattern;
  */
 final class Crash {
   private static final Pattern EXCEPTION = Pattern.compile("(?:^|\\s)((?:[A-Za-z_$][\\w$]*\\.)+[A-Za-z_$][\\w$]*(?::\\s.*)?)$");
-  private static final Pattern EXIT = Pattern.compile("\\[apksim\\] exit (\\d+): (.*)");
+  private static final Pattern EXIT = Pattern.compile("\\[apksim\\] exit (-?\\d+): (.*)");
+  private static final Pattern HS_ERR = Pattern.compile("hs_err_pid(\\d+)\\.log");
   private static final Pattern SIGNAL = Pattern.compile("(SIG[A-Z]+) \\(0x[0-9a-f]+\\)");
   /** Longest line the tab or the log endpoint gets. */
   static final int MAX_LINE = 400;
@@ -38,9 +39,12 @@ final class Crash {
     private volatile String fatal;
     private volatile String exit;
     private volatile String said;
+    private volatile long hsErrPid = -1;
 
     void line(String line) {
-      Matcher m = EXIT.matcher(line);
+      Matcher m = HS_ERR.matcher(line);
+      if (m.find()) hsErrPid = Long.parseLong(m.group(1));  // "An error report file ... is saved as: .../hs_err_pid123.log"
+      m = EXIT.matcher(line);
       if (m.find() && !m.group(1).equals("0")) exit = "exit " + m.group(1) + ": " + clip(m.group(2).strip());
       if (line.startsWith("[apksim] ") && !line.matches("\\[apksim\\] (jvm-main|control port|data slot|saved|translated|exit|permission).*")) {
         said = clip(line.substring(9).strip());  // e.g. "--activity .X: no activity ... in the manifest"
@@ -59,6 +63,11 @@ final class Crash {
           fatalLeft = 0;
         }
       }
+    }
+
+    /** The pid in an hs_err file name the JVM printed (the JVM's own, whatever process we started), or -1. */
+    long hsErrPid() {
+      return hsErrPid;
     }
 
     /** "uncaught exception ...", "exit 137: ...", or null. */

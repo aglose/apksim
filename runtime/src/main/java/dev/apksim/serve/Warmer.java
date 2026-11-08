@@ -37,6 +37,8 @@ final class Warmer {
     volatile State state = State.QUEUED;
     volatile String progress = "";
     volatile String error = "";
+    volatile long jvmPid = -1;  // the JVM a warm launch runs in (a standby's), not the client we started
+    volatile long finishedAt;
     final CompletableFuture<Void> done = new CompletableFuture<>();
 
     Job(Catalog.App app, Path apk) {
@@ -50,7 +52,7 @@ final class Warmer {
   /** App id to the APK path its job is under: a catalog URL app has no path of its own until it is downloaded. */
   private final Map<String, String> byId = new java.util.HashMap<>();
   /** APKs a session launched without a warm-up (it translates for itself): never warmed beside it afterwards. */
-  private final java.util.Set<String> taken = new java.util.HashSet<>();
+  private final Map<String, Long> taken = new java.util.HashMap<>();
   private boolean closed;
   private Thread loopThread;
   private volatile Process active;
@@ -67,7 +69,7 @@ final class Warmer {
     String key = app.path().toString();
     synchronized (this) {
       byId.put(app.id(), key);
-      if (closed || taken.contains(key) || jobs.containsKey(key)) return;
+      if (closed || taken.containsKey(key) || jobs.containsKey(key)) return;
       Job j = new Job(app, app.path());
       jobs.put(key, j);
       queue.add(j);
@@ -111,9 +113,11 @@ final class Warmer {
       try {
         warm(j);
         j.state = State.READY;
+        j.finishedAt = System.currentTimeMillis();
       } catch (Exception e) {
         j.error = String.valueOf(e.getMessage());
         j.state = State.FAILED;
+        j.finishedAt = System.currentTimeMillis();
         System.err.printf("[serve] warming %s failed: %s%n", j.app.name(), j.error);
       } finally {
         j.done.complete(null);
@@ -150,6 +154,7 @@ final class Warmer {
         p.destroyForcibly();
         p.waitFor(5, TimeUnit.SECONDS);
       }
+      Session.endJvm(j.jvmPid);  // a warm launch: the standby's JVM may still be flushing after its client went
       // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
       if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
     }
@@ -158,7 +163,6 @@ final class Warmer {
   private void run(Job j, Process p, java.util.concurrent.atomic.AtomicReference<Path> slot, long t0) throws Exception {
     List<String> last = new ArrayList<>();
     Crash.Reason reason = new Crash.Reason();
-    long[] jvmPid = {-1};
     Thread reader = Thread.ofVirtual().name("serve-warm-log").start(() -> {
       try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
         for (String line; (line = r.readLine()) != null; ) {
@@ -166,7 +170,7 @@ final class Warmer {
           Matcher ds = DATA_SLOT.matcher(line);
           if (ds.find()) {
             slot.set(Path.of(ds.group(1)));
-            jvmPid[0] = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
+            j.jvmPid = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
           }
           Matcher m = PROGRESS.matcher(line);
           if (m.find()) j.progress = "translating classes: " + m.group(1);
@@ -187,7 +191,7 @@ final class Warmer {
       throw new IOException(closed ? "the server is stopping" : "no first frame after " + limit + " s");
     }
     reader.join(2000);
-    List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), jvmPid[0]);
+    List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), j.jvmPid, reason.hsErrPid());
     if (p.exitValue() != 0) {
       String why = Crash.hsErrReason(hs);
       if (why == null) why = reason.text();
@@ -209,12 +213,12 @@ final class Warmer {
       byId.putIfAbsent(app.id(), key);
       j = jobs.get(key);
       if (j == null) {
-        taken.add(key);  // not warmed (yet): this session translates for itself, and nothing warms it beside it
+        taken.put(key, System.currentTimeMillis());  // not warmed (yet): this session translates for itself, and nothing warms it beside it
         return;
       }
       if (j.state == State.QUEUED) {
-        j.state = State.SKIPPED;
-        taken.add(key);
+        skip(j);
+        taken.put(key, System.currentTimeMillis());
         return;
       }
     }
@@ -254,6 +258,28 @@ final class Warmer {
     return j.state == State.FAILED ? j.error : j.progress;
   }
 
+  private static void skip(Job j) {
+    j.state = State.SKIPPED;
+    j.finishedAt = System.currentTimeMillis();
+  }
+
+  /**
+   * Forgets what is a day old and over, alongside `Catalog.sweep`: finished jobs, the ids that pointed at them and the
+   * taken marks, except the catalog's own apps (`keepIds`) and anything queued or warming.
+   */
+  synchronized void prune(java.util.Set<String> keepIds) {
+    long cutoff = System.currentTimeMillis() - 24 * 3_600_000L;
+    java.util.Set<String> keepKeys = new java.util.HashSet<>();
+    for (String id : keepIds) if (byId.get(id) != null) keepKeys.add(byId.get(id));
+    jobs.entrySet().removeIf(e -> {
+      Job j = e.getValue();
+      boolean over = j.state == State.READY || j.state == State.FAILED || j.state == State.SKIPPED;
+      return over && j.finishedAt < cutoff && !keepKeys.contains(e.getKey());
+    });
+    taken.entrySet().removeIf(e -> e.getValue() < cutoff && !jobs.containsKey(e.getKey()));
+    byId.entrySet().removeIf(e -> !keepIds.contains(e.getKey()) && !jobs.containsKey(e.getValue()) && !taken.containsKey(e.getValue()));
+  }
+
   /**
    * The server is stopping: nothing queued will run, a running warm-up's instance is ended and its data slot erased
    * (by the warm-up's own thread), and this waits for that, up to 15 s.
@@ -263,7 +289,7 @@ final class Warmer {
     synchronized (this) {
       closed = true;
       for (Job j : queue) {
-        j.state = State.SKIPPED;
+        skip(j);
         j.done.complete(null);
       }
       queue.clear();

@@ -276,7 +276,10 @@ public final class Serve {
       return t;
     });
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
-    timer.scheduleWithFixedDelay(() -> catalog.sweep(24 * 3_600_000L), 0, 1, TimeUnit.HOURS);
+    timer.scheduleWithFixedDelay(() -> {
+      catalog.sweep(24 * 3_600_000L);
+      warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
+    }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       List<Thread> stopping = new ArrayList<>();

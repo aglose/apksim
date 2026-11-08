@@ -397,7 +397,8 @@ fi
 # (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
 # apksim serve sets APKSIM_NO_CORE: a crashed instance (a large app is gigabytes) writes its hs_err report but no core file.
 NOCORE=()
-[[ -n "${APKSIM_NO_CORE:-}" ]] && NOCORE=(-XX:-CreateCoredumpOnCrash)
+# The core-size limit too: a native abort (libc abort() from an app's library) never reaches HotSpot's crash handling.
+if [[ -n "${APKSIM_NO_CORE:-}" ]]; then NOCORE=(-XX:-CreateCoredumpOnCrash); ulimit -c 0 2>/dev/null || true; fi
 exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \

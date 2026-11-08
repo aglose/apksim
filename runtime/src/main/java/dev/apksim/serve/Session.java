@@ -220,7 +220,7 @@ final class Session {
     if (status != 0) {
       abnormal = true;
       // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
-      List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), pid);
+      List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
       for (String l : hs) logLine(l);
       String reason = Crash.hsErrReason(hs);
       if (reason != null) reason = "crashed: " + reason;
@@ -228,6 +228,24 @@ final class Session {
       if (reason != null) why += ": " + reason;
     }
     stop(why);
+  }
+
+  /** After its client has gone: waits up to 5 s for a (standby) JVM, then kills it, as endInstance does. */
+  static void endJvm(long pid) {
+    if (pid <= 0) return;
+    ProcessHandle.of(pid).ifPresent(h -> {
+      if (!h.info().command().map(c -> c.contains("java")).orElse(false)) return;
+      try {
+        h.onExit().get(5, TimeUnit.SECONDS);
+      } catch (Exception e) {
+        h.destroyForcibly();
+        try {
+          h.onExit().get(3, TimeUnit.SECONDS);
+        } catch (Exception e2) {
+          // nothing more to do
+        }
+      }
+    });
   }
 
   private static Socket connect(int port) throws IOException {
