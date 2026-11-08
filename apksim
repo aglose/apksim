@@ -74,7 +74,12 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   FLAGS="${2:-}"
   SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
   [[ -S "$SOCK" ]] && exit 0
-  if [[ -f "$SOCK.pid" ]] && kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
+  # Alive, or there and out of reach: a beamed instance (this runs in its sandbox) may signal only itself, so kill -0
+  # on its booting standby answers "not permitted", which is not a dead one.
+  if [[ -f "$SOCK.pid" ]]; then
+    ALIVE="$(kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>&1)" && exit 0
+    [[ "$ALIVE" == *"not permitted"* ]] && exit 0
+  fi
   rm -f "$SOCK.pid"
   ARGS=(--standby "$SOCK")
   [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
@@ -406,7 +411,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     # Network: what the Mac reaches over IPv4, but not loopback (other instances' control ports, the agent) and no
     # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets); no
     # local socket but the resolver's and syslog's (not ssh-agent's, a container engine's or a standby's).
-    # Signals only to itself (no other process of the visitor's); no pasteboard (the Mac's clipboard, even through
+    # Signals only to itself: not even its own sandbox, which every warm beamed instance shares (each spawns the next
+    # standby inside its own), so one site's app could otherwise end another's session. No pasteboard (the Mac's clipboard, even through
     # native code or reflection past SimWindow's own check).
     RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
     RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
@@ -432,7 +438,7 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
 (deny network-outbound (remote unix-socket))
 (allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\") (path-literal \"/private/var/run/syslog\")))
 (deny signal)
-(allow signal (target same-sandbox))
+(allow signal (target self))
 (deny mach-lookup (global-name \"com.apple.pasteboard.1\"))"
     EXTRA+=("-Djava.net.preferIPv4Stack=true")
     # Its crash report where it may write (its scratch), for the agent to summarise (Session.beamHsErr).

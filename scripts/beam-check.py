@@ -176,7 +176,10 @@ def sandbox_checks(apksim, apk):
         ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
         ("denied", "connect to any other local socket (an ssh-agent's, a container engine's)", f"nc -U -z {other_sock}"),
         ("denied", "signal another of the visitor's processes", f"kill -0 {victim.pid}"),
-        ("allowed", "signal itself", "kill -0 $$"),
+        ("allowed", "signal itself", "sh -c 'kill -0 $$'"),  # its own pid: the ( ) the probe runs in is a child
+        # Its own sandbox is every warm beamed instance's (each spawns the next standby inside its own): a child stands
+        # in for another site's session in it.
+        ("denied", "signal a process in its own sandbox (another beamed session)", "sleep 3 & kill -0 $!"),
         ("denied", "read the Mac's clipboard (the pasteboard service)", "pbpaste >/dev/null && [ -n \"$(pbpaste)\" ]"),
         ("allowed", "look a name up through the system resolver", "dscacheutil -q host -a name example.com | grep -q ip_address"),
         # The JDK's dual-stack sockets reach 127.0.0.1 as ::ffff:127.0.0.1, which the loopback rule alone let through.

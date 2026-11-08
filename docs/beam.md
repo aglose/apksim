@@ -508,8 +508,10 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   would read whatever the visitor copies, passwords included, and could write to it. The profile also refuses the
   pasteboard service itself, so native code or reflection past apksim's own check reaches nothing; Cmd+V in the shown
   simulator window does not paste either (the tab's keyboard types text in).
-- **Signals and other systems**: signals only to its own sandbox (no other process of the visitor's, the agent
-  included). `apksim beam` runs only on macOS: there is no sandbox for it elsewhere yet, and the launcher refuses a
+- **Signals and other systems**: signals only to itself (`target self`: no other process of the visitor's, the agent
+  included, and no other beamed instance: they share one sandbox, as each spawns the next standby inside its own, so
+  `same-sandbox` let one site's app end another's session). The launcher's standby check, which runs inside it, takes
+  `kill -0`'s "not permitted" for a standby that is there. `apksim beam` runs only on macOS: there is no sandbox for it elsewhere yet, and the launcher refuses a
   beamed instance without one.
 - **Caches without sharing**: a beamed instance starts from its build's caches the agent keeps
   (`STATE/beam/cache/<sha256>/`: translated classes read in place, its APK cache entry cloned with `cp -c`), which it
