@@ -137,6 +137,9 @@ def sandbox_checks(apksim, apk):
         pass
     unix.bind(standby)
     unix.listen(1)
+    victim = subprocess.Popen(["sleep", "120"])  # another process of the visitor's
+    if not subprocess.run(["pbpaste"], capture_output=True).stdout:
+        subprocess.run(["pbcopy"], input=b"x")  # something on the clipboard, so an allowed read would show it
     other_sock = os.path.join(tempfile.gettempdir(), f"beam-check-agent{os.getpid()}.sock")
     agent_like = socket.socket(socket.AF_UNIX)
     try:
@@ -171,6 +174,9 @@ def sandbox_checks(apksim, apk):
         ("denied", "connect to a loopback port (another instance, the agent)", f"nc -z -w 2 127.0.0.1 {lport}"),
         ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
         ("denied", "connect to any other local socket (an ssh-agent's, a container engine's)", f"nc -U -z {other_sock}"),
+        ("denied", "signal another of the visitor's processes", f"kill -0 {victim.pid}"),
+        ("allowed", "signal itself", "kill -0 $$"),
+        ("denied", "read the Mac's clipboard (the pasteboard service)", "pbpaste >/dev/null && [ -n \"$(pbpaste)\" ]"),
         ("allowed", "look a name up through the system resolver", "dscacheutil -q host -a name example.com | grep -q ip_address"),
         # The JDK's dual-stack sockets reach 127.0.0.1 as ::ffff:127.0.0.1, which the loopback rule alone let through.
         ("denied", "connect to loopback as ::ffff:127.0.0.1 (IPv6)", f"nc -6 -z -w 2 ::ffff:127.0.0.1 {lport}"),
@@ -199,6 +205,7 @@ def sandbox_checks(apksim, apk):
     os.unlink(standby)
     agent_like.close()
     os.unlink(other_sock)
+    victim.kill()
 
 
 def sh_quote(s):

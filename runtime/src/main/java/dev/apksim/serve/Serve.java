@@ -353,6 +353,11 @@ public final class Serve {
             + " on 127.0.0.1 and asks before a site runs an app)");
         System.exit(2);
       }
+      if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
+        System.err.println("apksim beam: runs only on macOS for now: a site's app runs in macOS's sandbox (docs/beam.md),"
+            + " and there is none on this system yet");
+        System.exit(2);
+      }
       home = "beam";
       if (!portGiven) port = Beam.DEFAULT_PORT;
       if (!maxGiven) max = 2;

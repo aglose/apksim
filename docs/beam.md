@@ -503,8 +503,12 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   socket (it would run an APK in the ordinary sandbox), nor any other local socket but the resolver's
   (`mDNSResponder`) and `syslog`: not an `ssh-agent`'s (signing with the visitor's keys) or a container engine's.
 - **Clipboard**: the app's clipboard does not follow the Mac's (an ordinary instance's does, both ways): a site's app
-  would read whatever the visitor copies, passwords included, and could write to it. Cmd+V in the shown simulator
-  window, which only the visitor can press there, still types it in.
+  would read whatever the visitor copies, passwords included, and could write to it. The profile also refuses the
+  pasteboard service itself, so native code or reflection past apksim's own check reaches nothing; Cmd+V in the shown
+  simulator window does not paste either (the tab's keyboard types text in).
+- **Signals and other systems**: signals only to its own sandbox (no other process of the visitor's, the agent
+  included). `apksim beam` runs only on macOS: there is no sandbox for it elsewhere yet, and the launcher refuses a
+  beamed instance without one.
 - **Caches without sharing**: a beamed instance starts from its build's caches the agent keeps
   (`STATE/beam/cache/<sha256>/`: translated classes read in place, its APK cache entry cloned with `cp -c`), which it
   may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
@@ -527,6 +531,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
+
+Sixth review (its summary): the beam profile refuses signals beyond its own sandbox and the pasteboard service; the
+agent and the launcher refuse to run beamed apps off macOS, which has their only sandbox.
 
 Fifth review (its summary): serve and the agent end only the JVM the kernel reports on an instance's control port
 (else one whose own launch.info names this APK), never a PID the app could print (it named any "java" process, the
