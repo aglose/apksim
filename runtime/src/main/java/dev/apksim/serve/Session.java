@@ -1098,19 +1098,7 @@ final class Session {
    * instance that never started) leaves its slot unused. It goes with the session, as the slot it ran in would.
    */
   private void eraseUnusedSeed() {
-    String seed = seedSlot;
-    if (seed == null || !seed.matches("bm[0-9a-f]{12}")) return;
-    try (Stream<Path> pkgs = Files.list(serve.state.resolve("cache/data"))) {
-      for (Path pkg : pkgs.toList()) {
-        Path slot = pkg.resolve(seed + "-0");
-        if (slot.equals(dataDir) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
-        SlotPack.deleteTree(slot);
-        SlotPack.deleteTree(slot.resolveSibling(seed + "-0.device"));
-        logLine("[beam] erased moved data the app did not use (" + pkg.getFileName() + ")");
-      }
-    } catch (IOException | RuntimeException e) {
-      logLine("[beam] could not look for unused moved data: " + e);
-    }
+    SlotPack.dropSeed(serve.state, seedSlot, dataDir == null ? null : dataDir.toAbsolutePath().normalize(), this::logLine);
   }
 
   /**

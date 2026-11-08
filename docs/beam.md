@@ -667,10 +667,13 @@ First review:
   must be the page's own (same origin and base path as the APK's, no redirects). It downloads the pack, unpacks it
   into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and
   without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
-  roots, no absolute, `.` or `..` paths, no links, 50,000 files and 1 GB at most, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket. The
+  roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread) and 1 GB at
+  most, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket. The
   agent cannot read the build's package (no manifest reader in serve's JVM): a pack naming another package lands
   where that app's instance never looks, the app starts with a fresh slot, and the unused one goes with the session. The
-  slot is the session's: erased when it ends unless kept (`keep on`, then `apksim beam saved` lists it as any other).
+  slot belongs to the grant until a session takes it: a grant that expires (checked every minute) or is refused, a
+  session that cannot start (no such app, all sessions in use) and, hourly, any `bm` slot no grant or session owns and
+  no instance holds erase it. Then it is the session's: erased when it ends unless kept (`keep on`, then `apksim beam saved` lists it as any other).
   The beam sandbox allows `bm<12 hex>-N` slots as it does `beam-N` (spelled out: the profile language's regex has no
   `{n}`, and `{12}` silently matched nothing, so the instance could not take its slot's lock).
 - **The page**: "With its data" (on by default, shown for a server session when beam is offered) makes a move to this

@@ -54,17 +54,22 @@ final class SlotPack {
     }
   }
 
-  /** The package a pack names, or null (a name as Android allows it). */
+  /** At most this many bytes of package name (Android's limit is 255). */
+  static final int MAX_PACKAGE = 256;
+
+  /**
+   * The package a pack names, or null (a name as Android allows it). It must be the first entry, as {@link #pack}
+   * writes it, and short: nothing else is decompressed before {@link #unpack}'s limits apply.
+   */
   static String packageOf(Path zip) throws IOException {
     try (ZipInputStream z = new ZipInputStream(Files.newInputStream(zip))) {
-      for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
-        if (e.getName().equals("package")) {
-          String p = new String(z.readNBytes(256), java.nio.charset.StandardCharsets.UTF_8).strip();
-          return p.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+") ? p : null;
-        }
-      }
+      ZipEntry e = z.getNextEntry();
+      if (e == null || !e.getName().equals("package")) return null;
+      byte[] b = z.readNBytes(MAX_PACKAGE + 1);
+      if (b.length > MAX_PACKAGE) return null;
+      String p = new String(b, java.nio.charset.StandardCharsets.UTF_8).strip();
+      return p.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+") ? p : null;
     }
-    return null;
   }
 
   /**
@@ -81,9 +86,20 @@ final class SlotPack {
     long total = 0;
     int count = 0;
     try (InputStream in = Files.newInputStream(zip); ZipInputStream z = new ZipInputStream(in)) {
-      for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
+      boolean first = true;
+      for (ZipEntry e; (e = z.getNextEntry()) != null; first = false) {
         String name = e.getName();
-        if (name.equals("package") || e.isDirectory()) continue;
+        // Every entry counts, and none is passed over unread: skipping one would decompress it outside the limits.
+        if (++count > MAX_FILES) throw new IOException("more than " + MAX_FILES + " files");
+        if (name.equals("package")) {
+          if (!first || z.readNBytes(MAX_PACKAGE + 1).length > MAX_PACKAGE) throw new IOException("bad package entry");
+          if (z.read() != -1) throw new IOException("bad package entry");
+          continue;
+        }
+        if (e.isDirectory()) {
+          if (z.read() != -1) throw new IOException("a folder entry with contents: " + name);
+          continue;
+        }
         Path root;
         String rel;
         if (name.startsWith("slot/")) {
@@ -101,7 +117,6 @@ final class SlotPack {
         for (String part : rel.split("/")) {
           if (part.equals("..") || part.equals(".")) throw new IOException("bad entry " + name);
         }
-        if (++count > MAX_FILES) throw new IOException("more than " + MAX_FILES + " files");
         Files.createDirectories(to.getParent());
         if (!to.getParent().toRealPath().startsWith(root.toRealPath())) throw new IOException("entry outside its folder: " + name);
         try (OutputStream out = Files.newOutputStream(to, java.nio.file.StandardOpenOption.CREATE_NEW)) {
@@ -117,6 +132,26 @@ final class SlotPack {
       deleteTree(slot);
       deleteTree(device);
       throw e instanceof IOException io ? io : new IOException(e);
+    }
+  }
+
+  /**
+   * A moved session's slot (`cache/data/<any package>/NAME-0` and its .device) that no instance took, erased: the
+   * agent unpacks it before the session exists, so a grant that expires or is refused, or a session that never
+   * starts, would otherwise leave the app's data unlisted for good. `except` (the slot an instance runs in) is kept.
+   */
+  static void dropSeed(Path state, String name, Path except, java.util.function.Consumer<String> log) {
+    if (name == null || !name.matches("bm[0-9a-f]{12}")) return;
+    try (Stream<Path> pkgs = Files.list(state.resolve("cache/data"))) {
+      for (Path pkg : pkgs.toList()) {
+        Path slot = pkg.resolve(name + "-0");
+        if (slot.equals(except) || !Files.isDirectory(slot, LinkOption.NOFOLLOW_LINKS)) continue;
+        deleteTree(slot);
+        deleteTree(slot.resolveSibling(name + "-0.device"));
+        log.accept("[beam] erased moved data no session used (" + pkg.getFileName() + ", " + name + ")");
+      }
+    } catch (IOException | RuntimeException e) {
+      log.accept("[beam] could not look for unused moved data: " + e);
     }
   }
 

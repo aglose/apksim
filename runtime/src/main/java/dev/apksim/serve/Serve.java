@@ -461,6 +461,7 @@ public final class Serve {
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
+    if (beam) timer.scheduleWithFixedDelay(agent::expire, 1, 1, TimeUnit.MINUTES);  // with the moved data of unused grants
     if (allowBeam) {
       // Sessions' data packed for a move (phase 5): gone once their tickets have expired.
       timer.scheduleWithFixedDelay(() -> {
@@ -563,11 +564,43 @@ public final class Serve {
 
   /** The agent's sweep (docs/beam.md): at its start, hourly, and as sessions start and end. */
   void sweepBeam() {
+    // Moved data (phase 5) left by an agent that ended between unpacking it and its session: no grant or session owns
+    // it, and no instance holds its lock.
+    try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {
+      for (Path pkg : pkgs) {
+        try (var slots = Files.newDirectoryStream(pkg, "bm*-0")) {
+          for (Path slot : slots) {
+            String name = slot.getFileName().toString().replaceFirst("-0$", "");
+            if (!name.matches("bm[0-9a-f]{12}") || agent.ownsSeed(name) || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot))
+                || locked(slot)) continue;
+            SlotPack.dropSeed(state, name, null, System.err::println);
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // no app data yet, or the next round
+    }
     try {
       store.sweep(catalog, sha -> agent.holds(sha)
           || sessions.values().stream().anyMatch(x -> sha.equals(catalog.buildHash(x.app.path()))));
     } catch (RuntimeException e) {
       System.err.println("[beam] sweep failed: " + e);
+    }
+  }
+
+  /** Whether an instance holds this slot's lock now. */
+  private static boolean locked(Path slot) {
+    Path lock = slot.resolve(".lock");
+    if (!Files.isRegularFile(lock, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(lock, java.nio.file.StandardOpenOption.WRITE)) {
+      java.nio.channels.FileLock l = ch.tryLock();
+      if (l == null) return true;
+      l.release();
+      return false;
+    } catch (java.nio.channels.OverlappingFileLockException e) {
+      return true;
+    } catch (IOException e) {
+      return true;  // unknown: left for the next round
     }
   }
 
@@ -877,6 +910,7 @@ public final class Serve {
     WebSocket ws = new WebSocket(s, in, out);
     Catalog.App app = catalog.find(r.param("app"));
     if (app == null) {
+      SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
       return;
@@ -893,6 +927,7 @@ public final class Serve {
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
+        SlotPack.dropSeed(state, seed, null, System.err::println);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
         return;

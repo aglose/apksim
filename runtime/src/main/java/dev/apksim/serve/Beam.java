@@ -51,9 +51,14 @@ final class Beam {
   private final Map<String, Long> deniedUntil = new ConcurrentHashMap<>();
   /** Builds whose grant was just used (sha256 -> when): its session is being set up, and the sweep must not miss it. */
   private final Map<String, Long> justUsed = new ConcurrentHashMap<>();
+  /** Moved-data slots whose grant was just used (name -> when): its session is being set up. */
+  private final Map<String, Long> seedsTaken = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
 
+  private final Path state;
+
   Beam(Path state) {
+    this.state = state;
     this.trustFile = state.resolve("beam/trust.json");
   }
 
@@ -189,13 +194,31 @@ final class Beam {
   }
 
   String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra) {
+    expire();
     long now = System.currentTimeMillis();
-    grants.values().removeIf(g -> g.expires < now);
     byte[] b = new byte[24];
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
     grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra));
     return token;
+  }
+
+  /** Drops expired grants, and with a session grant the moved data unpacked for it (also every minute, `Serve`). */
+  void expire() {
+    long now = System.currentTimeMillis();
+    for (var e : List.copyOf(grants.entrySet())) {
+      if (e.getValue().expires < now && grants.remove(e.getKey(), e.getValue())) dropSeed(e.getValue());
+    }
+  }
+
+  /** Whether a live session grant owns this moved-data slot (the hourly sweep leaves it). */
+  boolean ownsSeed(String name) {
+    seedsTaken.values().removeIf(t -> t < System.currentTimeMillis() - 30_000);
+    return seedsTaken.containsKey(name) || grants.values().stream().anyMatch(g -> g.kind == Kind.SESSION && name.equals(g.extra));
+  }
+
+  private void dropSeed(Grant g) {
+    if (g.kind == Kind.SESSION) SlotPack.dropSeed(state, g.extra, null, System.err::println);
   }
 
   /** Whether an unexpired grant names this build (the sweep keeps it: the page is about to use it). */
@@ -214,8 +237,13 @@ final class Beam {
   Grant take(String token, Kind kind, String origin) {
     if (token == null || origin == null) return null;
     Grant g = grants.remove(token);
-    if (g == null || g.kind != kind || !g.origin.equals(origin) || g.expires < System.currentTimeMillis()) return null;
+    if (g == null) return null;
+    if (g.kind != kind || !g.origin.equals(origin) || g.expires < System.currentTimeMillis()) {
+      dropSeed(g);  // used up, so its moved data has no session to go to
+      return null;
+    }
     if (g.sha256 != null) justUsed.put(g.sha256, System.currentTimeMillis());
+    if (g.kind == Kind.SESSION && g.extra != null) seedsTaken.put(g.extra, System.currentTimeMillis());
     return g;
   }
 
