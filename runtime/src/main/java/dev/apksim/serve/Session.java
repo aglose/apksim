@@ -193,6 +193,7 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
+    if (serve.moveSharedData) cmd.add("--move-shared-data");
     // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     List<String> own = app.launch();
     for (int i = 0; i < own.size(); i++) {

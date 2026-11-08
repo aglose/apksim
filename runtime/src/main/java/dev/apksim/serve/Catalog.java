@@ -46,7 +46,8 @@ final class Catalog {
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
       "--audio", "--biometrics", "--network-profile", "--device");
-  static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard");
+  /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
+  static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
   /** An app being downloaded from a URL added at run time: its id is answered at once, the APK comes later. */
   static final class Download {

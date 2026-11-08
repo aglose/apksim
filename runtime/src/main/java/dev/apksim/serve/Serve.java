@@ -34,7 +34,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-                          [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--in-flight N]
+                          [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -60,6 +60,8 @@ public final class Serve {
   boolean noNetwork;
   /** `--core-dumps`: instances may leave core files when they crash (off by default: a large app's is gigabytes). */
   boolean coreDumps;
+  /** `--move-shared-data`: every instance loads 4 KB-aligned libraries with data on a code page (macOS, experimental). */
+  boolean moveSharedData;
   /** `--warm`: warm each APK's cache in the background: on Linux (no warm standby) by default, `on` also on the Mac. */
   String warm = "auto";
   Warmer warmer;
@@ -167,6 +169,10 @@ public final class Serve {
         }
         case "--core-dumps" -> {
           s.coreDumps = true;
+          i--;
+        }
+        case "--move-shared-data" -> {
+          s.moveSharedData = true;
           i--;
         }
         case "--no-network" -> {

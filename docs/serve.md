@@ -14,7 +14,7 @@ This page is the spec, then how it is built, then what was measured.
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
-             [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--trust-proxy]
+             [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
 ```
 
@@ -52,6 +52,9 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - `--core-dumps`: let a crashed instance write a core file. Off by default (instances run with
   `-XX:-CreateCoredumpOnCrash`, set through `APKSIM_NO_CORE=1`, which the launcher reads): a large app's core is
   gigabytes and a few crashes fill a volume. The JVM's crash report is kept in any case, as below.
+- `--move-shared-data`: every instance (sessions and warm-ups) runs with `--move-shared-data` (macOS, experimental: a
+  4 KB-aligned native library whose writable data shares a 16 KB page with its code is loaded by moving that data). An
+  app may also carry it as its own launch option (below). Does nothing on Linux.
 - `--allow-origin ORIGIN` (repeatable, e.g. `https://dashboard.example.com`): pages on that origin may embed serve's
   page in a frame and open its WebSockets and POSTs (see "Embedding"). Without it, nothing may frame the page.
 
@@ -155,8 +158,12 @@ A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
-`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, `--device`, and the flag
-`--soft-keyboard`. Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
+`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, `--device`, and the flags
+`--soft-keyboard` and `--move-shared-data` (macOS: load a 4 KB-aligned native library whose data shares a page with its
+code, experimental; it only changes how the app's own libraries are mapped, and does nothing on Linux).
+`serve --move-shared-data` gives it to every app, since apps rarely control how their third-party libraries are aligned. A
+session that ends because the loader refused such a library says so in the tab, and names these two places to set it (the
+loader's own advice, "launch with --move-shared-data", is not something a tab can do). Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
 `--adb`, `--no-sandbox`...): serve refuses a catalog with one at startup and a URL add with one with a 400. `--device` takes a built-in
 device or a custom size `WxH[@density]` (`--device 1280x720@1.5`, validated as for `--device-size`; a bad one is refused
 at startup or with a 400): it is that app's default device, used when a tab names none (the page's Device menu then
