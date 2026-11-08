@@ -35,9 +35,16 @@ public final class Thermal {
   private static int generation;  // each reset starts a new one: a drainer from an earlier one retires without touching the state
 
   private static void notify(Entry e, int s) {
+    final int gen = generation;  // called under LOCK
     QUEUE.add(() -> {
       try {
-        e.executor().execute(() -> e.listener().onThermalStatusChanged(s));
+        // A task an asynchronous executor still holds past a reset is dropped, not delivered to the last test's listener.
+        e.executor().execute(() -> {
+          synchronized (LOCK) {
+            if (gen != generation) return;
+          }
+          e.listener().onThermalStatusChanged(s);
+        });
       } catch (RuntimeException x) {  // a rejecting executor must not keep the others from hearing
         System.err.println("[apksim] thermal listener not notified: " + x);
       }
