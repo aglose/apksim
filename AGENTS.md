@@ -231,7 +231,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamSandbox` (in `dev.apksim`): a beamed instance's
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
-    saved|run|forget|config|sweep|status`; the page is
+    saved|run|forget|config|sweep|status`; `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
+    when a page asks, `--launchd` taking the socket on stdin; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
@@ -272,7 +273,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
   fallback to the server), `beam-size-check.py` (Fill mode and the simulator window as two views of one display, in
   Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, in
-  Chrome),
+  Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
+  stand-in for launchd; `--real` installs a test LaunchAgent),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),

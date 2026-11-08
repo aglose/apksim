@@ -383,8 +383,8 @@ page's server with a signed ticket, the tab relaying it only when that fails. Ph
 the display to the page at the browser's pixel ratio (one frame pixel per screen pixel), and the simulator window is a
 second view of it ("Show in Simulator"; its close button hides it while the tab is attached). Phase 4 is built: a
 running session moves between the server and the Mac with no blank frame (the old side streams until the new side's
-first frame, ~0.5 s). Left: the launchd agent, reconnecting after sleep, the app's data moving with it (phase 5),
-hidden-tab throttling and a Linux agent (phase 6).
+first frame, ~0.5 s). The launchd agent is built (`apksim beam install`, opt-in). Left: the app's data moving with it
+(phase 5), a Linux agent with a sandbox of its own (phase 6), Safari and Firefox.
 
 ## Not planned
 

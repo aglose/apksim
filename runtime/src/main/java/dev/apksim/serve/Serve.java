@@ -40,7 +40,8 @@ public final class Serve {
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
-             apksim beam saved | run ID [OPTIONS] | forget ID | sweep
+             apksim beam saved | run ID [OPTIONS] | forget ID | sweep | status
+             apksim beam install [--port N] [--agent-idle SECONDS] | uninstall   (launchd starts it when a page asks)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -111,6 +112,15 @@ public final class Serve {
   private Double keepSavedDays;
   /** `--allow-beam`: this server's page offers "Run on this Mac" and serves its APKs to it (docs/beam.md). */
   boolean allowBeam;
+  /**
+   * `apksim beam --launchd` (`apksim beam install`): started by launchd on a page's first connection, with the listening
+   * socket on stdin (inetd's way), and gone again after {@link #agentIdleSeconds} with no session or request.
+   */
+  boolean launchd;
+  int agentIdleSeconds = 600;
+  private volatile long lastActivity = System.currentTimeMillis();
+  private final java.util.concurrent.atomic.AtomicInteger busy = new java.util.concurrent.atomic.AtomicInteger();
+  private static final ThreadLocal<Boolean> statusRequest = ThreadLocal.withInitial(() -> false);
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -130,6 +140,9 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && args[1].equals("trust")) {
       Beam.trustCommand(state, List.of(args).subList(2, args.length));
       return;
+    }
+    if (args.length > 1 && args[0].equals("--beam") && List.of("install", "uninstall").contains(args[1])) {
+      System.exit(BeamLaunchd.command(s.launcher, state, args[1], List.of(args).subList(2, args.length)));
     }
     if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep", "status").contains(args[1])) {
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
@@ -151,6 +164,11 @@ public final class Serve {
           s.allowBeam = true;
           continue;
         }
+        case "--launchd" -> {
+          s.launchd = true;
+          continue;
+        }
+        case "--agent-idle" -> s.agentIdleSeconds = Math.max(5, Integer.parseInt(need(a, v)));
         case "--beam-port" -> s.beamPort = Integer.parseInt(need(a, v));
         case "--keep-days" -> {
           s.keepDays = BeamStore.days(need(a, v), false);
@@ -349,7 +367,7 @@ public final class Serve {
       if (!bind.equals("127.0.0.1") || token != null || !apps.isEmpty() || trustProxy || publicOrigin != null
           || !basePath.isEmpty() || !allowedOrigins.isEmpty() || allowBeam) {
         System.err.println("apksim beam: takes only --port, --max, --idle, --quality, --bitrate, --codec, --in-flight,"
-            + " --max-upload, --no-network, --launch-timeout, --keep-days, --save-sessions, --keep-saved-days (it listens"
+            + " --max-upload, --no-network, --launch-timeout, --keep-days, --save-sessions, --keep-saved-days, --launchd, --agent-idle (it listens"
             + " on 127.0.0.1 and asks before a site runs an app)");
         System.exit(2);
       }
@@ -403,9 +421,20 @@ public final class Serve {
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
     warmer = new Warmer(this);
     catalog.onReady = warmer::enqueue;
-    ServerSocket server = new ServerSocket();
-    server.setReuseAddress(true);
-    server.bind(new InetSocketAddress(addr, port), 64);
+    ServerSocket server;
+    if (launchd) {
+      // launchd listens and hands the socket over on stdin (inetdCompatibility with Wait): what the plist names.
+      if (!beam || !(System.inheritedChannel() instanceof java.nio.channels.ServerSocketChannel ch)) {
+        System.err.println("apksim beam --launchd: no listening socket on stdin (apksim beam install sets that up)");
+        System.exit(2);
+        return;
+      }
+      server = ch.socket();
+    } else {
+      server = new ServerSocket();
+      server.setReuseAddress(true);
+      server.bind(new InetSocketAddress(addr, port), 64);
+    }
     String host = loopbackBind ? (addr instanceof java.net.Inet6Address ? "[::1]" : "localhost") : bind;
     String at = publicOrigin != null ? publicOrigin + basePath : "http://" + host + ":" + server.getLocalPort() + basePath;
     if (!beam) System.err.printf("[serve] %s/%s  (%d apps listed, up to %d sessions, idle %d s, uploads up to %d MB)%n",
@@ -432,6 +461,15 @@ public final class Serve {
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
+    if (launchd) {
+      // Nothing runs until a page asks: launchd starts the agent again on the next connection.
+      timer.scheduleWithFixedDelay(() -> {
+        if (sessions.isEmpty() && busy.get() == 0 && System.currentTimeMillis() - lastActivity > agentIdleSeconds * 1000L) {
+          System.err.printf("[beam] idle for %d s: exiting (launchd starts it again for the next page)%n", agentIdleSeconds);
+          System.exit(0);
+        }
+      }, 5, 5, TimeUnit.SECONDS);
+    }
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       List<Thread> stopping = new ArrayList<>();
       stopping.add(Thread.ofVirtual().start(warmer::shutdown));  // ends a running warm-up and erases its data slot
@@ -456,10 +494,15 @@ public final class Serve {
         }
         continue;
       }
+      busy.incrementAndGet();
       Thread.ofVirtual().name("serve-http").start(() -> {
         try {
           handle(c);
         } finally {
+          // A page's request keeps a launchd agent up; `apksim beam status` asking about it does not (statusRequest).
+          if (!statusRequest.get()) lastActivity = System.currentTimeMillis();
+          statusRequest.remove();
+          busy.decrementAndGet();
           connections.release();
         }
       });
@@ -931,6 +974,7 @@ public final class Serve {
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
     if (sent == null && r.method().equals("GET") && r.path().equals("/beam/status")) {
+      statusRequest.set(true);
       StringBuilder b = new StringBuilder("{\"port\":" + port + ",\"max\":" + max + ",\"keeps\":" + Http.q(store.config.describe())
           + ",\"sessions\":[");
       for (Session x : sessions.values()) {

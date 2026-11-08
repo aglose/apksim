@@ -661,6 +661,7 @@ final class BeamStore {
         System.out.printf("builds: %d (%.1f MB), held %s days after their last session%n", builds, bytes / 1048576.0, num(store.config.keepDays()));
         System.out.println("saved sessions: " + store.saved().size() + (store.saved().isEmpty() ? "" : " (apksim beam saved)"));
         System.out.println("keeps: " + store.config.describe());
+        System.out.println(BeamLaunchd.state());
         return 0;
       }
       case "sweep" -> {
@@ -688,7 +689,8 @@ final class BeamStore {
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
-             apksim beam status                 what the agent runs, the sites it lets in, what it keeps""";
+             apksim beam status                 what the agent runs, the sites it lets in, what it keeps
+             apksim beam install | uninstall    let pages start the agent through launchd (or not)""";
 
   private static int usage() {
     System.err.println(USAGE);

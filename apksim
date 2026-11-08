@@ -60,7 +60,11 @@ EOF
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
   # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
-  beam) SERVE=1; shift; set -- --beam "$@" ;;
+  # (The path it was run as, before links are followed: `apksim beam install` writes that into launchd's job, so a
+  # Homebrew upgrade, which moves the install folder, leaves bin/apksim and the job working.)
+  beam) SERVE=1; shift; set -- --beam "$@"
+    APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
+    export APKSIM_LAUNCHER_PATH ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first

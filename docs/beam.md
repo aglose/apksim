@@ -13,7 +13,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | Phase | State |
 |---|---|
 | 0 Browser feasibility | Done for Chrome 156 (works behind a one-time `loopback-network` prompt, no speed cost). Safari, Firefox not checked: beam is offered only in Chromium browsers |
-| 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`. Left: the launchd agent (it runs in the foreground) |
+| 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`; the launchd agent (`apksim beam install`, see "The launchd agent"), checked with a stand-in for launchd, not yet installed with launchd itself |
 | 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
@@ -241,8 +241,8 @@ the manual checks listed.
    that later turns out to refuse gets a fallback: a locally trusted TLS certificate for `127.0.0.1`, or top-level
    navigation to the agent's own copy of the page, which loses embedding.
 1. **Agent and start-on-the-Mac.** Built 2026-11-07 (see "Phase 1 as built" below): `apksim beam`, the trust store
-   and prompt, `serve --allow-beam`, the page's "On this Mac" choice, `scripts/beam-check.py`. Left from the plan: the
-   LaunchAgent with socket activation in the cask (the agent runs in the foreground for now), and instances with a hidden window instead of `--headless` (with "Show in Simulator", phase 3).
+   and prompt, `serve --allow-beam`, the page's "On this Mac" choice, `scripts/beam-check.py`; the LaunchAgent with
+   socket activation on 2026-11-08 (`apksim beam install`, opt-in rather than in the cask; see "The launchd agent").
 1b. **Parity with a local launch.** Built 2026-11-07 (see "Phase 1b as built"). The goal: once beamed, the app is as fast as `apksim app.apk` in its own
    window. Already the same: the app's process (the same launcher and JVM, Metal, VideoToolbox, the Mac's memory: the
    app never runs in the browser, whose tab holds only a video decoder and a canvas) and a warm start (0.37 s to the
@@ -670,6 +670,28 @@ First review:
   cold (1.7 s to the first frame) and one failed; `beam-check.py` now checks a beamed session is a warm hand-off.
   The parity bench measured the first frame from a click that came after the page had already started the app (the
   0.17 s above was the end of a start, not a start); it now loads the page without `?app=` and times one Start.
+
+## The launchd agent (2026-11-08)
+
+- **`apksim beam install [--port N] [--agent-idle S]`** (`BeamLaunchd`) writes two LaunchAgents to
+  ~/Library/LaunchAgents and loads them (`launchctl bootstrap gui/UID`); `apksim beam uninstall` boots them out and
+  deletes them; `apksim beam status` says whether it is installed. Opt-in, never done by the installer: an agent any
+  page can reach (behind its consent prompt) is the visitor's choice. The Homebrew cask removes both on uninstall and
+  says how to install it.
+  - `dev.apksim.beam`: launchd listens on 127.0.0.1:PORT (47474) and starts `apksim beam --launchd` on a page's first
+    connection, handing it the listening socket on stdin (`inetdCompatibility` with `Wait`), which the agent takes as
+    `System.inheritedChannel()`: no native code. It exits after `--agent-idle` seconds (600) with no session, no
+    request in flight and no page's request (`apksim beam status` asking does not count), and launchd starts it again
+    for the next page: nothing runs, no memory is used, until a page asks. Logs to `STATE/beam/logs/agent.log`.
+  - `dev.apksim.beam.sweep`: `apksim beam sweep` once a day, so builds past their hold go while the agent never runs.
+  - The job names the launcher as it was run (Homebrew's `bin/apksim`, which an upgrade keeps; the install folder it
+    leads to changes with each version), and `APKSIM_HOME` when set.
+- **Checked** (`scripts/beam-launchd-check.py`, 12 checks): both property lists valid (`plutil`), the agent's
+  socket-activated on its port with the socket handed over inetd's way; with the script standing in for launchd
+  (holding the socket and starting `--launchd` when a connection waits): nothing runs until a page asks, the first
+  request starts the agent in 0.1 s and is answered, a session streams, with no page for its idle time it exits, the
+  next request starts it again. `--real` installs the jobs with launchd itself (a test label, removed after); not run
+  here yet: installing a LaunchAgent on this Mac needs its owner's go-ahead.
 
 ## Measurements to keep (as serve's table)
 
