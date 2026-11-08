@@ -33,8 +33,8 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
-                          [--warm auto|on|off] [--core-dumps] [--in-flight N]
+                          [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -51,6 +51,10 @@ public final class Serve {
   int quality = 80;
   /** `--in-flight N`: the most frames in flight to a tab (the window is sized from the round trip, up to this). */
   int inFlightMax = 8;
+  /** H.264 streams' bit rate in kilobits a second (`--bitrate`). */
+  int bitrateKbps = 4000;
+  /** Whether a tab may ask for H.264 (`--codec auto`, the default) or always gets JPEG (`--codec jpeg`). */
+  boolean allowH264 = true;
   long maxUploadMb = 300;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
@@ -99,6 +103,15 @@ public final class Serve {
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
+        case "--bitrate" -> s.bitrateKbps = Math.max(100, Math.min(100_000, Integer.parseInt(need(a, v))));
+        case "--codec" -> {
+          String c = need(a, v);
+          if (!c.equals("auto") && !c.equals("jpeg")) {
+            System.err.println("--codec takes auto or jpeg\n" + USAGE);
+            System.exit(2);
+          }
+          s.allowH264 = c.equals("auto");
+        }
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
         case "--trust-proxy" -> {
           s.trustProxy = true;
@@ -607,7 +620,7 @@ public final class Serve {
       return;
     }
     Map<String, String> options = new LinkedHashMap<>();
-    for (String k : List.of("device", "appearance", "locale", "fontscale", "open", "orientation", "permissions")) {
+    for (String k : List.of("device", "appearance", "locale", "fontscale", "open", "orientation", "permissions", "codec")) {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }

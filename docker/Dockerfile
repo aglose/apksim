@@ -2,14 +2,17 @@
 # ones), each built natively for its CPU. amd64 also runs on Apple Silicon under Rosetta, but arm64 runs there natively
 # and is much faster. Build with scripts/docker-build.sh [TAG] [--platform linux/arm64], which stages the context.
 FROM eclipse-temurin:24-jdk AS build
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev unzip zip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev unzip zip libopenh264-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY native native
 COPY lib /opt/apksim/work/lib
 # Natives: the ELF loader and bionic shim (the window, Metal and VideoToolbox parts are macOS-only).
 RUN mkdir -p /opt/apksim/work/runtime/icu && \
     gcc -O2 -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-      -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c native/jnigraphics.c -ldl -lpthread
+      -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c native/jnigraphics.c -ldl -lpthread && \
+    # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
+    gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+      -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 # The newest of each, should an older one be left in work/lib; the others go.
 RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \
@@ -39,8 +42,8 @@ LABEL org.opencontainers.image.source=https://github.com/aglose/apksim \
       org.opencontainers.image.licenses=Apache-2.0
 # GLES for test runs that render offscreen (dev.apksim.gl): Mesa's software EGL and GLES, on EGL's surfaceless platform
 # (no display server), where pbuffers work. Python for scripts/instrument.py (a whole suite in one container),
-# snapshot.py (screenshot tests, docs/snapshots.md) and drive.py.
-RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 && \
+# snapshot.py (screenshot tests, docs/snapshots.md) and drive.py. OpenH264 for `apksim serve`'s H.264 stream.
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 libopenh264-7 && \
     rm -rf /var/lib/apt/lists/*
 ENV EGL_PLATFORM=surfaceless
 # State (startup cache, class cache, app data) stays in the image's own work/, also when work/release marks a version.
