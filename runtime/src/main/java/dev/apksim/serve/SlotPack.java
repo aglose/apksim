@@ -128,10 +128,15 @@ final class SlotPack {
         }
         String entry = prefix + n;
         if (at.isDirectory()) {
+          // Each folder an entry of its own (an empty one would otherwise be lost), counted as unpack counts it.
+          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files and folders to move");
+          progress.files = used[0];
+          z.putNextEntry(new ZipEntry(entry + "/"));
+          z.closeEntry();
           add(z, d, n.toString(), entry + "/", depth + 1, used, progress);
         } else if (at.isRegularFile()) {
           if (depth == 0 && prefix.equals("slot/") && n.toString().equals(".lock")) continue;  // the slot's own lock
-          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files to move");
+          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files and folders to move");
           progress.files = used[0];
           progress.openingIn = d;
           progress.opening = n;
@@ -208,9 +213,10 @@ final class SlotPack {
           if (z.read() != -1) throw new IOException("bad package entry");
           continue;
         }
-        if (e.isDirectory()) {
+        boolean folder = e.isDirectory();
+        if (folder) {
           if (z.read() != -1) throw new IOException("a folder entry with contents: " + name);
-          continue;
+          name = name.substring(0, name.length() - 1);  // its trailing "/"
         }
         Path root;
         String rel;
@@ -228,6 +234,12 @@ final class SlotPack {
         if (!to.startsWith(root) || to.equals(root)) throw new IOException("entry outside its folder: " + name);
         for (String part : rel.split("/")) {
           if (part.equals("..") || part.equals(".")) throw new IOException("bad entry " + name);
+        }
+        if (folder) {
+          // An empty folder the app made is kept too (it may count on it being there).
+          Files.createDirectories(to);
+          if (!to.toRealPath().startsWith(root.toRealPath())) throw new IOException("entry outside its folder: " + name);
+          continue;
         }
         Files.createDirectories(to.getParent());
         if (!to.getParent().toRealPath().startsWith(root.toRealPath())) throw new IOException("entry outside its folder: " + name);

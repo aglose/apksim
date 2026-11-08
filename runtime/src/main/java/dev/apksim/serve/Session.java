@@ -431,20 +431,29 @@ final class Session {
     long[] used = {1, 0};  // entries (the package one), bytes
     for (Path root : List.of(dir, dir.resolveSibling(dir.getFileName() + ".device"))) {
       if (!Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+      // Files and folders alike (each is an entry), and no further than the limit: a slot of millions of empty folders
+      // must not keep this walking.
       try (Stream<Path> all = Files.walk(root)) {
-        all.filter(f -> Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)).forEach(f -> {
-          used[0]++;
-          try {
-            used[1] += Files.size(f);
-          } catch (IOException e) {
-            // gone meanwhile
+        var it = all.iterator();
+        while (it.hasNext() && used[0] <= SlotPack.MAX_FILES && used[1] <= SlotPack.MAX_BYTES) {
+          Path f = it.next();
+          if (f.equals(root)) continue;
+          if (Files.isDirectory(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            used[0]++;
+          } else if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            used[0]++;
+            try {
+              used[1] += Files.size(f);
+            } catch (IOException e) {
+              // gone meanwhile
+            }
           }
-        });
+        }
       } catch (IOException | RuntimeException e) {
         return "the app's data could not be read: " + e.getMessage();
       }
     }
-    if (used[0] > SlotPack.MAX_FILES) return "the app's data has more than " + (SlotPack.MAX_FILES - 1) + " files to move";
+    if (used[0] > SlotPack.MAX_FILES) return "the app's data has more than " + (SlotPack.MAX_FILES - 1) + " files and folders to move";
     if (used[1] > SlotPack.MAX_BYTES) return "the app's data is over " + (SlotPack.MAX_BYTES >> 20) + " MB to move";
     return null;
   }

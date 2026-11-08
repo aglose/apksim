@@ -674,8 +674,9 @@ First review:
 - **The server** (`Session.handoff`): a server session's own socket sends `handoff` (only with `--allow-beam`; never
   the agent's). The app is told to `quit` and its JVM's exit awaited (the attested PID, as for ending an instance), so
   what it wrote is flushed; its data slot and `serve-N.device` folder (/sdcard and the Settings values, `SlotDevice`)
-  are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files only, not the slot's `.lock`, at most
-  50,000 files and 1 GB) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
+  are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files and folders, empty ones too, not the
+  slot's `.lock`; at most 50,000 entries, files and folders alike, and 1 GB, the server's own count stopping at that
+  limit) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
   phase 2's, 5 minutes) for `GET /api/beam/data?ticket=T`, which needs no token and serves that pack once its hash
   matches the ticket's. The session then ends without a word (its slot erased as always); packs older than the ticket
   go with a sweep. A session that has no data slot yet answers `h {"error"}` and runs on; a pack that fails answers
