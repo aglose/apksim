@@ -582,6 +582,10 @@ of the old one; a start cancelled while the server answered never reaches the ag
 their instance by the session's PID; a stream viewer coming before the window (a cold launch) no longer calls into the
 window's library before it is loaded.
 
+Later review: taking a session's grant marks its build and moved data as taken before the grant goes (`Beam.take`).
+Removed first, an hourly or session-end sweep running between the two found no owner for the moved data and erased
+it just before the session started with it.
+
 First review:
 
 - An upload's hash is checked while the file is still staged (`Catalog.upload` with the expected SHA-256): with

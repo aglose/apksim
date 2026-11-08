@@ -274,14 +274,21 @@ final class Beam {
   /** The grant for this token if it is of this kind, for this origin and unexpired; used up either way. */
   Grant take(String token, Kind kind, String origin) {
     if (token == null || origin == null) return null;
-    Grant g = grants.remove(token);
+    Grant g = grants.get(token);
     if (g == null) return null;
-    if (g.kind != kind || !g.origin.equals(origin) || g.expires < System.currentTimeMillis()) {
+    // Marked taken before the grant goes, so a sweep in between still finds an owner for its build and moved data
+    // (removed first, a sweep there saw neither and erased the data the session was about to start with).
+    Long now = System.currentTimeMillis();
+    String seed = g.kind == Kind.SESSION ? g.extra : null;
+    if (g.sha256 != null) justUsed.put(g.sha256, now);
+    if (seed != null) seedsTaken.put(seed, now);
+    if (!grants.remove(token, g)) return null;  // another request took it: its marks are its own
+    if (g.kind != kind || !g.origin.equals(origin) || g.expires < now) {
+      if (g.sha256 != null) justUsed.remove(g.sha256, now);  // unless another take of the build marked it since
+      if (seed != null) seedsTaken.remove(seed, now);
       dropSeed(g);  // used up, so its moved data has no session to go to
       return null;
     }
-    if (g.sha256 != null) justUsed.put(g.sha256, System.currentTimeMillis());
-    if (g.kind == Kind.SESSION && g.extra != null) seedsTaken.put(g.extra, System.currentTimeMillis());
     return g;
   }
 
