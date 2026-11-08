@@ -16,6 +16,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
+             [--allow-beam] [--beam-port N]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -307,6 +308,16 @@ that no deep link names, data entered).
   sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
   by different people on one machine, which can read the state folder: give each trust boundary its own serve (its
   own container).
+
+### Run on this Mac (`--allow-beam`)
+
+With `--allow-beam` the page offers "On this Mac" to a visitor whose Mac runs `apksim beam` (docs/beam.md: the
+agent, its prompt, its protocol and what was checked): the app runs there, on their hardware, and the tab draws its
+stream as it draws the server's, so no server session is used. Serve adds `GET /api/beam` (the agent's port,
+`--beam-port`, default 47474), `GET /api/apps/ID/beam` (name, size, SHA-256, launch options) and `GET /api/apps/ID/apk`
+(the APK, which the tab passes on when the agent does not have that build), behind the token like everything else,
+and lets the page reach `http://127.0.0.1:PORT` in its CSP. Off by default: it lets token holders download the APKs
+they can run.
 
 ### Not in scope (yet)
 

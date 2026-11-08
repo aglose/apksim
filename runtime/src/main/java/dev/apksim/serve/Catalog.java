@@ -83,9 +83,10 @@ final class Catalog {
     }
   }
 
-  Catalog(List<String> sources, Path state, long maxBytes) throws IOException {
-    this.uploads = state.resolve("serve/uploads");
-    this.downloads = state.resolve("serve/downloads");
+  /** `home`: the state folder's part for this server, `serve` (apksim serve) or `beam` (the agent, docs/beam.md). */
+  Catalog(List<String> sources, Path state, String home, long maxBytes) throws IOException {
+    this.uploads = state.resolve(home + "/uploads");
+    this.downloads = state.resolve(home + "/downloads");
     this.maxBytes = maxBytes;
     Files.createDirectories(uploads);
     Files.createDirectories(downloads);
@@ -335,6 +336,71 @@ final class Catalog {
   /** An added app's download: null when it is not one (or finished long ago). */
   Download download(String id) {
     return id == null ? null : downloading.get(id);
+  }
+
+  /**
+   * A new id for the APK stored with this content hash, or null when none is (`apksim beam`: a page that sent this
+   * build before sends nothing again). Kept by the same rules as an upload's.
+   */
+  App byHash(String sha256, String name, List<String> launch) throws IOException {
+    if (sha256 == null || !sha256.matches("[0-9a-f]{64}")) return null;
+    Path apk = uploads.resolve(sha256 + ".apk");
+    String id = newId(), clean = clean(name);
+    StringBuilder ref = new StringBuilder(sha256).append(".apk\n").append(clean).append('\n');
+    for (String o : launch) ref.append(o).append('\n');
+    synchronized (uploadsLock) {
+      if (!Files.isRegularFile(apk)) return null;
+      Files.writeString(uploads.resolve(id + ".ref"), ref);
+    }
+    return new App(id, clean, apk, null, true, launch);
+  }
+
+  private final Map<Path, String[]> sha256s = new ConcurrentHashMap<>();
+
+  /**
+   * The SHA-256 of an APK file, as hex (`--allow-beam`: the agent is told it, and checks what it gets against it). A
+   * stored upload is named by it; any other file's is worked out once per size and modification time.
+   */
+  String sha256(Path apk) throws IOException {
+    String n = apk.getFileName().toString();
+    if (apk.getParent() != null && apk.getParent().equals(uploads) && n.matches("[0-9a-f]{64}\\.apk")) return n.substring(0, 64);
+    String stamp = Files.size(apk) + ":" + Files.getLastModifiedTime(apk).toMillis();
+    String[] known = sha256s.get(apk);
+    if (known != null && known[0].equals(stamp)) return known[1];
+    try (InputStream f = Files.newInputStream(apk)) {
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] buf = new byte[1 << 16];
+      for (int k; (k = f.read(buf)) > 0; ) md.update(buf, 0, k);
+      String sha = HexFormat.of().formatHex(md.digest());
+      sha256s.put(apk, new String[] {stamp, sha});
+      return sha;
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * Forgets an upload that must not be kept (`apksim beam`: its bytes were not the build the page named): its id,
+   * and its APK when no other id names it.
+   */
+  void discard(App a) throws IOException {
+    synchronized (uploadsLock) {
+      Files.deleteIfExists(uploads.resolve(a.id() + ".ref"));
+      String apk = a.path().getFileName().toString();
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads, "*.ref")) {
+        for (Path ref : d) {
+          List<String> lines = Files.readAllLines(ref);
+          if (!lines.isEmpty() && lines.get(0).equals(apk)) return;
+        }
+      }
+      Files.deleteIfExists(a.path());
+    }
+  }
+
+  /** Whether this added app's download is still under way (its file is not there yet). */
+  boolean downloading(App a) {
+    Download d = downloading.get(a.id());
+    return d != null && !d.done.isDone();
   }
 
   /**

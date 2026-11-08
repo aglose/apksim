@@ -364,6 +364,15 @@ Each has its spec, checks and measurements in its own doc. Three are in 0.9.0; t
 
 Failure bundles (phase 5, PRs #38 and #43) shipped with them in 0.9.0.
 
+## Phase 7: beam a browser session to the visitor's Mac (planned 2026-11-07)
+
+docs/beam.md: when the visitor has apksim installed, the APK runs on their Mac (a loopback-only `apksim serve
+--beam` agent, started by launchd on first use) and streams into the same canvas in the page, so it stays where it
+was in the tab or iframe; Fill mode sizes the Android display to the page's stage at the browser's pixel ratio, and
+the simulator window, when shown, is a second view of the same display. Phase 0 (what browsers allow an https page
+to reach on 127.0.0.1): Chrome 156 allows it behind a one-time `loopback-network` prompt, at the same speed as a
+same-origin page; Safari and Firefox are not checked (beam is offered only in Chromium browsers until they are).
+
 ## Not planned
 
 - Rust rewrite of the native C-library shim: safety, not speed, and the shim is small. Revisit only if it keeps

@@ -182,7 +182,7 @@ final class Session {
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill",
-        "--data-slots", "serve", "--control", "auto"));
+        "--data-slots", serve.home, "--control", "auto"));
     cmd.addAll(List.of("--device", deviceSpec(device)));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -795,9 +795,9 @@ final class Session {
    */
   static void eraseSlot(Serve serve, Path dataDir, Consumer<String> logLine) {
     Path dir = dataDir.toAbsolutePath().normalize();
-    // Only a slot of serve's own (serve-N, under the state folder's app data).
+    // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !dir.getFileName().toString().startsWith("serve-")) return;
+        || !dir.getFileName().toString().startsWith(serve.home + "-")) return;
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;

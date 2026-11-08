@@ -83,6 +83,9 @@ body.embed.bare aside { width: auto; }
     <option value="desktop">Desktop</option><option value="tv">TV</option>
   </select>
   <label><input id="dark" type="checkbox"> Dark</label>
+  <select id="runOn" aria-label="Where the app runs" hidden title="Run the app on this server, or on this Mac with its own apksim (docs/beam.md)">
+    <option value="server">On the server</option><option value="mac">On this Mac</option>
+  </select>
   <span class="spacer"></span>
   <button id="start" class="primary" disabled>Start</button>
   <button id="stop" disabled>Stop</button>
@@ -249,6 +252,7 @@ async function loadApps() {
   $("url").value = state.open;
   refresh();
   await codecReady;
+  await beamSetup();
   if (state.app) start();
 }
 function refresh() {
@@ -285,7 +289,8 @@ $("file").onchange = () => {
 function start() {
   if (!state.app) return;
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
-  if (ws) ws.close();
+  // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
+  if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
@@ -295,7 +300,16 @@ function start() {
   mode = "jpeg"; closeDecoder();
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  const sock = ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q));
+  const gen = ++startGen;
+  if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
+  else openSocket(serverSocketUrl(q), false);
+  fit();
+}
+// A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
+let startGen = 0;
+function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q); }
+function openSocket(url, onMac) {
+  const sock = ws = new WebSocket(url);
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
   // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
@@ -305,13 +319,17 @@ function start() {
   sock.onclose = () => {
     socketClosed(sock);
     if (sock !== ws) return;
-    if (!ended) overlay("Disconnected from the server.", "Start again", start);
+    if (!ended) overlay(onMac ? "Disconnected from this Mac's apksim." : "Disconnected from the server.", "Start again", start);
     ended = true;
     refresh();
   };
-  fit();
 }
-function stop() { clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0; if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); } }
+function stop() {
+  const asking = startGen;  // a start still asking this Mac (no socket yet) is dropped too
+  startGen++; clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0;
+  if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
+  else if (asking && !ended) { ended = true; overlay("Stopped.", "Start again", start); refresh(); }
+}
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
@@ -620,6 +638,91 @@ $("copy").onclick = async () => {
   $("link").value = link;
   try { await navigator.clipboard.writeText(link); log("link copied (people without the token cookie need the token link once)"); }
   catch (e) { $("linkbox").hidden = false; $("link").select(); log("copy the link from the box"); }
+};
+
+// ---------------------------------------------------------------- beam (docs/beam.md)
+// With `serve --allow-beam`, a visitor whose Mac runs `apksim beam` may run the app there instead: the page asks the
+// agent on 127.0.0.1 to start it (sending the APK when the agent does not have that build), then draws the agent's
+// stream here exactly as the server's. Offered only where the browser knows the loopback-network permission (Chrome's:
+// what docs/beam.md checked), and never probed before that permission is granted or the visitor picks "On this Mac":
+// a visitor without apksim sees no prompt.
+const beam = { port: 0, url: "", ok: false };
+function pref(v) { try { if (v === undefined) return localStorage.getItem("apksim.runOn"); localStorage.setItem("apksim.runOn", v); } catch (e) { return null; } }
+async function beamSetup() {
+  if (embed && params.get("beam") === "0") return;
+  const mac = navigator.userAgentData ? navigator.userAgentData.platform === "macOS" : /Macintosh/.test(navigator.userAgent);
+  if (!mac) return;
+  let cfg, perm;
+  try {
+    const r = await fetch(withToken("api/beam"));
+    if (!r.ok) return;  // this server does not offer it
+    cfg = await r.json();
+  } catch (e) { return; }
+  if (cfg.protocol !== 1) return;
+  try { perm = (await navigator.permissions.query({ name: "loopback-network" })).state; } catch (e) { return; }
+  if (perm === "denied") return;
+  beam.port = cfg.port; beam.url = "http://127.0.0.1:" + cfg.port;
+  $("runOn").hidden = false;
+  // Already allowed: find the agent now, and run there when the visitor chose it (or this site is allowed there).
+  if (perm === "granted") {
+    const h = await beamHello(false);
+    if (h && (pref() === "mac" || pref() === null && h.trusted)) $("runOn").value = "mac";
+  }
+}
+async function beamHello(asked) {
+  try {
+    // Pending while the browser asks the visitor (Chrome: "apps on this device"): the page waits for the answer.
+    if (asked) overlay("Allow this site to reach apps on this device (the browser asks), then it runs on this Mac.");
+    const r = await fetch(beam.url + "/beam/hello");
+    const h = await r.json();
+    if (asked) overlay(null);
+    if (h.protocol !== 1) { log("this Mac's apksim (" + h.apksim + ") speaks another protocol: update it (brew upgrade apksim)"); return null; }
+    beam.ok = true;
+    log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
+    return h;
+  } catch (e) {
+    if (asked) { overlay(null); log("no apksim on this Mac (run `apksim beam`, docs/beam.md): " + e.message); }
+    return null;
+  }
+}
+async function okJson(p) {
+  const r = await p;
+  if (!r.ok) throw new Error((await r.text()).trim() || "HTTP " + r.status);
+  return r.json();
+}
+async function startOnMac(q, gen) {
+  const app = state.app;
+  try {
+    overlay("Starting on this Mac…");
+    const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
+    // The agent asks its owner the first time this site runs an app there (a prompt on the Mac): this waits for it.
+    let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sha256: info.sha256, name: info.name, size: info.size, options: info.options }) }));
+    if (gen !== startGen) return;
+    if (g.need === "upload") {
+      overlay("Sending the app to this Mac (" + Math.max(1, Math.round(info.size / 1048576)) + " MB)…");
+      const r = await fetch(withToken("api/apps/" + encodeURIComponent(app) + "/apk"));
+      if (!r.ok) throw new Error("the server would not send the APK: " + (await r.text()).trim());
+      const apk = await r.blob();
+      if (gen !== startGen) return;
+      g = await okJson(fetch(beam.url + "/beam/upload?upload=" + encodeURIComponent(g.upload), { method: "POST", body: apk }));
+    }
+    if (gen !== startGen) return;
+    log("running on this Mac");
+    const lq = new URLSearchParams(q);
+    lq.set("app", g.app); lq.set("token", g.token);
+    openSocket("ws://127.0.0.1:" + beam.port + "/ws?" + lq, true);
+  } catch (e) {
+    if (gen !== startGen) return;
+    log("this Mac: " + e.message + ": running on the server instead");
+    openSocket(serverSocketUrl(q), false);
+  }
+}
+$("runOn").onchange = async () => {
+  if ($("runOn").value === "mac" && !beam.ok && !(await beamHello(true))) $("runOn").value = "server";
+  pref($("runOn").value);
+  // A running session starts again where it was asked to run (moving it without a restart is docs/beam.md's phase 4).
+  if (ws && ws.readyState <= 1 && !ended) start();
 };
 addEventListener("beforeunload", () => { if (ws) ws.close(); });
 if (!redirecting) loadApps();

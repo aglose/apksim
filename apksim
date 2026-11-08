@@ -2,6 +2,7 @@
 # Usage: apksim [--activity PKG/.Act|.Act|NAME] [--shot FILE] [--exit-after-first-frame] [--debug PORT]
 #               [--instrument test.apk [-e KEY VALUE]...] app.apk
 #        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
+#        apksim beam [--port N] [--max N] | apksim beam trust [list|allow ORIGIN|revoke ORIGIN]  (docs/beam.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
@@ -34,6 +35,7 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: apksim [options] APP.apk
        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...
+       apksim beam [--port N] [--max N]    run browser sessions' apps on this Mac (docs/beam.md)
        apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
        apksim --version | --train | --stop-standbys
 
@@ -57,6 +59,8 @@ EOF
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
+  # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
+  beam) SERVE=1; shift; set -- --beam "$@" ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first

@@ -174,6 +174,21 @@ final class Http {
     out.flush();
   }
 
+  /** A file as the body, streamed (an APK can be hundreds of MB). */
+  static void file(OutputStream out, java.nio.file.Path path, String type) throws IOException {
+    long size = java.nio.file.Files.size(path);
+    StringBuilder h = new StringBuilder("HTTP/1.1 200 OK\r\nContent-Type: ").append(type).append("\r\nContent-Length: ").append(size)
+        .append("\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n");
+    String cors = CORS_ORIGIN.get();
+    if (cors != null) h.append("Access-Control-Allow-Origin: ").append(cors).append("\r\nVary: Origin\r\n");
+    h.append("Connection: close\r\n\r\n");
+    out.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
+    try (java.io.InputStream in = java.nio.file.Files.newInputStream(path)) {
+      in.transferTo(out);
+    }
+    out.flush();
+  }
+
   static void text(OutputStream out, int status, String body) throws IOException {
     respond(out, status, "text/plain; charset=utf-8", (body + "\n").getBytes(StandardCharsets.UTF_8));
   }

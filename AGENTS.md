@@ -219,7 +219,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
-  - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
+  - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
+    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
@@ -254,7 +255,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
-  bundles, see "Instrumentation tests"), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
+  bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
+  `serve --allow-beam` started and driven as a page would, docs/beam.md), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -266,7 +268,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `linux-docker.md`, `ci-testbed.md` (a large app's
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks

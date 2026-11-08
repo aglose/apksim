@@ -130,7 +130,7 @@ final class Warmer {
     System.err.printf("[serve] warming the cache of %s%n", j.app.name());
     List<String> cmd = new ArrayList<>();
     if (Files.isExecutable(Path.of("/usr/bin/nice"))) cmd.addAll(List.of("/usr/bin/nice", "-n", "10"));
-    cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", "serve",
+    cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", serve.home,
         "--exit-after-first-frame"));
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
