@@ -211,6 +211,9 @@ final class SlotPack {
     Files.createDirectories(device);
     long total = 0;
     int count = 0;
+    // Folders made so far: one made implicitly, above an entry, counts toward the limit too (else 50,000 entries 63
+    // deep each would make three million). Pack writes each folder before what is in it, so its packs pay nothing extra.
+    java.util.Set<Path> made = new java.util.HashSet<>();
     try (InputStream in = Files.newInputStream(zip); ZipInputStream z = new ZipInputStream(in)) {
       boolean first = true;
       for (ZipEntry e; (e = z.getNextEntry()) != null; first = false) {
@@ -238,7 +241,9 @@ final class SlotPack {
         } else {
           throw new IOException("unexpected entry " + name);
         }
-        if (rel.isEmpty() || rel.startsWith("/") || rel.contains("\\") || rel.contains("\0")) throw new IOException("bad entry " + name);
+        // A backslash is an ordinary character in a name on macOS and Linux (pack takes such a file), so it is kept;
+        // only "/" separates, and "." and ".." are refused below.
+        if (rel.isEmpty() || rel.startsWith("/") || rel.contains("\0")) throw new IOException("bad entry " + name);
         // Folders deep, as pack counts them: a folder entry is its own components, a file's are its containing
         // folders (pack takes a file inside 64 nested folders).
         int folders = rel.split("/").length - (folder ? 0 : 1);
@@ -248,6 +253,9 @@ final class SlotPack {
         for (String part : rel.split("/")) {
           if (part.equals("..") || part.equals(".")) throw new IOException("bad entry " + name);
         }
+        count += newFolders(to.getParent(), root, made);
+        if (folder) made.add(to);  // counted as its own entry
+        if (count > MAX_FILES) throw new IOException("more than " + MAX_FILES + " files and folders");
         if (folder) {
           // An empty folder the app made is kept too (it may count on it being there).
           Files.createDirectories(to);
@@ -290,6 +298,16 @@ final class SlotPack {
     } catch (IOException | RuntimeException e) {
       log.accept("[beam] could not look for unused moved data: " + e);
     }
+  }
+
+  /** The folders from `dir` up to `root` (not included) not made yet, marked made; how many. */
+  private static int newFolders(Path dir, Path root, java.util.Set<Path> made) {
+    int n = 0;
+    for (Path d = dir; d != null && !d.equals(root) && d.startsWith(root); d = d.getParent()) {
+      if (!made.add(d)) break;  // its parents were made with it
+      n++;
+    }
+    return n;
   }
 
   static void deleteTree(Path dir) {

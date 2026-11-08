@@ -701,7 +701,7 @@ First review:
   must be the page's own (same origin and base path as the APK's, no redirects). It downloads the pack, unpacks it
   into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and
   without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
-  roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread) and 1 GB at
+  roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread, and each folder made on the way to one too) and 1 GB at
   most, a name at most 4,096 characters and 64 folders deep, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket, and so
   does a pack naming another package than the build's (read from its manifest, `ApkCache.manifestPackage`: at most 1 MB, where real ones are 21-39 KB; only the first
   element decoded, by Axml, which checks every length, offset and count against its input and caps what it decodes): a site's
