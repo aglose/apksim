@@ -58,8 +58,14 @@ public final class Serve {
   int quality = 80;
   /** `--in-flight N`: the most frames in flight to a tab (the window is sized from the round trip, up to this). */
   int inFlightMax = 8;
-  /** H.264 streams' bit rate in kilobits a second (`--bitrate`). */
+  /** H.264 streams' bit rate in kilobits a second (`--bitrate`; the agent's default is {@link #BEAM_KBPS}). */
   int bitrateKbps = 4000;
+  private boolean bitrateGiven;
+  /**
+   * The agent's stream never leaves the Mac, so it has no network to spare: 20 Mbps gives the Shader tab 16 KB a frame
+   * against 4 (fine detail in motion) for ~0.6 ms more encode, with the same pacing and latency (beam-parity.py).
+   */
+  static final int BEAM_KBPS = 20_000;
   /** Whether a tab may ask for H.264 (`--codec auto`, the default) or always gets JPEG (`--codec jpeg`). */
   boolean allowH264 = true;
   long maxUploadMb = 300;
@@ -166,7 +172,10 @@ public final class Serve {
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
-        case "--bitrate" -> s.bitrateKbps = Math.max(100, Math.min(100_000, Integer.parseInt(need(a, v))));
+        case "--bitrate" -> {
+          s.bitrateKbps = Math.max(100, Math.min(100_000, Integer.parseInt(need(a, v))));
+          s.bitrateGiven = true;
+        }
         case "--codec" -> {
           String c = need(a, v);
           if (!c.equals("auto") && !c.equals("jpeg")) {
@@ -344,6 +353,7 @@ public final class Serve {
       home = "beam";
       if (!portGiven) port = Beam.DEFAULT_PORT;
       if (!maxGiven) max = 2;
+      if (!bitrateGiven) bitrateKbps = BEAM_KBPS;
       agent = new Beam(state);
       store = new BeamStore(state);
       BeamStore.Config c = store.config;

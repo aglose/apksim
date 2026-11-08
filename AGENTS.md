@@ -29,7 +29,15 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
-    loop turn draw, 150-400 frames a second on a video screen. The first frame waits for the bottom window that is
+    loop turn draw, 150-400 frames a second on a video screen. It is drawn only on a turn that ran a vsync, or when
+    none is pending (a TextureView's new picture): input dispatched at a turn's start dirtied the window, which was
+    drawn then and again at the vsync (`frames` counts the frames `held for their vsync`). A vsync asked for since the
+    last frame waits for the display's next one, and while a timed drag (`swipe ... MS`) runs the loop turns at each
+    vsync and sends the move there, as a device consumes batched touch input in the vsync's frame; other input goes
+    out 7 ms apart. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
+    twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
+    one. The first frame waits for the bottom window that is
     shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
     never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
@@ -258,7 +266,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
-  `serve --allow-beam` started and driven as a page would, docs/beam.md), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
+  `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
+  against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
+  `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -320,7 +330,8 @@ AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb she
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
-`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time).
+`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
+`vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or
@@ -809,7 +820,8 @@ on its own thread; `redraw` makes the Host draw one for a new subscriber), or as
 (`codec=h264`, sent by the page when WebCodecs decodes it) and the instance has an encoder (VideoToolbox; OpenH264
 in the image), answered `c h264`/`c jpeg`: no reordering, keyframes only at the start, a size change or a `key`
 request, and a still screen encoded twice more to sharpen it; `--bitrate` (4000 kbps), `--codec jpeg` turns it off.
-Serve relays frames with at most two in flight per tab (the page acknowledges each one drawn; with H.264 a tab that
+Serve relays frames with at most two in flight per tab (the page acknowledges each one decoded and shows it at its
+next display refresh, from a queue of at most two, pacing the instance to that display with `vsync`; with H.264 a tab that
 falls behind drops to the next keyframe, which serve asks for), and passes on only input and device commands
 (`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a

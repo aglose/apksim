@@ -394,20 +394,119 @@ function onFrame(buf, sock) {
   chain = chain.then(() => createImageBitmap(jpeg)).then(bmp => {
     // Decoding takes a moment: by now Stop or a new session may have replaced this frame's socket.
     if (sock !== ws || ended) { bmp.close(); return; }
-    draw(bmp, w, h);
-    bmp.close();
-    shown(presented, encode, buf.byteLength);
+    present(bmp, w, h, presented, encode, buf.byteLength, sock);
   }).catch(() => { if (sock === ws) send("ack"); });
+}
+// Decoded frames reach the canvas at the display's refresh (requestAnimationFrame), as the Mac window presents its
+// frames at its vsync. Drawn as soon as decoded, two that the stream's jitter (encode, transport, decode: 5-12 ms
+// between frames sent every 8.3) brought within one refresh interval showed only the second, and the next refresh
+// none. Drawing at the refresh costs no time: a canvas draw is shown at the next refresh either way. The second of two
+// waits for the refresh after (a queue of at most two); one left waiting at every refresh for long means frames come a
+// refresh late, and one is skipped to catch up.
+const ready = [];
+let presenting = false, standing = 0;
+function present(image, w, h, presented, encode, bytes, sock) {
+  paced();
+  send("ack");  // decoded: the server may send the next; the queue below bounds itself
+  ready.push({ image, w, h, presented, encode, bytes, sock });
+  while (ready.length > 2) dropFrame(ready.shift());
+  if (!presenting) { presenting = true; requestAnimationFrame(presentTick); }
+}
+function dropFrame(f) { f.image.close(); drawsSinceVsync++; }  // never shown: apksimPacing counts it as replaced
+function presentTick() {
+  presenting = false;
+  while (ready.length && (ready[0].sock !== ws || ended)) ready.shift().image.close();
+  if (!ready.length) { standing = 0; return; }
+  let f = ready.shift();
+  if (ready.length && standing > 8) { dropFrame(f); f = ready.shift(); standing = 0; }
+  draw(f.image, f.w, f.h);
+  f.image.close();
+  shown(f.presented, f.encode, f.bytes);
+  standing = ready.length ? standing + 1 : 0;
+  if (ready.length) { presenting = true; requestAnimationFrame(presentTick); }
 }
 function draw(image, w, h) {
   if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); }
   ctx.drawImage(image, 0, 0, w, h);
+  drawsSinceVsync++;
 }
+// What reached the screen per display refresh (requestAnimationFrame), counted as the Mac window counts its display
+// link's vsyncs (`frames`' screen part, native/simwindow.m): a refresh with a new frame drawn since the last is shown
+// (more than one: the rest were replaced before being shown), one without inside an animation (a frame came within
+// 50 ms before) is a repeat. Only while a script asks for it (apksimPacing), so a page left open costs nothing.
+let drawsSinceVsync = 0, pacing = null;
+function pacingTick(t) {
+  const p = pacing;
+  if (!p) return;
+  const n = drawsSinceVsync; drawsSinceVsync = 0;
+  if (p.last) p.periods.push(t - p.last);
+  p.last = t;
+  if (n > 0) { p.shown++; p.replaced += n - 1; p.repeated += p.pendingRepeats; p.pendingRepeats = 0; p.lastFrame = t; }
+  else if (t - p.lastFrame < 50) p.pendingRepeats++;
+  else p.pendingRepeats = 0;
+  requestAnimationFrame(pacingTick);
+}
+window.apksimPacing = ms => new Promise(done => {
+  drawsSinceVsync = 0;
+  pacing = { shown: 0, repeated: 0, replaced: 0, pendingRepeats: 0, lastFrame: -1e9, last: 0, periods: [] };
+  requestAnimationFrame(pacingTick);
+  setTimeout(() => {
+    const p = pacing; pacing = null;
+    const all = p.shown + p.repeated;
+    done({ hz: p.periods.length ? Math.round(1000 / median(p.periods)) : 0, newPct: all ? Math.round(p.shown * 100 / all) : 0,
+      shown: p.shown, repeated: p.repeated, replaced: p.replaced });
+  }, ms);
+});
+// The instance paces its frames to this tab's display (SimWindow.remoteVsync, docs/beam.md "Phase 1b"): a canvas draw
+// reaches the screen at the next refresh (requestAnimationFrame) if it comes before it, so a frame drawn just before a
+// refresh may slip to the one after while the next frame lands in the same one (one replaced, one refresh repeated).
+// With the instance on its own 120 Hz grid the two clocks drifted and some runs showed 91% new frames where the Mac
+// window showed 99%. So the page measures where in its refresh interval frames are decoded and every 500 ms sends its
+// period and how far to move the instance's vsyncs, so they land mid-interval, away from that edge. The loop runs
+// only while frames come (a still screen sends nothing); a hidden tab has no refreshes, and the instance goes back to
+// its own pace.
+const pace = { running: false, last: 0, lastFrame: 0, periods: [], phases: [], target: 0.5 };
+function paceTick() {
+  // When this runs, not the refresh's timestamp: the queue below draws frames here, and a frame decoded after this
+  // point waits a whole refresh, wherever the timestamp says the refresh began.
+  const t = performance.now();
+  if (pace.last) push(pace.periods, t - pace.last, 120);
+  pace.last = t;
+  if (performance.now() - pace.lastFrame > 500) { pace.running = false; pace.last = 0; return; }
+  requestAnimationFrame(paceTick);
+}
+function paced() {
+  const t = performance.now();
+  pace.lastFrame = t;
+  if (!pace.running) { pace.running = true; requestAnimationFrame(paceTick); return; }
+  if (pace.last && pace.periods.length >= 10) {
+    const p = pacePeriod();
+    pace.phases.push((((t - pace.last) % p) + p) % p / p);
+  }
+}
+// The refresh period to the microsecond: the time the last ticks took over the refreshes in it (a gap of two counts
+// two). A median alone is what the timestamps round to (8.3 ms at 120 Hz), and 0.03 ms a refresh is 4 ms a second of
+// drift, more than corrections twice a second hold.
+function pacePeriod() {
+  const m = median(pace.periods);
+  let total = 0, n = 0;
+  for (const d of pace.periods) { const k = Math.round(d / m); if (k >= 1 && k <= 4) { total += d; n += k; } }
+  return n ? total / n : m;
+}
+setInterval(() => {
+  const phases = pace.phases; pace.phases = [];
+  if (!pace.running || phases.length < 20 || document.visibilityState !== "visible") return;
+  const p = pacePeriod();
+  let sx = 0, sy = 0;
+  for (const f of phases) { sx += Math.cos(2 * Math.PI * f); sy += Math.sin(2 * Math.PI * f); }
+  // The mean phase less the target, -0.5..0.5 of a period.
+  const late = ((Math.atan2(sy, sx) / (2 * Math.PI) - pace.target) % 1 + 1.5) % 1 - 0.5;
+  if (p >= 4 && p <= 50) send("vsync " + Math.round(p * 1000) + " " + -Math.round(late * p * 600));  // 0.6 of the error
+}, 500);
 function shown(presented, encode, bytes) {
   fallbackTries = 0;
   if (!onHome) overlay(null);
   const t = now();
-  send("ack");
   push(drawnAt, t, 240); push(frameLat, t - presented, 60); push(encodes, encode, 60); push(sizes, bytes, 60);
   // The first new frame after an input, if it comes within a second (an input that changes nothing on screen is
   // not answered by the next caret blink).
@@ -472,9 +571,7 @@ function onVideo(dv, buf, sock, w, h, presented, encode) {
         output: frame => {
           const m = decoding.shift();
           if (d !== decoder || !m || m.sock !== ws || ended) { frame.close(); if (m && m.sock === ws) send("ack"); return; }
-          draw(frame, m.w, m.h);
-          frame.close();
-          shown(m.presented, m.encode, m.bytes);
+          present(frame, m.w, m.h, m.presented, m.encode, m.bytes, m.sock);
         },
         error: e => { if (d === decoder) e.name === "NotSupportedError" ? unsupported(e.message) : videoLost(e.message); },
       });

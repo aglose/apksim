@@ -370,8 +370,11 @@ docs/beam.md: when the visitor has apksim installed, the APK runs on their Mac (
 and streams into the same canvas in the page, so it stays where it was in the tab or iframe. Status: phase 0 (what
 an https page may reach on 127.0.0.1) done for Chrome 156; phase 1 (the agent, its trust prompt, `serve
 --allow-beam`, the page's "On this Mac") built and checked (`scripts/beam-check.py`, and in Chrome: 120 fps, 0.37 s
-to the first frame with the build cached, no server session). Next is 1b, parity with a local launch: the app's
-process already is one, and what is left is the frame's path to the screen (encode, decode, two clocks). 1c is
+to the first frame with the build cached, no server session). 1b, parity with a local launch, is done
+(`scripts/beam-parity.py`): the tab shows a new frame on as many display refreshes as the app's own window (99-100%
+on the Shader tab and slow drags, 88-91% on flings, both), after slow drags stopped drawing ~170 frames a second at
+120 Hz, the page started showing frames at its refresh and the instance paces to the tab's display; one refresh more
+latency than the window is left (the encode). 1c is
 built: builds deleted 2 days (`apksim beam config keep-days N`) after their last session, with their cache entry,
 and sessions erased unless the visitor keeps one ("Keep on this Mac", or `save-sessions on`), which `apksim beam
 run ID` reopens locally with its data (`beam-check.py`, 62 checks). Then the direct APK download, sizing with Show

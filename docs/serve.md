@@ -229,7 +229,7 @@ inside itself:
   when a codec was named). Serve relays them to the tab over a WebSocket. Each binary message is the frame's width,
   height, present time (epoch µs) and encode time (µs), big-endian, then the JPEG, or for H.264 a byte (1 for a
   keyframe) and the access unit.
-- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once drawn.
+- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once decoded.
   Two frames in flight cap a stream at about 2 frames per round trip (~20 fps at 100 ms however fast the app renders),
   so the window is sized from what is measured: `clamp(ceil(rtt / frame_interval) + 1, 2, --in-flight)`, where `rtt` is
   the quickest of the last 8 WebSocket ping round trips (serve pings every 0.5 s while frames flow; a browser's pong
@@ -243,6 +243,15 @@ inside itself:
   for serve, past 30 waiting). The window and byte budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
+- The page shows decoded frames at its display's refresh (`requestAnimationFrame`), as the Mac window shows its own at
+  the display's vsync, from a queue of at most two: two frames the stream's jitter brings within one refresh are
+  shown one each, not the first overwritten (docs/beam.md, "Phase 1b as built"). Its present→screen and input→screen
+  figures therefore end at that refresh.
+- Pacing to the tab's display: while frames come, the page measures where in its refresh interval they are decoded
+  and every 500 ms sends `vsync PERIOD_US SHIFT_US` (its refresh period, and how far to move the instance's frames so
+  they land mid-interval). The instance then times its frames to that display instead of its own 120 Hz grid
+  (`SimWindow.remoteVsync`), and goes back to the grid 1.5 s after the last one (a hidden tab sends none). It is not
+  answered and does not count as input for `--idle`.
 
 ### Input
 

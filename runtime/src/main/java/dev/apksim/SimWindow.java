@@ -110,14 +110,65 @@ final class SimWindow {
     if (!headless && !Boolean.getBoolean("apksim.noBoost")) nativeBoostThread();
   }
 
-  /** Nanoseconds until the display's next vsync, or -1 without a window or while macOS is not showing it. */
+  /**
+   * Nanoseconds until the display's next vsync, or -1 without a window or while macOS is not showing it. Then, if a
+   * viewer elsewhere has told its own display's pace (`vsync`, from apksim serve's page: {@link #remoteVsync}), the
+   * time until that one's next.
+   */
   static long untilVsync() {
-    return headless ? -1 : nativeUntilVsync();
+    long n = headless ? -1 : nativeUntilVsync();
+    return n >= 0 ? n : untilRemoteVsync();
   }
 
   /** What reached the screen since the last call, counted per display vsync. */
   static String vsyncStats() {
-    return headless ? "screen: headless" : nativeVsyncStats();
+    String remote = remotePeriodNanos > 0 && System.nanoTime() - remoteSeenNanos < REMOTE_FRESH_NANOS
+        ? String.format(" (pacing to a viewer's %.1f Hz display)", 1e9 / remotePeriodNanos) : "";
+    return (headless ? "screen: headless" : nativeVsyncStats()) + remote;
+  }
+
+  // A viewer's display, for an instance whose frames are shown elsewhere (apksim serve and beam stream them into a
+  // browser tab, docs/beam.md "Phase 1b"). The tab measures where in its own refresh interval each frame is drawn and
+  // sends its period and how far to move these vsyncs so frames land mid-interval: with Host's own 120 Hz grid, two
+  // clocks drifted, and on bad runs two frames reached one browser refresh and none the next (91% new frames against
+  // the window's 99%). Without an update for a second and a half (the tab hidden, closed) Host's grid paces again.
+  private static final long REMOTE_FRESH_NANOS = 1_500_000_000L;
+  private static volatile long remotePeriodNanos;
+  private static volatile long remoteAnchorNanos;
+  private static volatile long remoteSeenNanos;
+
+  /**
+   * `vsync PERIOD_US SHIFT_US`: the viewer's display refreshes every PERIOD_US, and these vsyncs should move by SHIFT_US
+   * (negative: earlier). `vsync off` forgets it; `vsync` says what is in use.
+   */
+  static synchronized String remoteVsync(String[] a) {
+    if (a.length == 1) {
+      boolean fresh = remotePeriodNanos > 0 && System.nanoTime() - remoteSeenNanos < REMOTE_FRESH_NANOS;
+      return fresh ? String.format("vsync: a viewer's %.1f Hz display", 1e9 / remotePeriodNanos) : "vsync: this instance's own";
+    }
+    if (a.length == 2 && a[1].equals("off")) {
+      remotePeriodNanos = 0;
+      return "ok";
+    }
+    if (a.length != 3) throw new IllegalArgumentException("usage: vsync [PERIOD_US SHIFT_US | off]");
+    long period = Long.parseLong(a[1]) * 1000;
+    long shift = Long.parseLong(a[2]) * 1000;
+    if (period < 4_000_000L || period > 50_000_000L || Math.abs(shift) > period) {
+      throw new IllegalArgumentException("vsync: a period of 4000-50000 us and a shift of at most one period");
+    }
+    long now = System.nanoTime();
+    boolean fresh = remotePeriodNanos > 0 && now - remoteSeenNanos < REMOTE_FRESH_NANOS;
+    remoteAnchorNanos = (fresh ? remoteAnchorNanos : now) + shift;
+    remotePeriodNanos = period;
+    remoteSeenNanos = now;
+    return "ok";
+  }
+
+  private static long untilRemoteVsync() {
+    long period = remotePeriodNanos;
+    long now = System.nanoTime();
+    if (period <= 0 || now - remoteSeenNanos >= REMOTE_FRESH_NANOS) return -1;
+    return Math.floorMod(remoteAnchorNanos - now, period);
   }
 
   private static native long nativeUntilVsync();

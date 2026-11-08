@@ -82,6 +82,13 @@ public class Host {
   private DeviceControls controls;
   private long downTime;
   private long frames;
+  /**
+   * Frames drawn on a loop turn that ran no vsync while one was pending (a window dirtied by input dispatched at the
+   * turn's start, before the frame it would be drawn in anyway), and turns that held such a frame back for that vsync
+   * (`frames` reports both). `-Dapksim.offVsyncFrames=true` draws them, as before 2026-11-07.
+   */
+  private long offVsyncFrames, heldForVsync;
+  private static final boolean OFF_VSYNC_FRAMES = Boolean.getBoolean("apksim.offVsyncFrames");
   private long looperNanos;
   private long windowStart = System.nanoTime();
   private long windowPresented;
@@ -152,9 +159,14 @@ public class Host {
     while (!closed) {
       try {
         long start = System.nanoTime();
-        // One event per 8 ms: a gesture needs time and looper turns between its events, or the app's
+        // About one event per 8 ms: a gesture needs time and looper turns between its events, or the app's
         // gesture detectors see no movement. Real mouse input rarely hits this limit.
-        if (start - lastInput >= 8_000_000L) {
+        // A timed drag's move goes out on every turn 4 ms on: while one runs the loop turns at each vsync (pace), and the
+        // move just before the vsync's frame is the one the frame shows, as a device consumes batched touch input in it.
+        // Any other event 7 ms on, not 8: turns at vsyncs come 8.3 ms apart give or take a wakeup's jitter, and at 8 one
+        // that came at 7.9 ms skipped its event (a fling's touch phase then missed vsyncs); idle turns are 2 ms polls,
+        // which reach 8 ms either way.
+        if (start - lastInput >= (OFF_VSYNC_FRAMES ? 8_000_000L : drag != null ? 4_000_000L : 7_000_000L)) {
           SimWindow.Event e = nextInput(start);
           if (e != null) {
             lastInput = start;
@@ -182,7 +194,7 @@ public class Host {
           // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
           // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
           String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
-          if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
+          if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw") && !cmd.args[0].equals("vsync")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
           if (cmd.args[0].equals("settle")) {
             // Answered later, from the loop, once the UI is quiet (or it gives up).
             Settle next;
@@ -219,6 +231,13 @@ public class Host {
         long nowMs = SystemClock.uptimeMillis();
         long stepMs = availableMs;
         if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+          if (frameAtNanos == 0 && !firstFrame && !OFF_VSYNC_FRAMES) {
+            // A vsync asked for since the last frame ran (by input dispatched above, or a message): it waits for the
+            // display's next one, as one asked for during a frame does (pace). Before, it ran at once: a timed drag's
+            // moves go out every 8 ms of real time, out of step with the display, and drew ~165 frames a second.
+            long until = followsDisplay() ? SimWindow.untilVsync() : -1;
+            if (until >= 0) frameAtNanos = System.nanoTime() + until + VSYNC_SLACK_NANOS;
+          }
           if (frameAtNanos != 0) {
             // Following the display: the frame waits for its vsync, then the clock catches up to now.
             if (System.nanoTime() < frameAtNanos) stepMs = 0;
@@ -239,6 +258,7 @@ public class Host {
           }
         }
         long looperStart = System.nanoTime();
+        long vsyncDue = ShadowChoreographer.getNextVsyncTimeNanos();
         if (!firstFrame && gridHz() < 120) alignFrameDelay();
         if (availableMs > MAX_CATCH_UP_MS) {
           // A long stall: time spent stalled is not replayed.
@@ -266,7 +286,19 @@ public class Host {
         if (Snapshot.ON) focusTopWindow();
         List<View> roots = rootViews();
         syncWindowPositions(roots);
-        if (!controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots) && capAllowsFrame())) {
+        // A frame is drawn at a vsync (the Choreographer's, which this turn ran) or when none is pending (a window dirtied
+        // outside a traversal: a TextureView's picture). Not on a turn between: input dispatched at a turn's start
+        // dirties the window at once, and drawing it then drew a frame the pending vsync drew again (a slow drag drew
+        // ~170 frames a second at 120 Hz, the rest replaced before the display showed them), as a device never does:
+        // its input is handled in the vsync's frame.
+        boolean ranVsync = vsyncDue != 0 && SystemClock.uptimeMillis() * 1_000_000L >= vsyncDue;
+        boolean offVsync = !firstFrame && !ranVsync && ShadowChoreographer.getNextVsyncTimeNanos() != 0;
+        // Its display vsync is used: the next vsync asked for waits for the display's next one (above).
+        if (ranVsync && !OFF_VSYNC_FRAMES) frameAtNanos = 0;
+        boolean want = !controls.hidden() && (firstFrame ? laidOut(roots) : needsFrame(roots) && capAllowsFrame());
+        if (want && offVsync && !OFF_VSYNC_FRAMES) heldForVsync++;
+        else if (want) {
+          if (offVsync) offVsyncFrames++;
           render(roots);
           if (firstFrame) {
             firstFrame = false;
@@ -479,25 +511,34 @@ public class Host {
   /** No frame drawn yet. Main thread only. */
   private boolean firstFrame = true;
 
+  /** Whether frames follow the display's vsync (when it has one: SimWindow.untilVsync), not Host's own grid. */
+  private static boolean followsDisplay() {
+    return FOLLOW_DISPLAY && gridHz() >= 120;
+  }
+
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced) {
     long wait = IDLE_POLL_NANOS;
     // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
     long hz = gridHz();
-    long untilVsync = FOLLOW_DISPLAY && hz >= 120 && ShadowChoreographer.getNextVsyncTimeNanos() != 0 ? SimWindow.untilVsync() : -1;
+    // A timed drag wants a frame at every vsync (its next move), whether or not the app asked for one yet.
+    boolean wanted = ShadowChoreographer.getNextVsyncTimeNanos() != 0 || drag != null && !OFF_VSYNC_FRAMES;
+    long untilVsync = followsDisplay() && wanted ? SimWindow.untilVsync() : -1;
     if (untilVsync >= 0) {
       // Just after the vsync, so the frame is ready well before the next one, where the screen shows it.
       long now = System.nanoTime();
       if (frameAtNanos == 0 || now >= frameAtNanos) frameAtNanos = now + untilVsync + VSYNC_SLACK_NANOS;
       wait = frameAtNanos - now;
-    } else if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+    } else if (wanted) {
       frameAtNanos = 0;
       long nowMs = SystemClock.uptimeMillis();
       if (hz < 120 && !firstFrame) {
         // Under a cap: until the vsync the frame delay put off (applyFrameDelay), but at most a 120 Hz interval, since
         // input and commands go out once a loop turn (a whole interval at 1 fps put a tap's DOWN and UP a second apart).
-        long vsyncMs = (ShadowChoreographer.getNextVsyncTimeNanos() + 999_999) / 1_000_000;
-        wait = Math.min(1_000_000_000L / 120, (vsyncMs - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced));
+        long next = ShadowChoreographer.getNextVsyncTimeNanos();
+        long vsyncMs = (next + 999_999) / 1_000_000;
+        wait = next == 0 ? 1_000_000_000L / 120  // a drag's next move, with no frame asked for yet
+            : Math.min(1_000_000_000L / 120, (vsyncMs - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced));
       } else {
         long nextLine = lineAfter(nowMs, 120) + 1;
         wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
@@ -1465,6 +1506,9 @@ public class Host {
         // audio [on|mute]: sound on or silent from now on, open tracks included (Features).
         return Features.audioCommand(a);
       }
+      case "vsync" -> {
+        return SimWindow.remoteVsync(a);
+      }
       case "maxfps" -> {
         String r = Features.maxFpsCommand(a);
         applyFrameDelay(firstFrame);
@@ -1495,7 +1539,9 @@ public class Host {
         return b.toString();
       }
       case "frames" -> {
-        return hw.frameIntervals() + " | " + SimWindow.vsyncStats();
+        String held = " | off-vsync frames=" + offVsyncFrames + " held for their vsync=" + heldForVsync;
+        offVsyncFrames = heldForVsync = 0;
+        return hw.frameIntervals() + " | " + SimWindow.vsyncStats() + held;
       }
       case "display" -> {
         return SimWindow.displayInfo();

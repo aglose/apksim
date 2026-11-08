@@ -553,14 +553,15 @@ final class Session {
       ws.sendText("r refused: " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       return;
     }
-    lastInput = System.currentTimeMillis();
+    if (!cmd.startsWith("vsync ")) lastInput = System.currentTimeMillis();  // the tab's pace is not someone using it
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
       wire = "device " + deviceSpec(device);
     }
     String shown = cmd;
-    boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ");
+    boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
+        || cmd.startsWith("vsync ");
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
   }
 
@@ -575,6 +576,8 @@ final class Session {
     if (t.matches("wheel " + NUM + " " + NUM + " " + NUM)) return t;
     if (t.matches("key [A-Z0-9_]{1,24}( [1-9])?( (ctrl|shift|alt|meta)){0,4}")) return t;
     if (t.matches("back|home|resume")) return t;
+    // The tab's display pace (SimWindow.remoteVsync): only how this tab's instance times its frames.
+    if (t.matches("vsync [0-9]{4,5} -?[0-9]{1,5}")) return t;
     if (t.matches("rotate (left|right|portrait|landscape)")) return t;
     if (t.matches("appearance (dark|light|toggle)")) return t;
     if (t.matches("device (" + String.join("|", DEVICES) + ")")) return t;

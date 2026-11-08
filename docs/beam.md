@@ -14,7 +14,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 |---|---|
 | 0 Browser feasibility | Done for Chrome 156 (works behind a one-time `loopback-network` prompt, no speed cost). Safari, Firefox not checked: beam is offered only in Chromium browsers |
 | 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`. Left: the launchd agent (it runs in the foreground) |
-| 1b Parity with a local launch | Next: measure the tab against the app's own window, then close the gap (below) |
+| 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | 2 The agent downloads the APK itself | Not started (the tab relays it today) |
 | 3 Sizing, Show in Simulator | Not started |
@@ -242,7 +242,7 @@ the manual checks listed.
 1. **Agent and start-on-the-Mac.** Built 2026-11-07 (see "Phase 1 as built" below): `apksim beam`, the trust store
    and prompt, `serve --allow-beam`, the page's "On this Mac" choice, `scripts/beam-check.py`. Left from the plan: the
    LaunchAgent with socket activation in the cask (the agent runs in the foreground for now), and instances with a hidden window instead of `--headless` (with "Show in Simulator", phase 3).
-1b. **Parity with a local launch (next).** The goal: once beamed, the app is as fast as `apksim app.apk` in its own
+1b. **Parity with a local launch.** Built 2026-11-07 (see "Phase 1b as built"). The goal: once beamed, the app is as fast as `apksim app.apk` in its own
    window. Already the same: the app's process (the same launcher and JVM, Metal, VideoToolbox, the Mac's memory: the
    app never runs in the browser, whose tab holds only a video decoder and a canvas) and a warm start (0.37 s to the
    first frame, against ~0.3 s for a warm launch). What differs is only how a frame reaches the screen:
@@ -412,6 +412,68 @@ waiting on the permission prompt (Chrome draws it, a script cannot see it).
   N|never` override it for one run. `keep-days` takes fractions.
 - **Checked**: `scripts/beam-check.py APK` now runs in a state folder of its own (`APKSIM_HOME`, removed after), so
   the Mac's own agent and its sites are never touched, and adds the 1c checks listed in its docstring.
+
+## Phase 1b as built (2026-11-07)
+
+- **The bench**: `scripts/beam-parity.py APK [--runs N] [--seconds S] [--agent-opt=--bitrate=N]`. Interleaved runs of
+  the app in its own Mac window (`--window nofocus`) and beamed into a Chrome tab (a serve with `--allow-beam`, an
+  agent, Chrome with a fresh profile kept from throttling while covered), driven with the same commands on each
+  instance's own control port, so only the frame's way to the screen differs. It reports per scenario: new frames on
+  N% of display refreshes while animating and frames replaced before being shown (the window counts its display
+  link, `frames`' screen part; the page counts `requestAnimationFrame` ticks the same way, `apksimPacing`), the
+  instance's own fps, CPU of the instance (and agent and Chrome), present → on screen, encode, frame size, tap → on
+  screen.
+- **Before**, test app, Mac (120 Hz display), 2 runs of 5 s each:
+
+  | | window | tab |
+  |---|---|---|
+  | Shader tab | 99, 99 | 100, **91** (57 replaced) |
+  | Flings | 89, 90 | 91, **82** (70 replaced) |
+  | Slow drags | 100, 99 at **~170 fps** | 97, **91** (51 replaced) at ~165 fps |
+
+- **Why, and what changed**:
+  1. Slow drags drew ~170 frames a second at 120 Hz, in the window and headless alike (the window threw 100-140 a
+     drag away). A timed drag's move went out every 8 ms of real time, out of step with the vsync: on the headless
+     grid, the window it dirtied was drawn on that loop turn and again at the vsync (143 frames in 2.4 s drawn
+     between vsyncs, counted); in the window, a vsync asked for after the last frame ran at once, since the loop's
+     deadline for the display's vsync had already passed. Now (`Host`): a frame is drawn only on a turn that ran a
+     vsync or when none is pending (`frames` counts any `held for their vsync`); a vsync asked for since the last
+     frame waits for the display's next one; while a timed drag runs, the loop turns at each vsync and sends the move
+     there (as a device consumes batched touch input in the vsync's frame); and other input goes out 7 ms apart
+     rather than 8, since vsync turns 8.3 ms apart give or take a wakeup's jitter skipped an event at 8. Drags: 120
+     fps, 99% new, 1-2 replaced (were 163-175 fps, 98%, 103-131 replaced); flings unchanged (94-96%).
+     `-Dapksim.offVsyncFrames=true` restores the old loop, for A/B runs.
+  2. The tab drew each frame the moment it was decoded, and the stream's jitter (raster, encode, transport, decode:
+     5-12 ms between frames sent every 8.3) put two within one browser refresh and none in the next. Measured per
+     refresh with the instance on its own grid: of 361, 162 had one frame, 100 none and 99 two. Now the page shows
+     decoded frames at `requestAnimationFrame` from a queue of at most two, as the window shows its frames at the
+     display's vsync; that costs no time, since a canvas draw is shown at the next refresh either way.
+  3. The headless instance paced on its own 120 Hz grid, which drifts against the browser's display. The page now
+     measures where in its refresh interval frames are decoded (against when its `requestAnimationFrame` callbacks
+     run, not their timestamps: a frame decoded after the callback waits a whole refresh) and every 500 ms sends
+     `vsync PERIOD_US SHIFT_US`, its period to the microsecond (over the refreshes in its last 120 ticks: a median
+     alone rounds to 8.3 ms, and 0.03 ms a refresh drifts 4 ms a second, which corrections twice a second never
+     caught) and 0.6 of the phase error. The instance takes that as its display's vsync (`SimWindow.remoteVsync`,
+     through the same display-following path as the window) until 1.5 s pass without one. With the queue it is what
+     sets the latency: present → on screen 11-16 ms paced, 17 ms on the grid.
+  4. The agent streams at 20 Mbps by default (`--bitrate` to change): its stream never leaves the Mac. The Shader tab
+     gets 16 KB a frame against 4, for ~0.6 ms more encode, with the same pacing and latency.
+- **After**, same bench (2 runs of 5 s):
+
+  | | window | tab | tab present → on screen |
+  |---|---|---|---|
+  | Shader tab | 99, 99 | 100, 99 | 11.4, 15.9 ms |
+  | Flings | 88, 90 | 89, 88 | 14.7, 11.6 ms |
+  | Slow drags | 99, 99 | 99, 99 | 14.4, 11.7 ms |
+
+  The instance's fps, CPU (0.4-0.7 of a core) and memory are the same in both; the tab adds the agent (0.02 of a core)
+  and Chrome (~0.3). Tap → on screen in the tab: 32-34 ms. First frame: 0.17 s in the tab (a warm standby, the build
+  cached), 0.28 s for a warm launch of the window.
+- **What is left**: about one refresh more latency than the window, which presents at the next vsync after raster.
+  Most of it is the H.264 encode (5.4-6.2 ms, on its own thread, so it never slows the app) and the decode.
+- **Tried, not kept**: VideoToolbox's `PrioritizeEncodingSpeedOverQuality` with an expected 120 fps made the encode
+  23 ms (from 5.6). Pacing without the queue (measured against the refresh timestamps, the period from the median):
+  73-90% new frames, worse than none, as the period was 0.03 ms short and the phase drifted.
 
 ## Measurements to keep (as serve's table)
 
