@@ -1698,6 +1698,9 @@ final class AdbShell {
       case "bluetooth" -> {
         return Bluetooth.command(a);
       }
+      case "thermal" -> {
+        return Thermal.command(a);
+      }
       default -> {
         return "error: " + a[0] + " is not available in a test run";
       }

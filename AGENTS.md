@@ -374,6 +374,10 @@ instance startService runs, and an `android:process` service gets its local bind
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
 only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
+`thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
+NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
+overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
+each `thermal` change, and `getCurrentThermalStatus` agrees (`apksim://system-sources` has a "thermal" line).
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
@@ -1014,7 +1018,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
   test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
-  the control commands it reaches are animscale, fontscale, network, bars and timezone (`ShellCommandTest`).
+  the control commands it reaches are animscale, fontscale, network, bars, timezone, bluetooth and thermal (`ShellCommandTest`, `ThermalTest`).
 - The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
   in framework code at its uptime clock, so the framework thought it was 1970 while the app's own code and the JDK
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
