@@ -10,7 +10,7 @@ import org.junit.runner.RunWith
 /**
  * The native loader fixture (testapks/loader-fixture/loaderfixture.c): the stack guard read through the thread
  * pointer, thread-local variables on several threads, barriers, mutexes and condition variables at 4 mod 8, thread attributes
- * and setjmp/longjmp, as Android code uses them. Each passes on a device; on the Mac and in both Linux images (arm64
+ * and setjmp/longjmp and zlib (imported from libz.so), as Android code uses them. Each passes on a device; on the Mac and in both Linux images (arm64
  * and x86_64) they check the loader and the bionic shims. A broken stack guard aborts the process instead of failing.
  */
 @RunWith(AndroidJUnit4::class)
@@ -31,4 +31,7 @@ class NativeLoaderTest {
   @Test fun barriersCanBeReusedAndDestroyedAtOnce() = assertEquals("ok", LoaderFixture.check("barrier"))
 
   @Test fun setjmpStaysInsideItsBuffer() = assertEquals("ok", LoaderFixture.check("setjmp"))
+
+  // The library imports zlib from libz.so: on Linux the JVM keeps its zlib private, so the loader must find the host's (issue 148).
+  @Test fun zlibRoundTripsThroughTheHostsLibz() = assertEquals("ok", LoaderFixture.check("zlib"))
 }
