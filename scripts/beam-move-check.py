@@ -153,6 +153,26 @@ def main():
         time.sleep(1)
         check(stayed and cdp.ev(s, 'document.getElementById("runOn").value') == "server" and cdp.ev(s, "window.__draws.length") > frames,
               "a move the full agent refuses leaves the session on the server, streaming")
+
+        # The same with its data: the server hands off (its app quits), then the full agent refuses; the page opens the
+        # server's session again with the hand-off's ticket, and the app comes back there with what it had saved.
+        cdp.ev(s, 'document.getElementById("url").value = "apksim://slot"; document.getElementById("go").click(); 1')
+        time.sleep(3)
+        cdp.ev(s, 'send("touch down 130 536"); send("touch up 130 536"); 1')  # Write
+        time.sleep(1.5)
+        cdp.ev(s, 'document.getElementById("moveData").checked = true; window.__logFrom = document.getElementById("log").textContent.length; '
+                  'document.getElementById("runOn").value = "mac"; document.getElementById("runOn").onchange(); 1')
+        back = until(lambda: "back on the server" in cdp.ev(s, 'document.getElementById("log").textContent.slice(window.__logFrom)'), 60)
+        tail = cdp.ev(s, 'document.getElementById("log").textContent.slice(window.__logFrom)')
+        check(back and cdp.ev(s, 'document.getElementById("runOn").value') == "server",
+              "a move with its data the full agent refuses: the app is back on the server with its data (" + tail.replace("\n", " | ")[-150:] + ")")
+        until(lambda: cdp.ev(s, "window.apksimStats().frames > 0 && !ws.onMac"), 40)
+        port, _ = bp.session_port(cdp, s, bp.state_dir())
+        ctl = bp.Control(port)
+        seen = until(lambda: next((x for x in ctl("nodes").split(";") if "at app start" in x), None), 20) or ""
+        ctl.close()
+        check("setting=written" in seen and "sdcard=written" in seen, f"  it started with what it had saved ({seen.strip()[:90]})")
+        cdp.ev(s, 'document.getElementById("moveData").checked = false; 1')
         cdp.ev(s2, 'document.getElementById("stop").click(); 1')
         cdp.call("Target.closeTarget", {"targetId": t2["targetId"]})
         time.sleep(2)
@@ -168,7 +188,8 @@ def main():
         done, t0, last_old, first_new, covered, d = moved("mac")
         tail = cdp.ev(s, 'document.getElementById("log").textContent.slice(window.__logFrom)')
         check(done and "could not move" not in tail and "without" not in tail,
-              f"moved to this Mac with its data ({(first_new or 0) - t0:.0f} ms from the choice to the Mac's first frame)")
+              f"moved to this Mac with its data ({(first_new or 0) - t0:.0f} ms from the choice to the Mac's first frame)"
+              + ("" if "could not move" not in tail and "without" not in tail else " -- " + tail.replace("\n", " | ")[-300:]))
         check(covered == 0, "  nothing covered the canvas meanwhile (the server's last frame stayed up)")
         check(until(lambda: status() == 0, 10), "  the server's session ended")
         port, _ = bp.session_port(cdp, s, bp.state_dir())

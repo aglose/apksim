@@ -420,7 +420,7 @@ final class Session {
     Path dir = slot.toAbsolutePath().normalize();
     Path data = serve.state.resolve("cache/data").toAbsolutePath().normalize();
     if (dir.getParent() == null || !data.equals(dir.getParent().getParent())
-        || !dir.getFileName().toString().matches(java.util.regex.Pattern.quote(serve.home) + "-[0-9]+")) {
+        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12})-[0-9]+")) {
       return "the app's data slot is not one of this server's";
     }
     long pid = instancePid;
@@ -1268,7 +1268,7 @@ final class Session {
     // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
     String slotName = dir.getFileName().toString();
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !(slotName.startsWith(serve.home + "-") || serve.beam && slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;
+        || !(slotName.startsWith(serve.home + "-") || slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;

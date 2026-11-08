@@ -386,8 +386,8 @@ async function moveSession(to) {
     const h = await handoff(ws);
     if (gen !== startGen) return;
     if (h.ticket) data = { ticket: h.ticket, url: new URL("api/beam/data", location.href).href };
-    if (h.skipped) log("its data moves without " + h.skipped + " links or special files in it (only regular files move)");
-    else log("its data could not move (" + h.error + "): it moves without it");
+    else log("its data could not move (" + (h.error || JSON.stringify(h)) + "): it moves without it");
+    if (h.skipped) log("its data moves without " + h.skipped + " links or special files in it (only regular files and folders move)");
     handedOff = !!h.ticket || h.ended;
   }
   if (to === "mac") {
@@ -402,7 +402,7 @@ async function moveSession(to) {
       if (gen !== startGen) return;
       chip(null);
       $("runOn").value = "server"; pref("server");
-      if (handedOff) restartOnServer(q, "could not move to this Mac: " + e.message);
+      if (handedOff) restartOnServer(q, "could not move to this Mac: " + e.message, data && data.ticket);
       else log("could not move to this Mac: " + e.message + "; it stays on the server");
       return;
     }
@@ -410,7 +410,7 @@ async function moveSession(to) {
   if (gen !== startGen || ended) { chip(null); return; }
   const sock = new WebSocket(url);
   sock.binaryType = "arraybuffer";
-  const m = moving = { sock, to, texts: [], gen, q, handedOff };
+  const m = moving = { sock, to, texts: [], gen, q, handedOff, restore: data && data.ticket };
   sock.onmessage = e => {
     if (moving !== m) return;
     if (typeof e.data !== "string") { promote(m, e.data); return; }
@@ -428,7 +428,7 @@ function abandonMove(why) {
   m.sock.onclose = null; m.sock.close();
   if (why === null) return;
   const stays = m.to === "mac" ? "server" : "mac";
-  if (m.handedOff) { $("runOn").value = "server"; pref("server"); restartOnServer(m.q, "could not move to this Mac: " + why); return; }
+  if (m.handedOff) { $("runOn").value = "server"; pref("server"); restartOnServer(m.q, "could not move to this Mac: " + why, m.restore); return; }
   log("could not move to " + (m.to === "mac" ? "this Mac" : "the server") + ": " + why + "; it stays " + (stays === "mac" ? "on this Mac" : "on the server"));
   $("runOn").value = stays; pref(stays);
 }
@@ -447,11 +447,14 @@ function handoff(sock) {
   }).then(h => { if (!h.ticket && !h.ended) sock.handedOff = false; return h; });
 }
 // After the server's session handed its data off and this Mac then failed to take it: the app on the server again,
-// started fresh (the data went with the handoff).
-function restartOnServer(q, why) {
-  log(why + "; it runs on the server again, without what it had saved");
+// with its data when the hand-off's ticket is still good (`restore`: the server keeps the pack until then, and says in
+// an `r` line whether it could), else fresh.
+function restartOnServer(q, why, ticket) {
+  log(why + "; it runs on the server again" + (ticket ? "" : ", without what it had saved"));
   if (ws) { socketClosed(ws); ws.onclose = null; ws.close(); ws = null; }
-  openSocket(serverSocketUrl(q), false);
+  const rq = new URLSearchParams(q);
+  if (ticket) rq.set("restore", ticket);
+  openSocket(serverSocketUrl(rq), false);
 }
 function promote(m, first) {
   moving = null;

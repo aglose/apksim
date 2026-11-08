@@ -445,6 +445,40 @@ def data_checks(apksim, apk, sha, size):
         mac.ws.s.close()
         until(lambda: not alive(pid), 20)
         check(until(lambda: all(not os.listdir(d) or os.listdir(d) == [".lock"] for d in seeded), 15), "data: which is erased when its session ends")
+
+        # A move the Mac cannot take after the hand-off: the tab opens the server's session again with the hand-off's
+        # ticket, and the app starts there with what it had saved; the pack is used once.
+        srv = ws_session(sp, f"/ws?app={app}{slot_link}", S)
+        srv.pump(3, until=lambda: srv.stats.get("pid", 0) > 0)
+        srv.pump(2)
+        srv.after([f"touch down {WRITE[0]} {WRITE[1]}", f"touch up {WRITE[0]} {WRITE[1]}"], 2)
+        srv.pump(1.5)
+        srv.ws.send("handoff")
+        try:
+            srv.pump(40, until=lambda: any(t.startswith("h ") for t in srv.texts))
+        except (EOFError, OSError):
+            pass
+        h2 = next((json.loads(t[2:]) for t in srv.texts if t.startswith("h ")), {})
+        check("ticket" in h2, "restore: a second session hands off its data")
+        until(lambda: json.loads(req(sp, "GET", "/api/status")[2]).get("sessions") == [], 20)
+        back = ws_session(sp, f"/ws?app={app}{slot_link}&restore={urllib.parse.quote(h2.get('ticket', ''))}", S)
+        back.pump(3, until=lambda: back.stats.get("pid", 0) > 0)
+        said = [t for t in back.texts if t.startswith("r ")]
+        check(any("back on the server" in t for t in said), f"restore: the server says its data is back ({said[:1]})")
+        seen = ""
+        for _ in range(20):
+            seen = nodes(state, back.stats.get("pid", 0))
+            if "at app start" in seen:
+                break
+            time.sleep(1)
+        check("at app start: setting=written" in seen and "sdcard=written" in seen,
+              f"restore: on the server again the app starts with what it had saved ({[x for x in seen.split(';') if 'app start' in x][:1]})")
+        back.ws.s.close()
+        until(lambda: json.loads(req(sp, "GET", "/api/status")[2]).get("sessions") == [], 20)
+        again = ws_session(sp, f"/ws?app={app}{slot_link}&restore={urllib.parse.quote(h2.get('ticket', ''))}", S)
+        said = [t for t in again.texts if t.startswith("r ")]
+        check(any("could not restore" in t and "gone" in t for t in said), f"restore: a pack is used once ({said[:1]})")
+        again.ws.s.close()
     finally:
         for p in procs:
             p.terminate()

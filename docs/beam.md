@@ -715,13 +715,20 @@ First review:
   Mac send `handoff` first, then start the Mac's session with the ticket; the server's last frame stays up meanwhile
   (still, since its app has quit: ~1.2 s to the Mac's first frame against ~0.5 s for a live move). Unticked, a move is
   phase 4's live one. If the server cannot hand off, the move goes on without the data (logged); if this Mac then
-  fails to start, the app starts on the server again, without what it had saved (the pack is gone with the session).
+  fails to take the session (its sessions all in use, a refused grant, an instance that does not start), the page
+  opens the server's session again with the hand-off's ticket (`restore=`): the server, which keeps the pack until the
+  ticket expires (5 minutes), checks the ticket and that the data is this app's, unpacks it into a slot of the new
+  session's own (`bm<12 hex>-0`, erased with it as any other), deletes the pack (used once), says so in an `r` line,
+  and the app starts there with what it had saved. Past the ticket's life it starts without it, and says so.
   A move from the Mac to the server never takes data (the agent offers no handoff: what a site's app wrote on the
   visitor's Mac stays there).
 - **Checked**: `beam-check.py` (data part: Write on the server's slot screen, `handoff` answers a ticket and the
   server's session ends, an altered ticket brings nothing, the agent's session starts with `setting=written` and
   `sdcard=written` at app start in a `bm` slot of its own, erased when the session ends) and `beam-move-check.py`
-  (Chrome: the same through the page's menu, nothing covering the canvas, then back to the server).
+  (Chrome: the same through the page's menu, nothing covering the canvas, then back to the server; and with the
+  agent's one session taken by another tab, a move with data refused after the hand-off, the app back on the server
+  with what it had saved). `beam-check.py` also restores a hand-off on the server directly and checks a pack is used
+  once.
 - **Not done**: what the app holds in memory (its screen, back stack, scroll) does not move, as planned. The plan's
   Trips rename is the same path (its database is a file of the slot) but is not checked separately.
 

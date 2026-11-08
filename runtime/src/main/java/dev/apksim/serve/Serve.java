@@ -934,6 +934,15 @@ public final class Serve {
       ws.close("no such app");
       return;
     }
+    String restore = r.param("restore");
+    if (!beam && allowBeam && restore != null && seed == null) {
+      try {
+        seed = restoreSeed(restore, app);
+        ws.sendText("r its data is back on the server: it starts with what it had saved");
+      } catch (IOException e) {
+        ws.sendText("r could not restore its data (" + e.getMessage() + "): it starts without it");
+      }
+    }
     Map<String, String> options = new LinkedHashMap<>();
     for (String k : List.of("device", "appearance", "locale", "fontscale", "open", "orientation", "permissions", "codec")) {
       String v = r.param(k);
@@ -954,10 +963,10 @@ public final class Serve {
       byte[] id = new byte[6];
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
+      session.seedSlot = seed;  // the agent's moved data, or the server's restored data
       if (beam) {
         session.site = site;
         session.keep = store.config.saveSessions();
-        session.seedSlot = seed;
       }
       sessions.put(session.id, session);
     }
@@ -1053,34 +1062,69 @@ public final class Serve {
       }
       if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode() + " for the data");
       if (Files.size(zip) > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
-      String pkg = SlotPack.packageOf(zip);
-      if (pkg == null) throw new IOException("the data names no app");
-      // Only into the build's own app folder: a pack naming another package (the owner's own app, say) would otherwise
-      // put a site's files in that app's data folder.
-      String own = dev.apksim.ApkCache.manifestPackage(apk);
-      if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
-      byte[] rnd = new byte[6];
-      RANDOM.nextBytes(rnd);
-      String name = "bm" + HexFormat.of().formatHex(rnd);
-      // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the
-      // sandbox lets them make a folder only, but one made before that rule, or by anything else, is checked here).
-      Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
-      Files.createDirectories(pkgDir);
-      if (!Files.isDirectory(data, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(pkgDir, java.nio.file.LinkOption.NOFOLLOW_LINKS)
-          || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
-        throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
-      }
-      agent.importing.add(name);  // until its grant owns it (the caller makes it next); the sweep leaves it
-      try {
-        SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
-      } catch (IOException | RuntimeException e) {
-        agent.importing.remove(name);
-        throw e;
-      }
+      // Until its grant owns it (the caller makes it next), the sweep leaves it.
+      String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
       System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%n", origin, Files.size(zip) >> 10, name);
       return name;
     } finally {
       Files.deleteIfExists(zip);
+    }
+  }
+
+  /**
+   * A hand-off pack unpacked into a fresh slot (`cache/data/<package>/bm<12 hex>-0`) for a session of `apk`: on the
+   * agent (a moved session), or on the server (a move the Mac could not take, restored). Only the build's own package
+   * (from its manifest), only into a plain app folder. `claim` and `unclaim` are told the slot's name around the
+   * unpack (the agent's sweep must leave it meanwhile). The slot's name, or throws why not.
+   */
+  private String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+      throws IOException {
+    String pkg = SlotPack.packageOf(zip);
+    if (pkg == null) throw new IOException("the data names no app");
+    // Only into the build's own app folder: a pack naming another package (the owner's own app, say) would otherwise
+    // put a site's files in that app's data folder.
+    String own = dev.apksim.ApkCache.manifestPackage(apk);
+    if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
+    byte[] rnd = new byte[6];
+    RANDOM.nextBytes(rnd);
+    String name = "bm" + HexFormat.of().formatHex(rnd);
+    // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
+    // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
+    Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
+    Files.createDirectories(pkgDir);
+    if (!Files.isDirectory(data, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(pkgDir, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
+      throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
+    }
+    claim.accept(name);
+    try {
+      SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
+    } catch (IOException | RuntimeException e) {
+      unclaim.accept(name);
+      throw e;
+    }
+    return name;
+  }
+
+  /**
+   * A hand-off's data back on the server (docs/beam.md phase 5, "a move that fails"): the tab moved a session to its
+   * Mac, the app quit here and its data was packed, then the Mac could not take it. The tab opens a session here again
+   * with the hand-off's ticket (`restore=`), and the pack it names (kept until the ticket expires) is unpacked into
+   * that session's own slot, then deleted: used once. The slot's name, or throws why not.
+   */
+  private String restoreSeed(String ticket, Catalog.App app) throws IOException {
+    String[] t = tickets.check(ticket);
+    if (t == null || !t[0].matches("d[0-9a-f]{24}")) throw new IOException("its ticket has expired");
+    Path zip = state.resolve("serve/handoff").resolve(t[0] + ".zip");
+    synchronized (this) {  // one restore per pack
+      if (!Files.isRegularFile(zip, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !catalog.sha256(zip).equals(t[1])) {
+        throw new IOException("its data is gone (restored already, or expired)");
+      }
+      try {
+        return seedFrom(zip, app.path(), n -> {}, n -> {});
+      } finally {
+        Files.deleteIfExists(zip);
+      }
     }
   }
 
