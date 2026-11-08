@@ -39,6 +39,9 @@ FAILED = []
 def parts(url):
     """(host:port, path prefix, origin) of a server URL, which may have a path (a proxy's prefix, --base-path)."""
     u = urllib.parse.urlsplit(url)
+    if u.scheme.lower() != "http":
+        # Its WebSocket and raw requests are plain sockets: an https URL would send the token unencrypted.
+        sys.exit(f"serve-check.py speaks plain HTTP only (no TLS): use an http:// URL, not {url}")
     # Origin as a browser sends it: lower case, no default port.
     scheme, host = u.scheme.lower(), u.netloc.lower()
     if (scheme, u.port) in (("http", 80), ("https", 443)):
