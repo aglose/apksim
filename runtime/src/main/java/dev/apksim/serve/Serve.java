@@ -598,7 +598,7 @@ public final class Serve {
         }
         b.append(",\"state\":\"failed\",\"error\":").append(Http.q(why));
       } else b.append(",\"state\":\"ready\"");
-      Http.json(out, 200, b.append(",\"received\":").append(d.received).append(",\"total\":").append(d.total)
+      Http.json(out, 200, b.append(",\"received\":").append(d.received()).append(",\"total\":").append(d.total())
           .append(",\"cache\":\"none\"}").toString());
       return;
     }

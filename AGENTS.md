@@ -817,7 +817,8 @@ length.
 `/api/health` needs no token (503 with the reason when a session could not start). `--allow-origin ORIGIN` lets a
 trusted page frame it (`/?embed=1&app=ID&token=...`: screen and device controls only, the token kept in memory and sent
 as `?token=`, since a cross-site frame gets no SameSite cookie) and open its WebSockets. `POST /api/apps {"url",
-"headers", "options"}` downloads an APK in the background and answers its id at once (`GET /api/apps/ID` for its state;
+"headers", "options"}` downloads an APK in the background (adds of one URL and headers share a fetch in progress and
+reuse a finished one for 5 minutes: `Catalog.sources`, keyed by a hash, issue 162) and answers its id at once (`GET /api/apps/ID` for its state;
 a session opened on it meanwhile shows `p downloading N%`); uploads may be chunked; catalog lines take ` -- ` launch
 options. Apps' launch options are limited to `Catalog.LAUNCH_OPTIONS` (activity, Build fields, settings...: nothing
 that touches files, ports or the JVM). Behind a reverse proxy (issue 143): `--trust-proxy` takes X-Forwarded-Host/-Proto

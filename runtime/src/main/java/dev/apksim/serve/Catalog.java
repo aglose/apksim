@@ -14,6 +14,7 @@ import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,6 +57,18 @@ final class Catalog {
     volatile long total = -1;
     final CompletableFuture<App> done = new CompletableFuture<>();
     final long started = System.currentTimeMillis();
+    /** The download this one shares (same URL and headers), whose progress it shows; null for the one doing the fetch. */
+    volatile Download lead;
+    /** When the fetch finished, 0 until then (for {@link #REUSE_MILLIS}). */
+    volatile long finished;
+
+    long received() {
+      return lead != null ? lead.received() : received;
+    }
+
+    long total() {
+      return lead != null ? lead.total() : total;
+    }
 
     Download(App app) {
       this.app = app;
@@ -72,6 +85,14 @@ final class Catalog {
   private final Path downloads;
   private final long maxBytes;
   private final Map<String, Download> downloading = new ConcurrentHashMap<>();
+  /**
+   * The real fetches by source: a hash of the URL and its headers (never the header values themselves), so adds of
+   * one APK with different launch options share a fetch in progress, and reuse one that finished in the last
+   * {@link #REUSE_MILLIS}. Guarded by itself.
+   */
+  private final Map<String, Download> sources = new HashMap<>();
+  /** How long a finished download of a URL is reused by later adds of it, instead of fetching again. */
+  static final long REUSE_MILLIS = 5 * 60_000L;
   /** Downloads running at once (`POST /api/apps`): each holds a connection out and a temporary file. */
   static final int MAX_DOWNLOADS = 4;
   private final java.util.concurrent.Semaphore downloadSlots = new java.util.concurrent.Semaphore(MAX_DOWNLOADS);
@@ -222,8 +243,8 @@ final class Catalog {
         try {
           return d.done.get(1, TimeUnit.SECONDS).path();
         } catch (TimeoutException e) {
-          long total = d.total;
-          String now = "downloading " + (total > 0 ? d.received * 100 / total + "%" : (d.received >> 20) + " MB");
+          long total = d.total();
+          String now = "downloading " + (total > 0 ? d.received() * 100 / total + "%" : (d.received() >> 20) + " MB");
           if (!now.equals(last)) progress.accept(now);
           last = now;
         } catch (ExecutionException e) {
@@ -287,14 +308,47 @@ final class Catalog {
       throw new IOException("only http(s) URLs");
     }
     pruneFailures();
-    if (!downloadSlots.tryAcquire()) {
-      throw new Busy(MAX_DOWNLOADS + " downloads are running: try again when one has finished");
-    }
     String path = u.getPath() == null ? "" : u.getPath();
     String clean = clean(name == null || name.isBlank() ? path.substring(path.lastIndexOf('/') + 1) : name);
     App pending = new App(newId(), clean, null, url, true, launch);
     Download d = new Download(pending);
+    String key = sourceKey(url, headers);
+    Download lead;
+    synchronized (sources) {
+      lead = sources.get(key);
+      if (lead != null && lead.finished > 0
+          && (System.currentTimeMillis() - lead.finished > REUSE_MILLIS || lead.done.isCompletedExceptionally()
+              || !Files.isRegularFile(lead.done.join().path()))) {
+        sources.remove(key);
+        lead = null;
+      }
+      if (lead == null) {
+        if (!downloadSlots.tryAcquire()) {
+          throw new Busy(MAX_DOWNLOADS + " downloads are running: try again when one has finished");
+        }
+        sources.put(key, d);
+      } else {
+        d.lead = lead;
+      }
+    }
     downloading.put(pending.id(), d);
+    if (lead != null) {
+      Download from = lead;
+      Thread.ofVirtual().name("serve-download").start(() -> {
+        try {
+          Path apk = from.done.get().path();
+          App done = publishRef(apk, pending.id(), clean, launch);
+          ready(done);
+          d.done.complete(done);
+          System.err.printf("[serve] added %s from %s (shared download)%n", clean, u.getHost());
+        } catch (Exception e) {
+          Throwable why = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+          d.done.completeExceptionally(why);
+        }
+        if (!d.done.isCompletedExceptionally()) downloading.remove(pending.id());
+      });
+      return pending;
+    }
     Thread.ofVirtual().name("serve-download").start(() -> {
       try {
         HttpURLConnection c = connect(url, headers);
@@ -305,9 +359,14 @@ final class Catalog {
         }
         App done = publish(tmp, pending.id(), clean, launch);
         ready(done);  // the warm-up's job exists before a session waiting on the download looks for it
+        d.finished = System.currentTimeMillis();
         d.done.complete(done);
         System.err.printf("[serve] added %s (%d MB) from %s%n", clean, d.received >> 20, u.getHost());
       } catch (Exception e) {
+        synchronized (sources) {
+          sources.remove(key, d);  // a failure is not reused: the next add tries again
+        }
+        d.finished = System.currentTimeMillis();
         d.done.completeExceptionally(e);
         System.err.printf("[serve] could not add %s from %s: %s%n", clean, u.getHost(), e.getMessage());
       } finally {
@@ -319,12 +378,34 @@ final class Catalog {
     return pending;
   }
 
+  /** What identifies a fetch: the URL and the headers, hashed so no header value is kept or can be logged. */
+  private static String sourceKey(String url, Map<String, String> headers) {
+    StringBuilder b = new StringBuilder(url);
+    new java.util.TreeMap<>(headers).forEach((k, v) -> b.append('\n').append(k.toLowerCase()).append(':').append(v));
+    return hash(b.toString().getBytes(StandardCharsets.UTF_8));
+  }
+
+  /** Publishes `id` for an APK already stored (a shared download's). */
+  private App publishRef(Path apk, String id, String clean, List<String> launch) throws IOException {
+    StringBuilder ref = new StringBuilder(apk.getFileName().toString()).append('\n').append(clean).append('\n');
+    for (String o : launch) ref.append(o).append('\n');
+    synchronized (uploadsLock) {
+      if (!Files.exists(apk)) throw new IOException("the shared download was removed: add the URL again");
+      Files.writeString(uploads.resolve(id + ".ref"), ref);
+    }
+    return new App(id, clean, apk, null, true, launch);
+  }
+
   /** Failed downloads kept for their ids to answer why (an hour, at most {@link #MAX_FAILURES}): the oldest go first. */
   static final int MAX_FAILURES = 100;
 
   private void pruneFailures() {
     long hourAgo = System.currentTimeMillis() - 3_600_000L;
     downloading.values().removeIf(d -> d.done.isCompletedExceptionally() && d.started < hourAgo);
+    synchronized (sources) {
+      long reuse = System.currentTimeMillis() - REUSE_MILLIS;
+      sources.values().removeIf(d -> d.finished > 0 && d.finished < reuse);
+    }
     List<Download> failed = new ArrayList<>();
     for (Download d : downloading.values()) if (d.done.isCompletedExceptionally()) failed.add(d);
     if (failed.size() <= MAX_FAILURES) return;

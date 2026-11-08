@@ -179,8 +179,11 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   `url` is required): serve downloads the APK itself and answers `{"id", "name", "state": "downloading"}` at once.
   `headers` go with the download only (an artifact store's `Authorization`) and are never stored; `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
-  rules: listed nowhere, deleted a day after its last use. A failed download is reported for an hour. At most 4
-  downloads run at once; another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
+  rules: listed nowhere, deleted a day after its last use. Adds of one URL with the same `headers` share one download: while it runs they wait on it (and show its progress),
+  and for 5 minutes after it finished a later add reuses the stored APK, each add keeping its own id and `options` (so
+  variants of one APK cost one fetch; a failure is never reused, and header values are only hashed into the key). A
+  failed download is reported for an hour. At most 4
+  real downloads run at once (a shared one counts once); another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
 - `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
   last three while it is downloading or has failed).
 - A tab (or `/ws?app=ID`) may open the id while it is still downloading: the session waits for it and sends `p
