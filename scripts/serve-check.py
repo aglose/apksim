@@ -206,6 +206,55 @@ def median(xs):
     return xs[len(xs) // 2] if xs else float("nan")
 
 
+def dedupe_check(url, token, host, apk):
+    """Adds of one URL share a download (issue 162): variants differing in options fetch once; other headers fetch again."""
+    import http.server as hs
+    import threading
+    hits = []
+
+    class H(hs.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.headers.get("X-Variant"))
+            time.sleep(1.5)  # long enough for the second add to arrive mid-download
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(apk)))
+            self.end_headers()
+            self.wfile.write(apk)
+
+        def log_message(self, *args):
+            pass
+
+    srv = hs.ThreadingHTTPServer(("0.0.0.0", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    src = f"http://{host}:{srv.server_address[1]}/dedupe.apk"
+
+    def add(options, headers=None):
+        status, body = http(url, "/api/apps", token, data=json.dumps({"url": src, "options": options,
+                                                                      "headers": headers or {}}).encode())
+        return json.loads(body)["id"] if status == 200 else None
+
+    def wait(app):
+        for _ in range(100):
+            _, body = http(url, "/api/apps/" + app, token)
+            st = json.loads(body).get("state")
+            if st != "downloading":
+                return st
+            time.sleep(0.2)
+        return "timeout"
+
+    a1 = add(["--audio", "mute"])
+    time.sleep(0.5)
+    a2 = add(["--anim-scale", "0"])
+    check(a1 and a2 and a1 != a2, "two adds of one URL get ids of their own")
+    check(wait(a1) == "ready" and wait(a2) == "ready", "both are ready")
+    check(len(hits) == 1, f"two adds of one URL during a download fetch it once ({len(hits)} requests)")
+    a3 = add(["--video", "blank"])
+    check(a3 and wait(a3) == "ready" and len(hits) == 1, f"an add after it finished reuses the stored APK ({len(hits)} requests)")
+    a4 = add([], {"X-Variant": "other"})
+    check(a4 and wait(a4) == "ready" and len(hits) == 2, f"other headers fetch again ({len(hits)} requests)")
+    srv.shutdown()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("url")
@@ -221,6 +270,8 @@ def main():
     ap.add_argument("--device-size", help="NAME=WxH@density, as the server was given: a session on NAME must show that size")
     ap.add_argument("--app-default-size", help="WxH in pixels: a session that names no device (on the app added with --add-url and"
                     " --add-options '[\"--device\",\"1280x720@1.5\"]') must show it")
+    ap.add_argument("--fixture-host", help="an address serve can reach this machine on (127.0.0.1 for a serve here): "
+                    "runs the shared-download check against a small server of ours that counts requests (issue 162)")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
     ap.add_argument("--h264", choices=["required", "optional", "skip"], default="optional",
@@ -305,6 +356,8 @@ def main():
     check(status == 400 and b"not allowed" in body, f"a URL add with a launch option outside the allowed set is refused ({status})")
     status, body = http(url, "/api/apps", token, data=json.dumps({"url": "file:///etc/passwd"}).encode())
     check(status == 400, f"a URL add that is not http(s) is refused ({status})")
+    if a.fixture_host:
+        dedupe_check(url, token, a.fixture_host, tiny.getvalue())
     # --move-shared-data only changes how the app's own libraries are mapped: an app may carry it (issue 161). The add
     # answers at once; the download from this address then fails in the background, which is fine here.
     status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/b.apk",
