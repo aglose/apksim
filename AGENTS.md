@@ -297,7 +297,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
   `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
-  `startup-gate` on an Apple Silicon runner (docs/startup-gate.md).
+  `startup-gate` on an Apple Silicon runner (docs/startup-gate.md). A `changes` job skips the build, test and Mac jobs for a pull request that touches only Markdown, `.txt`,
+  `docs/`, `.claude/`, LICENSE or NOTICE (skipped jobs count as passed for the required checks, which a workflow path
+  filter would leave pending); `linux-smoke` still runs its personal-information check.
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
