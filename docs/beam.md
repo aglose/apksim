@@ -589,6 +589,12 @@ The consent prompt's output is read on a thread of its own and its process ended
 first, an `osascript` that never ended held the one-prompt-at-a-time lock, and with it every later start, for good.
 A build's kept APK cache entry is swapped in by renames once a session ends, so a session of the same build starting
 then never clones it half deleted.
+The beam profile denies the apksim folder's own `work/` sign-ins, app data, scratch, and serve's and the agent's
+files as well as the state folder's: with `APKSIM_HOME` elsewhere (as `beam-check.py` runs) the folder's read rule let a
+beamed app read a checkout's `work/autofill` and `work/cache/data` (two probes now). The package a moved session's data
+is checked against is matched at the manifest element's start only, with the decoder escaping names: searched for
+anywhere, a manifest whose names repeated `<manifest` took the agent quadratic time (18 s for 350k characters; the
+decoded element is also capped at 1M characters now).
 
 First review:
 

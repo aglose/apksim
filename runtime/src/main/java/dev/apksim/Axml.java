@@ -34,7 +34,8 @@ final class Axml {
     ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
     b.position(8);
     long[] budget = {2L * data.length + 65_536};  // chars all strings together may decode to
-    long outLimit = 16L * data.length + (1 << 20);
+    // The manifest element alone (maxTags 1) is a few hundred characters in a real APK.
+    long outLimit = maxTags == Integer.MAX_VALUE ? 16L * data.length + (1 << 20) : 1 << 20;
     List<String> strings = new ArrayList<>();
     StringBuilder out = new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     boolean first = true;
@@ -51,7 +52,7 @@ final class Axml {
         String name = str(strings, b.getInt(start + 16 + 4));
         int count = b.getShort(start + 16 + 12) & 0xffff;
         int attrSize = b.getShort(start + 16 + 10) & 0xffff;
-        out.append('<').append(name);
+        out.append('<').append(escape(name));  // names too: only the decoder writes '<' and '>' (see ApkCache.manifestPackage)
         if (first) {
           out.append(" xmlns:android=\"http://schemas.android.com/apk/res/android\"");
           first = false;
@@ -65,7 +66,7 @@ final class Axml {
           int value = b.getInt(a + 16);
           out.append(' ');
           if (ns != -1) out.append("android:");
-          out.append(attr).append("=\"");
+          out.append(escape(attr)).append("=\"");
           if (rawString != -1) {
             out.append(escape(str(strings, rawString)));
           } else if (dataType == TYPE_STRING) {
@@ -86,7 +87,7 @@ final class Axml {
         out.append(">\n");
         if (++tags >= maxTags) break;
       } else if (type == CHUNK_END_TAG) {
-        out.append("</").append(str(strings, b.getInt(start + 16 + 4))).append(">\n");
+        out.append("</").append(escape(str(strings, b.getInt(start + 16 + 4)))).append(">\n");
       } else if (type != CHUNK_START_NS && type != 0x0101 && type != 0x0180 && type != 0x0104) {
         // Unknown chunks are skipped by size.
       }

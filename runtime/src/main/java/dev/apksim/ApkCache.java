@@ -60,8 +60,12 @@ public final class ApkCache {
     } catch (RuntimeException e) {
       throw new IOException("the APK's manifest could not be read: " + e.getMessage());
     }
+    // Matched at the one tag's start only: searched for anywhere, a manifest whose names repeated "<manifest" with no
+    // '>' after them took quadratic time (18 s for 350k characters) in the agent, outside any sandbox. Axml escapes
+    // names, so the only '<' and '>' past the declaration are the element's own.
+    int at = first.indexOf("\n<manifest");
     java.util.regex.Matcher m = java.util.regex.Pattern.compile("<manifest\\b[^>]*?\\spackage=\"([^\"]*)\"").matcher(first);
-    if (!m.find() || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
+    if (at < 0 || !m.region(at + 1, first.length()).lookingAt() || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
       throw new IOException("the manifest names no package");
     }
     return m.group(1);

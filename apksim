@@ -429,6 +429,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
     # native code or reflection past SimWindow's own check).
     RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
     RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
+    # The checkout's own work/ too, which is the state folder unless APKSIM_HOME moves it (beam-check.py does): its
+    # sign-ins, app data, scratch and serve's and the agent's files were readable through the apksim folder's rule.
+    RW="$RR/work"; [[ -d "$ROOT/work" ]] && RW="$(cd "$ROOT/work" && pwd -P)"
     QS="$(printf '%s' "$RS" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
     # bm<12 hex>: a moved session's data (spelled out: the profile language's regex has no {n} quantifier).
     H12="$(printf '[0-9a-f]%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)"
@@ -444,7 +447,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (allow file-read-metadata (subpath \"$RH\"))
 (deny file-read* file-write* (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+\$\"))
 (allow file-read* (subpath \"$RR\") (subpath \"$RL\") (subpath \"$RJ\") (subpath \"$RS\"))
-(deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\") (subpath \"$RS/tmp\"))
+(deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\") (subpath \"$RS/tmp\")
+  (subpath \"$RW/autofill\") (subpath \"$RW/beam\") (subpath \"$RW/serve\") (subpath \"$RW/screenshots\") (subpath \"$RW/cache\") (subpath \"$RW/tmp\"))
 (allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (subpath \"$RS/tmp/$$\") (regex #\"$SLOTS\"))
 (allow file-read-metadata (subpath \"$RS\"))
 (deny network-outbound (remote ip \"localhost:*\"))

@@ -160,8 +160,19 @@ def sandbox_checks(apksim, apk):
     for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x")):
         if not os.path.exists(f):
             open(f, "w").write("secret\n")
+    # The checkout's own work/ (the state folder unless APKSIM_HOME moves it, as here): planted files, removed below.
+    rw = os.path.join(os.path.realpath(os.path.dirname(HERE)), "work")
+    planted = [os.path.join(rw, "autofill", "beam-check-probe.properties"),
+               os.path.join(rw, "cache", "data", "dev.example.beamcheck", "default", "x")]
+    made = [f for f in planted if not os.path.exists(f)]
+    autofill_was = os.path.isdir(os.path.join(rw, "autofill"))
+    for f in made:
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "w").write("secret\n")
     probes = [
         ("allowed", "write its own scratch", "touch $S/tmp/$$/probe"),
+        ("denied", "read sign-ins saved in the apksim folder's work/ (the state folder elsewhere)", "cat $R/work/autofill/beam-check-probe.properties"),
+        ("denied", "read app data in the apksim folder's work/", "cat $R/work/cache/data/dev.example.beamcheck/default/x"),
         ("allowed", "write a beam data slot", "touch $S/cache/data/dev.example/beam-0/probe"),
         ("allowed", "read apksim's jar", "head -c 4 $R/work/apksim.jar"),
         ("allowed", "reach the internet's resolver", "nslookup -timeout=3 example.com"),
@@ -210,7 +221,17 @@ def sandbox_checks(apksim, apk):
     open(os.path.join(STATE, "tmp", "1", "shared.txt"), "w").write("another instance's file\n")
     env = dict(ENV, APKSIM_BEAM_SANDBOX="1", APKSIM_SANDBOX_TEST=f"sh -c {sh_quote(script)} probe {sh_quote(os.path.realpath(STATE))} "
                f"{sh_quote(os.path.realpath(os.path.dirname(HERE)))}")
-    r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=env)
+    try:
+        r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=env)
+    finally:
+        for f in made:
+            os.remove(f)
+        shutil.rmtree(os.path.join(rw, "cache", "data", "dev.example.beamcheck"), ignore_errors=True)
+        if not autofill_was:
+            try:
+                os.rmdir(os.path.join(rw, "autofill"))  # the check made it
+            except OSError:
+                pass
     got = dict(line.split(" ", 1)[::-1] for line in r.stdout.split("\n") if line.strip())
     for i, (want, what, _) in enumerate(probes):
         check(got.get(str(i)) == want, f"sandbox: a beamed app may{'' if want == 'allowed' else ' not'} {what} ({got.get(str(i))})")
