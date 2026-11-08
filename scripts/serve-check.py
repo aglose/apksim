@@ -516,7 +516,8 @@ def check_h264(url, token, app, a):
     n1 = len(s.frames)
     s.pump(2.0)
     resumed = s.frames[n1:]
-    cap = max(2, a.in_flight or 8) if ACK_DELAY_MS else 2  # the window has grown on a slow link
+    # The window may have grown on a slow link (simulated or real): its cap, or exactly two where --in-flight is 1 or 2.
+    cap = a.in_flight if a.in_flight and a.in_flight <= 2 else max(2, a.in_flight or 8)
     check(len(held) <= cap, f"at most {cap} frames in flight to a tab that does not acknowledge ({len(held)})")
     if len(shader) >= 30:  # only where the app animates fast enough to fall behind (not the Linux image's CPU shader)
         check(bool(resumed) and resumed[0][7], "after falling behind, the stream resumes at a keyframe")
