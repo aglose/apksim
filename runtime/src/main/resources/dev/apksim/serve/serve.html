@@ -252,6 +252,7 @@ function start() {
   sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
   sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
+    socketClosed(sock);
     if (sock !== ws) return;
     if (!ended) overlay("Disconnected from the server.", "Start again", start);
     ended = true;
@@ -259,7 +260,7 @@ function start() {
   };
   fit();
 }
-function stop() { if (ws) { ended = true; ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
+function stop() { if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
@@ -357,6 +358,18 @@ function videoLost(why) {
   closeDecoder();
   send("key"); keyAsked = true;
 }
+// The browser passed the first probe but will not decode this stream (its profile, level or size, e.g. after a
+// switch to a larger device): another keyframe would fail the same way, so the session starts again on JPEG.
+function unsupported(why) {
+  log("video: this browser cannot decode the stream (" + why + "): starting again with JPEG");
+  closeDecoder();
+  h264Ok = false;
+  start();
+}
+// The decoder belongs to one socket: when that socket closes (Stop, the session ending, a disconnect) it goes too,
+// and an older socket closing never touches a newer session's decoder.
+let decoderSock = null;
+function socketClosed(sock) { if (decoderSock === sock) { closeDecoder(); decoderSock = null; } }
 function onVideo(dv, buf, sock, w, h, presented, encode) {
   const key = dv.getUint8(20) === 1, data = new Uint8Array(buf, 21);
   if (key) {
@@ -371,10 +384,11 @@ function onVideo(dv, buf, sock, w, h, presented, encode) {
           frame.close();
           shown(m.presented, m.encode, m.bytes);
         },
-        error: e => { if (d === decoder) videoLost(e.message); },
+        error: e => { if (d === decoder) e.name === "NotSupportedError" ? unsupported(e.message) : videoLost(e.message); },
       });
+      decoderSock = sock;
       try { d.configure({ codec, codedWidth: w, codedHeight: h, optimizeForLatency: true }); }
-      catch (e) { videoLost(e.message); send("ack"); return; }
+      catch (e) { send("ack"); unsupported(e.message); return; }
       decoderCodec = codec; decoderW = w; decoderH = h;
     }
     needKey = keyAsked = false;
