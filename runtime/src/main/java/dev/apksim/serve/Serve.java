@@ -142,13 +142,14 @@ public final class Serve {
           s.port = Integer.parseInt(need(a, v));
           s.portGiven = true;
         }
+        // Flags without a value: past the step over a value after the switch, to the next argument.
         case "--beam" -> {
           s.beam = true;
-          i--;
+          continue;
         }
         case "--allow-beam" -> {
           s.allowBeam = true;
-          i--;
+          continue;
         }
         case "--beam-port" -> s.beamPort = Integer.parseInt(need(a, v));
         case "--keep-days" -> {
