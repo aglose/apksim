@@ -236,6 +236,7 @@ $("file").onchange = () => {
 // ---------------------------------------------------------------- session
 function start() {
   if (!state.app) return;
+  clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
   if (ws) ws.close();
   ended = false; onHome = false; frameW = frameH = 0;
   const q = new URLSearchParams({ app: state.app, device: state.device, appearance: state.appearance });
@@ -260,7 +261,7 @@ function start() {
   };
   fit();
 }
-function stop() { if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
+function stop() { clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0; if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
@@ -281,7 +282,9 @@ function onText(t) {
     // and its data is erased): try again, a little later each time.
     ended = true;
     log("waiting for the previous session to end (" + fallbackTries + ")");
-    setTimeout(start, 500 * 2 ** fallbackTries++);
+    // Bound to this socket: if Start or Stop came meanwhile, the retry does nothing to the newer session.
+    const busy = ws;
+    retryTimer = setTimeout(() => { retryTimer = 0; if (ws === busy) start(); }, 500 * 2 ** fallbackTries++);
   }
   else if (kind === "x") { ended = true; fallbackTries = 0; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
 }
@@ -376,6 +379,7 @@ function unsupported(why) {
   start();
 }
 let fallbackTries = 0;  // > 0 while the JPEG restart waits for a free session (busy answers retried with backoff)
+let retryTimer = 0;
 // The decoder belongs to one socket: when that socket closes (Stop, the session ending, a disconnect) it goes too,
 // and an older socket closing never touches a newer session's decoder.
 let decoderSock = null;
