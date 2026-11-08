@@ -1403,6 +1403,17 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeUntilVsync(JNIEnv *env, 
   return (jlong)((target - now) * 1e9);
 }
 
+// The display's refresh period in nanoseconds while its vsyncs arrive (as nativeUntilVsync), else -1.
+JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeVsyncPeriod(JNIEnv *env, jclass c) {
+  double period, seen, now = CACurrentMediaTime();
+  @synchronized([SimView class]) {
+    period = vsyncPeriod;
+    seen = vsyncSeen;
+  }
+  if (period <= 0 || now - seen > 4 * period + 0.004) return -1;
+  return (jlong)(period * 1e9);
+}
+
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetCloseHides(JNIEnv *env, jclass c, jboolean on) { closeHides = on; }
 
 // `window close`: what the window's close button does (performClose: asks windowShouldClose, as a click would).

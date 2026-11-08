@@ -137,6 +137,13 @@ final class SimWindow {
     return n >= 0 ? n : untilRemoteVsync();
   }
 
+  /** The period of the vsyncs {@link #untilVsync} follows (the window's display, else a viewer's), or -1. */
+  static long vsyncPeriodNanos() {
+    if (!headless && nativeUntilVsync() >= 0) return nativeVsyncPeriod();
+    long period = remotePeriodNanos;
+    return period > 0 && System.nanoTime() - remoteSeenNanos < REMOTE_FRESH_NANOS ? period : -1;
+  }
+
   /** What reached the screen since the last call, counted per display vsync. */
   static String vsyncStats() {
     String remote = remotePeriodNanos > 0 && System.nanoTime() - remoteSeenNanos < REMOTE_FRESH_NANOS
@@ -194,6 +201,8 @@ final class SimWindow {
   }
 
   private static native long nativeUntilVsync();
+
+  private static native long nativeVsyncPeriod();
 
   private static native void nativeSetCloseHides(boolean on);
 

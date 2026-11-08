@@ -235,8 +235,8 @@ public class Host {
             // A vsync asked for since the last frame ran (by input dispatched above, or a message): it waits for the
             // display's next one, as one asked for during a frame does (pace). Before, it ran at once: a timed drag's
             // moves go out every 8 ms of real time, out of step with the display, and drew ~165 frames a second.
-            long until = followsDisplay() ? SimWindow.untilVsync() : -1;
-            if (until >= 0) frameAtNanos = System.nanoTime() + until + VSYNC_SLACK_NANOS;
+            long at = followsDisplay() ? vsyncFrameAt(System.nanoTime()) : -1;
+            if (at >= 0) frameAtNanos = at;
           }
           if (frameAtNanos != 0) {
             // Following the display: the frame waits for its vsync, then the clock catches up to now.
@@ -511,6 +511,27 @@ public class Host {
   /** No frame drawn yet. Main thread only. */
   private boolean firstFrame = true;
 
+  /** {@link #vsyncFrameAt}'s 120 Hz budget: no frame starts at a vsync much before this. */
+  private static long frameBudgetNanos;
+
+  /**
+   * When the next frame starts on the display's vsyncs (just after one, VSYNC_SLACK_NANOS), or -1 without vsyncs. At
+   * most 120 a second, as the app's 120 Hz device draws: on a faster display (a 144 or 240 Hz monitor, the window's or
+   * a viewer's in a tab) a vsync before the 120 Hz budget is skipped for the next, every other one at 240 Hz and an
+   * average of 120 at 144. Before, every vsync drew a frame: 240 a second, twice the work.
+   */
+  private static long vsyncFrameAt(long now) {
+    long until = SimWindow.untilVsync();
+    if (until < 0) return -1;
+    long at = now + until;
+    long period = SimWindow.vsyncPeriodNanos();
+    if (period > 0 && period < FRAME_NANOS - 500_000L) {
+      while (at < frameBudgetNanos - 500_000L) at += period;
+      frameBudgetNanos = Math.max(frameBudgetNanos, at - FRAME_NANOS) + FRAME_NANOS;  // idle: the budget starts again
+    }
+    return at + VSYNC_SLACK_NANOS;
+  }
+
   /** Whether frames follow the display's vsync (when it has one: SimWindow.untilVsync), not Host's own grid. */
   private static boolean followsDisplay() {
     return FOLLOW_DISPLAY && gridHz() >= 120;
@@ -523,11 +544,10 @@ public class Host {
     long hz = gridHz();
     // A timed drag wants a frame at every vsync (its next move), whether or not the app asked for one yet.
     boolean wanted = ShadowChoreographer.getNextVsyncTimeNanos() != 0 || drag != null && !OFF_VSYNC_FRAMES;
-    long untilVsync = followsDisplay() && wanted ? SimWindow.untilVsync() : -1;
-    if (untilVsync >= 0) {
+    if (followsDisplay() && wanted && SimWindow.untilVsync() >= 0) {
       // Just after the vsync, so the frame is ready well before the next one, where the screen shows it.
       long now = System.nanoTime();
-      if (frameAtNanos == 0 || now >= frameAtNanos) frameAtNanos = now + untilVsync + VSYNC_SLACK_NANOS;
+      if (frameAtNanos == 0 || now >= frameAtNanos) frameAtNanos = Math.max(0, vsyncFrameAt(now));
       wait = frameAtNanos - now;
     } else if (wanted) {
       frameAtNanos = 0;
