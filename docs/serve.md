@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]... [--warm auto|on|off]
+             [--max-upload MB] [--quality Q] [--in-flight N] [--no-network] [--allow-origin ORIGIN]... [--warm auto|on|off]
              [--core-dumps] [--trust-proxy] [--public-origin URL] [--base-path /PATH]
 ```
 
@@ -34,6 +34,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   ```
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
 - `--quality Q` (default 80): the JPEG quality of the stream.
+- `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
 - `--warm auto|on|off` (default `auto`): warm each APK's cache in the background (below). `auto` is on for Linux,
   where there is no warm standby, and off on the Mac, where a launch is already fast and a warm-up would take the
@@ -194,8 +195,15 @@ inside itself:
   one sent.
 - The instance sends them over its control channel: a `stream [QUALITY]` command turns that connection into a frame
   stream (loopback only, like every control connection). Serve relays them to the tab over a WebSocket.
-- Flow control: serve keeps at most two frames in flight to a tab, and the tab acknowledges each frame once drawn.
-  A slow tab or network sees fewer frames, never older ones: frames that arrive meanwhile replace the waiting one.
+- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once drawn.
+  Two frames in flight cap a stream at about 2 frames per round trip (~20 fps at 100 ms however fast the app renders),
+  so the window is sized from what is measured: `clamp(ceil(rtt / frame_interval) + 1, 2, --in-flight)`, where `rtt` is
+  the quickest of the last 16 send-to-ack times (queueing and a slow tab only add) and `frame_interval` the smoothed gap
+  between the instance's frames. Past the first two frames a frame is sent only while the bytes in flight stay under
+  1 MB, so a slow link sees current frames rather than a backlog. A slow tab or network sees fewer frames, never older
+  ones: frames that arrive meanwhile replace the waiting one. The `s` stats message has `window` (effective), `ackRttMs`
+  (-1 before the first ack; it includes the tab's decode and draw) and `frameMs`, so a client can tell whether the
+  network or the app is the limit.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
 

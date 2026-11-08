@@ -34,7 +34,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
-                          [--warm auto|on|off] [--core-dumps]
+                          [--warm auto|on|off] [--core-dumps] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -49,6 +49,8 @@ public final class Serve {
   int max = 4;
   int idleSeconds = 600;
   int quality = 80;
+  /** `--in-flight N`: the most frames in flight to a tab (the window is sized from the round trip, up to this). */
+  int inFlightMax = 8;
   long maxUploadMb = 300;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
@@ -95,6 +97,7 @@ public final class Serve {
         case "--idle" -> s.idleSeconds = Integer.parseInt(need(a, v));
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
+        case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
         case "--trust-proxy" -> {

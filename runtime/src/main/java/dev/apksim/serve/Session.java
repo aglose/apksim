@@ -30,7 +30,8 @@ import java.util.stream.Stream;
  * One browser tab and the apksim instance it drives. The instance is an ordinary launch (`apksim --headless --fresh
  * --control auto ... APK`, taken by a warm standby on the Mac when one is ready); this reads its control port from its
  * stderr, opens two control connections to it on loopback (commands, pipelined, and a frame stream), and relays: frames
- * to the tab, at most two in flight (the tab acknowledges each one it draws, and newer frames replace the one waiting),
+ * to the tab, a window in flight (two to eight, sized from the ack round trip and the frame interval, see {@link #window}; the tab
+ * acknowledges each one it draws, and newer frames replace the one waiting),
  * and the tab's input to the instance, only as the commands {@link #check} allows.
  */
 final class Session {
@@ -39,7 +40,9 @@ final class Session {
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
   private static final String NUM = "-?\\d{1,5}(\\.\\d{1,3})?";
-  private static final int MAX_IN_FLIGHT = 2;
+  private static final int MIN_IN_FLIGHT = 2;
+  /** Bytes sent and not yet acknowledged, past the first {@link #MIN_IN_FLIGHT} frames: a slow link sees current frames. */
+  private static final long IN_FLIGHT_BYTES = 1 << 20;
   static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv");
 
   final String id;
@@ -77,6 +80,14 @@ final class Session {
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
   private byte[] waiting;
   private int inFlight;
+  private long inFlightBytes;
+  /** Send time (nanoTime) and size of each frame in flight, oldest first (acks come back in order). */
+  private final java.util.ArrayDeque<long[]> flying = new java.util.ArrayDeque<>();
+  /** Recent ack round trips in ms (a ring of 16), and the smoothed interval between the instance's frames in ms. */
+  private final double[] ackRtts = new double[16];
+  private int ackCount;
+  private double frameIntervalMs = 1000;
+  private long lastFrameNanos;
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
@@ -320,6 +331,9 @@ final class Session {
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
         synchronized (this) {
+          long n = System.nanoTime();
+          if (lastFrameNanos != 0) frameIntervalMs += ((n - lastFrameNanos) / 1e6 - frameIntervalMs) * 0.1;
+          lastFrameNanos = n;
           waiting = frame;
           notifyAll();
         }
@@ -334,10 +348,12 @@ final class Session {
       while (!ended) {
         byte[] f;
         synchronized (this) {
-          while (waiting == null || inFlight >= MAX_IN_FLIGHT) wait();
+          while (waiting == null || !mayFly(waiting.length)) wait();
           f = waiting;
           waiting = null;
           inFlight++;
+          inFlightBytes += f.length;
+          flying.add(new long[] {System.nanoTime(), f.length});
         }
         ws.sendBinary(new byte[0], f, 0, f.length);
         framesSent++;
@@ -349,8 +365,38 @@ final class Session {
   }
 
   private synchronized void acked() {
-    if (inFlight > 0) inFlight--;
+    long[] f = flying.poll();
+    if (f != null) {
+      inFlight--;
+      inFlightBytes -= f[1];
+      ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
+    }
     notifyAll();
+  }
+
+  /** The quickest of the recent ack round trips in ms (queueing and a slow tab only add), or -1 before the first. */
+  private synchronized double ackRttMs() {
+    int n = Math.min(ackCount, ackRtts.length);
+    if (n == 0) return -1;
+    double m = Double.MAX_VALUE;
+    for (int i = 0; i < n; i++) m = Math.min(m, ackRtts[i]);
+    return m;
+  }
+
+  /**
+   * Frames in flight so the link stays full: clamp(ceil(rtt / frame interval) + 1, 2, cap), where cap is `--in-flight`
+   * (default 8; below 2 the window is that). Before the first ack, 2.
+   */
+  private synchronized int window() {
+    int cap = serve.inFlightMax, lo = Math.min(MIN_IN_FLIGHT, cap);
+    double rtt = ackRttMs();
+    if (rtt < 0) return lo;
+    return (int) Math.max(lo, Math.min(cap, Math.ceil(rtt / Math.max(frameIntervalMs, 4)) + 1));
+  }
+
+  private boolean mayFly(int len) {
+    int w = window();
+    return inFlight < Math.min(w, MIN_IN_FLIGHT) || (inFlight < w && inFlightBytes + len <= IN_FLIGHT_BYTES);
   }
 
   // ---------------------------------------------------------------- input
@@ -512,7 +558,8 @@ final class Session {
     return "{\"id\":" + Http.q(id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(device)
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
-        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20) + "}";
+        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
+        + ",\"window\":" + window() + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + "}";
   }
 
   // ---------------------------------------------------------------- the end

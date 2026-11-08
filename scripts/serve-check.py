@@ -34,6 +34,7 @@ import urllib.request
 import zipfile
 
 FAILED = []
+ACK_DELAY_MS = 0
 
 
 def parts(url):
@@ -133,20 +134,28 @@ class Session:
         self.offset, self.best_rtt = 0.0, float("inf")  # the server's clock minus this one's
         self.texts = []
         self.stats = {}
+        self.ack_delay = ACK_DELAY_MS / 1000
+        self.acks = []  # when each delayed ack is due
 
     def pump(self, seconds, until=None):
         """Reads messages for this long (or until until() is true), acknowledging each frame as a tab does."""
         end = time.time() + seconds
         while time.time() < end:
-            m = self.ws.recv(max(0.01, end - time.time()))
+            while self.acks and self.acks[0] <= time.time():
+                self.acks.pop(0)
+                self.ws.send("ack")
+            m = self.ws.recv(max(0.01, min(end, self.acks[0] if self.acks else end) - time.time()))
             if m is None:
-                break
+                continue
             op, p = m
             if op == 2:
                 w, h, present_us, encode_us = struct.unpack(">iiqi", p[:20])
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
                                     hashlib.sha1(p[20:]).hexdigest()))
-                self.ws.send("ack")
+                if self.ack_delay:
+                    self.acks.append(time.time() + self.ack_delay)
+                else:
+                    self.ws.send("ack")
             elif op == 1:
                 t = p.decode()
                 self.texts.append(t)
@@ -191,10 +200,13 @@ def main():
     ap.add_argument("--max-upload-mb", type=int)
     ap.add_argument("--first-frame-timeout", type=int, default=180)
     ap.add_argument("--allow-origin")
+    ap.add_argument("--ack-delay", type=int, default=0, help="ms to hold each ack: a slow link's return half; the server's window should grow")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
     ap.add_argument("--crash-app", help="id of an app that crashes at start (test app: -- --activity .CrashActivity)")
     a = ap.parse_args()
+    global ACK_DELAY_MS
+    ACK_DELAY_MS = a.ack_delay
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
 
@@ -375,6 +387,8 @@ def main():
     print(f"     taps: input -> frame {median(taps):.0f} ms (median of {len(taps)}); drag: {fps:.0f} fps, {len(drag)} frames")
     print(f"     present -> received {median(lat):.0f} ms median (clocks matched to {s.best_rtt:.1f} ms round trip); encode {median(enc):.1f} ms median; {kb:.0f} KB/frame")
     print(f"     shader tab: {shader_fps:.0f} fps, {shader_kb:.0f} KB/frame, encode {shader_enc:.1f} ms")
+    print(f"     window {s.stats.get('window')} frames in flight, ack round trip {s.stats.get('ackRttMs')} ms, frame interval {s.stats.get('frameMs')} ms")
+    check(isinstance(s.stats.get("window"), int) and 2 <= s.stats["window"] <= 32, f"stats report the window ({s.stats.get('window')})")
     print(f"     memory: {s.stats.get('rssMb')} MB resident, {s.stats.get('heapMb')} MB heap; frames sent {s.stats.get('framesSent')}")
     status, body = http(url, "/api/status", token)
     st = json.loads(body) if status == 200 else {}
