@@ -662,12 +662,21 @@ First review:
 - **The server** (`Session.handoff`): a server session's own socket sends `handoff` (only with `--allow-beam`; never
   the agent's). The app is told to `quit` and its JVM's exit awaited (the attested PID, as for ending an instance), so
   what it wrote is flushed; its data slot and `serve-N.device` folder (/sdcard and the Settings values, `SlotDevice`)
-  are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files only, no links followed, not the
-  slot's `.lock`) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
+  are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files only, not the slot's `.lock`, at most
+  50,000 files and 1 GB) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
   phase 2's, 5 minutes) for `GET /api/beam/data?ticket=T`, which needs no token and serves that pack once its hash
   matches the ticket's. The session then ends without a word (its slot erased as always); packs older than the ticket
   go with a sweep. A session that has no data slot yet answers `h {"error"}` and runs on; a pack that fails answers
   the error and ends.
+- **What the server packs**: the slot path comes from the instance's output, which app code (attachBaseContext)
+  can write before apksim does, so it is taken only when it is one of this server's slots and the session's own JVM
+  holds its `.lock` open (lsof on the Mac, `/proc/<pid>/fd` on Linux, checked before the app quits; the JVM is the
+  process listening on its control port, or on Linux, which has no standbys, the process serve started). Else the
+  app could name any folder (the server user's, another visitor's slot) for the tab to download. The pack is read
+  through open folder handles from the state folder down, each opened without following a link
+  (SecureDirectoryStream): a process the app left running may still write there, and a file or folder swapped for a
+  link between a check and an open would otherwise be packed through it. Links and special files are left out.
+  Checked on the Mac; the Linux path (`/proc`, the started process) is not run by a check yet.
 - **The agent** (`Serve.beamSeed`): `/beam/start` takes `data: {"ticket","url"}` beside phase 2's fields; the address
   must be the page's own (same origin and base path as the APK's, no redirects). It downloads the pack, unpacks it
   into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and

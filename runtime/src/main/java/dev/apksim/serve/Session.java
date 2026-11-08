@@ -241,6 +241,15 @@ final class Session {
     // caches): the process the kernel says listens on its control port, which Main opens before any app code runs.
     // Never what it prints: the app's own output could name another process.
     instancePid = listenerPid(p);
+    if (instancePid <= 0 && !System.getProperty("os.name", "").startsWith("Mac")) {
+      // No lsof (the Linux image), and no standby off the Mac: the launcher execs the JVM, so the process started
+      // here is the instance itself.
+      Process launched;
+      synchronized (this) {
+        launched = process;
+      }
+      if (launched != null) instancePid = launched.pid();
+    }
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
@@ -291,6 +300,16 @@ final class Session {
       ws.sendText("h {\"error\":\"the app has no data yet\"}");
       return;
     }
+    // The slot comes from the instance's output, which app code (attachBaseContext) can write first: it must be one
+    // of this server's slots, and one the session's own JVM (known by the kernel, not by what it prints) holds open,
+    // checked while it still runs. Else the app could name any folder (the server user's, or another visitor's slot)
+    // for the server to pack and hand to this tab.
+    String why = handoffSlotProblem(slot);
+    if (why != null) {
+      logLine("[serve] no handoff: " + why);
+      ws.sendText("h {\"error\":" + Http.q(why) + "}");
+      return;
+    }
     synchronized (exitLock) {
       if (exitHandled) return;
       exitHandled = true;  // its quit below is not an exit to report: this ends the session itself
@@ -321,7 +340,10 @@ final class Session {
       String hid = "d" + java.util.HexFormat.of().formatHex(rnd);
       Path zip = dir.resolve(hid + ".zip");
       try (java.io.OutputStream out = Files.newOutputStream(zip)) {
-        SlotPack.pack(slot, slot.getParent().getFileName().toString(), out);
+        SlotPack.pack(serve.state, slot, slot.getParent().getFileName().toString(), out);
+      } catch (IOException | RuntimeException e) {
+        Files.deleteIfExists(zip);
+        throw e;
       }
       String sha = serve.catalog.sha256(zip);
       logLine("[serve] handed off its data (" + (Files.size(zip) >> 10) + " KB) to the tab's Mac");
@@ -333,6 +355,48 @@ final class Session {
       Thread.currentThread().interrupt();
     }
     stop(null);
+  }
+
+  /** Why this session's data slot may not be handed off, or null. */
+  private String handoffSlotProblem(Path slot) {
+    Path dir = slot.toAbsolutePath().normalize();
+    Path data = serve.state.resolve("cache/data").toAbsolutePath().normalize();
+    if (dir.getParent() == null || !data.equals(dir.getParent().getParent())
+        || !dir.getFileName().toString().matches(java.util.regex.Pattern.quote(serve.home) + "-[0-9]+")) {
+      return "the app's data slot is not one of this server's";
+    }
+    long pid = instancePid;
+    if (pid <= 0) return "the app's process is not known";
+    if (!holdsOpen(pid, dir.resolve(".lock"))) return "the app's data slot is not its own";
+    return null;
+  }
+
+  /** Whether process `pid` has `file` open: /proc on Linux, lsof elsewhere. */
+  static boolean holdsOpen(long pid, Path file) {
+    try {
+      Path real = file.toRealPath();
+      Path fds = Path.of("/proc", Long.toString(pid), "fd");
+      if (Files.isDirectory(fds)) {
+        try (Stream<Path> all = Files.list(fds)) {
+          return all.anyMatch(f -> {
+            try {
+              return real.equals(Files.readSymbolicLink(f));
+            } catch (IOException | RuntimeException e) {
+              return false;
+            }
+          });
+        }
+      }
+      Process l = new ProcessBuilder("lsof", "-t", "--", real.toString()).redirectErrorStream(true).start();
+      String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      l.waitFor(5, TimeUnit.SECONDS);
+      return out.lines().map(String::strip).anyMatch(Long.toString(pid)::equals);
+    } catch (IOException | RuntimeException e) {
+      return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   private void explainExit(Process p) {

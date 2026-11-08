@@ -3,9 +3,18 @@ package dev.apksim.serve;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.Set;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -27,30 +36,83 @@ final class SlotPack {
 
   private SlotPack() {}
 
-  /** Zips a slot and its .device folder (links are not followed, nor packed). */
-  static void pack(Path slot, String pkg, OutputStream out) throws IOException {
-    Path device = slot.resolveSibling(slot.getFileName() + ".device");
-    try (ZipOutputStream z = new ZipOutputStream(out)) {
-      z.putNextEntry(new ZipEntry("package"));
-      z.write(pkg.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-      z.closeEntry();
-      add(z, slot, "slot/");
-      add(z, device, "device/");
+  /**
+   * Zips a slot (under `state`) and its .device folder. Read through open folder handles from `state` down, each
+   * opened without following a link (openat with O_NOFOLLOW, SecureDirectoryStream), never by path: a process the app
+   * left running may still write there, and swapping a file or a folder above it for a link between a check and an
+   * open would otherwise pack what the link names (a file of the server's, which the app may not read itself). Links
+   * are left out, as are other special files. At most {@link #MAX_FILES} files and {@link #MAX_BYTES}, as unpacking
+   * takes.
+   */
+  static void pack(Path state, Path slot, String pkg, OutputStream out) throws IOException {
+    Path base = state.toAbsolutePath().normalize();
+    Path rel = base.relativize(slot.toAbsolutePath().normalize());
+    if (rel.getNameCount() < 2 || rel.startsWith("..")) throw new IOException("not a data slot under the state folder");
+    try (DirectoryStream<Path> top = Files.newDirectoryStream(base)) {
+      if (!(top instanceof SecureDirectoryStream<Path> s)) throw new IOException("this system cannot read a folder without following links");
+      List<SecureDirectoryStream<Path>> open = new ArrayList<>();
+      try (ZipOutputStream z = new ZipOutputStream(out)) {
+        SecureDirectoryStream<Path> parent = s;
+        for (Path part : rel.getParent()) {
+          parent = parent.newDirectoryStream(part, LinkOption.NOFOLLOW_LINKS);
+          open.add(parent);
+        }
+        z.putNextEntry(new ZipEntry("package"));
+        z.write(pkg.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        z.closeEntry();
+        long[] used = {0, 0};  // files, bytes
+        String name = rel.getFileName().toString();
+        add(z, parent, name, "slot/", 0, used);
+        add(z, parent, name + ".device", "device/", 0, used);
+      } finally {
+        for (SecureDirectoryStream<Path> d : open) d.close();
+      }
     }
   }
 
-  private static void add(ZipOutputStream z, Path root, String prefix) throws IOException {
-    if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return;
-    List<Path> files;
-    try (Stream<Path> all = Files.walk(root)) {
-      files = all.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).sorted().toList();
+  private static void add(ZipOutputStream z, SecureDirectoryStream<Path> parent, String name, String prefix, int depth, long[] used)
+      throws IOException {
+    if (depth > 64) throw new IOException("folders nested too deep to move");
+    SecureDirectoryStream<Path> d;
+    try {
+      d = parent.newDirectoryStream(Path.of(name), LinkOption.NOFOLLOW_LINKS);
+    } catch (java.nio.file.NoSuchFileException | java.nio.file.NotDirectoryException e) {
+      return;  // none (a slot without a .device folder)
+    } catch (java.nio.file.FileSystemException e) {
+      return;  // a link (ELOOP): left out
     }
-    for (Path f : files) {
-      String rel = root.relativize(f).toString().replace('\\', '/');
-      if (rel.equals(".lock")) continue;  // the slot's lock is the slot's own
-      z.putNextEntry(new ZipEntry(prefix + rel));
-      Files.copy(f, z);
-      z.closeEntry();
+    try (d) {
+      List<Path> names = new ArrayList<>();
+      for (Path p : d) names.add(p.getFileName());
+      names.sort(null);
+      for (Path n : names) {
+        BasicFileAttributes at;
+        try {
+          at = d.getFileAttributeView(n, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS).readAttributes();
+        } catch (java.nio.file.NoSuchFileException e) {
+          continue;  // gone meanwhile
+        }
+        String entry = prefix + n;
+        if (at.isDirectory()) {
+          add(z, d, n.toString(), entry + "/", depth + 1, used);
+        } else if (at.isRegularFile()) {
+          if (depth == 0 && prefix.equals("slot/") && n.toString().equals(".lock")) continue;  // the slot's own lock
+          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + MAX_FILES + " files to move");
+          try (SeekableByteChannel ch = d.newByteChannel(n, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            z.putNextEntry(new ZipEntry(entry));
+            ByteBuffer buf = ByteBuffer.allocate(1 << 16);
+            for (int r; (r = ch.read(buf)) > 0; buf.clear()) {
+              used[1] += r;
+              if (used[1] > MAX_BYTES) throw new IOException("the app's data is over " + (MAX_BYTES >> 20) + " MB to move");
+              z.write(buf.array(), 0, r);
+            }
+            z.closeEntry();
+          } catch (java.nio.file.FileSystemException e) {
+            if (e.getMessage() != null && e.getMessage().contains("symbolic link")) continue;  // swapped for a link meanwhile
+            throw e;
+          }
+        }
+      }
     }
   }
 
