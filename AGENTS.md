@@ -954,8 +954,16 @@ test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so 
 TLS on several threads with registers live across the access (TLSDESC on arm64), barriers (reused, destroyed at once), mutexes and condition
 variables at 4 mod 8 (boxed on both Linux architectures), thread attributes with `pthread_getattr_np` and an app-supplied stack, and setjmp/longjmp into bionic's jmp_buf. It is
 built for API 29, so it also has Android's own RELR tags (`DT_ANDROID_RELR`, which the NDK writes for API 28-29
-libraries); the loader once skipped them and called an unrelocated initialiser. When the loader or a bionic shim gets a
-new case wrong, add it there; a device passes every check.
+libraries); the loader once skipped them and called an unrelocated initialiser. Beside it, `pagefixture.c` builds two
+libraries linked for 4 KB pages: `libpagefixture4k.so` (code and RELRO on one 16 KB page: must load and run on the
+Mac) and `libpagefixturenorelro.so` (`-z norelro`: code and writable data on one page: refused on the Mac by default,
+moved with `--move-shared-data`), checked by `NativeLoaderTest` too (the move tests run on the Mac only with the switch,
+whose property the test reads; the refusal test only without it) (relocated pointers, .data, .bss, an exported variable through the GOT and
+dlsym, a load (literal) and an adr in assembly, and through dl_iterate_phdr: .data's PT_LOAD, PT_DYNAMIC, DT_PLTGOT's
+live GOT and the symbol's st_value); `pagefixturefar.c` (moved data out of an adr's reach: an UnsatisfiedLinkError
+naming the entry on every try) and `pagefixturecxx.cpp` (a C++ exception caught with its personality slot moved).
+`build.sh` checks each still has code and data on one 16 KB page (issue 137). When the loader or a bionic
+shim gets a new case wrong, add it there; a device passes every check.
 UiAutomator works (`ShadowSimUiAutomation`): getWindows lists the windows `AccessibleWindows` reports (under a
 Dialog, only the dialog, as on a device: issue 97), getRootInActiveWindow the topmost focusable one. Each window gets an
 accessibility window id (`AttachInfo.mAccessibilityWindowId`, which the system assigns on a device): a node's
@@ -1236,7 +1244,28 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   by design. Measure 120 fps on interactions or the test app's Shader tab.
 - Measurements are noisy when the machine is busy (WindowServer and the Claude app use CPU). Use A/B runs, not
   one-offs.
-- macOS forbids W+X pages, so 4 KB-aligned `.so` files (Flipper and its libc++) cannot load. 16 KB-aligned ones work.
+- macOS (16 KB pages) never makes a page writable and executable at once: `mprotect`/`mmap` refuse RWX, and MAP_JIT
+  memory is writable or executable per thread, never both (checked: a thread executing a MAP_JIT page it may write
+  faults). A 4 KB-aligned `.so` (an NDK before r27) has 16 KB pages holding the end of its code and what lld put
+  after it, RELRO first: `elfloader.c` makes such pages read+execute once relocated, which a device's linker does to
+  RELRO anyway. Writable `.data`/`.bss` on a page with code (`code_page_conflict`: a RELRO under ~12 KB, as in
+  libevent's in a Flipper debug build, or `-z norelro`) is refused by default before anything is mapped: a catchable
+  UnsatisfiedLinkError naming the APK entry, the rebuild (16 KB pages) and the switch. `--move-shared-data`
+  (`-Dapksim.moveSharedData`, warm launches too; ElfLoader hands it to the native side before each load) moves it
+  instead (`plan_data_move`): from its 4 KB page to the end of the image, the file's bytes are copied to pages after
+  the image, a multiple of 16 KB on, so low 12 bits stay; the code's adrp (and adr/ldr-literal, if still within 1 MB)
+  of moved pages is repointed (`patch_moved_refs`, executable sections only); relocations, symbol lookups and the
+  dynamic section go through `at()`; dl_iterate_phdr's view follows the move (program headers, the dynamic section's
+  address entries, moved symbols' st_value, then read as they are: `symbols_moved`); .eh_frame's PC-relative
+  personality and LSDA pointers and each LSDA's type-table entries (typed catches) are repointed (`move_eh_frame`,
+  `move_lsda`). What cannot be repointed (code after the moved data, an adr/ldr out of reach, an unwind pointer it
+  cannot rewrite) refuses the library; a failed load gives its range back. A line on stderr names each moved library.
+  Opt-in only because references with no relocation and no recognisable instruction cannot all be found: clang's
+  relative lookup tables (offsets from a table in .rodata to globals), other link-time offsets in data, address
+  differences folded into immediates, a one-past-the-end pointer at the moved boundary, data words in code that look
+  like adrp. Each review of the move found another class. `--skip-library NAME` makes the app's
+  `System.loadLibrary(NAME)` throw without trying (`ElfLoader.skipped`; not DT_NEEDED or dlopen). Every loader error
+  names the library's APK entry (`lib/arm64-v8a/NAME.so`) (issue 137).
 - A `.so`'s code pages are mapped from the extracted file (`elfloader.c` `load_segment`), not copied, so pages nothing
   patches stay clean (a large app's WebRTC library: 6.1 of 10.9 MB). macOS refuses `mmap(PROT_EXEC)` of a file but
   allows `mprotect` to read+execute of a private file mapping; if refused, the range is copied as before. Never rewrite
@@ -1260,7 +1289,8 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - `testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk`: the main regression app.
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
-- An app whose native libraries are 4 KB-aligned (Flipper) fails as expected.
+- An app whose native libraries are 4 KB-aligned (a debug build with Flipper): libflipper and libc++_shared load, but
+  libevent_core/extra need `--move-shared-data`; without it Flipper's uncaught UnsatisfiedLinkError ends the app (exit 10).
 - `testapks/loader-fixture`: a native library of loader and bionic checks inside the test app (see "Instrumentation tests").
 
 ## Open work

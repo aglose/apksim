@@ -46,6 +46,8 @@ Common options (each is listed with its values in the README, "Devices and launc
   --headless, --window front|nofocus|background|minimized|hidden
   --network record|replay FILE, --network-profile offline|3g|lossy
   --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
+  --skip-library NAME           the app's System.loadLibrary(NAME) throws UnsatisfiedLinkError (repeatable)
+  --move-shared-data            macOS: load 4 KB-aligned libraries with data on a code page (experimental)
 
 Full reference: https://github.com/aglose/apksim#devices-and-launch-options
 EOF
@@ -145,6 +147,12 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # any Build or Build.VERSION field (repeatable: MODEL=..., VERSION.RELEASE=...).
     --serial) EXTRA+=("-Dapksim.serial=$2"); shift 2 ;;
     --feature) FEATURES="${FEATURES:+$FEATURES,}$2"; shift 2 ;;
+    # A native library the app's System.loadLibrary must not load (repeatable): it throws UnsatisfiedLinkError as for
+    # one the APK lacks, which an SDK with an optional native part catches (ElfLoader.java).
+    --skip-library) SKIP_LIBS="${SKIP_LIBS:+$SKIP_LIBS,}$2"; shift 2 ;;
+    # macOS: load a 4 KB-aligned library whose writable data shares a 16 KB page with its code by moving that data
+    # (experimental; refused by default, native/elfloader.c plan_data_move).
+    --move-shared-data) EXTRA+=("-Dapksim.moveSharedData=true"); shift ;;
     # A Settings value set before the app starts (repeatable), as `adb shell settings put` would (SlotDevice.java).
     --setting)
       [[ "$2" =~ ^(global|secure|system):[^=]+= ]] || { echo "--setting takes global|secure|system:KEY=VALUE" >&2; exit 2; }
@@ -232,6 +240,7 @@ done
 [[ -n "${RECORD_MODE:-}" && -z "${RECORD_DIR:-}" ]] && { echo "--record needs --record-dir DIR" >&2; exit 2; }
 [[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
 [[ -n "${FEATURES:-}" ]] && EXTRA+=("-Dapksim.features=$FEATURES")
+[[ -n "${SKIP_LIBS:-}" ]] && EXTRA+=("-Dapksim.skipLibraries=$SKIP_LIBS")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
 if [[ -n "${BUNDLES:-}" ]]; then
   IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
@@ -250,7 +259,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
