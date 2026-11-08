@@ -522,6 +522,11 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
   the same build's cache, regular files and folders only, so what an app writes reaches only later launches of the
   same build. Deleted with the build.
+- **Fail closed**: the launcher runs a beamed instance in the beam profile or inside one, and refuses it otherwise.
+  It used to skip the sandbox whenever `APKSIM_SANDBOXED` (meaning "already in one") or `APKSIM_NOCACHE` (training)
+  was set, so an agent started from a shell that had either ran sites' APKs unsandboxed, silently. A standby spawned
+  inside is told it is (`APKSIM_SANDBOXED=beam`), and the launcher checks that rather than trusting it: inside, a
+  write to `STATE/beam` is refused. The agent also strips those variables from its instances' environment.
 - **Standbys**: a standby's sandbox is the one it started in, so an instance never starts the next (its rules name its
   own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame.
 - **Cost**: none measured. First frame in the tab 0.17 s, as before (0.29 s while the APK cache entry was rebuilt in

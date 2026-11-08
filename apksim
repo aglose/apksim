@@ -378,8 +378,19 @@ mkdir -p "$STATE/tmp/$$"
 # write under its state folder (work/ or ~/.apksim) and temp, and cannot read credentials. Network stays on unless --no-network.
 SANDBOX=()
 # A standby started by a sandboxed instance is already inside the same sandbox (FLAGS are part of its name).
-if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ]]; then
-  export APKSIM_SANDBOXED=1
+# A beamed instance is inside one only when it is the beam sandbox (APKSIM_SANDBOXED=beam, set below): any other
+# value, or APKSIM_NOCACHE, in the agent's environment must not let a site's APK run without it.
+BEAM_INSIDE=""
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" && "${APKSIM_SANDBOXED:-}" == beam ]]; then
+  # Checked, not taken on its word: the beam profile refuses writes in STATE/beam outside out/<pid>, so a write
+  # there that succeeds means this is not inside it.
+  BEAM_INSIDE=1
+  mkdir -p "$STATE/beam" 2>/dev/null
+  if ( : > "$STATE/beam/.sandbox-probe.$$" ) 2>/dev/null; then rm -f "$STATE/beam/.sandbox-probe.$$"; BEAM_INSIDE=""; fi
+fi
+if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}" && -z "$BEAM_INSIDE" \
+      || -z "${APKSIM_BEAM_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOXED:-}" ) ]]; then
+  if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then export APKSIM_SANDBOXED=beam; else export APKSIM_SANDBOXED=1; fi
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
@@ -448,6 +459,12 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     EXTRA+=("-XX:ErrorFile=$RS/tmp/$$/hs_err_pid%p.log")
   fi
   SANDBOX=(sandbox-exec -p "$PROFILE")
+fi
+# Fail closed: a beamed instance runs in the beam profile or inside one, never otherwise (not on Linux either, which
+# has none yet).
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" && ${#SANDBOX[@]} -eq 0 && -z "$BEAM_INSIDE" ]]; then
+  echo "apksim: a beamed instance runs only in the beam sandbox (macOS); refusing to start it without one" >&2
+  exit 2
 fi
 # The JDK reaches 127.0.0.1 as ::ffff:127.0.0.1 on a dual-stack socket, which the rule above cannot allow, so under
 # --no-network libloopback moves those connects to IPv4 sockets. Set through env: dyld drops DYLD_* variables when

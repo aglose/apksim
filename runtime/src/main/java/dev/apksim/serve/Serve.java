@@ -556,8 +556,14 @@ public final class Serve {
     if (coreDumps) pb.environment().remove("APKSIM_NO_CORE");
     else pb.environment().put("APKSIM_NO_CORE", "1");
     // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
-    if (beam) pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
-    else pb.environment().remove("APKSIM_BEAM_SANDBOX");
+    if (beam) {
+      pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
+      // Nothing from the agent's own environment that would skip or weaken the sandbox (the launcher refuses then,
+      // but the instance should never get them): it runs outside any sandbox, so none of these describe it.
+      for (String k : List.of("APKSIM_SANDBOXED", "APKSIM_NOCACHE", "APKSIM_SANDBOX_TEST")) pb.environment().remove(k);
+    } else {
+      pb.environment().remove("APKSIM_BEAM_SANDBOX");
+    }
   }
 
   /** The agent's cache for one build (translated classes), kept and deleted with it. */

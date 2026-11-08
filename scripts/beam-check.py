@@ -214,6 +214,14 @@ def sandbox_checks(apksim, apk):
     got = dict(line.split(" ", 1)[::-1] for line in r.stdout.split("\n") if line.strip())
     for i, (want, what, _) in enumerate(probes):
         check(got.get(str(i)) == want, f"sandbox: a beamed app may{'' if want == 'allowed' else ' not'} {what} ({got.get(str(i))})")
+    # Whatever the agent's environment says: an "already sandboxed" marker (ordinary, or the beam one claimed by hand)
+    # or APKSIM_NOCACHE (training) never lets a beamed launch run without the beam profile.
+    for extra in ({"APKSIM_SANDBOXED": "1"}, {"APKSIM_SANDBOXED": "beam"}, {"APKSIM_NOCACHE": "1"}):
+        e = dict(ENV, APKSIM_BEAM_SANDBOX="1", **extra,
+                 APKSIM_SANDBOX_TEST="if ( ls $HOME ) >/dev/null 2>&1; then echo unsandboxed; else echo sandboxed; fi")
+        r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=e)
+        check(r.stdout.strip().endswith("sandboxed") and "unsandboxed" not in r.stdout,
+              f"sandbox: a beamed launch with {extra} in its environment still runs in it ({r.stdout.strip()[-20:]})")
     listener.close()
     unix.close()
     os.unlink(standby)
