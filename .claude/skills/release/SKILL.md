@@ -40,7 +40,13 @@ Oldest number first (a PR cut from another's branch merges after its parent). Fo
 adds personal info, or a PR looks unrelated or risky (changes to CI secrets, the release workflow, licence).
 Leave that PR open, merge the rest, and say which and why.
 
-## 3. Docs for what landed
+## 3. Choose the version (before the docs)
+Semver on the last `vX.Y.Z` tag, judged from the merged PRs: new features, options or commands → minor bump
+(0.18.0 → 0.19.0); only fixes, docs, CI → patch; a breaking change to the CLI, control commands or file formats →
+say so and use a minor bump while below 1.0. Use the version in the docs of step 3.
+Fix it now: the docs branch, image tags and tag below all use this one VERSION.
+
+## 4. Docs for what landed
 Work in a fresh worktree from the updated `origin/main`: `git worktree add ../apksim-release-docs -b docs-VERSION
 origin/main`.
 1. List what changed: `git log --merges --first-parent LAST_TAG..origin/main` and `git diff --stat LAST_TAG..origin/main`.
@@ -50,14 +56,9 @@ origin/main`.
    run, run it or leave the old one and say so.
 3. Image tag and version references: `grep -rn "ghcr.io/aglose/apksim:" README.md docs packaging` and update to
    the new version where they name the latest release.
-4. Run `scripts/hooks/check-private` on the staged change, commit (no trailer), push, open a PR (title like
+4. Run `scripts/hooks/check-private --staged` on the staged change, commit (no trailer), push, open a PR (title like
    "Docs for VERSION: ...", no "Generated with" line), wait for `linux-smoke`, merge as in step 2. An existing open
    docs PR for this release (e.g. `docs-0.19.0`) is merged in step 2 instead; do not duplicate it.
-
-## 4. Choose the version
-Semver on the last `vX.Y.Z` tag, judged from the merged PRs: new features, options or commands → minor bump
-(0.18.0 → 0.19.0); only fixes, docs, CI → patch; a breaking change to the CLI, control commands or file formats →
-say so and use a minor bump while below 1.0. Use the version in the docs of step 3.
 
 ## 5. Tag and let CI build the draft
 ```bash
@@ -69,7 +70,10 @@ The tag must point at the merged docs commit. The pre-push hook allows tags. The
 images). It makes a **draft** release with the tarball, `SHA256SUMS` and the test app.
 **Stop** if the run fails: show the failing job's log tail (`gh run view RUN_ID --log-failed | tail -60`), fix on a
 branch via PR if it is a code or workflow problem, and delete and re-push the tag only after the fix is on main
-(tell the owner you are moving an unpublished tag).
+(tell the owner you are moving an unpublished tag). A failed upload can leave an incomplete draft release, and
+re-running `release.yml` then fails in `gh release create`: first check it is still a draft
+(`gh release view vX.Y.Z --json isDraft`), then `gh release delete vX.Y.Z` (keep the tag until the fix is on main),
+then delete and re-push the tag.
 
 ## 6. Release notes and publish
 1. Write notes from the merged PRs since the last tag: a short headline paragraph, then grouped bullets (Added,
