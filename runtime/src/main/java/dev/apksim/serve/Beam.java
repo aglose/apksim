@@ -81,6 +81,16 @@ final class Beam {
   }
 
   synchronized void setTrust(String origin, String value) throws IOException {
+    // Read, change and write under a lock the agent and `apksim beam trust` share, so neither loses the other's change.
+    Files.createDirectories(trustFile.getParent());
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(trustFile.resolveSibling("trust.lock"),
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+         java.nio.channels.FileLock l = ch.lock()) {
+      writeTrust(origin, value);
+    }
+  }
+
+  private void writeTrust(String origin, String value) throws IOException {
     Map<String, String> t = trust();
     if (value == null) t.remove(origin);
     else t.put(origin, value);

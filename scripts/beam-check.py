@@ -207,6 +207,19 @@ def live_sandbox_checks(pid):
         io.write(line + "\n")
         io.flush()
         return io.readline().strip()
+    # The Mac clipboard stays the Mac's: a beamed app neither reads what the visitor copies nor writes it (the visitor's
+    # own clipboard is put back after).
+    saved = subprocess.run(["pbpaste"], capture_output=True).stdout
+    marker = f"beam-check-clipboard-{os.getpid()}"
+    subprocess.run(["pbcopy"], input=marker.encode())
+    time.sleep(1.5)
+    app_clip = cmd("clipboard")
+    cmd("clipboard set beam-check-from-the-app")
+    time.sleep(1)
+    mac_clip = subprocess.run(["pbpaste"], capture_output=True).stdout.decode(errors="replace")
+    subprocess.run(["pbcopy"], input=saved)
+    check(marker not in app_clip and "beam-check-from-the-app" not in mac_clip,
+          f"sandbox: a beamed app does not see or set the Mac's clipboard (app has {app_clip[:40]!r})")
     bad = cmd(f"shot {os.path.join(STATE, 'beam', 'probe.png')}")
     good = cmd(f"shot {os.path.join(STATE, 'tmp', str(pid), 'probe.png')}")
     c.close()

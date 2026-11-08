@@ -103,9 +103,18 @@ final class SimWindow {
 
   private static native String nativeClipboardText();
 
+  /**
+   * Whether the app's clipboard follows the Mac's, both ways. Not for a beamed instance (BeamSandbox): a web site's app
+   * would read whatever the visitor copies (a password) and could write to it. Cmd+V in its shown window, which only the
+   * visitor can press there, still types the clipboard in.
+   */
+  private static boolean macClipboard() {
+    return !headless && !BeamSandbox.ON;
+  }
+
   /** The Mac clipboard's text, or null. */
   static String clipboardText() {
-    return headless ? null : nativeClipboardText();
+    return macClipboard() ? nativeClipboardText() : null;
   }
 
   /** Types the Mac clipboard's text into the app, like Cmd+V in the window. */
@@ -274,12 +283,12 @@ final class SimWindow {
 
   /** NSPasteboard's change count: it moves whenever anything on the Mac copies. -1 without a window. */
   static long clipboardChangeCount() {
-    return headless ? -1 : nativeClipboardChangeCount();
+    return macClipboard() ? nativeClipboardChangeCount() : -1;
   }
 
   /** Puts text on the Mac clipboard and returns the new change count. */
   static long setClipboardText(String text) {
-    return headless ? -1 : nativeSetClipboardText(text);
+    return macClipboard() ? nativeSetClipboardText(text) : -1;
   }
 
   static boolean isHeadless() {

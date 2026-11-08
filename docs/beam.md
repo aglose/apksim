@@ -501,6 +501,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with
   `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
   socket (it would run an APK in the ordinary sandbox).
+- **Clipboard**: the app's clipboard does not follow the Mac's (an ordinary instance's does, both ways): a site's app
+  would read whatever the visitor copies, passwords included, and could write to it. Cmd+V in the shown simulator
+  window, which only the visitor can press there, still types it in.
 - **Caches without sharing**: a beamed instance starts from its build's caches the agent keeps
   (`STATE/beam/cache/<sha256>/`: translated classes read in place, its APK cache entry cloned with `cp -c`), which it
   may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
@@ -523,6 +526,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
+
+Fourth review (its summary, no inline issues): beamed instances, which have a window since phase 3, no longer share
+the Mac's clipboard; `trust.json` is changed under a lock the agent and `apksim beam trust` share.
 
 Third review: package folders are create-only in the beam profile (renaming one into scratch read it); the agent's
 identity for an instance's files is the process the kernel reports on its control port (`lsof`), not a PID the app
