@@ -54,19 +54,29 @@ public final class Thermal {
    */
   private static void drain(int gen) {
     Throwable failed = null;
-    while (true) {
-      Runnable r;
-      synchronized (LOCK) {
-        r = gen != generation ? null : QUEUE.poll();  // a reset while a callback ran retires this drainer
-        if (r == null) {
-          if (gen == generation) draining = false;
-          break;
+    boolean released = false;
+    try {
+      while (true) {
+        Runnable r;
+        synchronized (LOCK) {
+          r = gen != generation ? null : QUEUE.poll();  // a reset while a callback ran retires this drainer
+          if (r == null) {
+            if (gen == generation) draining = false;
+            released = true;
+            break;
+          }
+        }
+        try {
+          r.run();
+        } catch (Throwable t) {
+          if (failed == null) failed = t; else if (failed != t) failed.addSuppressed(t);  // one instance cannot suppress itself
         }
       }
-      try {
-        r.run();
-      } catch (Throwable t) {
-        if (failed == null) failed = t; else failed.addSuppressed(t);
+    } finally {
+      if (!released) {
+        synchronized (LOCK) {
+          if (gen == generation) draining = false;
+        }
       }
     }
     if (failed instanceof RuntimeException re) throw re;

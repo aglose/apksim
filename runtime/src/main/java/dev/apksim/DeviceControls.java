@@ -520,7 +520,12 @@ final class DeviceControls {
       }
       case "thermal" -> {
         // thermal [none|light|moderate|severe|critical|emergency|shutdown]: PowerManager's thermal status (Thermal).
-        return Thermal.command(a);
+        // A listener's exception is the app's crash (Crashes), not a command error; bad arguments answer error: as usual.
+        String[] args = a, reply = new String[1];
+        Crashes.app(() -> {
+          reply[0] = Thermal.command(args);
+        });
+        return reply[0];
       }
       case "location" -> {
         return location().run(a);

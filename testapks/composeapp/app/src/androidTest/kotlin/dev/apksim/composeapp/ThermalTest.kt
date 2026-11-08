@@ -127,4 +127,23 @@ class ThermalTest {
     assertEquals(listOf(PowerManager.THERMAL_STATUS_NONE, PowerManager.THERMAL_STATUS_LIGHT), heard)
     pm.removeThermalStatusListener(l)
   }
+
+  @Test
+  fun f_listenersThrowingTheSameExceptionDoNotWedgeNotifications() {
+    assumeTrue("the thermal shell command is apksim's", onApksim)
+    val boom = IllegalStateException("boom")
+    val throwing = PowerManager.OnThermalStatusChangedListener { if (it != PowerManager.THERMAL_STATUS_NONE) throw boom }
+    val other = PowerManager.OnThermalStatusChangedListener { if (it != PowerManager.THERMAL_STATUS_NONE) throw boom }
+    pm.addThermalStatusListener(inline, throwing)
+    pm.addThermalStatusListener(inline, other)
+    shell("apksim thermal severe")  // both throw the one instance in one drain: the failure is reported, nothing wedges
+    pm.removeThermalStatusListener(throwing)
+    pm.removeThermalStatusListener(other)
+    val heard = mutableListOf<Int>()
+    val l = PowerManager.OnThermalStatusChangedListener { heard += it }
+    pm.addThermalStatusListener(inline, l)
+    shell("apksim thermal none")
+    assertEquals(listOf(PowerManager.THERMAL_STATUS_SEVERE, PowerManager.THERMAL_STATUS_NONE), heard)
+    pm.removeThermalStatusListener(l)
+  }
 }
