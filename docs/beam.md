@@ -604,6 +604,9 @@ extracted there once it has exited, as a session does (`Session.keepBeamCaches`)
 wrote only its out folder, and the first session translated everything again (`beam-check.py`'s warm checks).
 That package's name is refused past 256 characters before it is checked: the check's repeated group recursed per
 segment, so a manifest package of 10k characters ("a.a.a...") overflowed the stack, an Error that ended the request.
+The page's `apksimStats().frames`, which the Chrome checks wait on, counts the frames shown from the current socket:
+it was the length of the last 240 frame times, so a count compared with an earlier one stopped growing at 240, and a
+moved or restarted session's `frames > 0` held before the new socket had shown anything.
 
 First review:
 

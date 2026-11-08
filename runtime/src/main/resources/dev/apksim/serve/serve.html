@@ -574,6 +574,7 @@ function presentTick() {
   draw(f.image, f.w, f.h);
   f.image.close();
   shown(f.presented, f.encode, f.bytes);
+  f.sock.shownFrames = (f.sock.shownFrames || 0) + 1;  // apksimStats' frames: this session's own, from its first
   standing = ready.length ? standing + 1 : 0;
   if (ready.length) { presenting = true; requestAnimationFrame(presentTick); }
 }
@@ -758,7 +759,10 @@ setInterval(() => {
 }, 500);
 // The latency figures for scripts (and the end-to-end check): medians of the last few.
 window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length, inputMs: median(inputLat), frameMs: median(frameLat),
-  encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN, frames: drawnAt.length,
+  // frames: shown from the current socket, all of them: drawnAt keeps only the last 240 (a count compared with an
+  // earlier one stopped growing there), and is not emptied when a move or a restart opens another socket.
+  encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN,
+  frames: (ws && ws.shownFrames) || 0,
   width: frameW, height: frameH, codec: mode });
 function fit() {
   if (fill.on) { fillFit(); return; }
