@@ -741,6 +741,13 @@ def main():
         t0 = time.time()
         s.pump(120, until=lambda: len(s.frames) > 0)
         check(len(s.frames) > 0, f"agent: frames arrive ({time.time() - t0:.2f} s to the first)")
+        # A build with a 4 KB-aligned library macOS cannot map as it is (the test app's libpagefixturenorelro.so) is
+        # launched with --move-shared-data by the agent itself (issue 171); one without is not.
+        with zipfile.ZipFile(a.apk) as z:
+            conflict = "lib/arm64-v8a/libpagefixturenorelro.so" in z.namelist()
+        said = "launching with --move-shared-data" in open(g.logfile).read()
+        check(said == conflict, "agent: --move-shared-data added for a build with a 4 KB-aligned library"
+              if conflict else "agent: no --move-shared-data for a build without a 4 KB-aligned library")
         s.pump(1.5)
         after = s.after(["touch down 733 1533", "touch up 733 1533"], 2)
         check(len(after) > 0, "agent: a tap changes the screen")

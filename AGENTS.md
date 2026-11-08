@@ -228,7 +228,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
-    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamSandbox` (in `dev.apksim`): a beamed instance's
+    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `SharedDataLibs`: the agent adds
+    `--move-shared-data` itself for a build with a 4 KB-aligned library macOS cannot map as it is (issue 171); `BeamSandbox` (in `dev.apksim`): a beamed instance's
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
     saved|run|forget|config|sweep|status`; `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
