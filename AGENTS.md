@@ -315,7 +315,8 @@ AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb she
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
-`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below).
+`audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
+`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity destroyed, the start activity (launcher or

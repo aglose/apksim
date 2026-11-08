@@ -30,6 +30,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   private int using;
   private ByteBuffer scratch;
   private int frameBytes;
+  private volatile float volume = 1f;
 
   /** The CoreAudio stream, made on first use, or 0 when this track stays with Robolectric. */
   private long out() {
@@ -48,7 +49,8 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       return 0;
     }
     frameBytes = channels * (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : encoding == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2);
-    SimAudio.nativeOutVolume(out, 1f, SimAudio.muted());
+    SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
+    SimAudio.track(this, true);
     STATS.incrementAndGet(0);
     return out;
   }
@@ -207,12 +209,28 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     return AudioTrack.SUCCESS;
   }
 
+  /** Applies the mute state in force to this track's stream, if it has one. */
+  void remute() {
+    long o;
+    synchronized (lock) {
+      o = out;
+      if (o == 0) return;
+      using++;
+    }
+    try {
+      SimAudio.nativeOutVolume(o, volume, SimAudio.muted());
+    } finally {
+      done();
+    }
+  }
+
   @Implementation
   protected void native_setVolume(float left, float right) {
+    volume = Math.max(left, right);
     long o = use();
     if (o == 0) return;
     try {
-      SimAudio.nativeOutVolume(o, Math.max(left, right), SimAudio.muted());
+      SimAudio.nativeOutVolume(o, volume, SimAudio.muted());
     } finally {
       done();
     }
@@ -230,6 +248,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       o = out;
       if (o == 0) return;
       out = 0;
+      SimAudio.track(this, false);
       SimAudio.nativeOutPlay(o, false);
     }
     synchronized (lock) {

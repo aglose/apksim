@@ -1461,6 +1461,10 @@ public class Host {
         // video: decode and draw counts; video on|blank: the mode codecs configured from now on take (Features).
         return a.length > 1 ? Features.videoCommand(a[1]) : Features.describe() + " | " + dev.apksim.video.VideoSurfaces.report();
       }
+      case "audio" -> {
+        // audio [on|mute]: sound on or silent from now on, open tracks included (Features).
+        return Features.audioCommand(a);
+      }
       case "maxfps" -> {
         String r = Features.maxFpsCommand(a);
         applyFrameDelay(firstFrame);
