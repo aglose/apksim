@@ -537,6 +537,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
 - **Not covered**: two beamed sessions at once can read and write each other's `beam-N` and `bm<12 hex>-N` slots
   (a standby's profile cannot name the slot a launch will take; a moved session's `bm` name is random, and no beamed
   app can list `cache/data`, so it would have to guess 48 bits); an APK can read other builds' APKs in `beam/uploads` (other sites' published apps);
+  services on this Mac that listen on every interface stay reachable at its own network address (and the local
+  network with them): the profile language names hosts only as `*` or `localhost` ("host must be * or localhost"),
+  so only loopback can be kept out, and the consent prompt says the app reaches what the Mac reaches;
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
@@ -692,9 +695,9 @@ First review:
   into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and
   without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
   roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread) and 1 GB at
-  most, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket. The
-  agent cannot read the build's package (no manifest reader in serve's JVM): a pack naming another package lands
-  where that app's instance never looks, the app starts with a fresh slot, and the unused one goes with the session. The
+  most, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket, and so
+  does a pack naming another package than the build's (read from its manifest, `ApkCache.manifestPackage`): a site's
+  files never land in another app's data folder, the owner's own apps' included. The
   slot belongs to the grant until a session takes it: a grant that expires (checked every minute) or is refused, a
   session that cannot start (no such app, all sessions in use) and, hourly, any `bm` slot no grant or session owns and
   no instance holds erase it. Then it is the session's: erased when it ends unless kept (`keep on`, then `apksim beam saved` lists it as any other).

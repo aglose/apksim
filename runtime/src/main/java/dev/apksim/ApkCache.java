@@ -39,6 +39,35 @@ import java.util.stream.Stream;
  * unused for 14 days, never for the cap.
  */
 public final class ApkCache {
+  /**
+   * The package an APK's manifest names (beam's moved data must be the build's: docs/beam.md phase 5). The APK is a
+   * site's, read by the agent outside any sandbox: the manifest at most 8 MB, decoded by Axml, parsed with no DOCTYPE
+   * or external entities.
+   */
+  public static String manifestPackage(Path apk) throws IOException {
+    byte[] raw;
+    try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(apk.toFile())) {
+      java.util.zip.ZipEntry e = zip.getEntry("AndroidManifest.xml");
+      if (e == null) throw new IOException("the APK has no manifest");
+      try (java.io.InputStream in = zip.getInputStream(e)) {
+        raw = in.readNBytes(8 << 20);
+      }
+    }
+    try {
+      javax.xml.parsers.DocumentBuilderFactory f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+      f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+      f.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+      f.setExpandEntityReferences(false);
+      String xml = Axml.decode(raw);
+      String pkg = f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+          .getDocumentElement().getAttribute("package");
+      if (!pkg.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) throw new IOException("the manifest names no package");
+      return pkg;
+    } catch (javax.xml.parsers.ParserConfigurationException | org.xml.sax.SAXException | RuntimeException e) {
+      throw new IOException("the APK's manifest could not be read: " + e.getMessage());
+    }
+  }
+
   static final String LOCK = "apk-cache.lock";
   private static final String IN_USE = "in-use.lock";
   private static final String LAST_USED = "last-used";

@@ -1026,7 +1026,7 @@ public final class Serve {
    * (`cache/data/<pkg>/bm<hex>-0` and its .device), which the session's instance then runs in without --fresh. The
    * slot's name, or throws why not. `spec` is "TICKET URL".
    */
-  private String beamSeed(String origin, String spec) throws IOException {
+  private String beamSeed(String origin, String spec, Path apk) throws IOException {
     String[] v = spec.split(" ", 2);
     if (v.length != 2) throw new IOException("bad data address");
     java.net.URI u = pageAddress(origin, v[1], "/api/beam/data");
@@ -1049,6 +1049,10 @@ public final class Serve {
       if (Files.size(zip) > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
       String pkg = SlotPack.packageOf(zip);
       if (pkg == null) throw new IOException("the data names no app");
+      // Only into the build's own app folder: a pack naming another package (the owner's own app, say) would otherwise
+      // put a site's files in that app's data folder.
+      String own = dev.apksim.ApkCache.manifestPackage(apk);
+      if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
       byte[] rnd = new byte[6];
       RANDOM.nextBytes(rnd);
       String name = "bm" + HexFormat.of().formatHex(rnd);
@@ -1143,7 +1147,7 @@ public final class Serve {
         String seed = null;
         if (g.extra() != null) {
           try {
-            seed = beamSeed(o, g.extra());
+            seed = beamSeed(o, g.extra(), a.path());
           } catch (IOException e) {
             Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
             return;
@@ -1233,7 +1237,7 @@ public final class Serve {
       String seed = null;
       if (data != null) {
         try {
-          seed = beamSeed(o, data);
+          seed = beamSeed(o, data, a.path());
         } catch (IOException e) {
           Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
           return;
