@@ -160,10 +160,17 @@ def sandbox_checks(apksim, apk):
         ("denied", "list the home folder", "ls $HOME"),
         ("denied", "connect to a loopback port (another instance, the agent)", f"nc -z -w 2 127.0.0.1 {lport}"),
         ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
+        # The JDK's dual-stack sockets reach 127.0.0.1 as ::ffff:127.0.0.1, which the loopback rule alone let through.
+        ("denied", "connect to loopback as ::ffff:127.0.0.1 (IPv6)", f"nc -6 -z -w 2 ::ffff:127.0.0.1 {lport}"),
+        ("denied", "write the temp folder (the launcher's link to its libraries is there)", "touch ${TMPDIR:-/tmp}/beam-check-probe"),
+        ("denied", "write apksim's own files (an install outside the home folder)", "touch $R/work/beam-check-probe"),
+        ("denied", "read another process's scratch", "cat $S/tmp/1/shared.txt"),
+        ("denied", "write /tmp", "touch /private/tmp/beam-check-probe"),
     ]
     script = "S=$1; R=$2\n" + "\n".join(
         f"if ( {cmd} ) >/dev/null 2>&1; then echo 'allowed {i}'; else echo 'denied {i}'; fi" for i, (_, _, cmd) in enumerate(probes))
     os.makedirs(os.path.join(STATE, "tmp", "1"), exist_ok=True)
+    open(os.path.join(STATE, "tmp", "1", "shared.txt"), "w").write("another instance's file\n")
     env = dict(ENV, APKSIM_BEAM_SANDBOX="1", APKSIM_SANDBOX_TEST=f"sh -c {sh_quote(script)} probe {sh_quote(os.path.realpath(STATE))} "
                f"{sh_quote(os.path.realpath(os.path.dirname(HERE)))}")
     r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=env)
@@ -388,6 +395,8 @@ def main():
 
     sandbox_checks(apksim, a.apk)
     download_checks(apksim, a.apk, sha, size)
+    r = beam(apksim, "status")
+    check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV)
     g = None
@@ -482,6 +491,10 @@ def main():
         s.pump(3, until=lambda: s.stats.get("pid", 0) > 0)
         pid = s.stats.get("pid", 0)
         live_sandbox_checks(pid)
+        r = beam(apksim, "status")
+        check(r.returncode == 0 and f"running on 127.0.0.1:{gp}, 1 of" in r.stdout and "beam-check.apk" in r.stdout and A in r.stdout,
+              "status: the agent's session, its app and site " + repr(r.stdout.splitlines()[:2]))
+        check(req(gp, "GET", "/beam/status", A)[0] != 200, "status: a page cannot read it")
         w2 = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}&token={grant['token']}", {"Origin": A})
         check(w2.status == 403, "agent: a session grant is used once")
         w.s.close()
@@ -548,6 +561,14 @@ def main():
         check(os.path.exists(build_file(sha)), "keep: with a nonzero hold the build stays after its session")
         g4, sent = begin(gp, B, start, apk)
         check(not sent and "token" in g4, "keep: and a session within the hold finds it by its hash")
+        # By now the agent's beam standby is up (it starts one a second after each first frame): a warm launch, in the
+        # beam sandbox, whose standby could bind its socket there.
+        time.sleep(4)
+        s4 = open_session(gp, g4, B)
+        log4 = os.path.join(STATE, "beam", "logs", session_info(s4).get("id", "") + ".log")
+        check(len(s4.frames) > 0 and os.path.exists(log4) and "[apksim] handoff" in open(log4).read(),
+              "keep: a beamed session is a warm launch (the agent's standby, in the beam sandbox)")
+        close_session(s4)
         stop(g)
 
         # A saved session: "keep on" from the tab, with keep-days 0 (from the config) for its build.
@@ -615,7 +636,10 @@ def main():
             stop(g)
         stop(server)
         subprocess.run([apksim, "--stop-standbys"], env=ENV, capture_output=True)
-        shutil.rmtree(STATE, ignore_errors=True)
+        if sc.FAILED or sys.exc_info()[0] is not None:
+            print(f"state folder kept for a look (logs in beam/logs): {STATE}")
+        else:
+            shutil.rmtree(STATE, ignore_errors=True)
     if sc.FAILED:
         print(f"{len(sc.FAILED)} check(s) failed")
         sys.exit(1)

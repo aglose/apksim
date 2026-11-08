@@ -70,6 +70,11 @@ final class BeamStore {
     this.config = readConfig();
   }
 
+  /** A JSON number as a whole number (the parser reads every number as a double). */
+  static long whole(Object o) {
+    return o instanceof Number n ? n.longValue() : 0;
+  }
+
   static String num(double d) {
     return d == Math.rint(d) ? Long.toString((long) d) : Double.toString(d);
   }
@@ -419,6 +424,17 @@ final class BeamStore {
         // the next sweep
       }
     }
+    // What a session's end took from an instance and left (the agent ended meanwhile): not one being read now.
+    Path importDir = beamDir.resolve("import");
+    if (Files.isDirectory(importDir)) {
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(importDir)) {
+        for (Path p : d) {
+          if (Files.getLastModifiedTime(p, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < now - 3_600_000L) deleteTree(p);
+        }
+      } catch (IOException e) {
+        // the next sweep
+      }
+    }
     Path outDir = beamDir.resolve("out");
     if (Files.isDirectory(outDir)) {
       try (DirectoryStream<Path> d = Files.newDirectoryStream(outDir)) {
@@ -562,6 +578,51 @@ final class BeamStore {
         System.out.println(c.describe() + (args.isEmpty() ? "" : store.agentPort() >= 0 ? "  (the running agent reads it at its next start)" : ""));
         return 0;
       }
+      case "status" -> {
+        // What the agent is doing, what it lets in, and what it keeps.
+        int port = store.agentPort();
+        if (port > 0) {
+          try {
+            java.net.http.HttpResponse<String> r = java.net.http.HttpClient.newHttpClient().send(
+                java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/beam/status"))
+                    .timeout(java.time.Duration.ofSeconds(5)).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (r.statusCode() == 200 && Json.parse(r.body()) instanceof Map<?, ?> st) {
+              List<?> ss = st.get("sessions") instanceof List<?> l ? l : List.of();
+              System.out.printf("agent: running on 127.0.0.1:%d, %d of %d sessions%n", port, ss.size(), whole(st.get("max")));
+              for (Object o : ss) {
+                if (o instanceof Map<?, ?> x) System.out.printf("  %s  %-24s from %-32s %s%s, pid %d, idle %d s%n", x.get("id"), x.get("app"),
+                    x.get("site"), x.get("device"), Boolean.TRUE.equals(x.get("keep")) ? ", kept when it ends" : "", whole(x.get("pid")), whole(x.get("idleS")));
+              }
+            } else {
+              System.out.println("agent: running (port " + port + "), status unavailable (" + r.statusCode() + ")");
+            }
+          } catch (IOException e) {
+            System.out.println("agent: holds its lock (port " + port + ") but does not answer: " + e.getMessage());
+          }
+        } else {
+          System.out.println(port == 0 ? "agent: a sweep is running" : "agent: not running (apksim beam starts it)");
+        }
+        Map<String, String> trust = new Beam(state).trust();
+        List<String> always = trust.entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList();
+        List<String> never = trust.entrySet().stream().filter(e -> e.getValue().equals("never")).map(Map.Entry::getKey).toList();
+        System.out.println("sites allowed: " + (always.isEmpty() ? "none" : String.join(", ", always))
+            + (never.isEmpty() ? "" : "; refused: " + String.join(", ", never)));
+        long bytes = 0;
+        int builds = 0;
+        Path uploads = state.resolve("beam/uploads");
+        if (Files.isDirectory(uploads)) {
+          try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads, "*.apk")) {
+            for (Path p : d) {
+              builds++;
+              bytes += Files.size(p);
+            }
+          }
+        }
+        System.out.printf("builds: %d (%.1f MB), held %s days after their last session%n", builds, bytes / 1048576.0, num(store.config.keepDays()));
+        System.out.println("saved sessions: " + store.saved().size() + (store.saved().isEmpty() ? "" : " (apksim beam saved)"));
+        System.out.println("keeps: " + store.config.describe());
+        return 0;
+      }
       case "sweep" -> {
         int port = store.agentPort();
         if (port >= 0) {
@@ -586,7 +647,8 @@ final class BeamStore {
              apksim beam run ID [OPTIONS]       opens one in apksim's window, with the data it left
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
-             apksim beam sweep                  deletes what is past its time now (the agent does it by itself)""";
+             apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
+             apksim beam status                 what the agent runs, the sites it lets in, what it keeps""";
 
   private static int usage() {
     System.err.println(USAGE);

@@ -131,7 +131,7 @@ public final class Serve {
       Beam.trustCommand(state, List.of(args).subList(2, args.length));
       return;
     }
-    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep").contains(args[1])) {
+    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep", "status").contains(args[1])) {
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
     for (int i = 0; i < args.length; i++) {
@@ -921,6 +921,20 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + Beam.PROTOCOL + ",\"trusted\":"
           + (o != null && agent.trusted(o)) + "}");
+      return;
+    }
+    // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
+    if (sent == null && r.method().equals("GET") && r.path().equals("/beam/status")) {
+      StringBuilder b = new StringBuilder("{\"port\":" + port + ",\"max\":" + max + ",\"keeps\":" + Http.q(store.config.describe())
+          + ",\"sessions\":[");
+      for (Session x : sessions.values()) {
+        if (b.charAt(b.length() - 1) != '[') b.append(',');
+        b.append("{\"id\":").append(Http.q(x.id)).append(",\"app\":").append(Http.q(x.app.name())).append(",\"site\":")
+            .append(Http.q(String.valueOf(x.site))).append(",\"device\":").append(Http.q(String.valueOf(x.device)))
+            .append(",\"keep\":").append(x.keep).append(",\"pid\":").append(x.pid).append(",\"idleS\":")
+            .append((System.currentTimeMillis() - x.lastInput) / 1000).append('}');
+      }
+      Http.json(out, 200, b.append("]}").toString());
       return;
     }
     if (o == null) {

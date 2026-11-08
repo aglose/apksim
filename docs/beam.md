@@ -21,7 +21,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 3 Sizing, Show in Simulator | Done (see "Phase 3 as built"): Fill mode at the browser's pixel ratio, the simulator window as a second view, close hides it |
 | 4 Moving a running session | Done (see "Phase 4 as built"): server to Mac and back with no blank frame; a refused move stays; a dead agent offers the server. Left: reconnecting after sleep |
 | 5 The app's data moves with it | Not started (optional) |
-| 6 Polish, Linux agent | Not started |
+| 6 Polish, Linux agent | Partly (see "Phase 6 so far"): hidden tabs throttled, `apksim beam status`. Left: the launchd agent, version messages, a Linux agent |
 
 ## What seamless means (the acceptance checks)
 
@@ -288,7 +288,7 @@ the manual checks listed.
    slot before launching without `--fresh`. Done when: the test app's Trips rename and the Settings values made on the
    server are there after the move. In-memory screen state (back stack, scroll) stays out: Robolectric's saved state
    is not a format to ship between machines.
-6. **Polish.** Hidden-tab throttling, version mismatch messages, `apksim beam status`, the agent's log in
+6. **Polish.** Partly built (see "Phase 6 so far"). Hidden-tab throttling, version mismatch messages, `apksim beam status`, the agent's log in
    `STATE/beam/logs`, a Linux agent (the Linux build is headless already; OpenH264 and CPU shaders), docs/serve.md
    and AGENTS.md updated.
 
@@ -485,15 +485,21 @@ saved sessions, saved autofill sign-ins, and the caches every launch loads code 
 extracted `.so` planted there would run in another app, the owner's own included). So beamed instances run in a
 sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named with `b`, `BeamSandbox`):
 
-- **Writes**: only its own scratch (`STATE/tmp/<pid>`: the JVM keeps the launcher's PID, so the profile can name it),
-  its own out folder (`STATE/beam/out/<pid>`) and `beam-N` data slots with their `.device` folders.
+- **Writes**: everything denied first, then only its own scratch (`STATE/tmp/<pid>`: the JVM keeps the launcher's PID,
+  so the profile can name it), its own out folder (`STATE/beam/out/<pid>`), `beam-N` data slots with their `.device`
+  folders, its standby's socket, Metal's shader cache and `/dev/null`: not apksim's own files wherever it is installed
+  (a Homebrew install is outside the home folder), the temp folder (the launcher's link to its libraries is there),
+  `/tmp`, or anything another process runs or loads.
 - **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a
   path stats the folders above it; listing is refused); in the state folder not the agent's folder (but the uploaded
-  builds and its build caches), serve's files, autofill, screenshots or `cache/` (other apps' data, the shared class
-  and APK caches), except `beam-N` slots.
-- **Network**: what the Mac reaches (the consent prompt says so), but no loopback connection (other instances' control
-  ports, the agent: a non-browser client could forge an `Origin`) and no standby's socket (it would run an APK in the
-  ordinary sandbox).
+  builds and its build caches), serve's files, autofill, screenshots, `cache/` (other apps' data, the shared class
+  and APK caches) or `tmp/` (another instance's scratch, where files it shares are copied), except `beam-N` slots and
+  its own scratch.
+- **Network**: what the Mac reaches over IPv4 (the consent prompt says so), but no loopback connection (other
+  instances' control ports, the agent: a non-browser client could forge an `Origin`), no IPv6 (an IPv6 socket reaches
+  loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with
+  `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
+  socket (it would run an APK in the ordinary sandbox).
 - **Caches without sharing**: a beamed instance starts from its build's caches the agent keeps
   (`STATE/beam/cache/<sha256>/`: translated classes read in place, its APK cache entry cloned with `cp -c`), which it
   may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
@@ -503,9 +509,10 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame.
 - **Cost**: none measured. First frame in the tab 0.17 s, as before (0.29 s while the APK cache entry was rebuilt in
   scratch each launch, 0.5 s while a read-only seed's packs were dropped by a write of their modification time).
-- **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (17: its scratch, slot, the jar
+- **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (22: its scratch, slot, the jar
   and the internet allowed; the trust file, autofill, another app's data, the shared class cache, another process's
-  scratch, the home folder, a listening loopback port and a standby socket refused) and asks a running beamed instance
+  scratch (writing and reading), the home folder, apksim's own files, the temp folder, `/tmp`, a listening loopback
+  port over IPv4 and as `::ffff:127.0.0.1` over IPv6, and a standby socket refused) and asks a running beamed instance
   to write a screenshot into the agent's folder (refused) and into its scratch (works); its 1c checks find nothing a
   beamed instance wrote in the shared caches.
 - **Not covered**: two beamed sessions at once can read each other's `beam-N` slot (a standby's profile cannot name
@@ -513,6 +520,16 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `--no-sandbox` is refused for beamed instances.
 
 ## Review fixes (2026-11-08)
+
+Second review: the beam profile denies every write but its own (above), reads of other instances' scratch, and IPv6
+(mapped loopback); the agent renames an instance's out folder into its own `beam/import/` before reading it, so a link
+planted there (or a folder swapped by a child process the app left running) cannot point it at the shared caches; the
+agent makes `STATE/tmp` before starting an instance in it; a new vsync period rebases its anchor on the latest vsync
+of the old one; a start cancelled while the server answered never reaches the agent (its prompt); the benches find
+their instance by the session's PID; a stream viewer coming before the window (a cold launch) no longer calls into the
+window's library before it is loaded.
+
+First review:
 
 - An upload's hash is checked while the file is still staged (`Catalog.upload` with the expected SHA-256): with
   `--warm on` the warmer was told of an upload, and ran it, before its hash was compared.
@@ -605,12 +622,49 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   when its WebSocket closes, so a drop ends it and the page offers the server; moving a session whose screen is still
   (no frames) waits for the new side's first frame as well, which a still screen sends at once.
 
+## Phase 6 so far (2026-11-08)
+
+- **Hidden tabs**: a tab in the background shows nothing (`requestAnimationFrame` stops, and with it the page's
+  presenting), so the page sends `maxfps 1` when it is hidden (or opens its socket hidden) and `maxfps 120` when it is
+  back; the app goes on otherwise (timers, sound, network). Any tab may send `maxfps 1-120` (it only slows its own
+  session), so a remote serve saves the drawing and encoding too: the Shader tab's instance draws ~1 frame a second
+  hidden against 120 in front (`beam-page-check.py`). Not answered (it is not input either).
+- **`apksim beam status`**: whether the agent runs (its lock and port), its sessions (app, site, device, kept or not,
+  pid, idle time, from `GET /beam/status`, which answers only a request without an `Origin`: never a page), the sites
+  allowed and refused, the builds kept and their hold, saved sessions and the settings (`beam-check.py`).
+- **Reconnecting after sleep, not done, on purpose**: the agent and the browser are on the same Mac and sleep
+  together, and a loopback connection does not break across sleep, so the dropped socket the plan foresaw is a crash
+  of one side, which the page already meets by offering the server. Not tested with a real sleep.
+- **Found on the way**: the beam profile's stricter writes stopped the agent's standbys (binding the socket under a
+  temporary name, then removing its `.pid` file as it took a launch, were both refused), so every beamed launch went
+  cold (1.7 s to the first frame) and one failed; `beam-check.py` now checks a beamed session is a warm hand-off.
+  The parity bench measured the first frame from a click that came after the page had already started the app (the
+  0.17 s above was the end of a start, not a start); it now loads the page without `?app=` and times one Start.
+
 ## Measurements to keep (as serve's table)
 
 Click to first local frame (warm standby, cold standby, first launch of an APK); cutover gap in frames; tap to frame
 and present to screen locally; stream fps on the Shader tab and while dragging; CPU and memory of the agent idle
 and per session; bytes moved on a first and a second visit; resize to frame at the new size, from the tab and from
 the simulator window.
+
+Measured 2026-11-08 (test app, Apple Silicon Mac, 120 Hz display, Chrome 156; `beam-parity.py`, `beam-move-check.py`,
+`beam-size-check.py`, the session logs):
+
+| | Value |
+|---|---|
+| Start on this Mac to first frame, warm standby, build cached | 0.35-0.39 s from the click (a warm launch of the window: 0.27-0.28 s) |
+| The same, cold (no standby ready) | 1.6-1.7 s |
+| First visit of a 17 MB build: downloaded by the agent itself | included in the start; the tab sends nothing |
+| Moving a session server → Mac / Mac → server | ~0.5 s; 10-17 ms between the old side's last frame and the new side's first, nothing blank |
+| Tap to on screen in the tab | 31-41 ms |
+| Present to on screen in the tab | 11-16 ms (the window: up to one refresh) |
+| New frame per display refresh, tab / window | Shader tab 99-100 / 99-100%, flings 88-91 / 88-90%, slow drags 99-100 / 99-100% |
+| Instance CPU, tab / window | Shader tab 0.54-0.60 / 0.51-0.54 of a core; agent 0.02; Chrome 0.27-0.32 |
+| A hidden tab's instance | 1 fps (119.5 in front) |
+| Stream at 20 Mbps | Shader tab 16 KB a frame, encode 5.4-6.2 ms |
+| Fill: a browser resize to frames at the new size | within the 100 ms send interval plus one frame |
+| A simulator window drag to the tab | within a moment (the next frame), no size sent back |
 
 ## Risks
 

@@ -52,8 +52,16 @@ final class SimWindow {
       m = 0;
     }
     nativeOpen(w, h, scale, title, Integer.getInteger("apksim.windowX", 0), m);
+    synchronized (SimWindow.class) {
+      windowOpen = true;
+      nativeSetCloseHides(closeHidesWanted);  // a stream viewer may have come before the window (a cold launch)
+    }
     Timing.mark("window-open");
   }
+
+  /** Whether the window (and its library) is up: natives other than the open's may be called from then. */
+  private static boolean windowOpen;
+  private static boolean closeHidesWanted;
 
   static void present(ByteBuffer rgba) {
     if (!headless) nativePresent(rgba);
@@ -157,8 +165,13 @@ final class SimWindow {
       throw new IllegalArgumentException("vsync: a period of 4000-50000 us and a shift of at most one period");
     }
     long now = System.nanoTime();
-    boolean fresh = remotePeriodNanos > 0 && now - remoteSeenNanos < REMOTE_FRESH_NANOS;
-    remoteAnchorNanos = (fresh ? remoteAnchorNanos : now) + shift;
+    long old = remotePeriodNanos;
+    boolean fresh = old > 0 && now - remoteSeenNanos < REMOTE_FRESH_NANOS;
+    // The latest vsync under the old period becomes the anchor, so a new period only spaces the vsyncs to come: kept
+    // as it was, every interval since the anchor would be read again at the new period, a phase jump that grew with the
+    // session's age on each small change of the page's estimate.
+    long anchor = fresh ? now - Math.floorMod(now - remoteAnchorNanos, old) : now;
+    remoteAnchorNanos = anchor + shift;
     remotePeriodNanos = period;
     remoteSeenNanos = now;
     return "ok";
@@ -188,8 +201,9 @@ final class SimWindow {
    * While a stream viewer is attached (FrameStream: apksim beam's tab), the window's close button hides the window and
    * the app runs on there; Quit still ends it.
    */
-  static void closeHides(boolean on) {
-    if (!headless) nativeSetCloseHides(on);
+  static synchronized void closeHides(boolean on) {
+    closeHidesWanted = on;
+    if (windowOpen) nativeSetCloseHides(on);
   }
 
   private static native String nativeVsyncStats();

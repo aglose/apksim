@@ -261,6 +261,7 @@ The tab sends commands in the control channel's own words, and serve passes on o
 |---|---|
 | pointer down / drag / up / cancel (mouse, pen, touch) | `touch down\|move\|up\|cancel X Y` (moves at most one per animation frame) |
 | wheel, trackpad scroll | `wheel X Y AMOUNT` (summed per animation frame) |
+| the tab hidden / shown again | `maxfps 1` / `maxfps 120` (a hidden tab shows nothing; not answered, not input for `--idle`) |
 | printable keys, paste, phone keyboards (through a hidden text field: IME, dictation) | `type TEXT`, `key SPACE` |
 | a phone keyboard's delete or return (input events with no key) | `key DEL`, `key FORWARD_DEL`, `key ENTER` |
 | Backspace, Delete, Enter, Tab, arrows, Home/End, Page Up/Down; Ctrl/Cmd and Shift with them | `key NAME 1 [ctrl] [shift] [alt]` |

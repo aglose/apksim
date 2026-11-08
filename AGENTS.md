@@ -231,7 +231,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamSandbox` (in `dev.apksim`): a beamed instance's
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
-    saved|run|forget|config|sweep`; the page is
+    saved|run|forget|config|sweep|status`; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`

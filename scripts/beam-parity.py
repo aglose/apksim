@@ -213,21 +213,20 @@ def window_run(apk, scenarios, seconds):
     return out
 
 
-def instance_port(state, after, exclude=()):
-    """The control port of an instance started after `after` (its tmp folder's control.port), and its PID."""
-    end = time.time() + 30
+def session_port(cdp, s, state, seconds=30):
+    """The control port and PID of the tab's own session's instance: the PID from the session's stats (the page keeps
+    the last as apksimSession), the port from that instance's tmp folder. Never another instance that happens to run."""
+    end = time.time() + seconds
     while time.time() < end:
-        for f in glob.glob(os.path.join(state, "tmp", "*", "control.port")):
-            pid = int(os.path.basename(os.path.dirname(f)))
-            if pid in exclude or os.path.getmtime(f) < after:
-                continue
+        pid = cdp.ev(s, "window.apksimSession && window.apksimSession.pid || 0")
+        f = os.path.join(state, "tmp", str(pid), "control.port")
+        if pid > 0 and os.path.exists(f):
             try:
-                os.kill(pid, 0)
                 return int(open(f).read().strip()), pid
-            except (OSError, ValueError):
-                continue
+            except ValueError:
+                pass
         time.sleep(0.2)
-    raise RuntimeError("no instance control port found")
+    raise RuntimeError("the session's instance did not say its pid")
 
 
 def tab_run(cdp, server_url, app_id, scenarios, seconds, state, agent_pid, chrome_pids):
@@ -235,11 +234,12 @@ def tab_run(cdp, server_url, app_id, scenarios, seconds, state, agent_pid, chrom
     s = cdp.call("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True})["sessionId"]
     cdp.call("Page.enable", {}, s)
     cdp.call("Page.bringToFront", {}, s)
-    cdp.call("Page.navigate", {"url": f"{server_url}/?app={app_id}"}, s)
+    # Loaded without ?app= (which would start it at once): the page set up, then the app chosen and one Start timed.
+    cdp.call("Page.navigate", {"url": f"{server_url}/"}, s)
     end = time.time() + 30
     while time.time() < end:
         try:
-            if cdp.ev(s, '!document.getElementById("runOn").hidden && document.getElementById("app").value !== ""'):
+            if cdp.ev(s, f'!document.getElementById("runOn").hidden && [...document.getElementById("app").options].some(o => o.value === {json.dumps(app_id)})'):
                 break
         except RuntimeError:
             pass
@@ -247,13 +247,14 @@ def tab_run(cdp, server_url, app_id, scenarios, seconds, state, agent_pid, chrom
     on = cdp.ev(s, 'document.getElementById("runOn").value')
     if on != "mac":
         cdp.ev(s, '(async () => { const r = document.getElementById("runOn"); r.value = "mac"; await r.onchange(); return r.value; })()')
+    cdp.ev(s, f'(() => {{ const a = document.getElementById("app"); a.value = {json.dumps(app_id)}; a.dispatchEvent(new Event("change")); return 1; }})()')
     t0 = time.time()
     cdp.ev(s, 'document.getElementById("start").click()')
     while time.time() - t0 < 60 and not cdp.ev(s, "window.apksimStats().frames > 0"):
         time.sleep(0.05)
     out = {"firstFrameS": round(time.time() - t0, 2), "runOn": cdp.ev(s, 'document.getElementById("runOn").value'),
            "codec": cdp.ev(s, "window.apksimStats().codec")}
-    port, pid = instance_port(state, t0 - 1)
+    port, pid = session_port(cdp, s, state)
     ctl = Control(port)
     time.sleep(2)
     # Taps made in the page: input -> the next new frame drawn in the tab.

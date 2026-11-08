@@ -216,6 +216,7 @@ final class Session {
         .redirectErrorStream(true);
     // Where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited(). A beamed instance may not
     // read or write the agent's folders: the state folder's tmp, which it may read (its report then goes to /tmp).
+    if (serve.beam) Files.createDirectories(serve.state.resolve("tmp"));  // a fresh state folder has none yet
     pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
@@ -572,7 +573,8 @@ final class Session {
       ws.sendText("r refused: " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       return;
     }
-    if (!cmd.startsWith("vsync ")) lastInput = System.currentTimeMillis();  // the tab's pace is not someone using it
+    // The tab's pace and its visibility are not someone using it.
+    if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
@@ -580,7 +582,7 @@ final class Session {
     }
     String shown = cmd;
     boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
-        || cmd.startsWith("vsync ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
+        || cmd.startsWith("vsync ") || cmd.startsWith("maxfps ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
   }
 
@@ -597,6 +599,8 @@ final class Session {
     if (t.matches("back|home|resume")) return t;
     // The tab's display pace (SimWindow.remoteVsync): only how this tab's instance times its frames.
     if (t.matches("vsync [0-9]{4,5} -?[0-9]{1,5}")) return t;
+    // A frame rate cap: the page asks for 1 while it is hidden (it shows nothing) and 120 when it is back.
+    if (t.matches("maxfps ([1-9]|[1-9][0-9]|1[01][0-9]|120)")) return t;
     if (t.matches("rotate (left|right|portrait|landscape)")) return t;
     if (t.matches("appearance (dark|light|toggle)")) return t;
     if (t.matches("device (" + String.join("|", DEVICES) + ")")) return t;
@@ -615,8 +619,8 @@ final class Session {
   /**
    * What only a tab of `apksim beam` may send besides {@link #check} (docs/beam.md, phase 3): the display sized to its
    * stage (`device WxH@D`, dp and density, 160-4096 dp a side and at most 4096 px, as --device-size takes), the Mac
-   * window shown or hidden ("Show in Simulator"), and a frame rate cap for a hidden tab. The instance is the visitor's
-   * own: a size costs their memory, not a server's.
+   * window shown or hidden ("Show in Simulator"). The instance is the visitor's own: a size costs their memory, not a
+   * server's.
    */
   static String checkBeam(String text) {
     String t = text.strip();
@@ -628,7 +632,6 @@ final class Session {
       return t;
     }
     if (t.matches("window (front|hide)")) return t;
-    if (t.matches("maxfps ([1-9]|[1-9][0-9]|1[01][0-9]|120)")) return t;
     return null;
   }
 
@@ -846,8 +849,28 @@ final class Session {
    */
   private void beamCaches() {
     if (pid <= 0) return;
-    Path out = serve.state.resolve("beam/out").resolve(Long.toString(pid));
+    Path given = serve.state.resolve("beam/out").resolve(Long.toString(pid));
     String build = serve.catalog.buildHash(app.path());
+    // Out of the instance's reach first: renamed into the agent's own folder, which no beamed instance may write (a
+    // child process the app left running could otherwise swap a folder for a link while this reads it), then used only
+    // if what arrived is a real folder. Renaming a link moves the link, never what it names.
+    Path out = serve.state.resolve("beam/import").resolve(Long.toString(pid) + "-" + Long.toHexString(System.nanoTime()));
+    try {
+      if (!Files.exists(given, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+      Files.createDirectories(out.getParent());
+      Files.move(given, out, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    } catch (IOException | RuntimeException e) {
+      logLine("[beam] could not take the instance's caches: " + e);
+      return;
+    }
+    if (!Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      try {
+        Files.deleteIfExists(out);
+      } catch (IOException e) {
+        // the sweep's
+      }
+      return;
+    }
     try {
       Path apkCache = out.resolve("apk-cache");
       if (build != null && Files.isDirectory(apkCache, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {

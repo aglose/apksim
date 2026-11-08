@@ -371,7 +371,8 @@ def main():
     texts = len(s.texts)
     s.ws.send("vsync 8333 -1200")
     s.pump(0.5)
-    check(len(s.texts) == texts, "the page's vsync pace is accepted and not answered")
+    # Only an answer to it counts: the server's stats come every 2 s whatever is sent.
+    check(not any(t.startswith(("r vsync", "r refused: vsync")) for t in s.texts[texts:]), "the page's vsync pace is accepted and not answered")
     s.ws.send("vsync 8333 -1200 x")
     s.pump(0.5)
     check(any(t.startswith("r refused: vsync") for t in s.texts[texts:]), "a malformed vsync is refused")

@@ -340,7 +340,12 @@ function openSocket(url, onMac, fallback) {
   sock.fallback = fallback || null; sock.gen = startGen;
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
-  sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
+  sock.onopen = () => {
+    if (sock !== ws) return;
+    refresh();
+    for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i);
+    if (document.visibilityState === "hidden") send("maxfps 1");  // started in a background tab
+  };
   wire(sock, onMac);
 }
 // The current session's socket. Every handler first checks that its socket is still the current one: a stopped
@@ -470,6 +475,7 @@ function onText(t) {
   else if (kind === "x") { ended = true; fallbackTries = 0; overlay(body.charAt(0).toUpperCase() + body.slice(1) + ".", "Start again", start); log(body); refresh(); }
 }
 function stats(s) {
+  window.apksimSession = s;  // for scripts: the instance's pid among them
   if (s.firstFrameMs >= 0) $("ff").textContent = (s.firstFrameMs / 1000).toFixed(2) + " s";
   $("mem").textContent = s.rssMb > 0 ? s.rssMb + " MB (heap " + s.heapMb + ")" : "–";
   const left = Math.max(0, s.idleLimitS - s.idleS);
@@ -993,6 +999,7 @@ async function startOnMac(q, gen) {
 async function macGrant(q, gen, say) {
   const app = state.app;
   const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
+  if (gen !== startGen) return null;  // stopped meanwhile: the agent is not asked (it may prompt its owner)
   // The agent asks its owner the first time this site runs an app there (a prompt on the Mac): this waits for it.
   // With the server's ticket and its download address the agent fetches a build it lacks itself (docs/beam.md,
   // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
@@ -1032,6 +1039,12 @@ $("runOn").onchange = async () => {
   else if (ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen) start();
 };
 addEventListener("beforeunload", () => { if (ws) ws.close(); });
+// A hidden tab shows nothing (requestAnimationFrame stops, docs/beam.md phase 6): its instance draws one frame a second
+// meanwhile, saving the server or this Mac a core's worth of drawing and encoding on an animated screen, and its own
+// pace again when the tab is back. The app goes on otherwise (timers, sound, network), as one in the foreground.
+document.addEventListener("visibilitychange", () => {
+  if (ws && ws.readyState === 1 && !ended) send(document.visibilityState === "hidden" ? "maxfps 1" : "maxfps 120");
+});
 if (!redirecting) loadApps();
 </script>
 </body>

@@ -5,7 +5,8 @@
 
 Stop while the agent has not answered yet (its consent prompt: the answer is held in the page), and that a late answer
 then opens no session anywhere; an agent that takes one session (`--max 1`) running a second tab's start on the server
-instead. A serve with --allow-beam and an agent on loopback ports, Chrome with a fresh profile; the page's origin is
+instead; a hidden tab's instance drawing a frame a second, its own pace again once the tab is back. A serve with
+--allow-beam and an agent on loopback ports, Chrome with a fresh profile; the page's origin is
 allowed for the run and revoked after.
 """
 import importlib.util, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
@@ -71,6 +72,24 @@ try:
     st = json.load(urllib.request.urlopen(url + "/api/status"))
     check(cdp.ev(s3, "window.apksimStats().frames > 0") and "running on the server instead" in log3 and len(st["sessions"]) == 1,
           "the second, refused by the full agent, runs on the server (" + log3.replace("\n", " | ")[-160:] + ")")
+    # 3. A hidden tab: its instance draws a frame a second; back in front, at its own pace again. The first tab (on this
+    # Mac) shows the Shader tab, which never stops animating, while the third is in front.
+    port, pid = bp.session_port(cdp, s2, os.path.join(ROOT, "work"))
+    ctl = bp.Control(port)
+    import re
+
+    def fps(seconds=3):  # from `stats`' frame count: `frames` leaves out intervals of 100 ms or more
+        n0, t0 = int(re.search(r"frames=(\d+)", ctl("stats")).group(1)), time.time()
+        time.sleep(seconds)
+        return (int(re.search(r"frames=(\d+)", ctl("stats")).group(1)) - n0) / (time.time() - t0)
+    ctl("tap 720 1690")
+    time.sleep(2)
+    hidden = fps()
+    cdp.call("Page.bringToFront", {}, s2)
+    time.sleep(2)
+    shown = fps()
+    ctl.close()
+    check(hidden <= 3 and shown >= 100, f"a hidden tab's instance draws {hidden:.1f} fps, {shown:.1f} once the tab is back in front")
 finally:
     for p in procs: p.terminate()
     for p in procs:
