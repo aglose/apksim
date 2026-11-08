@@ -77,6 +77,8 @@ final class WebSocket {
           }
           case 0x9 -> sendFrame(0xA, payload, 0, payload.length);
           case 0xA -> {
+            java.util.function.LongConsumer h = onPong;
+            if (h != null && payload.length == 8) h.accept(java.nio.ByteBuffer.wrap(payload).getLong());
           }
           case 0x0, 0x1, 0x2 -> {
             if (op != 0) {
@@ -111,8 +113,15 @@ final class WebSocket {
    * that drop idle WebSockets see traffic both ways, with no help from the client.
    */
   void ping() {
+    ping(new byte[0]);
+  }
+
+  /** Called with the payload of each 8-byte pong (see {@link #ping(byte[])}). */
+  volatile java.util.function.LongConsumer onPong;
+
+  void ping(byte[] payload) {
     try {
-      sendFrame(0x9, new byte[0], 0, 0);
+      sendFrame(0x9, payload, 0, payload.length);
     } catch (IOException e) {
       closed = true;
     }

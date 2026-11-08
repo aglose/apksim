@@ -30,8 +30,10 @@ import java.util.stream.Stream;
  * One browser tab and the apksim instance it drives. The instance is an ordinary launch (`apksim --headless --fresh
  * --control auto ... APK`, taken by a warm standby on the Mac when one is ready); this reads its control port from its
  * stderr, opens two control connections to it on loopback (commands, pipelined, and a frame stream), and relays: frames
- * to the tab, at most two in flight (the tab acknowledges each one it draws, and newer frames replace the one waiting;
- * with H.264, a tab that falls behind drops to the next keyframe instead), and the tab's input to the instance, only as the commands {@link #check} allows.
+ * to the tab, a window in flight (two to eight, sized from the ping round trip and the frame interval, see
+ * {@link #window}; the tab acknowledges each one it draws, and newer frames replace the one waiting; with H.264,
+ * a tab that falls behind drops to the next keyframe instead), and the tab's input to the instance, only as the
+ * commands {@link #check} allows.
  */
 final class Session {
   private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
@@ -39,7 +41,9 @@ final class Session {
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
   private static final String NUM = "-?\\d{1,5}(\\.\\d{1,3})?";
-  private static final int MAX_IN_FLIGHT = 2;
+  private static final int MIN_IN_FLIGHT = 2;
+  /** Bytes sent and not yet acknowledged, past the first {@link #MIN_IN_FLIGHT} frames: a slow link sees current frames. */
+  private static final long IN_FLIGHT_BYTES = 1 << 20;
   static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv");
 
   final String id;
@@ -79,6 +83,18 @@ final class Session {
   // and a tab that falls behind drops to the next keyframe, which is then asked for.
   private final ArrayDeque<byte[]> waiting = new ArrayDeque<>();
   private int inFlight;
+  private long inFlightBytes;
+  /** Send time (nanoTime) and size of each frame in flight, oldest first (acks come back in order). */
+  private final java.util.ArrayDeque<long[]> flying = new java.util.ArrayDeque<>();
+  /** Recent ack round trips in ms (a ring of 16), and the smoothed interval between the instance's frames in ms. */
+  private final double[] ackRtts = new double[16];
+  private int ackCount;
+  /** Recent WebSocket ping round trips in ms (a ring of 8): the link alone, with no queue of frames to decode behind. */
+  private final double[] pingRtts = new double[8];
+  private int pingCount;
+  private long lastProbe;
+  private double frameIntervalMs = 100;
+  private long lastFrameNanos;
   private boolean dropToKey;
   /** The stream is H.264 (the tab asked, and the instance has an encoder). */
   private volatile boolean h264;
@@ -91,6 +107,7 @@ final class Session {
     this.app = app;
     this.options = options;
     this.ws = ws;
+    ws.onPong = this::ponged;
     this.device = options.getOrDefault("device", "phone");
   }
 
@@ -332,6 +349,11 @@ final class Session {
         }
         boolean askKey = false;
         synchronized (this) {
+          long n = System.nanoTime();
+          // Gaps over 250 ms are a still screen (unchanged images are not sent), not the app's frame rate.
+          double gap = (n - lastFrameNanos) / 1e6;
+          if (lastFrameNanos != 0 && gap <= 250) frameIntervalMs += (gap - frameIntervalMs) * 0.1;
+          lastFrameNanos = n;
           if (!h264) {
             waiting.clear();
             waiting.add(frame);
@@ -376,9 +398,16 @@ final class Session {
       while (!ended) {
         byte[] f;
         synchronized (this) {
-          while (waiting.isEmpty() || inFlight >= MAX_IN_FLIGHT) wait();
+          while (waiting.isEmpty() || !mayFly(waiting.peek().length)) wait();
           f = waiting.poll();
           inFlight++;
+          inFlightBytes += f.length;
+          flying.add(new long[] {System.nanoTime(), f.length});
+        }
+        long now = System.nanoTime();
+        if (now - lastProbe > 500_000_000L) {
+          lastProbe = now;
+          ws.ping(java.nio.ByteBuffer.allocate(8).putLong(now).array());
         }
         ws.sendBinary(new byte[0], f, 0, f.length);
         framesSent++;
@@ -390,8 +419,57 @@ final class Session {
   }
 
   private synchronized void acked() {
-    if (inFlight > 0) inFlight--;
+    long[] f = flying.poll();
+    if (f != null) {
+      inFlight--;
+      inFlightBytes -= f[1];
+      ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
+    }
     notifyAll();
+  }
+
+  /** The quickest of the recent ping round trips in ms, or -1 before the first. */
+  private synchronized double pingRttMs() {
+    int n = Math.min(pingCount, pingRtts.length);
+    if (n == 0) return -1;
+    double m = Double.MAX_VALUE;
+    for (int i = 0; i < n; i++) m = Math.min(m, pingRtts[i]);
+    return m;
+  }
+
+  private void ponged(long sentNanos) {
+    double ms = (System.nanoTime() - sentNanos) / 1e6;
+    synchronized (this) {
+      pingRtts[pingCount++ % pingRtts.length] = ms;
+      notifyAll();
+    }
+  }
+
+  /** The quickest of the recent ack round trips in ms (queueing and a slow tab only add), or -1 before the first. */
+  private synchronized double ackRttMs() {
+    int n = Math.min(ackCount, ackRtts.length);
+    if (n == 0) return -1;
+    double m = Double.MAX_VALUE;
+    for (int i = 0; i < n; i++) m = Math.min(m, ackRtts[i]);
+    return m;
+  }
+
+  /**
+   * Frames in flight so the link stays full: clamp(ceil(rtt / frame interval) + 1, 2, cap), where cap is `--in-flight`
+   * (default 8; below 2 the window is that). Before the first ack, 2.
+   */
+  private synchronized int window() {
+    int cap = serve.inFlightMax, lo = Math.min(MIN_IN_FLIGHT, cap);
+    // The ping's round trip, not the acks': an ack waits behind the tab's decoding of the frames before it, so a tab
+    // limited by its decoder would grow its own window (and latency) without gaining frames.
+    double rtt = pingRttMs();
+    if (rtt < 0) return lo;
+    return (int) Math.max(lo, Math.min(cap, Math.ceil(rtt / Math.max(frameIntervalMs, 4)) + 1));
+  }
+
+  private boolean mayFly(int len) {
+    int w = window();
+    return inFlight < Math.min(w, MIN_IN_FLIGHT) || (inFlight < w && inFlightBytes + len <= IN_FLIGHT_BYTES);
   }
 
   /** H.264: a keyframe next, from the instance (one is sent even if the screen is still). */
@@ -571,7 +649,8 @@ final class Session {
     return "{\"id\":" + Http.q(id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(device)
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
-        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20) + "}";
+        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
+        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + "}";
   }
 
   // ---------------------------------------------------------------- the end

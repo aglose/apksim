@@ -34,6 +34,7 @@ import urllib.request
 import zipfile
 
 FAILED = []
+ACK_DELAY_MS = 0
 
 
 def parts(url):
@@ -103,10 +104,10 @@ class WS:
             n = struct.unpack(">Q", self._read(8))[0]
         return b0 & 0x0f, self._read(n)
 
-    def send(self, text):
-        data = text.encode()
+    def send(self, text, op=1, raw=None):
+        data = raw if raw is not None else text.encode()
         mask = os.urandom(4)
-        head = bytes([0x81])
+        head = bytes([0x80 | op])
         head += bytes([0x80 | len(data)]) if len(data) < 126 else bytes([0x80 | 126]) + struct.pack(">H", len(data))
         self.s.sendall(head + mask + bytes(c ^ mask[i & 3] for i, c in enumerate(data)))
 
@@ -136,21 +137,31 @@ class Session:
         self.offset, self.best_rtt = 0.0, float("inf")  # the server's clock minus this one's
         self.texts = []
         self.stats = {}
+        self.ack_delay = ACK_DELAY_MS / 1000
+        self.acks = []  # when each delayed ack is due
 
     def pump(self, seconds, until=None):
         """Reads messages for this long (or until until() is true), acknowledging each frame as a tab does."""
         end = time.time() + seconds
         while time.time() < end:
-            m = self.ws.recv(max(0.01, end - time.time()))
+            while self.acks and self.acks[0][0] <= time.time():
+                kind, raw = self.acks.pop(0)[1:]
+                if kind == "ack":
+                    self.ws.send("ack")
+                else:
+                    self.ws.send("", op=0xA, raw=raw)
+            m = self.ws.recv(max(0.01, min(end, self.acks[0][0] if self.acks else end) - time.time()))
             if m is None:
-                break
+                continue
             op, p = m
             if op == 2:
                 w, h, present_us, encode_us = struct.unpack(">iiqi", p[:20])
                 key = self.codec == "h264" and len(p) > 20 and p[20] == 1
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
                                     hashlib.sha1(p[20:]).hexdigest(), key, p[21:] if self.codec == "h264" else b""))
-                if self.acking:
+                if self.acking and self.ack_delay:
+                    self.acks.append((time.time() + self.ack_delay, "ack", None))
+                elif self.acking:
                     self.ws.send("ack")
             elif op == 1:
                 t = p.decode()
@@ -167,6 +178,11 @@ class Session:
                 if t.startswith("x "):
                     print("     session ended: " + t[2:])
                     return False
+            elif op == 9:  # a ping: its pong, held as a slow link would
+                if self.ack_delay:
+                    self.acks.append((time.time() + self.ack_delay, "pong", p))
+                else:
+                    self.ws.send("", op=0xA, raw=p)
             elif op == 8:
                 return False
             if until and until():
@@ -198,12 +214,16 @@ def main():
     ap.add_argument("--max-upload-mb", type=int)
     ap.add_argument("--first-frame-timeout", type=int, default=180)
     ap.add_argument("--allow-origin")
+    ap.add_argument("--ack-delay", type=int, default=0, help="ms to hold each ack: a slow link's return half; the server's window should grow")
+    ap.add_argument("--in-flight", type=int, help="the server's --in-flight cap, for the --ack-delay check")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
     ap.add_argument("--h264", choices=["required", "optional", "skip"], default="optional",
                     help="the H.264 stream's checks: required fails when the server answers JPEG (no encoder there)")
     ap.add_argument("--crash-app", help="id of an app that crashes at start (test app: -- --activity .CrashActivity)")
     a = ap.parse_args()
+    global ACK_DELAY_MS
+    ACK_DELAY_MS = a.ack_delay
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
 
@@ -349,6 +369,16 @@ def main():
     fps = len(drag) / drag_s
     drag_mb_s = sum(f[3] for f in drag) / drag_s / 1e6
     check(len(drag) > 10, f"frames while dragging ({len(drag)} in {drag_s:.2f} s)")
+    if ACK_DELAY_MS:
+        # A slow link (acks and pongs held): with --in-flight 1 or 2 the window is exactly that; otherwise it must have
+        # grown past two frames for the drag's frame rate, and stay within --in-flight's cap when given.
+        s.stats = {}
+        s.ws.send("stats")
+        s.pump(3, until=lambda: "window" in s.stats)
+        w = s.stats.get("window", 0)
+        cap = a.in_flight
+        ok = w == cap if cap and cap <= 2 else w > 2 and (not cap or w <= cap)
+        check(ok, f"the window on a {ACK_DELAY_MS} ms link ({w}, cap {cap or 'default'}, ping {s.stats.get('pingRttMs')} ms, frames every {s.stats.get('frameMs')} ms)")
     check(len(s.after(["wheel 400 1000 -3"], 1.0)) > 0, "a frame after scrolling with the wheel")
     # Trips tab, then its note field: typing changes the screen.
     check(len(s.after(["touch down 350 1690", "touch up 350 1690"], 2.0)) > 0, "a frame after switching to Trips")
@@ -385,6 +415,8 @@ def main():
     print(f"     taps: input -> frame {median(taps):.0f} ms (median of {len(taps)}); drag: {fps:.0f} fps, {len(drag)} frames")
     print(f"     present -> received {median(lat):.0f} ms median (clocks matched to {s.best_rtt:.1f} ms round trip); encode {median(enc):.1f} ms median; {kb:.0f} KB/frame")
     print(f"     shader tab: {shader_fps:.0f} fps, {shader_kb:.0f} KB/frame, encode {shader_enc:.1f} ms")
+    print(f"     window {s.stats.get('window')} frames in flight, ack round trip {s.stats.get('ackRttMs')} ms, frame interval {s.stats.get('frameMs')} ms")
+    check(isinstance(s.stats.get("window"), int) and 1 <= s.stats["window"] <= 32, f"stats report the window ({s.stats.get('window')})")
     print(f"     bandwidth (JPEG): drag {drag_mb_s:.2f} MB/s, shader tab {shader_kb * shader_fps / 1024:.2f} MB/s")
     print(f"     memory: {s.stats.get('rssMb')} MB resident, {s.stats.get('heapMb')} MB heap; frames sent {s.stats.get('framesSent')}")
     status, body = http(url, "/api/status", token)
@@ -457,7 +489,9 @@ def check_h264(url, token, app, a):
     drag = s.frames[n0:]
     s.ws.send("touch up 400 580")
     s.pump(0.5)
-    check(len(drag) > 10 and not any(f[7] for f in drag), f"delta frames while dragging ({len(drag)}, no keyframes)")
+    # (On a slow link, --ack-delay, a window at its cap leaves frames waiting past three: the stream then drops to
+    # keyframes, as designed, so only the frames are counted.)
+    check(len(drag) > 10 and (ACK_DELAY_MS or not any(f[7] for f in drag)), f"delta frames while dragging ({len(drag)}, no keyframes)")
     drag_mb_s = sum(f[3] for f in drag) / drag_s / 1e6
     # A still screen still answers a keyframe request (a tab whose decoder failed asks for one).
     s.pump(1)
@@ -482,7 +516,9 @@ def check_h264(url, token, app, a):
     n1 = len(s.frames)
     s.pump(2.0)
     resumed = s.frames[n1:]
-    check(len(held) <= 2, f"at most two frames in flight to a tab that does not acknowledge ({len(held)})")
+    # The window may have grown on a slow link (simulated or real): its cap, or exactly two where --in-flight is 1 or 2.
+    cap = a.in_flight if a.in_flight and a.in_flight <= 2 else max(2, a.in_flight or 8)
+    check(len(held) <= cap, f"at most {cap} frames in flight to a tab that does not acknowledge ({len(held)})")
     if len(shader) >= 30:  # only where the app animates fast enough to fall behind (not the Linux image's CPU shader)
         check(bool(resumed) and resumed[0][7], "after falling behind, the stream resumes at a keyframe")
     s.after(["touch down 130 1690", "touch up 130 1690"], 1.0)

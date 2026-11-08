@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+             [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH]
 ```
@@ -36,6 +36,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
+- `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
 - `--codec auto|jpeg` (default `auto`): `auto` gives a tab H.264 when it asks and the instance has an encoder;
   `jpeg` always streams JPEG.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
@@ -211,11 +212,18 @@ inside itself:
   when a codec was named). Serve relays them to the tab over a WebSocket. Each binary message is the frame's width,
   height, present time (epoch µs) and encode time (µs), big-endian, then the JPEG, or for H.264 a byte (1 for a
   keyframe) and the access unit.
-- Flow control: serve keeps at most two frames in flight to a tab, and the tab acknowledges each frame once drawn.
-  A slow tab or network sees fewer frames, never older ones: with JPEG, frames that arrive meanwhile replace the
-  waiting one. H.264 frames each need the one before, so none is skipped: up to three wait, and a tab further behind
-  drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same for
-  serve, past 30 waiting). A slow link then sees keyframes, as JPEG would, until it keeps up again.
+- Flow control: serve keeps a window of frames in flight to a tab, and the tab acknowledges each frame once drawn.
+  Two frames in flight cap a stream at about 2 frames per round trip (~20 fps at 100 ms however fast the app renders),
+  so the window is sized from what is measured: `clamp(ceil(rtt / frame_interval) + 1, 2, --in-flight)`, where `rtt` is
+  the quickest of the last 8 WebSocket ping round trips (serve pings every 0.5 s while frames flow; a browser's pong
+  does not wait for the page, so a tab slow to decode cannot inflate it) and `frame_interval` the smoothed gap between
+  the instance's frames, ignoring gaps over 250 ms (a still screen sends none). Past the first two frames a frame is sent only while the bytes in flight stay under
+  1 MB, so a slow link sees current frames rather than a backlog. A slow tab or network sees fewer frames, never older
+  ones: frames that arrive meanwhile replace the waiting one. The `s` stats message has `window` (effective), `pingRttMs`, `ackRttMs`
+  (-1 before the first ack; it includes the tab's decode and draw) and `frameMs`, so a client can tell whether the
+  network or the app is the limit. H.264 frames each need the one before, so none is skipped: up to three wait, and a tab further
+  behind drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same
+  for serve, past 30 waiting). The window and byte budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
 
