@@ -192,23 +192,33 @@ function setDevice(name) {
   if (![...$("device").options].some(o => o.value === name)) {
     const o = document.createElement("option");
     o.value = o.textContent = name;
+    o.dataset.app = "1";  // an app's own default: rebuilt when the app changes
     $("device").appendChild(o);
   }
   $("device").value = name;
 }
-// The app's own default device (launch option --device) joins the menu without changing what is selected.
-async function offerAppDevice() {
+// The menu's app-specific part, rebuilt when the app changes: the app's own default device (launch option --device)
+// is offered, and while nothing was chosen and no session runs, shown as what Start will launch (else the Phone).
+async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link named this size (?device=)
   if (!state.app) return;
-  const app = state.app;
+  const app = state.app, sel = $("device");
+  const live = () => ws && ws.readyState <= 1 && !ended;
+  for (const o of [...sel.options]) {
+    if (o.dataset.app && !(live() && o.value === sel.value) && !(keepLinked && o.value === state.device)) o.remove();
+  }
+  if (!live() && ![...sel.options].some(o => o.value === sel.value)) sel.value = "phone";
+  if (state.device && ![...sel.options].some(o => o.value === state.device)) state.device = "";  // the server would refuse it
   try {
     const r = await fetch(withToken("api/apps/" + encodeURIComponent(app)));
     if (!r.ok || app !== state.app) return;
-    const d = (await r.json()).device;
-    if (d && ![...$("device").options].some(o => o.value === d)) {
+    const d = (await r.json()).device || "";
+    if (d && ![...sel.options].some(o => o.value === d)) {
       const o = document.createElement("option");
       o.value = o.textContent = d;
-      $("device").appendChild(o);
+      o.dataset.app = "1";
+      sel.appendChild(o);
     }
+    if (!state.device && !live()) sel.value = d || "phone";
   } catch (e) { /* the menu keeps what it has */ }
 }
 async function loadDevices() {
@@ -232,7 +242,7 @@ async function loadApps() {
   if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
   await loadDevices();
   if (state.device) setDevice(state.device);
-  offerAppDevice();
+  offerAppDevice(true);
   $("dark").checked = state.appearance === "dark";
   if (state.fontscale) $("fontscale").value = state.fontscale;
   $("locale").value = state.locale;
