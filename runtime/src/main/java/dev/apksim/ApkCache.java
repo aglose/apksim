@@ -65,7 +65,10 @@ public final class ApkCache {
     // names, so the only '<' and '>' past the declaration are the element's own.
     int at = first.indexOf("\n<manifest");
     java.util.regex.Matcher m = java.util.regex.Pattern.compile("<manifest\\b[^>]*?\\spackage=\"([^\"]*)\"").matcher(first);
-    if (at < 0 || !m.region(at + 1, first.length()).lookingAt() || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
+    // Length first: the name check's repeated group recurses per segment, so a package of thousands ("a.a.a...", 10k
+    // characters) overflowed the stack, an Error no caller catches. 256, as a moved session's data allows (SlotPack).
+    if (at < 0 || !m.region(at + 1, first.length()).lookingAt() || m.group(1).length() > 256
+        || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
       throw new IOException("the manifest names no package");
     }
     return m.group(1);

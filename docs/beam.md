@@ -600,6 +600,8 @@ standby took the launch and ignored it. A beamed instance's `=true` is its stand
 An agent's cache warm-up (`apksim beam --warm on`) starts from its build's cache and leaves what it translated and
 extracted there once it has exited, as a session does (`Session.keepBeamCaches`): before, it ran in the beam sandbox,
 wrote only its out folder, and the first session translated everything again (`beam-check.py`'s warm checks).
+That package's name is refused past 256 characters before it is checked: the check's repeated group recursed per
+segment, so a manifest package of 10k characters ("a.a.a...") overflowed the stack, an Error that ended the request.
 
 First review:
 
