@@ -386,6 +386,7 @@ async function moveSession(to) {
     const h = await handoff(ws);
     if (gen !== startGen) return;
     if (h.ticket) data = { ticket: h.ticket, url: new URL("api/beam/data", location.href).href };
+    if (h.skipped) log("its data moves without " + h.skipped + " links or special files in it (only regular files move)");
     else log("its data could not move (" + h.error + "): it moves without it");
     handedOff = !!h.ticket || h.ended;
   }

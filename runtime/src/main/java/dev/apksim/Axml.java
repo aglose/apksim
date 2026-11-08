@@ -25,6 +25,12 @@ final class Axml {
    * for anything past those bounds.
    */
   static String decode(byte[] data) {
+    return decode(data, Integer.MAX_VALUE);
+  }
+
+  /** As {@link #decode(byte[])}, stopping after `maxTags` start tags (1: the manifest element alone). */
+  static String decode(byte[] data, int maxTags) {
+    int tags = 0;
     ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
     b.position(8);
     long[] budget = {2L * data.length + 65_536};  // chars all strings together may decode to
@@ -36,7 +42,7 @@ final class Axml {
       int start = b.position();
       int type = b.getShort(start) & 0xffff;
       int size = b.getInt(start + 4);
-      if (size <= 0) break;
+      if (size < 8) break;  // a chunk is at least its header: a smaller size would step through the bytes one by one
       if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
       if (type == CHUNK_STRING_POOL) {
         readStrings(b, start, strings, budget);
@@ -78,6 +84,7 @@ final class Axml {
           if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
         }
         out.append(">\n");
+        if (++tags >= maxTags) break;
       } else if (type == CHUNK_END_TAG) {
         out.append("</").append(str(strings, b.getInt(start + 16 + 4))).append(">\n");
       } else if (type != CHUNK_START_NS && type != 0x0101 && type != 0x0180 && type != 0x0104) {
@@ -105,6 +112,8 @@ final class Axml {
     for (int i = 0; i < count; i++) {
       long at = (long) start + stringsStart + b.getInt(start + 28 + i * 4);
       if (at < 0 || at >= b.limit()) throw new IllegalArgumentException("bad string offset");
+      // Each string costs its object too, not only its chars: a pool of empty strings is not free.
+      if ((budget[0] -= 8) < 0) throw new IllegalArgumentException("too many strings");
       int p = (int) at;
       if (utf8) {
         p += (b.get(p) & 0x80) != 0 ? 2 : 1; // UTF-16 length

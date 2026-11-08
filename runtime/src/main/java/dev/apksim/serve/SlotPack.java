@@ -50,6 +50,8 @@ final class SlotPack {
    */
   static final class Progress {
     volatile long files, bytes;
+    /** Entries left out: links, other special files, ones swapped meanwhile (the handoff says how many). */
+    volatile long skipped;
     private volatile SecureDirectoryStream<Path> openingIn;
     private volatile Path opening;
 
@@ -110,6 +112,7 @@ final class SlotPack {
     } catch (java.nio.file.NoSuchFileException | java.nio.file.NotDirectoryException e) {
       return;  // none (a slot without a .device folder)
     } catch (java.nio.file.FileSystemException e) {
+      progress.skipped++;
       return;  // a link (ELOOP): left out
     }
     try (d) {
@@ -136,7 +139,10 @@ final class SlotPack {
           try {
             opened = d.newByteChannel(n, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
           } catch (java.nio.file.FileSystemException e) {
-            if (e.getMessage() != null && e.getMessage().contains("symbolic link")) continue;  // swapped for a link meanwhile
+            if (e.getMessage() != null && e.getMessage().contains("symbolic link")) {  // swapped for a link meanwhile
+              progress.skipped++;
+              continue;
+            }
             throw e;
           } finally {
             progress.opening = null;
@@ -153,6 +159,8 @@ final class SlotPack {
             }
             z.closeEntry();
           }
+        } else {
+          progress.skipped++;  // a link, a pipe, a socket: not moved
         }
       }
     }

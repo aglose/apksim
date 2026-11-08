@@ -41,8 +41,8 @@ import java.util.stream.Stream;
 public final class ApkCache {
   /**
    * The package an APK's manifest names (beam's moved data must be the build's: docs/beam.md phase 5). The APK is a
-   * site's, read by the agent outside any sandbox: the manifest at most 8 MB, decoded by Axml, parsed with no DOCTYPE
-   * or external entities.
+   * site's, read by the agent outside any sandbox: the manifest at most 1 MB (real ones are tens of KB), and only its
+   * first element decoded (Axml, bounded by its input), its package attribute read from that text.
    */
   public static String manifestPackage(Path apk) throws IOException {
     byte[] raw;
@@ -50,23 +50,23 @@ public final class ApkCache {
       java.util.zip.ZipEntry e = zip.getEntry("AndroidManifest.xml");
       if (e == null) throw new IOException("the APK has no manifest");
       try (java.io.InputStream in = zip.getInputStream(e)) {
-        raw = in.readNBytes(8 << 20);
+        raw = in.readNBytes((1 << 20) + 1);
       }
     }
+    if (raw.length > 1 << 20) throw new IOException("the APK's manifest is over 1 MB");
+    String first;
     try {
-      javax.xml.parsers.DocumentBuilderFactory f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
-      f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-      f.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
-      f.setExpandEntityReferences(false);
-      String xml = Axml.decode(raw);
-      String pkg = f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
-          .getDocumentElement().getAttribute("package");
-      if (!pkg.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) throw new IOException("the manifest names no package");
-      return pkg;
-    } catch (javax.xml.parsers.ParserConfigurationException | org.xml.sax.SAXException | RuntimeException e) {
+      first = Axml.decode(raw, 1);  // the manifest element alone: its package is all this needs
+    } catch (RuntimeException e) {
       throw new IOException("the APK's manifest could not be read: " + e.getMessage());
     }
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("<manifest\\b[^>]*?\\spackage=\"([^\"]*)\"").matcher(first);
+    if (!m.find() || !m.group(1).matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")) {
+      throw new IOException("the manifest names no package");
+    }
+    return m.group(1);
   }
+
 
   static final String LOCK = "apk-cache.lock";
   private static final String IN_USE = "in-use.lock";

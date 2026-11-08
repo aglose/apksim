@@ -339,15 +339,18 @@ final class Session {
       new java.security.SecureRandom().nextBytes(rnd);
       String hid = "d" + java.util.HexFormat.of().formatHex(rnd);
       Path zip = dir.resolve(hid + ".zip");
+      long skipped;
       try {
-        packWithDeadline(slot, zip);
+        skipped = packWithDeadline(slot, zip);
       } catch (IOException | RuntimeException e) {
         Files.deleteIfExists(zip);
         throw e;
       }
       String sha = serve.catalog.sha256(zip);
       logLine("[serve] handed off its data (" + (Files.size(zip) >> 10) + " KB) to the tab's Mac");
-      ws.sendText("h {\"ticket\":" + Http.q(serve.tickets.mint(hid, sha)) + ",\"size\":" + Files.size(zip) + "}");
+      if (skipped > 0) logLine("[serve] left out of the handoff: " + skipped + " links or special files");
+      ws.sendText("h {\"ticket\":" + Http.q(serve.tickets.mint(hid, sha)) + ",\"size\":" + Files.size(zip)
+          + (skipped > 0 ? ",\"skipped\":" + skipped : "") + "}");
     } catch (IOException | RuntimeException e) {
       logLine("[serve] could not hand off its data: " + e);
       ws.sendText("h {\"error\":" + Http.q(String.valueOf(e.getMessage())) + "}");
@@ -366,7 +369,7 @@ final class Session {
    * the pack is given up and the handoff fails, and the session still ends and frees its place. The thread is then
    * left blocked for good, holding only its folder handles (its zip is closed and deleted here).
    */
-  private void packWithDeadline(Path slot, Path zip) throws IOException, InterruptedException {
+  private long packWithDeadline(Path slot, Path zip) throws IOException, InterruptedException {
     SlotPack.Progress progress = new SlotPack.Progress();
     Throwable[] failed = {null};
     java.io.OutputStream out = Files.newOutputStream(zip);
@@ -406,6 +409,7 @@ final class Session {
     if (failed[0] instanceof IOException e) throw e;
     if (failed[0] instanceof RuntimeException e) throw e;
     if (failed[0] != null) throw new IOException(failed[0]);
+    return progress.skipped;
   }
 
   /** How long a pack may go without reading a byte before it is unblocked, then given up (packWithDeadline). */

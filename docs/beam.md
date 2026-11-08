@@ -682,8 +682,8 @@ First review:
   app could name any folder (the server user's, another visitor's slot) for the tab to download. The pack is read
   through open folder handles from the state folder down, each opened without following a link
   (SecureDirectoryStream): a process the app left running may still write there, and a file or folder swapped for a
-  link between a check and an open would otherwise be packed through it. Links and special files are left out.
-  A file swapped for a named pipe between the check and the open blocks that open (uninterruptibly) until something
+  link between a check and an open would otherwise be packed through it. Links and special files are left out, counted, and said: the tab gets `h {"ticket", "size", "skipped"}` and its log
+  "its data moves without N links or special files in it". A file swapped for a named pipe between the check and the open blocks that open (uninterruptibly) until something
   writes to it, so the pack runs on a thread of its own, watched: no progress for 15 s and it is interrupted (which
   ends a pipe read that never finishes) and its pending open is released by opening the same name for writing; still
   stuck 15 s later, the handoff fails and the session ends anyway. The release fails when the app keeps swapping the
@@ -696,7 +696,8 @@ First review:
   without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
   roots, no absolute, `.` or `..` paths, no links, 50,000 entries (every one counted, none skipped unread) and 1 GB at
   most, the `package` entry first and at most 256 bytes, no folder entry with contents, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket, and so
-  does a pack naming another package than the build's (read from its manifest, `ApkCache.manifestPackage`): a site's
+  does a pack naming another package than the build's (read from its manifest, `ApkCache.manifestPackage`: at most 1 MB, where real ones are 21-39 KB; only the first
+  element decoded, by Axml, which checks every length, offset and count against its input and caps what it decodes): a site's
   files never land in another app's data folder, the owner's own apps' included. The
   slot belongs to the grant until a session takes it: a grant that expires (checked every minute) or is refused, a
   session that cannot start (no such app, all sessions in use) and, hourly, any `bm` slot no grant or session owns and
