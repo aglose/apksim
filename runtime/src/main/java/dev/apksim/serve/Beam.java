@@ -125,7 +125,10 @@ final class Beam {
     synchronized (prompting) {
       Long until = deniedUntil.get(origin);
       if (until != null && until > System.currentTimeMillis()) return false;
-      if (trusted(origin)) return true;  // answered "Always Allow" while this request waited
+      // Read again: while this request waited for another prompt, its answer or `apksim beam trust` may have saved one.
+      String now = trust().get(origin);
+      if ("never".equals(now)) return false;
+      if ("always".equals(now)) return true;
       String answer = switch (consentMode) {
         case "allow" -> "Always Allow";
         case "deny" -> "Don't Allow";

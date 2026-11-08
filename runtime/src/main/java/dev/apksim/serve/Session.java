@@ -36,7 +36,7 @@ import java.util.stream.Stream;
  * commands {@link #check} allows.
  */
 final class Session {
-  private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
+  static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
   private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
@@ -956,7 +956,7 @@ final class Session {
    * reads nothing through it, and the agent never follows one). The out folder goes either way.
    */
   /** The PID of the process listening on this loopback port (lsof, the kernel's answer), or -1. */
-  private static long listenerPid(int port) {
+  static long listenerPid(int port) {
     try {
       Process l = new ProcessBuilder("lsof", "-nP", "-iTCP:" + port, "-sTCP:LISTEN", "-t").redirectErrorStream(true).start();
       String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();

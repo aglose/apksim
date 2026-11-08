@@ -131,7 +131,7 @@ final class Warmer {
     List<String> cmd = new ArrayList<>();
     if (Files.isExecutable(Path.of("/usr/bin/nice"))) cmd.addAll(List.of("/usr/bin/nice", "-n", "10"));
     cmd.addAll(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill", "--data-slots", serve.home,
-        "--exit-after-first-frame"));
+        "--exit-after-first-frame", "--control", "auto"));  // its control port: how its JVM is known (below)
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
     cmd.addAll(j.app.launch());
@@ -169,9 +169,15 @@ final class Warmer {
         for (String line; (line = r.readLine()) != null; ) {
           reason.line(line);
           Matcher ds = DATA_SLOT.matcher(line);
-          if (ds.find() && slot.get() == null) {  // the first only: later lines may be the app's own output
-            slot.set(Path.of(ds.group(1)));
-            j.jvmPid = Long.parseLong(ds.group(2));  // a warm launch runs in the standby's JVM, not the client we started
+          if (ds.find() && slot.get() == null) slot.set(Path.of(ds.group(1)));  // erased only if unlocked and serve's own
+          // The JVM a warm launch runs in (the standby's, not the client started here), for ending it: the process the
+          // kernel says listens on its control port, which Main opens and announces before any app code runs. Never
+          // the pid the data slot line names: app code (attachBaseContext) runs before it and could print another
+          // session's JVM there, which cleanup would then kill.
+          Matcher cp = Session.CONTROL_PORT.matcher(line);
+          if (cp.find() && j.jvmPid < 0) {
+            long pid = Session.listenerPid(Integer.parseInt(cp.group(1)));
+            j.jvmPid = pid > 0 ? pid : 0;  // 0: looked once, unknown (then nothing is ended)
           }
           Matcher m = PROGRESS.matcher(line);
           if (m.find()) j.progress = "translating classes: " + m.group(1);
