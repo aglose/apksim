@@ -56,7 +56,10 @@ check_commit() {
   local c="$1" short; short="$(git rev-parse --short "$c")"
   local lines; lines="$(git log -1 --format=%B "$c" | match_lines)"
   [[ -n "$lines" ]] && hit "commit $short: message, line(s) $lines"
+  local full accepted=; full="$(git rev-parse "$c")"
+  grep -qx "$full" scripts/hooks/accepted-identity-commits 2>/dev/null && accepted=1
   for field in '%an <%ae>' '%cn <%ce>'; do
+    [[ -n "$accepted" ]] && break
     git log -1 --format="$field" "$c" | grep -q -i -E -f "$PATTERNS" && \
       hit "commit $short: $( [[ $field == '%an <%ae>' ]] && echo author || echo committer ) name or email"
   done

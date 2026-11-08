@@ -1,0 +1,6 @@
+# Commits already on main whose author/committer email check-private would flag: GitHub's web merge used the
+# account's primary address instead of the noreply one. History on main is not rewritten (a rewrite once threw away
+# a peer's work), so only the identity fields of these commits are skipped; their messages and changes are still checked.
+# Merge with: gh pr merge --merge --author-email 7216340+aglose@users.noreply.github.com
+db2e1d3479b5c916a05f51262b93c250def680be
+f91cd6325fe48e14bfae0c812b2ff2d4d3576d5c
