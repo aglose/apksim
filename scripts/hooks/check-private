@@ -57,7 +57,7 @@ check_commit() {
   local lines; lines="$(git log -1 --format=%B "$c" | match_lines)"
   [[ -n "$lines" ]] && hit "commit $short: message, line(s) $lines"
   local full accepted=; full="$(git rev-parse "$c")"
-  grep -qx "$full" "$(dirname "$0")/accepted-identity-commits" 2>/dev/null && accepted=1
+  grep -qx "$full" scripts/hooks/accepted-identity-commits 2>/dev/null && accepted=1
   for field in '%an <%ae>' '%cn <%ce>'; do
     [[ -n "$accepted" ]] && break
     git log -1 --format="$field" "$c" | grep -q -i -E -f "$PATTERNS" && \
