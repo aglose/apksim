@@ -132,6 +132,7 @@ public final class Thermal {
     }
     if (s < 0) return "error: usage: thermal [none|light|moderate|severe|critical|emergency|shutdown]";
     synchronized (LOCK) {
+      if (status == s) return "thermal: " + NAMES[s];  // no change, no callbacks, as the thermal service reports changes only
       status = s;
       for (Entry e : LISTENERS) notify(e, s);
     }
