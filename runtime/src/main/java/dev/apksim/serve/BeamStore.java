@@ -556,7 +556,12 @@ final class BeamStore {
         // Held (shared: runs of one session side by side) until the launch ends: forget and the expiry sweep take it
         // exclusively, so neither erases a session that is open or opening.
         try (FileChannel ch = store.sessionLock(String.valueOf(r.get("id")))) {
-          FileLock held = ch.tryLock(0, Long.MAX_VALUE, true);
+          FileLock held;
+          try {
+            held = ch.tryLock(0, Long.MAX_VALUE, true);
+          } catch (OverlappingFileLockException e) {
+            held = null;  // this JVM holds it already: as taken (released with the channel, closed below either way)
+          }
           if (held == null) {
             System.err.println("apksim beam run: " + r.get("id") + " is being forgotten");
             return 1;
