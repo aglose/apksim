@@ -361,14 +361,15 @@ def main():
     fps = len(drag) / drag_s
     check(len(drag) > 10, f"frames while dragging ({len(drag)} in {drag_s:.2f} s)")
     if ACK_DELAY_MS:
-        # A slow link (acks and pongs held): the window must have grown past two frames for the drag's frame rate,
-        # and stay within --in-flight's cap when given.
+        # A slow link (acks and pongs held): with --in-flight 1 or 2 the window is exactly that; otherwise it must have
+        # grown past two frames for the drag's frame rate, and stay within --in-flight's cap when given.
         s.stats = {}
         s.ws.send("stats")
         s.pump(3, until=lambda: "window" in s.stats)
         w = s.stats.get("window", 0)
-        check(w > 2 and (not a.in_flight or w <= a.in_flight),
-              f"the window grows on a {ACK_DELAY_MS} ms link ({w}, cap {a.in_flight or 'default'}, ping {s.stats.get('pingRttMs')} ms, frames every {s.stats.get('frameMs')} ms)")
+        cap = a.in_flight
+        ok = w == cap if cap and cap <= 2 else w > 2 and (not cap or w <= cap)
+        check(ok, f"the window on a {ACK_DELAY_MS} ms link ({w}, cap {cap or 'default'}, ping {s.stats.get('pingRttMs')} ms, frames every {s.stats.get('frameMs')} ms)")
     check(len(s.after(["wheel 400 1000 -3"], 1.0)) > 0, "a frame after scrolling with the wheel")
     # Trips tab, then its note field: typing changes the screen.
     check(len(s.after(["touch down 350 1690", "touch up 350 1690"], 2.0)) > 0, "a frame after switching to Trips")
