@@ -23,15 +23,21 @@ public final class SimAudio {
     return dev.apksim.Features.audio() == dev.apksim.Features.Audio.MUTE;
   }
 
-  private static final java.util.Set<ShadowSimAudioTrack> TRACKS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.Set<ShadowSimAudioTrack> TRACKS = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());  // weak: an app may drop a track without release
 
   static void track(ShadowSimAudioTrack t, boolean open) {
-    if (open) TRACKS.add(t); else TRACKS.remove(t);
+    synchronized (TRACKS) {
+      if (open) TRACKS.add(t); else TRACKS.remove(t);
+    }
   }
 
   /** Applies the current mute state to every open track (the `audio` command). */
   public static void remuteAll() {
-    for (ShadowSimAudioTrack t : TRACKS) t.remute();
+    java.util.List<ShadowSimAudioTrack> open;
+    synchronized (TRACKS) {
+      open = new java.util.ArrayList<>(TRACKS);
+    }
+    for (ShadowSimAudioTrack t : open) t.remute();
   }
 
   private static boolean load() {
