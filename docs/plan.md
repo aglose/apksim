@@ -379,8 +379,12 @@ built: builds deleted 2 days (`apksim beam config keep-days N`) after their last
 and sessions erased unless the visitor keeps one ("Keep on this Mac", or `save-sessions on`), which `apksim beam
 run ID` reopens locally with its data (`beam-check.py`). Beamed apps run in a sandbox of their own (nothing of the
 Mac's but their slot, scratch and per-build caches). Phase 2 is built: the agent downloads a build it lacks from the
-page's server with a signed ticket, the tab relaying it only when that fails. Then sizing with Show in Simulator,
-moving a running session, and the launchd agent.
+page's server with a signed ticket, the tab relaying it only when that fails. Phase 3 is built: Fill mode sizes
+the display to the page at the browser's pixel ratio (one frame pixel per screen pixel), and the simulator window is a
+second view of it ("Show in Simulator"; its close button hides it while the tab is attached). Phase 4 is built: a
+running session moves between the server and the Mac with no blank frame (the old side streams until the new side's
+first frame, ~0.5 s). Left: the launchd agent, reconnecting after sleep, the app's data moving with it (phase 5),
+hidden-tab throttling and a Linux agent (phase 6).
 
 ## Not planned
 

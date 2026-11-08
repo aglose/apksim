@@ -270,7 +270,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
   against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
   `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
-  fallback to the server),
+  fallback to the server), `beam-size-check.py` (Fill mode and the simulator window as two views of one display, in
+  Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, in
+  Chrome),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
@@ -349,7 +351,8 @@ launch with `--timezone America/New_York`; see `TimeZones` below), `config` (con
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
 `window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden
-and whether the app is active),
+and whether the app is active), `window close` (as the close button: while a stream viewer is attached, apksim beam's
+tab, it only hides the window),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
 also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,

@@ -184,8 +184,11 @@ final class Session {
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
-    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString(), "--headless", "--fresh", "--no-autofill",
-        "--data-slots", serve.home, "--control", "auto"));
+    // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
+    // display, a second view of it.
+    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString()));
+    cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
+    cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
     cmd.addAll(List.of("--device", deviceSpec(device)));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -559,6 +562,7 @@ final class Session {
       return;
     }
     String cmd = check(text);
+    if (cmd == null && serve.beam) cmd = checkBeam(text);
     if (cmd == null && text.strip().startsWith("device ")) {
       // A size serve names (--device-size) or the app's own default: the name is checked, never passed on as given.
       String name = text.strip().substring(7);
@@ -576,7 +580,7 @@ final class Session {
     }
     String shown = cmd;
     boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
-        || cmd.startsWith("vsync ");
+        || cmd.startsWith("vsync ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
   }
 
@@ -605,6 +609,26 @@ final class Session {
       String s = t.substring(5).replaceAll("[\\p{Cntrl}\\s]+", " ").strip();
       return s.isEmpty() ? null : "type " + s;
     }
+    return null;
+  }
+
+  /**
+   * What only a tab of `apksim beam` may send besides {@link #check} (docs/beam.md, phase 3): the display sized to its
+   * stage (`device WxH@D`, dp and density, 160-4096 dp a side and at most 4096 px, as --device-size takes), the Mac
+   * window shown or hidden ("Show in Simulator"), and a frame rate cap for a hidden tab. The instance is the visitor's
+   * own: a size costs their memory, not a server's.
+   */
+  static String checkBeam(String text) {
+    String t = text.strip();
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("device (\\d{3,4})x(\\d{3,4})@(\\d(?:\\.\\d{1,3})?)").matcher(t);
+    if (m.matches()) {
+      int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
+      double d = Double.parseDouble(m.group(3));
+      if (w < 160 || h < 160 || w > 4096 || h > 4096 || d < 0.75 || d > 4 || w * d > 4096 || h * d > 4096) return null;
+      return t;
+    }
+    if (t.matches("window (front|hide)")) return t;
+    if (t.matches("maxfps ([1-9]|[1-9][0-9]|1[01][0-9]|120)")) return t;
     return null;
   }
 

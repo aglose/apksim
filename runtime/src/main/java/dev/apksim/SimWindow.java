@@ -173,6 +173,25 @@ final class SimWindow {
 
   private static native long nativeUntilVsync();
 
+  private static native void nativeSetCloseHides(boolean on);
+
+  private static native void nativeClose();
+
+  /** `window close`: as the window's close button (hides it while a viewer is attached, else the app ends). */
+  static boolean close() {
+    if (headless) return false;
+    nativeClose();
+    return true;
+  }
+
+  /**
+   * While a stream viewer is attached (FrameStream: apksim beam's tab), the window's close button hides the window and
+   * the app runs on there; Quit still ends it.
+   */
+  static void closeHides(boolean on) {
+    if (!headless) nativeSetCloseHides(on);
+  }
+
   private static native String nativeVsyncStats();
 
   static String displayInfo() {

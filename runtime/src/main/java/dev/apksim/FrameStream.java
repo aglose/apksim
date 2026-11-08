@@ -113,6 +113,7 @@ final class FrameStream {
       FrameStream.quality = Math.max(10, Math.min(100, quality));
       if (h264) FrameStream.kbps = Math.max(100, Math.min(100_000, kbps));
       SUBSCRIBERS.add(s);
+      SimWindow.closeHides(true);
       // The new subscriber needs the current screen even if it does not change (s.needsFrame): the last frame is
       // encoded again for it, and the redraw below covers a first subscriber, before any frame was kept.
       wake = true;
@@ -124,6 +125,7 @@ final class FrameStream {
     } finally {
       synchronized (LOCK) {
         SUBSCRIBERS.remove(s);
+        SimWindow.closeHides(!SUBSCRIBERS.isEmpty());
         wake = true;  // the encoder lets go of an H.264 encoder no one needs any more
         LOCK.notifyAll();
       }

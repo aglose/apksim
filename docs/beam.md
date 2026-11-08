@@ -18,8 +18,8 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
 | 2 The agent downloads the APK itself | Done (see "Phase 2 as built"): with the server's ticket, from the page's own site; the tab relays it only when that fails |
-| 3 Sizing, Show in Simulator | Not started |
-| 4 Moving a running session | Not started |
+| 3 Sizing, Show in Simulator | Done (see "Phase 3 as built"): Fill mode at the browser's pixel ratio, the simulator window as a second view, close hides it |
+| 4 Moving a running session | Done (see "Phase 4 as built"): server to Mac and back with no blank frame; a refused move stays; a dead agent offers the server. Left: reconnecting after sleep |
 | 5 The app's data moves with it | Not started (optional) |
 | 6 Polish, Linux agent | Not started |
 
@@ -273,13 +273,13 @@ the manual checks listed.
    tab's relay. Done when: the second visit transfers nothing; a server behind an auth proxy (a stand-in in
    `beam-check.py` that wants a cookie) beams through the tab; a wrong hash, an expired or altered ticket, and an app
    the ticket does not name are refused.
-3. **Sizing (~1 week).** Fill mode, density from the pixel ratio, the two-views rule, "Show in Simulator", close as
+3. **Sizing.** Built 2026-11-08 (see "Phase 3 as built"). Fill mode, density from the pixel ratio, the two-views rule, "Show in Simulator", close as
    hide, the `Session.check` additions. Done when: in Chromium, the canvas's backing size equals the stage's CSS size
    times the ratio and equals the frame's size after every resize (a script through the browser's devtools
    protocol); a window drag to another display re-densities; dragging the simulator window resizes what the tab
    shows within one frame; 100 rapid resizes from both sides end with both views agreeing and no feedback loop
    (count `size` commands); the test app's top bar reads the stage's size in dp.
-4. **Moving a running session (~3 days).** Parallel start on a hidden canvas, cutover on the local first frame,
+4. **Moving a running session.** Built 2026-11-08 (see "Phase 4 as built"; not the reconnect after sleep). Parallel start on a hidden canvas, cutover on the local first frame,
    remote close, the progress chip, reconnect after sleep, fallback to the server. Done when: no blank frame across
    the cutover (frame log), input before the cutover reaches the server and after it the Mac, and a killed agent
    mid-session offers the server.
@@ -547,6 +547,63 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   downloads the build itself and the second visit transfers nothing; a hash the download does not have is not kept;
   another site's address and another path of the page's site are not fetched; with an expired ticket the agent asks
   the tab. In Chrome with serve's page: "this Mac downloaded the app from this server", then found by its hash.
+
+## Phase 3 as built (2026-11-08)
+
+- **Beamed instances have a window**, hidden (`--window hidden` instead of `--headless`), so the same display has a
+  second view. While it is hidden there is no display vsync and the tab's `vsync` paces the instance (phase 1b); shown,
+  the display's vsync paces it again.
+- **The page** (a session on this Mac only, shown when the session's `i` message says `keep`, i.e. the agent's): a
+  "Device size / Fill the page" menu (remembered), "Show in Simulator" (`window front`) and "Fit to tab".
+  - Fill: the stage's CSS size in dp at `devicePixelRatio` (`device WxH@D`; 160-4096 dp, at most 4096 px a side, the
+    ratio rounded to 0.01), sent from a `ResizeObserver` at most every 100 ms and once 120 ms after the last change,
+    and again when a `matchMedia("(resolution: Rdppx)")` listener sees the window move to another ratio. The canvas's
+    CSS size is the frame's pixels over the ratio, pinned top left: one frame pixel per screen pixel, and a frame from
+    before a resize is shown as it is, never stretched. Not sent again while unchanged.
+  - The two views: the tab sends a size only for its own stage, never in answer to a frame. A frame of a size it did not
+    send, once its own resizes have settled (500 ms), is the simulator window's (dragged, rotated): shown as it is,
+    with "Fit to tab", which sends the tab's size again (as does the next stage resize).
+  - Device size sends the menu's device again; a new session starts in the remembered mode.
+- **`Session.checkBeam`** (the agent only): `device WxH@D` within those limits (not answered to the tab: one a resize
+  step), `window front|hide`, `maxfps N`. A remote serve still takes only named sizes.
+- **Closing the simulator window** while a stream viewer is attached hides it (`windowShouldClose`,
+  `SimWindow.closeHides`, set as FrameStream gains and loses subscribers); the session goes on in the tab. Quit (Cmd+Q)
+  ends it, and the tab is told. Without a viewer the close button ends the instance as before. `window close` does
+  what the close button does, for checks.
+- **Checked** (`scripts/beam-size-check.py`, Chrome, 25 checks): after each of four browser window sizes the canvas is
+  the stage times the ratio and the frames that size, shown unscaled, and the test app's top bar reads the stage's size
+  in dp; a pixel ratio of 1 (DevTools' device metrics) re-densities the display and back; `window show` then a drag to
+  420x760 points shows 840x1520 in the tab within a moment with no size sent back and Fit to tab offered, which takes
+  it back; 50 browser resizes interleaved with 50 window drags end with no size sent after them and both views on the
+  tab's size; the close button with the tab attached hides the window and the session streams on; Device size brings
+  the phone back. Without a viewer, `window close` still ends an instance (exit 0).
+- **Not done**: Fill as the default for desktop and custom sizes (it is a remembered choice), rotating in Fill (the
+  frame turns and Fit to tab is offered), letterboxing the window's size in the tab's middle (it is pinned top left).
+
+## Phase 4 as built (2026-11-08)
+
+- **The page** (`moveSession`): changing "On the server / On this Mac" while a session shows frames moves it rather
+  than restarting it. The other side's session starts beside the running one (on the Mac through the same grant,
+  download or relay as a start, `macGrant`; on the server a WebSocket of its own), with the same query: app, device,
+  appearance, locale, font scale and the last deep link, so the app starts there again where its link points (what it
+  holds in memory does not move; its data is phase 5). The running session goes on streaming and taking input
+  meanwhile, and a chip says "Moving to this Mac: translating classes…" from the new side's `p` messages. On the new
+  side's first frame (a keyframe) the page takes it over (`promote`): the old socket's handlers stop drawing, it is
+  closed (the server's session ends and its slot is erased, as for a closed tab), the new side's buffered `i`/`c`
+  messages are replayed (its device, the keep and display controls, the codec), the decoder starts on that keyframe,
+  and input goes there. The canvas is never cleared: the old side's last frame stays up until the new one is drawn.
+- **Fallbacks**: a move the other side refuses or that fails before its first frame (`x`: the agent's sessions all in
+  use; a closed connection; a grant refused) is abandoned, the menu set back, and the session stays where it was. Stop,
+  Start or another move abandon a move under way. A session on this Mac whose agent goes away mid-session (quit,
+  killed) offers "Run on the server instead".
+- **Checked** (`scripts/beam-move-check.py`, Chrome, 13 checks, the test app on its Shader tab): server to Mac in
+  ~0.5 s (warm standby, build cached) with the server's frames going on until 16-17 ms before the Mac's first and
+  nothing covering the canvas, the server's session then gone and input reaching the Mac's; Mac to server the same
+  way (10-17 ms); with another tab holding the agent's one session a move is refused and the session streams on on the
+  server; with the agent killed mid-session the page offers the server, which runs it.
+- **Not done**: reconnecting to the same Mac session after the Mac slept (the plan's 30 s): the agent ends a session
+  when its WebSocket closes, so a drop ends it and the page offers the server; moving a session whose screen is still
+  (no frames) waits for the new side's first frame as well, which a still screen sends at once.
 
 ## Measurements to keep (as serve's table)
 

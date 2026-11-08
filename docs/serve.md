@@ -329,7 +329,10 @@ and lets the page reach `http://127.0.0.1:PORT` in its CSP. The beam answer also
 a key serve makes at its start, for that app and its SHA-256, good for 5 minutes), and `GET /api/beam/apk?ticket=T`
 serves that one APK to whoever holds the ticket, without the token: the visitor's agent downloads the build itself
 with it, and only when that fails (a sign-in it cannot pass, a firewall) does the tab relay the APK. Off by default: it
-lets token holders, and the agents they hand a ticket to, download the APKs they can run.
+lets token holders, and the agents they hand a ticket to, download the APKs they can run. A session on the visitor's
+Mac also offers "Fill the page" (the display sized to the stage at the browser's pixel ratio) and "Show in
+Simulator", which only the agent accepts (docs/beam.md, phase 3). Changing where the app runs during a session moves
+it: the other side starts beside it and takes over on its first frame, with no blank frame between (phase 4).
 
 ### Not in scope (yet)
 
