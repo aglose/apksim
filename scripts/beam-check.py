@@ -28,6 +28,7 @@ import json
 import os
 import glob
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -112,7 +113,93 @@ def build_file(sha):
 
 
 def cache_entries(sha):
-    return glob.glob(os.path.join(STATE, "cache", sha + ".apk-*"))
+    """The build's caches: the agent's translated classes (moved there as each session ends) and any apksim cache entry
+    (a beamed instance keeps its own in its scratch; `beam run`, an ordinary launch, makes one)."""
+    return glob.glob(os.path.join(STATE, "cache", sha + ".apk-*")) + glob.glob(os.path.join(STATE, "beam", "cache", sha))
+
+
+def build_classes(sha):
+    return glob.glob(os.path.join(STATE, "beam", "cache", sha, "classes", "*", "*.pack"))
+
+
+def sandbox_checks(apksim, apk):
+    """The beam sandbox's profile (docs/beam.md "The beam sandbox"), probed with shell commands run inside it."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    lport = listener.getsockname()[1]
+    standby = os.path.join(tempfile.gettempdir(), f"apksim-standby-beamcheck{os.getpid()}.sock")
+    unix = socket.socket(socket.AF_UNIX)
+    try:
+        os.unlink(standby)
+    except OSError:
+        pass
+    unix.bind(standby)
+    unix.listen(1)
+    os.makedirs(os.path.join(STATE, "beam"), exist_ok=True)
+    os.makedirs(os.path.join(STATE, "autofill"), exist_ok=True)
+    other = os.path.join(STATE, "cache", "data", "dev.example", "default")
+    os.makedirs(other, exist_ok=True)
+    os.makedirs(os.path.join(STATE, "cache", "data", "dev.example", "beam-0"), exist_ok=True)
+    for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x")):
+        if not os.path.exists(f):
+            open(f, "w").write("secret\n")
+    probes = [
+        ("allowed", "write its own scratch", "touch $S/tmp/$$/probe"),
+        ("allowed", "write a beam data slot", "touch $S/cache/data/dev.example/beam-0/probe"),
+        ("allowed", "read apksim's jar", "head -c 4 $R/work/apksim.jar"),
+        ("allowed", "reach the internet's resolver", "nslookup -timeout=3 example.com"),
+        ("denied", "read the agent's trusted sites", "cat $S/beam/trust.json"),
+        ("denied", "read saved autofill sign-ins", "cat $S/autofill/x.properties"),
+        ("denied", "read another app's data", "cat $S/cache/data/dev.example/default/x"),
+        ("denied", "write the shared class cache", "mkdir -p $S/cache/classes/probe"),
+        ("denied", "write another app's data", "touch $S/cache/data/dev.example/default/probe"),
+        ("denied", "write another process's scratch", "touch $S/tmp/1/probe"),
+        ("denied", "edit the agent's trusted sites", "echo x >> $S/beam/trust.json"),
+        ("denied", "read a file in the home folder", "head -c 1 $HOME/Library/Preferences/.GlobalPreferences.plist"),
+        ("denied", "list the home folder", "ls $HOME"),
+        ("denied", "connect to a loopback port (another instance, the agent)", f"nc -z -w 2 127.0.0.1 {lport}"),
+        ("denied", "connect to a standby's socket", f"nc -U -z {standby}"),
+    ]
+    script = "S=$1; R=$2\n" + "\n".join(
+        f"if ( {cmd} ) >/dev/null 2>&1; then echo 'allowed {i}'; else echo 'denied {i}'; fi" for i, (_, _, cmd) in enumerate(probes))
+    os.makedirs(os.path.join(STATE, "tmp", "1"), exist_ok=True)
+    env = dict(ENV, APKSIM_BEAM_SANDBOX="1", APKSIM_SANDBOX_TEST=f"sh -c {sh_quote(script)} probe {sh_quote(os.path.realpath(STATE))} "
+               f"{sh_quote(os.path.realpath(os.path.dirname(HERE)))}")
+    r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=env)
+    got = dict(line.split(" ", 1)[::-1] for line in r.stdout.split("\n") if line.strip())
+    for i, (want, what, _) in enumerate(probes):
+        check(got.get(str(i)) == want, f"sandbox: a beamed app may{'' if want == 'allowed' else ' not'} {what} ({got.get(str(i))})")
+    listener.close()
+    unix.close()
+    os.unlink(standby)
+
+
+def sh_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def live_sandbox_checks(pid):
+    """A running beamed instance, over its own control port: a screenshot into the agent's folder fails, into its own
+    scratch works (the instance's own file operations, from inside the JVM)."""
+    f = os.path.join(STATE, "tmp", str(pid), "control.port")
+    if not os.path.exists(f):
+        check(False, f"sandbox: the beamed instance's control port ({f})")
+        return
+    c = socket.create_connection(("127.0.0.1", int(open(f).read().strip())), timeout=30)
+    io = c.makefile("rw")
+
+    def cmd(line):
+        io.write(line + "\n")
+        io.flush()
+        return io.readline().strip()
+    bad = cmd(f"shot {os.path.join(STATE, 'beam', 'probe.png')}")
+    good = cmd(f"shot {os.path.join(STATE, 'tmp', str(pid), 'probe.png')}")
+    c.close()
+    check(bad.startswith("error") and not os.path.exists(os.path.join(STATE, "beam", "probe.png")),
+          f"sandbox: a beamed instance cannot write into the agent's folder ({bad[:80]})")
+    check(not good.startswith("error") and os.path.exists(os.path.join(STATE, "tmp", str(pid), "probe.png")),
+          f"sandbox: and writes its own scratch ({good[:60]})")
 
 
 def begin(gp, origin, start, apk):
@@ -196,6 +283,7 @@ def main():
     r = subprocess.run([apksim, "beam", "--bind", "0.0.0.0"], capture_output=True, text=True, timeout=30, env=ENV)
     check(r.returncode == 2, "apksim beam refuses --bind (loopback only)")
 
+    sandbox_checks(apksim, a.apk)
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV)
     g = None
@@ -289,6 +377,7 @@ def main():
         check(len(after) > 0, "agent: a tap changes the screen")
         s.pump(3, until=lambda: s.stats.get("pid", 0) > 0)
         pid = s.stats.get("pid", 0)
+        live_sandbox_checks(pid)
         w2 = WS(f"http://127.0.0.1:{gp}", f"/ws?app={grant['app']}&token={grant['token']}", {"Origin": A})
         check(w2.status == 403, "agent: a session grant is used once")
         w.s.close()
@@ -335,7 +424,10 @@ def main():
         check(len(s2.frames) > 0, "keep: the second session runs")
         check(close_session(s2), "keep: the second session ends")
         time.sleep(2)  # its end's sweep, with keep-days 0
-        check(os.path.exists(build_file(sha)) and cache_entries(sha), "keep: the build and its cache entry stay while a session of it runs")
+        check(os.path.exists(build_file(sha)), "keep: the build stays while a session of it runs")
+        check(build_classes(sha), "keep: a session's translated classes go into its build's cache when it ends")
+        check(not glob.glob(os.path.join(STATE, "cache", sha + ".apk-*")) and not glob.glob(os.path.join(STATE, "cache", "classes", "*", "*.pack")),
+              "keep: a beamed instance wrote nothing into the caches other launches share")
         check(close_session(s1), "keep: the first session ends")
         check(until(lambda: not os.path.exists(build_file(sha)) and not cache_entries(sha), 15),
               "keep: with keep-days 0 the build and its cache entry go once its last session ends")

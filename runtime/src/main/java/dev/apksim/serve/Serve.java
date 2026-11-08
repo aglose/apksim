@@ -459,12 +459,14 @@ public final class Serve {
   }
 
   /** On the Mac, a warm-launch standby for the first session (each instance starts the next after its first frame). */
-  private void warmStandby() {
+  void warmStandby() {
     if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) return;
     if ("0".equals(System.getenv("APKSIM_STANDBY"))) return;
     try {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
-      ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby", (noNetwork ? "n" : "") + (coreDumps ? "" : "k"))
+      // The agent's instances run in the beam sandbox (b, the launcher's APKSIM_BEAM_SANDBOX), so their standbys too.
+      ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby",
+          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : ""))
           .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
       instanceEnvironment(pb);
       pb.start().waitFor(10, TimeUnit.SECONDS);
@@ -477,6 +479,14 @@ public final class Serve {
   void instanceEnvironment(ProcessBuilder pb) {
     if (coreDumps) pb.environment().remove("APKSIM_NO_CORE");
     else pb.environment().put("APKSIM_NO_CORE", "1");
+    // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
+    if (beam) pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
+    else pb.environment().remove("APKSIM_BEAM_SANDBOX");
+  }
+
+  /** The agent's cache for one build (translated classes), kept and deleted with it. */
+  Path beamCache(String sha256) {
+    return state.resolve("beam/cache").resolve(sha256);
   }
 
   void ended(Session s) {
@@ -899,17 +909,13 @@ public final class Serve {
         }
         Catalog.App a;
         try {
-          a = catalog.upload(r.content(), length, g.name(), g.launch());
+          // The hash checked before the file is stored or the warmer hears of it (it would run it).
+          a = catalog.upload(r.content(), length, g.name(), g.launch(), g.sha256());
         } catch (IOException e) {
           Http.text(out, 400, e.getMessage());
           return;
         }
-        String got = catalog.sha256(a.path());
-        if (!got.equals(g.sha256())) {
-          catalog.discard(a);
-          Http.text(out, 400, "the APK's SHA-256 is " + got + ", not the " + g.sha256() + " the page named");
-          return;
-        }
+        String got = g.sha256();
         System.err.printf("[beam] %s sent %s (%d MB)%n", o, a.name(), Files.size(a.path()) >> 20);
         Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch())) + "}");
       }

@@ -228,7 +228,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
-    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamStore`: what the agent
+    loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md; `BeamSandbox` (in `dev.apksim`): a beamed instance's
+    sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
     saved|run|forget|config|sweep`; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
@@ -268,6 +269,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
   `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
   against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
+  `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
+  fallback to the server),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
@@ -736,7 +739,8 @@ then three rounds of a framework-only activity (views, text, a RenderNode drawn 
 through `HwRenderer`, touches), so call sites Robolectric links through invokedynamic and framework classes are
 done, plus the codec list, networks, XML parser and runtime hash; Robolectric then resets as between tests. No app
 code runs before the launch. It then waits for the JIT queue to drain (~2.2 s from start to ready, ~410 MB idle).
-- One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`), not per working directory.
+- One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`, and `b` for `apksim beam`'s
+  instances, which the agent starts itself: docs/beam.md "The beam sandbox"), not per working directory.
   Instances start the next one 1 s after their first frame (`--spawn-standby`, inside their own sandbox) or on exit.
   A launch waits for a booting standby only past its first second (a cold launch is ~1.3 s), else launches cold.
 - A standby quits after an hour unused (`-Dapksim.standbyIdle` seconds) and when `work/apksim.jar` or `work/app.aot`

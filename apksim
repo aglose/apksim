@@ -77,11 +77,13 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)
   # k: no core dumps (apksim serve): a flag of the standby's name, since its JVM fixes it at its start.
   if [[ "$FLAGS" == *k* ]]; then export APKSIM_NO_CORE=1; else unset APKSIM_NO_CORE; fi
+  # b: a beamed instance's sandbox (docs/beam.md "The beam sandbox"), started only by the agent, outside any sandbox.
+  if [[ "$FLAGS" == *b* ]]; then export APKSIM_BEAM_SANDBOX=1; else unset APKSIM_BEAM_SANDBOX; fi
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
 fi
 if [[ "${1:-}" == --stop-standbys ]]; then
   # This folder's standbys (they also quit after an hour unused, or when work/apksim.jar or work/app.aot change).
-  for FLAGS in "" n s ns k nk sk nsk; do
+  for FLAGS in "" n s ns k nk sk nsk b nb kb nkb; do
     SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
     [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
     rm -f "$SOCK" "$SOCK.pid"
@@ -255,6 +257,12 @@ fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}"
+# A beamed instance (the agent sets APKSIM_BEAM_SANDBOX, docs/beam.md): a sandbox of its own, so standbys of its own.
+if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+  [[ -n "${NO_SANDBOX:-}" ]] && { echo "a beamed instance always runs sandboxed" >&2; exit 2; }
+  FLAGS="${FLAGS}b"
+  EXTRA+=("-Dapksim.beamSandbox=true")
+fi
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
 WARM_OK=""
@@ -269,6 +277,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
+      -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*) ;;
       -Dapksim.classCache=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
@@ -343,8 +352,10 @@ fi
 # spares starting python3 just to read the clock.
 [[ "$OS" == Darwin ]] || export APKSIM_T0=${APKSIM_T0:-$(date +%s%3N)}
 # This launch may start the next standby (Standby.spawnNext), which inherits its sandbox.
-[[ -n "$WARM_OK" ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
-[[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK" "-Dapksim.spawnStandby=$FLAGS")
+# Not a beamed one: what it starts would inherit its sandbox, whose rules name this process (the agent starts them).
+[[ -n "$WARM_OK" && "$FLAGS" != *b* ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
+[[ -n "$STANDBY_SOCK" ]] && EXTRA+=("-Dapksim.standby=$STANDBY_SOCK")
+[[ -n "$STANDBY_SOCK" && "$FLAGS" != *b* ]] && EXTRA+=("-Dapksim.spawnStandby=$FLAGS")
 # Robolectric mishandles spaces in its dependency path, so always go through a link without any.
 TMP="${TMPDIR:-/tmp}"
 LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
@@ -372,6 +383,31 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     PROFILE="$PROFILE
 (deny network-outbound (remote ip))
 (allow network-outbound (remote ip \"localhost:*\"))"
+  fi
+  if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+    # A beamed instance runs an APK a web site sent (docs/beam.md "The beam sandbox"). Rules name real paths (the
+    # sandbox matches resolved ones); later rules win. Writes: its own scratch and out folder (this PID: exec keeps it
+    # for the JVM) and beam-N data slots, nothing else in the state folder, so not the caches other launches load code
+    # from. Reads: nothing in the home folder but apksim, its libraries and the JDK; in the state folder not the
+    # agent's trust and settings, saved sessions, serve's files, autofill sign-ins or other apps' data and caches (a
+    # path's metadata only: resolving the APK's path stats the folders above it).
+    # Network: what the Mac reaches, but not loopback (other instances' control ports, the agent) or a standby's socket.
+    RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
+    RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
+    QS="$(printf '%s' "$RS" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+    SLOTS="^$QS/cache/data/[^/]+/beam-[0-9]+(\\.device)?(/|\$)"
+    mkdir -p "$STATE/beam/out" "$STATE/cache/data"  # made here: the instance may make only what is inside them
+    PROFILE="$PROFILE
+(deny file-write* (subpath \"$RS\"))
+(allow file-write* (subpath \"$RS/tmp/$$\") (subpath \"$RS/beam/out/$$\") (regex #\"^$QS/cache/data(/[^/]+)?\$\") (regex #\"$SLOTS\"))
+(deny file-read* (subpath \"$RH\"))
+(allow file-read-metadata (subpath \"$RH\"))
+(allow file-read* (subpath \"$RR\") (subpath \"$RL\") (subpath \"$RJ\") (subpath \"$RS\"))
+(deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\"))
+(allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (regex #\"$SLOTS\"))
+(allow file-read-metadata (subpath \"$RS\"))
+(deny network-outbound (remote ip \"localhost:*\"))
+(deny network-outbound (remote unix-socket (path-regex #\"/apksim-standby-\")))"
   fi
   SANDBOX=(sandbox-exec -p "$PROFILE")
 fi

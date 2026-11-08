@@ -49,6 +49,8 @@ final class ClassCache {
   private static final List<ClassCache> OPEN = new java.util.concurrent.CopyOnWriteArrayList<>();
 
   private final Path dir;
+  /** Read only, where dir has nothing yet: a beamed instance's build cache (BeamSandbox), else null. */
+  private final Path seed;
   private final Object saving = new Object();
   private final String[] keys;
   private final Map<String, Entry>[] loaded;
@@ -61,13 +63,15 @@ final class ClassCache {
   int hits;
 
   @SuppressWarnings("unchecked")
-  private ClassCache(Path dir, String[] keys, String pkg) {
+  private ClassCache(Path dir, Path seed, String[] keys, String pkg) {
     this.dir = dir;
+    this.seed = seed;
     this.keys = keys;
     hintFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".classes");
-    if (hintFile != null && Files.isRegularFile(hintFile)) {
+    Path hintsIn = hintFile == null ? null : read(hintFile.getFileName().toString());
+    if (hintsIn != null && Files.isRegularFile(hintsIn)) {
       try {
-        hints.addAll(Files.readAllLines(hintFile));
+        hints.addAll(Files.readAllLines(hintsIn));
       } catch (IOException ignored) {
         // Hints only speed things up.
       }
@@ -91,14 +95,21 @@ final class ClassCache {
     if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
     else if (!dev.apksim.dex.ClassTranslator.PEEPHOLE) runtime += "-raw";
     runtime += dev.apksim.dex.Probes.cacheKey();  // test-impact recording: probed classes
-    Path root = Path.of(System.getProperty("apksim.cacheRoot"), "classes");
-    ClassCache cache = new ClassCache(root.resolve(runtime), keys, hintName);
+    Path root = BeamSandbox.ON ? BeamSandbox.classCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot"), "classes");
+    Path seed = BeamSandbox.ON ? BeamSandbox.classCacheSeed() : null;
+    ClassCache cache = new ClassCache(root.resolve(runtime), seed == null ? null : seed.resolve(runtime), keys, hintName);
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
     saver.setDaemon(true);
     saver.setPriority(Thread.MIN_PRIORITY);
     saver.start();
     OPEN.add(cache);
     return cache;
+  }
+
+  /** A file of this cache to read: this process's own, else the seed's (a beamed instance's build cache). */
+  private Path read(String name) {
+    Path own = dir.resolve(name);
+    return seed == null || Files.exists(own) ? own : seed.resolve(name);
   }
 
   /** Classes the last launches of this app loaded, in the order they first loaded them. */
@@ -117,7 +128,7 @@ final class ClassCache {
   }
 
   private Entry valid(int dex, String name, ToIntFunction<String> answer) {
-    if (loaded[dex] == null) loaded[dex] = load(dir.resolve(keys[dex] + ".pack"));
+    if (loaded[dex] == null) loaded[dex] = load(read(keys[dex] + ".pack"));
     Entry e = loaded[dex].get(name);
     if (e == null) return null;
     for (int i = 0; i < e.owners.length; i++) {
@@ -190,7 +201,7 @@ final class ClassCache {
       }
       for (int i = 0; i < keys.length; i++) {
         if (fresh[i].isEmpty()) continue;
-        if (loaded[i] == null) loaded[i] = load(dir.resolve(keys[i] + ".pack"));
+        if (loaded[i] == null) loaded[i] = load(read(keys[i] + ".pack"));
         todo.put(i, fresh[i]);
         fresh[i] = new HashMap<>();
       }
@@ -238,7 +249,7 @@ final class ClassCache {
         Files.write(tmp, names);
         Files.move(tmp, hintFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       }
-      sweep();
+      if (!BeamSandbox.ON) sweep();  // a beamed instance's folder is new each launch, and the agent's to tidy
     } catch (IOException e) {
       System.err.println("[apksim] could not save translated classes: " + e);
       return;
@@ -284,8 +295,15 @@ final class ClassCache {
         m.put(name, new Entry(b, b.position(), len, owners, answers));
         b.position(b.position() + len);
       }
-      // Touching the file marks it as in use for sweep().
-      Files.setLastModifiedTime(pack, FileTime.fromMillis(System.currentTimeMillis()));
+      // Touching the file marks it as in use for sweep(). Not a beamed instance's (its seed is read only, and the
+      // agent keeps it as long as the build), and never at the cost of the classes read.
+      if (!BeamSandbox.ON) {
+        try {
+          Files.setLastModifiedTime(pack, FileTime.fromMillis(System.currentTimeMillis()));
+        } catch (IOException e) {
+          // a read-only cache: used as it is
+        }
+      }
     } catch (IOException | RuntimeException e) {
       System.err.println("[apksim] ignoring damaged class cache " + pack.getFileName() + ": " + e);
       return new HashMap<>();

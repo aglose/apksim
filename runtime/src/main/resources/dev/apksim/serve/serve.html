@@ -257,7 +257,9 @@ async function loadApps() {
   if (state.app) start();
 }
 function refresh() {
-  const running = ws && ws.readyState <= 1 && !ended;
+  // A start on this Mac has no socket while it waits for the agent (its prompt) or sends the APK: it counts as running,
+  // so Stop can drop it.
+  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen;
   $("start").disabled = !$("app").value || running;
   $("stop").disabled = !running;
   for (const id of ["back", "home", "rotl", "rotr", "go", "copy", "keep"]) $(id).disabled = !running;
@@ -309,9 +311,11 @@ function start() {
 }
 // A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
 let startGen = 0;
+let macStart = 0;  // the start generation asking this Mac (no socket yet), else 0
 function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q); }
-function openSocket(url, onMac) {
+function openSocket(url, onMac, fallback) {
   const sock = ws = new WebSocket(url);
+  sock.fallback = fallback || null; sock.gen = startGen;
   sock.binaryType = "arraybuffer";
   bestRtt = Infinity; clockOffset = 0;
   // Every handler first checks that its socket is still the current one: a stopped session's socket may still be
@@ -319,6 +323,7 @@ function openSocket(url, onMac) {
   sock.onopen = () => { if (sock !== ws) return; refresh(); for (let i = 0; i < 5; i++) setTimeout(syncClock, 200 * i); };
   sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
+    if (sock === ws && macFallback(sock, "the session closed before its first frame")) return;
     socketClosed(sock);
     if (sock !== ws) return;
     if (!ended) overlay(onMac ? "Disconnected from this Mac's apksim." : "Disconnected from the server.", "Start again", start);
@@ -355,6 +360,7 @@ function onText(t) {
     if (rtt < bestRtt) { bestRtt = rtt; clockOffset = server - (sent + rtt / 2); }
   }
   else if (kind === "q") { $("permission").hidden = false; $("permText").textContent = "The app asks for: " + body; }
+  else if (kind === "x" && ws && macFallback(ws, body)) { /* on the server now */ }
   else if (kind === "x" && fallbackTries > 0 && fallbackTries < 6 && /^all \d+ sessions are in use/.test(body)) {
     // The JPEG restart came before the old session let go of its place (it holds it until its instance has exited
     // and its data is erased): try again, a little later each time.
@@ -799,6 +805,7 @@ async function okJson(p) {
 }
 async function startOnMac(q, gen) {
   const app = state.app;
+  macStart = gen; refresh();
   try {
     overlay("Starting on this Mac…");
     const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
@@ -818,19 +825,35 @@ async function startOnMac(q, gen) {
     log("running on this Mac");
     const lq = new URLSearchParams(q);
     lq.set("app", g.app); lq.set("token", g.token);
-    openSocket("ws://127.0.0.1:" + beam.port + "/ws?" + lq, true);
+    macStart = 0;
+    openSocket("ws://127.0.0.1:" + beam.port + "/ws?" + lq, true, q);
   } catch (e) {
     if (gen !== startGen) return;
+    macStart = 0;
     log("this Mac: " + e.message + ": running on the server instead");
     openSocket(serverSocketUrl(q), false);
+  } finally {
+    if (macStart === gen) macStart = 0;
+    refresh();
   }
+}
+// A session on this Mac that ends before its first frame (the agent's sessions all in use, the upgrade refused, the
+// instance failing to start) runs on the server instead, once, unless Stop or a newer start came meanwhile.
+function macFallback(sock, why) {
+  if (!sock.fallback || frameW || sock.gen !== startGen || ended) return false;
+  const q = sock.fallback; sock.fallback = null;
+  if (ws === sock) { ws = null; socketClosed(sock); sock.close(); }
+  log("this Mac: " + why + ": running on the server instead");
+  openSocket(serverSocketUrl(q), false);
+  return true;
 }
 $("keep").onchange = () => send("keep " + ($("keep").checked ? "on" : "off"));
 $("runOn").onchange = async () => {
   if ($("runOn").value === "mac" && !beam.ok && !(await beamHello(true))) $("runOn").value = "server";
   pref($("runOn").value);
-  // A running session starts again where it was asked to run (moving it without a restart is docs/beam.md's phase 4).
-  if (ws && ws.readyState <= 1 && !ended) start();
+  // A running session, or one still asking this Mac, starts again where it was asked to run (moving it without a
+  // restart is docs/beam.md's phase 4).
+  if (ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen) start();
 };
 addEventListener("beforeunload", () => { if (ws) ws.close(); });
 if (!redirecting) loadApps();

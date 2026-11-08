@@ -95,6 +95,7 @@ public final class ApkCache {
 
   /** The entry for this APK, created and marked in use by this process; eviction then runs in the background. */
   static synchronized Path take(Path root, Path apk) throws IOException {
+    if (BeamSandbox.ON) BeamSandbox.seedApkCache(root);
     Path entry = root.resolve(apk.getFileName() + "-" + key(apk));
     Files.createDirectories(root);
     try (FileChannel global = FileChannel.open(root.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
@@ -105,6 +106,8 @@ public final class ApkCache {
       held = ch;
       touch(entry.resolve(LAST_USED));
     }
+    // A beamed instance's entry is in its own scratch, and every other is out of its reach (BeamSandbox).
+    if (BeamSandbox.ON) return entry;
     // After startup: listing and sizing the entries must not compete with the launch. A launch that ends sooner runs
     // it on the way out (beforeExit), as Standby.halt's Runtime.halt would end this thread.
     Thread t = new Thread(() -> {

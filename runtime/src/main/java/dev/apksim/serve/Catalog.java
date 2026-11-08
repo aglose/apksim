@@ -380,24 +380,6 @@ final class Catalog {
     }
   }
 
-  /**
-   * Forgets an upload that must not be kept (`apksim beam`: its bytes were not the build the page named): its id,
-   * and its APK when no other id names it.
-   */
-  void discard(App a) throws IOException {
-    synchronized (uploadsLock) {
-      Files.deleteIfExists(uploads.resolve(a.id() + ".ref"));
-      String apk = a.path().getFileName().toString();
-      try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads, "*.ref")) {
-        for (Path ref : d) {
-          List<String> lines = Files.readAllLines(ref);
-          if (!lines.isEmpty() && lines.get(0).equals(apk)) return;
-        }
-      }
-      Files.deleteIfExists(a.path());
-    }
-  }
-
   /** Whether this added app's download is still under way (its file is not there yet). */
   boolean downloading(App a) {
     Download d = downloading.get(a.id());
@@ -409,7 +391,16 @@ final class Catalog {
    * id, or throws with the reason it was refused.
    */
   App upload(InputStream in, long length, String name, List<String> launch) throws IOException {
-    App a = publish(store(in, length, n -> {}), newId(), clean(name), launch);
+    return upload(in, length, name, launch, null);
+  }
+
+  /**
+   * An upload that must have this SHA-256 (apksim beam's, named by the page's start), checked while the file is still
+   * staged: one that does not match is deleted before it is stored or announced to anything (the warmer runs what it
+   * is told of).
+   */
+  App upload(InputStream in, long length, String name, List<String> launch, String expectSha256) throws IOException {
+    App a = publish(store(in, length, n -> {}), newId(), clean(name), launch, expectSha256);
     ready(a);
     return a;
   }
@@ -432,6 +423,10 @@ final class Catalog {
 
   /** Moves a stored file into place by its content hash and publishes `id` for it. */
   private App publish(Path tmp, String id, String clean, List<String> launch) throws IOException {
+    return publish(tmp, id, clean, launch, null);
+  }
+
+  private App publish(Path tmp, String id, String clean, List<String> launch, String expectSha256) throws IOException {
     String sha;
     try (InputStream f = Files.newInputStream(tmp)) {
       MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -440,6 +435,10 @@ final class Catalog {
       sha = HexFormat.of().formatHex(md.digest());
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
+    }
+    if (expectSha256 != null && !expectSha256.equals(sha)) {
+      Files.deleteIfExists(tmp);
+      throw new IOException("the APK's SHA-256 is " + sha + ", not the " + expectSha256 + " the page named");
     }
     Path apk = uploads.resolve(sha + ".apk");
     StringBuilder ref = new StringBuilder(sha).append(".apk\n").append(clean).append('\n');

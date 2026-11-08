@@ -8,7 +8,7 @@ simulator window when either is resized.
 
 This page is the plan: what "seamless" has to mean, the design, then phases with what finishes each.
 
-## Status (2026-11-07)
+## Status (2026-11-08)
 
 | Phase | State |
 |---|---|
@@ -16,6 +16,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 1 Agent, start on the Mac | Done: `apksim beam`, trust and prompt (answered by the owner), `serve --allow-beam`, the page's menu, `beam-check.py`. Left: the launchd agent (it runs in the foreground) |
 | 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
+| Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
 | 2 The agent downloads the APK itself | Not started (the tab relays it today) |
 | 3 Sizing, Show in Simulator | Not started |
 | 4 Moving a running session | Not started |
@@ -474,6 +475,56 @@ waiting on the permission prompt (Chrome draws it, a script cannot see it).
 - **Tried, not kept**: VideoToolbox's `PrioritizeEncodingSpeedOverQuality` with an expected 120 fps made the encode
   23 ms (from 5.6). Pacing without the queue (measured against the refresh timestamps, the period from the median):
   73-90% new frames, worse than none, as the period was 0.03 ms short and the phase drifted.
+
+## The beam sandbox (2026-11-08)
+
+A beamed APK is a web site's code on the visitor's Mac. apksim's ordinary sandbox (the launcher's `sandbox-exec`
+profile) keeps an app out of credentials and lets it write only the state folder, which was not enough here: that
+folder holds the agent's `trust.json` (an app allowed once could allow its site for good), other apps' data slots and
+saved sessions, saved autofill sign-ins, and the caches every launch loads code from (a translated class or an
+extracted `.so` planted there would run in another app, the owner's own included). So beamed instances run in a
+sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named with `b`, `BeamSandbox`):
+
+- **Writes**: only its own scratch (`STATE/tmp/<pid>`: the JVM keeps the launcher's PID, so the profile can name it),
+  its own out folder (`STATE/beam/out/<pid>`) and `beam-N` data slots with their `.device` folders.
+- **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a
+  path stats the folders above it; listing is refused); in the state folder not the agent's folder (but the uploaded
+  builds and its build caches), serve's files, autofill, screenshots or `cache/` (other apps' data, the shared class
+  and APK caches), except `beam-N` slots.
+- **Network**: what the Mac reaches (the consent prompt says so), but no loopback connection (other instances' control
+  ports, the agent: a non-browser client could forge an `Origin`) and no standby's socket (it would run an APK in the
+  ordinary sandbox).
+- **Caches without sharing**: a beamed instance starts from its build's caches the agent keeps
+  (`STATE/beam/cache/<sha256>/`: translated classes read in place, its APK cache entry cloned with `cp -c`), which it
+  may read but not write, and writes what it makes to its out folder; once it has exited the agent moves that into
+  the same build's cache, regular files and folders only, so what an app writes reaches only later launches of the
+  same build. Deleted with the build.
+- **Standbys**: a standby's sandbox is the one it started in, so an instance never starts the next (its rules name its
+  own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame.
+- **Cost**: none measured. First frame in the tab 0.17 s, as before (0.29 s while the APK cache entry was rebuilt in
+  scratch each launch, 0.5 s while a read-only seed's packs were dropped by a write of their modification time).
+- **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (17: its scratch, slot, the jar
+  and the internet allowed; the trust file, autofill, another app's data, the shared class cache, another process's
+  scratch, the home folder, a listening loopback port and a standby socket refused) and asks a running beamed instance
+  to write a screenshot into the agent's folder (refused) and into its scratch (works); its 1c checks find nothing a
+  beamed instance wrote in the shared caches.
+- **Not covered**: two beamed sessions at once can read each other's `beam-N` slot (a standby's profile cannot name
+  the slot a launch will take); an APK can read other builds' APKs in `beam/uploads` (other sites' published apps);
+  `--no-sandbox` is refused for beamed instances.
+
+## Review fixes (2026-11-08)
+
+- An upload's hash is checked while the file is still staged (`Catalog.upload` with the expected SHA-256): with
+  `--warm on` the warmer was told of an upload, and ran it, before its hash was compared.
+- Keeping a session: the `.device` folder moves first, while the slot still holds its name (once renamed, a new
+  session could take `beam-N` and empty its `.device`); a failure puts both back, or deletes what cannot go back, so
+  nothing is left under a name nothing lists; saving shares the sweep's lock, so a sweep never misses both the running
+  session and its record.
+- `apksim beam run` drops the app's own `--device` (the session's recorded one stands), as a session does.
+- The page: a start on this Mac counts as running while it waits for the agent (Stop works, changing the menu starts
+  it again where asked), and a Mac session that ends before its first frame (the agent's sessions all in use, a
+  refused upgrade, an instance that fails to start) runs on the server instead. `scripts/beam-page-check.py` checks
+  both in Chrome.
 
 ## Measurements to keep (as serve's table)
 

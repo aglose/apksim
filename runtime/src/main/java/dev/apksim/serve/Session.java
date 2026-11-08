@@ -197,6 +197,10 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.moveSharedData) cmd.add("--move-shared-data");
+    // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
+    // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
+    String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
+    if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
     // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     List<String> own = app.launch();
     for (int i = 0; i < own.size(); i++) {
@@ -207,7 +211,9 @@ final class Session {
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
-    pb.directory(serve.logs.toFile());  // where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited()
+    // Where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited(). A beamed instance may not
+    // read or write the agent's folders: the state folder's tmp, which it may read (its report then goes to /tmp).
+    pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
     // process it never saw.
@@ -373,6 +379,15 @@ final class Session {
         if (firstFrameMillis < 0) {
           firstFrameMillis = System.currentTimeMillis() - started;
           ws.sendText("p first frame after " + firstFrameMillis + " ms");
+          // A beamed instance starts no standby itself (it would inherit this one's sandbox): the agent does.
+          if (serve.beam) Thread.ofVirtual().name("beam-standby").start(() -> {
+            try {
+              Thread.sleep(1000);  // as an instance does: not while the app is starting
+            } catch (InterruptedException e) {
+              return;
+            }
+            serve.warmStandby();
+          });
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
         boolean askKey = false;
@@ -795,7 +810,68 @@ final class Session {
         Thread.currentThread().interrupt();
       }
     }
+    if (serve.beam) beamCaches();
     eraseData();
+  }
+
+  /**
+   * A beamed instance's caches (`STATE/beam/out/<pid>`, BeamSandbox) into its build's cache: only that build's, so what
+   * an app wrote there can reach no other app. Translated classes as regular files named as the cache names them, never
+   * a link; the APK cache entry of this build's file as a whole (a link in it stays a link: the next instance's sandbox
+   * reads nothing through it, and the agent never follows one). The out folder goes either way.
+   */
+  private void beamCaches() {
+    if (pid <= 0) return;
+    Path out = serve.state.resolve("beam/out").resolve(Long.toString(pid));
+    String build = serve.catalog.buildHash(app.path());
+    try {
+      Path apkCache = out.resolve("apk-cache");
+      if (build != null && Files.isDirectory(apkCache, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        try (var entries = Files.newDirectoryStream(apkCache)) {
+          for (Path e : entries) {
+            if (!e.getFileName().toString().matches(build + "\\.apk-[0-9a-f]{16}") || !Files.isDirectory(e, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+            Path into = serve.beamCache(build).resolve("apk");
+            BeamStore.deleteTree(into);
+            Files.createDirectories(into);
+            Files.move(e, into.resolve(e.getFileName().toString()));
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      logLine("[beam] could not keep the APK cache entry: " + e);
+    }
+    try {
+      Path classes = out.resolve("classes");
+      if (build != null && Files.isDirectory(classes, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        Path into = serve.beamCache(build).resolve("classes");
+        try (var runtimes = Files.newDirectoryStream(classes)) {
+          for (Path rt : runtimes) {
+            if (!Files.isDirectory(rt, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !rt.getFileName().toString().matches("[0-9a-zA-Z-]{1,80}")) continue;
+            Path dest = into.resolve(rt.getFileName().toString());
+            Files.createDirectories(dest);
+            int moved = 0;
+            try (var files = Files.newDirectoryStream(rt)) {
+              for (Path f : files) {
+                String n = f.getFileName().toString();
+                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes)")) continue;
+                Files.move(f, dest.resolve(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                moved++;
+              }
+            }
+            if (moved > 0) logLine("[beam] kept " + moved + " translated class files for the next launch of this build");
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      logLine("[beam] could not keep translated classes: " + e);
+    }
+    if (Files.isDirectory(out, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      try (Stream<Path> all = Files.walk(out)) {  // walking follows no link: a link is removed, not what it names
+        for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+      } catch (IOException | RuntimeException e) {
+        logLine("[beam] could not remove " + out + ": " + e);
+      }
+    }
   }
 
   private void eraseData() {

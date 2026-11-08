@@ -219,15 +219,19 @@ final class BeamStore {
 
   /**
    * Keeps a session's data slot (its instance has exited): renamed to `k<id>-0`, its `.device` beside it too, and
-   * described in `saved/<id>.json`. The new id, or null when the slot cannot be kept (then the caller erases it).
+   * described in `saved/<id>.json`. The new id, or null when the slot cannot be kept (then the caller erases it, and
+   * nothing of it is left under another name). Synchronized with {@link #sweep}: a sweep sees either the session
+   * running or its record, never neither, so it cannot delete the build a session is being saved with.
    */
-  String save(Leaving s) {
+  synchronized String save(Leaving s) {
     Path dir = s.slot().toAbsolutePath().normalize();
     if (!dir.startsWith(dataRoot.toAbsolutePath().normalize()) || !dir.getFileName().toString().startsWith("beam-")) return null;
     byte[] b = new byte[6];
     RANDOM.nextBytes(b);
     String id = HexFormat.of().formatHex(b);
     Path target = dir.resolveSibling("k" + id + "-0");
+    Path device = dir.resolveSibling(dir.getFileName() + ".device");
+    Path deviceTarget = target.resolveSibling(target.getFileName() + ".device");
     try (FileChannel ch = FileChannel.open(dir.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
       FileLock l;
       try {
@@ -236,33 +240,55 @@ final class BeamStore {
         l = null;
       }
       if (l == null) return null;  // another instance holds it (it took the slot with --fresh): nothing of ours is left
+      boolean deviceMoved = false;
+      boolean slotMoved = false;
       try {
+        // The .device folder first, while the slot still has its name and its lock: once the slot is renamed, another
+        // session may take beam-N and, with --fresh, empty beam-N.device.
+        if (Files.isDirectory(device)) {
+          Files.move(device, deviceTarget, StandardCopyOption.ATOMIC_MOVE);
+          deviceMoved = true;
+        }
         Files.move(dir, target, StandardCopyOption.ATOMIC_MOVE);
-        Path device = dir.resolveSibling(dir.getFileName() + ".device");
-        if (Files.isDirectory(device)) Files.move(device, target.resolveSibling(target.getFileName() + ".device"), StandardCopyOption.ATOMIC_MOVE);
+        slotMoved = true;
+        long now = System.currentTimeMillis();
+        StringBuilder j = new StringBuilder("{\n");
+        field(j, "id", id);
+        field(j, "app", s.app());
+        field(j, "sha256", s.sha256());
+        field(j, "package", dir.getParent().getFileName().toString());
+        field(j, "device", s.device());
+        field(j, "appearance", s.appearance());
+        field(j, "locale", s.locale());
+        field(j, "fontscale", s.fontScale());
+        field(j, "permissions", s.permissions());
+        field(j, "site", s.site());
+        j.append("  \"launch\": [");
+        for (int i = 0; i < s.launch().size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(s.launch().get(i)));
+        j.append("],\n  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
+        writeAtomically(savedDir.resolve(id + ".json"), j.toString());
+        return id;
+      } catch (IOException | RuntimeException e) {
+        System.err.println("[beam] could not keep " + dir + ": " + e);
+        // Back where they were, for the caller to erase; what cannot go back (its name taken meanwhile) goes now, so
+        // no data is left under a name nothing lists.
+        if (slotMoved) putBack(target, dir);
+        if (deviceMoved) putBack(deviceTarget, device);
+        return null;
       } finally {
         l.release();
       }
-      long now = System.currentTimeMillis();
-      StringBuilder j = new StringBuilder("{\n");
-      field(j, "id", id);
-      field(j, "app", s.app());
-      field(j, "sha256", s.sha256());
-      field(j, "package", dir.getParent().getFileName().toString());
-      field(j, "device", s.device());
-      field(j, "appearance", s.appearance());
-      field(j, "locale", s.locale());
-      field(j, "fontscale", s.fontScale());
-      field(j, "permissions", s.permissions());
-      field(j, "site", s.site());
-      j.append("  \"launch\": [");
-      for (int i = 0; i < s.launch().size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(s.launch().get(i)));
-      j.append("],\n  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
-      writeAtomically(savedDir.resolve(id + ".json"), j.toString());
-      return id;
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] could not keep " + dir + ": " + e);
       return null;
+    }
+  }
+
+  private static void putBack(Path moved, Path original) {
+    try {
+      Files.move(moved, original, StandardCopyOption.ATOMIC_MOVE);
+    } catch (IOException | RuntimeException e) {
+      deleteTree(moved);
     }
   }
 
@@ -380,6 +406,32 @@ final class BeamStore {
         System.err.println("[beam] could not remove the cache entry of " + name + ": " + e);
       }
     }
+    // The agent's own per-build caches (translated classes, BeamStore's sibling Serve.beamCache) of builds now gone, and
+    // out folders of beamed instances that have exited (a session's end moves them; one that ended the agent leaves them).
+    Path cacheDir = beamDir.resolve("cache");
+    if (Files.isDirectory(cacheDir)) {
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(cacheDir)) {
+        for (Path p : d) {
+          String n = p.getFileName().toString();
+          if (n.matches("[0-9a-f]{64}") && !catalog.hasBuild(n)) deleteTree(p);
+        }
+      } catch (IOException e) {
+        // the next sweep
+      }
+    }
+    Path outDir = beamDir.resolve("out");
+    if (Files.isDirectory(outDir)) {
+      try (DirectoryStream<Path> d = Files.newDirectoryStream(outDir)) {
+        for (Path p : d) {
+          String n = p.getFileName().toString();
+          if (!n.matches("\\d{1,10}")) continue;
+          boolean alive = ProcessHandle.of(Long.parseLong(n)).map(ProcessHandle::isAlive).orElse(false);
+          if (!alive) deleteTree(p);
+        }
+      } catch (IOException e) {
+        // the next sweep
+      }
+    }
     // A cache entry an earlier sweep left (in use then) whose build is gone: named by a build's hash, which no other
     // launch's file is but a serve upload of the same build (`STATE/serve/uploads`), whose entry stays.
     try (DirectoryStream<Path> d = Files.newDirectoryStream(cacheRoot, "*.apk-*")) {
@@ -392,6 +444,15 @@ final class BeamStore {
       }
     } catch (IOException e) {
       // the next sweep
+    }
+  }
+
+  /** Deletes a folder and what is in it; a link is removed, never followed. Best effort. */
+  static void deleteTree(Path dir) {
+    try (Stream<Path> all = Files.walk(dir)) {
+      for (Path p : all.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[beam] could not remove " + dir + ": " + e);
     }
   }
 
@@ -441,7 +502,13 @@ final class BeamStore {
         if (r.get("permissions") instanceof String p && (p.equals("grant") || p.equals("deny"))) cmdLine.addAll(List.of("--permissions", p));
         List<String> launch = new ArrayList<>();
         if (r.get("launch") instanceof List<?> l) for (Object o : l) launch.add(String.valueOf(o));
-        cmdLine.addAll(Catalog.launchOptions(launch));  // checked again: the record is a file anyone here could edit
+        // Checked again (the record is a file anyone here could edit). As a session ran them: the app's own --device was
+        // its default, and the session's device is the one recorded; options given here come last and win.
+        List<String> own = Catalog.launchOptions(launch);
+        for (int i = 0; i < own.size(); i++) {
+          if (own.get(i).equals("--device") && r.get("device") instanceof String) i++;
+          else cmdLine.add(own.get(i));
+        }
         cmdLine.addAll(args.subList(1, args.size()));
         cmdLine.add(catalog.buildFile(sha).toString());
         store.used(String.valueOf(r.get("id")));
