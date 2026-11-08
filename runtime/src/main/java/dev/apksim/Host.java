@@ -525,7 +525,9 @@ public class Host {
     if (until < 0) return -1;
     long at = now + until;
     long period = SimWindow.vsyncPeriodNanos();
-    if (period > 0 && period < FRAME_NANOS - 500_000L) {
+    // Any display faster than 120 Hz (125 Hz too), not one a hair fast by its measure: 120 Hz reported as 8333 us
+    // (120.005 Hz) would otherwise build up a skipped frame every ~12 s. Up to 120.3 Hz draws at the display's rate.
+    if (period > 0 && period < FRAME_NANOS - 20_000L) {
       while (at < frameBudgetNanos - 500_000L) at += period;
       frameBudgetNanos = Math.max(frameBudgetNanos, at - FRAME_NANOS) + FRAME_NANOS;  // idle: the budget starts again
     }

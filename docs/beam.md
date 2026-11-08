@@ -611,8 +611,9 @@ The agent's sweep keeps a build while a cache warm-up of it is queued or running
 when the warm-up ends: a large app's warm-up runs past a new build's 3-minute grace, and with `keep-days 0` the sweep
 could delete the APK and its cache under it.
 Frames that follow a display's vsyncs (the window's, or a viewer's `vsync`) come at most 120 a second
-(`Host.vsyncFrameAt`): on a faster display a vsync before a 120 Hz budget is skipped. The test app's Shader tab, told
-a viewer's 144 / 240 Hz display: 144 / 234 frames a second before, 119.6 / 120.0 now; 120 and 60 Hz unchanged.
+(`Host.vsyncFrameAt`): on a display faster than 120 Hz (from 120.3 Hz: one measured a hair fast is left alone) a vsync
+before a 120 Hz budget is skipped. The test app's Shader tab, told a viewer's 125 / 144 / 240 Hz display: 144 / 234
+frames a second before at 144 / 240 Hz, 119.1 / 119.3 / 120.0 now; 120 and 60 Hz unchanged.
 
 First review:
 
