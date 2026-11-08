@@ -239,6 +239,10 @@ final class AppClasses {
     if (out == null) return null;
     translateNanos += System.nanoTime() - t0;
     translated++;
+    // serve shows this to a tab waiting on a first launch (a large app takes minutes to translate on a few CPUs).
+    if (translated % 500 == 0 && !Boolean.getBoolean("apksim.quiet")) {
+      System.err.printf("[apksim] translated %d classes so far%n", translated);
+    }
     return out;
   }
 

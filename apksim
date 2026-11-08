@@ -384,7 +384,10 @@ elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
 fi
 # A small young generation keeps GC pauses inside a frame: fewer objects live long enough to be copied
 # (64 MB: ~1 ms median pause while scrolling; 256 MB: ~12 ms, up to 50 ms). It also saves ~150 MB.
-exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" \
+# apksim serve sets APKSIM_NO_CORE: a crashed instance (a large app is gigabytes) writes its hs_err report but no core file.
+NOCORE=()
+[[ -n "${APKSIM_NO_CORE:-}" ]] && NOCORE=(-XX:-CreateCoredumpOnCrash)
+exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \

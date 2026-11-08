@@ -62,6 +62,8 @@ final class Catalog {
   }
 
   private static final SecureRandom RANDOM = new SecureRandom();
+  /** Told of each upload or added app once its APK is stored (the cache warm-up's queue), or null. */
+  volatile java.util.function.Consumer<App> onReady;
   /** Publishing an upload (its APK and its id), renewing an id, and sweeping take this, so a sweep never sees half. */
   private final Object uploadsLock = new Object();
   private final Map<String, App> configured = new LinkedHashMap<>();
@@ -284,6 +286,7 @@ final class Catalog {
         }
         App done = publish(tmp, pending.id(), clean, launch);
         d.done.complete(done);
+        ready(done);
         System.err.printf("[serve] added %s (%d MB) from %s%n", clean, d.received >> 20, u.getHost());
       } catch (Exception e) {
         d.done.completeExceptionally(e);
@@ -320,7 +323,14 @@ final class Catalog {
    * id, or throws with the reason it was refused.
    */
   App upload(InputStream in, long length, String name, List<String> launch) throws IOException {
-    return publish(store(in, length, n -> {}), newId(), clean(name), launch);
+    App a = publish(store(in, length, n -> {}), newId(), clean(name), launch);
+    ready(a);
+    return a;
+  }
+
+  private void ready(App a) {
+    java.util.function.Consumer<App> c = onReady;
+    if (c != null) c.accept(a);
   }
 
   private static String newId() {

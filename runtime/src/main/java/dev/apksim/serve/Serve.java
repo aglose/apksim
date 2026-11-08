@@ -34,7 +34,8 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...""";
+                          [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
+                          [--warm auto|on|off] [--core-dumps]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -51,6 +52,11 @@ public final class Serve {
   long maxUploadMb = 300;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
+  /** `--core-dumps`: instances may leave core files when they crash (off by default: a large app's is gigabytes). */
+  boolean coreDumps;
+  /** `--warm`: warm each APK's cache in the background: on Linux (no warm standby) by default, `on` also on the Mac. */
+  String warm = "auto";
+  Warmer warmer;
   boolean loopbackBind;
   private final List<String> apps = new ArrayList<>();
   /** Pages on these origins may frame serve's page and open its WebSockets and POSTs (`--allow-origin`). */
@@ -92,6 +98,17 @@ public final class Serve {
             System.exit(2);
           }
           s.allowedOrigins.add(o);
+        }
+        case "--warm" -> {
+          s.warm = need(a, v);
+          if (!List.of("auto", "on", "off").contains(s.warm)) {
+            System.err.println("--warm takes auto, on or off\n" + USAGE);
+            System.exit(2);
+          }
+        }
+        case "--core-dumps" -> {
+          s.coreDumps = true;
+          i--;
         }
         case "--no-network" -> {
           s.noNetwork = true;
@@ -202,6 +219,9 @@ public final class Serve {
       page = in.readAllBytes();
     }
     Files.createDirectories(logs);
+    Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
+    warmer = new Warmer(this);
+    catalog.onReady = warmer::enqueue;
     ServerSocket server = new ServerSocket();
     server.setReuseAddress(true);
     server.bind(new InetSocketAddress(addr, port), 64);
@@ -210,6 +230,9 @@ public final class Serve {
         host, server.getLocalPort(), token == null ? "" : "?token=...", catalog.listed().size(), max, idleSeconds, maxUploadMb);
     if (!allowedOrigins.isEmpty()) System.err.println("[serve] pages on " + String.join(", ", allowedOrigins) + " may embed it");
     warmStandby();
+    boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+    if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
+    else catalog.onReady = null;
     ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
       Thread t = new Thread(r, "serve-timer");
       t.setDaemon(true);
@@ -217,6 +240,7 @@ public final class Serve {
     });
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
     timer.scheduleWithFixedDelay(() -> catalog.sweep(24 * 3_600_000L), 0, 1, TimeUnit.HOURS);
+    timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       List<Thread> stopping = new ArrayList<>();
       for (Session x : new ArrayList<>(sessions.values())) stopping.add(Thread.ofVirtual().start(() -> x.stop("server stopping")));
@@ -260,6 +284,12 @@ public final class Serve {
     } catch (IOException | InterruptedException e) {
       System.err.println("[serve] no standby: " + e);
     }
+  }
+
+  /** What every instance serve starts (a session's, a cache warm-up's) runs with: no core dumps unless `--core-dumps`. */
+  void instanceEnvironment(ProcessBuilder pb) {
+    if (coreDumps) pb.environment().remove("APKSIM_NO_CORE");
+    else pb.environment().put("APKSIM_NO_CORE", "1");
   }
 
   void ended(Session s) {
@@ -342,6 +372,10 @@ public final class Serve {
     }
     if (r.method().equals("GET") && r.path().startsWith("/api/apps/")) {
       appState(r.path().substring("/api/apps/".length()), out);
+      return;
+    }
+    if (r.method().equals("GET") && r.path().matches("/api/sessions/[0-9a-f]{12}/log")) {
+      sessionLog(r.path().substring("/api/sessions/".length(), "/api/sessions/".length() + 12), out);
       return;
     }
     switch (r.method() + " " + r.path()) {
@@ -443,6 +477,21 @@ public final class Serve {
     }
   }
 
+  /**
+   * `GET /api/sessions/ID/log` (token required, like everything but health): the tail of a session's log as text,
+   * which has the JVM crash report's header in it when the instance crashed. Bounded ({@link Crash#TAIL_BYTES}); the
+   * id is the session's random one and the file is looked up by it alone. Kept as long as the log is (a week).
+   */
+  private void sessionLog(String id, OutputStream out) throws IOException {
+    Path f = logs.resolve(id + ".log");
+    if (!Files.isRegularFile(f)) {
+      Http.text(out, 404, "no such session log (logs are kept for a week)");
+      return;
+    }
+    List<String> lines = Crash.tail(f, Crash.TAIL_LINES, Crash.TAIL_BYTES);
+    Http.respond(out, 200, "text/plain; charset=utf-8", (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));
+  }
+
   /** `GET /api/apps/ID`: an uploaded or added app's state (downloading, ready, failed), for a service that added it. */
   private void appState(String id, OutputStream out) throws IOException {
     Catalog.Download d = catalog.download(id);
@@ -459,7 +508,8 @@ public final class Serve {
         }
         b.append(",\"state\":\"failed\",\"error\":").append(Http.q(why));
       } else b.append(",\"state\":\"ready\"");
-      Http.json(out, 200, b.append(",\"received\":").append(d.received).append(",\"total\":").append(d.total).append('}').toString());
+      Http.json(out, 200, b.append(",\"received\":").append(d.received).append(",\"total\":").append(d.total)
+          .append(",\"cache\":\"none\"}").toString());
       return;
     }
     Catalog.App a = catalog.find(id);
@@ -467,7 +517,9 @@ public final class Serve {
       Http.text(out, 404, "no such app (an upload is kept for a day after its last use)");
       return;
     }
-    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"ready\"}");
+    String detail = warmer.detail(a);
+    Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"ready\",\"cache\":"
+        + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + "}");
   }
 
   /** Why a session could not start now (the launcher, the state folder, disk space), or null when it could. */
@@ -533,7 +585,7 @@ public final class Serve {
     StringBuilder b = new StringBuilder("{\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
         .append(",\"maxUploadMb\":").append(maxUploadMb).append(",\"uptimeS\":").append((System.currentTimeMillis() - startedAt) / 1000)
         .append(",\"warmLaunches\":").append(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"))
-        .append(",\"sessions\":[");
+        .append(",\"apps\":").append(warmer == null ? "[]" : warmer.json()).append(",\"sessions\":[");
     boolean first = true;
     for (Session s : sessions.values()) {
       if (!first) b.append(',');
