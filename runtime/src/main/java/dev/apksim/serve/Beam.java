@@ -34,7 +34,11 @@ final class Beam {
   enum Kind { UPLOAD, SESSION }
 
   /** What a grant lets one request do, for one origin. */
-  record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires) {}
+  /**
+   * `extra`: for a session grant, the slot the agent unpacked a moved session's data into (phase 5); for an upload
+   * grant, the data's `ticket url` to fetch once the APK arrives. Null otherwise.
+   */
+  record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires, String extra) {}
 
   private final Path trustFile;
   /**
@@ -178,12 +182,16 @@ final class Beam {
   // ---------------------------------------------------------------- grants
 
   String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch) {
+    return grant(kind, origin, app, sha256, name, launch, null);
+  }
+
+  String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra) {
     long now = System.currentTimeMillis();
     grants.values().removeIf(g -> g.expires < now);
     byte[] b = new byte[24];
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
-    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS));
+    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra));
     return token;
   }
 

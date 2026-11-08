@@ -20,8 +20,8 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 2 The agent downloads the APK itself | Done (see "Phase 2 as built"): with the server's ticket, from the page's own site; the tab relays it only when that fails |
 | 3 Sizing, Show in Simulator | Done (see "Phase 3 as built"): Fill mode at the browser's pixel ratio, the simulator window as a second view, close hides it |
 | 4 Moving a running session | Done (see "Phase 4 as built"): server to Mac and back with no blank frame; a refused move stays; a dead agent offers the server. Left: reconnecting after sleep |
-| 5 The app's data moves with it | Not started (optional) |
-| 6 Polish, Linux agent | Partly (see "Phase 6 so far"): hidden tabs throttled, `apksim beam status`. Left: the launchd agent, version messages, a Linux agent |
+| 5 The app's data moves with it | Done (see "Phase 5 as built"): a move from the server to the Mac takes the app's data slot and /sdcard and Settings values ("With its data"); the app quits on the server first |
+| 6 Polish, Linux agent | Partly (see "Phase 6 so far"): hidden tabs throttled, `apksim beam status`, the launchd agent. Left: version messages, a Linux agent |
 
 ## What seamless means (the acceptance checks)
 
@@ -283,7 +283,7 @@ the manual checks listed.
    remote close, the progress chip, reconnect after sleep, fallback to the server. Done when: no blank frame across
    the cutover (frame log), input before the cutover reaches the server and after it the Mac, and a killed agent
    mid-session offers the server.
-5. **State that moves with it (~1 week, optional).** The server stops its instance (`quit`, so data is flushed),
+5. **State that moves with it (~1 week, optional).** Built 2026-11-08 (see "Phase 5 as built"; the server's to the Mac only). The server stops its instance (`quit`, so data is flushed),
    packs its data slot and `serve-N.device` into the ticket's download, and the agent unpacks it into its `beam-N`
    slot before launching without `--fresh`. Done when: the test app's Trips rename and the Settings values made on the
    server are there after the move. In-memory screen state (back stack, scroll) stays out: Robolectric's saved state
@@ -652,6 +652,41 @@ First review:
   when its WebSocket closes, so a drop ends it and the page offers the server; moving a session whose screen is still
   (no frames) waits for the new side's first frame as well, which a still screen sends at once.
 
+## Phase 5 as built (2026-11-08)
+
+- **The server** (`Session.handoff`): a server session's own socket sends `handoff` (only with `--allow-beam`; never
+  the agent's). The app is told to `quit` and its JVM's exit awaited (the attested PID, as for ending an instance), so
+  what it wrote is flushed; its data slot and `serve-N.device` folder (/sdcard and the Settings values, `SlotDevice`)
+  are zipped (`SlotPack`: `slot/...`, `device/...`, a `package` entry; regular files only, no links followed, not the
+  slot's `.lock`) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket","size"}`: a signed ticket (as
+  phase 2's, 5 minutes) for `GET /api/beam/data?ticket=T`, which needs no token and serves that pack once its hash
+  matches the ticket's. The session then ends without a word (its slot erased as always); packs older than the ticket
+  go with a sweep. A session that has no data slot yet answers `h {"error"}` and runs on; a pack that fails answers
+  the error and ends.
+- **The agent** (`Serve.beamSeed`): `/beam/start` takes `data: {"ticket","url"}` beside phase 2's fields; the address
+  must be the page's own (same origin and base path as the APK's, no redirects). It downloads the pack, unpacks it
+  into a slot of its own, `cache/data/<package>/bm<12 hex>-0`, and starts the instance on it with `--data-slots` and
+  without `--fresh`; the grant says `data: true`. Unpacking takes what a site sent, so only regular files under the two
+  roots, no absolute, `.` or `..` paths, no links, 50,000 files and 1 GB at most, into folders made fresh for it; anything else refuses the start (502), as does an altered or expired ticket. The
+  agent cannot read the build's package (no manifest reader in serve's JVM): a pack naming another package lands
+  where that app's instance never looks, the app starts with a fresh slot, and the unused one goes with the session. The
+  slot is the session's: erased when it ends unless kept (`keep on`, then `apksim beam saved` lists it as any other).
+  The beam sandbox allows `bm<12 hex>-N` slots as it does `beam-N` (spelled out: the profile language's regex has no
+  `{n}`, and `{12}` silently matched nothing, so the instance could not take its slot's lock).
+- **The page**: "With its data" (on by default, shown for a server session when beam is offered) makes a move to this
+  Mac send `handoff` first, then start the Mac's session with the ticket; the server's last frame stays up meanwhile
+  (still, since its app has quit: ~1.2 s to the Mac's first frame against ~0.5 s for a live move). Unticked, a move is
+  phase 4's live one. If the server cannot hand off, the move goes on without the data (logged); if this Mac then
+  fails to start, the app starts on the server again, without what it had saved (the pack is gone with the session).
+  A move from the Mac to the server never takes data (the agent offers no handoff: what a site's app wrote on the
+  visitor's Mac stays there).
+- **Checked**: `beam-check.py` (data part: Write on the server's slot screen, `handoff` answers a ticket and the
+  server's session ends, an altered ticket brings nothing, the agent's session starts with `setting=written` and
+  `sdcard=written` at app start in a `bm` slot of its own, erased when the session ends) and `beam-move-check.py`
+  (Chrome: the same through the page's menu, nothing covering the canvas, then back to the server).
+- **Not done**: what the app holds in memory (its screen, back stack, scroll) does not move, as planned. The plan's
+  Trips rename is the same path (its database is a file of the slot) but is not checked separately.
+
 ## Phase 6 so far (2026-11-08)
 
 - **Hidden tabs**: a tab in the background shows nothing (`requestAnimationFrame` stops, and with it the page's
@@ -712,6 +747,7 @@ Measured 2026-11-08 (test app, Apple Silicon Mac, 120 Hz display, Chrome 156; `b
 | The same, cold (no standby ready) | 1.6-1.7 s |
 | First visit of a 17 MB build: downloaded by the agent itself | included in the start; the tab sends nothing |
 | Moving a session server → Mac / Mac → server | ~0.5 s; 10-17 ms between the old side's last frame and the new side's first, nothing blank |
+| Moving a session to this Mac with its data | ~1.2 s from the choice to the Mac's first frame, the server's last frame still meanwhile |
 | Tap to on screen in the tab | 31-41 ms |
 | Present to on screen in the tab | 11-16 ms (the window: up to one refresh) |
 | New frame per display refresh, tab / window | Shader tab 99-100 / 99-100%, flings 88-91 / 88-90%, slow drags 99-100 / 99-100% |

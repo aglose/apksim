@@ -232,7 +232,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
     saved|run|forget|config|sweep|status`; `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
-    when a page asks, `--launchd` taking the socket on stdin; the page is
+    when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
+    zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
@@ -272,8 +273,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
   `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
   fallback to the server), `beam-size-check.py` (Fill mode and the simulator window as two views of one display, in
-  Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, in
-  Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
+  Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, and
+  with its data, in Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
   stand-in for launchd; `--real` installs a test LaunchAgent),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
@@ -852,7 +853,9 @@ under a prefix (a proxy that strips it works too); the page builds every URL rel
 redirect is relative. WebSocket pings go to every session every 20 s.
 `--allow-beam` (docs/beam.md): the page offers "On this Mac" when the visitor runs `apksim beam`, which runs the app in
 the beam sandbox and streams it into the same canvas; the server hands the page a signed ticket (`BeamTicket`) with
-which the agent downloads the APK itself (`GET /api/beam/apk`, no token), the tab relaying it when that fails.
+which the agent downloads the APK itself (`GET /api/beam/apk`, no token), the tab relaying it when that fails. A move
+to the Mac "With its data" sends `handoff` on the server's socket: the app quits, its slot is packed, and the agent
+downloads it with a ticket (`GET /api/beam/data`) into the slot the app starts in there.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

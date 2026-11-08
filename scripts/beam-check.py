@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -343,6 +344,98 @@ def download_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def data_checks(apksim, apk, sha, size):
+    """Phase 5 (docs/beam.md): a session's data moved from the server to this Mac, in a state folder, server and agent
+    of their own. On the test app's slot screen the server's session writes a setting and an /sdcard file; its socket's
+    `handoff` packs them (the app quit first) and answers a data ticket; the agent's start with it runs the app in a slot
+    it unpacked them into, where the app sees them at its start."""
+    state = tempfile.mkdtemp(prefix="beam-check-data-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    sp, gp = free_port(), free_port()
+    S = f"http://127.0.0.1:{sp}"
+    procs = []
+
+    def ws_session(port, path, origin):
+        w = WS(f"http://127.0.0.1:{port}", path, {"Origin": origin})
+        sess = sc.Session.__new__(sc.Session)
+        sess.ws, sess.frames, sess.codec, sess.acking, sess.offset, sess.best_rtt = w, [], "jpeg", True, 0.0, float("inf")
+        sess.texts, sess.stats, sess.ack_delay, sess.acks = [], {}, 0, []
+        sess.pump(120, until=lambda: len(sess.frames) > 0)
+        return sess
+
+    def nodes(st, pid):
+        f = os.path.join(st, "tmp", str(pid), "control.port")
+        if not os.path.exists(f):
+            return ""
+        c = socket.create_connection(("127.0.0.1", int(open(f).read().strip())), timeout=30)
+        io = c.makefile("rw")
+        io.write("nodes\n")
+        io.flush()
+        out = io.readline()
+        c.close()
+        return out
+    try:
+        procs.append(subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", apk],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env))
+        procs.append(subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env))
+        check(wait_up(sp, "/api/health") and wait_up(gp, "/beam/hello"), "data: a server and an agent of its own")
+        app = json.loads(req(sp, "GET", "/api/apps")[2])[0]["id"]
+        slot_link = "&open=" + urllib.parse.quote("apksim://slot")
+        srv = ws_session(sp, f"/ws?app={app}{slot_link}", S)
+        check(len(srv.frames) > 0, "data: a session on the server, on the slot screen")
+        srv.pump(3, until=lambda: srv.stats.get("pid", 0) > 0)
+        srv.pump(2)
+        after = srv.after([f"touch down {WRITE[0]} {WRITE[1]}", f"touch up {WRITE[0]} {WRITE[1]}"], 2)
+        check(len(after) > 0, "data: Write on the server's slot screen")
+        srv.pump(1.5)
+        srv.ws.send("handoff")
+        try:
+            srv.pump(40, until=lambda: any(t.startswith("h ") for t in srv.texts))
+        except (EOFError, OSError):
+            pass
+        h = next((json.loads(t[2:]) for t in srv.texts if t.startswith("h ")), {})
+        check(h.get("ticket", "").startswith("v1.d") and h.get("size", 0) > 0, f"data: handoff answers a data ticket ({h.get('size')} bytes)")
+        check(until(lambda: json.loads(req(sp, "GET", "/api/status")[2]).get("sessions") == [], 20), "data: and the server's session ends")
+        st, _, body = req(sp, "GET", f"/api/apps/{app}/beam")
+        info = json.loads(body)
+        start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": [], "ticket": info.get("ticket"),
+                 "url": S + "/api/beam/apk"}
+        bad = dict(start, data={"ticket": h.get("ticket", "")[:-2] + "AA", "url": S + "/api/beam/data"})
+        check(req(gp, "POST", "/beam/start", S, bad)[0] == 502, "data: an altered data ticket brings nothing")
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, data={"ticket": h.get("ticket"), "url": S + "/api/beam/data"}))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("data") is True and "token" in g, f"data: the agent takes the session with its data ({st})")
+        mac = ws_session(gp, f"/ws?app={g.get('app')}&token={g.get('token')}{slot_link}", S)
+        mac.pump(3, until=lambda: mac.stats.get("pid", 0) > 0)
+        seen = ""
+        for _ in range(20):
+            seen = nodes(state, mac.stats.get("pid", 0))
+            if "at app start" in seen:
+                break
+            time.sleep(1)
+        ok_data = "at app start: setting=written" in seen and "sdcard=written" in seen
+        check(ok_data, f"data: on this Mac the app starts with what it wrote on the server ({[x for x in seen.split(';') if 'app start' in x][:1]})")
+        if not ok_data:
+            for f in sorted(glob.glob(os.path.join(state, "beam", "logs", "*.log")), key=os.path.getmtime)[-1:]:
+                print("     --", f, *[l for l in open(f).read().splitlines() if "control" not in l][-25:], sep="\n     ")
+        seeded = glob.glob(os.path.join(state, "cache", "data", "*", "bm*-0"))
+        check(len(seeded) == 1, f"data: in a slot of its own ({[os.path.basename(x) for x in seeded]})")
+        pid = mac.stats.get("pid", 0)
+        mac.ws.s.close()
+        until(lambda: not alive(pid), 20)
+        check(until(lambda: all(not os.listdir(d) or os.listdir(d) == [".lock"] for d in seeded), 15), "data: which is erased when its session ends")
+    finally:
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                p.wait(15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -434,6 +527,7 @@ def main():
 
     sandbox_checks(apksim, a.apk)
     download_checks(apksim, a.apk, sha, size)
+    data_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")
     check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],

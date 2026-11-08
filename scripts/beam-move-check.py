@@ -8,7 +8,9 @@ one, which follows within a moment (no blank frame: the canvas is never cleared 
 server's last frame and the Mac's first is measured), the server's session then ends and input reaches the Mac's.
 It moves back the same way; a move the agent refuses (all its sessions in use) leaves it where it was; and with the
 agent killed mid-session the page offers the server, which runs it. A serve with --allow-beam and an agent on loopback
-ports, Chrome with a fresh profile; the page's origin is allowed for the run and revoked after.
+ports, Chrome with a fresh profile; the page's origin is allowed for the run and revoked after. Those moves are live
+ones ("With its data" off); then one with it (phase 5): the server's app writes on the test app's slot screen, the
+move takes the data, and the app on this Mac starts with it.
 """
 import importlib.util
 import json
@@ -92,6 +94,7 @@ def main():
         cdp.ev(s, 'document.getElementById("stop").click(); document.getElementById("runOn").value = "server"; pref("server"); start(); 1')
         check(until(lambda: cdp.ev(s, "window.apksimStats().frames > 0") and status() == 1, 40), "a session on the server")
         cdp.ev(s, PROBE % gp)
+        cdp.ev(s, 'document.getElementById("moveData").checked = false; 1')  # phase 4's live moves first
         cdp.ev(s, 'send("touch down 720 1690"); send("touch up 720 1690"); 1')  # the Shader tab: frames without end
         time.sleep(2)
 
@@ -153,6 +156,29 @@ def main():
         cdp.ev(s2, 'document.getElementById("stop").click(); 1')
         cdp.call("Target.closeTarget", {"targetId": t2["targetId"]})
         time.sleep(2)
+
+        # Phase 5: a move with its data. The server's app writes a setting and an /sdcard file on its slot screen; the
+        # move hands them off (the app quits there first, its last frame staying up), and the app here starts with them.
+        check(cdp.ev(s, "!ws.onMac") and status() == 1, "on the server again, for a move with its data")
+        cdp.ev(s, 'document.getElementById("url").value = "apksim://slot"; document.getElementById("go").click(); 1')
+        time.sleep(3)
+        cdp.ev(s, 'send("touch down 130 536"); send("touch up 130 536"); 1')  # Write
+        time.sleep(1.5)
+        cdp.ev(s, 'document.getElementById("moveData").checked = true; window.__logFrom = document.getElementById("log").textContent.length; 1')
+        done, t0, last_old, first_new, covered, d = moved("mac")
+        tail = cdp.ev(s, 'document.getElementById("log").textContent.slice(window.__logFrom)')
+        check(done and "could not move" not in tail and "without" not in tail,
+              f"moved to this Mac with its data ({(first_new or 0) - t0:.0f} ms from the choice to the Mac's first frame)")
+        check(covered == 0, "  nothing covered the canvas meanwhile (the server's last frame stayed up)")
+        check(until(lambda: status() == 0, 10), "  the server's session ended")
+        port, _ = bp.session_port(cdp, s, bp.state_dir())
+        ctl = bp.Control(port)
+        seen = until(lambda: next((x for x in ctl("nodes").split(";") if "at app start" in x), None), 20) or ""
+        ctl.close()
+        check("setting=written" in seen and "sdcard=written" in seen, f"  the app here started with what it wrote on the server ({seen.strip()[:90]})")
+        cdp.ev(s, 'document.getElementById("moveData").checked = false; 1')
+        done, *_ = moved("server")
+        check(done, "moved back to the server")
 
         # The agent killed mid-session: the page offers the server.
         done, *_ = moved("mac")

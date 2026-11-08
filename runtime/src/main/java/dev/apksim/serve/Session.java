@@ -76,6 +76,8 @@ final class Session {
   volatile long bytesSent;
   volatile String device;
   private volatile Path dataDir;
+  /** `apksim beam`: the slot name (`bm<hex>`) the agent unpacked this session's moved data into, else null. */
+  volatile String seedSlot;
   /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
   volatile String site;
   volatile boolean keep;
@@ -189,7 +191,9 @@ final class Session {
     // display, a second view of it.
     List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString()));
     cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
-    cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
+    // A session whose data came from the server (phase 5) runs in the slot the agent unpacked it into, not a fresh one.
+    if (seedSlot != null) cmd.addAll(List.of("--no-autofill", "--data-slots", seedSlot, "--control", "auto"));
+    else cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
     cmd.addAll(List.of("--device", deviceSpec(device)));
     String appearance = options.get("appearance");
     if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
@@ -274,6 +278,62 @@ final class Session {
 
   private final Object exitLock = new Object();
   private boolean exitHandled;
+
+  /**
+   * `handoff` (docs/beam.md, phase 5): the app quits (so what it wrote is flushed), its data slot and .device folder
+   * are packed (SlotPack) into `STATE/serve/handoff/<id>.zip`, and the tab gets `h {"ticket", "size"}`, a ticket for
+   * `GET /api/beam/data` the visitor's agent downloads it with; then the session ends without a word (the tab is moving
+   * it), its slot erased as always. The pack is kept until the ticket expires. A tab gets `h {"error"}` when it cannot.
+   */
+  private void handoff() {
+    Path slot = dataDir;
+    if (slot == null || ended) {
+      ws.sendText("h {\"error\":\"the app has no data yet\"}");
+      return;
+    }
+    synchronized (exitLock) {
+      if (exitHandled) return;
+      exitHandled = true;  // its quit below is not an exit to report: this ends the session itself
+    }
+    try {
+      synchronized (replies) {
+        if (controlOut != null) controlOut.println("quit");
+      }
+      Process p;
+      synchronized (this) {
+        p = process;
+      }
+      if (p != null) p.waitFor(20, TimeUnit.SECONDS);
+      long jvm = instancePid;
+      if (jvm > 0) {
+        ProcessHandle.of(jvm).ifPresent(h -> {
+          try {
+            h.onExit().get(10, TimeUnit.SECONDS);
+          } catch (Exception e) {
+            // packed as far as it was written
+          }
+        });
+      }
+      Path dir = serve.state.resolve("serve/handoff");
+      Files.createDirectories(dir);
+      byte[] rnd = new byte[12];
+      new java.security.SecureRandom().nextBytes(rnd);
+      String hid = "d" + java.util.HexFormat.of().formatHex(rnd);
+      Path zip = dir.resolve(hid + ".zip");
+      try (java.io.OutputStream out = Files.newOutputStream(zip)) {
+        SlotPack.pack(slot, slot.getParent().getFileName().toString(), out);
+      }
+      String sha = serve.catalog.sha256(zip);
+      logLine("[serve] handed off its data (" + (Files.size(zip) >> 10) + " KB) to the tab's Mac");
+      ws.sendText("h {\"ticket\":" + Http.q(serve.tickets.mint(hid, sha)) + ",\"size\":" + Files.size(zip) + "}");
+    } catch (IOException | RuntimeException e) {
+      logLine("[serve] could not hand off its data: " + e);
+      ws.sendText("h {\"error\":" + Http.q(String.valueOf(e.getMessage())) + "}");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    stop(null);
+  }
 
   private void explainExit(Process p) {
     Thread reading = logReader;
@@ -576,6 +636,11 @@ final class Session {
     }
     if (text.equals("stats")) {
       send("stats", this::onStats);
+      return;
+    }
+    if (text.equals("handoff") && serve.allowBeam && !serve.beam) {
+      // Phase 5: the tab moves this session to its Mac with the app's data. Only this session's own socket asks.
+      Thread.ofVirtual().name("serve-handoff-" + id).start(this::handoff);
       return;
     }
     if (serve.beam && (text.equals("keep on") || text.equals("keep off"))) {
@@ -1011,6 +1076,7 @@ final class Session {
   }
 
   private void eraseData() {
+    eraseUnusedSeed();
     if (dataDir == null) return;
     if (serve.beam && keep) {
       String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch(),
@@ -1027,14 +1093,36 @@ final class Session {
   }
 
   /**
+   * A moved session's slot (phase 5) the instance did not take: the agent unpacks into the package the pack names,
+   * which it cannot check against the build's (no manifest reader here), so a pack naming another package (or an
+   * instance that never started) leaves its slot unused. It goes with the session, as the slot it ran in would.
+   */
+  private void eraseUnusedSeed() {
+    String seed = seedSlot;
+    if (seed == null || !seed.matches("bm[0-9a-f]{12}")) return;
+    try (Stream<Path> pkgs = Files.list(serve.state.resolve("cache/data"))) {
+      for (Path pkg : pkgs.toList()) {
+        Path slot = pkg.resolve(seed + "-0");
+        if (slot.equals(dataDir) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+        SlotPack.deleteTree(slot);
+        SlotPack.deleteTree(slot.resolveSibling(seed + "-0.device"));
+        logLine("[beam] erased moved data the app did not use (" + pkg.getFileName() + ")");
+      }
+    } catch (IOException | RuntimeException e) {
+      logLine("[beam] could not look for unused moved data: " + e);
+    }
+  }
+
+  /**
    * Empties a data slot an instance held (a session's, or a cache warm-up's), once nothing holds its lock
    * (Storage.dataDir), within the state folder.
    */
   static void eraseSlot(Serve serve, Path dataDir, Consumer<String> logLine) {
     Path dir = dataDir.toAbsolutePath().normalize();
     // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
+    String slotName = dir.getFileName().toString();
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !dir.getFileName().toString().startsWith(serve.home + "-")) return;
+        || !(slotName.startsWith(serve.home + "-") || serve.beam && slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;

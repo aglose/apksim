@@ -230,7 +230,8 @@ final class BeamStore {
    */
   synchronized String save(Leaving s) {
     Path dir = s.slot().toAbsolutePath().normalize();
-    if (!dir.startsWith(dataRoot.toAbsolutePath().normalize()) || !dir.getFileName().toString().startsWith("beam-")) return null;
+    String slotName = dir.getFileName().toString();
+    if (!dir.startsWith(dataRoot.toAbsolutePath().normalize()) || !(slotName.startsWith("beam-") || slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return null;
     byte[] b = new byte[6];
     RANDOM.nextBytes(b);
     String id = HexFormat.of().formatHex(b);

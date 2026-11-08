@@ -94,6 +94,7 @@ body.embed.bare aside { width: auto; }
   <select id="runOn" aria-label="Where the app runs" hidden title="Run the app on this server, or on this Mac with its own apksim (docs/beam.md)">
     <option value="server">On the server</option><option value="mac">On this Mac</option>
   </select>
+  <label id="moveDataBox" hidden title="Moving this session to this Mac takes the app's data with it (what it saved: files, databases, settings, /sdcard; not the screen it is on): the app quits on the server first, so its last frame stays still for a moment"><input id="moveData" type="checkbox" checked> With its data</label>
   <label id="keepBox" hidden title="When this session ends, keep the app and its data on this Mac (its sign-ins too) instead of erasing them; apksim beam saved lists what is kept, apksim beam run ID opens it"><input id="keep" type="checkbox"> Keep on this Mac</label>
   <span class="spacer"></span>
   <button id="start" class="primary" disabled>Start</button>
@@ -310,7 +311,7 @@ function start() {
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
   if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
-  $("keepBox").hidden = true; $("macRow").hidden = true;
+  $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
   if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
   const q = sessionQuery();
@@ -356,7 +357,7 @@ function wire(sock, onMac) {
   sock.onclose = () => {
     if (sock === ws && macFallback(sock, "the session closed before its first frame")) return;
     socketClosed(sock);
-    if (sock !== ws) return;
+    if (sock !== ws || sock.handedOff) return;  // a server session whose data went to this Mac ends by design
     // This Mac's agent gone mid-session (quit, the Mac's owner stopped it): the server can run it instead.
     if (!ended && onMac) overlay("Disconnected from this Mac's apksim.", "Run on the server instead", () => { $("runOn").value = "server"; pref("server"); start(); });
     else if (!ended) overlay(onMac ? "Disconnected from this Mac's apksim." : "Disconnected from the server.", "Start again", start);
@@ -376,25 +377,39 @@ async function moveSession(to) {
   if (moving) abandonMove(null);
   const gen = startGen, where = to === "mac" ? "this Mac" : "the server", q = sessionQuery();
   chip("Moving to " + where + "…");
-  let url;
+  let url, data = null, handedOff = false;
+  if (to === "mac" && !$("moveData").checked) log("moving without its data");
+  if (to === "mac" && $("moveData").checked && !ws.onMac) {
+    // Phase 5 (docs/beam.md): the app quits on the server, which packs what it saved and answers a ticket for it; the
+    // agent downloads that into the slot the app starts in here. The server's last frame stays up meanwhile.
+    chip("Moving to this Mac with its data…");
+    const h = await handoff(ws);
+    if (gen !== startGen) return;
+    if (h.ticket) data = { ticket: h.ticket, url: new URL("api/beam/data", location.href).href };
+    else log("its data could not move (" + h.error + "): it moves without it");
+    handedOff = !!h.ticket || h.ended;
+  }
   if (to === "mac") {
     try {
-      const g = await macGrant(q, gen, text => chip("Moving to this Mac: " + text));
+      const g = await macGrant(q, gen, text => chip("Moving to this Mac: " + text), data);
       if (!g) return;
+      if (data && g.data !== true) log("this Mac's apksim did not take its data: the app starts there without it");
       const lq = new URLSearchParams(q);
       lq.set("app", g.app); lq.set("token", g.token);
       url = "ws://127.0.0.1:" + beam.port + "/ws?" + lq;
     } catch (e) {
       if (gen !== startGen) return;
-      chip(null); log("could not move to this Mac: " + e.message + "; it stays on the server");
+      chip(null);
       $("runOn").value = "server"; pref("server");
+      if (handedOff) restartOnServer(q, "could not move to this Mac: " + e.message);
+      else log("could not move to this Mac: " + e.message + "; it stays on the server");
       return;
     }
   } else url = serverSocketUrl(q);
   if (gen !== startGen || ended) { chip(null); return; }
   const sock = new WebSocket(url);
   sock.binaryType = "arraybuffer";
-  const m = moving = { sock, to, texts: [], gen };
+  const m = moving = { sock, to, texts: [], gen, q, handedOff };
   sock.onmessage = e => {
     if (moving !== m) return;
     if (typeof e.data !== "string") { promote(m, e.data); return; }
@@ -412,8 +427,30 @@ function abandonMove(why) {
   m.sock.onclose = null; m.sock.close();
   if (why === null) return;
   const stays = m.to === "mac" ? "server" : "mac";
+  if (m.handedOff) { $("runOn").value = "server"; pref("server"); restartOnServer(m.q, "could not move to this Mac: " + why); return; }
   log("could not move to " + (m.to === "mac" ? "this Mac" : "the server") + ": " + why + "; it stays " + (stays === "mac" ? "on this Mac" : "on the server"));
   $("runOn").value = stays; pref(stays);
+}
+// `handoff` on a server session's socket: its answer (`h {"ticket","size"}` or `h {"error"}`), or {error} when the
+// socket closes first or the server says nothing for 60 s. Once the server has started on it the session ends.
+function handoff(sock) {
+  return new Promise(done => {
+    let settled = false;
+    const finish = h => { if (settled) return; settled = true; clearTimeout(timer); sock.onHandoff = null; done(h); };
+    const timer = setTimeout(() => finish({ error: "the server did not answer", ended: true }), 60000);
+    sock.handedOff = true;  // its close is the server ending it for the move, not a disconnection
+    sock.onHandoff = h => finish(h.ticket ? h : Object.assign({ ended: !/no data yet/.test(h.error || "") }, h));
+    const closed = sock.onclose;
+    sock.onclose = e => { closed && closed(e); finish({ error: "the server's session closed", ended: true }); };
+    sock.send("handoff");
+  }).then(h => { if (!h.ticket && !h.ended) sock.handedOff = false; return h; });
+}
+// After the server's session handed its data off and this Mac then failed to take it: the app on the server again,
+// started fresh (the data went with the handoff).
+function restartOnServer(q, why) {
+  log(why + "; it runs on the server again, without what it had saved");
+  if (ws) { socketClosed(ws); ws.onclose = null; ws.close(); ws = null; }
+  openSocket(serverSocketUrl(q), false);
 }
 function promote(m, first) {
   moving = null;
@@ -447,6 +484,7 @@ function onText(t) {
     const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device);
     // Only the agent says it (docs/beam.md): a session on this Mac may keep its data when it ends.
     $("keepBox").hidden = typeof i.keep !== "boolean"; $("keep").checked = i.keep === true;
+    $("moveDataBox").hidden = typeof i.keep === "boolean" || $("runOn").hidden;  // a server session's move to this Mac
     $("macRow").hidden = typeof i.keep !== "boolean";
     if (typeof i.keep === "boolean" && prefFit() === "fill") setFill(true);
   }
@@ -455,6 +493,7 @@ function onText(t) {
     log(body === "on" ? "this Mac keeps the app and its data when the session ends (apksim beam saved)" : "this Mac erases the app's data when the session ends");
   }
   else if (kind === "s") stats(JSON.parse(body));
+  else if (kind === "h") { const f = ws && ws.onHandoff; if (f) { ws.onHandoff = null; f(JSON.parse(body)); } }
   else if (kind === "r") log(body);
   else if (kind === "c") { mode = body === "h264" ? "h264" : "jpeg"; log("stream: " + (mode === "h264" ? "H.264" : "JPEG")); }
   else if (kind === "t") {
@@ -996,7 +1035,7 @@ async function startOnMac(q, gen) {
 }
 // A session grant from this Mac's agent for the app chosen ({app, token}), or null when a newer start or Stop came
 // meanwhile; throws why not. `say` shows what it is doing.
-async function macGrant(q, gen, say) {
+async function macGrant(q, gen, say, data) {
   const app = state.app;
   const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
   if (gen !== startGen) return null;  // stopped meanwhile: the agent is not asked (it may prompt its owner)
@@ -1005,7 +1044,7 @@ async function macGrant(q, gen, say) {
   // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
   let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
-      url: new URL("api/beam/apk", location.href).href }) }));
+      url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
   if (g.via === "download") log("this Mac downloaded the app from this server");
   if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");
   if (gen !== startGen) return null;

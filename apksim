@@ -410,7 +410,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && -z "${APKSIM_NOCACHE:-}" && -z 
     RS="$(cd "$STATE" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"; RL="$(cd "$ROOT/work/lib" && pwd -P)"
     RJ="$(cd "$(dirname "$JAVA")/.." && pwd -P)"; RH="$(cd "$HOME" && pwd -P)"
     QS="$(printf '%s' "$RS" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
-    SLOTS="^$QS/cache/data/[^/]+/beam-[0-9]+(\\.device)?(/|\$)"
+    # bm<12 hex>: a moved session's data (spelled out: the profile language's regex has no {n} quantifier).
+    H12="$(printf '[0-9a-f]%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)"
+    SLOTS="^$QS/cache/data/[^/]+/(beam|bm$H12)-[0-9]+(\\.device)?(/|\$)"
     UCACHE="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"; UCACHE="${UCACHE:+$(cd "$UCACHE" && pwd -P)}"
     mkdir -p "$STATE/beam/out" "$STATE/cache/data"  # made here: the instance may make only what is inside them
     PROFILE="$PROFILE
