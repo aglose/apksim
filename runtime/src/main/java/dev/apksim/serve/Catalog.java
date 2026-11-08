@@ -45,7 +45,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--network-profile");
+      "--audio", "--biometrics", "--network-profile", "--device");
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard");
 
   /** An app being downloaded from a URL added at run time: its id is answered at once, the APK comes later. */
@@ -151,11 +151,29 @@ final class Catalog {
           || v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
         throw new IOException("launch option " + o + " needs a plain value");
       }
+      if (o.equals("--device") && !Session.DEVICES.contains(v) && deviceSize(v) == null) {
+        throw new IOException("--device takes " + String.join(", ", Session.DEVICES) + " or WxH[@density] such as 1280x720@1.5"
+            + " (160-4096 dp a side, density 0.75-4, at most 4096 pixels a side)");
+      }
       out.add(o);
       out.add(v);
     }
     if (out.size() > 64) throw new IOException("too many launch options");
     return List.copyOf(out);
+  }
+
+  /**
+   * A custom device size `WxH[@density]` (dp; density a scale factor such as 1, 1.5, 2, 3, default 2) in a form
+   * `--device` takes, or null when it is not one or is out of bounds (the limits of apksim's own parser, and at most
+   * 4096 pixels a side, as a session's frames are held in memory).
+   */
+  static String deviceSize(String s) {
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("([1-9]\\d{2,3})x([1-9]\\d{2,3})(?:@(\\d(?:\\.\\d{1,2})?))?").matcher(s);
+    if (!m.matches()) return null;
+    int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
+    double d = m.group(3) == null ? 2 : Double.parseDouble(m.group(3));
+    if (w < 160 || h < 160 || w > 4096 || h > 4096 || d < 0.75 || d > 4 || w * d > 4096 || h * d > 4096) return null;
+    return s;
   }
 
   List<App> listed() {

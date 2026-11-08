@@ -153,7 +153,7 @@ const canvas = $("screen"), ctx = canvas.getContext("2d");
 const KEYS = { Backspace: "DEL", Delete: "FORWARD_DEL", Enter: "ENTER", Tab: "TAB", ArrowLeft: "DPAD_LEFT", ArrowRight: "DPAD_RIGHT",
   ArrowUp: "DPAD_UP", ArrowDown: "DPAD_DOWN", Home: "MOVE_HOME", End: "MOVE_END", PageUp: "PAGE_UP", PageDown: "PAGE_DOWN" };
 const params = new URLSearchParams(location.search);
-const state = { app: params.get("app") || "", device: params.get("device") || "phone", appearance: params.get("appearance") || "light",
+const state = { app: params.get("app") || "", device: params.get("device") || "", appearance: params.get("appearance") || "light",
   locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
   orientation: params.get("orientation") || "" };
 let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
@@ -186,6 +186,26 @@ function addApp(id, name) {
   o.value = id; o.textContent = name;
   $("app").appendChild(o);
 }
+// Named sizes the server adds (serve --device-size NAME=WxH@density) join the Device menu. state.device stays "" until the
+// tab picks one: the session then starts on the app's own default device, else the phone, and the menu shows which.
+function setDevice(name) {
+  if (![...$("device").options].some(o => o.value === name)) {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    $("device").appendChild(o);
+  }
+  $("device").value = name;
+}
+async function loadDevices() {
+  try {
+    const r = await fetch(withToken("api/devices"));
+    if (r.ok) for (const d of await r.json()) {
+      const o = document.createElement("option");
+      o.value = d.name; o.textContent = d.name + " (" + d.size + ")";
+      $("device").appendChild(o);
+    }
+  } catch (e) { log("could not list devices: " + e); }
+}
 async function loadApps() {
   try {
     if (!embed) {
@@ -195,7 +215,8 @@ async function loadApps() {
   } catch (e) { log("could not list apps: " + e); }
   if (embed && !state.app) $("empty").textContent = "No app: the page embedding this one names it (?app=ID).";
   if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
-  $("device").value = state.device;
+  await loadDevices();
+  if (state.device) setDevice(state.device);
   $("dark").checked = state.appearance === "dark";
   if (state.fontscale) $("fontscale").value = state.fontscale;
   $("locale").value = state.locale;
@@ -210,7 +231,7 @@ function refresh() {
   $("stop").disabled = !running;
   for (const id of ["back", "home", "rotl", "rotr", "go", "copy"]) $(id).disabled = !running;
 }
-$("app").onchange = () => { state.app = $("app").value; refresh(); };
+$("app").onchange = () => { state.app = $("app").value; state.device = ""; refresh(); };
 $("uploadBtn").onclick = () => $("file").click();
 $("file").onchange = () => {
   const f = $("file").files[0];
@@ -239,7 +260,8 @@ function start() {
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
   if (ws) ws.close();
   ended = false; onHome = false; frameW = frameH = 0;
-  const q = new URLSearchParams({ app: state.app, device: state.device, appearance: state.appearance });
+  const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
+  if (state.device) q.set("device", state.device);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
   mode = "jpeg"; closeDecoder();
@@ -268,7 +290,7 @@ function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
 function onText(t) {
   const kind = t[0], body = t.slice(2);
   if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
-  else if (kind === "i") { const i = JSON.parse(body); log("session " + i.id + ": " + i.app); }
+  else if (kind === "i") { const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device); }
   else if (kind === "s") stats(JSON.parse(body));
   else if (kind === "r") log(body);
   else if (kind === "c") { mode = body === "h264" ? "h264" : "jpeg"; log("stream: " + (mode === "h264" ? "H.264" : "JPEG")); }
@@ -561,7 +583,7 @@ $("url").onkeydown = e => { if (e.key === "Enter") $("go").click(); };
 $("permAllow").onclick = () => { send("permission allow"); $("permission").hidden = true; };
 $("permDeny").onclick = () => { send("permission deny"); $("permission").hidden = true; };
 $("copy").onclick = async () => {
-  const q = new URLSearchParams({ app: state.app, device: state.device });
+  const q = new URLSearchParams({ app: state.app, device: $("device").value });
   if (state.appearance === "dark") q.set("appearance", "dark");
   for (const k of ["locale", "fontscale", "open"]) if (state[k]) q.set(k, state[k]);
   // Always the screen's current orientation: some devices start in landscape (foldable, tablet), others in portrait.
