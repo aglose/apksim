@@ -218,20 +218,11 @@ final class Session {
     // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),
     // its catalog need not say --move-shared-data, and the beamed app would exit at its first loadLibrary. The agent
     // adds the flag itself; it changes only how such libraries are mapped, and the instance is in the beam sandbox.
-    if (serve.beam && !cmd.contains("--move-shared-data")) {
-      List<String> libs = List.of();
-      try {
-        libs = SharedDataLibs.in(apk, build);
-      } catch (IOException e) {
-        System.err.println("[beam] cannot read " + app.name() + "'s native libraries: " + e);
-      }
-      if (!libs.isEmpty()) {
-        cmd.add("--move-shared-data");
-        String line = "[beam] " + app.name() + ": " + String.join(", ", libs) + " 4 KB aligned with data on a code page:"
-            + " launching with --move-shared-data";
+    if (serve.beam) {
+      SharedDataLibs.addFlag(cmd, apk, build, app.name(), line -> {
         System.err.println(line);
         logLine(line);
-      }
+      });
     }
     cmd.add(apk.toString());
     ws.sendText("p launching " + app.name());

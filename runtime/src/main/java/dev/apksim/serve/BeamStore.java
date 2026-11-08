@@ -563,6 +563,8 @@ final class BeamStore {
         if (r.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) cmdLine.addAll(List.of("--font-scale", f));
         if (r.get("permissions") instanceof String p && (p.equals("grant") || p.equals("deny"))) cmdLine.addAll(List.of("--permissions", p));
         cmdLine.addAll(args.subList(1, args.size()));
+        // As a tab's session got it (issue 171): the record keeps the app's own options, not what the agent added.
+        SharedDataLibs.addFlag(cmdLine, catalog.buildFile(sha), sha, String.valueOf(r.get("app")), System.err::println);
         cmdLine.add(catalog.buildFile(sha).toString());
         // Held (shared: runs of one session side by side) until the launch ends: forget and the expiry sweep take it
         // exclusively, so neither erases a session that is open or opening.

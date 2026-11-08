@@ -45,12 +45,34 @@ final class SharedDataLibs {
         if (!n.startsWith(DIR) || !n.endsWith(".so") || n.indexOf('/', DIR.length()) >= 0) continue;
         try (InputStream in = zip.getInputStream(e)) {
           if (conflict(in.readNBytes(MAX_HEADERS))) found.add(n);
+        } catch (IOException | RuntimeException x) {
+          // One unreadable entry is judged as fine: the loader says what is wrong with it if the app loads it.
         }
       }
     }
     List<String> result = List.copyOf(found);
     if (build != null) BY_BUILD.put(build, result);
     return result;
+  }
+
+  /**
+   * Adds `--move-shared-data` to a beamed launch's command when the build needs it and the command lacks it, with a
+   * line for the logs (`say`). Used for a tab's session and for `apksim beam run` of a kept one, so a session that
+   * started only with the flag reopens with it too (and sessions kept before the agent added it).
+   */
+  static void addFlag(List<String> cmd, Path apk, String build, String app, java.util.function.Consumer<String> say) {
+    if (cmd.contains("--move-shared-data")) return;
+    List<String> libs;
+    try {
+      libs = in(apk, build);
+    } catch (IOException | RuntimeException e) {
+      say.accept("[beam] cannot read " + app + "'s native libraries: " + e);
+      return;
+    }
+    if (libs.isEmpty()) return;
+    cmd.add("--move-shared-data");
+    say.accept("[beam] " + app + ": " + String.join(", ", libs) + " 4 KB aligned with data on a code page:"
+        + " launching with --move-shared-data");
   }
 
   /** Whether this ELF's start (header and program headers) shows writable non-RELRO data on a 16 KB page with code. */
@@ -62,7 +84,8 @@ final class SharedDataLibs {
     long phoff = b.getLong(32);
     int phentsize = Short.toUnsignedInt(b.getShort(54));
     int phnum = Short.toUnsignedInt(b.getShort(56));
-    if (phentsize < 56 || phoff < 0 || phoff + (long) phentsize * phnum > head.length) return false;
+    // phoff first, so the sum cannot overflow: a bad header is no library we can judge, never an exception.
+    if (phentsize < 56 || phoff < 0 || phoff > head.length || (long) phentsize * phnum > head.length - phoff) return false;
     int[] type = new int[phnum], flags = new int[phnum];
     long[] va = new long[phnum], mem = new long[phnum];
     long rl = 0, rh = 0;

@@ -881,12 +881,15 @@ the next try); the page fell back to the server each time, and the operator neve
 
 So the agent reads the program headers of the build's `lib/arm64-v8a/*.so` before each launch (`SharedDataLibs`, the
 test of `code_page_conflict` in `native/elfloader.c`, remembered per build) and adds `--move-shared-data` itself when
-one has such data, with a line in the agent's log and the session's naming the libraries. The flag changes only how
+one has such data, with a line in the agent's log and the session's naming the libraries. `apksim beam run` of a
+kept session does the same (its record keeps the app's own options, not what the agent added). A library whose headers
+cannot be read is taken as fine: the loader says what is wrong with it if the app loads it. The flag changes only how
 those libraries are mapped (any other loads as before), and the instance is in the beam sandbox. A library whose
 data cannot be moved (code after it) is still refused, with the loader's own message. What the move cannot promise
 (references it cannot find, AGENTS.md) holds here too; without it the app does not start on the Mac at all. An app
 that catches the refusal and runs without the library now gets it loaded, moved. `beam-check.py` checks the line
-appears for the test app (whose `libpagefixturenorelro.so` is such a library) and the session then streams.
+appears for the test app (whose `libpagefixturenorelro.so` is such a library), that the session then streams, and
+that `run` of its kept session adds the flag too.
 
 ## Measurements to keep (as serve's table)
 

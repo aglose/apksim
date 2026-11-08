@@ -890,6 +890,9 @@ def main():
         check("at app start: setting=written" in nodes and "sdcard=written" in nodes,
               f"keep: run reopens it with the data it left ({[x for x in nodes.split(';') if 'app start' in x][:1]})")
         check(code == 0, f"keep: run ends with the instance's exit code ({code})")
+        err = rp.stderr.read() if code != -1 else ""
+        check(("launching with --move-shared-data" in err) == conflict,
+              "keep: run adds --move-shared-data as the tab's session did" if conflict else "keep: run adds no --move-shared-data")
 
         r = beam(apksim, "forget", sid)
         check(r.returncode == 0 and not slots(f"k{sid}") and saved_ids(apksim) == [], "keep: forget erases its data")
