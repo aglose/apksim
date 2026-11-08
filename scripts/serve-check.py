@@ -107,12 +107,15 @@ def http(url, path, token=None, data=None, headers=None):
 
 
 class Session:
-    def __init__(self, url, token, app, device):
+    def __init__(self, url, token, app, device, codec=None):
         hdr = {"Origin": url}
         if token:
             hdr["Cookie"] = "apksim_token=" + token
-        self.ws = WS(url, f"/ws?app={app}&device={device}", hdr)
-        self.frames = []  # (arrived, present_ms in this machine's time, encode_ms, size, w, h, jpeg digest)
+        self.ws = WS(url, f"/ws?app={app}&device={device}" + (f"&codec={codec}" if codec else ""), hdr)
+        # (arrived, present_ms in this machine's time, encode_ms, size, w, h, payload digest, H.264 keyframe, payload)
+        self.frames = []
+        self.codec = "jpeg"  # what the server answered ("c h264" or "c jpeg"), when asked
+        self.acking = True
         self.offset, self.best_rtt = 0.0, float("inf")  # the server's clock minus this one's
         self.texts = []
         self.stats = {}
@@ -127,9 +130,11 @@ class Session:
             op, p = m
             if op == 2:
                 w, h, present_us, encode_us = struct.unpack(">iiqi", p[:20])
+                key = self.codec == "h264" and len(p) > 20 and p[20] == 1
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
-                                    hashlib.sha1(p[20:]).hexdigest()))
-                self.ws.send("ack")
+                                    hashlib.sha1(p[20:]).hexdigest(), key, p[21:] if self.codec == "h264" else b""))
+                if self.acking:
+                    self.ws.send("ack")
             elif op == 1:
                 t = p.decode()
                 self.texts.append(t)
@@ -140,6 +145,8 @@ class Session:
                         self.best_rtt, self.offset = rtt, server - (sent + rtt / 2)
                 if t.startswith("s "):
                     self.stats = json.loads(t[2:])
+                if t.startswith("c "):
+                    self.codec = t[2:]
                 if t.startswith("x "):
                     print("     session ended: " + t[2:])
                     return False
@@ -176,6 +183,8 @@ def main():
     ap.add_argument("--allow-origin")
     ap.add_argument("--add-url")
     ap.add_argument("--add-options", default="[]")
+    ap.add_argument("--h264", choices=["required", "optional", "skip"], default="optional",
+                    help="the H.264 stream's checks: required fails when the server answers JPEG (no encoder there)")
     a = ap.parse_args()
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
@@ -322,6 +331,7 @@ def main():
     s.ws.send("touch up 400 580")
     s.pump(0.5)
     fps = len(drag) / drag_s
+    drag_mb_s = sum(f[3] for f in drag) / drag_s / 1e6
     check(len(drag) > 10, f"frames while dragging ({len(drag)} in {drag_s:.2f} s)")
     check(len(s.after(["wheel 400 1000 -3"], 1.0)) > 0, "a frame after scrolling with the wheel")
     # Trips tab, then its note field: typing changes the screen.
@@ -359,6 +369,7 @@ def main():
     print(f"     taps: input -> frame {median(taps):.0f} ms (median of {len(taps)}); drag: {fps:.0f} fps, {len(drag)} frames")
     print(f"     present -> received {median(lat):.0f} ms median (clocks matched to {s.best_rtt:.1f} ms round trip); encode {median(enc):.1f} ms median; {kb:.0f} KB/frame")
     print(f"     shader tab: {shader_fps:.0f} fps, {shader_kb:.0f} KB/frame, encode {shader_enc:.1f} ms")
+    print(f"     bandwidth (JPEG): drag {drag_mb_s:.2f} MB/s, shader tab {shader_kb * shader_fps / 1024:.2f} MB/s")
     print(f"     memory: {s.stats.get('rssMb')} MB resident, {s.stats.get('heapMb')} MB heap; frames sent {s.stats.get('framesSent')}")
     status, body = http(url, "/api/status", token)
     st = json.loads(body) if status == 200 else {}
@@ -382,8 +393,87 @@ def main():
     print("RESULT " + json.dumps({"firstFrameMs": round(first_ms), "tapMs": round(median(taps)), "dragFps": round(fps),
                                   "frameLatencyMs": round(median(lat)), "encodeMs": round(median(enc), 1),
                                   "kbPerFrame": round(kb), "shaderFps": round(shader_fps), "shaderKb": round(shader_kb),
-                                  "shaderEncodeMs": round(shader_enc, 1), "rssMb": s.stats.get("rssMb"), "heapMb": s.stats.get("heapMb")}))
+                                  "shaderEncodeMs": round(shader_enc, 1), "rssMb": s.stats.get("rssMb"), "heapMb": s.stats.get("heapMb"),
+                                  "dragMBps": round(drag_mb_s, 2)}))
+    if a.h264 != "skip":
+        check_h264(url, token, app, a)
     return finish()
+
+
+def nal_types(unit):
+    """The NAL unit types of an Annex B access unit."""
+    types, i = [], 0
+    while True:
+        i = unit.find(b"\x00\x00\x01", i)
+        if i < 0 or i + 3 >= len(unit):
+            return types
+        types.append(unit[i + 3] & 0x1F)
+        i += 3
+
+
+def check_h264(url, token, app, a):
+    """A second tab that asks for H.264 (as the page does when WebCodecs decodes it): keyframes, deltas, flow control."""
+    print("  -- H.264 stream (codec=h264)")
+    s = Session(url, token, app, a.device, codec="h264")
+    got = s.pump(a.first_frame_timeout, until=lambda: len(s.frames) > 0)
+    check(got and any(t.startswith("c ") for t in s.texts), "the server names the stream's codec")
+    if not got:
+        return
+    if s.codec != "h264":
+        check(a.h264 != "required", f"an H.264 stream (the server answered {s.codec}: no encoder there)")
+        s.ws.s.close()
+        return
+    first = s.frames[0]
+    types = nal_types(first[8])
+    check(first[7] and {7, 8, 5} <= set(types), f"the first frame is a keyframe with SPS, PPS and IDR ({types})")
+    s.pump(3)  # let the app settle
+    # A drag, as in the JPEG session: delta frames, every one in order.
+    s.ws.send("touch down 400 1300")
+    s.pump(0.1)
+    n0, t_drag = len(s.frames), time.time()
+    for i in range(1, 91):
+        s.ws.send(f"touch move 400 {1300 - i * 8}")
+        s.pump(0.008)
+    drag_s = time.time() - t_drag
+    drag = s.frames[n0:]
+    s.ws.send("touch up 400 580")
+    s.pump(0.5)
+    check(len(drag) > 10 and not any(f[7] for f in drag), f"delta frames while dragging ({len(drag)}, no keyframes)")
+    drag_mb_s = sum(f[3] for f in drag) / drag_s / 1e6
+    # A still screen still answers a keyframe request (a tab whose decoder failed asks for one).
+    s.pump(1)
+    check(any(f[7] for f in s.after(["key"], 1.0)), "a keyframe after the tab asks for one, on a still screen")
+    # The Shader tab: every frame differs.
+    s.after(["touch down 720 1690", "touch up 720 1690"], 1.0)
+    n0, t_sh = len(s.frames), time.time()
+    s.pump(3)
+    shader = s.frames[n0:]
+    shader_s = time.time() - t_sh
+    shader_mb_s = sum(f[3] for f in shader) / shader_s / 1e6
+    check(len(shader) >= 3, f"H.264 frames on the Shader tab ({len(shader)})")
+    # A tab that stops acknowledging gets no more than two frames in flight; once it acknowledges again the stream
+    # starts over at a keyframe, not with frames it could no longer decode.
+    s.acking = False
+    n0 = len(s.frames)
+    s.pump(1.0)
+    held = s.frames[n0:]
+    s.acking = True
+    for _ in held:
+        s.ws.send("ack")
+    n1 = len(s.frames)
+    s.pump(2.0)
+    resumed = s.frames[n1:]
+    check(len(held) <= 2, f"at most two frames in flight to a tab that does not acknowledge ({len(held)})")
+    if len(shader) >= 30:  # only where the app animates fast enough to fall behind (not the Linux image's CPU shader)
+        check(bool(resumed) and resumed[0][7], "after falling behind, the stream resumes at a keyframe")
+    s.after(["touch down 130 1690", "touch up 130 1690"], 1.0)
+    enc = median([f[2] for f in s.frames])
+    kb = sum(f[3] for f in s.frames) / len(s.frames) / 1024
+    print(f"     H.264: encode {enc:.1f} ms median, {kb:.1f} KB/frame; drag {len(drag) / drag_s:.0f} fps {drag_mb_s:.2f} MB/s; "
+          f"shader tab {len(shader) / shader_s:.0f} fps {shader_mb_s:.2f} MB/s")
+    print("RESULT-H264 " + json.dumps({"encodeMs": round(enc, 1), "kbPerFrame": round(kb, 1), "dragMBps": round(drag_mb_s, 2),
+                                       "shaderFps": round(len(shader) / shader_s), "shaderMBps": round(shader_mb_s, 2)}))
+    s.ws.s.close()
 
 
 def finish():

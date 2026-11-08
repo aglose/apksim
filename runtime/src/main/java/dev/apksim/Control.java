@@ -50,9 +50,13 @@ final class Control {
       while ((line = in.readLine()) != null) {
         String[] args = line.trim().split("\\s+");
         if (args[0].equals("stream")) {
-          // stream [QUALITY]: this connection becomes a stream of JPEG frames (FrameStream) until it closes.
-          out.println("ok stream");
-          FrameStream.serve(s.getInputStream(), s.getOutputStream(), args.length > 1 ? Integer.parseInt(args[1]) : 80);
+          // stream [QUALITY] [h264 [KBPS]]: this connection becomes a stream of frames (FrameStream) until it closes:
+          // JPEG, or H.264 when asked for and there is an encoder here; the answer names the codec when one was asked.
+          boolean asked = args.length > 2 && args[2].equals("h264");
+          boolean h264 = asked && FrameStream.h264Available();
+          out.println(asked ? "ok stream " + (h264 ? "h264" : "jpeg") : "ok stream");
+          FrameStream.serve(s.getInputStream(), s.getOutputStream(), args.length > 1 ? Integer.parseInt(args[1]) : 80,
+              h264, args.length > 3 ? Integer.parseInt(args[3]) : 4000);
           return;
         }
         Pending p = new Pending(args);

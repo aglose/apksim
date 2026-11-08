@@ -215,7 +215,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
-  - `FrameStream`: the screen as JPEG frames for `apksim serve` (see "apksim serve"). `Control` serves each connection
+  - `FrameStream`: the screen as JPEG or H.264 frames for `apksim serve` (see "apksim serve"; H.264 is
+    `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
+    `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
@@ -312,7 +314,7 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY]` (the connection becomes a JPEG frame stream: see "apksim serve"), `ping`, `quit`,
+(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
@@ -794,8 +796,12 @@ is the spec, the security model and the measurements. Each tab is an ordinary la
 auto`, warm on the Mac when the standby is ready, cold on Linux), read from its stderr (`[apksim] control port N`;
 the rest goes to `STATE/serve/logs/<session>.log`). Serve opens two control connections: commands, pipelined, and
 `stream`, after which `FrameStream` sends each presented frame that differs from the last as a JPEG (Android's encoder,
-on its own thread; `redraw` makes the Host draw one for a new subscriber). Serve relays frames with at most two in
-flight per tab (the page acknowledges each one drawn), and passes on only input and device commands
+on its own thread; `redraw` makes the Host draw one for a new subscriber), or as H.264 when the tab asked
+(`codec=h264`, sent by the page when WebCodecs decodes it) and the instance has an encoder (VideoToolbox; OpenH264
+in the image), answered `c h264`/`c jpeg`: no reordering, keyframes only at the start, a size change or a `key`
+request, and a still screen encoded twice more to sharpen it; `--bitrate` (4000 kbps), `--codec jpeg` turns it off.
+Serve relays frames with at most two in flight per tab (the page acknowledges each one drawn; with H.264 a tab that
+falls behind drops to the next keyframe, which serve asks for), and passes on only input and device commands
 (`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
 non-loopback `Host` header (DNS rebinding). Instances are never given `--adb` or `--control-bind`. A session ends when

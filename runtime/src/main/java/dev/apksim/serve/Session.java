@@ -30,8 +30,8 @@ import java.util.stream.Stream;
  * One browser tab and the apksim instance it drives. The instance is an ordinary launch (`apksim --headless --fresh
  * --control auto ... APK`, taken by a warm standby on the Mac when one is ready); this reads its control port from its
  * stderr, opens two control connections to it on loopback (commands, pipelined, and a frame stream), and relays: frames
- * to the tab, at most two in flight (the tab acknowledges each one it draws, and newer frames replace the one waiting),
- * and the tab's input to the instance, only as the commands {@link #check} allows.
+ * to the tab, at most two in flight (the tab acknowledges each one it draws, and newer frames replace the one waiting;
+ * with H.264, a tab that falls behind drops to the next keyframe instead), and the tab's input to the instance, only as the commands {@link #check} allows.
  */
 final class Session {
   private static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
@@ -68,8 +68,15 @@ final class Session {
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
-  private byte[] waiting;
+  // JPEG: at most one frame waits, the newest. H.264: every frame from a keyframe on waits (each needs the one before),
+  // and a tab that falls behind drops to the next keyframe, which is then asked for.
+  private final ArrayDeque<byte[]> waiting = new ArrayDeque<>();
   private int inFlight;
+  private boolean dropToKey;
+  /** The stream is H.264 (the tab asked, and the instance has an encoder). */
+  private volatile boolean h264;
+  /** H.264 frames that may wait for the tab before it drops to the next keyframe. */
+  private static final int MAX_WAITING = 3;
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
@@ -167,7 +174,9 @@ final class Session {
       }
     }
     stream = connect(p);
-    stream.getOutputStream().write(("stream " + serve.quality + "\n").getBytes(StandardCharsets.US_ASCII));
+    // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
+    String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
+    stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
   }
 
   private static Socket connect(int port) throws IOException {
@@ -216,12 +225,14 @@ final class Session {
   private void readFrames() {
     try {
       DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(stream.getInputStream(), 1 << 16));
-      // "ok stream"
+      // "ok stream", or "ok stream h264|jpeg" when a codec was asked for: the tab is told which before any frame.
       StringBuilder line = new StringBuilder();
       for (int c; (c = in.read()) != '\n'; ) {
         if (c < 0) return;
         line.append((char) c);
       }
+      h264 = line.toString().trim().equals("ok stream h264");
+      if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
         int len = in.readInt();
         if (len < 20 || len > 64 << 20) return;
@@ -232,10 +243,25 @@ final class Session {
           ws.sendText("p first frame after " + firstFrameMillis + " ms");
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
+        boolean askKey = false;
         synchronized (this) {
-          waiting = frame;
+          if (!h264) {
+            waiting.clear();
+            waiting.add(frame);
+          } else if (len > 20 && frame[20] == 1) {
+            waiting.clear();
+            waiting.add(frame);
+            dropToKey = false;
+          } else if (!dropToKey && waiting.size() >= MAX_WAITING) {
+            // The tab is behind: what waits goes, and so does every frame until a keyframe.
+            waiting.clear();
+            dropToKey = askKey = true;
+          } else if (!dropToKey) {
+            waiting.add(frame);
+          }
           notifyAll();
         }
+        if (askKey) askKey();
       }
     } catch (IOException e) {
       // the instance went away
@@ -247,9 +273,8 @@ final class Session {
       while (!ended) {
         byte[] f;
         synchronized (this) {
-          while (waiting == null || inFlight >= MAX_IN_FLIGHT) wait();
-          f = waiting;
-          waiting = null;
+          while (waiting.isEmpty() || inFlight >= MAX_IN_FLIGHT) wait();
+          f = waiting.poll();
           inFlight++;
         }
         ws.sendBinary(new byte[0], f, 0, f.length);
@@ -266,11 +291,29 @@ final class Session {
     notifyAll();
   }
 
+  /** H.264: a keyframe next, from the instance (one is sent even if the screen is still). */
+  private void askKey() {
+    Socket s = stream;
+    if (!h264 || s == null) return;
+    try {
+      synchronized (s) {
+        s.getOutputStream().write("key\n".getBytes(StandardCharsets.US_ASCII));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
   // ---------------------------------------------------------------- input
 
   private void onMessage(String text) {
     if (text.equals("ack")) {
       acked();
+      return;
+    }
+    if (text.equals("key")) {
+      // The tab's decoder lost its place (an error, or it started mid-stream): it waits for a keyframe.
+      askKey();
       return;
     }
     if (text.startsWith("t ") && text.length() < 40) {

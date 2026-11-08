@@ -13,7 +13,8 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--quality Q] [--no-network] [--allow-origin ORIGIN]...
+             [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+             [--allow-origin ORIGIN]...
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -33,6 +34,9 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   ```
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
 - `--quality Q` (default 80): the JPEG quality of the stream.
+- `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
+- `--codec auto|jpeg` (default `auto`): `auto` gives a tab H.264 when it asks and the instance has an encoder;
+  `jpeg` always streams JPEG.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
 - `--allow-origin ORIGIN` (repeatable, e.g. `https://dashboard.example.com`): pages on that origin may embed serve's
   page in a frame and open its WebSockets and POSTs (see "Embedding"). Without it, nothing may frame the page.
@@ -108,13 +112,29 @@ inside itself:
 
 ### Stream
 
-- Frames are JPEG, encoded in the instance with Android's encoder from the frame the Host presents (the raster
-  thread's buffer, as the AVI recorder takes it), sent only when a new frame is presented and differs from the last
-  one sent.
-- The instance sends them over its control channel: a `stream [QUALITY]` command turns that connection into a frame
-  stream (loopback only, like every control connection). Serve relays them to the tab over a WebSocket.
+- Frames are encoded in the instance from the frame the Host presents (the raster thread's buffer, as the AVI
+  recorder takes it), sent only when a new frame is presented and differs from the last one sent. Two codecs:
+  - JPEG (the default, and what a page without WebCodecs or an older page gets): each frame on its own, with
+    Android's encoder.
+  - H.264, when the tab asks for it (`/ws?...&codec=h264`: the page does when `VideoDecoder.isConfigSupported`
+    says it decodes `avc1`; `?codec=jpeg` in the page's URL keeps it on JPEG) and the instance has an encoder:
+    VideoToolbox on the Mac, OpenH264 on Linux (the image installs `libopenh264-7`; without it the stream stays
+    JPEG). Serve tells the tab which it got (`c h264` or `c jpeg`) before the first frame. Low-latency settings: no
+    frame reordering (no B-frames), each frame out as it goes in, an average of `--bitrate` kbps, keyframes only for
+    a new viewer, a size change (rotation, device), or when asked (`key` from the tab, after a decoder error). BT.709,
+    limited range, named in the stream. Each frame is one access unit in Annex B, the SPS and PPS in front of every
+    keyframe, so the page configures its decoder from the keyframe itself (codec string from the SPS). Once the screen
+    stops changing, the last frame is encoded twice more, 120 ms apart, to sharpen what the bit rate left out of it.
+- The instance sends them over its control channel: a `stream [QUALITY] [h264 [KBPS]]` command turns that connection
+  into a frame stream (loopback only, like every control connection), answered `ok stream` (or `ok stream h264|jpeg`
+  when a codec was named). Serve relays them to the tab over a WebSocket. Each binary message is the frame's width,
+  height, present time (epoch µs) and encode time (µs), big-endian, then the JPEG, or for H.264 a byte (1 for a
+  keyframe) and the access unit.
 - Flow control: serve keeps at most two frames in flight to a tab, and the tab acknowledges each frame once drawn.
-  A slow tab or network sees fewer frames, never older ones: frames that arrive meanwhile replace the waiting one.
+  A slow tab or network sees fewer frames, never older ones: with JPEG, frames that arrive meanwhile replace the
+  waiting one. H.264 frames each need the one before, so none is skipped: up to three wait, and a tab further behind
+  drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same for
+  serve, past 30 waiting). A slow link then sees keyframes, as JPEG would, until it keeps up again.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
 
@@ -187,7 +207,8 @@ that no deep link names, data entered).
   gestures from the browser, file pickers (`pick`), multiple tabs sharing one session.
 - A pool of more than one warm standby (one per apksim folder today, refilled ~2 s after each launch: a second
   session within that time launches cold).
-- Video codecs for the stream (H.264 over WebCodecs would cut bandwidth several-fold on busy screens).
+- Other video codecs (VP8/VP9/AV1), a bit rate that adapts to the link, and sending only the changed region of a
+  JPEG frame.
 
 ## How it is built
 
@@ -197,7 +218,9 @@ that no deep link names, data entered).
 - `Session`: starts `apksim` as a child process, reads `[apksim] control port N` from its stderr (the rest goes to
   `STATE/serve/logs/<session>.log`), opens two control connections (commands, pipelined; and the stream), and
   relays both ways.
-- In the instance: `FrameStream` (raster thread → latest frame → encoder thread → each subscriber), `Control` serves
+- In the instance: `FrameStream` (raster thread → latest frame → encoder thread → each subscriber; one H.264
+  encoder shared by every H.264 subscriber, `dev.apksim.video.H264Encoder`: `native/h264enc.m` on the Mac,
+  `native/linux/h264enc_linux.c` in the image, which opens libopenh264 with `dlopen`), `Control` serves
   each connection on its own thread (before: one client at a time), and the `stream` and `redraw` commands. `stats`
   reports the PID and data slot.
 - Clock: the tab sends `t <its time>` and serve answers with its own, so the tab can put frame times on its clock.
@@ -213,8 +236,11 @@ command, the upload limits, then taps the FAB, drags, scrolls, types, switches t
 checking that frames follow each, and that closing the tab ends the session. It also checks `/api/health` without the
 token, a chunked upload, and that URL adds with a disallowed launch option or a non-http URL are refused; with
 `--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; with
-`--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. It prints the
-numbers below.
+`--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. Then a second tab
+asks for H.264 (`--h264 required|optional|skip`; CI requires it): the first frame is a keyframe with SPS, PPS and IDR,
+a drag gives delta frames only, a `key` request on a still screen brings a keyframe, a tab that stops acknowledging
+gets at most two frames, and once it acknowledges again the stream resumes at a keyframe. It prints the numbers
+below.
 `scripts/ci-smoke.sh` runs it against the Linux image with a token on a non-loopback bind, as CI does.
 
 ## Measured (2026-11-05, test app, phone 822x1782)
@@ -240,5 +266,26 @@ under Rosetta), the client on the Mac through the published port.
 - Bandwidth: ~3-5 MB/s while scrolling, up to ~12 MB/s on a full-screen animation at 120 fps. On a slow link the
   acknowledgements hold the server back to what the tab draws, so the tab sees fewer, current frames rather than a
   growing delay.
+
+### H.264 against JPEG (2026-11-07, Mac, test app, phone 822x1782, `--bitrate 4000`)
+
+`serve-check.py`'s two tabs on one server, and the page itself in a Chromium tab (WebCodecs, hardware decoding):
+
+| | JPEG (quality 80) | H.264 |
+|---|---|---|
+| Dragging the list (one move every ~8 ms) | 3.1 MB/s, 82 fps | 0.08 MB/s, 72 fps |
+| Shader tab (full-screen noise, 120 fps) | 11.3 MB/s, 96 KB a frame | 0.50 MB/s, ~4 KB a frame |
+| Average frame over a session | 72 KB | 3.5 KB (the first keyframe ~10-40 KB) |
+| Encode, phone | 3.7 ms | 5.3-5.6 ms (VideoToolbox, waited for) |
+| Encode, tablet 2560x1600 | ~12 ms | ~6 ms |
+| Page in Chromium, Shader tab | | 120 fps drawn, frame presented → on screen 7 ms |
+
+- 40x less while scrolling, 20x less on the animation. Text and edges on still screens come out as sharp as JPEG's
+  (41.7 dB PSNR against a screenshot after a scroll, with the two sharpening passes); fine noise at 120 fps is
+  visibly blockier at 4 Mbps (`--bitrate` raises it).
+- VideoToolbox's encode is waited for on the encoder thread, ~2 ms longer than JPEG on a phone screen, which costs
+  some frames while dragging (72 against 82 fps); on a tablet screen it is half JPEG's time.
+- Linux: OpenH264 in software (the image, `SCREEN_CONTENT_REAL_TIME`). Its numbers come from CI's run of the check
+  (`serve-check.log`); not measured on Colima here.
 - The latency figures in the tab (and the check) compare the instance's clock with the tab's after matching them
   over the WebSocket (the quickest of a few round trips), so they hold across machines.
