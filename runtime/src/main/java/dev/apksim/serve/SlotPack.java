@@ -44,7 +44,37 @@ final class SlotPack {
    * are left out, as are other special files. At most {@link #MAX_FILES} files and {@link #MAX_BYTES}, as unpacking
    * takes.
    */
+  /**
+   * How far a pack has got, for a caller that waits on it with a deadline: a file swapped for a named pipe between
+   * the check and the open blocks that open until something writes to the pipe, and open() cannot be interrupted.
+   */
+  static final class Progress {
+    volatile long files, bytes;
+    private volatile SecureDirectoryStream<Path> openingIn;
+    private volatile Path opening;
+
+    /**
+     * Unblocks an open stuck on a pipe: opens the same entry, through the same folder handle, for writing (no create,
+     * no truncate, no link followed), which lets a reader's open return. Run it on a thread of its own: with no reader
+     * left it blocks itself.
+     */
+    void unstick() {
+      SecureDirectoryStream<Path> d = openingIn;
+      Path n = opening;
+      if (d == null || n == null) return;
+      try (SeekableByteChannel ch = d.newByteChannel(n, Set.of(StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS))) {
+        // opened is enough
+      } catch (IOException | RuntimeException e) {
+        // swapped again, or gone
+      }
+    }
+  }
+
   static void pack(Path state, Path slot, String pkg, OutputStream out) throws IOException {
+    pack(state, slot, pkg, out, new Progress());
+  }
+
+  static void pack(Path state, Path slot, String pkg, OutputStream out, Progress progress) throws IOException {
     Path base = state.toAbsolutePath().normalize();
     Path rel = base.relativize(slot.toAbsolutePath().normalize());
     if (rel.getNameCount() < 2 || rel.startsWith("..")) throw new IOException("not a data slot under the state folder");
@@ -62,15 +92,16 @@ final class SlotPack {
         z.closeEntry();
         long[] used = {1, 0};  // entries (the package one counted, as unpack counts it), bytes
         String name = rel.getFileName().toString();
-        add(z, parent, name, "slot/", 0, used);
-        add(z, parent, name + ".device", "device/", 0, used);
+        add(z, parent, name, "slot/", 0, used, progress);
+        add(z, parent, name + ".device", "device/", 0, used, progress);
       } finally {
         for (SecureDirectoryStream<Path> d : open) d.close();
       }
     }
   }
 
-  private static void add(ZipOutputStream z, SecureDirectoryStream<Path> parent, String name, String prefix, int depth, long[] used)
+  private static void add(ZipOutputStream z, SecureDirectoryStream<Path> parent, String name, String prefix, int depth, long[] used,
+      Progress progress)
       throws IOException {
     if (depth > 64) throw new IOException("folders nested too deep to move");
     SecureDirectoryStream<Path> d;
@@ -94,22 +125,33 @@ final class SlotPack {
         }
         String entry = prefix + n;
         if (at.isDirectory()) {
-          add(z, d, n.toString(), entry + "/", depth + 1, used);
+          add(z, d, n.toString(), entry + "/", depth + 1, used, progress);
         } else if (at.isRegularFile()) {
           if (depth == 0 && prefix.equals("slot/") && n.toString().equals(".lock")) continue;  // the slot's own lock
           if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files to move");
-          try (SeekableByteChannel ch = d.newByteChannel(n, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+          progress.files = used[0];
+          progress.openingIn = d;
+          progress.opening = n;
+          SeekableByteChannel opened;
+          try {
+            opened = d.newByteChannel(n, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+          } catch (java.nio.file.FileSystemException e) {
+            if (e.getMessage() != null && e.getMessage().contains("symbolic link")) continue;  // swapped for a link meanwhile
+            throw e;
+          } finally {
+            progress.opening = null;
+            progress.openingIn = null;
+          }
+          try (SeekableByteChannel ch = opened) {
             z.putNextEntry(new ZipEntry(entry));
             ByteBuffer buf = ByteBuffer.allocate(1 << 16);
             for (int r; (r = ch.read(buf)) > 0; buf.clear()) {
               used[1] += r;
+              progress.bytes = used[1];
               if (used[1] > MAX_BYTES) throw new IOException("the app's data is over " + (MAX_BYTES >> 20) + " MB to move");
               z.write(buf.array(), 0, r);
             }
             z.closeEntry();
-          } catch (java.nio.file.FileSystemException e) {
-            if (e.getMessage() != null && e.getMessage().contains("symbolic link")) continue;  // swapped for a link meanwhile
-            throw e;
           }
         }
       }

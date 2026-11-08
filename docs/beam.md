@@ -680,6 +680,12 @@ First review:
   through open folder handles from the state folder down, each opened without following a link
   (SecureDirectoryStream): a process the app left running may still write there, and a file or folder swapped for a
   link between a check and an open would otherwise be packed through it. Links and special files are left out.
+  A file swapped for a named pipe between the check and the open blocks that open (uninterruptibly) until something
+  writes to it, so the pack runs on a thread of its own, watched: no progress for 15 s and it is interrupted (which
+  ends a pipe read that never finishes) and its pending open is released by opening the same name for writing; still
+  stuck 15 s later, the handoff fails and the session ends anyway. The release fails when the app keeps swapping the
+  name (the open then waits on a pipe nothing can name: 32 of 32 times under a swapping loop), so the give-up is what
+  bounds it; that thread stays blocked, holding only its folder handles (its zip is closed and deleted).
   Checked on the Mac; the Linux path (`/proc`, the started process) is not run by a check yet.
 - **The agent** (`Serve.beamSeed`): `/beam/start` takes `data: {"ticket","url"}` beside phase 2's fields; the address
   must be the page's own (same origin and base path as the APK's, no redirects). It downloads the pack, unpacks it

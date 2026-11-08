@@ -339,8 +339,8 @@ final class Session {
       new java.security.SecureRandom().nextBytes(rnd);
       String hid = "d" + java.util.HexFormat.of().formatHex(rnd);
       Path zip = dir.resolve(hid + ".zip");
-      try (java.io.OutputStream out = Files.newOutputStream(zip)) {
-        SlotPack.pack(serve.state, slot, slot.getParent().getFileName().toString(), out);
+      try {
+        packWithDeadline(slot, zip);
       } catch (IOException | RuntimeException e) {
         Files.deleteIfExists(zip);
         throw e;
@@ -356,6 +356,60 @@ final class Session {
     }
     stop(null);
   }
+
+  /**
+   * SlotPack.pack on a thread of its own, watched: a process the app left running can swap a file for a named pipe
+   * between the check and the open, and that open blocks (uninterruptibly) until something writes to the pipe, as a
+   * read from a pipe that never ends does. With no progress for 15 s the pack is interrupted (which ends a read) and its
+   * pending open released (Progress.unstick: an open of the same name for writing). That fails when the app has
+   * swapped the name again meanwhile, leaving the open blocked on a pipe nothing can name; so, still stuck 15 s later,
+   * the pack is given up and the handoff fails, and the session still ends and frees its place. The thread is then
+   * left blocked for good, holding only its folder handles (its zip is closed and deleted here).
+   */
+  private void packWithDeadline(Path slot, Path zip) throws IOException, InterruptedException {
+    SlotPack.Progress progress = new SlotPack.Progress();
+    Throwable[] failed = {null};
+    java.io.OutputStream out = Files.newOutputStream(zip);
+    Thread t = Thread.ofPlatform().daemon().name("serve-pack-" + id).start(() -> {
+      try (out) {
+        SlotPack.pack(serve.state, slot, slot.getParent().getFileName().toString(), out, progress);
+      } catch (Throwable e) {
+        failed[0] = e;
+      }
+    });
+    long seenFiles = -1, seenBytes = -1, since = System.currentTimeMillis();
+    boolean nudged = false;
+    while (true) {
+      t.join(1000);
+      if (!t.isAlive()) break;
+      long now = System.currentTimeMillis();
+      if (progress.files != seenFiles || progress.bytes != seenBytes) {
+        seenFiles = progress.files;
+        seenBytes = progress.bytes;
+        since = now;
+        nudged = false;
+      } else if (now - since > STALL_MS && !nudged) {
+        logLine("[serve] packing the app's data has not moved for " + STALL_MS / 1000 + " s: unblocking it");
+        t.interrupt();
+        Thread.ofPlatform().daemon().name("serve-pack-unstick-" + id).start(progress::unstick);
+        nudged = true;
+        since = now;
+      } else if (now - since > STALL_MS) {
+        try {
+          out.close();
+        } catch (IOException e) {
+          // closed either way
+        }
+        throw new IOException("the app's data could not be read (a file that never ends)");
+      }
+    }
+    if (failed[0] instanceof IOException e) throw e;
+    if (failed[0] instanceof RuntimeException e) throw e;
+    if (failed[0] != null) throw new IOException(failed[0]);
+  }
+
+  /** How long a pack may go without reading a byte before it is unblocked, then given up (packWithDeadline). */
+  static long STALL_MS = Long.getLong("apksim.packStallMs", 15_000);
 
   /** Why this session's data slot may not be handed off, or null. */
   private String handoffSlotProblem(Path slot) {
