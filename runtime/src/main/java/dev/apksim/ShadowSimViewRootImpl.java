@@ -23,15 +23,23 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter;
 @Implements(value = ViewRootImpl.class, isInAndroidSdk = false)
 public class ShadowSimViewRootImpl extends ShadowViewRootImpl {
   private RenderNode node;
+  /** Window draws under way on the main thread (nested ones too): {@link TestRecorder} never captures inside one. */
+  static int drawing;
 
   @Implementation(minSdk = 34)
   @Override
   protected boolean draw(boolean fullRedrawNeeded, Object activeSyncGroup, boolean syncBuffer) {
-    boolean drew = super.draw(fullRedrawNeeded, activeSyncGroup, syncBuffer);
-    if (TestActivities.testRun()) {
-      record();
-      TestRecorder.onDraw();  // --record: a frame of the test's movie, when one is due
+    boolean drew;
+    drawing++;
+    try {
+      drew = super.draw(fullRedrawNeeded, activeSyncGroup, syncBuffer);
+      if (TestActivities.testRun()) record();
+    } finally {
+      drawing--;
     }
+    // --record: a frame of the test's movie when one is due, taken from a message posted now, once this draw (and
+    // the traversal, and any draw this one is nested in) has returned (issue 144).
+    if (TestActivities.testRun()) TestRecorder.onDraw();
     return drew;
   }
 
