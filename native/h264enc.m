@@ -16,15 +16,19 @@ typedef struct {
   int ok;
 } Encoder;
 
-static void append(Encoder *e, const void *p, size_t n) {
+// Returns 0 when the buffer could not grow (the old one is kept, unchanged).
+static int append(Encoder *e, const void *p, size_t n) {
   if (e->outLen + n > e->outCap) {
     size_t cap = e->outCap ? e->outCap : 1 << 16;
     while (cap < e->outLen + n) cap *= 2;
-    e->out = realloc(e->out, cap);
+    uint8_t *grown = realloc(e->out, cap);
+    if (!grown) return 0;
+    e->out = grown;
     e->outCap = cap;
   }
   memcpy(e->out + e->outLen, p, n);
   e->outLen += n;
+  return 1;
 }
 
 static const uint8_t START[4] = {0, 0, 0, 1};
@@ -38,9 +42,10 @@ static void onEncoded(void *ref, void *frameRef, OSStatus status, VTEncodeInfoFl
     CFDictionaryRef a = CFArrayGetValueAtIndex(attachments, 0);
     key = !CFDictionaryContainsKey(a, kCMSampleAttachmentKey_NotSync);
   }
+  // Any append that cannot grow the buffer leaves e->ok 0: nativeEncode then returns null (a failed encode).
   e->outLen = 0;
   uint8_t flag = key;
-  append(e, &flag, 1);
+  if (!append(e, &flag, 1)) return;
   if (key) {
     CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample);
     size_t count = 0;
@@ -49,8 +54,7 @@ static void onEncoded(void *ref, void *frameRef, OSStatus status, VTEncodeInfoFl
       const uint8_t *set;
       size_t len;
       if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, i, &set, &len, NULL, NULL) != noErr) continue;
-      append(e, START, 4);
-      append(e, set, len);
+      if (!append(e, START, 4) || !append(e, set, len)) return;
     }
   }
   CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
@@ -62,8 +66,7 @@ static void onEncoded(void *ref, void *frameRef, OSStatus status, VTEncodeInfoFl
     uint32_t len = ((uint8_t)data[at] << 24) | ((uint8_t)data[at + 1] << 16) | ((uint8_t)data[at + 2] << 8) | (uint8_t)data[at + 3];
     at += 4;
     if (len > total - at) break;
-    append(e, START, 4);
-    append(e, data + at, len);
+    if (!append(e, START, 4) || !append(e, data + at, len)) return;
     at += len;
   }
   e->ok = 1;
@@ -81,6 +84,7 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_video_H264Encoder_nativeAvailable(JNI
 
 JNIEXPORT jlong JNICALL Java_dev_apksim_video_H264Encoder_nativeOpen(JNIEnv *env, jclass c, jint w, jint h, jint kbps) {
   Encoder *e = calloc(1, sizeof(Encoder));
+  if (!e) return 0;  // H264Encoder.open reports no encoder
   e->w = w;
   e->h = h;
   // Low-latency rate control: no frame reordering, and frames come out as they go in.

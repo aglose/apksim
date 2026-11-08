@@ -86,10 +86,18 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_video_H264Encoder_nativeOpen(JNIEnv *env
   int format = videoFormatI420;
   (*enc)->SetOption(enc, ENCODER_OPTION_DATAFORMAT, &format);
   Encoder *e = calloc(1, sizeof(Encoder));
+  uint8_t *yuv = malloc((size_t)w * h * 3 / 2);
+  if (!e || !yuv) {  // H264Encoder.open reports no encoder
+    free(e);
+    free(yuv);
+    (*enc)->Uninitialize(enc);
+    destroy(enc);
+    return 0;
+  }
   e->enc = enc;
   e->w = w;
   e->h = h;
-  e->yuv = malloc((size_t)w * h * 3 / 2);
+  e->yuv = yuv;
   return (jlong)e;
 }
 
@@ -169,7 +177,9 @@ JNIEXPORT jbyteArray JNICALL Java_dev_apksim_video_H264Encoder_nativeEncode(JNIE
     for (int j = 0; j < info.sLayerInfo[i].iNalCount; j++) total += info.sLayerInfo[i].pNalLengthInByte[j];
   }
   if (total > e->outCap) {
-    e->out = realloc(e->out, total);
+    uint8_t *grown = realloc(e->out, total);
+    if (!grown) return NULL;  // the old buffer stays; a failed encode, which FrameStream retries
+    e->out = grown;
     e->outCap = total;
   }
   // Each layer's NAL units sit one after another in its buffer, with their start codes.
