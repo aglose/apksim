@@ -111,6 +111,8 @@ public final class Serve {
   private Double keepSavedDays;
   /** `--allow-beam`: this server's page offers "Run on this Mac" and serves its APKs to it (docs/beam.md). */
   boolean allowBeam;
+  /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
+  final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
   int beamPort = Beam.DEFAULT_PORT;
   private boolean portGiven, maxGiven;
@@ -578,6 +580,12 @@ public final class Serve {
           "Set-Cookie: apksim_token=" + r.param("token") + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000");
       return;
     }
+    // A visitor's agent downloading the APK of the app its page is starting (docs/beam.md, phase 2): the ticket, which
+    // only a page with the token gets, is the authorization, for that one build and five minutes.
+    if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam/apk")) {
+      beamDownload(r.param("ticket"), out);
+      return;
+    }
     if (!authorized(r)) {
       Http.text(out, 401, "this server needs its token: open the link with ?token=... once (or send Authorization: Bearer ...)");
       return;
@@ -863,8 +871,33 @@ public final class Serve {
     }
     StringBuilder opts = new StringBuilder("[");
     for (String o : a.launch()) opts.append(opts.length() > 1 ? "," : "").append(Http.q(o));
+    String sha = catalog.sha256(apk);
     Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"size\":" + Files.size(apk)
-        + ",\"sha256\":" + Http.q(catalog.sha256(apk)) + ",\"options\":" + opts.append(']') + "}");
+        + ",\"sha256\":" + Http.q(sha) + ",\"options\":" + opts.append(']') + ",\"ticket\":" + Http.q(tickets.mint(a.id(), sha))
+        + ",\"ticketSeconds\":" + tickets.lifetimeSeconds + "}");
+  }
+
+  /** `GET /api/beam/apk?ticket=T`: the APK a valid ticket names, while that app's file is still that build. */
+  private void beamDownload(String ticket, OutputStream out) throws IOException {
+    String[] t = tickets.check(ticket);
+    Catalog.App a = t == null ? null : catalog.find(t[0]);
+    if (a == null || catalog.downloading(a)) {
+      Http.text(out, 403, "no such ticket, or it has expired (each lasts " + tickets.lifetimeSeconds / 60 + " minutes): start again");
+      return;
+    }
+    Path apk;
+    try {
+      apk = catalog.file(a, what -> {}, () -> false);
+    } catch (IOException e) {
+      Http.text(out, 409, e.getMessage());
+      return;
+    }
+    if (!catalog.sha256(apk).equals(t[1])) {
+      Http.text(out, 409, "this app's file has changed since the ticket was made: start again");
+      return;
+    }
+    System.err.printf("[serve] beam: %s downloaded by a visitor's agent%n", a.name());
+    Http.file(out, apk, "application/vnd.android.package-archive");
   }
 
   /**
@@ -939,11 +972,13 @@ public final class Serve {
       Http.text(out, 413, "the request body is limited to 64 KB");
       return;
     }
-    String sha, name;
+    String sha, name, ticket, from;
     long size;
     List<String> launch;
     try {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
+      ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
+      from = body.get("url") instanceof String u && u.length() <= 2000 ? u : null;
       if (!(body.get("sha256") instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
       sha = h;
       name = body.get("name") instanceof String n ? n : null;
@@ -969,12 +1004,74 @@ public final class Serve {
       return;
     }
     Catalog.App a = catalog.byHash(sha, name, launch);
+    String via = "cache";
+    String why = null;
+    if (a == null && ticket != null && from != null) {
+      // Phase 2: from the page's own server, with the ticket it was given; the tab relays it only if this fails.
+      try {
+        a = beamFetch(o, from, ticket, sha, name, size, launch);
+        via = "download";
+      } catch (IOException e) {
+        why = e.getMessage();
+        System.err.println("[beam] could not download " + (name == null ? sha.substring(0, 12) : name) + " from " + o + ": " + why);
+      }
+    }
     if (a != null) {
-      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch)) + "}");
+      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch))
+          + ",\"via\":" + Http.q(via) + "}");
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch)) + "}");
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch))
+        + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
+  }
+
+  /**
+   * The agent downloads a build from the server the page came from (docs/beam.md, phase 2): only from that page's own
+   * origin (a page could make it fetch nothing it could not fetch itself), only `/api/beam/apk` with the ticket, no
+   * redirects (a sign-in page behind single sign-on is a failure, not a place to go), an APK's content type, within
+   * --max-upload, and the hash the page named checked before the file is stored. Throws why it could not.
+   */
+  private Catalog.App beamFetch(String origin, String from, String ticket, String sha, String name, long size, List<String> launch)
+      throws IOException {
+    java.net.URI u;
+    try {
+      u = new java.net.URI(from);
+    } catch (java.net.URISyntaxException e) {
+      throw new IOException("not a URL");
+    }
+    String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
+    if (!(scheme.equals("http") || scheme.equals("https")) || u.getHost() == null || u.getRawUserInfo() != null
+        || u.getRawQuery() != null || u.getRawFragment() != null || u.getRawPath() == null || !u.getRawPath().endsWith("/api/beam/apk")) {
+      throw new IOException("not the server's APK address");
+    }
+    int port = u.getPort();
+    boolean defaultPort = port == -1 || scheme.equals("http") && port == 80 || scheme.equals("https") && port == 443;
+    String own = scheme + "://" + u.getHost().toLowerCase(Locale.ROOT) + (defaultPort ? "" : ":" + port);
+    if (!own.equals(origin.toLowerCase(Locale.ROOT))) throw new IOException("the address is not the page's own site (" + own + ")");
+    if (size > maxUploadMb << 20) throw new IOException("too large");
+    java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+        .followRedirects(java.net.http.HttpClient.Redirect.NEVER).connectTimeout(java.time.Duration.ofSeconds(10)).build();
+    java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(u.resolve(u.getRawPath() + "?ticket="
+            + java.net.URLEncoder.encode(ticket, StandardCharsets.UTF_8)))
+        .timeout(java.time.Duration.ofMinutes(10)).header("Accept", "application/vnd.android.package-archive").GET().build();
+    java.net.http.HttpResponse<InputStream> resp;
+    try {
+      resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted");
+    }
+    try (InputStream body = resp.body()) {
+      if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode());
+      String type = resp.headers().firstValue("content-type").orElse("");
+      if (!type.startsWith("application/vnd.android.package-archive")) throw new IOException("the server sent " + (type.isEmpty() ? "no content type" : type) + ", not an APK");
+      long length = resp.headers().firstValueAsLong("content-length").orElse(-1);
+      if (length > maxUploadMb << 20) throw new IOException("too large: " + (length >> 20) + " MB");
+      Catalog.App a = catalog.upload(body, length, name, launch, sha);
+      System.err.printf("[beam] %s: downloaded %s (%d MB) itself%n", origin, a.name(), Files.size(a.path()) >> 20);
+      return a;
+    }
   }
 
   /**

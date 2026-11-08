@@ -377,8 +377,10 @@ on the Shader tab and slow drags, 88-91% on flings, both), after slow drags stop
 latency than the window is left (the encode). 1c is
 built: builds deleted 2 days (`apksim beam config keep-days N`) after their last session, with their cache entry,
 and sessions erased unless the visitor keeps one ("Keep on this Mac", or `save-sessions on`), which `apksim beam
-run ID` reopens locally with its data (`beam-check.py`, 62 checks). Then the direct APK download, sizing with Show
-in Simulator, moving a running session, and the launchd agent.
+run ID` reopens locally with its data (`beam-check.py`). Beamed apps run in a sandbox of their own (nothing of the
+Mac's but their slot, scratch and per-build caches). Phase 2 is built: the agent downloads a build it lacks from the
+page's server with a signed ticket, the tab relaying it only when that fails. Then sizing with Show in Simulator,
+moving a running session, and the launchd agent.
 
 ## Not planned
 

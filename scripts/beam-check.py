@@ -202,6 +202,109 @@ def live_sandbox_checks(pid):
           f"sandbox: and writes its own scratch ({good[:60]})")
 
 
+def download_checks(apksim, apk, sha, size):
+    """Phase 2 (docs/beam.md): the agent downloads a build from the page's server with the server's ticket, in a state
+    folder, server and agent of their own (tickets of 4 s, for expiry). A stand-in for single sign-on in front of the
+    server (401 to anyone without its cookie) makes the agent ask the tab to send the APK instead."""
+    import http.server
+    import threading
+    import urllib.request
+    state = tempfile.mkdtemp(prefix="beam-check-dl-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_TICKET_SECONDS="4", APKSIM_BEAM_CONSENT="allow")
+    sp, gp = free_port(), free_port()
+    procs = []
+
+    class SignIn(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html>sign in</html>")
+
+        def log_message(self, *a):
+            pass
+    proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SignIn)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    S, P = f"http://127.0.0.1:{sp}", f"http://127.0.0.1:{proxy.server_address[1]}"
+    uploads = os.path.join(state, "beam", "uploads")
+    try:
+        procs.append(subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", apk],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env))
+        procs.append(subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env))
+        check(wait_up(sp, "/api/health") and wait_up(gp, "/beam/hello"), "download: a server and an agent of its own")
+        app = json.loads(req(sp, "GET", "/api/apps")[2])[0]["id"]
+        st, _, body = req(sp, "GET", f"/api/apps/{app}/beam")
+        info = json.loads(body)
+        ticket = info.get("ticket", "")
+        check(st == 200 and info.get("sha256") == sha and ticket.startswith("v1.") and info.get("ticketSeconds") == 4,
+              f"download: the app's beam answer carries a ticket ({ticket[:24]}...)")
+        st, h, body = req(sp, "GET", f"/api/beam/apk?ticket={ticket}")
+        check(st == 200 and hashlib.sha256(body).hexdigest() == sha and h.get("content-type", "").startswith("application/vnd.android"),
+              "download: the ticket alone downloads that APK (no token)")
+        altered = ticket[:-1] + ("A" if ticket[-1] != "A" else "B")
+        check(req(sp, "GET", f"/api/beam/apk?ticket={altered}")[0] == 403, "download: an altered ticket is refused")
+        check(req(sp, "GET", "/api/beam/apk")[0] == 403, "download: no ticket, no APK")
+        other = ticket.replace(f".{sha}.", f".{'0' * 64}.")
+        check(req(sp, "GET", f"/api/beam/apk?ticket={other}")[0] == 403, "download: a ticket naming another build is refused")
+        start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": [], "ticket": ticket}
+
+        # Behind a sign-in the agent cannot pass: the tab sends the APK.
+        st, _, body = req(gp, "POST", "/beam/start", P, dict(start, url=P + "/api/beam/apk"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and "401" in g.get("why", ""), f"download: behind a sign-in the agent asks the tab ({g.get('why')})")
+        st, _, body = req(gp, "POST", f"/beam/upload?upload={g.get('upload')}", P, open(apk, "rb").read())
+        check(st == 200 and "token" in json.loads(body), "download: and the tab's upload starts the session")
+        for f in glob.glob(os.path.join(uploads, "*")):
+            os.remove(f)  # the agent has no build again
+
+        # From the page's own server: the agent downloads it itself, then finds it by its hash.
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, url=S + "/api/beam/apk"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("via") == "download" and "token" in g and os.path.exists(os.path.join(uploads, sha + ".apk")),
+              f"download: the agent downloads the build from the page's server ({g.get('via')})")
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, url=S + "/api/beam/apk"))
+        check(json.loads(body).get("via") == "cache", "download: the second visit transfers nothing")
+        # A build named by a hash the download does not have: not stored, the tab asked.
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, sha256="1" * 64, url=S + "/api/beam/apk"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and "SHA-256" in g.get("why", "") and not os.path.exists(os.path.join(uploads, "1" * 64 + ".apk")),
+              f"download: a download whose hash is not the one named is not kept ({g.get('why', '')[:60]})")
+        # Only from the page's own site.
+        st, _, body = req(gp, "POST", "/beam/start", P, dict(start, sha256="2" * 64, url=S + "/api/beam/apk"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and "own site" in g.get("why", ""), f"download: not from another site than the page's ({g.get('why')})")
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, sha256="3" * 64, url=S + "/api/other"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and g.get("why"), f"download: nor any other address of it ({g.get('why')})")
+        # An expired ticket.
+        for f in glob.glob(os.path.join(uploads, "*")):
+            os.remove(f)
+        time.sleep(5)
+        check(req(sp, "GET", f"/api/beam/apk?ticket={ticket}")[0] == 403, "download: an expired ticket is refused")
+        st, _, body = req(gp, "POST", "/beam/start", S, dict(start, url=S + "/api/beam/apk"))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and "403" in g.get("why", ""), f"download: and the agent then asks the tab ({g.get('why')})")
+    finally:
+        proxy.shutdown()
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                p.wait(15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
 def begin(gp, origin, start, apk):
     """A session grant for this build, sending the APK when the agent asks; (grant, sent)."""
     st, _, body = req(gp, "POST", "/beam/start", origin, start)
@@ -284,6 +387,7 @@ def main():
     check(r.returncode == 2, "apksim beam refuses --bind (loopback only)")
 
     sandbox_checks(apksim, a.apk)
+    download_checks(apksim, a.apk, sha, size)
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV)
     g = None

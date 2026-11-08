@@ -17,7 +17,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
-| 2 The agent downloads the APK itself | Not started (the tab relays it today) |
+| 2 The agent downloads the APK itself | Done (see "Phase 2 as built"): with the server's ticket, from the page's own site; the tab relays it only when that fails |
 | 3 Sizing, Show in Simulator | Not started |
 | 4 Moving a running session | Not started |
 | 5 The app's data moves with it | Not started (optional) |
@@ -269,7 +269,7 @@ the manual checks listed.
    session's slot renamed and listed; `run` reopening it with the data it left (the test app's `apksim://slot`
    "Write" values); a build a saved session names surviving the sweep; `forget` erasing the data and starting the
    build's hold; `config` values read at start.
-2. **APK transport (~3 days).** Tickets, `--allow-beam`, `GET /api/beam/apk`, the hash cache, `need-upload` and the
+2. **APK transport.** Built 2026-11-08 (see "Phase 2 as built"). Tickets, `--allow-beam`, `GET /api/beam/apk`, the hash cache, `need-upload` and the
    tab's relay. Done when: the second visit transfers nothing; a server behind an auth proxy (a stand-in in
    `beam-check.py` that wants a cookie) beams through the tab; a wrong hash, an expired or altered ticket, and an app
    the ticket does not name are refused.
@@ -525,6 +525,28 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   it again where asked), and a Mac session that ends before its first frame (the agent's sessions all in use, a
   refused upgrade, an instance that fails to start) runs on the server instead. `scripts/beam-page-check.py` checks
   both in Chrome.
+
+## Phase 2 as built (2026-11-08)
+
+- **Tickets** (`BeamTicket`): `GET /api/apps/ID/beam` (behind the token) answers a `ticket` too:
+  `v1.<app>.<sha256>.<expiry>.<HMAC-SHA256>`, signed with a key serve makes at its start (tickets die with it), good
+  for 5 minutes (`APKSIM_BEAM_TICKET_SECONDS` for checks). `GET /api/beam/apk?ticket=T` needs no token: it serves the
+  APK of the app the ticket names while that app's file is still the build it names, and refuses an altered, expired
+  or unknown ticket (403). Not the session's state yet (device, appearance...), which the start sends as before.
+- **The agent** (`Serve.beamFetch`): `/beam/start` takes `ticket` and `url` (the page sends
+  `new URL("api/beam/apk", location.href)`, so a base path or a proxy's prefix holds). For a build it lacks it
+  downloads `url?ticket=T` itself, but only from the page's own origin (the request's `Origin`: a page cannot make
+  the agent fetch what it could not fetch itself) and only that path, follows no redirects (a single sign-on page is a
+  failure, not a place to go), wants an APK's content type, keeps within `--max-upload`, and checks the SHA-256 the page
+  named before the file is stored (`Catalog.upload` with the expected hash). The answer says `"via": "cache"` or
+  `"download"`. Any failure answers `need: upload` with `why` (in the page's log), and the tab relays the APK as in
+  phase 1.
+- **Checked** (`beam-check.py`'s download section, 15 checks, a server and agent of their own): the ticket alone
+  downloads the APK, altered / missing / other-build / expired tickets are refused; behind a stand-in single sign-on
+  (401 without its cookie) the agent asks the tab, whose upload starts the session; from the page's server the agent
+  downloads the build itself and the second visit transfers nothing; a hash the download does not have is not kept;
+  another site's address and another path of the page's site are not fetched; with an expired ticket the agent asks
+  the tab. In Chrome with serve's page: "this Mac downloaded the app from this server", then found by its hash.
 
 ## Measurements to keep (as serve's table)
 

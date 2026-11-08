@@ -845,6 +845,9 @@ from a loopback peer as the browser's (Origin is checked against them, and the l
 `--public-origin URL` accepts that origin as serve's own and prints links with it, `--base-path /sim` serves everything
 under a prefix (a proxy that strips it works too); the page builds every URL relative to its folder, and the token
 redirect is relative. WebSocket pings go to every session every 20 s.
+`--allow-beam` (docs/beam.md): the page offers "On this Mac" when the visitor runs `apksim beam`, which runs the app in
+the beam sandbox and streams it into the same canvas; the server hands the page a signed ticket (`BeamTicket`) with
+which the agent downloads the APK itself (`GET /api/beam/apk`, no token), the tab relaying it when that fails.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

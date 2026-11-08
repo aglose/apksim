@@ -810,8 +810,13 @@ async function startOnMac(q, gen) {
     overlay("Starting on this Mac…");
     const info = await okJson(fetch(withToken("api/apps/" + encodeURIComponent(app) + "/beam")));
     // The agent asks its owner the first time this site runs an app there (a prompt on the Mac): this waits for it.
+    // With the server's ticket and its download address the agent fetches a build it lacks itself (docs/beam.md,
+    // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
     let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sha256: info.sha256, name: info.name, size: info.size, options: info.options }) }));
+      body: JSON.stringify({ sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
+        url: new URL("api/beam/apk", location.href).href }) }));
+    if (g.via === "download") log("this Mac downloaded the app from this server");
+    if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");
     if (gen !== startGen) return;
     if (g.need === "upload") {
       overlay("Sending the app to this Mac (" + Math.max(1, Math.round(info.size / 1048576)) + " MB)…");
