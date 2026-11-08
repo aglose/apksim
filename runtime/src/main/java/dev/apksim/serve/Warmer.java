@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
  */
 final class Warmer {
   private static final Pattern PROGRESS = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
+  private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   enum State { QUEUED, WARMING, READY, FAILED, SKIPPED }
 
   private static final class Job {
@@ -46,6 +47,13 @@ final class Warmer {
 
   private final Serve serve;
   private final Map<String, Job> jobs = new LinkedHashMap<>();  // by APK path (apps sharing a file share its cache)
+  /** App id to the APK path its job is under: a catalog URL app has no path of its own until it is downloaded. */
+  private final Map<String, String> byId = new java.util.HashMap<>();
+  /** APKs a session launched without a warm-up (it translates for itself): never warmed beside it afterwards. */
+  private final java.util.Set<String> taken = new java.util.HashSet<>();
+  private boolean closed;
+  private Thread loopThread;
+  private volatile Process active;
   private final ArrayDeque<Job> queue = new ArrayDeque<>();
   private boolean running;
 
@@ -58,13 +66,14 @@ final class Warmer {
     if (app.path() == null) return;
     String key = app.path().toString();
     synchronized (this) {
-      if (jobs.containsKey(key)) return;
+      byId.put(app.id(), key);
+      if (closed || taken.contains(key) || jobs.containsKey(key)) return;
       Job j = new Job(app, app.path());
       jobs.put(key, j);
       queue.add(j);
       if (!running) {
         running = true;
-        Thread.ofPlatform().name("serve-warm").daemon().start(this::loop);
+        loopThread = Thread.ofPlatform().name("serve-warm").daemon().start(this::loop);
       }
     }
   }
@@ -78,7 +87,7 @@ final class Warmer {
             if (Files.isRegularFile(a.path())) enqueue(a);
           } else if (a.url() != null) {
             Path p = serve.catalog.file(a, w -> {}, () -> false);
-            enqueue(new Catalog.App(a.id(), a.name(), p, a.url(), false, a.launch()));
+            enqueue(new Catalog.App(a.id(), a.name(), p, a.url(), false, a.launch()));  // remembered under a.id()
           }
         } catch (IOException | RuntimeException e) {
           System.err.println("[serve] not warming " + a.name() + ": " + e.getMessage());
@@ -91,7 +100,7 @@ final class Warmer {
     while (true) {
       Job j;
       synchronized (this) {
-        j = queue.poll();
+        j = closed ? null : queue.poll();
         if (j == null) {
           running = false;
           return;
@@ -126,13 +135,35 @@ final class Warmer {
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true).directory(serve.logs.toFile());
     serve.instanceEnvironment(pb);
-    Process p = pb.start();
+    Process p;
+    synchronized (this) {
+      if (closed) throw new IOException("the server is stopping");
+      p = pb.start();
+      active = p;
+    }
+    java.util.concurrent.atomic.AtomicReference<Path> slot = new java.util.concurrent.atomic.AtomicReference<>();
+    try {
+      run(j, p, slot, t0);
+    } finally {
+      active = null;
+      if (p.isAlive()) {
+        p.destroyForcibly();
+        p.waitFor(5, TimeUnit.SECONDS);
+      }
+      // Its data slot (serve-N and its .device folder), as a session's is erased: nothing may be left behind.
+      if (slot.get() != null) Session.eraseSlot(serve, slot.get(), l -> System.err.println(l));
+    }
+  }
+
+  private void run(Job j, Process p, java.util.concurrent.atomic.AtomicReference<Path> slot, long t0) throws Exception {
     List<String> last = new ArrayList<>();
     Crash.Reason reason = new Crash.Reason();
     Thread reader = Thread.ofVirtual().name("serve-warm-log").start(() -> {
       try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
         for (String line; (line = r.readLine()) != null; ) {
           reason.line(line);
+          Matcher ds = DATA_SLOT.matcher(line);
+          if (ds.find()) slot.set(Path.of(ds.group(1)));
           Matcher m = PROGRESS.matcher(line);
           if (m.find()) j.progress = "translating classes: " + m.group(1);
           synchronized (last) {
@@ -147,7 +178,9 @@ final class Warmer {
     long limit = Math.max(900, serve.launchTimeoutSeconds * 5L);
     if (!p.waitFor(limit, TimeUnit.SECONDS)) {
       p.destroyForcibly();
-      throw new IOException("no first frame after " + limit + " s");
+      p.waitFor(5, TimeUnit.SECONDS);
+      reader.join(2000);
+      throw new IOException(closed ? "the server is stopping" : "no first frame after " + limit + " s");
     }
     reader.join(2000);
     List<String> hs = Crash.takeHsErr(serve.logs, p.pid());
@@ -164,14 +197,19 @@ final class Warmer {
    * Before a session launches an app: waits while its APK is being warmed (progress to `progress`, at most once a
    * second, for at most `maxSeconds`); takes it off the queue when it has not started, so the session warms it itself.
    */
-  void await(Catalog.App app, Consumer<String> progress, BooleanSupplier stopped, int maxSeconds) {
-    if (app.path() == null) return;
+  void await(Catalog.App app, Path apk, Consumer<String> progress, BooleanSupplier stopped, int maxSeconds) {
+    String key = apk.toString();
     Job j;
     synchronized (this) {
-      j = jobs.get(app.path().toString());
-      if (j == null) return;
+      byId.putIfAbsent(app.id(), key);
+      j = jobs.get(key);
+      if (j == null) {
+        taken.add(key);  // not warmed (yet): this session translates for itself, and nothing warms it beside it
+        return;
+      }
       if (j.state == State.QUEUED) {
         j.state = State.SKIPPED;
+        taken.add(key);
         return;
       }
     }
@@ -192,31 +230,54 @@ final class Warmer {
   }
 
   /** The cache state of an app for `GET /api/apps/ID` and `/api/status`: "none", "queued", "warming", "ready", "failed". */
+  private Job job(Catalog.App app) {
+    if (app == null) return null;
+    String key = byId.get(app.id());
+    if (key == null && app.path() != null) key = app.path().toString();
+    return key == null ? null : jobs.get(key);
+  }
+
   synchronized String state(Catalog.App app) {
-    if (app == null || app.path() == null) return "none";
-    Job j = jobs.get(app.path().toString());
+    Job j = job(app);
     if (j == null || j.state == State.SKIPPED) return "none";
     return j.state.name().toLowerCase(java.util.Locale.ROOT);
   }
 
   synchronized String detail(Catalog.App app) {
-    Job j = app == null || app.path() == null ? null : jobs.get(app.path().toString());
+    Job j = job(app);
     if (j == null) return "";
     return j.state == State.FAILED ? j.error : j.progress;
   }
 
-  /** One JSON object per APK warmed or being warmed, for `/api/status`. */
-  synchronized String json() {
-    StringBuilder b = new StringBuilder("[");
-    for (Job j : jobs.values()) {
-      if (j.state == State.SKIPPED) continue;
-      if (b.length() > 1) b.append(',');
-      b.append("{\"id\":").append(Http.q(j.app.id())).append(",\"name\":").append(Http.q(j.app.name()))
-          .append(",\"cache\":").append(Http.q(j.state.name().toLowerCase(java.util.Locale.ROOT)));
-      String d = j.state == State.FAILED ? j.error : j.progress;
-      if (!d.isEmpty()) b.append(",\"detail\":").append(Http.q(d));
-      b.append('}');
+  /**
+   * The server is stopping: nothing queued will run, a running warm-up's instance is ended and its data slot erased
+   * (by the warm-up's own thread), and this waits for that, up to 15 s.
+   */
+  void shutdown() {
+    Thread t;
+    synchronized (this) {
+      closed = true;
+      for (Job j : queue) {
+        j.state = State.SKIPPED;
+        j.done.complete(null);
+      }
+      queue.clear();
+      t = loopThread;
     }
-    return b.append(']').toString();
+    Process p = active;
+    if (p != null) {
+      p.destroy();
+      try {
+        if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly();
+      } catch (InterruptedException e) {
+        p.destroyForcibly();
+        Thread.currentThread().interrupt();
+      }
+    }
+    try {
+      if (t != null) t.join(15_000);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 }

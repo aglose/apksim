@@ -94,19 +94,22 @@ the cache itself:
 - Each APK stored by an upload or a URL add, and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
   and warmed one at a time at low priority (`nice -n 10`): an ordinary headless launch (`--exit-after-first-frame`,
   with the app's own launch options) that leaves the same caches a session finds. It does not count against `--max`
-  and takes a data slot (`serve-N`) while it runs, as a session does. It stops with a failure after 15 minutes.
+  and takes a data slot (`serve-N`) while it runs, as a session does; the slot is erased when the warm-up ends, fails or
+  is cut short. Stopping serve ends a running warm-up (and erases its slot) and drops the queue. It stops with a failure after 15 minutes.
 - A session opened on an APK while it is warming waits for it instead of translating the same classes beside it, and its
   tab shows `p warming the app's cache (translating classes: 4200)` meanwhile. One opened while the APK is still queued
   takes it off the queue and warms it itself. A session that translates for itself (nothing warmed it) also sends
   `p translating classes: N` every second or so, from the instance's log (the number of classes translated so far; the
   total is not known before the app has run once, so it is a count, not a percentage).
 - `GET /api/apps/ID` has `"cache"`: `none`, `queued`, `warming`, `ready` or `failed` (and `"cacheDetail"`, the progress
-  or the reason), and `GET /api/status` lists `"apps"` with the same for every APK serve has queued. A failed warm-up
+  or the reason), and `GET /api/status` lists `"apps"` with the same for the catalog's apps only (`--apps`; an upload's or URL add's id is an unlisted capability and never shown there). A failed warm-up
   only means no head start (an uploaded file that is not a real APK fails it).
 - Keep the cache across container restarts with a volume at `/opt/apksim/work/cache` (translated classes and extracted
   libraries, keyed by the APK's content). Uploads under `STATE/serve/uploads` are lost on a restart without a volume
   there too, and their ids stop working; mount `/opt/apksim/work/serve` as well if uploaded builds must outlive the
   container.
+- On the Mac the standby serve starts gets the same no-core setting (`APKSIM_NO_CORE`), so sessions taken by it leave no core
+  file either (macOS writes none by default anyway).
 - Not done: a warm standby for the most recently used APK on Linux.
 
 ### Launch options per app

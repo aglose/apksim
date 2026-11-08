@@ -285,8 +285,8 @@ final class Catalog {
           tmp = store(in, d.total, n -> d.received = n);
         }
         App done = publish(tmp, pending.id(), clean, launch);
+        ready(done);  // the warm-up's job exists before a session waiting on the download looks for it
         d.done.complete(done);
-        ready(done);
         System.err.printf("[serve] added %s (%d MB) from %s%n", clean, d.received >> 20, u.getHost());
       } catch (Exception e) {
         d.done.completeExceptionally(e);

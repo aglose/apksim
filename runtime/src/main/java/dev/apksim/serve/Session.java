@@ -132,7 +132,7 @@ final class Session {
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
-    serve.warmer.await(app, what -> ws.sendText("p " + what), () -> ended, serve.launchTimeoutSeconds * 5);
+    serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended, serve.launchTimeoutSeconds * 5);
     if (ended) return;
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
@@ -563,9 +563,15 @@ final class Session {
     eraseData();
   }
 
-  /** Empties the data slot the instance held, once nothing holds its lock (Storage.dataDir), within the state folder. */
   private void eraseData() {
-    if (dataDir == null) return;
+    if (dataDir != null) eraseSlot(serve, dataDir, this::logLine);
+  }
+
+  /**
+   * Empties a data slot an instance held (a session's, or a cache warm-up's), once nothing holds its lock
+   * (Storage.dataDir), within the state folder.
+   */
+  static void eraseSlot(Serve serve, Path dataDir, Consumer<String> logLine) {
     Path dir = dataDir.toAbsolutePath().normalize();
     // Only a slot of serve's own (serve-N, under the state folder's app data).
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
@@ -593,7 +599,7 @@ final class Session {
       }
       l.release();
     } catch (IOException | RuntimeException e) {
-      logLine("[serve] could not erase " + dir + ": " + e);
+      logLine.accept("[serve] could not erase " + dir + ": " + e);
     }
   }
 

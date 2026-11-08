@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * ever leaves the machine, never a file as such.
  */
 final class Crash {
-  private static final Pattern EXCEPTION = Pattern.compile("((?:[a-z_][\\w]*\\.)+[A-Z][\\w$]*(?:Exception|Error|Throwable)\\b.*)");
+  private static final Pattern EXCEPTION = Pattern.compile("((?:[a-z_]\\w*\\.)+(?:[A-Z][\\w$]*)?(?:Exception|Error|Throwable)\\b.*)");
   private static final Pattern EXIT = Pattern.compile("\\[apksim\\] exit (\\d+): (.*)");
   private static final Pattern SIGNAL = Pattern.compile("(SIG[A-Z]+) \\(0x[0-9a-f]+\\)");
   /** Longest line the tab or the log endpoint gets. */

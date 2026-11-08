@@ -243,6 +243,7 @@ public final class Serve {
     timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       List<Thread> stopping = new ArrayList<>();
+      stopping.add(Thread.ofVirtual().start(warmer::shutdown));  // ends a running warm-up and erases its data slot
       for (Session x : new ArrayList<>(sessions.values())) stopping.add(Thread.ofVirtual().start(() -> x.stop("server stopping")));
       for (Thread t : stopping) {
         try {
@@ -279,8 +280,11 @@ public final class Serve {
     if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) return;
     if ("0".equals(System.getenv("APKSIM_STANDBY"))) return;
     try {
-      new ProcessBuilder(launcher.toString(), "--spawn-standby", noNetwork ? "n" : "")
-          .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor(10, TimeUnit.SECONDS);
+      // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
+      ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby", noNetwork ? "n" : "")
+          .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
+      instanceEnvironment(pb);
+      pb.start().waitFor(10, TimeUnit.SECONDS);
     } catch (IOException | InterruptedException e) {
       System.err.println("[serve] no standby: " + e);
     }
@@ -581,11 +585,28 @@ public final class Serve {
     session.run();
   }
 
+  /**
+   * The cache state of each app the catalog lists (`--apps`), for `/api/status`. Never an upload's or URL add's id:
+   * those are unlisted capabilities, shown only to whoever has them (`GET /api/apps/ID`).
+   */
+  private String catalogCaches() {
+    StringBuilder b = new StringBuilder("[");
+    for (Catalog.App a : catalog.listed()) {
+      if (b.length() > 1) b.append(',');
+      b.append("{\"id\":").append(Http.q(a.id())).append(",\"name\":").append(Http.q(a.name()))
+          .append(",\"cache\":").append(Http.q(warmer.state(a)));
+      String d = warmer.detail(a);
+      if (!d.isEmpty()) b.append(",\"detail\":").append(Http.q(d));
+      b.append('}');
+    }
+    return b.append(']').toString();
+  }
+
   private String status() {
     StringBuilder b = new StringBuilder("{\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
         .append(",\"maxUploadMb\":").append(maxUploadMb).append(",\"uptimeS\":").append((System.currentTimeMillis() - startedAt) / 1000)
         .append(",\"warmLaunches\":").append(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"))
-        .append(",\"apps\":").append(warmer == null ? "[]" : warmer.json()).append(",\"sessions\":[");
+        .append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");
     boolean first = true;
     for (Session s : sessions.values()) {
       if (!first) b.append(',');
