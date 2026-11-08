@@ -60,7 +60,7 @@ final class SlotPack {
         z.putNextEntry(new ZipEntry("package"));
         z.write(pkg.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         z.closeEntry();
-        long[] used = {0, 0};  // files, bytes
+        long[] used = {1, 0};  // entries (the package one counted, as unpack counts it), bytes
         String name = rel.getFileName().toString();
         add(z, parent, name, "slot/", 0, used);
         add(z, parent, name + ".device", "device/", 0, used);
@@ -97,7 +97,7 @@ final class SlotPack {
           add(z, d, n.toString(), entry + "/", depth + 1, used);
         } else if (at.isRegularFile()) {
           if (depth == 0 && prefix.equals("slot/") && n.toString().equals(".lock")) continue;  // the slot's own lock
-          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + MAX_FILES + " files to move");
+          if (++used[0] > MAX_FILES) throw new IOException("the app's data has more than " + (MAX_FILES - 1) + " files to move");
           try (SeekableByteChannel ch = d.newByteChannel(n, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
             z.putNextEntry(new ZipEntry(entry));
             ByteBuffer buf = ByteBuffer.allocate(1 << 16);

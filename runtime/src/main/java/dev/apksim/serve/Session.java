@@ -368,6 +368,26 @@ final class Session {
     long pid = instancePid;
     if (pid <= 0) return "the app's process is not known";
     if (!holdsOpen(pid, dir.resolve(".lock"))) return "the app's data slot is not its own";
+    // Over the limits the agent unpacks within: said now, while the app still runs here, not after it quit. (The
+    // pack itself checks again: this count may change before then.)
+    long[] used = {1, 0};  // entries (the package one), bytes
+    for (Path root : List.of(dir, dir.resolveSibling(dir.getFileName() + ".device"))) {
+      if (!Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+      try (Stream<Path> all = Files.walk(root)) {
+        all.filter(f -> Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)).forEach(f -> {
+          used[0]++;
+          try {
+            used[1] += Files.size(f);
+          } catch (IOException e) {
+            // gone meanwhile
+          }
+        });
+      } catch (IOException | RuntimeException e) {
+        return "the app's data could not be read: " + e.getMessage();
+      }
+    }
+    if (used[0] > SlotPack.MAX_FILES) return "the app's data has more than " + (SlotPack.MAX_FILES - 1) + " files to move";
+    if (used[1] > SlotPack.MAX_BYTES) return "the app's data is over " + (SlotPack.MAX_BYTES >> 20) + " MB to move";
     return null;
   }
 
