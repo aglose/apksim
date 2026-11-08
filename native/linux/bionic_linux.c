@@ -527,6 +527,9 @@ static const Entry table[] = {
     E("dl_iterate_phdr", s_dl_iterate_phdr),
 };
 
+static void *host_libz;
+static void open_libz(void) { host_libz = dlopen("libz.so.1", RTLD_NOW | RTLD_LOCAL); }
+
 void *bionic_lookup(const char *name) {
   if (!a_ctype['a' + 1]) init_ctype();
   void *graphics = jnigraphics_lookup(name);
@@ -534,7 +537,14 @@ void *bionic_lookup(const char *name) {
   for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
     if (!strcmp(table[i].name, name)) return table[i].fn;
   }
-  return dlsym(RTLD_DEFAULT, name);
+  void *p = dlsym(RTLD_DEFAULT, name);
+  if (p) return p;
+  // libz.so is a system library for the loader (is_system_lib), but a Temurin JVM keeps its zlib private, so
+  // RTLD_DEFAULT has none of its symbols (issue 148: inflate/deflate fell to the stubs, SIGILL in a Rust SDK). Look in the
+  // host's own libz, opened once; zlib exports nothing else, so asking it for any other name is harmless.
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, open_libz);
+  return host_libz ? dlsym(host_libz, name) : NULL;
 }
 
 // An import nobody provides: only fatal if it is actually called, and then it says what was missing.
