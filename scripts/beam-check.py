@@ -28,6 +28,7 @@ import json
 import os
 import glob
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -574,7 +575,15 @@ def main():
         log4 = os.path.join(STATE, "beam", "logs", session_info(s4).get("id", "") + ".log")
         check(len(s4.frames) > 0 and os.path.exists(log4) and "[apksim] handoff" in open(log4).read(),
               "keep: a beamed session is a warm launch (the agent's standby, in the beam sandbox)")
-        close_session(s4)
+        # A JVM crash: its report is written in its scratch (the only place it may write) and summarised for the tab.
+        s4.pump(3, until=lambda: s4.stats.get("pid", 0) > 0)
+        os.kill(int(s4.stats["pid"]), signal.SIGSEGV)
+        try:
+            s4.pump(20, until=lambda: any(t.startswith("x ") for t in s4.texts))
+        except (EOFError, OSError):
+            pass
+        ended = [t for t in s4.texts if t.startswith("x ")]
+        check(ended and "SIGSEGV" in ended[0], f"keep: a beamed JVM's crash report reaches the tab ({ended[:1]})")
         stop(g)
 
         # A saved session: "keep on" from the tab, with keep-days 0 (from the config) for its build.

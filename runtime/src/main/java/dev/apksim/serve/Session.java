@@ -216,7 +216,7 @@ final class Session {
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
     // Where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited(). A beamed instance may not
-    // read or write the agent's folders: the state folder's tmp, which it may read (its report then goes to /tmp).
+    // read or write the agent's folders: the state folder's tmp (its report goes to its scratch, -XX:ErrorFile).
     if (serve.beam) Files.createDirectories(serve.state.resolve("tmp"));  // a fresh state folder has none yet
     pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
@@ -289,7 +289,7 @@ final class Session {
     if (status != 0) {
       abnormal = true;
       // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
-      List<String> hs = Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
+      List<String> hs = serve.beam ? beamHsErr() : Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
       for (String l : hs) logLine(l);
       String reason = Crash.hsErrReason(hs);
       if (reason != null) reason = "crashed: " + reason;
@@ -878,6 +878,30 @@ final class Session {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return -1;
+    }
+  }
+
+  /**
+   * A beamed JVM's crash report (`-XX:ErrorFile` in its scratch, the only place it may write): first renamed into the
+   * agent's own folder (a link moves as a link), then read only if it is a regular file, so the app cannot have the
+   * agent read another file through a link and show its comment lines to the page.
+   */
+  private List<String> beamHsErr() {
+    long bp = beamPid;
+    if (bp <= 0) return List.of();
+    Path src = serve.state.resolve("tmp").resolve(Long.toString(bp)).resolve("hs_err_pid" + bp + ".log");
+    Path dir = serve.state.resolve("beam/import").resolve("crash-" + bp + "-" + Long.toHexString(System.nanoTime()));
+    try {
+      if (!Files.exists(src, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return List.of();
+      Files.createDirectories(dir);
+      Path f = dir.resolve(src.getFileName().toString());
+      Files.move(src, f, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      List<String> hs = Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? Crash.takeHsErr(dir, bp) : List.of();
+      BeamStore.deleteTree(dir);
+      return hs;
+    } catch (IOException | RuntimeException e) {
+      BeamStore.deleteTree(dir);
+      return List.of("[hs_err] unreadable: " + e.getMessage());
     }
   }
 
