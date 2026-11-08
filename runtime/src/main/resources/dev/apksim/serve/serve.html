@@ -274,6 +274,7 @@ $("file").onchange = () => {
     $("app").value = state.app = a.id;
     log("uploaded " + a.name);
     refresh();
+    offerAppDevice();
   };
   x.onerror = () => { $("uploadBtn").textContent = "Upload APK…"; log("upload failed"); };
   x.send(f);
@@ -286,6 +287,7 @@ function start() {
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
   if (ws) ws.close();
   ended = false; onHome = false; frameW = frameH = 0;
+  offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
@@ -309,7 +311,7 @@ function start() {
   };
   fit();
 }
-function stop() { clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0; if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); } }
+function stop() { clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0; if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); } }
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }

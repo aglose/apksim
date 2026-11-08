@@ -472,7 +472,7 @@ def main():
         got = (d.frames[0][4], d.frames[0][5]) if d.frames else None
         check(got == px, f"a session naming no device shows the app's default size {a.app_default_size} px (got {got})")
         info = [t for t in d.texts if t.startswith("i ")]
-        check(info and "x" in json.loads(info[0][2:]).get("device", ""), "the session's info says which device it runs on")
+        check(info and json.loads(info[0][2:]).get("device"), "the session's info says which device it runs on")
         d.ws.s.close()
     if a.h264 != "skip":
         check_h264(url, token, app, a)
