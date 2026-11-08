@@ -595,6 +595,8 @@ beamed app read a checkout's `work/autofill` and `work/cache/data` (two probes n
 is checked against is matched at the manifest element's start only, with the decoder escaping names: searched for
 anywhere, a manifest whose names repeated `<manifest` took the agent quadratic time (18 s for 350k characters; the
 decoded element is also capped at 1M characters now).
+A launch given `--jvm -Djava.net.preferIPv4Stack=...` launches cold: the JDK reads it once at JVM start, so a
+standby took the launch and ignored it. A beamed instance's `=true` is its standby's own, set as that JVM starts.
 
 First review:
 
