@@ -47,9 +47,9 @@ final class FrameStream {
     return !SUBSCRIBERS.isEmpty();
   }
 
-  /** Whether `stream ... h264` gets H.264 here. */
+  /** Whether `stream ... h264` gets H.264 here: an encoder that opened and encoded a test frame. */
   static boolean h264Available() {
-    return H264Encoder.available();
+    return H264Encoder.works();
   }
 
   /** From the raster thread: the frame just presented. */
@@ -108,21 +108,33 @@ final class FrameStream {
     }, "apksim-frame-stream-eof");
     eof.setDaemon(true);
     eof.start();
-    SUBSCRIBERS.add(s);
     startEncoder();
     synchronized (LOCK) {
       FrameStream.quality = Math.max(10, Math.min(100, quality));
       if (h264) FrameStream.kbps = Math.max(100, Math.min(100_000, kbps));
-      lastEncoded = null;  // the new subscriber needs the current screen even if it has not changed
-      if (h264) keyWanted = true;
+      SUBSCRIBERS.add(s);
+      // The new subscriber needs the current screen even if it does not change (s.needsFrame): the last frame is
+      // encoded again for it, and the redraw below covers a first subscriber, before any frame was kept.
+      wake = true;
+      LOCK.notifyAll();
     }
     Control.QUEUE.add(new Control.Pending(new String[] {"redraw"}));
     try {
       s.run();
     } finally {
-      SUBSCRIBERS.remove(s);
+      synchronized (LOCK) {
+        SUBSCRIBERS.remove(s);
+        wake = true;  // the encoder lets go of an H.264 encoder no one needs any more
+        LOCK.notifyAll();
+      }
     }
   }
+
+  private static boolean wake;  // guarded by LOCK: a subscriber came or went
+  /** H.264 encodes that failed in a row; past {@link #MAX_FAILURES} the H.264 subscribers are ended. */
+  private static int failures;
+  private static final int MAX_FAILURES = 5;
+  private static final long RETRY_MS = 200;
 
   private static int quality = 80;
   private static int kbps = 4000;
@@ -152,30 +164,49 @@ final class FrameStream {
       int rate;
       boolean key;
       boolean refine = false;
+      boolean retry = false;
       boolean repeat;
+      boolean needy;
       synchronized (LOCK) {
-        long until = System.nanoTime() + REFINE_MS * 1_000_000;
-        while (!fresh && !keyWanted) {
+        long refineAt = System.nanoTime() + REFINE_MS * 1_000_000;
+        long retryAt = System.nanoTime() + RETRY_MS * 1_000_000;
+        while (!fresh && !keyWanted && !wake) {
+          // No H.264 subscriber left: its encoder (native buffers, a VideoToolbox session) goes now, not at the
+          // next frame, which a still screen may never present.
+          if (video != null && !hasCodec(true)) {
+            video.close();
+            video = null;
+          }
           try {
+            // H.264 only: after a failed encode, the last frame again as a keyframe, a few times at most.
+            boolean canRetry = failures > 0 && lastEncoded != null && hasCodec(true);
             // H.264 only: once frames stop, the last one encoded again, for the detail the bit rate left out.
-            long left = (until - System.nanoTime()) / 1_000_000;
             boolean canRefine = video != null && refines < REFINES && lastEncoded != null && hasCodec(true);
-            if (canRefine && left <= 0) {
+            long now = System.nanoTime();
+            if (canRetry && now >= retryAt) {
+              retry = true;
+              break;
+            }
+            if (!canRetry && canRefine && now >= refineAt) {
               refine = true;
               break;
             }
-            LOCK.wait(canRefine ? Math.max(1, left) : 0);
+            long until = canRetry ? retryAt : canRefine ? refineAt : 0;
+            LOCK.wait(until == 0 ? 0 : Math.max(1, (until - now) / 1_000_000));
           } catch (InterruptedException e) {
             return;
           }
         }
-        key = keyWanted;
+        wake = false;
+        needy = anyNeedsFrame();
+        key = keyWanted || retry;
         boolean source = fresh && latest != null;
         fresh = false;
         keyWanted = false;
-        repeat = refine || (key && !source);
+        // The last frame encoded again: a refinement, a retry, or, on a still screen, a keyframe or a new subscriber's
+        // first frame.
+        repeat = refine || (!source && (key || needy));
         if (repeat) {
-          // The last frame encoded again (a refinement, or a keyframe of a still screen).
           if (lastEncoded == null) continue;
           if (raw == null || raw.length != lastEncoded.length) raw = new byte[lastEncoded.length];
           System.arraycopy(lastEncoded, 0, raw, 0, lastEncoded.length);
@@ -184,7 +215,11 @@ final class FrameStream {
           micros = epochMicros();
         } else {
           // Presented again, unchanged (same size too: a rotated solid screen has the same bytes).
-          if (!key && lastEncoded != null && latestW == lastW && latestH == lastH && Arrays.equals(lastEncoded, latest)) continue;
+          // Kept for a subscriber that has had no frame yet.
+          if (!key && !needy && lastEncoded != null && latestW == lastW && latestH == lastH
+              && Arrays.equals(lastEncoded, latest)) {
+            continue;
+          }
           if (latest == null) continue;
           if (raw == null || raw.length != latest.length) raw = new byte[latest.length];
           System.arraycopy(latest, 0, raw, 0, latest.length);
@@ -197,7 +232,9 @@ final class FrameStream {
       }
       if (SUBSCRIBERS.isEmpty()) continue;
       refines = refine ? refines + 1 : 0;
-      if (hasCodec(false) && !repeat) {
+      // JPEG for a new frame, or for a JPEG subscriber that has had none yet (it may have joined while the frame
+      // before was being encoded, which then was not offered to it).
+      if (hasCodec(false) && (!repeat || (!refine && anyNeedsFrame(false)))) {
         long t0 = System.nanoTime();
         if (bitmap == null || bitmap.getWidth() != w || bitmap.getHeight() != h) {
           if (bitmap != null) bitmap.recycle();
@@ -221,12 +258,22 @@ final class FrameStream {
           videoKbps = rate;
           key = true;
         }
+        if (anyNeedsFrame(true)) key = true;  // a new H.264 subscriber starts at a keyframe
         byte[] unit = video == null ? null : video.encode(raw, w * 4, micros, key);
         if (unit == null) {
-          // Nothing came out (or no encoder for this size): a fresh encoder and a keyframe next time.
+          // Nothing came out (or no encoder for this size): a fresh encoder and the last frame again as a keyframe,
+          // RETRY_MS later even on a still screen. Past MAX_FAILURES in a row the H.264 streams end (their tabs see
+          // the stream close) rather than wait on a screen that never comes.
           if (video != null) video.close();
           video = null;
+          if (++failures > MAX_FAILURES) {
+            System.err.println("[apksim] H.264 encoding failed " + failures + " times at " + w + "x" + h
+                + ": ending the H.264 streams");
+            failures = 0;
+            for (Subscriber s : SUBSCRIBERS) if (s.h264) s.close();
+          }
         } else {
+          failures = 0;
           int encodeMicros = (int) ((System.nanoTime() - t0) / 1000);
           Frame f = new Frame(unit, video.width, video.height, micros, encodeMicros, unit[0] == 1);
           for (Subscriber s : SUBSCRIBERS) if (s.h264) s.offer(f);
@@ -251,6 +298,17 @@ final class FrameStream {
     return false;
   }
 
+  /** Whether a subscriber has had no frame yet (an H.264 one: no keyframe). */
+  private static boolean anyNeedsFrame() {
+    for (Subscriber s : SUBSCRIBERS) if (s.needsFrame) return true;
+    return false;
+  }
+
+  private static boolean anyNeedsFrame(boolean h264) {
+    for (Subscriber s : SUBSCRIBERS) if (s.h264 == h264 && s.needsFrame) return true;
+    return false;
+  }
+
   /** One encoded frame: a JPEG, or [keyframe flag] + an H.264 access unit. */
   private record Frame(byte[] data, int w, int h, long presentMicros, int encodeMicros, boolean key) {}
 
@@ -260,6 +318,8 @@ final class FrameStream {
     private final ArrayDeque<Frame> queue = new ArrayDeque<>();  // guarded by this
     private boolean waitKey = true;  // H.264: dropping frames until a keyframe; guarded by this
     private boolean closed;  // guarded by this
+    /** No frame offered yet (H.264: no keyframe): the encoder sends it the current screen even if unchanged. */
+    volatile boolean needsFrame = true;
 
     Subscriber(DataOutputStream out, boolean h264) {
       this.out = out;
@@ -291,6 +351,7 @@ final class FrameStream {
         return;
       }
       queue.add(f);
+      needsFrame = false;
       notifyAll();
     }
 

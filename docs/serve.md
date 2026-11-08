@@ -14,7 +14,7 @@ This page is the spec, then how it is built, then what was measured.
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-             [--allow-origin ORIGIN]...
+             [--allow-origin ORIGIN]... [--trust-proxy] [--public-origin URL] [--base-path /PATH]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -60,6 +60,30 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
+
+### Behind a reverse proxy
+
+A web app on its own hostname can forward a path to serve, so the browser's page and WebSocket stay on the app's
+origin. Proxies usually rewrite `Host` to the upstream, keep the browser's `Origin`, and add `X-Forwarded-Host` and
+`X-Forwarded-Proto`.
+
+- `--trust-proxy`: a request from a loopback peer (a proxy beside serve, in the same pod or host) that carries
+  `X-Forwarded-Host` is taken as addressed to that host. Its `Origin` is checked against `X-Forwarded-Proto://X-Forwarded-Host`
+  (the first value of each, for a chain of proxies), and the loopback `Host` check (DNS rebinding) does not apply to
+  it, and an `Origin` matching only serve's upstream `Host` is refused. The headers are ignored from any other peer, so
+  a client cannot claim them. Serve itself then listens on loopback. It needs `--token`: any loopback connection is
+  taken for the proxy, so without one a DNS-rebinding page could pass as it.
+- `--public-origin URL` (e.g. `https://app.example.com`): the origin browsers reach serve at. It is accepted as serve's
+  own for WebSockets and POSTs whatever the headers say, its host passes the loopback `Host` check (a proxy that keeps
+  `Host`), and the link serve prints at startup uses it. The simpler choice when there is one public origin.
+- `--base-path /sim`: the page, `/ws` and `/api/*` are served under `/sim/` (`/sim` redirects there). A proxy that
+  strips the prefix itself works too, with or without the option. The path may not have `.` or `..` segments, nor be
+  one of serve's own (`/ws`, `/api`, `/api/...`): behind a stripping proxy those requests would look prefixed. The page builds every URL relative to its own
+  folder, the token link's redirect is relative, and "Copy link" uses the page's own address, so links keep the
+  proxy's origin and prefix.
+- Keepalive: serve sends a WebSocket ping every 20 s to every session (the browser answers by itself), so proxies and
+  load balancers that drop idle WebSockets (often after 60-100 s) keep it. A client may also send `t <its time>` at
+  any time as a keepalive of its own: serve answers it with its clock and nothing else.
 
 ### Launch options per app
 
@@ -235,7 +259,8 @@ acknowledgements, the same commands) with the test app: it checks the token, a c
 command, the upload limits, then taps the FAB, drags, scrolls, types, switches tabs, turns on dark mode and rotates,
 checking that frames follow each, and that closing the tab ends the session. It also checks `/api/health` without the
 token, a chunked upload, and that URL adds with a disallowed launch option or a non-http URL are refused; with
-`--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; with
+`--allow-origin ORIGIN` (one the server allows) that origin's WebSocket and framing and the embedded token link; URL may
+include a path (`http://host:port/sim` for `--base-path` or a proxy's prefix); with
 `--add-url URL [--add-options JSON]` it runs the session on that APK, added with `POST /api/apps`. Then a second tab
 asks for H.264 (`--h264 required|optional|skip`; CI requires it): the first frame is a keyframe with SPS, PPS and IDR,
 a drag gives delta frames only, a `key` request on a still screen brings a keyframe, a tab that stops acknowledging

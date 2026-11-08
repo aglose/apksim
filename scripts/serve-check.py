@@ -36,6 +36,20 @@ import zipfile
 FAILED = []
 
 
+def parts(url):
+    """(host:port, path prefix, origin) of a server URL, which may have a path (a proxy's prefix, --base-path)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme.lower() != "http":
+        # Its WebSocket and raw requests are plain sockets: an https URL would send the token unencrypted.
+        sys.exit(f"serve-check.py speaks plain HTTP only (no TLS): use an http:// URL, not {url}")
+    # Origin as a browser sends it: lower case, no default port.
+    scheme, host = u.scheme.lower(), u.netloc.lower()
+    if (scheme, u.port) in (("http", 80), ("https", 443)):
+        host = host.rsplit(":", 1)[0]
+    netloc = u.netloc if u.port else u.netloc + (":443" if scheme == "https" else ":80")
+    return netloc, u.path.rstrip("/"), f"{scheme}://{host}"
+
+
 def check(ok, what):
     print(("ok   " if ok else "FAIL ") + what, flush=True)
     if not ok:
@@ -44,11 +58,14 @@ def check(ok, what):
 
 class WS:
     def __init__(self, url, path, headers):
-        host, port = url.split("//", 1)[1].rstrip("/").split(":")
+        hostport, prefix, _ = parts(url)
+        host, port = hostport.rsplit(":", 1)
+        path = prefix + path
         self.s = socket.create_connection((host, int(port)), timeout=30)
         self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         key = base64.b64encode(os.urandom(16)).decode()
-        req = f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
+        authority = parts(url)[2].split("//", 1)[1]  # Host as a browser sends it: no default port
+        req = f"GET {path} HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" \
               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
         for k, v in headers.items():
             req += f"{k}: {v}\r\n"
@@ -108,7 +125,7 @@ def http(url, path, token=None, data=None, headers=None):
 
 class Session:
     def __init__(self, url, token, app, device, codec=None):
-        hdr = {"Origin": url}
+        hdr = {"Origin": parts(url)[2]}
         if token:
             hdr["Cookie"] = "apksim_token=" + token
         self.ws = WS(url, f"/ws?app={app}&device={device}" + (f"&codec={codec}" if codec else ""), hdr)
@@ -190,9 +207,9 @@ def main():
     token = open(a.token).readline().strip() if a.token else None
 
     # A request head that never ends (a byte now and then would do the same): the server must drop it (10 s).
-    hostport = url.split("//")[1]
+    hostport, prefix, origin = parts(url)
     slow = socket.create_connection((hostport.split(":")[0], int(hostport.split(":")[1])), timeout=30)
-    slow.sendall(b"GET / HTTP/1.1\r\nHost: " + hostport.encode() + b"\r\n")
+    slow.sendall(b"GET " + (prefix + "/").encode() + b" HTTP/1.1\r\nHost: " + hostport.encode() + b"\r\n")
     slow_since = time.time()
     if token:
         status, _ = http(url, "/api/apps")
@@ -214,9 +231,8 @@ def main():
         friend = WS(url, "/ws?app=x", {"Origin": a.allow_origin, **({"Cookie": "apksim_token=" + token} if token else {})})
         check(friend.status == 101, f"a WebSocket from an --allow-origin page is accepted ({friend.status})")
         friend.s.close()
-        hostport = url.split("//")[1]
         c = httpc.HTTPConnection(hostport, timeout=30)
-        c.request("GET", "/", headers={"Authorization": "Bearer " + token} if token else {})
+        c.request("GET", prefix + "/", headers={"Authorization": "Bearer " + token} if token else {})
         r = c.getresponse()
         csp, xfo = r.getheader("Content-Security-Policy", ""), r.getheader("X-Frame-Options")
         r.read()
@@ -224,7 +240,7 @@ def main():
               f"the page may be framed by the allowed origin (X-Frame-Options {xfo})")
         if token:
             c = httpc.HTTPConnection(hostport, timeout=30)
-            c.request("GET", "/?embed=1&app=x&token=" + urllib.parse.quote(token))
+            c.request("GET", prefix + "/?embed=1&app=x&token=" + urllib.parse.quote(token))
             r = c.getresponse()
             r.read()
             check(r.status == 200, f"an embedded page's token link is served, not redirected ({r.status})")
@@ -234,9 +250,8 @@ def main():
         check(page_hdrs.get("X-Frame-Options") == "DENY", "without --allow-origin the page cannot be framed")
     if a.max_upload_mb:
         too_big = (a.max_upload_mb << 20) + 1
-        hostport = url.split("//")[1]
         s = socket.create_connection((hostport.split(":")[0], int(hostport.split(":")[1])), timeout=30)
-        s.sendall(f"POST /api/upload HTTP/1.1\r\nHost: {hostport}\r\nContent-Length: {too_big}\r\n".encode()
+        s.sendall(f"POST {prefix}/api/upload HTTP/1.1\r\nHost: {hostport}\r\nContent-Length: {too_big}\r\n".encode()
                   + (f"Authorization: Bearer {token}\r\n" if token else "").encode() + b"\r\n")
         reply = s.recv(200)
         check(b" 413 " in reply, "an upload over the limit is refused: " + reply.split(b"\r\n")[0].decode())
@@ -252,8 +267,8 @@ def main():
     status, _ = http(url, "/api/upload", token, data=b"not a zip file", headers={"X-Filename": "x.apk"})
     check(status == 400, f"an upload that is not an APK is refused ({status})")
     # A streamed body (fetch with a ReadableStream, curl -T -) comes chunked, without Content-Length.
-    c = httpc.HTTPConnection(url.split("//")[1], timeout=60)
-    c.request("POST", "/api/upload", body=iter([tiny.getvalue()[:10], tiny.getvalue()[10:]]), encode_chunked=True,
+    c = httpc.HTTPConnection(hostport, timeout=60)
+    c.request("POST", prefix + "/api/upload", body=iter([tiny.getvalue()[:10], tiny.getvalue()[10:]]), encode_chunked=True,
               headers={"X-Filename": "chunked.apk", "Transfer-Encoding": "chunked",
                        **({"Authorization": "Bearer " + token} if token else {})})
     r = c.getresponse()

@@ -146,7 +146,7 @@ JNIEXPORT jbyteArray JNICALL Java_dev_apksim_video_H264Encoder_nativeEncode(JNIE
   if (!src) return NULL;
   toI420(e, src, stride, bgra);
   (*env)->ReleasePrimitiveArrayCritical(env, pixels, src, JNI_ABORT);
-  if (key) (*e->enc)->ForceIntraFrame(e->enc, true, -1);
+  if (key) (*e->enc)->ForceIntraFrame(e->enc, true);  // the C vtable's (the layer argument is C++'s)
   SSourcePicture pic;
   memset(&pic, 0, sizeof pic);
   pic.iColorFormat = videoFormatI420;

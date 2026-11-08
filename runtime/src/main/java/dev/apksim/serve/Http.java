@@ -202,6 +202,17 @@ final class Http {
     };
   }
 
+  /** A query string: key=value pairs, URL-encoded, joined with &. */
+  static String query(Map<String, String> q) {
+    StringBuilder b = new StringBuilder();
+    for (Map.Entry<String, String> e : q.entrySet()) {
+      if (b.length() > 0) b.append('&');
+      b.append(java.net.URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)).append('=')
+          .append(java.net.URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
+    }
+    return b.toString();
+  }
+
   /** A JSON string literal. */
   static String q(String s) {
     if (s == null) return "null";

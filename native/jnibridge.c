@@ -324,6 +324,10 @@ JNIEXPORT void JNICALL Java_dev_apksim_ElfLoader_nativeSetOffline(JNIEnv *env, j
   net_offline = offline;
 }
 
+JNIEXPORT void JNICALL Java_dev_apksim_ElfLoader_nativeSetMoveSharedData(JNIEnv *env, jclass c, jboolean on) {
+  elf_set_move_shared_data(on);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_apksim_ElfLoader_nativeLoad(JNIEnv *env, jclass c, jstring jpath, jstring jdir) {
   install_table(env);
   jnigraphics_init(env);

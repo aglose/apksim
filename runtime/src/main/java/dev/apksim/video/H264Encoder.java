@@ -32,6 +32,34 @@ public final class H264Encoder implements AutoCloseable {
     return AVAILABLE;
   }
 
+  private static volatile Boolean works;
+
+  /**
+   * Whether an encoder opens and gives a keyframe here (once per process: a small grey frame), so that a stream is
+   * offered as H.264 only where it can be.
+   */
+  public static boolean works() {
+    Boolean w = works;
+    if (w != null) return w;
+    synchronized (H264Encoder.class) {
+      if (works != null) return works;
+      boolean ok = false;
+      try (H264Encoder e = open(64, 64, 500)) {
+        if (e != null) {
+          byte[] grey = new byte[64 * 64 * 4];
+          java.util.Arrays.fill(grey, (byte) 0x80);
+          byte[] unit = e.encode(grey, 64 * 4, 0, true);
+          ok = unit != null && unit.length > 1 && unit[0] == 1;
+        }
+      } catch (Throwable t) {
+        System.err.println("[apksim] no H.264 encoder: " + t);
+      }
+      if (AVAILABLE && !ok) System.err.println("[apksim] the H.264 encoder did not start: streams stay JPEG");
+      works = ok;
+      return ok;
+    }
+  }
+
   /**
    * An encoder for frames of at least this size (it encodes the even part: H.264's 4:2:0 needs even sizes), at about
    * kbps kilobits a second, or null.
