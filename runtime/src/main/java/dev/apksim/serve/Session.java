@@ -1155,6 +1155,8 @@ final class Session {
   /** {@link #listenerPid} of the instance's control port, else -1 (then a beamed one's caches are not kept). */
   private volatile long instancePid = -1;
 
+  private static final Object BEAM_CACHE_SWAP = new Object();
+
   private void beamCaches() {
     long pid = instancePid;
     if (pid <= 0) {
@@ -1194,10 +1196,21 @@ final class Session {
         try (var entries = Files.newDirectoryStream(apkCache)) {
           for (Path e : entries) {
             if (!e.getFileName().toString().matches(build + "\\.apk-[0-9a-f]{16}") || !Files.isDirectory(e, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+            // Swapped in by renames, not emptied and refilled: another session of this build starting meanwhile
+            // clones `apk` (BeamSandbox.seedApkCache) and would have found it half deleted or empty.
             Path into = serve.beamCache(build).resolve("apk");
-            BeamStore.deleteTree(into);
-            Files.createDirectories(into);
-            Files.move(e, into.resolve(e.getFileName().toString()));
+            String tag = Long.toHexString(System.nanoTime());
+            Path staged = into.resolveSibling("apk.new-" + tag);
+            Path old = into.resolveSibling("apk.old-" + tag);
+            Files.createDirectories(staged);
+            Files.move(e, staged.resolve(e.getFileName().toString()));
+            boolean had;
+            synchronized (BEAM_CACHE_SWAP) {  // two sessions of one build ending together
+              had = Files.exists(into, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+              if (had) Files.move(into, old, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+              Files.move(staged, into, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            }
+            if (had) BeamStore.deleteTree(old);
           }
         }
       }

@@ -585,6 +585,10 @@ window's library before it is loaded.
 Later review: taking a session's grant marks its build and moved data as taken before the grant goes (`Beam.take`).
 Removed first, an hourly or session-end sweep running between the two found no owner for the moved data and erased
 it just before the session started with it.
+The consent prompt's output is read on a thread of its own and its process ended after 150 s with no answer: read
+first, an `osascript` that never ended held the one-prompt-at-a-time lock, and with it every later start, for good.
+A build's kept APK cache entry is swapped in by renames once a session ends, so a session of the same build starting
+then never clones it half deleted.
 
 First review:
 

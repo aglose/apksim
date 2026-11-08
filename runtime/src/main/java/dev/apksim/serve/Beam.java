@@ -64,6 +64,8 @@ final class Beam {
   private static final long GRANT_MS = 120_000;
   /** "Don't Allow" is not asked again for this long (a page cannot keep a prompt up). */
   private static final long DENIED_MS = 10 * 60_000;
+  /** The dialog gives up after 120 s; past this the prompt's process is ended and the start has no answer. */
+  private static final long PROMPT_MS = Long.getLong("apksim.beam.promptMs", 150_000);
   private static final SecureRandom RANDOM = new SecureRandom();
 
   enum Kind { UPLOAD, SESSION }
@@ -208,8 +210,28 @@ final class Beam {
         + "\"Always Allow\"} default button \"Allow Once\" cancel button \"Don't Allow\" with icon caution giving up after 120";
     try {
       Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true).start();
-      String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-      if (!p.waitFor(150, TimeUnit.SECONDS)) p.destroyForcibly();
+      // Read on a thread of its own: reading here waited for osascript to end before the timeout was looked at, so
+      // one that never ended (a dialog that never came up) held `prompting`, and every later start, for good.
+      var output = new java.util.concurrent.CompletableFuture<String>();
+      Thread.ofVirtual().name("apksim-beam-prompt").start(() -> {
+        try {
+          output.complete(new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+          output.complete("");
+        }
+      });
+      if (!p.waitFor(PROMPT_MS, TimeUnit.MILLISECONDS)) {
+        p.descendants().forEach(ProcessHandle::destroyForcibly);
+        p.destroyForcibly();
+        System.err.println("[beam] the prompt did not end in " + PROMPT_MS / 1000 + " s: no answer");
+        return "No Answer";  // nobody answered: this start only, the page may ask again
+      }
+      String out;
+      try {
+        out = output.get(5, TimeUnit.SECONDS);  // ended: its output is closed, unless a child it left holds the pipe
+      } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+        out = "";
+      }
       if (out.contains("gave up:true")) return "No Answer";
       if (out.contains("button returned:Always Allow")) return "Always Allow";
       if (out.contains("button returned:Allow Once")) return "Allow Once";
