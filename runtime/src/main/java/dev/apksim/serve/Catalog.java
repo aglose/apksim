@@ -349,7 +349,8 @@ final class Catalog {
     StringBuilder ref = new StringBuilder(sha256).append(".apk\n").append(clean).append('\n');
     for (String o : launch) ref.append(o).append('\n');
     synchronized (uploadsLock) {
-      if (!Files.isRegularFile(apk)) return null;
+      // A regular file only, never through a link: the APK the agent then runs and serves is the one stored here.
+      if (!Files.isRegularFile(apk, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null;
       Files.writeString(uploads.resolve(id + ".ref"), ref);
       inUseAgain(sha256);
     }
@@ -499,7 +500,7 @@ final class Catalog {
 
   /** Whether this build is stored here. */
   boolean hasBuild(String sha) {
-    return sha != null && sha.matches("[0-9a-f]{64}") && Files.isRegularFile(uploads.resolve(sha + ".apk"));
+    return sha != null && sha.matches("[0-9a-f]{64}") && Files.isRegularFile(uploads.resolve(sha + ".apk"), java.nio.file.LinkOption.NOFOLLOW_LINKS);
   }
 
   /** The stored build's file (it may not exist). */
