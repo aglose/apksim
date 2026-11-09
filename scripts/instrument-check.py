@@ -3,13 +3,14 @@
 
 Usage: instrument-check.py. No apksim, APK or JVM needed: instrument.py runs with `--apksim "instrument-check.py
 --fake"`, and this script then plays apksim --instrument, writing `am instrument -r` output for a made-up suite
-(classes p.C000.., methods m0..) and dying where the scenario (CHECK_SCENARIO) says. It honours -e class, notClass
+(classes p.C000.., methods m0..) and dying where the scenario (CHECK_SCENARIO) says. It honours -e class, notClass,
 log true and numShards/shardIndex as apksim does, and counts its calls in CHECK_DIR. Each scenario checks the exit status, the processes
 started, and the JUnit XML (one entry per test, the failures expected). The real thing is ProcessDeathTest, run with
 `-e crashOnPurpose true` (CI's linux-smoke job). The hang-* scenarios check --test-timeout: the stand-in stops writing
 and stays alive (with a child, and a JVM-style thread dump on SIGQUIT), and every process it started must be gone at
 the end; *-docker ones run it through a stand-in `docker run` whose "container" is outside instrument.py's process
-group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead.
+group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send instrument.py a SIGINT (Ctrl-C) instead;
+init-error-* list a class's initializationError, which --isolate and list-based shards leave out (--keep-class-errors).
 The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
 import gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
@@ -63,7 +64,12 @@ def fake():
     universe = [(f"{pre}C{c:03d}", f"m{m}") for c in range(300 if big else 3) for m in range(10 if big else 3)]
     if sc == "parameterized":  # JUnit Parameterized names: a comma (and here a backslash) in them
         universe = [("p.C000", m) for m in ("m0", "test[0: a, b]", "test[1: c\\d, e]", "m3")] + universe[3:]
+    if sc.startswith(("init-error-only", "init-error-incomplete")):  # nothing but p.Empty's initializationError
+        universe = []
     keep, drop = selectors(e.get("class", "")), selectors(e.get("notClass", ""))
+    # init-error-*: p.Empty, a Parameterized class with no parameters, lists as one initializationError and runs nothing.
+    empty = ("p.Empty", "initializationError")
+    lists_empty = sc.startswith("init-error") and (not keep or empty[0] in keep or "#".join(empty) in keep)
     tests = [(c, m) for c, m in universe
              if c not in drop and f"{c}#{m}" not in drop and (not keep or c in keep or f"{c}#{m}" in keep)]
     if "numShards" in e:  # Instrument's shard: abs(description.hashCode() % numShards), Java's sign-of-dividend remainder
@@ -84,11 +90,16 @@ def fake():
             hang(state, "p.Listing", "list")
         if sc == "listing-fails":
             sys.exit(3)
-        for n, (c, m) in enumerate(tests):
+        for n, (c, m) in enumerate(tests + ([empty] if lists_empty else [])):
             block(c, m, n + 1, 1)
             block(c, m, n + 1, 0)
+        if sc.startswith("init-error-incomplete"):  # the listing dies before its end
+            sys.exit(3)
         print("INSTRUMENTATION_CODE: -1")
         return
+    if sc.startswith("init-error") and keep == ["#".join(empty)]:  # no method matches: no result at all
+        print("No tests found matching class [p.Empty]", file=sys.stderr)
+        sys.exit(1)
     if sc == "startup" or (sc == "rerun-startup" and calls > 1):
         print("dies at startup", file=sys.stderr)
         sys.exit(1)
@@ -300,9 +311,25 @@ SCENARIOS = {
     # at once, and with a hang (--test-timeout 2) whose relaunch must start. The file gets the last container's ID.
     "cidfile-sharded": (0, 2, 9, []),
     "cidfile-hang": (1, 3, 9, ["p.C000#m1"]),
+    # init-error-*: the listing also has p.Empty#initializationError (a Parameterized class with no parameters), which
+    # the orchestrator's runner side drops. --isolate: a listing, then a process for each of the 9 real tests.
+    "init-error-isolate": (0, 10, 9, []),
+    # --keep-class-errors: p.Empty#initializationError gets its process too, which ends without a result.
+    "init-error-isolate-keep": (1, 11, 10, ["p.Empty#initializationError"]),
+    # The listing has nothing else: a run of no tests, which passes; kept, its one process fails.
+    "init-error-only-isolate": (0, 1, 0, []),
+    "init-error-only-isolate-keep": (1, 2, 1, ["p.Empty#initializationError"]),
+    # The same listing dying before its end still fails the run.
+    "init-error-incomplete-isolate": (1, 1, 1, ["(listing)#incomplete"]),
+    # The same over --shards 3 --timings (shards made from the listing): a listing, then 3 shards.
+    "init-error-balanced": (0, 4, 9, []),
+    "init-error-balanced-keep": (0, 4, 9, []),  # p.Empty is named in a shard's -e class, and runs nothing there
+    "init-error-only-balanced": (0, 1, 0, []),
+    "init-error-incomplete-balanced": (1, 1, 0, []),  # "listing the suite failed", and no report
 }
 SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3,
-          "cidfile-sharded": 2}
+          "cidfile-sharded": 2, "init-error-balanced": 3, "init-error-balanced-keep": 3, "init-error-only-balanced": 3,
+          "init-error-incomplete-balanced": 3}
 # When an interrupt-* scenario sends its SIGINT: once a process hangs, or, for these, once the process being started
 # has noted its call (its first act), well inside the spawn delay.
 INTERRUPT_WHEN = {"interrupt-spawn": lambda d: os.path.exists(os.path.join(d, "calls")),
@@ -327,12 +354,14 @@ LONG_MESSAGE = ("java.lang.VerifyError: Bad type on operand stack\nException Det
 
 def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
-    if sc.startswith("balanced"):
+    if sc.startswith("init-error") and "isolate" in sc:
+        return ["--isolate", "-j", "3"] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
+    if "balanced" in sc:
         xml = os.path.join(d, "timings.xml")
         with open(xml, "w") as f:
             f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
-        return ["--timings", xml]
+        return ["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
     if sc.startswith("interrupt"):
         return ["--test-timeout", "0"]
     if sc.startswith("hang") or sc in ("slow", "cidfile-hang"):
@@ -463,6 +492,11 @@ def main():
                 ("not ended by docker rm -f", ("docker" in sc or sc == "cidfile-hang") and not os.path.exists(os.path.join(d, "docker-kills"))),
                 ("no process.txt saying it timed out", sc == "hang" and not any(
                     "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
+                ("p.Empty's warning " + ("printed though kept" if sc.endswith("-keep") else "missing"),
+                 sc.startswith("init-error") and sc != "init-error-incomplete-balanced"  # (that one stops at the listing)
+                 and ("leaving out p.Empty#initializationError" in r.stderr) == sc.endswith("-keep")),
+                ("an entry for p.Empty", sc.startswith("init-error") and not sc.endswith("isolate-keep")
+                 and any(c == "p.Empty" for c, _ in names)),
                 (f"took {took:.0f} s", took > 30),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
