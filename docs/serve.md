@@ -41,7 +41,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   https://ci.example.com/artifacts/app.apk Nightly -- --setting global:onboarding_done=1
   ```
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
-- `--max-push MB` (default 16, at most 64): the largest file a tab may push into its app (below); a session takes 64 MB
+- `--max-push MB` (default 16, at most 32): the largest file a tab may push into its app (below); a session takes 64 MB
   of them in all.
 - `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)

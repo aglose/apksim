@@ -203,7 +203,7 @@ public final class Serve {
         case "--idle" -> s.idleSeconds = Integer.parseInt(need(a, v));
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
-        case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(64, Long.parseLong(need(a, v))));
+        case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(32, Long.parseLong(need(a, v))));
         case "--allow-rec" -> s.allowRec = true;
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));

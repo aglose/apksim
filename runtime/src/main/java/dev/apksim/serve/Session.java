@@ -939,30 +939,39 @@ final class Session {
         throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
       }
     }
-    // The body, its copy and its Base64 text are alive together: ~3 times its size, reserved before any is allocated, out
-    // of one budget for every session (the launcher's heap is small), and given back when this upload is done.
-    long reserve = 3 * (length >= 0 ? length : max);
-    if (INFLIGHT.addAndGet(reserve) > INFLIGHT_MAX) {
-      INFLIGHT.addAndGet(-reserve);
-      throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
-    }
+    // The body, its copy and its Base64 text are alive together: ~3 times its size, taken from one budget for every
+    // session (the launcher's heap is small) before it is allocated or read, and given back when this upload is done.
+    // A known length is reserved at once; a chunked body as it arrives.
+    java.util.concurrent.atomic.AtomicLong held = new java.util.concurrent.atomic.AtomicLong();
+    if (length >= 0 && !reserve(held, 3 * length)) throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
     try {
-      return pushReserved(path, body, length, max);
+      return pushReserved(path, body, length, max, held);
     } finally {
-      INFLIGHT.addAndGet(-reserve);
+      INFLIGHT.addAndGet(-held.get());
     }
+  }
+
+  private static boolean reserve(java.util.concurrent.atomic.AtomicLong held, long n) {
+    if (INFLIGHT.addAndGet(n) > INFLIGHT_MAX) {
+      INFLIGHT.addAndGet(-n);
+      return false;
+    }
+    held.addAndGet(n);
+    return true;
   }
 
   private static final java.util.concurrent.atomic.AtomicLong INFLIGHT = new java.util.concurrent.atomic.AtomicLong();
   private static final long INFLIGHT_MAX = 96L << 20;
 
-  private String pushReserved(String path, java.io.InputStream body, long length, long max) throws IOException {
+  private String pushReserved(String path, java.io.InputStream body, long length, long max, java.util.concurrent.atomic.AtomicLong held)
+      throws IOException {
     java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream((int) Math.max(0, Math.min(length, 1 << 20)));
     byte[] chunk = new byte[1 << 16];
     long left = length >= 0 ? length : max + 1;
     while (left > 0) {
       int n = body.read(chunk, 0, (int) Math.min(chunk.length, left));
       if (n < 0) break;
+      if (length < 0 && !reserve(held, 3L * n)) throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
       buf.write(chunk, 0, n);
       left -= n;
       if (buf.size() > max) throw new PushRefused(413, "too large (limit " + serve.maxPushMb + " MB a file)");
@@ -1064,6 +1073,7 @@ final class Session {
       ws.sendText("r refused: rec (the server does not allow recordings: --allow-rec)");
       return;
     }
+    lastInput = System.currentTimeMillis();  // a tab using the recorder is someone using the session
     String cmd = null;
     String id2 = null;
     if (t.matches("rec (on|off)( (input|logcat|net|db|db\\+values|screen|all))*") || t.equals("rec checkpoint now")) {
@@ -1072,6 +1082,10 @@ final class Session {
       Path dir = recDir();
       if (dir == null) {
         ws.sendText("r rec: error: the app is not up yet");
+        return;
+      }
+      if (!dir.toString().matches("\\S+")) {
+        ws.sendText("r rec: error: the state folder's path has white space, which a control command cannot carry");
         return;
       }
       id2 = Long.toHexString(new java.security.SecureRandom().nextLong() & 0xffffffffffffL | 0x100000000000L).substring(0, 12);
