@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
              [--allow-beam] [--beam-port N]
@@ -41,6 +41,10 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   https://ci.example.com/artifacts/app.apk Nightly -- --setting global:onboarding_done=1
   ```
 - `--max-upload MB` (default 300): uploads larger than this are refused before they are stored.
+- `--max-push MB` (default 16, at most 64): the largest file a tab may push into its app (below); a session takes 64 MB
+  of them in all.
+- `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
+  and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
 - `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
@@ -89,6 +93,20 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - Before that `x` message, an instance that died (or could not start) sends its last 50 log lines as `r log: LINE`
   messages, which serve's page shows in its log under the screen. A tab that left, idled out or ended the session
   normally gets none.
+- **Files in** (issue 187): `POST /api/sessions/ID/files?path=PATH` with the bytes as the body (token required, like
+  everything but health) writes a file into the running app's own storage and answers
+  `{"path":"/data/data/PKG/files/x.json","size":7}`. `PATH` is a device path or one relative to the app's data
+  (`files/x.json`); it may name only the app's `files/`, `cache/`, `shared_prefs/` and `databases/`, `/sdcard` and
+  `/data/local/tmp` (what `adb push` reaches, less the rest of the data folder), in letters, digits and `. _ @ + = , / -`
+  (no `..`, no spaces). Refused: `400` a bad path, `422` outside those folders or through a link, `413` over
+  `--max-push` or the session's total, `409` before the app is up. The server reads the body itself and the app writes it
+  (`devpush`, not a command a tab may send), so no host path is ever named. A file is moved into place whole, so an app
+  holding the old one open keeps reading it. On `apksim beam` the same is `POST /beam/sessions/ID/files?path=&key=`, with
+  the page's `Origin` and the `key` the session sent that tab on its socket (`f KEY`).
+- **Recordings out** (issue 187): with `--allow-rec`, the tab may send `rec on|off [input|logcat|net|db|db+values|screen|all]...`,
+  `rec checkpoint now` and `rec save [SECONDS]` (never a file name). `rec save` is answered `r rec: saved RID` and the
+  server writes `STATE/serve/logs/rec-ID/RID.apkrec`; `GET /api/sessions/ID/recordings/RID` streams it (`404` until it
+  is written) and it is kept with the logs, a week, after the session ends. Redaction is the recorder's own.
 - `GET /api/sessions/ID/log` (token required, like everything but health): the tail of that session's log as
   `text/plain`, at most 200 lines and 64 KB, each line cut at 400 characters and control characters replaced. `ID` is
   the session's id (the `i` message, the `id` in `/api/status`), which only its tab and whoever the tab tells know.

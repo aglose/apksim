@@ -179,4 +179,20 @@ final class Crash {
       System.err.println("[serve] could not sweep logs: " + e);
     }
   }
+
+  /** Flight recordings tabs saved (`rec-<session>` folders beside the logs, issue 187) older than `days`. */
+  static void sweepRecordings(Path logs, int days) {
+    long cutoff = System.currentTimeMillis() - days * 24 * 3_600_000L;
+    try (DirectoryStream<Path> d = Files.newDirectoryStream(logs, "rec-*")) {
+      for (Path dir : d) {
+        if (!Files.isDirectory(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.getLastModifiedTime(dir).toMillis() >= cutoff) continue;
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(dir)) {
+          for (Path f : files) Files.deleteIfExists(f);
+        }
+        Files.deleteIfExists(dir);
+      }
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[serve] could not sweep recordings: " + e);
+    }
+  }
 }

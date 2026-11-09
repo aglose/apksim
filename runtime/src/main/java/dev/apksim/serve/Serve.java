@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--allow-beam] [--beam-port N]
@@ -71,6 +71,10 @@ public final class Serve {
   /** Whether a tab may ask for H.264 (`--codec auto`, the default) or always gets JPEG (`--codec jpeg`). */
   boolean allowH264 = true;
   long maxUploadMb = 300;
+  /** Issue 187: a file a tab pushes into its app (MB each, MB in all per session), and whether a tab may record. */
+  long maxPushMb = 16;
+  long maxPushTotalMb = 64;
+  boolean allowRec;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
   /** `--core-dumps`: instances may leave core files when they crash (off by default: a large app's is gigabytes). */
@@ -199,6 +203,8 @@ public final class Serve {
         case "--idle" -> s.idleSeconds = Integer.parseInt(need(a, v));
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
+        case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(64, Long.parseLong(need(a, v))));
+        case "--allow-rec" -> s.allowRec = true;
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--bitrate" -> {
@@ -426,6 +432,7 @@ public final class Serve {
       page = in.readAllBytes();
     }
     Files.createDirectories(logs);
+    Crash.sweepRecordings(logs, 7);
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
     warmer = new Warmer(this);
     catalog.onReady = warmer::enqueue;
@@ -468,7 +475,10 @@ public final class Serve {
       else catalog.sweep(24 * 3_600_000L);
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
-    timer.scheduleWithFixedDelay(() -> Crash.sweep(logs, 7), 1, 1, TimeUnit.HOURS);
+    timer.scheduleWithFixedDelay(() -> {
+      Crash.sweep(logs, 7);
+      Crash.sweepRecordings(logs, 7);
+    }, 1, 1, TimeUnit.HOURS);
     if (beam) timer.scheduleWithFixedDelay(agent::expire, 1, 1, TimeUnit.MINUTES);  // with the moved data of unused grants
     if (allowBeam) {
       // Sessions' data packed for a move (phase 5): gone once their tickets have expired.
@@ -744,6 +754,11 @@ public final class Serve {
       sessionLog(r.path().substring("/api/sessions/".length(), "/api/sessions/".length() + 12), out);
       return;
     }
+    java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/api/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());
+    if (fm.matches()) {
+      sessionFile(r, out, sessions.get(fm.group(1)), fm.group(2));
+      return;
+    }
     switch (r.method() + " " + r.path()) {
       case "GET /" -> {
         // --allow-beam: the page also asks this Mac's agent (/beam/hello, /beam/start); its WebSocket is under ws: already.
@@ -851,6 +866,47 @@ public final class Serve {
     } catch (IOException e) {
       Http.text(out, 400, e.getMessage());
     }
+  }
+
+  /**
+   * Issue 187: `POST /api/sessions/ID/files?path=` (a file into the running app) and `GET /api/sessions/ID/recordings/RID`
+   * (a flight recording the tab saved with `rec save`). The same on the beam agent under `/beam/sessions/ID/...`. A session
+   * that is not running (or not this caller's) is a 404.
+   */
+  private void sessionFile(Http.Request r, OutputStream out, Session s, String what) throws IOException {
+    if (s == null) {
+      Http.text(out, 404, "no such session (or it has ended)");
+      return;
+    }
+    if (what.equals("files")) {
+      if (!r.method().equals("POST")) {
+        Http.text(out, 405, "POST the file as the request body");
+        return;
+      }
+      long length = r.chunked() ? -1 : r.contentLength();
+      if (length < 0 && !r.chunked()) {
+        Http.text(out, 411, "send the file as the request body, with Content-Length or Transfer-Encoding: chunked");
+        return;
+      }
+      try {
+        Http.json(out, 200, s.pushFile(r.param("path"), r.content(), length));
+      } catch (Session.PushRefused e) {
+        Http.text(out, e.status, e.getMessage());
+      } catch (IOException e) {
+        Http.text(out, 500, e.getMessage());
+      }
+      return;
+    }
+    if (!r.method().equals("GET")) {
+      Http.text(out, 405, "GET the recording");
+      return;
+    }
+    Path f = s.recording(what.substring("recordings/".length()));
+    if (f == null) {
+      Http.text(out, 404, "no such recording yet (rec save answers with its id; the file appears when it is written)");
+      return;
+    }
+    Http.file(out, f, "application/octet-stream");
   }
 
   /**
@@ -1413,6 +1469,19 @@ public final class Serve {
     }
     if (o == null) {
       Http.text(out, 403, "the agent runs apps for browser pages only (a request with its page's Origin)");
+      return;
+    }
+    java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/beam/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());
+    if (fm.matches()) {
+      // Issue 187: this page's own session only: its origin, and the key the session sent that tab on its socket.
+      Session x = sessions.get(fm.group(1));
+      String key = r.param("key");
+      if (x == null || x.fileKey == null || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
+          x.fileKey.getBytes(StandardCharsets.UTF_8)) || !o.equals(x.site)) {
+        Http.text(out, 404, "no such session (or it has ended)");
+        return;
+      }
+      sessionFile(r, out, x, fm.group(2));
       return;
     }
     switch (r.method() + " " + r.path()) {

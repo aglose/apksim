@@ -13,10 +13,12 @@ import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -117,6 +119,7 @@ final class Session {
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
+    this.fileKey = serve.beam ? HexFormat.of().formatHex(secureBytes()) : null;
     this.id = id;
     this.app = app;
     // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
@@ -300,6 +303,7 @@ final class Session {
         controlOut.println(e.getKey());
       }
     }
+    if (fileKey != null) ws.sendText("f " + fileKey);  // the key its file requests carry (beam)
     stream = connect(p);
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
@@ -846,6 +850,11 @@ final class Session {
       ws.sendText("k " + (keep ? "on" : "off"));
       return;
     }
+    if (text.startsWith("rec ")) {
+      // Issue 187: the recorder from a tab, where the server allows it (--allow-rec; always on a visitor's own Mac).
+      recCommand(text.strip());
+      return;
+    }
     String cmd = check(text);
     if (cmd == null && serve.beam) cmd = checkBeam(text);
     if (cmd == null && text.strip().startsWith("device ")) {
@@ -875,6 +884,176 @@ final class Session {
     boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
         || cmd.startsWith("vsync ") || cmd.startsWith("maxfps ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
+  }
+
+
+  // ---------------------------------------------------------------- files and recordings (issue 187)
+
+  /** `apksim beam`: the secret the tab's file requests carry (sent to it on its socket once the instance is up). */
+  final String fileKey;
+  private long pushedBytes;
+  /** Recording ids this session asked for (a file exists once the instance has moved it into place, complete). */
+  private final java.util.Set<String> recordings = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  private static byte[] secureBytes() {
+    byte[] b = new byte[16];
+    new java.security.SecureRandom().nextBytes(b);
+    return b;
+  }
+
+  /** A device path a tab may name: a plain one (no white space or control characters, so it is one word on the control line). */
+  static boolean plainDevicePath(String p) {
+    return p != null && p.length() <= 300 && p.matches("[A-Za-z0-9._@+=,/-]+");
+  }
+
+  /** Waits for the instance's answer to one command (the control connection answers in order). */
+  private String ask(String cmd, long timeoutMs) throws IOException {
+    CompletableFuture<String> f = new CompletableFuture<>();
+    send(cmd, f::complete);
+    try {
+      return f.get(timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted");
+    } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+      throw new IOException("the app did not answer");
+    }
+  }
+
+  /**
+   * A tab's upload (`POST .../files?path=`): the bytes are read here, within the limits, and handed to the instance as
+   * `devpush`, which writes them where `adb push` could (TabFiles). Returns the JSON answer; throws why not (message
+   * shown to the tab, status in {@link PushRefused}).
+   */
+  String pushFile(String path, java.io.InputStream body, long length) throws IOException {
+    if (!plainDevicePath(path)) throw new PushRefused(400, "path: letters, digits and . _ @ + = , / - only");
+    for (String seg : path.split("/")) if (seg.equals("..")) throw new PushRefused(400, "path: no .. segments");
+    if (!path.startsWith("/") && !path.matches("(files|cache|shared_prefs|databases)/.+")) {
+      throw new PushRefused(400, "path: relative paths start with files/, cache/, shared_prefs/ or databases/");
+    }
+    long max = serve.maxPushMb << 20;
+    if (length > max) throw new PushRefused(413, "too large: " + (length >> 20) + " MB (limit " + serve.maxPushMb + " MB a file)");
+    if (ended || controlOut == null) throw new PushRefused(409, "the app is not running yet");
+    synchronized (this) {
+      if (pushedBytes + Math.max(length, 0) > serve.maxPushTotalMb << 20) {
+        throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
+      }
+    }
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream((int) Math.max(0, Math.min(length, max)));
+    byte[] chunk = new byte[1 << 16];
+    long left = length >= 0 ? length : max + 1;
+    while (left > 0) {
+      int n = body.read(chunk, 0, (int) Math.min(chunk.length, left));
+      if (n < 0) break;
+      buf.write(chunk, 0, n);
+      left -= n;
+      if (buf.size() > max) throw new PushRefused(413, "too large (limit " + serve.maxPushMb + " MB a file)");
+    }
+    if (length >= 0 && buf.size() != length) throw new PushRefused(400, "the body ended early");
+    synchronized (this) {
+      if (pushedBytes + buf.size() > serve.maxPushTotalMb << 20) {
+        throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
+      }
+      pushedBytes += buf.size();
+    }
+    String reply = ask("devpush " + path + " " + java.util.Base64.getEncoder().encodeToString(buf.toByteArray()), 30_000);
+    if (!reply.startsWith("ok ")) {
+      synchronized (this) {
+        pushedBytes -= buf.size();
+      }
+      throw new PushRefused(422, reply.startsWith("error: ") ? reply.substring(7) : reply);
+    }
+    String[] v = reply.split(" ");
+    lastInput = System.currentTimeMillis();
+    logLine("[serve] file from the tab: " + v[1] + " (" + v[2] + " bytes)");
+    return "{\"path\":" + Http.q(v[1]) + ",\"size\":" + v[2] + "}";
+  }
+
+  /** An upload or download the server refuses, with the HTTP status to answer. */
+  static final class PushRefused extends IOException {
+    final int status;
+
+    PushRefused(int status, String why) {
+      super(why);
+      this.status = status;
+    }
+  }
+
+  /** Where this session's recordings are written: the instance's own out folder in a beam sandbox, else the server's. */
+  private Path recDir() {
+    if (serve.beam) return pid > 0 ? serve.state.resolve("beam/out/" + pid + "/rec") : null;
+    return serve.logs.resolve("rec-" + id);
+  }
+
+  /** The folder a finished beam session's recordings are moved to (logs age out with it). */
+  private Path keptRecDir() {
+    return serve.logs.resolve("rec-" + id);
+  }
+
+  /** The recording file, if this session made it and it is written (the instance moves it into place when complete). */
+  Path recording(String rid) {
+    if (!rid.matches("[0-9a-f]{12}") || !recordings.contains(rid)) return null;
+    for (Path d : new Path[] {recDir(), keptRecDir()}) {
+      Path f = d == null ? null : d.resolve(rid + ".apkrec");
+      if (f != null && Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return f;
+    }
+    return null;
+  }
+
+  /** After a beam instance exits: its recordings from the sandbox's out folder to the logs folder. */
+  private void keepRecordings() {
+    Path d = pid > 0 && serve.beam ? serve.state.resolve("beam/out/" + pid + "/rec") : null;
+    if (d == null || !Files.isDirectory(d)) return;
+    try {
+      Files.createDirectories(keptRecDir());
+      try (java.util.stream.Stream<Path> l = Files.list(d)) {
+        for (Path f : (Iterable<Path>) l::iterator) {
+          if (f.getFileName().toString().endsWith(".apkrec") && Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            Files.move(f, keptRecDir().resolve(f.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+          }
+        }
+      }
+    } catch (IOException e) {
+      logLine("[serve] could not keep the recordings: " + e);
+    }
+  }
+
+  /** `rec on|off [CHANNEL...]`, `rec checkpoint now`, `rec save [SECONDS]` from the tab; never a file name of its own. */
+  private void recCommand(String t) {
+    if (!serve.beam && !serve.allowRec) {
+      ws.sendText("r refused: rec (the server does not allow recordings: --allow-rec)");
+      return;
+    }
+    String cmd = null;
+    String id2 = null;
+    if (t.matches("rec (on|off)( (input|logcat|net|db|db\\+values|screen|all))*") || t.equals("rec checkpoint now")) {
+      cmd = t;
+    } else if (t.matches("rec save( [1-9][0-9]{0,3})?")) {
+      Path dir = recDir();
+      if (dir == null) {
+        ws.sendText("r rec: error: the app is not up yet");
+        return;
+      }
+      id2 = Long.toHexString(new java.security.SecureRandom().nextLong() & 0xffffffffffffL | 0x100000000000L).substring(0, 12);
+      try {
+        Files.createDirectories(dir);
+      } catch (IOException e) {
+        ws.sendText("r rec: error: " + e.getMessage());
+        return;
+      }
+      String secs = t.length() > 8 ? t.substring(9) : "";
+      cmd = "rec save " + (secs.isEmpty() ? "" : secs + " ") + dir.resolve(id2 + ".apkrec");
+    }
+    if (cmd == null) {
+      ws.sendText("r refused: " + t);
+      return;
+    }
+    final String rid = id2;
+    if (rid != null) recordings.add(rid);
+    send(cmd, r -> {
+      if (rid != null && r.startsWith("error")) recordings.remove(rid);
+      ws.sendText(rid != null && !r.startsWith("error") ? "r rec: saved " + rid : "r rec: " + r.replace(serve.state.toString(), "~"));
+    });
   }
 
   /**
@@ -1145,6 +1324,7 @@ final class Session {
     }
     closeQuietly(control);
     closeQuietly(stream);
+    keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.
     Thread reading = logReader;
