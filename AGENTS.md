@@ -309,7 +309,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
   `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
-  `startup-gate` on an Apple Silicon runner (`macos-15`, or a self-hosted Mac while the `STARTUP_GATE_RUNNER` repository variable is set; forks' pull requests never go there: docs/startup-gate.md). A `changes` job skips the build, test and Mac jobs for a pull request that touches only Markdown, `.txt`,
+  `startup-gate` on an Apple Silicon runner (`macos-15`, or a self-hosted Mac while the `STARTUP_GATE_RUNNER` repository variable is set; the Mac's job-started hook, `scripts/runner-job-started.sh`, refuses every other job and forks' pull requests: docs/startup-gate.md). A `changes` job skips the build, test and Mac jobs for a pull request that touches only Markdown, `.txt`,
   `docs/`, `.claude/`, LICENSE or NOTICE (skipped jobs count as passed for the required checks, which a workflow path
   filter would leave pending); `linux-smoke` still runs its personal-information check.
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),

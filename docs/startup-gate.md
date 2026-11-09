@@ -116,9 +116,15 @@ gh variable delete STARTUP_GATE_RUNNER                                         #
 GitHub has no fallback: with the variable set and the Mac asleep, off or its runner stopped, the job waits for it
 (up to a day). Delete the variable before closing the Mac, or start a waiting job again after deleting it.
 
-The repository is public, so a pull request's code is anyone's code. The job goes to the Mac only for pushes, manual
-runs and pull requests from this repository's own branches; a fork's pull request always gets `macos-15`, whatever the
-variable says. Keep "Require approval for all external contributors" on (Settings → Actions → General) as well.
+The repository is public, so a pull request's code is anyone's code, its workflow files included. `ci.yml` sends the
+job to the Mac only for pushes, manual runs and pull requests from this repository's own branches, but that is only
+routing: a fork's pull request runs the fork's `ci.yml`, which could name the runner's labels in any job. A personal
+account's repository has no runner groups to restrict a runner to a workflow, so the Mac enforces it itself, outside
+anything a pull request can change: `scripts/runner-job-started.sh`, installed as the runner's job-started hook, fails
+every job before its first step unless it is `ci.yml`'s `startup-gate` of this repository for a push, a manual run, or
+a pull request whose head branch is in this repository (read from GitHub's event payload, which a fork cannot change).
+A fork's job that targets the Mac then fails rather than running there. Keep "Require approval for all external
+contributors" on (Settings → Actions → General) as well, and read a fork's workflow changes before approving a run.
 
 Setting the Mac up, once:
 
@@ -126,7 +132,12 @@ Setting the Mac up, once:
   runs as that user. Its session must stay logged in (fast user switching) for the runner's LaunchAgent to run.
 - As that user: Settings → Actions → Runners → New self-hosted runner → macOS, ARM64, and follow its commands
   (`config.sh` with the registration token it shows; the default labels are the ones above), then `./svc.sh install`
-  and `./svc.sh start`. The job needs the Xcode command-line tools (system-wide), `python3` and `gh` on the runner's
+  and `./svc.sh start`.
+- The job-started hook, before the runner takes any job: copy `scripts/runner-job-started.sh` outside the runner's
+  folder (`~/actions-runner-hooks/job-started.sh`; a job must not be able to rewrite it), add
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/USER/actions-runner-hooks/job-started.sh` to the runner's `.env`, and restart
+  it (`./svc.sh stop`, `./svc.sh start`). A job's log then starts with "self-hosted runner hook: ... allowed".
+- The job needs the Xcode command-line tools (system-wide), `python3` and `gh` on the runner's
   `PATH` (`config.sh` records the `PATH` it was run with in `.path`: include `/opt/homebrew/bin`).
 - On power, the Mac must not sleep: System Settings → Battery → Options → "Prevent automatic sleeping on power adapter
   when the display is off". The job holds it awake itself while it runs (`caffeinate`), but a sleeping Mac never
