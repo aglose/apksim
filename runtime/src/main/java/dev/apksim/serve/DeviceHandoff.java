@@ -38,6 +38,8 @@ final class DeviceHandoff {
 
   private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
+  static final String SERIAL = "[A-Za-z0-9._:\\-]{1,100}";
+
   static final String USAGE = """
       usage: apksim beam to-device ID [-s SERIAL] [--data] [--settings KEY,KEY...|all] [--install replace|skip] [--yes] [--dry-run]
         --data      replace the app's data on the device with the session's (the device's is backed up first)
@@ -127,7 +129,7 @@ final class DeviceHandoff {
         }
       }
     }
-    if (id == null || serial != null && !serial.matches("[A-Za-z0-9._:\\-]{1,100}")) return null;
+    if (id == null || serial != null && !serial.matches(SERIAL)) return null;
     return new Options(id, serial, data, settings, replace, yes, dry);
   }
 
@@ -141,7 +143,7 @@ final class DeviceHandoff {
     List<String> ready = new ArrayList<>();
     for (String l : r.out().split("\n")) {
       String[] f = l.strip().split("\\s+");
-      if (f.length == 2 && f[1].equals("device")) ready.add(f[0]);
+      if (f.length == 2 && f[1].equals("device") && f[0].matches(SERIAL)) ready.add(f[0]);  // a serial adb reports is data too
     }
     if (named != null) {
       if (ready.contains(named)) return named;
@@ -405,9 +407,9 @@ final class DeviceHandoff {
         // Nothing is cleared unless the archive is there and reads.
         String t = q(backups.resolve(backupName + ".tar").toString());
         script.append("test -s ").append(t).append(" && tar -tf ").append(t).append(" >/dev/null || { echo 'the backup archive is missing or unreadable' >&2; exit 1; }\n");
-        script.append("adb -s ").append(serial).append(" shell ").append(q("am force-stop " + pkg)).append("\n");
-        script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " sh -c " + q(CLEAR))).append("\n");
-        script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " tar -xf - -C .")).append(" < ")
+        script.append("adb -s ").append(q(serial)).append(" shell ").append(q("am force-stop " + pkg)).append("\n");
+        script.append("adb -s ").append(q(serial)).append(" shell ").append(q("run-as " + pkg + " sh -c " + q(CLEAR))).append("\n");
+        script.append("adb -s ").append(q(serial)).append(" shell ").append(q("run-as " + pkg + " tar -xf - -C .")).append(" < ")
             .append(q(backups.resolve(backupName + ".tar").toString())).append("\n");
       }
       List<String> lines = new ArrayList<>();
@@ -415,9 +417,9 @@ final class DeviceHandoff {
         String ns = e.getKey().substring(0, e.getKey().indexOf('/')), key = e.getKey().substring(e.getKey().indexOf('/') + 1);
         String was = settingsGet(serial, ns, key);
         if (was == null) {
-          script.append("adb -s ").append(serial).append(" shell ").append(q("settings delete " + ns + " " + key)).append("\n");
+          script.append("adb -s ").append(q(serial)).append(" shell ").append(q("settings delete " + ns + " " + key)).append("\n");
         } else {
-          script.append("adb -s ").append(serial).append(" shell ").append(q("settings put " + ns + " " + key + " " + q(was))).append("\n");
+          script.append("adb -s ").append(q(serial)).append(" shell ").append(q("settings put " + ns + " " + key + " " + q(was))).append("\n");
         }
         lines.add(e.getKey() + ": " + (was == null ? "(unset)" : was) + " -> " + (e.getValue() == null ? "(deleted)" : e.getValue()));
       }
@@ -491,7 +493,7 @@ final class DeviceHandoff {
   /** The inverse of {@link #options}, appended to the restore script. */
   private static void optionsUndo(String serial, String pkg, Map<String, Object> rec, StringBuilder script)
       throws IOException, InterruptedException {
-    String pre = "adb -s " + serial + " shell ";
+    String pre = "adb -s " + q(serial) + " shell ";
     if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
       java.util.regex.Matcher m = java.util.regex.Pattern.compile("(yes|no|auto)").matcher(sh(serial, "cmd uimode night").out());
       if (m.find()) script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
