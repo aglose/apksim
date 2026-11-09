@@ -81,6 +81,15 @@ final class Session {
   /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
   volatile String site;
   volatile boolean keep;
+  /**
+   * Issue 181: the saved session this one reopened (its data copied into {@link #seedSlot}), else null; its copy goes
+   * back over the saved slot when the session ends. Its `saved/<id>.lock` is held shared meanwhile, so `forget` and the
+   * expiry sweep leave it.
+   */
+  volatile String savedId;
+  volatile BeamStore.SavedHold savedLock;
+  /** The saved record's `changed` when its copy was made: a write-back over data changed since is refused. */
+  volatile long savedChanged;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -132,6 +141,10 @@ final class Session {
     int i = l.lastIndexOf("--device");  // the last, as the launcher takes it
     return i >= 0 && i + 1 < l.size() ? l.get(i + 1) : null;
   }
+
+  /** The app's own launch options a reopened saved session's recorded setting replaces, and that setting's name. */
+  private static final Map<String, String> SAVED_OVER_OWN = Map.of("--appearance", "appearance", "--locale", "locale",
+      "--font-scale", "fontscale", "--permissions", "permissions");
 
   /** Whether a tab may ask for this device: a built-in one, a size serve was given a name for, or the app's own default. */
   static boolean deviceAllowed(Serve serve, Catalog.App app, String name) {
@@ -220,6 +233,9 @@ final class Session {
     List<String> own = app.launch();
     for (int i = 0; i < own.size(); i++) {
       if (own.get(i).equals("--device")) i++;
+      // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
+      // app's own defaults, as `apksim beam run` puts them.
+      else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
       else cmd.add(own.get(i));
     }
     // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),
@@ -819,6 +835,12 @@ final class Session {
     }
     if (serve.beam && (text.equals("keep on") || text.equals("keep off"))) {
       // The agent's own, never passed to the instance; only this session's tab reaches this.
+      if (savedId != null) {
+        // A reopened saved session stays saved: only its owner erases it (apksim beam forget), never a page.
+        logLine("[beam] saved session " + savedId + " stays saved (apksim beam forget " + savedId + " erases it)");
+        ws.sendText("k on");
+        return;
+      }
       keep = text.equals("keep on");
       logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
       ws.sendText("k " + (keep ? "on" : "off"));
@@ -1283,12 +1305,47 @@ final class Session {
   }
 
   private void eraseData() {
+    try {
+      eraseOrKeep();
+    } finally {
+      closeSavedLock();
+      if (seedSlot != null) {  // its saved session may be opened again now
+        serve.reopened.remove(seedSlot);
+        serve.reopenedChanged.remove(seedSlot);
+      }
+    }
+  }
+
+  private void closeSavedLock() {
+    BeamStore.SavedHold l = savedLock;
+    savedLock = null;
+    if (l != null) l.close();
+  }
+
+  private void eraseOrKeep() {
     eraseUnusedSeed();
     if (dataDir == null) return;
+    if (serve.beam && savedId != null) {
+      // Its shared hold given up first: the write-back takes the session's lock exclusively (BeamStore.writeBack).
+      closeSavedLock();
+      Map<String, Object> rec = serve.store.saved(savedId);
+      if (rec != null && seedSlot != null && dataDir.getFileName().toString().equals(seedSlot + "-0") && serve.store.writeBack(dataDir, rec, savedChanged)) {
+        logLine("[beam] what the app wrote is kept in saved session " + savedId);
+        System.err.printf("[beam] session %s: saved session %s updated (%s from %s)%n", this.id, savedId, app.name(), site);
+        return;
+      }
+      logLine("[beam] could not put the data back in saved session " + savedId + " (opened by apksim beam run meanwhile, or forgotten): kept as a new one");
+    }
     if (serve.beam && keep) {
+      List<String> signers;
+      try {
+        signers = ApkSigners.of(app.path()).certs();
+      } catch (IOException | RuntimeException e) {
+        signers = null;  // a newer build then needs this one still here to start on its data
+      }
       String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
-          options.get("permissions"), site));
+          options.get("permissions"), site, signers));
       if (id != null) {
         logLine("[beam] kept on this Mac as " + id + " (apksim beam run " + id + ")");
         System.err.printf("[beam] session %s kept as %s: %s from %s%n", this.id, id, app.name(), site);

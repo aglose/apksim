@@ -234,7 +234,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     `--move-shared-data` itself for a build with a 4 KB-aligned library macOS cannot map as it is (issue 171); `BeamSandbox` (in `dev.apksim`): a beamed instance's
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
-    saved|run|forget|config|sweep|status`; `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
+    saved|run|forget|config|sweep|status`, and a saved session reopened from its site's tab on a copy written back when
+    it ends, or a newer build of the same app started on a copy (`/beam/start`'s `saved`/`dataFrom`, `GET /beam/saved`,
+    issue 181; `ApkSigners`: the same key, as Android requires of an update); `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
     when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.

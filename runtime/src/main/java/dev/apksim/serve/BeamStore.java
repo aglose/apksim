@@ -237,7 +237,7 @@ final class BeamStore {
 
   /** What a session leaves for its saved record: the slot, what it ran, and where it came from. */
   record Leaving(Path slot, String app, String sha256, List<String> launch, String device, String appearance,
-      String locale, String fontScale, String permissions, String site) {}
+      String locale, String fontScale, String permissions, String site, List<String> signers) {}
 
   /**
    * Keeps a session's data slot (its instance has exited): renamed to `k<id>-0`, its `.device` beside it too, and
@@ -286,9 +286,11 @@ final class BeamStore {
         field(j, "fontscale", s.fontScale());
         field(j, "permissions", s.permissions());
         field(j, "site", s.site());
-        j.append("  \"launch\": [");
-        for (int i = 0; i < s.launch().size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(s.launch().get(i)));
-        j.append("],\n  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
+        list(j, "launch", s.launch());
+        // Who signed its build (issue 181): a newer build may start on this data only if the same key signed it, which
+        // is then checked against this even after the saved build itself is gone.
+        if (s.signers() != null) list(j, "signers", s.signers());
+        j.append("  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
         writeAtomically(savedDir.resolve(id + ".json"), j.toString());
         return id;
       } catch (IOException | RuntimeException e) {
@@ -315,8 +317,140 @@ final class BeamStore {
     }
   }
 
+  private static void list(StringBuilder j, String k, List<String> v) {
+    j.append("  ").append(Http.q(k)).append(": [");
+    for (int i = 0; i < v.size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(v.get(i)));
+    j.append("],\n");
+  }
+
   private static void field(StringBuilder j, String k, String v) {
     if (v != null) j.append("  ").append(Http.q(k)).append(": ").append(Http.q(v)).append(",\n");
+  }
+
+  /**
+   * Issue 181: a saved session reopened in a tab ran on a copy of its slot (`bm<hex>-0`, the only kind of slot the beam
+   * sandbox lets an instance touch besides `beam-N`, so a site's app never reaches the saved data of another site's);
+   * once its instance has exited, the copy takes the saved slot's place (`k<id>-0` and its `.device`), as a device keeps
+   * what the app wrote. False when it cannot: the saved session is open (`apksim beam run`) or being forgotten, the copy
+   * is not there, or a rename fails; the caller then keeps the copy as a new saved session (if it is there), so nothing
+   * the app wrote is lost and the saved one is as it was.
+   *
+   * The session's own lock (`saved/<id>.lock`) is taken exclusively for the swap, by a caller that holds none on it: a
+   * `run` holds it shared for as long as it runs, so none is open now and none can start (and recreate `k<id>-0`, whose
+   * name is free between the two renames) until the swap is done; `forget` and the expiry sweep wait too. A `run` that
+   * opened it after the copy was made (`copiedAt`: the record's {@link #changed} then) may have written to it: the copy
+   * is then not put back over it but kept as a new saved session by the caller.
+   *
+   * The saved slot as it was goes to `beam/writeback/` (which no sweep empties) and is deleted once the copy is in its
+   * place; if a rename fails and cannot be undone, it stays there, named in the log, as it may be the only copy.
+   */
+  synchronized boolean writeBack(Path copy, Map<String, Object> rec, long copiedAt) {
+    Path dir = copy.toAbsolutePath().normalize();
+    String id = String.valueOf(rec.get("id"));
+    if (!id.matches("[0-9a-f]{12}") || !dir.startsWith(dataRoot.toAbsolutePath().normalize())
+        || !dir.getFileName().toString().matches("bm[0-9a-f]{12}-0") || !dir.getParent().getFileName().toString().equals(rec.get("package"))) {
+      return false;
+    }
+    Path target = dir.resolveSibling("k" + id + "-0");
+    Path device = dir.resolveSibling(dir.getFileName() + ".device"), deviceTarget = target.resolveSibling(target.getFileName() + ".device");
+    // The copy must be there (a plain folder): its app may have removed it, and the saved slot is moved aside only for it.
+    if (!Files.isDirectory(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+    Path trash = beamDir.resolve("writeback").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
+    List<FileChannel> open = new ArrayList<>();
+    boolean dropTrash = true;
+    SavedHold own = null;
+    try {
+      own = hold(id, true);
+      if (own == null) return false;  // a `run` has it open, or a copy for a newer build is being read
+      Map<String, Object> now = saved(id);
+      if (now == null) return false;  // forgotten while the session ran
+      if (changed(now) != copiedAt) {
+        System.err.println("[beam] saved session " + id + " was opened by apksim beam run since the tab's copy was made: the copy is kept as a new one");
+        return false;
+      }
+      // The copy's lock (its instance has gone) and the saved slot's (no `run` has it open), both held while they swap.
+      for (Path p : List.of(dir, target)) {
+        if (!Files.isDirectory(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+        FileChannel ch = FileChannel.open(p.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        open.add(ch);
+        FileLock l;
+        try {
+          l = ch.tryLock();
+        } catch (OverlappingFileLockException e) {
+          l = null;
+        }
+        if (l == null) return false;
+      }
+      Files.createDirectories(trash);
+      List<Path[]> done = new ArrayList<>();  // renames made, undone in reverse if a later one fails
+      try {
+        for (Path[] m : List.of(new Path[] {deviceTarget, trash.resolve("device")}, new Path[] {target, trash.resolve("slot")},
+            new Path[] {device, deviceTarget}, new Path[] {dir, target})) {
+          // Only the copy itself is required (a missing one undoes the rest): the .device folders and the old slot may not exist.
+          if (m[0] != dir && !Files.exists(m[0], java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+          Files.move(m[0], m[1], StandardCopyOption.ATOMIC_MOVE);
+          done.add(m);
+        }
+      } catch (IOException | RuntimeException e) {
+        System.err.println("[beam] could not put " + dir + " back as saved session " + id + ": " + e);
+        for (int i = done.size() - 1; i >= 0; i--) {
+          try {
+            Files.move(done.get(i)[1], done.get(i)[0], StandardCopyOption.ATOMIC_MOVE);
+          } catch (IOException | RuntimeException ex) {
+            System.err.println("[beam] could not undo " + done.get(i)[0] + ": what was there is kept in " + trash + " (saved session " + id + ")");
+            dropTrash = false;  // what is there may be the only copy of something
+          }
+        }
+        return false;
+      }
+      used(id);
+      changing(id);
+      return true;
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[beam] could not put " + dir + " back as saved session " + id + ": " + e);
+      return false;
+    } finally {
+      for (FileChannel ch : open) {
+        try {
+          ch.close();
+        } catch (IOException e) {
+          // released with the process
+        }
+      }
+      if (dropTrash) deleteTree(trash);  // the saved slot as it was before this session (never through a link)
+      if (own != null) own.close();
+    }
+  }
+
+  /** The saved sessions that came from this site (issue 181's `GET /beam/saved`), newest use first. */
+  List<Map<String, Object>> savedFrom(String origin) {
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> r : saved()) if (origin.equals(r.get("site"))) out.add(r);
+    out.sort(Comparator.comparingLong((Map<String, Object> r) -> r.get("lastUsed") instanceof Number n ? n.longValue() : 0).reversed());
+    return out;
+  }
+
+  /** When a saved session's data last changed (`changed` in its record: a `run`, a write-back), or 0 for never. */
+  static long changed(Map<String, Object> rec) {
+    return rec != null && rec.get("changed") instanceof Number n ? n.longValue() : 0;
+  }
+
+  /**
+   * Notes that a saved session's data may change now (`apksim beam run` opening it, a tab's write-back): a tab's copy
+   * made before is then not written back over it ({@link #writeBack}), so what the run wrote is not lost. A new value
+   * every time, even within one millisecond.
+   */
+  synchronized void changing(String id) {
+    Path f = savedDir.resolve(id + ".json");
+    try {
+      String text = Files.readString(f);
+      long now = Math.max(System.currentTimeMillis(), changed(saved(id)) + 1);
+      text = text.contains("\"changed\": ") ? text.replaceFirst("\"changed\": \\d+", "\"changed\": " + now)
+          : text.replaceFirst("(\"lastUsed\": \\d+)", "$1,\n  \"changed\": " + now);
+      writeAtomically(f, text);
+    } catch (IOException e) {
+      System.err.println("[beam] cannot note a change of " + id + ": " + e.getMessage());
+    }
   }
 
   /** Notes a saved session's use (`run`): `keep-saved-days` counts from it. */
@@ -362,10 +496,87 @@ final class BeamStore {
     return total;
   }
 
-  /** `saved/<id>.lock`: shared by each `run` of the session while it runs, exclusive to `forget`. */
-  FileChannel sessionLock(String id) throws IOException {
-    Files.createDirectories(savedDir);
-    return FileChannel.open(savedDir.resolve(id + ".lock"), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+  /**
+   * A hold on a saved session's lock (`saved/<id>.lock`): shared by each `run` and each tab that has it open or is
+   * copying it, exclusive to `forget` and a tab's write-back. Taken only through {@link #hold}: within one process,
+   * closing any channel to a file releases every lock the process has on it (POSIX), so the process keeps one channel
+   * per saved session, counts its shared holders, and closes it when the last lets go.
+   */
+  final class SavedHold implements AutoCloseable {
+    private final String id;
+    private boolean closed;
+
+    private SavedHold(String id) {
+      this.id = id;
+    }
+
+    @Override
+    public void close() {
+      synchronized (holds) {
+        if (closed) return;
+        closed = true;
+        Held h = holds.get(id);
+        if (h == null || --h.count > 0) return;
+        holds.remove(id);
+        try {
+          h.ch.close();  // the last holder here: nothing else of this process's is on that file
+        } catch (IOException e) {
+          // released with the process
+        }
+      }
+    }
+  }
+
+  private static final class Held {
+    final FileChannel ch;
+    final boolean exclusive;
+    int count = 1;
+
+    Held(FileChannel ch, boolean exclusive) {
+      this.ch = ch;
+      this.exclusive = exclusive;
+    }
+  }
+
+  private final Map<String, Held> holds = new java.util.HashMap<>();
+
+  /**
+   * Takes a saved session's lock, shared or exclusive, without waiting; null when another holds it in a way that
+   * excludes this (here or in another process). A shared hold joins one this process has.
+   */
+  SavedHold hold(String id, boolean exclusive) throws IOException {
+    if (id == null || !id.matches("[0-9a-f]{12}")) return null;
+    synchronized (holds) {
+      Held h = holds.get(id);
+      if (h != null) {
+        if (exclusive || h.exclusive) return null;
+        h.count++;
+        return new SavedHold(id);
+      }
+      Files.createDirectories(savedDir);
+      FileChannel ch = FileChannel.open(savedDir.resolve(id + ".lock"), StandardOpenOption.CREATE, StandardOpenOption.READ,
+          StandardOpenOption.WRITE);
+      FileLock l;
+      try {
+        l = ch.tryLock(0, Long.MAX_VALUE, !exclusive);
+      } catch (IOException | RuntimeException e) {
+        ch.close();  // no other channel of this process is on the file (none in holds): closing it releases nothing else
+        throw e;
+      }
+      if (l == null) {
+        ch.close();
+        return null;
+      }
+      holds.put(id, new Held(ch, exclusive));
+      return new SavedHold(id);
+    }
+  }
+
+  /** One per saved session: copies of it are read one at a time (each takes its slot's `.lock`). */
+  private final Map<String, Object> copying = new java.util.concurrent.ConcurrentHashMap<>();
+
+  Object copyMonitor(String id) {
+    return copying.computeIfAbsent(id, k -> new Object());
   }
 
   /**
@@ -375,14 +586,8 @@ final class BeamStore {
   String forget(Map<String, Object> rec) {
     String sid = String.valueOf(rec.get("id"));
     if (!sid.matches("[0-9a-f]{12}")) return "not a saved session";
-    try (FileChannel lockCh = sessionLock(sid)) {
-      FileLock own;
-      try {
-        own = lockCh.tryLock();
-      } catch (OverlappingFileLockException e) {
-        own = null;
-      }
-      if (own == null) return "it is open (apksim beam run): quit it first";
+    try (SavedHold own = hold(sid, true)) {
+      if (own == null) return "it is open (apksim beam run, or a tab): quit it first";
       String why = forgetLocked(rec);
       if (why == null) Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
       return why;
@@ -568,20 +773,18 @@ final class BeamStore {
         cmdLine.add(catalog.buildFile(sha).toString());
         // Held (shared: runs of one session side by side) until the launch ends: forget and the expiry sweep take it
         // exclusively, so neither erases a session that is open or opening.
-        try (FileChannel ch = store.sessionLock(String.valueOf(r.get("id")))) {
-          FileLock held;
-          try {
-            held = ch.tryLock(0, Long.MAX_VALUE, true);
-          } catch (OverlappingFileLockException e) {
-            held = null;  // this JVM holds it already: as taken (released with the channel, closed below either way)
-          }
+        try (SavedHold held = store.hold(String.valueOf(r.get("id")), false)) {
           if (held == null) {
-            System.err.println("apksim beam run: " + r.get("id") + " is being forgotten");
+            System.err.println("apksim beam run: " + r.get("id") + " is busy (being forgotten, or a tab's session is being put back into it): try again");
             return 1;
           }
           store.used(String.valueOf(r.get("id")));
+          // Held shared until it ends, so a tab's write-back (exclusive) cannot happen meanwhile; marked, so one whose
+          // copy was made before this does not overwrite what this run writes.
+          store.changing(String.valueOf(r.get("id")));
           int code = new ProcessBuilder(cmdLine).inheritIO().start().waitFor();
           store.used(String.valueOf(r.get("id")));
+          store.changing(String.valueOf(r.get("id")));  // again at its end: a copy made while it started is refused too
           return code;
         }
       }
