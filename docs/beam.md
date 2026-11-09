@@ -823,7 +823,7 @@ months apart in either direction.
   know.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
   built"). 0.20.0 and later speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
-  `source` (issues 177, 178); the start's `saved` and `dataFrom` and `GET /beam/saved` (issue 181).
+  `source` (issues 177, 178); the start's `saved` and `dataFrom` and `GET /beam/saved` (issue 181, 0.21.0 and later).
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
   (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
@@ -853,7 +853,7 @@ readable by any origin. Requests to the server carry its token as everything els
    "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
    (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
    store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
-   releases before 0.20.0). Or, for the site's saved data (step 8): `"saved": ID` (its own build: `sha256` may be left
+   releases before 0.20.0). Or, for the site's saved data (step 8; 0.21.0 and later): `"saved": ID` (its own build: `sha256` may be left
    out) or `"dataFrom": ID` beside a newer build's fields. The agent may first prompt its owner (up to 2.5 minutes: keep
    the request open; `asking` in step 2 says it is). Answers:
    - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data, with
