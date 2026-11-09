@@ -1278,15 +1278,19 @@ final class Session {
     try {
       eraseOrKeep();
     } finally {
+      closeSavedLock();
       if (seedSlot != null) serve.reopened.remove(seedSlot);  // its saved session may be opened again now
-      java.nio.channels.FileChannel l = savedLock;
-      savedLock = null;
-      if (l != null) {
-        try {
-          l.close();
-        } catch (IOException e) {
-          // released with the process
-        }
+    }
+  }
+
+  private void closeSavedLock() {
+    java.nio.channels.FileChannel l = savedLock;
+    savedLock = null;
+    if (l != null) {
+      try {
+        l.close();
+      } catch (IOException e) {
+        // released with the process
       }
     }
   }
@@ -1295,13 +1299,15 @@ final class Session {
     eraseUnusedSeed();
     if (dataDir == null) return;
     if (serve.beam && savedId != null) {
+      // Its shared hold given up first: the write-back takes the session's lock exclusively (BeamStore.writeBack).
+      closeSavedLock();
       Map<String, Object> rec = serve.store.saved(savedId);
       if (rec != null && seedSlot != null && dataDir.getFileName().toString().equals(seedSlot + "-0") && serve.store.writeBack(dataDir, rec)) {
         logLine("[beam] what the app wrote is kept in saved session " + savedId);
         System.err.printf("[beam] session %s: saved session %s updated (%s from %s)%n", this.id, savedId, app.name(), site);
         return;
       }
-      logLine("[beam] could not put the data back in saved session " + savedId + " (open in apksim beam run?): kept as a new one");
+      logLine("[beam] could not put the data back in saved session " + savedId + " (open in apksim beam run, or forgotten): kept as a new one");
     }
     if (serve.beam && keep) {
       List<String> signers;

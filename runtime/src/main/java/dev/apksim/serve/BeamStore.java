@@ -331,8 +331,13 @@ final class BeamStore {
    * Issue 181: a saved session reopened in a tab ran on a copy of its slot (`bm<hex>-0`, the only kind of slot the beam
    * sandbox lets an instance touch besides `beam-N`, so a site's app never reaches the saved data of another site's);
    * once its instance has exited, the copy takes the saved slot's place (`k<id>-0` and its `.device`), as a device keeps
-   * what the app wrote. False when it cannot: the saved slot is open (`apksim beam run`) or a rename fails; the caller
-   * then keeps the copy as a new saved session, so nothing the app wrote is lost and the saved one is as it was.
+   * what the app wrote. False when it cannot: the saved session is open (`apksim beam run`) or being forgotten, the copy
+   * is not there, or a rename fails; the caller then keeps the copy as a new saved session (if it is there), so nothing
+   * the app wrote is lost and the saved one is as it was.
+   *
+   * The session's own lock (`saved/<id>.lock`) is taken exclusively for the swap, by a caller that holds none on it: a
+   * `run` holds it shared for as long as it runs, so none is open now and none can start (and recreate `k<id>-0`, whose
+   * name is free between the two renames) until the swap is done; `forget` and the expiry sweep wait too.
    */
   synchronized boolean writeBack(Path copy, Map<String, Object> rec) {
     Path dir = copy.toAbsolutePath().normalize();
@@ -343,10 +348,22 @@ final class BeamStore {
     }
     Path target = dir.resolveSibling("k" + id + "-0");
     Path device = dir.resolveSibling(dir.getFileName() + ".device"), deviceTarget = target.resolveSibling(target.getFileName() + ".device");
+    // The copy must be there (a plain folder): its app may have removed it, and the saved slot is moved aside only for it.
+    if (!Files.isDirectory(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
     Path trash = beamDir.resolve("import").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
     List<FileChannel> open = new ArrayList<>();
     boolean dropTrash = true;
     try {
+      FileChannel session = sessionLock(id);
+      open.add(session);
+      FileLock own;
+      try {
+        own = session.tryLock();
+      } catch (OverlappingFileLockException e) {
+        own = null;  // this JVM holds it (a copy for a newer build being read): not now
+      }
+      if (own == null) return false;
+      if (saved(id) == null) return false;  // forgotten while the session ran
       // The copy's lock (its instance has gone) and the saved slot's (no `run` has it open), both held while they swap.
       for (Path p : List.of(dir, target)) {
         if (!Files.isDirectory(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
@@ -365,7 +382,8 @@ final class BeamStore {
       try {
         for (Path[] m : List.of(new Path[] {deviceTarget, trash.resolve("device")}, new Path[] {target, trash.resolve("slot")},
             new Path[] {device, deviceTarget}, new Path[] {dir, target})) {
-          if (!Files.exists(m[0], java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+          // Only the copy itself is required (a missing one undoes the rest): the .device folders and the old slot may not exist.
+          if (m[0] != dir && !Files.exists(m[0], java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
           Files.move(m[0], m[1], StandardCopyOption.ATOMIC_MOVE);
           done.add(m);
         }
@@ -663,7 +681,7 @@ final class BeamStore {
             held = null;  // this JVM holds it already: as taken (released with the channel, closed below either way)
           }
           if (held == null) {
-            System.err.println("apksim beam run: " + r.get("id") + " is being forgotten");
+            System.err.println("apksim beam run: " + r.get("id") + " is busy (being forgotten, or a tab's session is being put back into it): try again");
             return 1;
           }
           store.used(String.valueOf(r.get("id")));

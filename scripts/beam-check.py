@@ -18,9 +18,10 @@ app); `forget` erasing it and the next sweep its build; `save-sessions on` keepi
 folder; `sweep` leaving a running agent's builds alone.
 
 Then issue 181: `GET /beam/saved` listing a saved session to its own site only; the tab reopening it (`saved`) on a
-copy that goes back over the saved slot when it ends, never two at once; a newer build of the same app (here: the
-test APK with a ZIP comment, another hash) started on a copy of it (`dataFrom`); and, when apksigner and keytool are
-here, a build signed by another key refused.
+copy that goes back over the saved slot when it ends, never two at once; and, when the Android SDK's apksigner and
+keytool are here, `dataFrom`: a saved session of the test APK signed with a key of the check's own, a newer build
+(one asset more, same key) started on a copy of it, and refused when altered after signing, when signed by another
+key, or on the debug-signed saved session.
 
 Everything runs in a state folder of its own (`APKSIM_HOME`, removed at the end), so the Mac's own agent, trusted
 sites and builds are not touched; its instances therefore start without the class cache or startup cache.
@@ -788,34 +789,61 @@ def at_start(nodes):
     return [x for x in nodes.split(";") if "app start" in x][:1]
 
 
-def next_build(apk_bytes):
-    """The same build with a ZIP comment added: another SHA-256, the same package and signer (a newer build, as far as
-    the agent can tell)."""
+def with_comment(apk_bytes):
+    """The APK with a ZIP comment added after it was signed: another SHA-256, the same certificate in its signing block,
+    but contents that are not what was signed (v2 and v3 cover the end record)."""
     import struct
     eocd = apk_bytes.rfind(b"PK\x05\x06")
-    assert eocd >= 0 and len(apk_bytes) == eocd + 22, "the test APK has a ZIP comment already"
-    c = b"beam-check: the next build"
+    assert eocd >= 0 and len(apk_bytes) == eocd + 22, "the APK has a ZIP comment already"
+    c = b"beam-check: not what was signed"
     return apk_bytes[:eocd + 20] + struct.pack("<H", len(c)) + c
 
 
-def resigned(apk_path):
-    """The test APK signed with a key of its own (apksigner and keytool), or None when the build tools are not here."""
-    sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
-    signers = sorted(glob.glob(os.path.join(sdk, "build-tools", "*", "apksigner")))
-    keytool = shutil.which("keytool")
-    if not signers or not keytool:
-        return None
-    d = tempfile.mkdtemp(prefix="beam-check-sign-")
-    ks, out = os.path.join(d, "k.jks"), os.path.join(d, "other.apk")
-    subprocess.run([keytool, "-genkeypair", "-keystore", ks, "-storepass", "beamcheck", "-keypass", "beamcheck", "-alias", "k",
-                    "-keyalg", "RSA", "-keysize", "2048", "-validity", "100", "-dname", "CN=beam-check"], capture_output=True)
-    subprocess.run([signers[-1], "sign", "--ks", ks, "--ks-pass", "pass:beamcheck", "--out", out, apk_path], capture_output=True)
-    if not os.path.exists(out):
-        return None
-    with open(out, "rb") as f:
-        b = f.read()
-    shutil.rmtree(d, ignore_errors=True)
-    return b
+class Signer:
+    """Builds of the test app signed with keys of beam-check's own (apksigner, keytool and zipalign from the Android SDK's
+    build tools); `ok` is False when they are not here."""
+
+    def __init__(self):
+        sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
+        tools = sorted(glob.glob(os.path.join(sdk, "build-tools", "*", "apksigner")))
+        self.apksigner = tools[-1] if tools else None
+        self.zipalign = os.path.join(os.path.dirname(tools[-1]), "zipalign") if tools else None
+        self.keytool = shutil.which("keytool")
+        self.dir = tempfile.mkdtemp(prefix="beam-check-sign-")
+        self.ok = bool(self.apksigner and self.keytool)
+
+    def key(self, name):
+        ks = os.path.join(self.dir, name + ".jks")
+        if not os.path.exists(ks):
+            subprocess.run([self.keytool, "-genkeypair", "-keystore", ks, "-storepass", "beamcheck", "-keypass", "beamcheck",
+                            "-alias", "k", "-keyalg", "RSA", "-keysize", "2048", "-validity", "100", "-dname", "CN=beam-check " + name],
+                           capture_output=True)
+        return ks
+
+    def build(self, apk_path, key, extra=None):
+        """The test APK (plus an asset `extra` names, as a newer build would differ) signed with `key`; its bytes."""
+        src = apk_path
+        if extra:
+            src = os.path.join(self.dir, f"{extra}-unsigned.apk")
+            with zipfile.ZipFile(apk_path) as zin, zipfile.ZipFile(src, "w") as zout:
+                for info in zin.infolist():
+                    zout.writestr(info, zin.read(info.filename), compress_type=info.compress_type)
+                zout.writestr("assets/beam-check-" + extra + ".txt", extra)
+            if self.zipalign and os.path.exists(self.zipalign):
+                aligned = src + ".aligned"
+                subprocess.run([self.zipalign, "-f", "-P", "16", "4", src, aligned], capture_output=True)
+                if os.path.exists(aligned):
+                    src = aligned
+        out = os.path.join(self.dir, f"{extra or 'base'}-{os.path.basename(key)}.apk")
+        r = subprocess.run([self.apksigner, "sign", "--ks", self.key(key), "--ks-pass", "pass:beamcheck", "--out", out, src],
+                           capture_output=True, text=True)
+        if not os.path.exists(out):
+            raise RuntimeError("apksigner: " + r.stderr[-500:])
+        with open(out, "rb") as f:
+            return f.read()
+
+    def close(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
@@ -868,42 +896,72 @@ def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
               "saved: what it wrote is back in the saved slot, and the copy is gone")
         check(saved_ids(apksim) == [sid], f"saved: still one saved session, the same ({saved_ids(apksim)})")
 
-        # A newer build of the same app (same package, same key) on a copy of the saved data.
-        nb = next_build(apk)
-        nsha = hashlib.sha256(nb).hexdigest()
-        start2 = dict(slot_start, sha256=nsha, size=len(nb), ticket=None, url=None, protocol=2, dataFrom=sid)
-        check(req(gp, "POST", "/beam/start", A, start2)[0] == 404, "dataFrom: not from another site")
-        st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, saved=sid))
-        check(st == 400, "dataFrom: not with saved too")
-        st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, dataFrom=None, saved=sid))
-        check(st == 400 and b"dataFrom" in body, f"saved: a saved session is not reopened with another build ({body[:90]!r})")
-        st, _, body = req(gp, "POST", "/beam/start", B, start2)
-        gu = json.loads(body) if st == 200 else {}
-        st, _, body = req(gp, "POST", f"/beam/upload?upload={gu.get('upload')}", B, nb) if gu.get("need") == "upload" else (st, {}, body)
-        gn = json.loads(body) if st == 200 else {}
-        check(gn.get("dataFrom") == sid and gn.get("data") is True and "token" in gn,
-              f"dataFrom: a newer build (sent by the tab) starts on a copy of it ({st}, {body[:100]!r})")
-        s = open_session(gp, gn, B)
-        seen = slot_nodes(s.stats.get("pid", 0))
-        check("at app start: setting=written" in seen and "sdcard=written" in seen,
-              f"dataFrom: the newer build starts with the saved data ({at_start(seen)})")
-        check(session_info(s).get("keep") is False, "dataFrom: the session itself is not kept unless asked")
-        check(close_session(s), "dataFrom: its session ends")
-        # Erased as any session's slot is: emptied but for its .lock, the folder itself left to the sweep.
-        check(until(lambda: all(not os.path.isdir(d) or os.listdir(d) in ([], [".lock"])
-                                for d in glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*"))), 15)
-              and saved_ids(apksim) == [sid] and os.path.exists(sd_file), "dataFrom: its copy is erased, the saved session left as it was")
-
-        other = resigned(apk_path)
-        if other is None:
-            print("  -- dataFrom: no apksigner and keytool here: another key's build not checked")
-        else:
-            st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, sha256=hashlib.sha256(other).hexdigest(), size=len(other)))
-            gu = json.loads(body) if st == 200 else {}
-            st, _, body = req(gp, "POST", f"/beam/upload?upload={gu.get('upload')}", B, other)
-            check(st == 409 and b"another key" in body, f"dataFrom: a build signed by another key is refused ({st}, {body[:90]!r})")
+        # A newer build of the same app on a copy of saved data: builds signed here with a key of beam-check's own.
+        sg = Signer()
+        if not sg.ok:
+            print("  -- dataFrom: no apksigner and keytool here: newer builds not checked")
+            return
+        try:
+            dataFrom_checks(apksim, gp, apk_path, sid, slot_start, sd_file, sg)
+        finally:
+            sg.close()
     finally:
         stop(g)
+
+
+def dataFrom_checks(apksim, gp, apk_path, sid, slot_start, sd_file, sg):
+    """`dataFrom` (issue 181): build 1 signed with key K is saved after a Write; build 2 (one asset more, K) starts on a
+    copy of it; build 2 altered after signing, build 2 signed with another key, and build 2 on the debug-signed saved
+    session `sid` are refused; the saved sessions stay as they were."""
+    b1, b2 = sg.build(apk_path, "k"), sg.build(apk_path, "k", "next")
+    other, tampered = sg.build(apk_path, "other", "next"), with_comment(b2)
+
+    def start_with(b, **kw):
+        """The grant for a start of build `b` (sending it when asked): (status, answer)."""
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(slot_start, sha256=hashlib.sha256(b).hexdigest(), size=len(b),
+                                                             ticket=None, url=None, protocol=2, **kw))
+        g = json.loads(body) if st == 200 else {}
+        if g.get("need") == "upload":
+            st, _, body = req(gp, "POST", f"/beam/upload?upload={g.get('upload')}", B, b)
+        return st, (json.loads(body) if st == 200 else {"error": body[:110]})
+
+    st, g1 = start_with(b1)
+    s = open_session(gp, g1, B)
+    s.ws.send("keep on")
+    s.pump(3, until=lambda: "k on" in s.texts)
+    r = control(s.stats.get("pid", 0), "tap-text Write")
+    s.pump(1.5)
+    check("tapped" in r and close_session(s), "dataFrom: build 1, signed here, is saved after a Write")
+    check(until(lambda: len(saved_ids(apksim)) == 2, 10), "dataFrom: two saved sessions now")
+    s1 = next((i for i in saved_ids(apksim) if i != sid), "none")
+
+    check(req(gp, "POST", "/beam/start", A, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), protocol=2, dataFrom=s1))[0] == 404,
+          "dataFrom: not from another site")
+    st, _, body = req(gp, "POST", "/beam/start", B, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), protocol=2, dataFrom=s1, saved=s1))
+    check(st == 400, "dataFrom: not with saved too")
+    st, _, body = req(gp, "POST", "/beam/start", B, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), protocol=2, saved=s1))
+    check(st == 400 and b"dataFrom" in body, f"saved: a saved session is not reopened with another build ({body[:90]!r})")
+    st, gn = start_with(b2, dataFrom=s1)
+    check(gn.get("dataFrom") == s1 and gn.get("data") is True and "token" in gn,
+          f"dataFrom: build 2 (sent by the tab, same package and key) starts on a copy of it ({st}, {gn})")
+    s = open_session(gp, gn, B)
+    seen = slot_nodes(s.stats.get("pid", 0))
+    check("at app start: setting=written" in seen and "sdcard=written" in seen,
+          f"dataFrom: build 2 starts with the saved data ({at_start(seen)})")
+    check(session_info(s).get("keep") is False, "dataFrom: the session itself is not kept unless asked")
+    check(close_session(s), "dataFrom: its session ends")
+    # Erased as any session's slot is: emptied but for its .lock, the folder itself left to the sweep.
+    check(until(lambda: all(not os.path.isdir(d) or os.listdir(d) in ([], [".lock"])
+                            for d in glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*"))), 15)
+          and sorted(saved_ids(apksim)) == sorted([sid, s1]), "dataFrom: its copy is erased, the saved sessions left as they were")
+    st, g = start_with(tampered, dataFrom=s1)
+    check(st == 409 and "signed" in str(g.get("error")), f"dataFrom: build 2 altered after signing (its certificate kept) is refused ({st}, {g})")
+    st, g = start_with(other, dataFrom=s1)
+    check(st == 409 and b"another key" in g.get("error", b""), f"dataFrom: build 2 signed by another key is refused ({st}, {g})")
+    st, g = start_with(b2, dataFrom=sid)
+    check(st == 409 and b"another key" in g.get("error", b""), f"dataFrom: and so is build 2 on the debug-signed saved session ({st}, {g})")
+    check(os.path.exists(sd_file), "dataFrom: the saved session is left as it was")
+    beam(apksim, "forget", s1)
 
 
 def free_port():

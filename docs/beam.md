@@ -949,30 +949,39 @@ page that runs a new build per pull request made the visitor repeat it for every
 - **Reopening one**: `POST /beam/start {"protocol", "saved": ID}`, from its own site only (any other gets the 404 an
   unknown id gets). `sha256` may be left out (its own build is used); one naming another build is refused (400: that is
   `dataFrom`). Its own build may be gone: with `sha256`, `ticket` and `url` as in any start it comes back the usual way.
-  The session runs with the launch options, device, appearance, locale, font scale and permissions it was saved with,
-  unless the page names them. The answer is the usual grant with `"data": true, "saved": ID`.
+  The session runs with the launch options, device (a Fill tab's `WxH@D` size too, within the bounds a beam tab's
+  `device` command has), appearance, locale, font scale and permissions it was saved with, unless the page names them. The answer is the usual grant with `"data": true, "saved": ID`.
   - It runs on a copy, not in the saved slot: the slot (`k<id>-0` and its `.device`) is packed as a hand-off is
     (`SlotPack`, through folder handles, links left out) and unpacked into the session's own `bm<12 hex>-0`, so the beam
     sandbox still lets an instance touch only `beam-N` and `bm` slots. Every beamed instance shares one sandbox, so
     allowing `k` slots there would have let any site's app read every other site's saved sign-ins.
   - When the session ends (however: the tab closed, the idle limit, a crash), the copy takes the saved slot's place
-    (`BeamStore.writeBack`: both slots' locks held, the old one moved aside and deleted, every rename undone if one
-    fails), as a device keeps what the app wrote. If it cannot (`apksim beam run` has the saved slot open), the copy is
-    kept as a new saved session instead, so nothing is lost.
+    (`BeamStore.writeBack`), as a device keeps what the app wrote. It holds `saved/<id>.lock` exclusively (the session
+    gives up its shared hold first), so no `run` is open and none can start and take `k<id>-0` while that name is free
+    between the renames; then both slots' locks; the copy must still be there (its app may have deleted it), the old
+    slot is moved aside and deleted only once the copy is in its place, and every rename is undone if one fails. If it
+    cannot (a `run` has it open, it was forgotten, the copy is gone), the copy (if there) is kept as a new saved
+    session instead, so nothing is lost.
   - One tab at a time (409 for a second while a grant or session holds the first); the session holds
     `saved/<id>.lock` shared, as `run` does, so `forget` and the `keep-saved-days` sweep leave it. The page cannot turn
     keeping off for it (`keep off` is answered `k on`): only the Mac's owner erases a saved session.
 - **A newer build on its data**: `POST /beam/start` with the new build's `sha256`, `ticket`, `url` (or `source`) as
   any start, plus `"dataFrom": ID`. The saved slot is copied as above into the new session's own slot only if the new
-  build has the same package (its manifest) and the same signers (`ApkSigners`: each signer certificate's SHA-256 from
-  the APK's v3 block, else v2, else v1's META-INF signature blocks; signatures are not verified, a build being found by
-  its hash) as the saved build, Android's own condition for an update that keeps an app's data; else 409 with why. A
+  build has the same package (its manifest) and the same signers as the saved build, Android's own condition for an
+  update that keeps an app's data; else 409 with why. `ApkSigners` takes the newest scheme the APK has and verifies it
+  as a device's package manager does before naming a signer (a certificate is public: copied into another APK, it says
+  nothing): v3 (signers covering API 36) or v2, each signer's signature over its signed data with its own key, which
+  must be its certificate's, and the content digest recomputed over the APK's entries, central directory and end record
+  (1 MB chunks); else v1 through the JDK's verifying JarFile (every entry outside META-INF signed, by the same signers,
+  each signer's own certificate from its certificate path, not a CA's). The answer is each signer certificate's SHA-256. A
   saved record notes its build's signers (`signers`), so this works after the saved build itself is gone; a record
   saved before this release needs its build still here. The copy is an ordinary moved session's slot: erased when the
   session ends unless kept, which saves it as a new session; the saved one stays as it was, a template for the next
   build. The answer says `"data": true, "dataFrom": ID`.
 - **Errors**: 404 (no such saved session from this site), 400 (`saved`, `dataFrom` and `data` together, or a reopen
-  naming another build), 409 (open in another tab or in `run`, another package, another key, or a copy that failed).
+  naming another build), 409 (open in another tab or in `run`, another package, another key, a build whose signature
+  does not verify, or a copy that failed). `data`'s ticket must be as the server mints them (`[A-Za-z0-9._-]`), so a
+  site's ticket is never read as the agent's own marker for saved data.
   Both work after `need: upload` too (the tab sends the build, then the agent copies the data). Additive: an agent
   before this ignores `saved` and `dataFrom` and starts the app with no data, so a page checks the answer's `saved` /
   `dataFrom` (and `/beam/saved`'s 404 tells it the agent is older).
@@ -982,10 +991,12 @@ page that runs a new build per pull request made the visitor repeat it for every
   pack can hold sign-ins); serve.html offers none of this yet (an embedding page uses the protocol below).
 - **Checked**: `beam-check.py` (the saved session listed to its site and not another; reopened by its site with no
   build named, not by another, not twice; running on a `bm` copy with the saved data at app start; `keep off` answered
-  `k on`; what it wrote back in the saved slot after it ends, the copy gone, still one saved session; a newer build
-  (the test APK with a ZIP comment: another hash, same package and key), sent by the tab, starting on a copy with the
-  saved data, its copy erased and the saved session unchanged; and, with apksigner and keytool, the APK signed with
-  another key refused).
+  `k on`; what it wrote back in the saved slot after it ends, the copy gone, still one saved session; and, with the
+  Android SDK's apksigner and keytool, the test APK signed with a key of the check's own saved after a Write, a newer
+  build of it (one asset more, same key) sent by the tab and starting on a copy with the saved data, its copy erased
+  and the saved sessions unchanged, and refused: that build with a ZIP comment added after signing (its certificate
+  kept), signed by another key, and on the debug-signed saved session). `ApkSigners` also checked by hand against
+  apksigner on v1-, v2- and v3-signed copies, and with a byte flipped in each (refused).
 
 ## A Linux agent: scope (2026-11-08, not started)
 

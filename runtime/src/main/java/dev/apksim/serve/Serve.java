@@ -963,10 +963,13 @@ public final class Serve {
         if (reopenedRec.get(k) instanceof String v && !v.isEmpty()) options.putIfAbsent(k, v);
       }
     }
+    // A size a Fill tab gave the session it was saved from (`WxH@D`): within the bounds a beam tab's `device` command has.
+    boolean savedSize = reopenedRec != null && options.get("device") != null && options.get("device").equals(reopenedRec.get("device"))
+        && Session.checkBeam("device " + options.get("device")) != null;
     // Only a device this server names (built in, --device-size, or the app's own default), never a client's own string;
     // anything else, or none, is the app's default device, else the phone.
     String device = options.get("device");
-    if (device != null && !Session.deviceAllowed(this, app, device)) options.remove("device");
+    if (device != null && !savedSize && !Session.deviceAllowed(this, app, device)) options.remove("device");
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
@@ -1150,7 +1153,7 @@ public final class Serve {
       } catch (java.nio.channels.OverlappingFileLockException e) {
         throw new IOException("it is in use on this Mac");
       }
-      if (shared == null) throw new IOException("it is being forgotten");
+      if (shared == null) throw new IOException("it is busy (being forgotten, or a tab's session is being put back into it): try again");
       if (own == null) throw new IOException("it is open on this Mac (apksim beam run): quit it first");
       try (OutputStream f = new java.io.BufferedOutputStream(Files.newOutputStream(zip, java.nio.file.StandardOpenOption.CREATE_NEW))) {
         SlotPack.pack(state, slot, pkg, f);
@@ -1478,7 +1481,9 @@ public final class Serve {
       ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
       from = body.get("url") instanceof String u && u.length() <= 2000 ? u : null;
       source = body.get("source") instanceof String u && u.length() <= 4000 ? u : null;
-      data = body.get("data") instanceof Map<?, ?> d && d.get("ticket") instanceof String dt && dt.length() <= 300
+      // A ticket as the server mints them (BeamTicket: letters, digits, '.', '_', '-'): nothing else, so a site's ticket
+      // can never be read as the agent's own marker for saved data ("@saved ID", "@from ID") once it rides in a grant.
+      data = body.get("data") instanceof Map<?, ?> d && d.get("ticket") instanceof String dt && dt.matches("[A-Za-z0-9._-]{1,300}")
           && d.get("url") instanceof String du && du.length() <= 2000 && !du.contains(" ") ? dt + " " + du : null;
       // Issue 181: a saved session reopened (`saved`), or a build started on a copy of one's data (`dataFrom`).
       for (String k : List.of("saved", "dataFrom")) {
