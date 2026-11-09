@@ -110,6 +110,7 @@ public class Host {
   public void run() throws Exception {
     current = this;
     Timing.mark("framework-ready");
+    AdbServer.frameworkReady();
     SimWindow.boostThread();
     RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
     DeviceControls.applyLaunchOptions();
