@@ -194,7 +194,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
 | | `--shot FILE` | Save a screenshot of the first frame |
 | | `--exit-after-first-frame` | Quit once the first frame is shown (benchmarks, smoke tests) |
-| | `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes (`--rec-window SECONDS`) of input, logcat, network, SQLite calls and the screen, with checkpoints to start a replay from, saved as one shareable `.apkrec` file by `rec save`, File > Save Replay, or by itself when the app crashes ([docs/flight-recorder.md](docs/flight-recorder.md)) |
+| | `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes (`--rec-window SECONDS`) of input, logcat, network, SQLite calls and the screen, with checkpoints to start a replay from, saved as one shareable `.apkrec` file by `rec save`, File > Save Replay, or by itself when the app crashes. `scripts/replay-adb.py FILE.apkrec -s SERIAL --yes` plays one on a device over adb, to tell an app bug from a simulator one. It replaces the app's data, `/sdcard` files and Settings values on that device (hence `--yes`; the app's current data is backed up first), so look at the plan with `--dry-run` before ([docs/flight-recorder.md](docs/flight-recorder.md)) |
 | Testing | `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
 | | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
 | | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
@@ -314,7 +314,9 @@ For people without Android tools: each tab runs the APK in its own instance on t
 (JPEG frames, sent only when the screen changes); clicks, drags, the wheel and the keyboard go back as touches and
 keys. Back, Home, rotation, dark mode, device type, text size, locale and deep links are buttons, and "Copy link"
 gives a URL that opens the same app in the same settings. A page that drives the stream itself can also mute audio,
-blank video and change animation speed in a running session (`audio`, `video`, `animscale`; docs/serve.md). On a Mac a session's first frame comes in 0.2-0.4 s, a tap
+blank video and change animation speed in a running session (`audio`, `video`, `animscale`; docs/serve.md), push a
+file into the app's storage (`POST /api/sessions/ID/files?path=`), and, when the server runs with `--allow-rec`, save
+a flight recording and download it. On a Mac a session's first frame comes in 0.2-0.4 s, a tap
 shows in ~30 ms on the same machine, and animations stream at up to 120 fps. Loopback only unless a token is set;
 sessions end when the tab closes or after 10 minutes idle, and their app data is erased. See
 [docs/serve.md](docs/serve.md).
@@ -367,7 +369,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.21.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.22.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -416,9 +418,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.21.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.22.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.21.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.22.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
