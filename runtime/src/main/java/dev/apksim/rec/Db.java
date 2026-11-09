@@ -91,6 +91,10 @@ public final class Db {
         j = j < 0 ? n : j + 1;
         b.append(sql, i, j);
         i = j;
+      } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+        int j = sql.indexOf("*/", i + 2);
+        b.append("/*…*/");  // to the end of the SQL when not closed
+        i = j < 0 ? n : j + 2;
       } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
         int j = sql.indexOf('\n', i);
         j = j < 0 ? n : j;

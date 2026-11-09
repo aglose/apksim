@@ -510,6 +510,11 @@ public final class Net {
    */
   private static Socket startedMeanwhile(Socket s) throws IOException {
     if (!active) return s;
+    // What the layer leaves alone stays: loopback and bypassed addresses (as tracked() and closeDirect do).
+    if (!(s.getRemoteSocketAddress() instanceof InetSocketAddress a) || bypass(a) || a.getAddress() == null
+        || a.getAddress().isLoopbackAddress() || a.getAddress().isAnyLocalAddress()) {
+      return s;
+    }
     direct.remove(s);
     s.close();
     throw new ConnectException("connection reset: the network layer started while connecting");
