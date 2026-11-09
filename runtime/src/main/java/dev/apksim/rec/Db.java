@@ -52,7 +52,8 @@ public final class Db {
     if (sql != null) m.put("sql", Rec.dbValues ? sql : literalsOut(sql));
     if (args != null) m.put("args", args);
     m.put("us", us);
-    if (error != null) m.put("error", error.toString());
+    // SQLite's messages quote the SQL ("... while compiling: INSERT ... 'value'"): its literals go too.
+    if (error != null) m.put("error", Rec.dbValues ? error.toString() : literalsOut(error.toString()));
     else if (result instanceof Cursor) m.put("result", "cursor");
     else if (result instanceof Number && !op.equals("simpleQueryForLong")) m.put("result", result);
     else if (result != null && Rec.dbValues) m.put("result", String.valueOf(result));

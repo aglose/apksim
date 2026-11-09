@@ -255,7 +255,18 @@ final class Recording {
   synchronized java.util.function.Supplier<String> harLater(java.util.function.LongPredicate keep) {
     List<Entry> some = new ArrayList<>();
     for (Entry e : entries) if (keep.test(e.wallMs)) some.add(e);
-    Map<String, List<String>> certs = new LinkedHashMap<>(certificates);
+    // Only the certificates of the hosts these exchanges went to, not every host the app has reached.
+    Map<String, List<String>> certs = new LinkedHashMap<>();
+    for (Entry e : some) {
+      try {
+        String host = URI.create(e.url).getHost();
+        if (host != null && certificates.containsKey(host.toLowerCase(Locale.ROOT))) {
+          certs.put(host.toLowerCase(Locale.ROOT), certificates.get(host.toLowerCase(Locale.ROOT)));
+        }
+      } catch (IllegalArgumentException x) {
+        // no host to match
+      }
+    }
     return () -> Json.write(harRoot(some, certs));
   }
 
