@@ -828,6 +828,12 @@ final class Session {
       ws.sendText("r refused: " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       return;
     }
+    if (cmd.equals("animscale toggle")) {
+      // As DeviceControls does: slow (10) unless already slower than normal; sent as a number so the recorded choice matches.
+      float cur = 1f;
+      try { cur = Float.parseFloat(options.getOrDefault("animscale", "1")); } catch (NumberFormatException e) { /* normal */ }
+      cmd = cur > 1f ? "animscale 1" : "animscale 10";
+    }
     // The tab's pace and its visibility are not someone using it.
     if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
     trackSetting(cmd);
@@ -893,9 +899,7 @@ final class Session {
     } else if (cmd.startsWith("audio ") || cmd.startsWith("video ")) {
       options.put(cmd.substring(0, 5), cmd.substring(6));
     } else if (cmd.startsWith("animscale ")) {
-      String v = cmd.substring(10);
-      if (v.equals("toggle")) v = "0".equals(options.get("animscale")) ? "1" : "0";
-      options.put("animscale", v);
+      options.put("animscale", cmd.substring(10));
     }
   }
 
