@@ -761,9 +761,21 @@ First review:
   and the app starts there with what it had saved. Past the ticket's life it starts without it, and says so.
   A move from the Mac to the server never takes data (the agent offers no handoff: what a site's app wrote on the
   visitor's Mac stays there).
+- **Behind a sign-in** (issue 173, protocol 2): as for the APK in phase 2, the agent's own download of the pack fails
+  behind a single sign-on proxy (a 401/403 or a redirect, which it does not follow). To a page in protocol 2 the start
+  (or the APK upload after `need: upload`) then answers `{"need": "data", "dataUpload", "dataWhy"}` (with `via` when the
+  build came in that start), and the tab fetches `api/beam/data?ticket=T` with its own credentials and posts it to
+  `POST /beam/upload-data?upload=G`, which answers the session grant with `data: true`. The pack goes through every
+  check a downloaded one does (at most 1 GB, the `package` entry, the build's own package, the unpack's limits); the
+  grant is one origin's, used once, and holds the build for the agent's sweep until then. A page in protocol 1 would
+  read that answer as a grant, so it still gets the 502. If the tab cannot fetch the pack either, the move fails as
+  any other (the page restores it on the server).
 - **Checked**: `beam-check.py` (data part: Write on the server's slot screen, `handoff` answers a ticket and the
   server's session ends, an altered ticket brings nothing, the agent's session starts with `setting=written` and
-  `sdcard=written` at app start in a `bm` slot of its own, erased when the session ends) and `beam-move-check.py`
+  `sdcard=written` at app start in a `bm` slot of its own, erased when the session ends; behind a stand-in sign-in
+  (401), a protocol 1 start still refused, a protocol 2 one asking the tab for the APK and then the data, a data grant
+  refused for another site and used once, a pack that is not one refused, and the app starting with the data the tab
+  sent) and `beam-move-check.py`
   (Chrome: the same through the page's menu, nothing covering the canvas, then back to the server; and with the
   agent's one session taken by another tab, a move with data refused after the hand-off, the app back on the server
   with what it had saved). `beam-check.py` also restores a hand-off on the server directly and checks a pack is used
@@ -808,10 +820,56 @@ months apart in either direction.
   the old one is dropped); `MIN_PROTOCOL` is raised only once no release that far back still serves pages, keeping at
   least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
   know.
+- **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
+  built"). Releases after 0.19.1 speak 1-2.
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
   (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
   app on the server).
+
+## Beam client protocol
+
+What a page that starts sessions on the visitor's Mac does, for a page that draws the stream itself (an embedding
+dashboard with its own canvas: serve.html refuses framing). serve.html is one implementation (`beamSetup`,
+`macGrant`, `moveSession`); this is the supported surface, and a change to it raises the protocol ("Versions").
+`SERVER` is serve's page address (its folder, under any `--base-path` or proxy prefix), `AGENT` is
+`http://127.0.0.1:PORT`. Every request to the agent carries the page's `Origin` (a browser sets it); its answers are
+readable by any origin. Requests to the server carry its token as everything else (cookie, `?token=` or
+`Authorization: Bearer`), except the two ticket downloads.
+
+1. **Is beam offered?** `GET SERVER/api/beam` → `{"port", "protocol", "minProtocol"}` (404: not offered). Chrome needs
+   the `loopback-network` permission for `AGENT`: ask `/beam/hello` only once it is granted or the visitor chose the
+   Mac, as the browser prompts on that request.
+2. **Is there an agent, and which protocol?** `GET AGENT/beam/hello` → `{"apksim", "protocol", "minProtocol",
+   "trusted"}`. Use `P = min(page's protocol, agent's protocol)` if it is at least both minimums; else stay on the
+   server and say which side to update. `trusted`: this origin will not be prompted.
+3. **The app's build.** `GET SERVER/api/apps/ID/beam` → `{"id", "name", "size", "sha256", "options", "ticket",
+   "ticketSeconds"}` (409 while an added app still downloads).
+4. **A grant.** `POST AGENT/beam/start` with JSON `{"protocol": P, "sha256", "name", "size", "options", "ticket",
+   "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
+   (step 7). The agent may first prompt its owner (up to 2.5 minutes: keep the request open). Answers:
+   - `{"app", "token", "via"}` (`via`: `cache` or `download`; `"data": true` when it took the data): go to step 5.
+   - `{"need": "upload", "upload": G, "why"?}`: the agent could not get the build itself. Fetch
+     `SERVER/api/apps/ID/apk` (with the token) and `POST AGENT/beam/upload?upload=G` with it as the body. The answer is
+     again one of these (a grant, or `need: data`).
+   - `{"need": "data", "dataUpload": D, "dataWhy", "via"?}` (protocol 2): the agent could not get the data itself.
+     Fetch `SERVER/api/beam/data?ticket=T` (the data ticket from step 7, with the page's own credentials) and `POST
+     AGENT/beam/upload-data?upload=D` with it as the body; the answer is the grant, with `"data": true`.
+   - Errors are plain text: 403 (this origin refused by the Mac's owner, or a grant not this origin's or used), 409
+     (protocol: which side to update), 413 (too large), 400 (a bad body or an upload that does not match), 502 (in
+     protocol 1, the data could not be taken). Each grant lasts 2 minutes and is used once.
+5. **The session.** `ws://127.0.0.1:PORT/ws?app=APP&token=TOKEN&protocol=P` plus the same session parameters as
+   serve's own `/ws` (device, appearance, locale, fontscale, open, codec...): the stream and input protocol are serve's
+   (docs/serve.md, "Stream" and "Input"), byte for byte. An upgrade refused with 409 (protocol) leaves the grant
+   usable; one refused with 403 (no such grant) does not.
+6. **Moving a running session** (phase 4): open the other side's session beside the running one, keep drawing and
+   sending input to the old one, and switch on the new side's first frame (a keyframe), replaying its text messages
+   (`i`, `c`, ...); an `x` or a close before it abandons the move.
+7. **With its data** (phase 5, server to Mac only): send `handoff` on the server session's WebSocket. It answers
+   `h {"ticket", "size", "skipped"?}` (the app quit and its data was packed; the server's session then ends) or
+   `h {"error"}` (with no data slot yet the session runs on; any other error ends it). Then step 4 with `data`. If
+   the Mac does not take it, open the server's session again with `&restore=TICKET`: an `r` line says whether the data
+   came back (the pack is kept until the ticket expires, 5 minutes, and used once).
 
 ## A Linux agent: scope (2026-11-08, not started)
 

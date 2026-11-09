@@ -10,7 +10,8 @@ It moves back the same way; a move the agent refuses (all its sessions in use) l
 agent killed mid-session the page offers the server, which runs it. A serve with --allow-beam and an agent on loopback
 ports, Chrome with a fresh profile; the page's origin is allowed for the run and revoked after. Those moves are live
 ones ("With its data" off); then one with it (phase 5): the server's app writes on the test app's slot screen, the
-move takes the data, and the app on this Mac starts with it.
+move takes the data, and the app on this Mac starts with it. Last, the same move with the page served through a
+stand-in for a single sign-on proxy (issue 173): the agent cannot download the data itself, so the tab sends it.
 """
 import importlib.util
 import json
@@ -19,7 +20,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import socket
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -58,6 +61,56 @@ def up(port, path):
         return False
 
 
+def sso_proxy(upstream):
+    """A stand-in for a single sign-on proxy in front of serve: a connection whose first request lacks its cookie gets
+    a 401 (the visitor's agent has no cookie; the browser, signed in, has), one with it is piped to serve, WebSockets
+    included. Returns the listening socket."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(64)
+
+    def pipe(a, b):
+        try:
+            while d := a.recv(65536):
+                b.sendall(d)
+        except OSError:
+            pass
+        for x in (a, b):
+            try:
+                x.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def handle(c):
+        head = b""
+        while b"\r\n\r\n" not in head:
+            d = c.recv(65536)
+            if not d:
+                c.close()
+                return
+            head += d
+        lines = head.split(b"\r\n\r\n")[0].decode("latin-1").lower().split("\r\n")
+        if not any(x.startswith("cookie:") and "sso=1" in x for x in lines):
+            c.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Type: text/html\r\nContent-Length: 20\r\nConnection: close\r\n\r\n"
+                      b"<html>sign in</html>")
+            c.close()
+            return
+        u = socket.create_connection(("127.0.0.1", upstream))
+        u.sendall(head)
+        threading.Thread(target=pipe, args=(u, c), daemon=True).start()
+        pipe(c, u)
+
+    def accept():
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=handle, args=(c,), daemon=True).start()
+    threading.Thread(target=accept, daemon=True).start()
+    return srv
+
+
 def main():
     apk = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(ROOT, "work/testapp.apk")
     apksim = os.path.join(ROOT, "apksim")
@@ -71,6 +124,9 @@ def main():
     agent = subprocess.Popen([apksim, "beam", "--port", str(gp), "--max", "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
     procs = [server, agent]
+    proxy = sso_proxy(sp)
+    sso = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+    subprocess.run([apksim, "beam", "trust", "allow", sso], capture_output=True, check=True)
 
     def status():
         return len(json.load(urllib.request.urlopen(url + "/api/status"))["sessions"])
@@ -201,6 +257,42 @@ def main():
         done, *_ = moved("server")
         check(done, "moved back to the server")
 
+        # Behind a sign-in (issue 173): the page through the stand-in proxy, signed in (its cookie); the agent's own
+        # download of the data gets the proxy's 401, so the tab fetches the pack and sends it, and the app on this Mac
+        # starts with it. The agent has the build already (found by its hash).
+        cdp.call("Browser.grantPermissions", {"permissions": ["loopbackNetwork"], "origin": sso})
+        t3 = cdp.call("Target.createTarget", {"url": "about:blank"})
+        s3 = cdp.call("Target.attachToTarget", {"targetId": t3["targetId"], "flatten": True})["sessionId"]
+        cdp.call("Page.navigate", {"url": sso + "/"}, s3)
+        time.sleep(1)
+        cdp.ev(s3, 'document.cookie = "sso=1; path=/"; 1')  # "signing in"
+        try:
+            cdp.call("Page.navigate", {"url": f"{sso}/?app={app}"}, s3)
+            until(lambda: cdp.ev(s3, '!document.getElementById("runOn").hidden'), 20)
+        except RuntimeError:
+            pass
+        cdp.ev(s3, 'document.getElementById("stop").click(); document.getElementById("runOn").value = "server"; pref("server"); start(); 1')
+        check(until(lambda: cdp.ev(s3, "window.apksimStats().frames > 0 && !ws.onMac"), 40), "behind a sign-in: a session on the server, through it")
+        cdp.ev(s3, 'document.getElementById("url").value = "apksim://slot"; document.getElementById("go").click(); 1')
+        time.sleep(3)
+        cdp.ev(s3, 'send("touch down 130 536"); send("touch up 130 536"); 1')  # Write
+        time.sleep(1.5)
+        cdp.ev(s3, 'document.getElementById("moveData").checked = true; window.__logFrom = document.getElementById("log").textContent.length; '
+                   'document.getElementById("runOn").value = "mac"; document.getElementById("runOn").onchange(); 1')
+        done = until(lambda: "moved to this Mac" in cdp.ev(s3, 'document.getElementById("log").textContent.slice(window.__logFrom)'), 60)
+        tail = cdp.ev(s3, 'document.getElementById("log").textContent.slice(window.__logFrom)')
+        check(done and "this tab sends it" in tail and "could not move" not in tail and "without" not in tail,
+              "  moved to this Mac with its data, the tab sending it (" + tail.replace("\n", " | ")[-220:] + ")")
+        port, _ = bp.session_port(cdp, s3, bp.state_dir())
+        ctl = bp.Control(port)
+        seen = until(lambda: next((x for x in ctl("nodes").split(";") if "at app start" in x), None), 20) or ""
+        ctl.close()
+        check("setting=written" in seen and "sdcard=written" in seen, f"  the app here started with what it wrote on the server ({seen.strip()[:90]})")
+        cdp.ev(s3, 'document.getElementById("stop").click(); 1')
+        cdp.call("Target.closeTarget", {"targetId": t3["targetId"]})
+        cdp.call("Page.bringToFront", {}, s)
+        time.sleep(6)  # the agent's one place is free once that session's instance has gone
+
         # The agent killed mid-session: the page offers the server.
         done, *_ = moved("mac")
         check(done, "moved to this Mac again")
@@ -221,7 +313,9 @@ def main():
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.wait(10)
+        proxy.close()
         subprocess.run([apksim, "beam", "trust", "revoke", url], capture_output=True)
+        subprocess.run([apksim, "beam", "trust", "revoke", sso], capture_output=True)
         shutil.rmtree(prof, ignore_errors=True)
     print("beam move check", "passed" if OK else "FAILED")
     sys.exit(0 if OK else 1)

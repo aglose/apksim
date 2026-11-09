@@ -339,6 +339,9 @@ lets token holders, and the agents they hand a ticket to, download the APKs they
 Mac also offers "Fill the page" (the display sized to the stage at the browser's pixel ratio) and "Show in
 Simulator", which only the agent accepts (docs/beam.md, phase 3). Changing where the app runs during a session moves
 it: the other side starts beside it and takes over on its first frame, with no blank frame between (phase 4).
+With "With its data" the move takes the app's data too (phase 5), relayed by the tab when the visitor's agent cannot
+download it itself (a sign-in in front of the server). A page that draws the stream itself follows docs/beam.md,
+"Beam client protocol".
 
 ### Not in scope (yet)
 

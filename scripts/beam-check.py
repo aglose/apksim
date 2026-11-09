@@ -428,12 +428,28 @@ def data_checks(apksim, apk, sha, size):
     """Phase 5 (docs/beam.md): a session's data moved from the server to this Mac, in a state folder, server and agent
     of their own. On the test app's slot screen the server's session writes a setting and an /sdcard file; its socket's
     `handoff` packs them (the app quit first) and answers a data ticket; the agent's start with it runs the app in a slot
-    it unpacked them into, where the app sees them at its start."""
+    it unpacked them into, where the app sees them at its start. Behind a stand-in for single sign-on (issue 173) the
+    agent can download neither the APK nor the data: the tab sends both."""
+    import http.server
+    import threading
     state = tempfile.mkdtemp(prefix="beam-check-data-")
     env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
     sp, gp = free_port(), free_port()
     S = f"http://127.0.0.1:{sp}"
     procs = []
+
+    class SignIn(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html>sign in</html>")
+
+        def log_message(self, *a):
+            pass
+    proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SignIn)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    P = f"http://127.0.0.1:{proxy.server_address[1]}"
 
     def ws_session(port, path, origin):
         w = WS(f"http://127.0.0.1:{port}", path, {"Origin": origin})
@@ -505,6 +521,56 @@ def data_checks(apksim, apk, sha, size):
         until(lambda: not alive(pid), 20)
         check(until(lambda: all(not os.listdir(d) or os.listdir(d) == [".lock"] for d in seeded), 15), "data: which is erased when its session ends")
 
+        # Behind a sign-in the agent cannot pass (issue 173): a protocol 1 page still gets the 502 it understands; in
+        # protocol 2 the agent asks the tab for the APK, then for the data, which the tab fetched with its own
+        # credentials (here: straight from the server), and the app starts with it.
+        for f in glob.glob(os.path.join(state, "beam", "uploads", "*")):
+            os.remove(f)  # the agent has no build again
+        sso = dict(start, url=P + "/api/beam/apk", data={"ticket": h.get("ticket"), "url": P + "/api/beam/data"})
+        st, _, body = req(gp, "POST", "/beam/start", P, sso)
+        g = json.loads(body) if st == 200 else {}
+        st, _, body = req(gp, "POST", f"/beam/upload?upload={g.get('upload')}", P, open(apk, "rb").read())
+        check(g.get("need") == "upload" and st == 502 and b"did not reach" in body,
+              f"sign-in: in protocol 1 the data the agent cannot download still refuses the start ({st}, {body[:60]!r})")
+        for f in glob.glob(os.path.join(state, "beam", "uploads", "*")):
+            os.remove(f)
+        st, _, body = req(gp, "POST", "/beam/start", P, dict(sso, protocol=2))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "upload" and "401" in g.get("why", ""), f"sign-in: in protocol 2 the agent asks the tab for the APK ({g.get('why')})")
+        st, _, body = req(gp, "POST", f"/beam/upload?upload={g.get('upload')}", P, open(apk, "rb").read())
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "data" and "401" in g.get("dataWhy", "") and "token" not in g,
+              f"sign-in: then for the data ({st}, {g.get('dataWhy')})")
+        up = g.get("dataUpload", "")
+        st, _, pack = req(sp, "GET", f"/api/beam/data?ticket={urllib.parse.quote(h.get('ticket', ''))}")
+        check(st == 200 and pack[:2] == b"PK", f"sign-in: the tab fetches the pack ({st}, {len(pack)} bytes)")
+        check(req(gp, "POST", f"/beam/upload-data?upload={up}", S, pack)[0] == 403, "sign-in: a data upload grant does not work for another site")
+        # That refusal used the grant up (as for the APK's): start again, here with the build already on this Mac.
+        st, _, body = req(gp, "POST", "/beam/start", P, dict(sso, protocol=2))
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("need") == "data" and g.get("via") == "cache", f"sign-in: a start with the build here asks only for the data ({g})")
+        st, _, body = req(gp, "POST", f"/beam/upload-data?upload={g.get('dataUpload')}", P, b"not a zip")
+        check(st == 400 and b"refused" in body, f"sign-in: a pack that is not one is refused ({body[:70]!r})")
+        st, _, body = req(gp, "POST", "/beam/start", P, dict(sso, protocol=2))
+        up = json.loads(body).get("dataUpload", "") if st == 200 else ""
+        st, _, body = req(gp, "POST", f"/beam/upload-data?upload={up}", P, pack)
+        g = json.loads(body) if st == 200 else {}
+        check(g.get("data") is True and "token" in g, f"sign-in: the tab's pack starts the session with its data ({st}, {body[:60]!r})")
+        check(req(gp, "POST", f"/beam/upload-data?upload={up}", P, pack)[0] == 403, "sign-in: a data upload grant is used once")
+        mac = ws_session(gp, f"/ws?app={g.get('app')}&token={g.get('token')}{slot_link}", P)
+        mac.pump(3, until=lambda: mac.stats.get("pid", 0) > 0)
+        seen = ""
+        for _ in range(20):
+            seen = nodes(state, mac.stats.get("pid", 0))
+            if "at app start" in seen:
+                break
+            time.sleep(1)
+        check("at app start: setting=written" in seen and "sdcard=written" in seen,
+              f"sign-in: on this Mac the app starts with the data the tab sent ({[x for x in seen.split(';') if 'app start' in x][:1]})")
+        pid = mac.stats.get("pid", 0)
+        mac.ws.s.close()
+        until(lambda: not alive(pid), 20)
+
         # A move the Mac cannot take after the hand-off: the tab opens the server's session again with the hand-off's
         # ticket, and the app starts there with what it had saved; the pack is used once.
         srv = ws_session(sp, f"/ws?app={app}{slot_link}", S)
@@ -539,6 +605,7 @@ def data_checks(apksim, apk, sha, size):
         check(any("could not restore" in t and "gone" in t for t in said), f"restore: a pack is used once ({said[:1]})")
         again.ws.s.close()
     finally:
+        proxy.shutdown()
         for p in procs:
             p.terminate()
         for p in procs:
@@ -673,7 +740,7 @@ def main():
         g = agent(apksim, gp, "deny")
         st, h, body = req(gp, "GET", "/beam/hello", A)
         hello = json.loads(body)
-        check(st == 200 and hello.get("protocol") == 1 and hello.get("trusted") is False, f"agent: hello ({body!r})")
+        check(st == 200 and hello.get("protocol") == 2 and hello.get("trusted") is False, f"agent: hello ({body!r})")
         check(h.get("access-control-allow-origin") == A, "agent: any page may read its hello")
         st, h, _ = req(gp, "OPTIONS", "/beam/start", A, headers={"Access-Control-Request-Method": "POST",
                                                                   "Access-Control-Request-Private-Network": "true"})
