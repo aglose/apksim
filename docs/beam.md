@@ -1087,6 +1087,38 @@ that catches the refusal and runs without the library now gets it loaded, moved.
 appears for the test app (whose `libpagefixturenorelro.so` is such a library), that the session then streams, and
 that `run` of its kept session adds the flag too.
 
+## Moving a session to a device (2026-11-09, issue 191)
+
+`apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install replace|skip] [--yes] [--dry-run]`
+(`serve/DeviceHandoff.java`) carries a saved session on to a real device over `adb`, so the app there carries on from the
+session's state rather than the device's own:
+
+1. **Build.** The device's base APK is pulled and compared with the session's by hash. If they differ, the signers
+   (`ApkSigners`) must match, or it stops: replacing a build signed by another key means uninstalling it, which erases the
+   device's data. `--install replace` runs `install -r -d`; the default `skip` leaves the device's build alone. A package
+   that is not installed needs `--install replace`.
+2. **Data** (`--data`). `run-as PKG` (a debuggable build) writes: the app is stopped, the device's data folder is saved to
+   `STATE/beam/device-backup/<serial>-<time>-<random>.tar` (a tar, not a zip: it comes straight from the device's `tar` and goes back
+   the same way, and the command prints how), cleared (the system's `lib` link stays), and the slot written over it (its
+   `.lock` left out). Files made through `run-as` belong to the app's uid and take the folder's label; `restorecon` runs
+   where it is allowed. A build that is not debuggable stops before anything is cleared; `adb root` on a userdebug device
+   is not supported yet.
+3. **Settings** (`--settings`). `ns/key,...` or `all`, from the slot's `settings.properties` and the session's `--setting`
+   options. Identity keys (`secure/android_id`, `global/device_id`, the device name, Bluetooth address, adb and developer
+   switches) are never put, even when named, and the device controls (font scale, animation scale, Bluetooth) are left to
+   their own handling. Each old value is read first and, with the data restore and the old appearance, font scale and locale, saved in `<serial>-<time>-<random>-undo.sh` before anything is changed; `sh` it to put everything back (the app is stopped and its data cleared first).
+4. **Launch options.** Appearance (`cmd uimode night`), font scale and locale (`cmd locale set-app-locales`, Android 13) are
+   applied, the app is force-stopped and its `--activity` (else its launcher activity) started. Said as not carried over:
+   the device size, in-memory state, the back stack, network state, `/sdcard` files.
+
+It asks before overwriting (`--yes` skips the question; with no terminal it refuses without it), `--dry-run` only prints the
+plan, and it holds the saved session and its slot lock while it reads it (so `beam run` is not writing it and `forget` cannot take it), packing the slot to a temporary file before the device is touched. The device is the only attached one or named with
+`-s`. `scripts/beam-device-check.py` runs it against a stand-in `adb` (backup before clear, quoting, identity keys,
+refusals); a real device is not part of it.
+
+Not done: the same for a plain instance (a `handoff adb SERIAL` control command) and a "Move to device" item in the page's
+menu; both would call this code.
+
 ## Measurements to keep (as serve's table)
 
 Click to first local frame (warm standby, cold standby, first launch of an APK); cutover gap in frames; tap to frame

@@ -352,15 +352,27 @@ jobs:
   startup-gate:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: macos-15  # Apple Silicon: warm launches (standbys) and the startup cache are Mac-only
+    # Apple Silicon: warm launches (standbys) and the startup cache are Mac-only. GitHub's macos-15 by default; the
+    # repository variable STARTUP_GATE_RUNNER (JSON: a label or a list of labels, e.g. ["self-hosted","macOS","ARM64"])
+    # sends it to a self-hosted Mac instead, for pushes, manual runs and pull requests from this repository's own
+    # branches; a fork's pull request gets GitHub's runner. That is only routing: a fork can rewrite this file, so
+    # what keeps its code off the Mac is the runner's own job-started hook (scripts/runner-job-started.sh).
+    # Delete the variable when that Mac is off, or the job waits for it (docs/startup-gate.md, "A self-hosted Mac").
+    runs-on: ${{ fromJSON((vars.STARTUP_GATE_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.STARTUP_GATE_RUNNER || '"macos-15"') }}
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-      # Spotlight indexes what the build writes and competes with the launches being timed.
+      # Spotlight indexes what the build writes and competes with the launches being timed. Not on a self-hosted Mac:
+      # that is the owner's setting, and sudo there would need a password.
       - name: Quiet the runner
-        run: sudo mdutil -a -i off || true
+        if: runner.environment == 'github-hosted'
+        run: sudo -n mdutil -a -i off || true
+      # A self-hosted Mac must not sleep mid-run (the runner kills this with the job's other leftover processes).
+      - name: Keep the Mac awake
+        if: runner.environment == 'self-hosted'
+        run: nohup caffeinate -dims -t 3600 >/dev/null 2>&1 &
       - name: Fetch the anchor release
         env:
           ANCHOR_INPUT: ${{ inputs.startup_anchor }}
@@ -395,6 +407,13 @@ jobs:
           python3 scripts/startup-gate.py --base "$ANCHOR_DIR" --base-home "$RUNNER_TEMP/state-anchor" \
             --head "$HEAD_DIR" --head-home "$RUNNER_TEMP/state-head" --apk "$BENCH_APK" --base-name "$ANCHOR" \
             --head-name "${GITHUB_SHA::7}" --json startup-gate.json --summary "$GITHUB_STEP_SUMMARY"
+      # The gate stops its standbys itself; a cancelled or failed run may not have. A self-hosted Mac keeps running
+      # after the job, and a standby would idle there for an hour.
+      - name: Stop standbys
+        if: always()
+        run: |
+          [ -z "$ANCHOR_DIR" ] || APKSIM_HOME="$RUNNER_TEMP/state-anchor" "$ANCHOR_DIR/apksim" --stop-standbys || true
+          [ -z "$HEAD_DIR" ] || APKSIM_HOME="$RUNNER_TEMP/state-head" "$HEAD_DIR/apksim" --stop-standbys || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
