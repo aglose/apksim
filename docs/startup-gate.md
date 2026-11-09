@@ -123,7 +123,9 @@ account's repository has no runner groups to restrict a runner to a workflow, so
 anything a pull request can change: `scripts/runner-job-started.sh`, installed as the runner's job-started hook, fails
 every job before its first step unless it is `ci.yml`'s `startup-gate` of this repository for a push, a manual run, or
 a pull request whose head branch is in this repository (read from GitHub's event payload, which a fork cannot change).
-A fork's job that targets the Mac then fails rather than running there. Keep "Require approval for all external
+The runner runs the hook as a step of the job, and a failed step only fails the job: a later step with `if: always()`
+or `failure()` would still run. So the hook does not just exit non-zero: it kills the job's `Runner.Worker`, and the
+runner reports the job failed before any of its steps have run. Keep "Require approval for all external
 contributors" on (Settings → Actions → General) as well, and read a fork's workflow changes before approving a run.
 
 Setting the Mac up, once:
@@ -131,12 +133,14 @@ Setting the Mac up, once:
 - A standard (not admin) macOS user of its own for the runner, holding none of the owner's files, keys or notes: a job
   runs as that user. Its session must stay logged in (fast user switching) for the runner's LaunchAgent to run.
 - As that user: Settings → Actions → Runners → New self-hosted runner → macOS, ARM64, and follow its commands
-  (`config.sh` with the registration token it shows; the default labels are the ones above), then `./svc.sh install`
-  and `./svc.sh start`.
-- The job-started hook, before the runner takes any job: copy `scripts/runner-job-started.sh` outside the runner's
-  folder (`~/actions-runner-hooks/job-started.sh`; a job must not be able to rewrite it), add
-  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/USER/actions-runner-hooks/job-started.sh` to the runner's `.env`, and restart
-  it (`./svc.sh stop`, `./svc.sh start`). A job's log then starts with "self-hosted runner hook: ... allowed".
+  (`config.sh` with the registration token it shows; the default labels are the ones above), but do not run `run.sh`
+  or start the service yet: a runner that is up takes any job queued for its labels, and without the hook nothing
+  refuses one.
+- The job-started hook: copy `scripts/runner-job-started.sh` outside the runner's folder
+  (`~/actions-runner-hooks/job-started.sh`; a job must not be able to rewrite it) and add
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/USER/actions-runner-hooks/job-started.sh` to the runner's `.env`.
+- Only then `./svc.sh install` and `./svc.sh start`. A job's log starts with "self-hosted runner hook: ... allowed";
+  a refused one ends right there, failed. After changing `.env` later, restart it (`./svc.sh stop`, `./svc.sh start`).
 - The job needs the Xcode command-line tools (system-wide), `python3` and `gh` on the runner's
   `PATH` (`config.sh` records the `PATH` it was run with in `.path`: include `/opt/homebrew/bin`).
 - On power, the Mac must not sleep: System Settings → Battery → Options → "Prevent automatic sleeping on power adapter
