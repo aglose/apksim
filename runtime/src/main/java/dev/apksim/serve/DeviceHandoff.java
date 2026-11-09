@@ -357,6 +357,7 @@ final class DeviceHandoff {
     }
 
     Path tarOut = null;
+    java.nio.channels.FileChannel deviceLock = null;
     try (BeamStore.SavedHold held = store.hold(o.id(), false)) {
       if (held == null) {
         System.err.println("apksim beam to-device: " + o.id() + " is busy (being forgotten, or put back into): try again");
@@ -401,6 +402,27 @@ final class DeviceHandoff {
       }
       // What the device has now, before anything is written, kept in a script that puts it back.
       Files.createDirectories(backups, PRIVATE_DIR);
+      // One handoff at a time per device (any session, any process): two would mix their data, and the second's "old"
+      // values and backup would be the first's half-written state.
+      Path lockFile = backups.resolve(serial.replace(':', '_') + ".lock");
+      if (!Files.exists(lockFile)) {
+        try {
+          Files.createFile(lockFile, PRIVATE_FILE);
+        } catch (java.nio.file.FileAlreadyExistsException e) {
+          // made meanwhile
+        }
+      }
+      deviceLock = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
+      java.nio.channels.FileLock dl;
+      try {
+        dl = deviceLock.tryLock();
+      } catch (java.nio.channels.OverlappingFileLockException e) {
+        dl = null;
+      }
+      if (dl == null) {
+        System.err.println("apksim beam to-device: another handoff to " + serial + " is running; nothing changed");
+        return 1;
+      }
       Path undo = backups.resolve(backupName + "-undo.sh");
       StringBuilder script = new StringBuilder("#!/bin/sh\n# puts back what beam to-device changed on " + serial + " (an installed build is not undone)\nset -e\n");
       if (o.data()) {
@@ -469,6 +491,7 @@ final class DeviceHandoff {
       store.used(o.id());
     } finally {
       if (tarOut != null) Files.deleteIfExists(tarOut);
+      if (deviceLock != null) deviceLock.close();  // releases its lock
     }
     return 0;
   }
