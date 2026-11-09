@@ -504,6 +504,10 @@ final class DeviceControls {
         updateSystemBars();
         return r;
       }
+      case "devpush" -> {
+        // devpush DEVICE_PATH BASE64: sent by serve/beam for a tab's upload (TabFiles); never a tab's own command.
+        return a.length == 3 || a.length == 2 ? TabFiles.push(a[1], a.length == 3 ? a[2] : "") : "error: usage: devpush DEVICE_PATH BASE64";
+      }
       case "pick" -> {
         // pick FILE... | pick cancel: answers a document or photo picker the app opened.
         return results.pick(a);

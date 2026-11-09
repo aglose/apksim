@@ -13,10 +13,12 @@ import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -117,6 +119,7 @@ final class Session {
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
+    this.fileKey = serve.beam ? HexFormat.of().formatHex(secureBytes()) : null;
     this.id = id;
     this.app = app;
     // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
@@ -300,6 +303,7 @@ final class Session {
         controlOut.println(e.getKey());
       }
     }
+    if (fileKey != null) ws.sendText("f " + fileKey);  // the key its file requests carry (beam)
     stream = connect(p);
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
@@ -846,6 +850,11 @@ final class Session {
       ws.sendText("k " + (keep ? "on" : "off"));
       return;
     }
+    if (text.startsWith("rec ")) {
+      // Issue 187: the recorder from a tab, where the server allows it (--allow-rec; always on a visitor's own Mac).
+      recCommand(text.strip());
+      return;
+    }
     String cmd = check(text);
     if (cmd == null && serve.beam) cmd = checkBeam(text);
     if (cmd == null && text.strip().startsWith("device ")) {
@@ -875,6 +884,296 @@ final class Session {
     boolean quiet = cmd.startsWith("touch ") || cmd.startsWith("wheel ") || cmd.startsWith("type ") || cmd.startsWith("key ")
         || cmd.startsWith("vsync ") || cmd.startsWith("maxfps ") || cmd.matches("device \\d+x\\d+@.*");  // a Fill tab's sizes, many while it resizes
     send(wire, quiet ? null : r -> ws.sendText("r " + shown.split(" ")[0] + ": " + r));
+  }
+
+
+  // ---------------------------------------------------------------- files and recordings (issue 187)
+
+  /** `apksim beam`: the secret the tab's file requests carry (sent to it on its socket once the instance is up). */
+  final String fileKey;
+  private long pushedBytes;
+  /** Recording ids this session asked for (a file exists once the instance has moved it into place, complete). */
+  private final java.util.Set<String> recordings = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  private static byte[] secureBytes() {
+    byte[] b = new byte[16];
+    new java.security.SecureRandom().nextBytes(b);
+    return b;
+  }
+
+  /** A device path a tab may name: a plain one (no white space or control characters, so it is one word on the control line). */
+  static boolean plainDevicePath(String p) {
+    return p != null && p.length() <= 300 && p.matches("[A-Za-z0-9._@+=,/-]+");
+  }
+
+  /** Waits for the instance's answer to one command (the control connection answers in order). */
+  private String ask(String cmd, long timeoutMs) throws IOException {
+    CompletableFuture<String> f = new CompletableFuture<>();
+    send(cmd, f::complete);
+    try {
+      return f.get(timeoutMs, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted");
+    } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+      throw new IOException("the app did not answer");
+    }
+  }
+
+  /**
+   * A tab's upload (`POST .../files?path=`): the bytes are read here, within the limits, and handed to the instance as
+   * `devpush`, which writes them where `adb push` could (TabFiles). Returns the JSON answer; throws why not (message
+   * shown to the tab, status in {@link PushRefused}).
+   */
+  String pushFile(String path, java.io.InputStream body, long length) throws IOException {
+    if (!plainDevicePath(path)) throw new PushRefused(400, "path: letters, digits and . _ @ + = , / - only");
+    for (String seg : path.split("/")) if (seg.equals("..")) throw new PushRefused(400, "path: no .. segments");
+    if (!path.startsWith("/") && !path.matches("(files|cache|shared_prefs|databases)/.+")) {
+      throw new PushRefused(400, "path: relative paths start with files/, cache/, shared_prefs/ or databases/");
+    }
+    long max = serve.maxPushMb << 20;
+    if (length > max) throw new PushRefused(413, "too large: " + (length >> 20) + " MB (limit " + serve.maxPushMb + " MB a file)");
+    if (ended || controlOut == null) throw new PushRefused(409, "the app is not running yet");
+    synchronized (this) {
+      if (pushedBytes + Math.max(length, 0) > serve.maxPushTotalMb << 20) {
+        throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
+      }
+    }
+    // The body, its copy and its Base64 text are alive together: ~3 times its size, taken from one budget for every
+    // session (the launcher's heap is small) before it is allocated or read, and given back when this upload is done.
+    // A known length is reserved at once; a chunked body as it arrives.
+    java.util.concurrent.atomic.AtomicLong held = new java.util.concurrent.atomic.AtomicLong();
+    if (length >= 0 && !reserve(held, 3 * length)) throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
+    try {
+      return pushReserved(path, body, length, max, held);
+    } finally {
+      INFLIGHT.addAndGet(-held.get());
+    }
+  }
+
+  private static boolean reserve(java.util.concurrent.atomic.AtomicLong held, long n) {
+    if (INFLIGHT.addAndGet(n) > INFLIGHT_MAX) {
+      INFLIGHT.addAndGet(-n);
+      return false;
+    }
+    held.addAndGet(n);
+    return true;
+  }
+
+  private static final java.util.concurrent.atomic.AtomicLong INFLIGHT = new java.util.concurrent.atomic.AtomicLong();
+  private static final long INFLIGHT_MAX = 96L << 20;
+
+  private String pushReserved(String path, java.io.InputStream body, long length, long max, java.util.concurrent.atomic.AtomicLong held)
+      throws IOException {
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream((int) Math.max(0, Math.min(length, 1 << 20)));
+    byte[] chunk = new byte[1 << 16];
+    long left = length >= 0 ? length : max + 1;
+    while (left > 0) {
+      int n = body.read(chunk, 0, (int) Math.min(chunk.length, left));
+      if (n < 0) break;
+      if (length < 0 && !reserve(held, 3L * n)) throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
+      buf.write(chunk, 0, n);
+      left -= n;
+      if (buf.size() > max) throw new PushRefused(413, "too large (limit " + serve.maxPushMb + " MB a file)");
+    }
+    if (length >= 0 && buf.size() != length) throw new PushRefused(400, "the body ended early");
+    synchronized (this) {
+      if (pushedBytes + buf.size() > serve.maxPushTotalMb << 20) {
+        throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
+      }
+      pushedBytes += buf.size();
+    }
+    String reply = ask("devpush " + path + " " + java.util.Base64.getEncoder().encodeToString(buf.toByteArray()), 30_000);
+    if (!reply.startsWith("ok ")) {
+      synchronized (this) {
+        pushedBytes -= buf.size();
+      }
+      throw new PushRefused(422, reply.startsWith("error: ") ? reply.substring(7) : reply);
+    }
+    String[] v = reply.split(" ");
+    lastInput = System.currentTimeMillis();
+    logLine("[serve] file from the tab: " + v[1] + " (" + v[2] + " bytes)");
+    return "{\"path\":" + Http.q(v[1]) + ",\"size\":" + v[2] + "}";
+  }
+
+  /** An upload or download the server refuses, with the HTTP status to answer. */
+  static final class PushRefused extends IOException {
+    final int status;
+
+    PushRefused(int status, String why) {
+      super(why);
+      this.status = status;
+    }
+  }
+
+  /** Where this session's recordings are written: the instance's own out folder in a beam sandbox, else the server's. */
+  private Path recDir() {
+    if (serve.beam) return instancePid > 0 ? serve.state.resolve("beam/out/" + instancePid + "/rec") : null;  // the kernel-confirmed pid, not the app-reported one
+    return serve.logs.resolve("rec-" + id);
+  }
+
+  /** The folder a finished beam session's recordings are moved to (logs age out with it). */
+  private Path keptRecDir() {
+    return serve.logs.resolve("rec-" + id);
+  }
+
+  /**
+   * The recording file, if this session made it and it is written (the instance moves it into place when complete).
+   * A beam app can write its own out folder, so a file there is never opened by the agent as it stands: it is copied
+   * (without following links) into the agent's folder and that copy is served.
+   */
+  Path recording(String rid) {
+    if (!rid.matches("[0-9a-f]{12}") || !recordings.contains(rid)) return null;
+    Path kept = keptRecDir().resolve(rid + ".apkrec");
+    if (Files.isRegularFile(kept, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return kept;
+    Path d = recDir();
+    if (d == null) return null;
+    if (!serve.beam) {
+      Path f = d.resolve(rid + ".apkrec");
+      return Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? f : null;
+    }
+    return copyOut(d, rid + ".apkrec") ? kept : null;
+  }
+
+  private final java.util.Set<String> failedCopies = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private final java.util.Set<String> copying = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.concurrent.atomic.AtomicInteger COPIERS = new java.util.concurrent.atomic.AtomicInteger();
+
+  /** Copies one recording out of a beam instance's folder into the agent's own, never following a link. */
+  private boolean copyOut(Path dir, String name) {
+    java.nio.file.LinkOption nf = java.nio.file.LinkOption.NOFOLLOW_LINKS;
+    Path f = dir.resolve(name);
+    if (failedCopies.contains(name) || Files.isSymbolicLink(dir) || !Files.isRegularFile(f, nf)) return false;
+    // Java cannot open without blocking, so a worker stuck on a pipe cannot be stopped. Each worker holds one of a few
+    // slots until it has really finished (not until its caller gave up), one recording is copied by one worker at a
+    // time, and a recording whose copy timed out is not tried again.
+    if (!copying.add(name)) return false;
+    boolean slot = false;
+    for (int n = COPIERS.get(); n < 4 && !slot; n = COPIERS.get()) slot = COPIERS.compareAndSet(n, n + 1);
+    if (!slot) {
+      copying.remove(name);
+      return false;
+    }
+    Path tmp = null;
+    CompletableFuture<Void> job = null;
+    try {
+      Files.createDirectories(keptRecDir());
+      Path t = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
+      tmp = t;
+      java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+      job = CompletableFuture.runAsync(() -> {
+        try (java.io.InputStream in = Files.newInputStream(f, nf)) {
+          if (!cancelled.get()) Files.copy(in, t, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+          throw new java.io.UncheckedIOException(e);
+        }
+      }, r -> Thread.ofVirtual().start(r));
+      job.whenComplete((v, e) -> {
+        COPIERS.decrementAndGet();
+        copying.remove(name);
+        if (cancelled.get()) {
+          try {
+            Files.deleteIfExists(t);
+          } catch (IOException ex) {
+            // left for the sweep
+          }
+        }
+      });
+      try {
+        job.get(30, TimeUnit.SECONDS);
+      } catch (java.util.concurrent.TimeoutException e) {
+        failedCopies.add(name);
+        cancelled.set(true);
+        return false;
+      } catch (Exception e) {
+        Files.deleteIfExists(t);
+        return false;
+      }
+      Files.move(t, keptRecDir().resolve(name), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      return true;
+    } catch (IOException e) {
+      if (tmp != null) {
+        try {
+          Files.deleteIfExists(tmp);
+        } catch (IOException ex) {
+          // left for the sweep
+        }
+      }
+      return false;
+    } finally {
+      if (job == null) {
+        COPIERS.decrementAndGet();
+        copying.remove(name);
+      }
+    }
+  }
+
+  /** After a beam instance exits: its recordings from the sandbox's out folder to the logs folder (copied, links refused). */
+  private void keepRecordings() {
+    Path d = serve.beam ? recDir() : null;
+    if (d == null || Files.isSymbolicLink(d) || !Files.isDirectory(d, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+    for (String rid : recordings) copyOut(d, rid + ".apkrec");
+  }
+
+  /** What a download needs after the session ends: the key and origin (beam), the ids, and where they are. */
+  record Kept(String key, String site, java.util.Set<String> rids, Path dir) {}
+
+  Kept kept() {
+    return recordings.isEmpty() ? null : new Kept(fileKey, site, new java.util.HashSet<>(recordings), keptRecDir());
+  }
+
+  /** `rec on|off CHANNEL...` by tokens (a repeated regex group would recurse once per word and overflow the stack). */
+  private static boolean recChannels(String t) {
+    if (t.length() > 200) return false;
+    String[] w = t.split(" ");
+    if (w.length < 2 || w.length > 10 || !w[0].equals("rec") || !(w[1].equals("on") || w[1].equals("off"))) return false;
+    for (int i = 2; i < w.length; i++) {
+      if (!List.of("input", "logcat", "net", "db", "db+values", "screen", "all").contains(w[i])) return false;
+    }
+    return true;
+  }
+
+  /** `rec on|off [CHANNEL...]`, `rec checkpoint now`, `rec save [SECONDS]` from the tab; never a file name of its own. */
+  private void recCommand(String t) {
+    if (!serve.beam && !serve.allowRec) {
+      ws.sendText("r refused: rec (the server does not allow recordings: --allow-rec)");
+      return;
+    }
+    lastInput = System.currentTimeMillis();  // a tab using the recorder is someone using the session
+    String cmd = null;
+    String id2 = null;
+    if (recChannels(t) || t.equals("rec checkpoint now")) {
+      cmd = t;
+    } else if (t.matches("rec save( [1-9][0-9]{0,3})?")) {
+      Path dir = recDir();
+      if (dir == null) {
+        ws.sendText("r rec: error: the app is not up yet");
+        return;
+      }
+      if (!dir.toString().matches("\\S+")) {
+        ws.sendText("r rec: error: the state folder's path has white space, which a control command cannot carry");
+        return;
+      }
+      id2 = Long.toHexString(new java.security.SecureRandom().nextLong() & 0xffffffffffffL | 0x100000000000L).substring(0, 12);
+      try {
+        Files.createDirectories(dir);
+      } catch (IOException e) {
+        ws.sendText("r rec: error: " + e.getMessage());
+        return;
+      }
+      String secs = t.length() > 8 ? t.substring(9) : "";
+      cmd = "rec save " + (secs.isEmpty() ? "" : secs + " ") + dir.resolve(id2 + ".apkrec");
+    }
+    if (cmd == null) {
+      ws.sendText("r refused: " + t);
+      return;
+    }
+    final String rid = id2;
+    if (rid != null) recordings.add(rid);
+    send(cmd, r -> {
+      if (rid != null && r.startsWith("error")) recordings.remove(rid);
+      ws.sendText(rid != null && !r.startsWith("error") ? "r rec: saved " + rid : "r rec: " + r.replace(serve.state.toString(), "~"));
+    });
   }
 
   /**
@@ -1145,6 +1444,7 @@ final class Session {
     }
     closeQuietly(control);
     closeQuietly(stream);
+    keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.
     Thread reading = logReader;
