@@ -964,6 +964,24 @@ def dataFrom_checks(apksim, gp, apk_path, sid, slot_start, sd_file, sg):
     check(until(lambda: len(saved_ids(apksim)) == 2, 10), "dataFrom: two saved sessions now")
     s1 = next((i for i in saved_ids(apksim) if i != sid), "none")
 
+    # An upload grant for a dataFrom start made before a tab reopens the same saved session: its upload then is refused,
+    # and the reopened session holds its saved session (kept, not a copy nothing puts back).
+    st, _, body = req(gp, "POST", "/beam/start", B, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), size=len(b2),
+                                                         ticket=None, url=None, protocol=2, dataFrom=s1))
+    pending = json.loads(body).get("upload") if st == 200 else None
+    st, _, body = req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": s1})
+    gr = json.loads(body) if st == 200 else {}
+    s = open_session(gp, gr, B)
+    check(len(s.frames) > 0 and session_info(s).get("keep") is True, "dataFrom: build 1's saved session reopened in a tab")
+    st, _, body = req(gp, "POST", f"/beam/upload?upload={pending}", B, b2)
+    check(st == 409 and b"open in another tab" in body, f"dataFrom: an upload granted before that reopen is refused meanwhile ({st}, {body[:80]!r})")
+    check(close_session(s), "dataFrom: the reopened session ends")
+    # Until /beam/saved no longer says it is open (its end puts the copy back after its instance has gone).
+    def closed():
+        st, _, body = req(gp, "GET", "/beam/saved", B)
+        return st == 200 and any(x.get("id") == s1 and x.get("open") is False for x in json.loads(body))
+    check(until(closed, 20) and sorted(saved_ids(apksim)) == sorted([sid, s1]), "dataFrom: and is put back, not kept as a new one")
+
     check(req(gp, "POST", "/beam/start", A, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), protocol=2, dataFrom=s1))[0] == 404,
           "dataFrom: not from another site")
     st, _, body = req(gp, "POST", "/beam/start", B, dict(slot_start, sha256=hashlib.sha256(b2).hexdigest(), protocol=2, dataFrom=s1, saved=s1))

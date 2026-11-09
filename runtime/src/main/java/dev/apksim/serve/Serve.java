@@ -975,13 +975,27 @@ public final class Serve {
     // anything else, or none, is the app's default device, else the phone.
     String device = options.get("device");
     if (device != null && !savedSize && !Session.deviceAllowed(this, app, device)) options.remove("device");
+    // A reopened saved session (issue 181) runs only while it holds its saved session's lock: without it, it would be a
+    // copy nothing puts back (its app's writes erased when it ends). A `dataFrom` copy of the same session reading it
+    // holds that lock for a moment (within one JVM even two shared locks on a file collide): waited for, briefly.
+    String reopenSid = beam && seed != null ? reopened.get(seed) : null;
+    java.nio.channels.FileChannel reopenLock = reopenSid == null ? null : holdSaved(reopenSid);
+    if (reopenSid != null && reopenLock == null) {
+      reopened.remove(seed);
+      reopenedChanged.remove(seed);
+      SlotPack.dropSeed(state, seed, null, System.err::println);
+      ws.sendText("x saved session " + reopenSid + " is busy on this Mac (being copied for a newer build, or forgotten): start it again");
+      ws.close("busy");
+      return;
+    }
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
+        if (reopenLock != null) reopenLock.close();
         if (seed != null) {
-        reopened.remove(seed);
-        reopenedChanged.remove(seed);
-      }
+          reopened.remove(seed);
+          reopenedChanged.remove(seed);
+        }
         SlotPack.dropSeed(state, seed, null, System.err::println);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
@@ -994,25 +1008,12 @@ public final class Serve {
       if (beam) {
         session.site = site;
         session.keep = store.config.saveSessions();
-        String sid = seed == null ? null : reopened.get(seed);
-        if (sid != null) {
-          // Issue 181: a reopened saved session; held (shared, as `run` holds it) until it ends.
-          java.nio.channels.FileChannel l = null;
-          try {
-            l = store.sessionLock(sid);
-            if (l.tryLock(0, Long.MAX_VALUE, true) != null) {
-              session.savedId = sid;
-              session.savedLock = l;
-              session.savedChanged = reopenedChanged.getOrDefault(seed, -1L);
-              session.keep = true;
-              l = null;
-            }
-          } catch (IOException | java.nio.channels.OverlappingFileLockException e) {
-            // as a copy only: it is kept as a new saved session if kept at all
-          } finally {
-            if (l != null) l.close();
-          }
-          if (session.savedId == null) System.err.println("[beam] saved session " + sid + " is being forgotten: its copy runs on its own");
+        if (reopenSid != null) {
+          // Issue 181: a reopened saved session, held (shared, as `run` holds it) until it ends.
+          session.savedId = reopenSid;
+          session.savedLock = reopenLock;
+          session.savedChanged = reopenedChanged.getOrDefault(seed, -1L);
+          session.keep = true;
         }
       }
       sessions.put(session.id, session);
@@ -1083,6 +1084,44 @@ public final class Serve {
     Http.file(out, apk, "application/vnd.android.package-archive");
   }
 
+  /**
+   * The saved session's lock (`saved/<id>.lock`) held shared on a channel of its own, for a reopened session's life;
+   * tried for up to 10 s (a copy for a newer build holds it while it reads the slot, `forget` exclusively). Null when it
+   * cannot be had, or the saved session is gone.
+   */
+  private java.nio.channels.FileChannel holdSaved(String id) {
+    long until = System.currentTimeMillis() + 10_000;
+    while (true) {
+      java.nio.channels.FileChannel ch = null;
+      try {
+        if (store.saved(id) == null) return null;
+        ch = store.sessionLock(id);
+        if (ch.tryLock(0, Long.MAX_VALUE, true) != null) {
+          java.nio.channels.FileChannel held = ch;
+          ch = null;
+          return held;
+        }
+      } catch (IOException | java.nio.channels.OverlappingFileLockException e) {
+        // held in this JVM (a copy being read): try again
+      } finally {
+        if (ch != null) {
+          try {
+            ch.close();
+          } catch (IOException e) {
+            // nothing held
+          }
+        }
+      }
+      if (System.currentTimeMillis() > until) return null;
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return null;
+      }
+    }
+  }
+
   /** A start's answer for saved data: which saved session it reopened (`saved`) or copied (`dataFrom`). */
   private static String localAnswer(String local) {
     if (local == null) return "";
@@ -1126,6 +1165,9 @@ public final class Serve {
     String pkg = String.valueOf(rec.get("package"));
     if (!pkg.matches("[A-Za-z0-9._]{1,255}")) throw new IOException("saved session " + id + " names no app");
     if (!reopen) {
+      // Not while a tab has it open (an upload grant made before that tab's start reaches here only now): the copy would
+      // be of data about to change, and its read would hold the lock that tab's session takes.
+      if (savedOpen(id)) throw new IOException("saved session " + id + " is open in another tab on this Mac: close it first");
       String own = dev.apksim.ApkCache.manifestPackage(apk);
       if (!pkg.equals(own)) {
         throw new IOException("this build is " + own + ", saved session " + id + " is " + pkg + "'s data: an app starts only on its own");

@@ -966,8 +966,11 @@ page that runs a new build per pull request made the visitor repeat it for every
     not put back over what that run may have written. If it cannot be put back (a `run` has it open or opened it
     meanwhile, it was forgotten, the copy is gone), the copy (if there) is kept as a new saved session instead, so
     nothing is lost.
-  - One tab at a time (409 for a second while a grant or session holds the first); the session holds
-    `saved/<id>.lock` shared, as `run` does, so `forget` and the `keep-saved-days` sweep leave it. The page cannot turn
+  - One tab at a time (409 for a second while a grant or session holds the first), and no `dataFrom` copy of it
+    meanwhile (409, at an upload too); the session holds `saved/<id>.lock` shared, as `run` does, so `forget` and the
+    `keep-saved-days` sweep leave it. It runs only once it has that lock (waited for up to 10 s: a copy for a newer
+    build holds it while it reads); without it the session ends at once with why and its copy is erased, rather than
+    run as a copy nothing would put back. The page cannot turn
     keeping off for it (`keep off` is answered `k on`): only the Mac's owner erases a saved session.
 - **A newer build on its data**: `POST /beam/start` with the new build's `sha256`, `ticket`, `url` (or `source`) as
   any start, plus `"dataFrom": ID`. The saved slot is copied as above into the new session's own slot only if the new
