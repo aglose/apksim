@@ -141,6 +141,14 @@ Setting the Mac up, once:
   `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/USER/actions-runner-hooks/job-started.sh` to the runner's `.env`.
 - Only then `./svc.sh install` and `./svc.sh start`. A job's log starts with "self-hosted runner hook: ... allowed";
   a refused one ends right there, failed. After changing `.env` later, restart it (`./svc.sh stop`, `./svc.sh start`).
+- Check the hook once on the real runner before setting the variable: push a scratch branch with a workflow that
+  targets the Mac from a job the hook must refuse, with a step that would run after a failure, e.g.
+  `.github/workflows/hook-check.yml`:
+  `on: push` / `jobs: probe: runs-on: [self-hosted, macOS, ARM64]` / `steps: - if: always()` /
+  `run: touch /tmp/hook-check-ran`. The job must end failed after "refusing this job ... ending the job", with no
+  `/tmp/hook-check-ran` on the Mac, and the runner must show Idle again (Settings → Actions → Runners). Then delete
+  the branch and run `ci.yml` by hand on main (`gh workflow run ci.yml`, with the variable set for that run) to see
+  `startup-gate` allowed.
 - The job needs the Xcode command-line tools (system-wide), `python3` and `gh` on the runner's
   `PATH` (`config.sh` records the `PATH` it was run with in `.path`: include `/opt/homebrew/bin`).
 - On power, the Mac must not sleep: System Settings → Battery → Options → "Prevent automatic sleeping on power adapter
