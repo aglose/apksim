@@ -17,7 +17,8 @@ passed as `-e class` (whole classes where none of their tests ran, else Class#me
 in chunks short enough for one argument. A comma in a name (Parameterized's `test[0: x, y]`) is written `\\,` and a
 backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runner has none; --isolate uses them too). No test with a result runs again. A new process that adds no result
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
-With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does.
+With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does. Like the Orchestrator's runner side, it leaves a listed
+`initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
 process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
@@ -813,6 +814,17 @@ article>div{{min-width:0}} h2{{font-size:16px;margin:0}} h2 span{{color:var(--di
         f.write(page)
 
 
+def drop_class_errors(a, tests):
+    """As AndroidTestOrchestrator: its runner side drops a listed `initializationError` (JUnitValidator), so such a class
+    (a Parameterized one with no parameters) is never run or reported. --keep-class-errors keeps them."""
+    if a.keep_class_errors:
+        return tests
+    dropped = sorted({c for c, m in tests if m == "initializationError"})
+    for c in dropped:
+        print(f"leaving out {c}#initializationError, as the orchestrator does (--keep-class-errors keeps it)", file=sys.stderr)
+    return [t for t in tests if t[1] != "initializationError"]
+
+
 def list_suite(a, passthrough):
     """The suite as a.e names it, listed by apksim (`-e log true`): [(class, method)], or exits if it cannot be listed."""
     listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
@@ -820,7 +832,7 @@ def list_suite(a, passthrough):
     if why:
         sys.stderr.write(listed.stderr[-4000:])
         sys.exit(f"listing the suite failed: {why}")
-    return [(c, m) for c, m, _, _ in parse(listed.stdout)]
+    return drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
 
 
 def run_tests(a, passthrough, listing, tests, label=""):
@@ -850,6 +862,8 @@ def main():
     p.add_argument("app")
     p.add_argument("test")
     p.add_argument("--isolate", action="store_true")
+    p.add_argument("--keep-class-errors", action="store_true",
+                   help="keep listed initializationError entries in --isolate's and --shards' suites (the orchestrator drops them)")
     p.add_argument("-j", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 3)))
     p.add_argument("--shards", type=int, default=1)
     p.add_argument("--xml")
@@ -987,7 +1001,7 @@ def main():
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
-        tests = [(c, m) for c, m, _, _ in parse(listed.stdout)]
+        tests = drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
         why = incomplete(listed, parse(listed.stdout))
         if why:
             sys.stderr.write(listed.stderr[-4000:])
