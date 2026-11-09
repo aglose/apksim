@@ -1021,7 +1021,7 @@ async function beamHello(asked) {
         + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
       return null;
     }
-    beam.protocol = common; beam.ok = true; beam.trusted = !!h.trusted;
+    beam.protocol = common; beam.ok = true;
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
   } catch (e) {
@@ -1072,7 +1072,8 @@ async function macGrant(q, gen, say, data) {
   // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
   // Meanwhile hello says whether that dialog is up (issue 178), so the page can tell the visitor it waits for them,
   // not for the agent: the dialog may be behind other windows, right after the browser's own prompt.
-  let waiting = !beam.trusted, asked = false;
+  // Every start, not only one for a site hello called untrusted: the owner may revoke it while this tab is open.
+  let waiting = true, asked = false;
   (async () => {
     await new Promise(r => setTimeout(r, 500));
     while (waiting && gen === startGen) {

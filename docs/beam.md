@@ -917,8 +917,8 @@ minutes), right after Chrome's own prompt for apps on this device, and a dialog 
 Space is easy to miss: the page looked stuck, then the start was refused.
 
 - **`/beam/hello` says `"asking": true`** to the origin whose dialog is up now, and only to it (another page learns
-  nothing about which sites ask). serve.html polls it once a second while a start for a site not yet allowed is
-  pending, and says "apksim is asking on this Mac: choose Allow in its dialog (it may be behind other windows)" in the
+  nothing about which sites ask). serve.html polls it once a second while a start is pending (every start: the
+  owner may revoke a site while its tab is open), and says "apksim is asking on this Mac: choose Allow in its dialog (it may be behind other windows)" in the
   start's overlay (or the move's chip), and in its log.
 - **A notification** (`display notification`, with a sound) comes with the dialog, so it is noticed when the dialog
   is not; it is not waited for, and nothing happens if it fails.
