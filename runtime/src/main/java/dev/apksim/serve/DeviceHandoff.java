@@ -264,6 +264,39 @@ final class DeviceHandoff {
     }
     String serial = device(o.serial());
     if (serial == null) return 1;
+    // One handoff at a time per device (any session, any process), taken before the device is looked at: two would mix
+    // their data, and a build decision made before the other's install would be stale. Held until the process ends
+    // or the handoff does (released in the finally below; an early return leaves it to the process exit).
+    Path backupsDir = store.stateDir().resolve("beam/device-backup");
+    try {
+      Files.createDirectories(backupsDir, PRIVATE_DIR);
+    } catch (UnsupportedOperationException e) {
+      Files.createDirectories(backupsDir);
+    }
+    restrict(backupsDir, "rwx------");  // also if it existed
+    Path lockFile = backupsDir.resolve(serial.replace(':', '_') + ".lock");
+    if (!Files.exists(lockFile)) {
+      try {
+        Files.createFile(lockFile, PRIVATE_FILE);
+      } catch (java.nio.file.FileAlreadyExistsException e) {
+        // made meanwhile
+      } catch (UnsupportedOperationException e) {
+        Files.createFile(lockFile);
+      }
+    }
+    restrict(lockFile, "rw-------");
+    java.nio.channels.FileChannel deviceLock = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
+    java.nio.channels.FileLock deviceFileLock;
+    try {
+      deviceFileLock = deviceLock.tryLock();
+    } catch (java.nio.channels.OverlappingFileLockException e) {
+      deviceFileLock = null;
+    }
+    if (deviceFileLock == null) {
+      deviceLock.close();
+      System.err.println("apksim beam to-device: another handoff to " + serial + " is running; nothing changed");
+      return 1;
+    }
     if (o.replace() && !catalog.hasBuild(sha)) {
       System.err.println("apksim beam to-device: the build of " + o.id() + " is no longer on this Mac (--install replace needs it);"
           + " beam it again from its site, or use --install skip");
@@ -336,7 +369,7 @@ final class DeviceHandoff {
     // Unique per handoff (a second in the same second must not overwrite the first's recovery files).
     String backupName = serial.replaceAll("[^A-Za-z0-9._\\-]", "_") + "-" + LocalDateTime.now().format(STAMP) + "-"
         + java.util.HexFormat.of().formatHex(rnd);
-    Path backups = store.stateDir().resolve("beam/device-backup");
+    Path backups = backupsDir;
     List<String> launchChanges = new ArrayList<>();
     if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) launchChanges.add("appearance " + a);
     if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) launchChanges.add("font scale " + f);
@@ -367,8 +400,6 @@ final class DeviceHandoff {
     }
 
     Path tarOut = null;
-    java.nio.channels.FileChannel deviceLock = null;
-    java.nio.channels.FileLock deviceFileLock = null;
     try (BeamStore.SavedHold held = store.hold(o.id(), false)) {
       if (held == null) {
         System.err.println("apksim beam to-device: " + o.id() + " is busy (being forgotten, or put back into): try again");
@@ -412,35 +443,6 @@ final class DeviceHandoff {
         if (lockCh != null) lockCh.close();
       }
       // What the device has now, before anything is written, kept in a script that puts it back.
-      try {
-        Files.createDirectories(backups, PRIVATE_DIR);
-      } catch (UnsupportedOperationException e) {
-        Files.createDirectories(backups);
-      }
-      restrict(backups, "rwx------");  // also if it existed
-      // One handoff at a time per device (any session, any process): two would mix their data, and the second's "old"
-      // values and backup would be the first's half-written state.
-      Path lockFile = backups.resolve(serial.replace(':', '_') + ".lock");
-      if (!Files.exists(lockFile)) {
-        try {
-          Files.createFile(lockFile, PRIVATE_FILE);
-        } catch (java.nio.file.FileAlreadyExistsException e) {
-          // made meanwhile
-        }
-      }
-      restrict(lockFile, "rw-------");
-      deviceLock = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
-      java.nio.channels.FileLock dl;
-      try {
-        dl = deviceLock.tryLock();
-        deviceFileLock = dl;
-      } catch (java.nio.channels.OverlappingFileLockException e) {
-        dl = null;
-      }
-      if (dl == null) {
-        System.err.println("apksim beam to-device: another handoff to " + serial + " is running; nothing changed");
-        return 1;
-      }
       Path undo = backups.resolve(backupName + "-undo.sh");
       StringBuilder script = new StringBuilder("#!/bin/sh\n# puts back what beam to-device changed on " + serial + " (an installed build is not undone)\nset -e\n");
       if (o.data()) {
@@ -535,7 +537,11 @@ final class DeviceHandoff {
 
   /** A setting's value as the device has it (one trailing newline dropped, nothing else), or null when unset. */
   private static String settingsGet(String serial, String ns, String key) throws IOException, InterruptedException {
-    String v = sh(serial, "settings get " + ns + " " + key).out();
+    Result r = sh(serial, "settings get " + ns + " " + key);
+    if (r.code() != 0 || r.out().contains("Exception")) {
+      throw new IOException("cannot read the device's " + ns + "/" + key + " (" + r.out().strip() + "); nothing was changed");
+    }
+    String v = r.out();
     if (v.endsWith("\n")) v = v.substring(0, v.length() - 1);
     if (v.endsWith("\r")) v = v.substring(0, v.length() - 1);
     return v.equals("null") ? null : v;
@@ -546,8 +552,10 @@ final class DeviceHandoff {
       throws IOException, InterruptedException {
     String pre = "adb -s " + q(serial) + " shell ";
     if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
-      java.util.regex.Matcher m = java.util.regex.Pattern.compile("(yes|no|auto)").matcher(sh(serial, "cmd uimode night").out());
-      if (m.find()) script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
+      Result r = sh(serial, "cmd uimode night");
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("(yes|no|auto)").matcher(r.out());
+      if (r.code() != 0 || !m.find()) throw new IOException("cannot read the device's night mode (" + r.out().strip() + "); nothing was changed");
+      script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
     }
     if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) {
       String was = settingsGet(serial, "system", "font_scale");
