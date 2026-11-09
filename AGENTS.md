@@ -187,9 +187,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     the raster thread), checkpoints (stack intents + saved state, a clone of the data folder), and `rec save` to a
     `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`). A checkpoint cycles the visible activities
     through onStop/onStart as a quick Home and back would: the one way recording shows in the app.
-    `scripts/replay-adb.py BUNDLE -s SERIAL` plays a bundle on a device over adb (the checkpoint's data, /sdcard and
-    Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192). Only
-    run against apksim's own adb device so far, not a phone or emulator.
+    `scripts/replay-adb.py BUNDLE -s SERIAL --yes` plays a bundle on a device over adb (the checkpoint's data, /sdcard
+    and Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192).
+    It replaces the app's data, /sdcard files and Settings values there, so it stops without `--yes` and backs the
+    app's data up first (`--backup-dir`, `--no-backup`); `--dry-run` prints the plan and touches nothing. Only run
+    against apksim's own adb device so far, not a phone or emulator.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.

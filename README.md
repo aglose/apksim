@@ -194,7 +194,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
 | | `--shot FILE` | Save a screenshot of the first frame |
 | | `--exit-after-first-frame` | Quit once the first frame is shown (benchmarks, smoke tests) |
-| | `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes (`--rec-window SECONDS`) of input, logcat, network, SQLite calls and the screen, with checkpoints to start a replay from, saved as one shareable `.apkrec` file by `rec save`, File > Save Replay, or by itself when the app crashes. `scripts/replay-adb.py FILE.apkrec -s SERIAL` plays one on a device over adb, to tell an app bug from a simulator one ([docs/flight-recorder.md](docs/flight-recorder.md)) |
+| | `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes (`--rec-window SECONDS`) of input, logcat, network, SQLite calls and the screen, with checkpoints to start a replay from, saved as one shareable `.apkrec` file by `rec save`, File > Save Replay, or by itself when the app crashes. `scripts/replay-adb.py FILE.apkrec -s SERIAL --yes` plays one on a device over adb, to tell an app bug from a simulator one. It replaces the app's data, `/sdcard` files and Settings values on that device (hence `--yes`; the app's current data is backed up first), so look at the plan with `--dry-run` before ([docs/flight-recorder.md](docs/flight-recorder.md)) |
 | Testing | `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
 | | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
 | | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
