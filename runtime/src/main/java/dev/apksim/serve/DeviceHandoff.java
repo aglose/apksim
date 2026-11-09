@@ -84,6 +84,9 @@ final class DeviceHandoff {
     if (!p.waitFor(10, TimeUnit.MINUTES)) {
       p.destroyForcibly();
       p.getInputStream().close();
+      p.getOutputStream().close();
+      drain.join(5_000);
+      feed.join(5_000);
       throw new IOException("adb " + String.join(" ", args) + " did not finish");
     }
     drain.join();  // the process has ended: its output ends and the stdin writer returns
@@ -187,7 +190,7 @@ final class DeviceHandoff {
       for (String k : want.split(",")) {
         if (!k.isBlank()) names.add(k.strip());
       }
-      if (names.isEmpty()) notes.add("--settings names no keys");
+      if (names.isEmpty()) notes.add("--settings was given but names no keys (use --settings all or --settings ns/key,ns/key)");
     }
     for (Map.Entry<String, String> e : all.entrySet()) {
       boolean deleted = e.getKey().startsWith("!");  // SlotDevice: a default the app deleted
@@ -365,6 +368,7 @@ final class DeviceHandoff {
 
     Path tarOut = null;
     java.nio.channels.FileChannel deviceLock = null;
+    java.nio.channels.FileLock deviceFileLock = null;
     try (BeamStore.SavedHold held = store.hold(o.id(), false)) {
       if (held == null) {
         System.err.println("apksim beam to-device: " + o.id() + " is busy (being forgotten, or put back into): try again");
@@ -408,8 +412,12 @@ final class DeviceHandoff {
         if (lockCh != null) lockCh.close();
       }
       // What the device has now, before anything is written, kept in a script that puts it back.
-      Files.createDirectories(backups, PRIVATE_DIR);
-      Files.setPosixFilePermissions(backups, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));  // also if it existed
+      try {
+        Files.createDirectories(backups, PRIVATE_DIR);
+      } catch (UnsupportedOperationException e) {
+        Files.createDirectories(backups);
+      }
+      restrict(backups, "rwx------");  // also if it existed
       // One handoff at a time per device (any session, any process): two would mix their data, and the second's "old"
       // values and backup would be the first's half-written state.
       Path lockFile = backups.resolve(serial.replace(':', '_') + ".lock");
@@ -420,11 +428,12 @@ final class DeviceHandoff {
           // made meanwhile
         }
       }
-      Files.setPosixFilePermissions(lockFile, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+      restrict(lockFile, "rw-------");
       deviceLock = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
       java.nio.channels.FileLock dl;
       try {
         dl = deviceLock.tryLock();
+        deviceFileLock = dl;
       } catch (java.nio.channels.OverlappingFileLockException e) {
         dl = null;
       }
@@ -500,7 +509,8 @@ final class DeviceHandoff {
       store.used(o.id());
     } finally {
       if (tarOut != null) Files.deleteIfExists(tarOut);
-      if (deviceLock != null) deviceLock.close();  // releases its lock
+      if (deviceFileLock != null && deviceFileLock.isValid()) deviceFileLock.release();
+      if (deviceLock != null) deviceLock.close();  // backstop
     }
     return 0;
   }
@@ -510,6 +520,15 @@ final class DeviceHandoff {
       java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
   private static final java.nio.file.attribute.FileAttribute<Set<java.nio.file.attribute.PosixFilePermission>> PRIVATE_FILE =
       java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+
+  /** Sets a private mode on a path that may already exist; a file system without POSIX modes only gets a warning. */
+  private static void restrict(Path f, String mode) throws IOException {
+    try {
+      Files.setPosixFilePermissions(f, java.nio.file.attribute.PosixFilePermissions.fromString(mode));
+    } catch (UnsupportedOperationException e) {
+      System.err.println("apksim beam to-device: warning: " + f + " cannot be made private on this file system");
+    }
+  }
 
   /** Empties the app's data folder but for the system's own `lib` link. */
   static final String CLEAR = "find . -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {} +";

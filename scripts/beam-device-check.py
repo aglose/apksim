@@ -75,7 +75,11 @@ def main():
     if not apk:
         sys.exit("no APK: pass one, or set APKSIM_TEST_APK")
     import hashlib
-    sha = hashlib.sha256(open(apk, "rb").read()).hexdigest()
+    h = hashlib.sha256()
+    with open(apk, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    sha = h.hexdigest()
     tmp = tempfile.mkdtemp(prefix="beam-device-")
     home, fake = tmp + "/home", tmp + "/fake"
     os.makedirs(fake + "/bin")
