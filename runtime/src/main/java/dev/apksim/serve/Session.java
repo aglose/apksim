@@ -1043,8 +1043,21 @@ final class Session {
       if (Files.isSymbolicLink(dir) || !Files.isRegularFile(f, nf)) return false;
       Files.createDirectories(keptRecDir());
       Path tmp = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
-      try (java.io.InputStream in = Files.newInputStream(f, nf)) {
-        Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+      // A file the app swapped for a pipe would block an open for good: opened on a thread that is given up on.
+      java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+      CompletableFuture<Void> job = CompletableFuture.runAsync(() -> {
+        try (java.io.InputStream in = Files.newInputStream(f, nf)) {
+          if (!cancelled.get()) Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+          throw new java.io.UncheckedIOException(e);
+        }
+      }, r -> Thread.ofVirtual().start(r));
+      try {
+        job.get(30, TimeUnit.SECONDS);
+      } catch (Exception e) {
+        cancelled.set(true);
+        Files.deleteIfExists(tmp);
+        return false;
       }
       Files.move(tmp, keptRecDir().resolve(name), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       return true;
@@ -1067,6 +1080,17 @@ final class Session {
     return recordings.isEmpty() ? null : new Kept(fileKey, site, new java.util.HashSet<>(recordings), keptRecDir());
   }
 
+  /** `rec on|off CHANNEL...` by tokens (a repeated regex group would recurse once per word and overflow the stack). */
+  private static boolean recChannels(String t) {
+    if (t.length() > 200) return false;
+    String[] w = t.split(" ");
+    if (w.length < 2 || w.length > 10 || !w[0].equals("rec") || !(w[1].equals("on") || w[1].equals("off"))) return false;
+    for (int i = 2; i < w.length; i++) {
+      if (!List.of("input", "logcat", "net", "db", "db+values", "screen", "all").contains(w[i])) return false;
+    }
+    return true;
+  }
+
   /** `rec on|off [CHANNEL...]`, `rec checkpoint now`, `rec save [SECONDS]` from the tab; never a file name of its own. */
   private void recCommand(String t) {
     if (!serve.beam && !serve.allowRec) {
@@ -1076,7 +1100,7 @@ final class Session {
     lastInput = System.currentTimeMillis();  // a tab using the recorder is someone using the session
     String cmd = null;
     String id2 = null;
-    if (t.matches("rec (on|off)( (input|logcat|net|db|db\\+values|screen|all))*") || t.equals("rec checkpoint now")) {
+    if (recChannels(t) || t.equals("rec checkpoint now")) {
       cmd = t;
     } else if (t.matches("rec save( [1-9][0-9]{0,3})?")) {
       Path dir = recDir();
