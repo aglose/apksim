@@ -1083,6 +1083,18 @@ async function macGrant(q, gen, say, data) {
     const apk = await r.blob();
     if (gen !== startGen) return null;
     g = await okJson(fetch(beam.url + "/beam/upload?upload=" + encodeURIComponent(g.upload), { method: "POST", body: apk }));
+    if (gen !== startGen) return null;
+  }
+  // A moved session's data the agent could not download itself (behind a sign-in, issue 173; protocol 2): this tab
+  // fetches the pack with its own credentials and sends it, as it does the APK.
+  if (g.need === "data") {
+    log("this Mac could not download the app's data itself (" + g.dataWhy + "): this tab sends it");
+    say("Sending its data to this Mac…");
+    const r = await fetch(data.url + "?ticket=" + encodeURIComponent(data.ticket));
+    if (!r.ok) throw new Error("the server would not send its data: " + ((await r.text()).trim() || "HTTP " + r.status));
+    const pack = await r.blob();
+    if (gen !== startGen) return null;
+    g = await okJson(fetch(beam.url + "/beam/upload-data?upload=" + encodeURIComponent(g.dataUpload), { method: "POST", body: pack }));
   }
   return gen === startGen ? g : null;
 }

@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * `apksim beam` (docs/beam.md): the agent's own state, beside {@link Serve} running in its loopback-only mode. Which
  * page origins may run apps on this Mac (`STATE/beam/trust.json`, asked once with a native prompt), and the one-use
- * grants a page gets from `/beam/start`: to send an APK (`upload`) and to open its session (`session`).
+ * grants a page gets from `/beam/start`: to send an APK (`upload`), to send a moved session's data (`data`, when the
+ * agent could not download it itself) and to open its session (`session`).
  *
  * The decision rests on `Origin`, which a browser sets and a page cannot: a page on another site can ask, never pass
  * as a trusted one. A process on this Mac can send any Origin, but it could run apksim itself.
@@ -29,8 +30,11 @@ final class Beam {
    * build speaks; MIN_PROTOCOL the oldest, raised only once no release that far back still serves pages (keep at
    * least the last three releases'). With no protocol in common the page stays on the server and says which side to
    * update. `APKSIM_BEAM_PROTOCOLS=MIN-MAX` overrides the range, for checks only.
+   *
+   * 2 (issue 173): a start with data the agent cannot download itself may answer `need: "data"`, and the page sends the
+   * pack to `/beam/upload-data`. A protocol 1 page would read that answer as a session grant, so it still gets the 502.
    */
-  static final int PROTOCOL = 1;
+  static final int PROTOCOL = 2;
   static final int MIN_PROTOCOL = 1;
 
   /** {min, max} this build speaks (or the checks' override). */
@@ -68,14 +72,15 @@ final class Beam {
   private static final long PROMPT_MS = Long.getLong("apksim.beam.promptMs", 150_000);
   private static final SecureRandom RANDOM = new SecureRandom();
 
-  enum Kind { UPLOAD, SESSION }
+  enum Kind { UPLOAD, DATA, SESSION }
 
-  /** What a grant lets one request do, for one origin. */
   /**
-   * `extra`: for a session grant, the slot the agent unpacked a moved session's data into (phase 5); for an upload
-   * grant, the data's `ticket url` to fetch once the APK arrives. Null otherwise.
+   * What a grant lets one request do, for one origin. `extra`: for a session grant, the slot the agent unpacked a moved
+   * session's data into (phase 5); for an upload grant, the data's `ticket url` to fetch once the APK arrives. Null
+   * otherwise. `protocol`: the one the start that made it named (an upload's answer depends on it).
    */
-  record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires, String extra) {}
+  record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires, String extra,
+               int protocol) {}
 
   private final Path trustFile;
   /**
@@ -253,12 +258,16 @@ final class Beam {
   }
 
   String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra) {
+    return grant(kind, origin, app, sha256, name, launch, extra, 1);
+  }
+
+  String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra, int protocol) {
     expire();
     long now = System.currentTimeMillis();
     byte[] b = new byte[24];
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
-    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra));
+    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra, protocol));
     if (kind == Kind.SESSION && extra != null) importing.remove(extra);  // the grant owns it now
     return token;
   }

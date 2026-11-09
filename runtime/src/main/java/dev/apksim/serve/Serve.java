@@ -1062,13 +1062,64 @@ public final class Serve {
       }
       if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode() + " for the data");
       if (Files.size(zip) > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
-      // Until its grant owns it (the caller makes it next), the sweep leaves it.
-      String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
-      System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%n", origin, Files.size(zip) >> 10, name);
-      return name;
+      return seedPack(origin, zip, apk, "");
     } finally {
       Files.deleteIfExists(zip);
     }
+  }
+
+  /**
+   * Phase 5 behind a sign-in (issue 173): the pack the agent could not download, sent by the tab, which fetched it with
+   * its own credentials (`POST /beam/upload-data`). Taken as a download is: at most {@link SlotPack#MAX_BYTES}, then
+   * every check of {@link #seedFrom}. The slot's name, or throws why not.
+   */
+  private String seedUpload(String origin, InputStream body, long length, Path apk) throws IOException {
+    if (length > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
+    Path dir = state.resolve("beam/import");
+    Files.createDirectories(dir);
+    Path zip = dir.resolve("data-" + Long.toHexString(System.nanoTime()) + ".zip");
+    try {
+      try (java.io.OutputStream f = Files.newOutputStream(zip, java.nio.file.StandardOpenOption.CREATE_NEW)) {
+        // Only the request's own body (a known length is not read past: the connection's next bytes are not its).
+        byte[] buf = new byte[64 * 1024];
+        long total = 0;
+        while (length < 0 || total < length) {
+          int n = body.read(buf, 0, (int) (length < 0 ? buf.length : Math.min(buf.length, length - total)));
+          if (n < 0) break;
+          total += n;
+          if (total > SlotPack.MAX_BYTES) throw new IOException("the data is too large");
+          f.write(buf, 0, n);
+        }
+        if (length >= 0 && total < length) throw new IOException("the data ended early");
+      }
+      return seedPack(origin, zip, apk, " (sent by the tab)");
+    } finally {
+      Files.deleteIfExists(zip);
+    }
+  }
+
+  /** A moved session's pack, downloaded or sent, into a slot of its own; the slot's name. */
+  private String seedPack(String origin, Path zip, Path apk, String how) throws IOException {
+    // Until its grant owns it (the caller makes it next), the sweep leaves it.
+    String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
+    System.err.printf("[beam] %s: a moved session's data (%d KB) into %s%s%n", origin, Files.size(zip) >> 10, name, how);
+    return name;
+  }
+
+  /**
+   * Phase 5's answer when the agent could not download the session's data (issue 173): to a page in protocol 2 or
+   * later, `need: "data"` with a grant for the tab to send the pack (`dataUpload`) and why (`dataWhy`); to an older
+   * page, which would read that as a session grant, the 502 it always got. `via`: how the build came, if it did.
+   */
+  private void dataNeeded(OutputStream out, String o, int protocol, Catalog.App a, String sha, List<String> launch, String via,
+      IOException e) throws IOException {
+    if (protocol < 2) {
+      Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
+      return;
+    }
+    System.err.println("[beam] could not download " + a.name() + "'s moved data from " + o + ": " + e.getMessage() + " (the tab is asked)");
+    Http.json(out, 200, "{\"need\":\"data\",\"dataUpload\":" + Http.q(agent.grant(Beam.Kind.DATA, o, a.id(), sha, a.name(), launch, null, protocol))
+        + (via == null ? "" : ",\"via\":" + Http.q(via)) + ",\"dataWhy\":" + Http.q(e.getMessage()) + "}");
   }
 
   /**
@@ -1131,8 +1182,9 @@ public final class Serve {
   /**
    * The agent's routes (`apksim beam`). Any page may ask `/beam/hello` (it says only whether that page's origin is
    * allowed); `/beam/start` runs the prompt for an origin not yet allowed, and answers a session grant for an APK the
-   * agent has by its hash, else an upload grant; `/beam/upload` takes the APK once and checks its hash; `/ws` opens
-   * the session for its grant only. Every grant is for one origin and one use.
+   * agent has by its hash, else an upload grant; `/beam/upload` takes the APK once and checks its hash;
+   * `/beam/upload-data` a moved session's data the agent could not download (protocol 2); `/ws` opens the session for
+   * its grant only. Every grant is for one origin and one use.
    */
   private void beamRoute(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
     String sent = r.header("origin");
@@ -1199,12 +1251,39 @@ public final class Serve {
           try {
             seed = beamSeed(o, g.extra(), a.path());
           } catch (IOException e) {
-            Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
+            dataNeeded(out, o, g.protocol(), a, got, a.launch(), null, e);
             return;
           }
         }
         Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed))
             + (seed == null ? "" : ",\"data\":true") + "}");
+      }
+      case "POST /beam/upload-data" -> {
+        // Issue 173: the pack the agent could not download (the page's server behind a sign-in), sent by the tab.
+        Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.DATA, o);
+        if (g == null) {
+          Http.text(out, 403, "no such data upload (each lasts two minutes and is used once): start again");
+          return;
+        }
+        Catalog.App a = catalog.find(g.app());
+        if (a == null || !Files.isRegularFile(a.path(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          Http.text(out, 410, "this Mac no longer has the app's build: start again");
+          return;
+        }
+        long length = r.chunked() ? -1 : r.contentLength();
+        if (length < 0 && !r.chunked()) {
+          Http.text(out, 411, "send the data as the request body");
+          return;
+        }
+        String seed;
+        try {
+          seed = seedUpload(o, r.content(), length, a.path());
+        } catch (IOException | RuntimeException e) {  // a malformed zip may throw either
+          Http.text(out, 400, "the session's data was refused: " + e.getMessage());
+          return;
+        }
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), g.sha256(), a.name(), g.launch(), seed))
+            + ",\"data\":true}");
       }
       case "GET /ws" -> {
         String why = Beam.protocolProblem(r.param("protocol"));
@@ -1233,6 +1312,7 @@ public final class Serve {
     }
     String sha, name, ticket, from, data;
     long size;
+    int protocol;
     List<String> launch;
     try {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
@@ -1248,6 +1328,7 @@ public final class Serve {
         Http.text(out, 409, why);
         return;
       }
+      protocol = proto == null ? 1 : Integer.parseInt(proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
       name = body.get("name") instanceof String n ? n : null;
       size = body.get("size") instanceof Number n ? n.longValue() : -1;
       List<String> given = new ArrayList<>();
@@ -1289,7 +1370,8 @@ public final class Serve {
         try {
           seed = beamSeed(o, data, a.path());
         } catch (IOException e) {
-          Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
+          dataNeeded(out, o, protocol, a, sha, launch, via, e);
+          sweepBeam();  // after the answer, with its data grant holding the build
           return;
         }
       }
@@ -1298,7 +1380,7 @@ public final class Serve {
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, data))
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, data, protocol))
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 
