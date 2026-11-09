@@ -1489,7 +1489,10 @@ public final class Serve {
           if (hops >= 5) throw new IOException("too many redirects");
           java.net.URI next;
           try {
-            next = hop.apply(u.resolve(new java.net.URI(loc)).toString());
+            // A query-only address (`?sig=...`, a store refreshing a signature) keeps the path: URI.resolve would drop
+            // its last segment (RFC 2396), asking for the folder instead of the build.
+            String cur = u.toString(), base = cur.indexOf('?') < 0 ? cur : cur.substring(0, cur.indexOf('?'));
+            next = hop.apply(loc.startsWith("?") ? base + loc : u.resolve(new java.net.URI(loc)).toString());
           } catch (java.net.URISyntaxException | IllegalArgumentException e) {
             next = null;
           }

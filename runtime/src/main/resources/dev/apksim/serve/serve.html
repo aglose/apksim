@@ -1094,7 +1094,7 @@ async function macGrant(q, gen, say, data) {
       body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
         url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
   } finally { waiting = false; }
-  if (asked) say("Allowed, starting…");
+  if (asked && gen === startGen) say("Allowed, starting…");  // never over a Stop's overlay or a newer session
   if (g.via === "download") log("this Mac downloaded the app from this server");
   if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");
   if (gen !== startGen) return null;

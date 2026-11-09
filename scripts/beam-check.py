@@ -402,14 +402,15 @@ def source_checks(apksim, apk, sha, size):
     class Store(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path
-            if path in ("/builds/app.apk", "/other/app.apk", "/builds-other/app.apk") or path.startswith("/builds/app.apk?"):
+            if path in ("/builds/app.apk", "/other/app.apk", "/builds-other/app.apk") or path.startswith("/builds/app.apk?") \
+                    or path == "/builds/qredirect?sig=new":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")  # what artifact stores send
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
                 return
-            to = {"/builds/redirect": "/builds/app.apk?sig=abc", "/builds/out": f"http://127.0.0.1:{self.server.server_address[1]}/other/app.apk"}.get(path)
+            to = {"/builds/redirect": "/builds/app.apk?sig=abc", "/builds/qredirect?sig=old": "?sig=new", "/builds/out": f"http://127.0.0.1:{self.server.server_address[1]}/other/app.apk"}.get(path)
             if to:
                 self.send_response(302)
                 self.send_header("Location", to)
@@ -470,6 +471,9 @@ def source_checks(apksim, apk, sha, size):
         clear()
         g = start(U + "/builds/redirect")
         check(g.get("via") == "source", f"source: a redirect within the allowed prefix is followed ({g.get('why')})")
+        clear()
+        g = start(U + "/builds/qredirect?sig=old")
+        check(g.get("via") == "source", f"source: a query-only redirect keeps the path ({g.get('why')})")
         clear()
         g = start(U + "/builds/out")
         check(g.get("need") == "upload" and "redirected" in g.get("why", ""), f"source: not a redirect out of it ({g.get('why')})")

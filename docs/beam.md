@@ -906,8 +906,8 @@ Mac reaches them directly and anonymously (CI artifacts), and the page knows tha
   `config` line beside `apksim beam install --trust` ("The consent wait").
 - **Checked** (`beam-check.py`'s source section, with a stand-in artifact store): no plain-http or user-bearing
   prefix; an address not allowed is not fetched and the tab is asked; an allowed one downloads with a store's
-  octet-stream type and is found by its hash the next time; a redirect within the prefix is followed, one out of it
-  is not; `/builds-other`, `..`, `%2e%2e` and `%2F` are not under `/builds`; a sign-in page is not a build; a hash
+  octet-stream type and is found by its hash the next time; a redirect within the prefix is followed (a query-only one
+  keeping the path: `URI.resolve` drops its last segment), one out of it is not; `/builds-other`, `..`, `%2e%2e` and `%2F` are not under `/builds`; a sign-in page is not a build; a hash
   that does not match is not kept; `disallow-download` takes effect at once.
 
 ## The consent wait (2026-11-08, issue 178)
