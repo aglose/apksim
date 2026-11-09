@@ -40,7 +40,7 @@ public final class Serve {
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
-             apksim beam saved | run ID [OPTIONS] | forget ID | sweep | status
+             apksim beam saved | run ID [OPTIONS] | to-device ID [OPTIONS] | forget ID | sweep | status
              apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
                                [allow-download URL] [disallow-download URL]""";
@@ -156,7 +156,7 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && List.of("install", "uninstall").contains(args[1])) {
       System.exit(BeamLaunchd.command(s.launcher, state, args[1], List.of(args).subList(2, args.length)));
     }
-    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "forget", "config", "sweep", "status").contains(args[1])) {
+    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status").contains(args[1])) {
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
     for (int i = 0; i < args.length; i++) {

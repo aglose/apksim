@@ -481,6 +481,16 @@ final class BeamStore {
     return out;
   }
 
+  Path stateDir() {
+    return state;
+  }
+
+  /** The saved session's first slot (`k<id>-0`), whether or not it exists; null for a record without a usable package. */
+  Path slotOf(Map<String, Object> rec) {
+    if (!(rec.get("package") instanceof String pkg) || !pkg.matches("[A-Za-z0-9._]{1,255}")) return null;
+    return dataRoot.resolve(pkg).resolve("k" + rec.get("id") + "-0");
+  }
+
   /** Bytes the saved session's data takes. */
   long size(Map<String, Object> rec) {
     long total = 0;
@@ -788,6 +798,9 @@ final class BeamStore {
           return code;
         }
       }
+      case "to-device" -> {
+        return DeviceHandoff.command(store, catalog, args);
+      }
       case "forget" -> {
         if (args.size() != 1) return usage();
         Map<String, Object> r = store.saved(args.get(0));
@@ -923,6 +936,8 @@ final class BeamStore {
   static final String USAGE = """
       usage: apksim beam saved                  the sessions kept on this Mac
              apksim beam run ID [OPTIONS]       opens one in apksim's window, with the data it left
+             apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install replace|skip] [--yes] [--dry-run]
+                                                moves one onto an attached adb device (docs/beam.md "Moving a session to a device")
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)

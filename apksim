@@ -2,7 +2,7 @@
 # Usage: apksim [--activity PKG/.Act|.Act|NAME] [--shot FILE] [--exit-after-first-frame] [--debug PORT]
 #               [--instrument test.apk [-e KEY VALUE]...] app.apk
 #        apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle S] [--apps DIR|FILE]...  (docs/serve.md)
-#        apksim beam [--port N] [--max N] | apksim beam trust|saved|run|forget|config|sweep  (docs/beam.md)
+#        apksim beam [--port N] [--max N] | apksim beam trust|saved|run|to-device|forget|config|sweep  (docs/beam.md)
 # Runs an unmodified APK in a single host process.
 set -euo pipefail
 # On Linux (containers, CI) there is no window, Metal or sandbox-exec: the app runs headless and the
