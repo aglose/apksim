@@ -950,7 +950,8 @@ page that runs a new build per pull request made the visitor repeat it for every
   unknown id gets). `sha256` may be left out (its own build is used); one naming another build is refused (400: that is
   `dataFrom`). Its own build may be gone: with `sha256`, `ticket` and `url` as in any start it comes back the usual way.
   The session runs with the launch options, device (a Fill tab's `WxH@D` size too, within the bounds a beam tab's
-  `device` command has), appearance, locale, font scale and permissions it was saved with, unless the page names them. The answer is the usual grant with `"data": true, "saved": ID`.
+  `device` command has), appearance, locale, font scale and permissions it was saved with, unless the page names them;
+  either way they win over the app's own launch options, as with `apksim beam run`. The answer is the usual grant with `"data": true, "saved": ID`.
   - It runs on a copy, not in the saved slot: the slot (`k<id>-0` and its `.device`) is packed as a hand-off is
     (`SlotPack`, through folder handles, links left out) and unpacked into the session's own `bm<12 hex>-0`, so the beam
     sandbox still lets an instance touch only `beam-N` and `bm` slots. Every beamed instance shares one sandbox, so
@@ -959,9 +960,12 @@ page that runs a new build per pull request made the visitor repeat it for every
     (`BeamStore.writeBack`), as a device keeps what the app wrote. It holds `saved/<id>.lock` exclusively (the session
     gives up its shared hold first), so no `run` is open and none can start and take `k<id>-0` while that name is free
     between the renames; then both slots' locks; the copy must still be there (its app may have deleted it), the old
-    slot is moved aside and deleted only once the copy is in its place, and every rename is undone if one fails. If it
-    cannot (a `run` has it open, it was forgotten, the copy is gone), the copy (if there) is kept as a new saved
-    session instead, so nothing is lost.
+    slot is moved aside (to `beam/writeback/`, which no sweep empties) and deleted only once the copy is in its place,
+    and every rename is undone if one fails (what cannot be is left there and named in the log). A `run` stamps the
+    record's `changed` as it opens the saved session and again as it ends; a copy made before a stamp it did not see is
+    not put back over what that run may have written. If it cannot be put back (a `run` has it open or opened it
+    meanwhile, it was forgotten, the copy is gone), the copy (if there) is kept as a new saved session instead, so
+    nothing is lost.
   - One tab at a time (409 for a second while a grant or session holds the first); the session holds
     `saved/<id>.lock` shared, as `run` does, so `forget` and the `keep-saved-days` sweep leave it. The page cannot turn
     keeping off for it (`keep off` is answered `k on`): only the Mac's owner erases a saved session.
@@ -991,7 +995,8 @@ page that runs a new build per pull request made the visitor repeat it for every
   pack can hold sign-ins); serve.html offers none of this yet (an embedding page uses the protocol below).
 - **Checked**: `beam-check.py` (the saved session listed to its site and not another; reopened by its site with no
   build named, not by another, not twice; running on a `bm` copy with the saved data at app start; `keep off` answered
-  `k on`; what it wrote back in the saved slot after it ends, the copy gone, still one saved session; and, with the
+  `k on`; what it wrote back in the saved slot after it ends, the copy gone, still one saved session; `apksim beam run`
+  opening it while a tab has it open, after which the tab's copy is kept as a new saved session; and, with the
   Android SDK's apksigner and keytool, the test APK signed with a key of the check's own saved after a Write, a newer
   build of it (one asset more, same key) sent by the tab and starting on a copy with the saved data, its copy erased
   and the saved sessions unchanged, and refused: that build with a ZIP comment added after signing (its certificate

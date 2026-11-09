@@ -337,9 +337,14 @@ final class BeamStore {
    *
    * The session's own lock (`saved/<id>.lock`) is taken exclusively for the swap, by a caller that holds none on it: a
    * `run` holds it shared for as long as it runs, so none is open now and none can start (and recreate `k<id>-0`, whose
-   * name is free between the two renames) until the swap is done; `forget` and the expiry sweep wait too.
+   * name is free between the two renames) until the swap is done; `forget` and the expiry sweep wait too. A `run` that
+   * opened it after the copy was made (`copiedAt`: the record's {@link #changed} then) may have written to it: the copy
+   * is then not put back over it but kept as a new saved session by the caller.
+   *
+   * The saved slot as it was goes to `beam/writeback/` (which no sweep empties) and is deleted once the copy is in its
+   * place; if a rename fails and cannot be undone, it stays there, named in the log, as it may be the only copy.
    */
-  synchronized boolean writeBack(Path copy, Map<String, Object> rec) {
+  synchronized boolean writeBack(Path copy, Map<String, Object> rec, long copiedAt) {
     Path dir = copy.toAbsolutePath().normalize();
     String id = String.valueOf(rec.get("id"));
     if (!id.matches("[0-9a-f]{12}") || !dir.startsWith(dataRoot.toAbsolutePath().normalize())
@@ -350,7 +355,7 @@ final class BeamStore {
     Path device = dir.resolveSibling(dir.getFileName() + ".device"), deviceTarget = target.resolveSibling(target.getFileName() + ".device");
     // The copy must be there (a plain folder): its app may have removed it, and the saved slot is moved aside only for it.
     if (!Files.isDirectory(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
-    Path trash = beamDir.resolve("import").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
+    Path trash = beamDir.resolve("writeback").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
     List<FileChannel> open = new ArrayList<>();
     boolean dropTrash = true;
     try {
@@ -363,7 +368,12 @@ final class BeamStore {
         own = null;  // this JVM holds it (a copy for a newer build being read): not now
       }
       if (own == null) return false;
-      if (saved(id) == null) return false;  // forgotten while the session ran
+      Map<String, Object> now = saved(id);
+      if (now == null) return false;  // forgotten while the session ran
+      if (changed(now) != copiedAt) {
+        System.err.println("[beam] saved session " + id + " was opened by apksim beam run since the tab's copy was made: the copy is kept as a new one");
+        return false;
+      }
       // The copy's lock (its instance has gone) and the saved slot's (no `run` has it open), both held while they swap.
       for (Path p : List.of(dir, target)) {
         if (!Files.isDirectory(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
@@ -393,13 +403,14 @@ final class BeamStore {
           try {
             Files.move(done.get(i)[1], done.get(i)[0], StandardCopyOption.ATOMIC_MOVE);
           } catch (IOException | RuntimeException ex) {
-            System.err.println("[beam] could not undo " + done.get(i)[0] + " (left in " + trash + "): " + ex);
+            System.err.println("[beam] could not undo " + done.get(i)[0] + ": what was there is kept in " + trash + " (saved session " + id + ")");
             dropTrash = false;  // what is there may be the only copy of something
           }
         }
         return false;
       }
       used(id);
+      changing(id);
       return true;
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] could not put " + dir + " back as saved session " + id + ": " + e);
@@ -422,6 +433,29 @@ final class BeamStore {
     for (Map<String, Object> r : saved()) if (origin.equals(r.get("site"))) out.add(r);
     out.sort(Comparator.comparingLong((Map<String, Object> r) -> r.get("lastUsed") instanceof Number n ? n.longValue() : 0).reversed());
     return out;
+  }
+
+  /** When a saved session's data last changed (`changed` in its record: a `run`, a write-back), or 0 for never. */
+  static long changed(Map<String, Object> rec) {
+    return rec != null && rec.get("changed") instanceof Number n ? n.longValue() : 0;
+  }
+
+  /**
+   * Notes that a saved session's data may change now (`apksim beam run` opening it, a tab's write-back): a tab's copy
+   * made before is then not written back over it ({@link #writeBack}), so what the run wrote is not lost. A new value
+   * every time, even within one millisecond.
+   */
+  synchronized void changing(String id) {
+    Path f = savedDir.resolve(id + ".json");
+    try {
+      String text = Files.readString(f);
+      long now = Math.max(System.currentTimeMillis(), changed(saved(id)) + 1);
+      text = text.contains("\"changed\": ") ? text.replaceFirst("\"changed\": \\d+", "\"changed\": " + now)
+          : text.replaceFirst("(\"lastUsed\": \\d+)", "$1,\n  \"changed\": " + now);
+      writeAtomically(f, text);
+    } catch (IOException e) {
+      System.err.println("[beam] cannot note a change of " + id + ": " + e.getMessage());
+    }
   }
 
   /** Notes a saved session's use (`run`): `keep-saved-days` counts from it. */
@@ -685,8 +719,12 @@ final class BeamStore {
             return 1;
           }
           store.used(String.valueOf(r.get("id")));
+          // Held shared until it ends, so a tab's write-back (exclusive) cannot happen meanwhile; marked, so one whose
+          // copy was made before this does not overwrite what this run writes.
+          store.changing(String.valueOf(r.get("id")));
           int code = new ProcessBuilder(cmdLine).inheritIO().start().waitFor();
           store.used(String.valueOf(r.get("id")));
+          store.changing(String.valueOf(r.get("id")));  // again at its end: a copy made while it started is refused too
           return code;
         }
       }

@@ -127,6 +127,8 @@ public final class Serve {
    * saved slot when their session ends. One open at a time per saved session (see {@link #savedOpen}).
    */
   final Map<String, String> reopened = new ConcurrentHashMap<>();
+  /** Each reopened copy's saved record `changed` when it was made (BeamStore.writeBack refuses data changed since). */
+  final Map<String, Long> reopenedChanged = new ConcurrentHashMap<>();
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -935,7 +937,10 @@ public final class Serve {
     WebSocket ws = new WebSocket(s, in, out);
     Catalog.App app = catalog.find(r.param("app"));
     if (app == null) {
-      if (seed != null) reopened.remove(seed);
+      if (seed != null) {
+        reopened.remove(seed);
+        reopenedChanged.remove(seed);
+      }
       SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
@@ -973,7 +978,10 @@ public final class Serve {
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
-        if (seed != null) reopened.remove(seed);
+        if (seed != null) {
+        reopened.remove(seed);
+        reopenedChanged.remove(seed);
+      }
         SlotPack.dropSeed(state, seed, null, System.err::println);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
@@ -995,6 +1003,7 @@ public final class Serve {
             if (l.tryLock(0, Long.MAX_VALUE, true) != null) {
               session.savedId = sid;
               session.savedLock = l;
+              session.savedChanged = reopenedChanged.getOrDefault(seed, -1L);
               session.keep = true;
               l = null;
             }
@@ -1086,7 +1095,7 @@ public final class Serve {
     for (var e : List.copyOf(reopened.entrySet())) {
       String seed = e.getKey();
       boolean live = agent.ownsSeed(seed) || sessions.values().stream().anyMatch(x -> seed.equals(x.seedSlot));
-      if (!live) reopened.remove(seed, e.getValue());  // its grant expired or its session ended
+      if (!live && reopened.remove(seed, e.getValue())) reopenedChanged.remove(seed);  // its grant expired or its session ended
       else if (e.getValue().equals(id)) return true;
     }
     return false;
@@ -1158,8 +1167,12 @@ public final class Serve {
       try (OutputStream f = new java.io.BufferedOutputStream(Files.newOutputStream(zip, java.nio.file.StandardOpenOption.CREATE_NEW))) {
         SlotPack.pack(state, slot, pkg, f);
       }
+      long changedAt = BeamStore.changed(store.saved(id));  // under the slot's lock: no run is writing it now
       String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
-      if (reopen) reopened.put(name, id);
+      if (reopen) {
+        reopenedChanged.put(name, changedAt);
+        reopened.put(name, id);
+      }
       store.used(id);
       System.err.printf("[beam] %s: saved session %s's data (%d KB) %s into %s%n", origin, id, Files.size(zip) >> 10,
           reopen ? "reopened" : "copied for a newer build", name);

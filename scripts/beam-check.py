@@ -896,6 +896,35 @@ def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
               "saved: what it wrote is back in the saved slot, and the copy is gone")
         check(saved_ids(apksim) == [sid], f"saved: still one saved session, the same ({saved_ids(apksim)})")
 
+        # `apksim beam run` opening it while a tab has it open: the tab's copy, made before, is not put back over what
+        # the run may have written, but kept as a new saved session.
+        st, _, body = req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": sid})
+        gr = json.loads(body) if st == 200 else {}
+        s = open_session(gp, gr, B)
+        cp = gp + 5
+        rp = subprocess.Popen([apksim, "beam", "run", sid, "--headless", "--control", str(cp)], env=ENV,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ran = False
+        for _ in range(60):
+            r = subprocess.run([sys.executable, os.path.join(HERE, "drive.py"), str(cp), "wait 1000", "nodes"], capture_output=True, text=True, timeout=60)
+            if "at app start" in r.stdout:
+                ran = True
+                break
+            time.sleep(1)
+        subprocess.run([sys.executable, os.path.join(HERE, "drive.py"), str(cp), "quit"], capture_output=True, text=True, timeout=30)
+        try:
+            rp.wait(30)
+        except subprocess.TimeoutExpired:
+            rp.kill()
+        check(ran and rp.returncode == 0, "saved: apksim beam run opens it while the tab has it open")
+        check(close_session(s), "saved: then the tab's session ends")
+        check(until(lambda: len(saved_ids(apksim)) == 2, 10),
+              f"saved: its copy is kept as a new saved session, not put over what the run may have written ({saved_ids(apksim)})")
+        for i in saved_ids(apksim):
+            if i != sid:
+                beam(apksim, "forget", i)
+        check(saved_ids(apksim) == [sid] and os.path.exists(sd_file), "saved: the saved session itself is as the run left it")
+
         # A newer build of the same app on a copy of saved data: builds signed here with a key of beam-check's own.
         sg = Signer()
         if not sg.ok:
