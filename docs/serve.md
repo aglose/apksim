@@ -164,7 +164,9 @@ Only these are accepted, each with one plain value (no value starting with `-` e
 code, experimental; it only changes how the app's own libraries are mapped, and does nothing on Linux).
 `serve --move-shared-data` gives it to every app, since apps rarely control how their third-party libraries are aligned. A
 session that ends because the loader refused such a library says so in the tab, and names these two places to set it (the
-loader's own advice, "launch with --move-shared-data", is not something a tab can do). Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
+loader's own advice, "launch with --move-shared-data", is not something a tab can do). A beamed session needs neither:
+`apksim beam` adds the flag itself for a build with such a library (docs/beam.md, "4 KB-aligned libraries"), so a
+catalog written for a Linux serve, where these libraries load as they are, also runs on a visitor's Mac. Never options that read or write files, open ports or change the JVM (`--jvm`, `--network record`,
 `--adb`, `--no-sandbox`...): serve refuses a catalog with one at startup and a URL add with one with a 400. `--device` takes a built-in
 device or a custom size `WxH[@density]` (`--device 1280x720@1.5`, validated as for `--device-size`; a bad one is refused
 at startup or with a 400): it is that app's default device, used when a tab names none (the page's Device menu then

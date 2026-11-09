@@ -871,6 +871,26 @@ What it would take for `apksim beam` on a Linux desktop (the page offers beam on
   one more 5 s round, then ends; a page's request in that round calls the exit off. The idle exit takes 11-16 s for
   an 8 s idle time, and the check waits until status says "not running", so the next request is a fresh start.
 
+## 4 KB-aligned libraries (2026-11-08, issue 171)
+
+An app in a Linux serve's catalog runs there with a library linked for 4 KB pages (Linux maps 4 KB pages), but macOS
+maps 16 KB pages: a library whose writable data outside RELRO shares a page with its code is refused by the native
+loader unless the launch has `--move-shared-data` (AGENTS.md, "Hard-won rules"). A catalog written for a Linux serve has
+no reason to say so, and the beamed app exited at its first `loadLibrary` (a `NoClassDefFoundError` for that class on
+the next try); the page fell back to the server each time, and the operator never knew.
+
+So the agent reads the program headers of the build's `lib/arm64-v8a/*.so` before each launch (`SharedDataLibs`, the
+test of `code_page_conflict` in `native/elfloader.c`, remembered per build) and adds `--move-shared-data` itself when
+one has such data, with a line in the agent's log and the session's naming the libraries. The agent's cache warm-up
+(`--warm`) and `apksim beam run` of a kept session do the same (its record keeps the app's own options, not what the agent added). A library whose headers
+cannot be read is taken as fine: the loader says what is wrong with it if the app loads it. The flag changes only how
+those libraries are mapped (any other loads as before), and the instance is in the beam sandbox. A library whose
+data cannot be moved (code after it) is still refused, with the loader's own message. What the move cannot promise
+(references it cannot find, AGENTS.md) holds here too; without it the app does not start on the Mac at all. An app
+that catches the refusal and runs without the library now gets it loaded, moved. `beam-check.py` checks the line
+appears for the test app (whose `libpagefixturenorelro.so` is such a library), that the session then streams, and
+that `run` of its kept session adds the flag too.
+
 ## Measurements to keep (as serve's table)
 
 Click to first local frame (warm standby, cold standby, first launch of an APK); cutover gap in frames; tap to frame

@@ -406,6 +406,10 @@ def warm_checks(apksim, apk, sha, size):
         warmed = until(lambda: "[serve] warmed" in open(log.name).read() or "warming" in open(log.name).read() and "failed" in open(log.name).read(), 300)
         text = open(log.name).read()
         check(warmed and "[serve] warmed" in text, "warm: the agent warms the build (" + next((l for l in text.splitlines() if "warm" in l and "fail" in l), "warmed") + ")")
+        with zipfile.ZipFile(apk) as z:
+            conflict = "lib/arm64-v8a/libpagefixturenorelro.so" in z.namelist()
+        check(("launching with --move-shared-data" in text) == conflict,
+              "warm: the warm-up adds --move-shared-data as a session does" if conflict else "warm: no --move-shared-data")
         check(until(lambda: bool(classes()) and bool(entry()), 10), f"warm: its translated classes and APK cache entry are the build's ({len(classes())} packs, {len(entry())} entries)")
         out = os.path.join(state, "beam", "out")
         check(until(lambda: not os.listdir(out) if os.path.isdir(out) else True, 10), "warm: its out folder is gone")
@@ -741,6 +745,13 @@ def main():
         t0 = time.time()
         s.pump(120, until=lambda: len(s.frames) > 0)
         check(len(s.frames) > 0, f"agent: frames arrive ({time.time() - t0:.2f} s to the first)")
+        # A build with a 4 KB-aligned library macOS cannot map as it is (the test app's libpagefixturenorelro.so) is
+        # launched with --move-shared-data by the agent itself (issue 171); one without is not.
+        with zipfile.ZipFile(a.apk) as z:
+            conflict = "lib/arm64-v8a/libpagefixturenorelro.so" in z.namelist()
+        said = "launching with --move-shared-data" in open(g.logfile).read()
+        check(said == conflict, "agent: --move-shared-data added for a build with a 4 KB-aligned library"
+              if conflict else "agent: no --move-shared-data for a build without a 4 KB-aligned library")
         s.pump(1.5)
         after = s.after(["touch down 733 1533", "touch up 733 1533"], 2)
         check(len(after) > 0, "agent: a tap changes the screen")
@@ -883,6 +894,9 @@ def main():
         check("at app start: setting=written" in nodes and "sdcard=written" in nodes,
               f"keep: run reopens it with the data it left ({[x for x in nodes.split(';') if 'app start' in x][:1]})")
         check(code == 0, f"keep: run ends with the instance's exit code ({code})")
+        err = rp.stderr.read() if code != -1 else ""
+        check(("launching with --move-shared-data" in err) == conflict,
+              "keep: run adds --move-shared-data as the tab's session did" if conflict else "keep: run adds no --move-shared-data")
 
         r = beam(apksim, "forget", sid)
         check(r.returncode == 0 and not slots(f"k{sid}") and saved_ids(apksim) == [], "keep: forget erases its data")
