@@ -187,6 +187,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     the raster thread), checkpoints (stack intents + saved state, a clone of the data folder), and `rec save` to a
     `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`). A checkpoint cycles the visible activities
     through onStop/onStart as a quick Home and back would: the one way recording shows in the app.
+    `scripts/replay-adb.py BUNDLE -s SERIAL` plays a bundle on a device over adb (the checkpoint's data, /sdcard and
+    Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192). Only
+    run against apksim's own adb device so far, not a phone or emulator.
+  - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
+    where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
+    `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
     `AccessibleWindows`: which windows accessibility reports (UiAutomation, `uiautomator dump`, `nodes`, bundles'
@@ -240,9 +246,14 @@ Read README.md for results and limits; this file covers how to work on the code.
     `--move-shared-data` itself for a build with a 4 KB-aligned library macOS cannot map as it is (issue 171); `BeamSandbox` (in `dev.apksim`): a beamed instance's
     sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
-    saved|run|forget|config|sweep|status`, and a saved session reopened from its site's tab on a copy written back when
+    saved|run|to-device|forget|config|sweep|status`, and a saved session reopened from its site's tab on a copy written back when
     it ends, or a newer build of the same app started on a copy (`/beam/start`'s `saved`/`dataFrom`, `GET /beam/saved`,
-    issue 181; `ApkSigners`: the same key, as Android requires of an update); `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
+    issue 181; `ApkSigners`: the same key, as Android requires of an update), and the flight recorder channels a beam
+    session starts with (`apksim beam config rec input|all|off|CHANNELS`, `input` by default; an app's own `--rec`
+    wins); `DeviceHandoff`: `apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install
+    replace|skip] [--yes] [--dry-run]`, a saved session carried on to an adb device (the build compared by hash and
+    signer, the device's data backed up before the slot is written through `run-as`, settings without identity keys, an
+    undo script; docs/beam.md "Moving a session to a device", issue 191; no real device has run it yet); `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
     when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
@@ -288,7 +299,11 @@ Read README.md for results and limits; this file covers how to work on the code.
   with its data, in Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
   stand-in for launchd; `--real` installs a test LaunchAgent),
   `rec-check.py` (the flight recorder against the test app and the network fixture: every channel, a checkpoint read
-  back, the saved bundle, a crash bundle), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
+  back, the saved bundle, a crash bundle), `replay-adb.py` (a flight recording replayed on a device over adb, shipped in
+  releases; `replay-adb-check.py` checks its plan on a synthetic bundle, no device), `beam-device-check.py` (`apksim beam
+  to-device` against a stand-in `adb` and a temporary state folder), `tabfiles-check.py` (a tab's file pushes and their
+  refusals, and a recording saved and downloaded, against a running `apksim serve --allow-rec`),
+  `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -790,7 +805,10 @@ it. `AdbServer` is the device side of the adb transport (CNXN without AUTH or TL
 WRTE in flight per stream) plus `sync:` v1 (STAT/LIST/SEND/RECV). `AdbShell` is a small shell (`;` `&&` `||`,
 quotes, `>`/`>>`; no pipes: pipe on the Mac) whose commands go through `Control.QUEUE`, i.e. the same
 `Host.runCommand`/`DeviceControls.run` code as `--control`; anything needing the main thread otherwise is posted to
-the main looper (`AdbShell.onMain`). Checked with adb 36 against the test app:
+the main looper (`AdbShell.onMain`). The port answers before the sandbox exists, so `shell:`/`exec:` requests are held
+until the framework is ready (`AdbServer.frameworkReady`, from `Host.run`, or `SimRunner` in test runs; after 60 s:
+`apksim: still starting, retry`): one that ran in that window initialised `android.os.Looper` on an adb thread outside
+the sandbox and the app died with exit 10 (issue 189). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
 back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
 after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (the display: `shot --display`, the app's pixels with the drawn soft keyboard, bars and banner over them when there is a window; headless it is the app's pixels, as `shot`; without `-p` raw RGBA),
@@ -871,6 +889,14 @@ the beam sandbox and streams it into the same canvas; the server hands the page 
 which the agent downloads the APK itself (`GET /api/beam/apk`, no token), the tab relaying it when that fails. A move
 to the Mac "With its data" sends `handoff` on the server's socket: the app quits, its slot is packed, and the agent
 downloads it with a ticket (`GET /api/beam/data`) into the slot the app starts in there.
+Files in and recordings out (issue 187, docs/serve.md): `POST /api/sessions/ID/files?path=PATH` writes the body into the
+running app's storage (`--max-push MB` a file, default 16; 64 MB a session); the server reads the upload and sends the
+instance `devpush` (`TabFiles`), so no host path is named. With `--allow-rec` (off by default: a recording holds the
+app's network calls and logs) a tab may send `rec on|off [CHANNEL...]`, `rec checkpoint now` and `rec save [SECONDS]`,
+never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept a week with the logs, and `GET
+/api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
+page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
+`scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;
