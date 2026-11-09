@@ -1120,6 +1120,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   frame after frame until the test's timeout; `RealTimeSwipeTest`), and
   anything moving the clock past real time (idleFor, SystemClock.sleep) waits for it. Off, nothing is registered.
   The test app's suite takes 13 s with it against 5.6 s (`RealTimeClockTest`, run with `-e realtimeClock true`).
+  Short waits (`waitOutBarrier`, the wait for real time after `idleFor`, `pumpFor`'s steps) sleep only up to a margin
+  before their deadline and spin the rest (`RealTimeClock.waitUntil`) where the OS overshoots sleeps: macOS VM CI
+  runners woke a 16 ms sleep ~115 ms late, so a tap's idle took seconds (issue 201). `--precise-waits on|off|auto`
+  (default auto: five 5 ms sleeps probed on first use; margin 4x the median overshoot, 200 ms at most, none under
+  3 ms; one stderr line says so). Costs a core while a main thread waits.
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk name>-<content key>`, `ApkCache`):
