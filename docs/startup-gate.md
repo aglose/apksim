@@ -103,6 +103,64 @@ as `activity-resumed` can be gated too. `"gate": false` reports a metric without
 - **A new anchor fails to download or launch**: the job needs the release's `apksim-VERSION-macos-arm64.tar.gz`,
   `apksim-testapp-VERSION.apk` and `SHA256SUMS` (release.yml publishes all three).
 
+## A self-hosted Mac
+
+GitHub's `macos-15` runners are sometimes all taken, and the job then waits for one, for an hour or more. The
+repository variable `STARTUP_GATE_RUNNER` sends the job to a self-hosted Apple Silicon Mac instead:
+
+```bash
+gh variable set STARTUP_GATE_RUNNER --body '["self-hosted","macOS","ARM64"]'   # use the Mac
+gh variable delete STARTUP_GATE_RUNNER                                         # back to macos-15
+```
+
+GitHub has no fallback: with the variable set and the Mac asleep, off or its runner stopped, the job waits for it
+(up to a day). Delete the variable before closing the Mac, or start a waiting job again after deleting it.
+
+The repository is public, so a pull request's code is anyone's code, its workflow files included. `ci.yml` sends the
+job to the Mac only for pushes, manual runs and pull requests from this repository's own branches, but that is only
+routing: a fork's pull request runs the fork's `ci.yml`, which could name the runner's labels in any job. A personal
+account's repository has no runner groups to restrict a runner to a workflow, so the Mac enforces it itself, outside
+anything a pull request can change: `scripts/runner-job-started.sh`, installed as the runner's job-started hook, fails
+every job before its first step unless it is `ci.yml`'s `startup-gate` of this repository for a push, a manual run, or
+a pull request whose head branch is in this repository (read from GitHub's event payload, which a fork cannot change).
+The runner runs the hook as a step of the job, and a failed step only fails the job: a later step with `if: always()`
+or `failure()` would still run. So the hook does not just exit non-zero: it kills the job's `Runner.Worker`, and the
+runner reports the job failed before any of its steps have run. Keep "Require approval for all external
+contributors" on (Settings → Actions → General) as well, and read a fork's workflow changes before approving a run.
+
+Setting the Mac up, once:
+
+- A standard (not admin) macOS user of its own for the runner, holding none of the owner's files, keys or notes: a job
+  runs as that user. Its session must stay logged in (fast user switching) for the runner's LaunchAgent to run.
+- As that user: Settings → Actions → Runners → New self-hosted runner → macOS, ARM64, and follow its commands
+  (`config.sh` with the registration token it shows; the default labels are the ones above), but do not run `run.sh`
+  or start the service yet: a runner that is up takes any job queued for its labels, and without the hook nothing
+  refuses one.
+- The job-started hook: copy `scripts/runner-job-started.sh` outside the runner's folder
+  (`~/actions-runner-hooks/job-started.sh`; a job must not be able to rewrite it) and add
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/USER/actions-runner-hooks/job-started.sh` to the runner's `.env`.
+- Only then `./svc.sh install` and `./svc.sh start`. A job's log starts with "self-hosted runner hook: ... allowed";
+  a refused one ends right there, failed. After changing `.env` later, restart it (`./svc.sh stop`, `./svc.sh start`).
+- Check the hook once on the real runner before setting the variable: push a scratch branch with a workflow that
+  targets the Mac from a job the hook must refuse, with a step that would run after a failure, e.g.
+  `.github/workflows/hook-check.yml`:
+  `on: push` / `jobs: probe: runs-on: [self-hosted, macOS, ARM64]` / `steps: - if: always()` /
+  `run: touch /tmp/hook-check-ran`. The job must end failed after "refusing this job ... ending the job", with no
+  `/tmp/hook-check-ran` on the Mac, and the runner must show Idle again (Settings → Actions → Runners). Then delete
+  the branch and run `ci.yml` by hand on main (`gh workflow run ci.yml`, with the variable set for that run) to see
+  `startup-gate` allowed.
+- The job needs the Xcode command-line tools (system-wide), `python3` and `gh` on the runner's
+  `PATH` (`config.sh` records the `PATH` it was run with in `.path`: include `/opt/homebrew/bin`).
+- On power, the Mac must not sleep: System Settings → Battery → Options → "Prevent automatic sleeping on power adapter
+  when the display is off". The job holds it awake itself while it runs (`caffeinate`), but a sleeping Mac never
+  picks a job up.
+
+What changes on the Mac: Spotlight is left alone (on `macos-15` the job turns indexing off), and its standbys are
+stopped at the end even when the run is cancelled. It uses its own installs and `APKSIM_HOME`s under the runner's
+temporary folder, so it neither sees nor stops anyone's own instances or standbys. Launches there are ~3.5 times
+faster than on `macos-15`, so the job takes a fraction of the time; other heavy work on the Mac (emulators, builds)
+makes batches noisier, which the gate turns into extra batches or an inconclusive result rather than a false failure.
+
 ## Running it locally
 
 ```bash
