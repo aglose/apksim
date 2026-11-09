@@ -979,7 +979,7 @@ public final class Serve {
     // copy nothing puts back (its app's writes erased when it ends). A `dataFrom` copy of the same session reading it
     // holds that lock for a moment (within one JVM even two shared locks on a file collide): waited for, briefly.
     String reopenSid = beam && seed != null ? reopened.get(seed) : null;
-    java.nio.channels.FileChannel reopenLock = reopenSid == null ? null : holdSaved(reopenSid);
+    BeamStore.SavedHold reopenLock = reopenSid == null ? null : holdSaved(reopenSid);
     if (reopenSid != null && reopenLock == null) {
       reopened.remove(seed);
       reopenedChanged.remove(seed);
@@ -1089,28 +1089,19 @@ public final class Serve {
    * tried for up to 10 s (a copy for a newer build holds it while it reads the slot, `forget` exclusively). Null when it
    * cannot be had, or the saved session is gone.
    */
-  private java.nio.channels.FileChannel holdSaved(String id) {
+  private BeamStore.SavedHold holdSaved(String id) {
     long until = System.currentTimeMillis() + 10_000;
     while (true) {
-      java.nio.channels.FileChannel ch = null;
       try {
-        if (store.saved(id) == null) return null;
-        ch = store.sessionLock(id);
-        if (ch.tryLock(0, Long.MAX_VALUE, true) != null) {
-          java.nio.channels.FileChannel held = ch;
-          ch = null;
-          return held;
+        BeamStore.SavedHold h = store.hold(id, false);
+        if (h != null) {
+          // Checked again once held: `forget` (which holds it exclusively) may have erased it just before.
+          if (store.saved(id) != null) return h;
+          h.close();
+          return null;
         }
-      } catch (IOException | java.nio.channels.OverlappingFileLockException e) {
-        // held in this JVM (a copy being read): try again
-      } finally {
-        if (ch != null) {
-          try {
-            ch.close();
-          } catch (IOException e) {
-            // nothing held
-          }
-        }
+      } catch (IOException e) {
+        // try again
       }
       if (System.currentTimeMillis() > until) return null;
       try {
@@ -1193,18 +1184,33 @@ public final class Serve {
     Path dir = state.resolve("beam/import");
     Files.createDirectories(dir);
     Path zip = dir.resolve("saved-" + Long.toHexString(System.nanoTime()) + ".zip");
-    // Held while it is read: forget waits, and a `run` opening it meanwhile takes another slot instead of writing this one.
-    try (java.nio.channels.FileChannel sl = store.sessionLock(id);
-         java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(slot.resolve(".lock"), java.nio.file.StandardOpenOption.CREATE,
-             java.nio.file.StandardOpenOption.WRITE)) {
-      java.nio.channels.FileLock shared, own;
+    // Held while it is read: forget and a write-back wait (the session's hold), and a `run` opening it meanwhile takes
+    // another slot instead of writing this one (its slot's lock). One copy of a saved session at a time here: a second
+    // channel on the slot's lock, closed, would release the first's (POSIX).
+    try (BeamStore.SavedHold shared = store.hold(id, false)) {
+      if (shared == null) throw new IOException("it is busy (being forgotten, or a tab's session is being put back into it): try again");
+      synchronized (store.copyMonitor(id)) {
+        return copyHeld(origin, id, rec, slot, pkg, apk, zip, reopen);
+      }
+    } catch (IOException | RuntimeException e) {
+      throw new IOException("saved session " + id + "'s data could not be copied: " + e.getMessage());
+    } finally {
+      Files.deleteIfExists(zip);
+    }
+  }
+
+  private String copyHeld(String origin, String id, Map<String, Object> rec, Path slot, String pkg, Path apk, Path zip, boolean reopen)
+      throws IOException {
+    // Checked again now that it is held: `forget` may have erased it since it was read.
+    if (store.saved(id) == null || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) throw new IOException("it is gone");
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(slot.resolve(".lock"), java.nio.file.StandardOpenOption.CREATE,
+        java.nio.file.StandardOpenOption.WRITE)) {
+      java.nio.channels.FileLock own;
       try {
-        shared = sl.tryLock(0, Long.MAX_VALUE, true);
         own = ch.tryLock();
       } catch (java.nio.channels.OverlappingFileLockException e) {
-        throw new IOException("it is in use on this Mac");
+        own = null;
       }
-      if (shared == null) throw new IOException("it is busy (being forgotten, or a tab's session is being put back into it): try again");
       if (own == null) throw new IOException("it is open on this Mac (apksim beam run): quit it first");
       try (OutputStream f = new java.io.BufferedOutputStream(Files.newOutputStream(zip, java.nio.file.StandardOpenOption.CREATE_NEW))) {
         SlotPack.pack(state, slot, pkg, f);
@@ -1219,10 +1225,6 @@ public final class Serve {
       System.err.printf("[beam] %s: saved session %s's data (%d KB) %s into %s%n", origin, id, Files.size(zip) >> 10,
           reopen ? "reopened" : "copied for a newer build", name);
       return name;
-    } catch (IOException | RuntimeException e) {
-      throw new IOException("saved session " + id + "'s data could not be copied: " + e.getMessage());
-    } finally {
-      Files.deleteIfExists(zip);
     }
   }
 

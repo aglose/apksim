@@ -968,7 +968,10 @@ page that runs a new build per pull request made the visitor repeat it for every
     nothing is lost.
   - One tab at a time (409 for a second while a grant or session holds the first), and no `dataFrom` copy of it
     meanwhile (409, at an upload too); the session holds `saved/<id>.lock` shared, as `run` does, so `forget` and the
-    `keep-saved-days` sweep leave it. It runs only once it has that lock (waited for up to 10 s: a copy for a newer
+    `keep-saved-days` sweep leave it. Inside the agent every hold on that lock goes through one channel per saved
+    session (`BeamStore.hold`: shared holds counted, an exclusive one alone), since closing any channel to a file
+    releases every lock the process has on it; copies of one saved session are read one at a time, and each re-reads
+    the record once held (it may have been forgotten just before). It runs only once it has that lock (waited for up to 10 s: a copy for a newer
     build holds it while it reads); without it the session ends at once with why and its copy is erased, rather than
     run as a copy nothing would put back. The page cannot turn
     keeping off for it (`keep off` is answered `k on`): only the Mac's owner erases a saved session.

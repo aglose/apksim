@@ -358,16 +358,10 @@ final class BeamStore {
     Path trash = beamDir.resolve("writeback").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
     List<FileChannel> open = new ArrayList<>();
     boolean dropTrash = true;
+    SavedHold own = null;
     try {
-      FileChannel session = sessionLock(id);
-      open.add(session);
-      FileLock own;
-      try {
-        own = session.tryLock();
-      } catch (OverlappingFileLockException e) {
-        own = null;  // this JVM holds it (a copy for a newer build being read): not now
-      }
-      if (own == null) return false;
+      own = hold(id, true);
+      if (own == null) return false;  // a `run` has it open, or a copy for a newer build is being read
       Map<String, Object> now = saved(id);
       if (now == null) return false;  // forgotten while the session ran
       if (changed(now) != copiedAt) {
@@ -424,6 +418,7 @@ final class BeamStore {
         }
       }
       if (dropTrash) deleteTree(trash);  // the saved slot as it was before this session (never through a link)
+      if (own != null) own.close();
     }
   }
 
@@ -501,10 +496,87 @@ final class BeamStore {
     return total;
   }
 
-  /** `saved/<id>.lock`: shared by each `run` of the session while it runs, exclusive to `forget`. */
-  FileChannel sessionLock(String id) throws IOException {
-    Files.createDirectories(savedDir);
-    return FileChannel.open(savedDir.resolve(id + ".lock"), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+  /**
+   * A hold on a saved session's lock (`saved/<id>.lock`): shared by each `run` and each tab that has it open or is
+   * copying it, exclusive to `forget` and a tab's write-back. Taken only through {@link #hold}: within one process,
+   * closing any channel to a file releases every lock the process has on it (POSIX), so the process keeps one channel
+   * per saved session, counts its shared holders, and closes it when the last lets go.
+   */
+  final class SavedHold implements AutoCloseable {
+    private final String id;
+    private boolean closed;
+
+    private SavedHold(String id) {
+      this.id = id;
+    }
+
+    @Override
+    public void close() {
+      synchronized (holds) {
+        if (closed) return;
+        closed = true;
+        Held h = holds.get(id);
+        if (h == null || --h.count > 0) return;
+        holds.remove(id);
+        try {
+          h.ch.close();  // the last holder here: nothing else of this process's is on that file
+        } catch (IOException e) {
+          // released with the process
+        }
+      }
+    }
+  }
+
+  private static final class Held {
+    final FileChannel ch;
+    final boolean exclusive;
+    int count = 1;
+
+    Held(FileChannel ch, boolean exclusive) {
+      this.ch = ch;
+      this.exclusive = exclusive;
+    }
+  }
+
+  private final Map<String, Held> holds = new java.util.HashMap<>();
+
+  /**
+   * Takes a saved session's lock, shared or exclusive, without waiting; null when another holds it in a way that
+   * excludes this (here or in another process). A shared hold joins one this process has.
+   */
+  SavedHold hold(String id, boolean exclusive) throws IOException {
+    if (id == null || !id.matches("[0-9a-f]{12}")) return null;
+    synchronized (holds) {
+      Held h = holds.get(id);
+      if (h != null) {
+        if (exclusive || h.exclusive) return null;
+        h.count++;
+        return new SavedHold(id);
+      }
+      Files.createDirectories(savedDir);
+      FileChannel ch = FileChannel.open(savedDir.resolve(id + ".lock"), StandardOpenOption.CREATE, StandardOpenOption.READ,
+          StandardOpenOption.WRITE);
+      FileLock l;
+      try {
+        l = ch.tryLock(0, Long.MAX_VALUE, !exclusive);
+      } catch (IOException | RuntimeException e) {
+        ch.close();  // no other channel of this process is on the file (none in holds): closing it releases nothing else
+        throw e;
+      }
+      if (l == null) {
+        ch.close();
+        return null;
+      }
+      holds.put(id, new Held(ch, exclusive));
+      return new SavedHold(id);
+    }
+  }
+
+  /** One per saved session: copies of it are read one at a time (each takes its slot's `.lock`). */
+  private final Map<String, Object> copying = new java.util.concurrent.ConcurrentHashMap<>();
+
+  Object copyMonitor(String id) {
+    return copying.computeIfAbsent(id, k -> new Object());
   }
 
   /**
@@ -514,14 +586,8 @@ final class BeamStore {
   String forget(Map<String, Object> rec) {
     String sid = String.valueOf(rec.get("id"));
     if (!sid.matches("[0-9a-f]{12}")) return "not a saved session";
-    try (FileChannel lockCh = sessionLock(sid)) {
-      FileLock own;
-      try {
-        own = lockCh.tryLock();
-      } catch (OverlappingFileLockException e) {
-        own = null;
-      }
-      if (own == null) return "it is open (apksim beam run): quit it first";
+    try (SavedHold own = hold(sid, true)) {
+      if (own == null) return "it is open (apksim beam run, or a tab): quit it first";
       String why = forgetLocked(rec);
       if (why == null) Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
       return why;
@@ -707,13 +773,7 @@ final class BeamStore {
         cmdLine.add(catalog.buildFile(sha).toString());
         // Held (shared: runs of one session side by side) until the launch ends: forget and the expiry sweep take it
         // exclusively, so neither erases a session that is open or opening.
-        try (FileChannel ch = store.sessionLock(String.valueOf(r.get("id")))) {
-          FileLock held;
-          try {
-            held = ch.tryLock(0, Long.MAX_VALUE, true);
-          } catch (OverlappingFileLockException e) {
-            held = null;  // this JVM holds it already: as taken (released with the channel, closed below either way)
-          }
+        try (SavedHold held = store.hold(String.valueOf(r.get("id")), false)) {
           if (held == null) {
             System.err.println("apksim beam run: " + r.get("id") + " is busy (being forgotten, or a tab's session is being put back into it): try again");
             return 1;

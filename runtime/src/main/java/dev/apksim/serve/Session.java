@@ -87,7 +87,7 @@ final class Session {
    * expiry sweep leave it.
    */
   volatile String savedId;
-  volatile java.nio.channels.FileChannel savedLock;
+  volatile BeamStore.SavedHold savedLock;
   /** The saved record's `changed` when its copy was made: a write-back over data changed since is refused. */
   volatile long savedChanged;
   private volatile boolean ended;
@@ -1296,15 +1296,9 @@ final class Session {
   }
 
   private void closeSavedLock() {
-    java.nio.channels.FileChannel l = savedLock;
+    BeamStore.SavedHold l = savedLock;
     savedLock = null;
-    if (l != null) {
-      try {
-        l.close();
-      } catch (IOException e) {
-        // released with the process
-      }
-    }
+    if (l != null) l.close();
   }
 
   private void eraseOrKeep() {
