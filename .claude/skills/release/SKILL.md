@@ -1,7 +1,6 @@
 ---
 name: release
 description: Merge every open apksim pull request, refresh the docs (README, AGENTS.md, docs/) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
-disable-model-invocation: true
 ---
 
 # apksim release
