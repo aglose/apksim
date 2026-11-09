@@ -46,7 +46,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--network-profile", "--device");
+      "--audio", "--biometrics", "--network-profile", "--device", "--rec");
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
@@ -177,6 +177,9 @@ final class Catalog {
       if (o.equals("--device") && !Session.DEVICES.contains(v) && deviceSize(v) == null) {
         throw new IOException("--device takes " + String.join(", ", Session.DEVICES) + " or WxH[@density] such as 1280x720@1.5"
             + " (160-4096 dp a side, density 0.75-4, at most 4096 pixels a side)");
+      }
+      if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
+        throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");
       }
       out.add(o);
       out.add(v);

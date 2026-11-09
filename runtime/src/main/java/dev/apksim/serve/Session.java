@@ -232,13 +232,19 @@ final class Session {
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
     String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
     if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
-    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
+    // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
+    // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
     List<String> own = app.launch();
+    if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
+      cmd.addAll(List.of("--rec", serve.store.config.rec()));
+    }
+    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     for (int i = 0; i < own.size(); i++) {
       if (own.get(i).equals("--device")) i++;
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
       // app's own defaults, as `apksim beam run` puts them.
       else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
+      else if (own.get(i).equals("--rec") && i + 1 < own.size() && own.get(i + 1).equals("off")) i++;  // off: no recorder
       else cmd.add(own.get(i));
     }
     // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),

@@ -33,7 +33,7 @@ cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" 
 # train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py (with affected.py) runs
 # test suites; snapshot.py screenshot tests.
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" \
-  "$ROOT/scripts/affected.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/device-profile.py" "$D/scripts/"
+  "$ROOT/scripts/affected.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/device-profile.py" "$ROOT/scripts/replay-adb.py" "$D/scripts/"
 cp "$ROOT/work/apksim.jar" "$D/work/"
 # Robolectric's native runtime is unpacked into work/runtime (prepare-runtime.sh) and never read from its jar.
 for j in "$ROOT"/work/lib/*.jar; do

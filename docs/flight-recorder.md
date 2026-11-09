@@ -5,7 +5,7 @@ engineer sees what happened (the screen as a movie, the input, logcat, network c
 replay exists, starts the app from a checkpoint just before the bug and carries on using it from there.
 
 This page covers the recording side, which is built: channels you switch on and off while the app runs, checkpoints,
-and the saved bundle. Replay is the next step ("Replay: the plan" below).
+and the saved bundle. Replay on a device over adb exists (`scripts/replay-adb.py`); replay in apksim is the next step ("Replay: the plan" below).
 
 ## Turning it on
 
@@ -161,6 +161,35 @@ logs. Treat a bundle from a signed-in session like the device itself.
 - The rings live in this process. A crash saves them, but a `kill -9` loses them.
 - Not recorded: sensors, camera frames, audio, location fixes (location changes made with the `location` command are
   recorded), notifications posted, WorkManager and alarm timing.
+
+## Replay on a real device: `scripts/replay-adb.py`
+
+To tell whether a bug is the app's or the simulator's, a recording can be played on a device over adb:
+
+```
+scripts/replay-adb.py session.apkrec -s SERIAL [--apk APK] [--pace 2] [--capture device.mp4] [--logcat device.log]
+scripts/replay-adb.py session.apkrec --dry-run       # the plan and the report, no device
+```
+
+It replaces the app's data, `/sdcard` files and Settings values on the device, so it needs `--yes`, and it saves the app's current data first (`--backup-dir DIR`, default `./replay-backup-PKG-TIME`; `--no-backup` skips it). It finds out whether the data can be written at all before it changes anything. It checks the installed APK against `apkSha256` (`--apk` installs a file after checking it against the same hash),
+stops the app, puts the checkpoint's data back (`data.zip`'s app folder through `run-as`, so the build must be
+debuggable, or straight over adb where that may write; `/sdcard` by push; Settings values by `settings put`), sets
+the checkpoint's display with `wm size` / `wm density` (reset at the end; `--scale-coordinates` scales the input
+instead), starts the checkpoint's top activity with `am start -n`, and plays `input.jsonl` at its recorded offsets
+(`--pace` divides them): a tap or a drag as `input tap` / `input swipe` with the gesture's duration, Back/Home/keys
+as keyevents, typed characters as `input text`, rotate/appearance/locale/font scale/animation scale/open URL as
+`settings`, `cmd` and `am` calls. `--capture` records the device screen next to the bundle's `screen.avi`.
+
+Its report says what was not done. The network is live (`network.har` cannot be given to a device); the intent's
+extras and the saved instance state are parcels the script does not unparcel, so only the activity's class is
+started; two-finger gestures, `location`, `push`, biometrics and the other commands adb cannot do are listed and
+skipped; characters left out of the recording (password fields, pasted text) are typed as `x`; `input text` drops
+characters other than letters, digits and `. , _ @ -` and a space. A drag is played as a swipe between its end
+points (`--path-steps N` cuts it into N). `scripts/replay-adb-check.py` checks the plan on a synthetic bundle.
+
+Beam sessions record `input` by default now (`apksim beam config rec input|all|off|CHANNELS`, read at the agent's
+start), so a session nobody planned to replay has something to `rec save`. An app's own launch options that name
+`--rec` win.
 
 ## Replay: the plan
 
