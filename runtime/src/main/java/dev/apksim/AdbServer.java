@@ -41,9 +41,8 @@ final class AdbServer {
     FRAMEWORK_READY.countDown();
   }
 
-  /** Holds a shell/exec request until the framework is ready (test runs have no Host loop: always ready). */
+  /** Holds a shell/exec request until the framework is ready (Host.run, or SimRunner for test runs). */
   private static boolean awaitFramework() {
-    if (System.getProperty("apksim.instrument") != null) return true;
     try {
       return FRAMEWORK_READY.await(60, java.util.concurrent.TimeUnit.SECONDS);
     } catch (InterruptedException e) {
@@ -296,6 +295,7 @@ final class AdbServer {
           if (!awaitFramework()) {
             // Handling a command first would initialise framework classes (Looper) outside the sandbox.
             s.out.write("apksim: still starting, retry\n".getBytes(StandardCharsets.UTF_8));
+            s.out.flush();
             return;
           }
           if (cmd.isBlank() && !exec) new AdbShell(s.out).interactive(s.in);

@@ -234,6 +234,9 @@ public class SimRunner extends RobolectricTestRunner {
      */
     @Override
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
+      // Test runs have no Host loop to say so: the sandbox exists here, so held adb requests may run. (A normal
+      // launch waits for Host, as this method creates the main Looper itself.)
+      if (TestActivities.testRun()) AdbServer.frameworkReady();
       Timing.detail("setup-app-state");
       TimeZones.applyLaunchZone();  // --timezone: the JDK's, android.icu's and user.timezone (Joda-Time)
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
