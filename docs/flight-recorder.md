@@ -49,18 +49,18 @@ The `--rec*` options are read after the hand-off, so a recording launch still go
 
 | Channel | What it keeps | Where it hooks |
 |---|---|---|
-| `input` | Every touch, two-finger touch, wheel, key, character, Back and window resize the app is given, stamped with the app's `SystemClock.uptimeMillis` and the wall clock. Also the device commands a replay must repeat: rotate, appearance, locale, font scale, device, size, open URL, push, permission, location, biometrics, recreate, process-death, home/lock and back, network conditions, clock, and so on. | `Host.dispatch` (one place for the Mac window, `--control`, adb and `drive`) and `Host.runCommand` |
+| `input` | Every touch, two-finger touch, wheel, key, character, Back (also one that only closes the software keyboard) and window resize the app is given, stamped with the app's `SystemClock.uptimeMillis` and the wall clock. Also the device commands a replay must repeat: rotate, appearance, locale, font scale, device, size, open URL, push, permission, location, biometrics, recreate, process-death, home/lock and back, network conditions, clock, and so on. | `Host.dispatch` (one place for the Mac window, `--control`, adb and `drive`) and `Host.runCommand` |
 | `logcat` | The app's `android.util.Log` lines while the channel was on | `AdbLog`'s ring (20k lines), which the channel turns on; each line now carries its wall time. The ring goes on for `adb logcat` with the channel off, so a save keeps only lines from when it was on (`rec.Spans`) |
-| `net` | Every HTTP(S) exchange while the channel was on, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file |
-| `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept), the number of bound arguments, column names, time in µs, rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
-| `db+values` | As `db`, plus bound values, ContentValues and simpleQuery results | the same |
+| `net` | Every HTTP(S) exchange while the channel was on, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file. An exchange belongs to the channel if the channel was on when its request began. A connection a worker was opening directly as the channel came on is closed when its connect returns, and the app reconnects through the layer |
+| `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept, literals written into it left out: `'…'`, `X'…'`, `…` for numbers), the number of bound arguments (for a `SQLiteStatement` too, read when it runs), column names, time in µs (a transaction's begin includes waiting for its lock), rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
+| `db+values` | As `db`, plus bound values, ContentValues, simpleQuery results, and the SQL as written | the same |
 | `screen` | Turning it on, or `rec clear`, redraws the windows so a still screen has a first frame. 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`, read per launch) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
 
 Covered by `db`: Room's framework driver, SQLDelight's Android driver, `SQLiteOpenHelper` code. Not covered: a bundled
 SQLite (androidx.sqlite's `BundledSQLiteDriver`, which ships its own native library), or SQLite reached from native
 code.
 
-Every ring has a byte budget: input 16 MB, db 16 MB, screen 64 MB, net 64 MB with bodies. When a ring hits its budget
+Every ring has a byte budget: input 16 MB, db 16 MB, screen 64 MB, net 64 MB with bodies, URLs and headers. When a ring hits its budget
 the oldest items go first (an item bigger than the whole budget goes too), and a saved bundle's manifest says how many
 were dropped.
 
@@ -144,7 +144,8 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
 - pasted text (Cmd+V, `paste`), wherever it goes: `{"pasted": true, "redacted": true}` per character;
 - clipboard text (`clipboard set TEXT` is kept as its length);
 - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
-- database values, unless `db+values` is on.
+- database values, unless `db+values` is on: bound arguments, ContentValues, query results, and literals written into
+  the SQL itself.
 
 Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, and anything the app
 logs. Treat a bundle from a signed-in session like the device itself.

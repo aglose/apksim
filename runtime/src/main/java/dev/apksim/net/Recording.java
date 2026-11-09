@@ -34,8 +34,11 @@ final class Recording {
   record Match(Set<String> fields, Set<String> ignoreQuery, Set<String> ignoreHeaders, Set<String> redact) {}
 
   static final class Entry {
-    final long wallMs = System.currentTimeMillis();
+    /** When the request began (the engine sets it from its start; the flight recorder's channel spans test it). */
+    long wallMs = System.currentTimeMillis();
     String started = Instant.ofEpochMilli(wallMs).toString();
+    /** Whether the flight recorder's capture was on when the request began (`rec off net` pauses it). */
+    boolean keepAtStart = true;
     long timeMs;
     String method;
     String url;
@@ -213,13 +216,13 @@ final class Recording {
   private long bytes;
 
   synchronized void add(Entry e) {
-    if (!keep) return;
+    if (!e.keepAtStart) return;  // begun while the capture was paused: what counts is the state at the request's start
     entries.add(e);
     index(e);
     if (path == null) {
       bytes += size(e);
       long from = dev.apksim.rec.Rec.keepFromWallMs();
-      while (!entries.isEmpty() && (entries.get(0).wallMs < from || (bytes > CAPTURE_BYTES && entries.size() > 1))) {
+      while (!entries.isEmpty() && (entries.get(0).wallMs < from || bytes > CAPTURE_BYTES)) {  // one too big goes too
         Entry old = entries.remove(0);
         bytes -= size(old);
         List<Entry> same = byKey.get(old.key);
@@ -231,8 +234,14 @@ final class Recording {
     }
   }
 
+  /** What an entry holds: bodies, and the URL, index key and headers, which can be large too. */
   private static long size(Entry e) {
-    return 512 + (e.reqBody == null ? 0 : e.reqBody.length) + (e.respBody == null ? 0 : e.respBody.length);
+    long n = 512 + (e.reqBody == null ? 0 : e.reqBody.length) + (e.respBody == null ? 0 : e.respBody.length);
+    n += 2L * ((e.url == null ? 0 : e.url.length()) + (e.key == null ? 0 : e.key.length()));
+    for (List<String[]> hs : List.of(e.reqHeaders, e.respHeaders)) {
+      if (hs != null) for (String[] h : hs) for (String x : h) n += 16 + 2L * (x == null ? 0 : x.length());
+    }
+    return n;
   }
 
   synchronized int size() {

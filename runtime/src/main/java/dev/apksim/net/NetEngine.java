@@ -823,6 +823,8 @@ final class NetEngine {
 
     boolean recordExchange(Request req) throws IOException {
       long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
+      boolean keepAtStart = Net.recording.keep;
       long sent = t0;
       boolean expect = "100-continue".equalsIgnoreCase(req.header("Expect"));
       byte[] statusLine = null;
@@ -887,6 +889,9 @@ final class NetEngine {
       cout.flush();
 
       Recording.Entry e = new Recording.Entry();
+      e.wallMs = startWall;
+      e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+      e.keepAtStart = keepAtStart;
       e.method = req.method;
       e.url = req.url;
       e.httpVersion = req.version;

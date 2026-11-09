@@ -408,6 +408,7 @@ public final class Net {
     if (!active) {
       s.connect(a, timeout);
       directly(s, isa);  // for a `network offline` later
+      startedMeanwhile(s);
       return;
     }
     Conditions c = conditions;
@@ -470,7 +471,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
-    if (!active) return tracked(f.createSocket(host, port));
+    if (!active) return startedMeanwhile(tracked(f.createSocket(host, port)));
     return createSocket(f, new InetSocketAddress(host, port), host);
   }
 
@@ -500,6 +501,20 @@ public final class Net {
   }
 
   /** A socket connected without the engine: remembered, so going offline closes it. */
+  /**
+   * A socket connected directly because the layer was off when the connect began. If it came on meanwhile (`rec on
+   * net`), its closeDirect may have looked at the sockets before this one was registered: closed here instead, so
+   * nothing goes on past the engine. The app sees a connection that failed as the network changed, and retries.
+   * `active` is set before closeDirect runs, and this socket is registered before `active` is read, so one of the two
+   * closes it.
+   */
+  private static Socket startedMeanwhile(Socket s) throws IOException {
+    if (!active) return s;
+    direct.remove(s);
+    s.close();
+    throw new ConnectException("connection reset: the network layer started while connecting");
+  }
+
   private static Socket tracked(Socket s) throws IOException {
     if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) directly(s, a);
     return s;
@@ -519,7 +534,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
-    if (!active) return tracked(f.createSocket(address, port));
+    if (!active) return startedMeanwhile(tracked(f.createSocket(address, port)));
     // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
     InetSocketAddress dest = new InetSocketAddress(address, port);
     return createSocket(f, dest, dest.getHostString());

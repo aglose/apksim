@@ -178,7 +178,9 @@ public class Host {
               FlightRecorder.input(e, SystemClock.uptimeMillis());
               controls.windowResized((int) e.x(), (int) e.y(), e.value() != 0);
             } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
-              // Back put the software keyboard away; the app does not see it.
+              // Back put the software keyboard away; the app does not see it, but its IME insets change, so a replay
+              // presses it too.
+              FlightRecorder.input(e, SystemClock.uptimeMillis());
             } else if (!controls.hidden()) {
               closed = dispatch(e);
             } else if (e.type() == SimWindow.UP) {

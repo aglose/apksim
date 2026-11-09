@@ -49,7 +49,7 @@ public final class Db {
     m.put("db", name(db));
     m.put("thread", Thread.currentThread().getName());
     m.put("op", op);
-    if (sql != null) m.put("sql", sql);
+    if (sql != null) m.put("sql", Rec.dbValues ? sql : literalsOut(sql));
     if (args != null) m.put("args", args);
     m.put("us", us);
     if (error != null) m.put("error", error.toString());
@@ -59,6 +59,72 @@ public final class Db {
     long size = 64 + (sql == null ? 0 : 2L * sql.length()) + (args == null ? 0 : 2L * args.toString().length());
     for (String k : new String[] {"result", "error"}) if (m.get(k) instanceof String v) size += 2L * v.length();  // a long simpleQueryForString
     Rec.DB.add(wall, size, m);
+  }
+
+  /**
+   * The SQL with its literals left out, for the db channel without values: an app can write a value into the SQL
+   * itself (`INSERT ... VALUES ('token')`, `WHERE pin = 1234`). String literals become '…', blobs X'…' and numbers …;
+   * identifiers (bare, "quoted", `quoted`, [quoted]), keywords and placeholders stay. Only the record changes, never
+   * the SQL that runs.
+   */
+  static String literalsOut(String sql) {
+    StringBuilder b = new StringBuilder(sql.length());
+    int n = sql.length();
+    for (int i = 0; i < n; ) {
+      char c = sql.charAt(i);
+      if (c == '\'' || ((c == 'x' || c == 'X') && i + 1 < n && sql.charAt(i + 1) == '\'' && (i == 0 || !word(sql.charAt(i - 1))))) {
+        boolean blob = c != '\'';
+        int j = i + (blob ? 2 : 1);
+        while (j < n) {  // '' inside a literal is a quote
+          if (sql.charAt(j) == '\'') {
+            if (j + 1 < n && sql.charAt(j + 1) == '\'') j += 2;
+            else break;
+          } else {
+            j++;
+          }
+        }
+        b.append(blob ? "X'…'" : "'…'");
+        i = Math.min(n, j + 1);
+      } else if (c == '"' || c == '`' || c == '[') {
+        char close = c == '[' ? ']' : c;
+        int j = sql.indexOf(close, i + 1);
+        j = j < 0 ? n : j + 1;
+        b.append(sql, i, j);
+        i = j;
+      } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+        int j = sql.indexOf('\n', i);
+        j = j < 0 ? n : j;
+        b.append("--…");  // a comment can hold anything too
+        i = j;
+      } else if ((Character.isDigit(c) || (c == '.' && i + 1 < n && Character.isDigit(sql.charAt(i + 1))))
+          && (i == 0 || !word(sql.charAt(i - 1)))) {
+        int j = i;
+        while (j < n && (word(sql.charAt(j)) || sql.charAt(j) == '.'
+            || ((sql.charAt(j) == '+' || sql.charAt(j) == '-') && (sql.charAt(j - 1) == 'e' || sql.charAt(j - 1) == 'E')))) {
+          j++;
+        }
+        b.append('…');
+        i = j;
+      } else if (c == '?') {
+        int j = i + 1;
+        while (j < n && Character.isDigit(sql.charAt(j))) j++;
+        b.append(sql, i, j);  // a placeholder, numbered or not (?1)
+        i = j;
+      } else if (word(c)) {
+        int j = i;
+        while (j < n && word(sql.charAt(j))) j++;
+        b.append(sql, i, j);  // a name or keyword, digits in it included (t2, ?1)
+        i = j;
+      } else {
+        b.append(c);
+        i++;
+      }
+    }
+    return b.toString();
+  }
+
+  private static boolean word(char c) {
+    return Character.isLetterOrDigit(c) || c == '_' || c == '$';
   }
 
   private static String name(SQLiteDatabase db) {
@@ -262,14 +328,27 @@ public final class Db {
         () -> db.updateWithOnConflict(table, v, where, whereArgs, conflict));
   }
 
+  // Timed from the call: taking a transaction can wait for another connection's lock, or fail.
   public static void beginTransaction(SQLiteDatabase db) {
-    db.beginTransaction();
-    if (Rec.db) log(db, "begin", null, null, System.nanoTime(), null, null);
+    if (!Rec.db) {
+      db.beginTransaction();
+      return;
+    }
+    rec(db, "begin", null, null, () -> {
+      db.beginTransaction();
+      return null;
+    });
   }
 
   public static void beginTransactionNonExclusive(SQLiteDatabase db) {
-    db.beginTransactionNonExclusive();
-    if (Rec.db) log(db, "begin", null, null, System.nanoTime(), null, null);
+    if (!Rec.db) {
+      db.beginTransactionNonExclusive();
+      return;
+    }
+    rec(db, "begin", null, null, () -> {
+      db.beginTransactionNonExclusive();
+      return null;
+    });
   }
 
   public static void setTransactionSuccessful(SQLiteDatabase db) {
@@ -290,6 +369,38 @@ public final class Db {
 
   // ------------------------------------------------------------------ SQLiteStatement
 
+  // SQLiteProgram's database and bound arguments (package-private there): what a statement's record names.
+  private static final java.lang.reflect.Method PROGRAM_DB = programMethod("getDatabase");
+  private static final java.lang.reflect.Method PROGRAM_ARGS = programMethod("getBindArgs");
+
+  private static java.lang.reflect.Method programMethod(String name) {
+    try {
+      java.lang.reflect.Method m = android.database.sqlite.SQLiteProgram.class.getDeclaredMethod(name);
+      m.setAccessible(true);
+      return m;
+    } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+      return null;
+    }
+  }
+
+  private static SQLiteDatabase db(SQLiteStatement s) {
+    try {
+      return PROGRAM_DB == null ? null : (SQLiteDatabase) PROGRAM_DB.invoke(s);
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      return null;
+    }
+  }
+
+  /** The arguments bound now: how many, or their values with db+values (as the database hooks). */
+  private static Object bound(SQLiteStatement s) {
+    try {
+      Object[] a = PROGRAM_ARGS == null ? null : (Object[]) PROGRAM_ARGS.invoke(s);
+      return a == null ? null : args(a);
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      return null;
+    }
+  }
+
   /** The statement's SQL: SQLiteStatement.toString is "SQLiteProgram: " and its SQL (getSql is hidden). */
   private static String sql(SQLiteStatement s) {
     String t = s.toString();
@@ -301,7 +412,7 @@ public final class Db {
       s.execute();
       return;
     }
-    rec(null, "exec", sql(s), null, () -> {
+    rec(db(s), "exec", sql(s), bound(s), () -> {
       s.execute();
       return null;
     });
@@ -309,21 +420,21 @@ public final class Db {
 
   public static int executeUpdateDelete(SQLiteStatement s) {
     if (!Rec.db) return s.executeUpdateDelete();
-    return rec(null, "updateDelete", sql(s), null, s::executeUpdateDelete);
+    return rec(db(s), "updateDelete", sql(s), bound(s), s::executeUpdateDelete);
   }
 
   public static long executeInsert(SQLiteStatement s) {
     if (!Rec.db) return s.executeInsert();
-    return rec(null, "insert", sql(s), null, s::executeInsert);
+    return rec(db(s), "insert", sql(s), bound(s), s::executeInsert);
   }
 
   public static long simpleQueryForLong(SQLiteStatement s) {
     if (!Rec.db) return s.simpleQueryForLong();
-    return rec(null, "simpleQueryForLong", sql(s), null, s::simpleQueryForLong);
+    return rec(db(s), "simpleQueryForLong", sql(s), bound(s), s::simpleQueryForLong);
   }
 
   public static String simpleQueryForString(SQLiteStatement s) {
     if (!Rec.db) return s.simpleQueryForString();
-    return rec(null, "simpleQueryForString", sql(s), null, s::simpleQueryForString);
+    return rec(db(s), "simpleQueryForString", sql(s), bound(s), s::simpleQueryForString);
   }
 }
