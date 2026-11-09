@@ -178,8 +178,8 @@ final class Catalog {
         throw new IOException("--device takes " + String.join(", ", Session.DEVICES) + " or WxH[@density] such as 1280x720@1.5"
             + " (160-4096 dp a side, density 0.75-4, at most 4096 pixels a side)");
       }
-      if (o.equals("--rec") && (v.equals("off") || BeamStore.recSetting(v) == null)) {
-        throw new IOException("--rec takes all or flight recorder channels such as input,logcat");
+      if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
+        throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");
       }
       out.add(o);
       out.add(v);

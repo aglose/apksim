@@ -211,7 +211,7 @@ class Plan:
             steps.append((off, "rotate", self.rot))
         elif name == "appearance" and args and args[0] in ("dark", "light"):
             steps.append((off, "shell", "cmd uimode night " + ("yes" if args[0] == "dark" else "no")))
-        elif name == "fontscale" and args and re.fullmatch(r"[0-3](\.\d+)?", args[0]):
+        elif name == "fontscale" and args and re.fullmatch(r"([0-3](\.\d+)?|4(\.0+)?)", args[0]):
             steps.append((off, "shell", "settings put system font_scale " + args[0]))
         elif name == "animscale" and args and re.fullmatch(r"\d+(\.\d+)?", args[0]):
             steps.append((off, "shell", "; ".join("settings put global %s %s" % (k, args[0]) for k in (
@@ -447,7 +447,7 @@ def play(adb, plan, scale, args, warn):
 
 def step_line(kind, a, scale, pace):
     if kind == "tap":
-        return "input tap %d %d" % (a[0] * scale[0], a[1] * scale[1])
+        return "input tap %d %d" % (round(a[0] * scale[0]), round(a[1] * scale[1]))
     if kind == "swipe":
         return "input swipe %d %d %d %d %d" % (a[0] * scale[0], a[1] * scale[1], a[2] * scale[0], a[3] * scale[1],
                                                max(1, int(a[4] / pace)))
@@ -475,7 +475,7 @@ def describe(plan, args):
         out.append("am start -n %s" % shlex.quote("%s/%s" % (plan.pkg, plan.stack[-1]["class"])))
     for off, kind, a in plan.steps:
         line = step_line(kind, a, (1.0, 1.0), args.pace)
-        out.append("+%6d ms  %s" % (off / args.pace, line))
+        out.append("+%6d ms  %s" % (round(off / args.pace), line))
     return out
 
 

@@ -244,6 +244,7 @@ final class Session {
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
       // app's own defaults, as `apksim beam run` puts them.
       else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
+      else if (own.get(i).equals("--rec") && i + 1 < own.size() && own.get(i + 1).equals("off")) i++;  // off: no recorder
       else cmd.add(own.get(i));
     }
     // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),
