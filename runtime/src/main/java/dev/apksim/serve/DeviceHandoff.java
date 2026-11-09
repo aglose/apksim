@@ -86,8 +86,8 @@ final class DeviceHandoff {
       p.getInputStream().close();
       throw new IOException("adb " + String.join(" ", args) + " did not finish");
     }
-    drain.join(10_000);
-    feed.join(10_000);
+    drain.join();  // the process has ended: its output ends and the stdin writer returns
+    feed.join();
     synchronized (out) {
       return new Result(p.exitValue(), out.toString(StandardCharsets.UTF_8));
     }
@@ -181,7 +181,14 @@ final class DeviceHandoff {
   static Map<String, String> chooseSettings(Map<String, String> all, String want, List<String> notes) {
     Map<String, String> out = new TreeMap<>();
     if (want == null) return out;
-    Set<String> names = want.equals("all") ? null : Set.of(want.split(","));
+    Set<String> names = null;
+    if (!want.equals("all")) {
+      names = new java.util.LinkedHashSet<>();
+      for (String k : want.split(",")) {
+        if (!k.isBlank()) names.add(k.strip());
+      }
+      if (names.isEmpty()) notes.add("--settings names no keys");
+    }
     for (Map.Entry<String, String> e : all.entrySet()) {
       boolean deleted = e.getKey().startsWith("!");  // SlotDevice: a default the app deleted
       String key = deleted ? e.getKey().substring(1) : e.getKey();
@@ -402,6 +409,7 @@ final class DeviceHandoff {
       }
       // What the device has now, before anything is written, kept in a script that puts it back.
       Files.createDirectories(backups, PRIVATE_DIR);
+      Files.setPosixFilePermissions(backups, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));  // also if it existed
       // One handoff at a time per device (any session, any process): two would mix their data, and the second's "old"
       // values and backup would be the first's half-written state.
       Path lockFile = backups.resolve(serial.replace(':', '_') + ".lock");
@@ -412,6 +420,7 @@ final class DeviceHandoff {
           // made meanwhile
         }
       }
+      Files.setPosixFilePermissions(lockFile, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
       deviceLock = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
       java.nio.channels.FileLock dl;
       try {
@@ -447,7 +456,7 @@ final class DeviceHandoff {
       }
       optionsUndo(serial, pkg, rec, script);
       Files.createFile(undo, PRIVATE_FILE);
-      Files.writeString(undo, script.toString());
+      Files.writeString(undo, script.toString(), StandardCharsets.UTF_8);
       System.out.println("what the device has now is saved in " + undo + " (sh it to put it back)");
 
       if (install) {

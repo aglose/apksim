@@ -67,13 +67,13 @@ elif a[0] == "shell":
 def main():
     apk = next((x for x in sys.argv[1:] if not x.startswith("-")), None)
     if not apk:
-        for c in (os.path.join(ROOT, "testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk"),
-                  "/Users/aglose/apksim/testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk"):
-            if os.path.exists(c):
+        for c in (os.environ.get("APKSIM_TEST_APK", ""),
+                  os.path.join(ROOT, "testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk")):
+            if c and os.path.exists(c):
                 apk = c
                 break
     if not apk:
-        sys.exit("no APK: pass one")
+        sys.exit("no APK: pass one, or set APKSIM_TEST_APK")
     import hashlib
     sha = hashlib.sha256(open(apk, "rb").read()).hexdigest()
     tmp = tempfile.mkdtemp(prefix="beam-device-")

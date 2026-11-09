@@ -488,7 +488,8 @@ final class BeamStore {
   /** The saved session's first slot (`k<id>-0`), whether or not it exists; null for a record without a usable package. */
   Path slotOf(Map<String, Object> rec) {
     if (!(rec.get("package") instanceof String pkg) || !pkg.matches("[A-Za-z0-9._]{1,255}")) return null;
-    return dataRoot.resolve(pkg).resolve("k" + rec.get("id") + "-0");
+    if (!(rec.get("id") instanceof String id) || !id.matches("[0-9a-f]{12}")) return null;
+    return dataRoot.resolve(pkg).resolve("k" + id + "-0");
   }
 
   /** Bytes the saved session's data takes. */
