@@ -821,7 +821,7 @@ months apart in either direction.
   least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
   know.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
-  built"). Releases after 0.19.1 speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
+  built"). 0.20.0 and later speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
   `source` (issues 177, 178).
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
@@ -844,7 +844,7 @@ readable by any origin. Requests to the server carry its token as everything els
 2. **Is there an agent, and which protocol?** `GET AGENT/beam/hello` → `{"apksim", "protocol", "minProtocol",
    "trusted", "asking"}`. Use `P = min(page's protocol, agent's protocol)` if it is at least both minimums; else stay
    on the server and say which side to update. `trusted`: this origin will not be prompted. `asking`: the consent
-   dialog for this origin is up now (releases after 0.19.1; absent before): poll it while a start is pending (step 4)
+   dialog for this origin is up now (0.20.0 and later; absent before): poll it while a start is pending (step 4)
    to tell the visitor the Mac waits for them ("The consent wait").
 3. **The app's build.** `GET SERVER/api/apps/ID/beam` → `{"id", "name", "size", "sha256", "options", "ticket",
    "ticketSeconds"}` (409 while an added app still downloads).
@@ -852,7 +852,7 @@ readable by any origin. Requests to the server carry its token as everything els
    "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
    (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
    store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
-   releases up to 0.19.1). The agent may first prompt its owner (up to 2.5 minutes: keep the request open; `asking`
+   releases before 0.20.0). The agent may first prompt its owner (up to 2.5 minutes: keep the request open; `asking`
    in step 2 says it is). Answers:
    - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data): go to
      step 5.
