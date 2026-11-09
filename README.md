@@ -312,8 +312,9 @@ apksim serve --bind 0.0.0.0 --token token.txt --apps builds/   # for others: the
 
 For people without Android tools: each tab runs the APK in its own instance on the server and streams its screen
 (JPEG frames, sent only when the screen changes); clicks, drags, the wheel and the keyboard go back as touches and
-keys. Back, Home, rotation, dark mode, device type, text size, locale, deep links, muted audio, blank video and
-animation speed are buttons, and "Copy link" gives a URL that opens the same app in the same settings. On a Mac a session's first frame comes in 0.2-0.4 s, a tap
+keys. Back, Home, rotation, dark mode, device type, text size, locale and deep links are buttons, and "Copy link"
+gives a URL that opens the same app in the same settings. A page that drives the stream itself can also mute audio,
+blank video and change animation speed in a running session (`audio`, `video`, `animscale`; docs/serve.md). On a Mac a session's first frame comes in 0.2-0.4 s, a tap
 shows in ~30 ms on the same machine, and animations stream at up to 120 fps. Loopback only unless a token is set;
 sessions end when the tab closes or after 10 minutes idle, and their app data is erased. See
 [docs/serve.md](docs/serve.md).
