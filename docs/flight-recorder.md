@@ -1,0 +1,171 @@
+# Flight recorder: the last N seconds, saved as a shareable bundle
+
+A tester finds a bug, saves what the device did over the last minute or two, and sends the file to an engineer. The
+engineer sees what happened (the screen as a movie, the input, logcat, network calls, database calls) and, once
+replay exists, starts the app from a checkpoint just before the bug and carries on using it from there.
+
+This page covers the recording side, which is built: channels you switch on and off while the app runs, checkpoints,
+and the saved bundle. Replay is the next step ("Replay: the plan" below).
+
+## Turning it on
+
+At launch:
+
+```
+./apksim --rec all app.apk                        # every channel
+./apksim --rec input,logcat,net app.apk           # some
+./apksim --rec all --rec-window 300 --rec-checkpoint 15 app.apk
+```
+
+While the app runs (control channel, `adb shell apksim rec ...`, or `scripts/ctl.py`):
+
+```
+rec                              status (one line): channels, counts, checkpoints, last save
+rec on [CHANNEL...]              start channels (none named: all)
+rec off [CHANNEL...]             stop them (what they kept stays until it ages out)
+rec window SECONDS               how much the rings keep (default 120)
+rec checkpoint now               take a checkpoint
+rec checkpoint every SECONDS     periodic checkpoints (default 30 while input is recorded)
+rec checkpoint off               only when asked
+rec checkpoint verify [ID]       read a checkpoint back as a replay would
+rec save [SECONDS] [FILE]        save the last SECONDS (default: the window) to FILE
+rec clear                        forget everything kept
+```
+
+`rec save` answers at once with the file name. A worker thread writes the file, and `rec status` reports when it is
+done (`last save: FILE: 107 KB in 32 ms`). Without FILE, bundles go to `work/screenshots/<package>-<time>.apkrec`
+(`~/.apksim/screenshots` for an installed release), next to screenshots and screen recordings. A FILE must be
+somewhere the launcher's sandbox lets the app write, which means under the state folder.
+
+In the Mac window: **File > Save Replay** (Cmd+Shift+S) saves the window. File > Show Screenshots and Recordings
+opens the folder.
+
+The `--rec*` options are read after the hand-off, so a recording launch still goes to a warm standby.
+
+## Channels
+
+| Channel | What it keeps | Where it hooks |
+|---|---|---|
+| `input` | Every touch, two-finger touch, wheel, key, character, Back and window resize the app is given, stamped with the app's `SystemClock.uptimeMillis` and the wall clock. Also the device commands a replay must repeat: rotate, appearance, locale, font scale, device, size, open URL, push, permission, location, biometrics, recreate, process-death, home/lock and back, network conditions, clock, and so on. | `Host.dispatch` (one place for the Mac window, `--control`, adb and `drive`) and `Host.runCommand` |
+| `logcat` | The app's `android.util.Log` lines | `AdbLog`'s ring (20k lines), which the channel turns on; each line now carries its wall time |
+| `net` | Every HTTP(S) exchange, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. |
+| `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept), the number of bound arguments, column names, time in µs, rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
+| `db+values` | As `db`, plus bound values, ContentValues and simpleQuery results | the same |
+| `screen` | 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
+
+Covered by `db`: Room's framework driver, SQLDelight's Android driver, `SQLiteOpenHelper` code. Not covered: a bundled
+SQLite (androidx.sqlite's `BundledSQLiteDriver`, which ships its own native library), or SQLite reached from native
+code.
+
+Every ring has a byte budget: input 16 MB, db 16 MB, screen 64 MB, net 64 MB with bodies. When a ring hits its budget
+the oldest items go first, and a saved bundle's manifest says how many were dropped.
+
+## Checkpoints
+
+A checkpoint is what a replay starts from:
+
+- the activity stack, bottom first: each activity's class, its intent (parcelled) and its saved instance state (the
+  Bundle from `onSaveInstanceState`, parcelled), in `state.bin`;
+- the app's data folder and its `.device` folder (SharedPreferences, databases, files, `/sdcard`, Settings values),
+  cloned with `copyfile(COPYFILE_CLONE)`. On APFS no bytes are copied (1 GB in 4 ms); on Linux it is a plain copy;
+- the device as the app sees it: display size, density, font scale, Robolectric's qualifier string (size, density,
+  orientation, night mode, locale) and the `config` command's text.
+
+Saving instance state works as it does on Android when the user leaves for a moment and comes back. The visible
+activities are paused and stopped, every activity saves its state, and they are restarted and resumed, all in one turn
+of the main thread, so no frame shows it. **The app does see one thing: its onPause/onStop/onStart/onResume run.**
+This is the only way a checkpoint shows in the app. A screen that refreshes in onResume refreshes. That is why
+checkpoints are not taken on every input:
+
+- the first comes once the first frame is drawn and the user has been idle for a second;
+- after that, every `--rec-checkpoint` seconds (default 30), only if there was input since the last one, only after a
+  second without input, and never while a finger is down or scripted input is queued;
+- and on `rec checkpoint now`.
+
+The test app takes 7-13 ms per checkpoint (state 7 ms). Checkpoints live in the instance's scratch folder
+(`work/tmp/<pid>/rec/`). The recorder keeps those inside the window plus the newest one before it, so a save of the
+whole window always has a checkpoint to start from, and the rings keep back to that checkpoint.
+
+The data is crash-consistent, not transaction-consistent: a database another thread is writing at that moment is
+cloned as power loss would leave it, which SQLite recovers from on open (its WAL is cloned with it).
+
+`rec checkpoint verify` reads a checkpoint back as a replay will: every intent and Bundle is unparcelled with the
+app's class loader and every value read, so a Parcelable the app cannot recreate shows up now rather than at replay
+time.
+
+## The bundle (`.apkrec`, a zip)
+
+| Entry | What |
+|---|---|
+| `manifest.json` | `format: apksim-flight-recording/1`, package, version, APK name and SHA-256, the window (`from`/`to` epoch ms), the device at save, channels, counts, the checkpoint used (id, wall and uptime, stack, its device), notes (input left out, items dropped, a missing checkpoint), and `crash` (a stack trace) for a crash bundle |
+| `input.jsonl` | From the checkpoint on: `{"t": uptimeMs, "w": wallMs, "ev": "down", "type": 0, "x": 300, "y": 1690, "v": 0}` or `{"t":…, "cmd": ["rotate", "landscape"]}` |
+| `logcat.txt` | threadtime lines from the checkpoint on |
+| `network.har` | HAR 1.2, readable by Chrome DevTools, Charles, and `--network replay` |
+| `db.jsonl` | one call per line |
+| `screen.avi`, `screen-times.txt` | Motion-JPEG at 5 fps from the window's start to the save (each frame repeated until the next, so the timing is real), and when each frame kept was presented |
+| `checkpoint/state.bin` | int count, then per activity (bottom first): UTF class name, int length + intent parcel, int length + Bundle parcel (-1: could not be parcelled, see notes) |
+| `checkpoint/stack.json`, `checkpoint/data.zip` | the stack's class names; the data in `SlotPack`'s format (`package`, `slot/…`, `device/…`), which `apksim beam`'s handoff already unpacks |
+
+The saved window starts at the checkpoint before it, so `input.jsonl` always starts at a state you can restore. If
+the oldest checkpoint is after the window's start, the manifest says how far in a replay would begin. If there is no
+checkpoint at all, the bundle can be read but not replayed.
+
+**A crash saves a bundle by itself.** When the app crashes with any channel on, the window is saved as
+`work/screenshots/<package>-<time>-crash.apkrec`, with the stack trace in its manifest. This happens before the process ends, and
+before the scratch folder that holds the checkpoints is deleted (`Crashes.terminate`).
+
+## Privacy
+
+A bundle is meant to be sent to someone else, so by default it leaves out:
+
+- characters and printable keys typed while a password field has the focus (a View with a password input type or
+  `PasswordTransformationMethod`, or a focused, editable Compose node with password semantics). These are recorded as
+  `{"redacted": true}`, and the manifest counts them;
+- clipboard text (`clipboard set TEXT` is kept as its length);
+- `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
+- database values, unless `db+values` is on.
+
+Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, and anything the app
+logs. Treat a bundle from a signed-in session like the device itself.
+
+## Limits
+
+- Replay is not built yet (below).
+- Text that reaches the app without passing through input dispatch (an accessibility `setText`, autofill) is not in
+  the input journal; its effects are in the checkpoints that follow.
+- `paste` is kept as a command, but the clipboard text it pastes is not, so a replay pastes something else.
+- `net` cannot start over a layer that has been shaping or replaying since before (`network 3g` mid-session,
+  `--network replay`): the answer says so. Launch with `--rec net` instead.
+- The rings live in this process. A crash saves them, but a `kill -9` loses them.
+- Not recorded: sensors, camera frames, audio, location fixes (location changes made with the `location` command are
+  recorded), notifications posted, WorkManager and alarm timing.
+
+## Replay: the plan
+
+`apksim --replay BUNDLE APK`: same APK (checked against `apkSha256`), then:
+
+1. Put the device back: the checkpoint's qualifiers, then `SlotPack.unpack` of `data.zip` into a fresh slot (`--fresh`
+   semantics, without the erase).
+2. Rebuild the stack from `state.bin`, as `process-death` does in-process (`DeviceControls.rebuildFromSavedState`):
+   each activity built with its intent, then `create(bundle).start().restoreInstanceState(bundle).postCreate(bundle)`,
+   the top one resumed.
+3. Network from `network.har` (`--network replay`, timing `recorded`), and the wall clock set to the checkpoint's
+   (`--clock`).
+4. Re-inject `input.jsonl` at the recorded uptime offsets from the checkpoint, through the same `pendingScript` queue
+   that `--control` input uses. Device commands run as commands. Redacted characters are typed as a placeholder.
+5. Hand over: at the end of the journal the network switches from replay to live (a new `--network-unmatched live`
+   policy: answer from the HAR where it matches, else go out), and the person replaying has the app.
+
+What makes a replay drift is thread timing (coroutines on IO dispatchers, races between workers), state held only in
+memory (a checkpoint keeps what `onSaveInstanceState` keeps, as process death does), and servers whose answers
+depend on time. Two things keep that in check: replaying a short tail (seconds, not minutes) and comparing frames
+against `screen.avi` to say where the replay diverged.
+
+## Checks
+
+`scripts/rec-check.py APP.apk [OUT]` (the test app). It launches with `--rec all` and the network fixture mapped in,
+and uses the Trips tab (SQLite) and the network screen (OkHttp and HttpURLConnection). It sets the clipboard, turns
+the screen channel off and on, takes a checkpoint and reads it back, then saves. It checks the bundle: manifest, input
+events and commands, clipboard text left out, logcat, both fetches in the HAR with Authorization redacted, db calls
+with no values, a well-formed AVI, and data.zip holding the trips database. A second launch crashes on purpose and
+must leave a crash bundle with the exception and a checkpoint.

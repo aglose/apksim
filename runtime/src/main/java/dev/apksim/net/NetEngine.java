@@ -138,7 +138,7 @@ final class NetEngine {
   }
 
   synchronized void flushNow() {
-    if (Net.mode != Net.Mode.RECORD) return;
+    if (Net.mode != Net.Mode.RECORD || Net.recording.path == null) return;  // null: the flight recorder's, in memory
     try {
       if (dirty || !Files.exists(Net.recording.path)) {
         dirty = false;

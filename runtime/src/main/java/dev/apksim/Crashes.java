@@ -119,6 +119,11 @@ final class Crashes {
    */
   private static void terminate() {
     try {
+      FlightRecorder.crashed(lastCrash);  // before the scratch folder, which holds its checkpoints, goes
+    } catch (Throwable ignored) {
+      // the crash is in the log either way
+    }
+    try {
       if (failCleanupForTest) throw new IllegalStateException("apksim.crashTest.failCleanup");
       ClassCache.flush();
     } catch (Throwable ignored) {
@@ -200,7 +205,11 @@ final class Crashes {
   }
 
   /** Logs the crash once; never throws (a minimal line on stderr if logging it failed). */
+  /** The last crash logged: what the flight recorder's crash bundle says (FlightRecorder.crashed). */
+  private static volatile Throwable lastCrash;
+
   private static void log(Thread t, Throwable e) {
+    lastCrash = e;
     try {
       ensureLogged(t, e);
     } catch (Throwable failed) {

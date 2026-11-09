@@ -181,6 +181,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     cache stays alive in display lists still drawing it. `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows
     hits and why draws went to HWUI (`small`, `config` by Bitmap.Config, `new`, `budget`, `unaligned`). Metal targets
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
+  - `FlightRecorder`, `rec/` (`Rec`, `Ring`, `Db`): the flight recorder (`--rec CHANNELS`, `rec` command,
+    docs/flight-recorder.md). Rings of the last N seconds (input at `Host.dispatch`, device commands at
+    `runCommand`, logcat, net through `Net.capture`, SQLite through translator hooks to `rec.Db`, screen frames from
+    the raster thread), checkpoints (stack intents + saved state, a clone of the data folder), and `rec save` to a
+    `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`). A checkpoint cycles the visible activities
+    through onStop/onStart as a quick Home and back would: the one way recording shows in the app.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
     `AccessibleWindows`: which windows accessibility reports (UiAutomation, `uiautomator dump`, `nodes`, bundles'
@@ -279,7 +285,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, and
   with its data, in Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
   stand-in for launchd; `--real` installs a test LaunchAgent),
-  `serve-check.py` (a running `apksim serve` driven as a browser tab, see
+  `rec-check.py` (the flight recorder against the test app and the network fixture: every channel, a checkpoint read
+  back, the saved bundle, a crash bundle), `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
   `prof.py` (summarise macOS `sample` output), `so-imports.py` (native import audit), `prepare-runtime.sh`,
@@ -291,7 +298,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `linux-docker.md`, `ci-testbed.md` (a large app's
+- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `flight-recorder.md` (`--rec`, checkpoints, `.apkrec` bundles, the replay plan), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `linux-docker.md`, `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
@@ -446,7 +453,7 @@ smallest width, size bucket and orientation follow), applied at most every 100 m
 meanwhile the last frame stays pinned top left. Activities get the configuration change as on a device in a freeform
 window: recreated, or resized in place when they declare `screenSize` in configChanges. Zoom only
 scales the window. A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit.
-Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R), Device (Device Type > Phone/Foldable/
+Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R, Save Replay Cmd+Shift+S: the flight recorder), Device (Device Type > Phone/Foldable/
 Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >

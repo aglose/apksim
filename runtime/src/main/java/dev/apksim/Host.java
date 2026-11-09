@@ -80,6 +80,7 @@ public class Host {
   private Bitmap bitmap;
   private HwRenderer hw;
   private DeviceControls controls;
+  private FlightRecorder recorder;
   private long downTime;
   private long frames;
   /**
@@ -133,6 +134,7 @@ public class Host {
     bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
+    recorder = new FlightRecorder(app, stack, controls);
     controls.showTitle();
     Timing.detail("controls");
 
@@ -173,6 +175,7 @@ public class Host {
             if (e.type() == SimWindow.COMMAND) {
               menuCommand((int) e.x());
             } else if (e.type() == SimWindow.RESIZE) {
+              FlightRecorder.input(e, SystemClock.uptimeMillis());
               controls.windowResized((int) e.x(), (int) e.y(), e.value() != 0);
             } else if (e.type() == SimWindow.BACK && controls.backClosesKeyboard()) {
               // Back put the software keyboard away; the app does not see it.
@@ -187,6 +190,7 @@ public class Host {
         }
         if (autofill != null) autofill.tick(Host::rootViews);
         controls.tick();
+        recorder.tick(!firstFrame);
         SlotDevice.tick();
         TimeTick.tick(app);
         Control.Pending cmd;
@@ -637,6 +641,11 @@ public class Host {
   /** The app data slot this instance holds (`stats` reports it, so `apksim serve` can erase it afterwards). */
   private static Path dataDir;
 
+  /** The app data slot this instance holds, or null before the app starts (the flight recorder clones it). */
+  static Path dataDir() {
+    return dataDir;
+  }
+
   /**
    * Swaps the temp "pkg-dataDir" Robolectric made for a link to a directory that outlives the process. Once: the
    * first call is from just before Application.onCreate (ShadowSimInstrumentation.callApplicationOnCreate), so the
@@ -951,6 +960,7 @@ public class Host {
 
   private boolean dispatch(SimWindow.Event e) {
     long now = SystemClock.uptimeMillis();
+    FlightRecorder.input(e, now);
     switch (e.type()) {
       case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP, SimWindow.CANCEL -> dispatchTouch(e, now);
       case SimWindow.TOUCH2_CENTRE, SimWindow.TOUCH2_DOWN, SimWindow.TOUCH2_MOVE, SimWindow.TOUCH2_UP -> dispatchTouch2(e, now);
@@ -1367,7 +1377,11 @@ public class Host {
   }
 
   private String runCommand(String[] a) throws Exception {
+    FlightRecorder.commandRan(a);
     switch (a[0]) {
+      case "rec" -> {
+        return recorder.command(a);
+      }
       case "tap" -> {
         float x = Float.parseFloat(a[1]);
         float y = Float.parseFloat(a[2]);

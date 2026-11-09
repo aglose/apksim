@@ -34,7 +34,8 @@ final class Recording {
   record Match(Set<String> fields, Set<String> ignoreQuery, Set<String> ignoreHeaders, Set<String> redact) {}
 
   static final class Entry {
-    String started = Instant.now().toString();
+    final long wallMs = System.currentTimeMillis();
+    String started = Instant.ofEpochMilli(wallMs).toString();
     long timeMs;
     String method;
     String url;
@@ -205,9 +206,44 @@ final class Recording {
 
   // ------------------------------------------------------------------ recording
 
+  /** False while the flight recorder's capture is paused (`rec off net`): exchanges go on, unkept. */
+  volatile boolean keep = true;
+  /** What a recording with no file (the flight recorder's) holds at most, bodies included; the oldest go first. */
+  private static final long CAPTURE_BYTES = 64L << 20;
+  private long bytes;
+
   synchronized void add(Entry e) {
+    if (!keep) return;
     entries.add(e);
     index(e);
+    if (path == null) {
+      bytes += size(e);
+      long from = dev.apksim.rec.Rec.keepFromWallMs();
+      while (!entries.isEmpty() && (entries.get(0).wallMs < from || (bytes > CAPTURE_BYTES && entries.size() > 1))) {
+        Entry old = entries.remove(0);
+        bytes -= size(old);
+        List<Entry> same = byKey.get(old.key);
+        if (same != null) {
+          same.remove(old);
+          if (same.isEmpty()) byKey.remove(old.key);
+        }
+      }
+    }
+  }
+
+  private static long size(Entry e) {
+    return 512 + (e.reqBody == null ? 0 : e.reqBody.length) + (e.respBody == null ? 0 : e.respBody.length);
+  }
+
+  synchronized int size() {
+    return entries.size();
+  }
+
+  /** The entries from epoch ms `from` on as a HAR file (the flight recorder's bundle). */
+  synchronized String har(long from) {
+    List<Entry> some = new ArrayList<>();
+    for (Entry e : entries) if (e.wallMs >= from) some.add(e);
+    return Json.write(harRoot(some));
   }
 
   synchronized void certificates(String host, List<String> chain) {
@@ -219,8 +255,17 @@ final class Recording {
   }
 
   synchronized void save() throws IOException {
+    Map<String, Object> root = harRoot(entries);
+    // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
+    // process per file).
+    Path tmp = path.resolveSibling(path.getFileName() + ".apksim-tmp");
+    Files.writeString(tmp, Json.write(root));
+    Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  private Map<String, Object> harRoot(List<Entry> some) {
     List<Object> list = new ArrayList<>();
-    for (Entry e : entries) list.add(toHar(e));
+    for (Entry e : some) list.add(toHar(e));
     Map<String, Object> log = new LinkedHashMap<>();
     log.put("version", "1.2");
     log.put("creator", Map.of("name", "apksim", "version", "1"));
@@ -229,11 +274,7 @@ final class Recording {
     log.put("_apksimRedacted", new ArrayList<>(new java.util.TreeSet<>(match.redact)));
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("log", log);
-    // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
-    // process per file).
-    Path tmp = path.resolveSibling(path.getFileName() + ".apksim-tmp");
-    Files.writeString(tmp, Json.write(root));
-    Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    return root;
   }
 
   private static List<Object> headers(List<String[]> hs) {

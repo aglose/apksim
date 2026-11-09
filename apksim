@@ -47,6 +47,8 @@ Common options (each is listed with its values in the README, "Devices and launc
   --adb PORT|auto               adb device (adb connect localhost:PORT)
   --headless, --window front|nofocus|background|minimized|hidden
   --network record|replay FILE, --network-profile offline|3g|lossy
+  --rec CHANNELS                flight recorder: input,logcat,net,db,screen or all (docs/flight-recorder.md)
+  --rec-window S, --rec-checkpoint S   seconds it keeps (120), between checkpoints (30; 0: when asked)
   --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
   --skip-library NAME           the app's System.loadLibrary(NAME) throws UnsatisfiedLinkError (repeatable)
   --move-shared-data            macOS: load 4 KB-aligned libraries with data on a code page (experimental)
@@ -147,6 +149,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --timezone) EXTRA+=("-Dapksim.timezone=$2"); shift 2 ;;
     # The wall clock the app sees starts at this instant (ISO 8601 or epoch ms) and runs on from it.
     --clock) EXTRA+=("-Dapksim.clock=$2"); shift 2 ;;
+    --rec) EXTRA+=("-Dapksim.rec=$2"); shift 2 ;;
+    --rec-window) EXTRA+=("-Dapksim.rec.window=$2"); shift 2 ;;
+    --rec-checkpoint) EXTRA+=("-Dapksim.rec.checkpoint=$2"); shift 2 ;;
     # Screenshot tests (docs/snapshots.md): CPU-only drawing and carets that do not blink, for the same pixels each run.
     --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
     # Made here, as --bundles is: under the sandbox only the folder itself is writable, not a missing parent.
@@ -286,6 +291,8 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
+      # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
+      -Dapksim.rec=*|-Dapksim.rec.*) ;;
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed

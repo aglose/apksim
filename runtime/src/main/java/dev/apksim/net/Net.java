@@ -147,6 +147,66 @@ public final class Net {
     }
   }
 
+  /**
+   * The flight recorder's net channel (dev.apksim.FlightRecorder, `rec on net`): every exchange kept in memory, as
+   * record mode would write it, from now on. With the network layer off it starts it in record mode with no file;
+   * connections made before then close, and the app reconnects through the engine, as after a change of network. A
+   * launch recording to a file (--network record) is captured as it is. Shaping (`network 3g`...) and replay cannot
+   * change mode underneath their connections: the answer says so.
+   */
+  public static synchronized String capture(boolean on) {
+    return capture(on, false);
+  }
+
+  /**
+   * `atLaunch`: from Main, right after configure() and before any app code: a layer shaping or mapping hosts since
+   * launch (--network-profile, --network-host) has no connections yet, so it can change to recording in memory.
+   */
+  public static synchronized String capture(boolean on, boolean atLaunch) {
+    if (atLaunch && on && active && mode == Mode.SHAPE) {
+      mode = Mode.RECORD;
+      recording = new Recording(null, new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact));
+      log("network " + describe());
+      return "net: capturing";
+    }
+    if (!active) {
+      if (!on) return "net: off";
+      Recording.Match match = new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact);
+      mode = Mode.RECORD;
+      recording = new Recording(null, match);
+      engine = new NetEngine();
+      try {
+        engine.start();
+      } catch (IOException e) {
+        engine = null;
+        mode = Mode.SHAPE;
+        recording = null;
+        return "error: net: the network layer did not start: " + e;
+      }
+      active = true;
+      int n = closeDirect();
+      log("network " + describe() + (n > 0 ? "; " + n + " connection" + (n == 1 ? "" : "s") + " made before closed" : ""));
+      return "net: capturing";
+    }
+    if (mode != Mode.RECORD) {
+      return on ? "error: net: the network layer is " + (mode == Mode.REPLAY ? "replaying" : "shaping (network conditions)")
+          + " since before; capturing needs it off or recording (launch with --rec net)" : "net: off";
+    }
+    recording.keep = on;
+    return on ? "net: capturing" : "net: paused";
+  }
+
+  /** The exchanges captured from epoch ms `from` on, as a HAR file; null when nothing is captured. */
+  public static synchronized byte[] captured(long from) {
+    if (!active || mode != Mode.RECORD) return null;
+    return recording.har(from).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  /** How many exchanges are held now (captured or recorded); -1 with no recording. */
+  public static synchronized int capturedCount() {
+    return active && mode == Mode.RECORD ? recording.size() : -1;
+  }
+
   /** A comma-separated list, lowercased: header names, hosts, match fields. */
   private static Set<String> list(String s) {
     Set<String> out = new java.util.LinkedHashSet<>();
@@ -167,7 +227,8 @@ public final class Net {
   static String describe() {
     StringBuilder b = new StringBuilder();
     b.append(switch (mode) {
-      case RECORD -> "recording to " + recording.path;
+      case RECORD -> recording.path == null ? "capturing for the flight recorder (in memory" + (recording.keep ? "" : ", paused") + ")"
+          : "recording to " + recording.path;
       case REPLAY -> "replaying " + recording.path + " (" + recording.entries.size() + " entries)";
       case SHAPE -> "live";
     });
@@ -292,7 +353,7 @@ public final class Net {
         return r;
       }
       case "save" -> {
-        if (mode != Mode.RECORD) return "error: not recording";
+        if (mode != Mode.RECORD || recording.path == null) return "error: not recording to a file";
         engine.flushNow();
         return "saved " + recording.entries.size() + " entries to " + recording.path;
       }

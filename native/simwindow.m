@@ -71,7 +71,7 @@ enum {
   TAG_LOCATION_BIKE, TAG_LOCATION_DRIVE, TAG_LOCATION_NONE, TAG_BIOMETRICS_ENROLLED, TAG_BIOMETRICS_MATCH,
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
-  TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR,
+  TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY,
 };
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
@@ -206,6 +206,7 @@ static void buildMenus(NSMenu *bar) {
   NSMenu *file = submenu(bar, @"File");
   addItem(file, @"Save Screen", TAG_SCREENSHOT, @"s", cmd);
   addItem(file, @"Record Screen", TAG_RECORD, @"r", cmd);
+  addItem(file, @"Save Replay", TAG_SAVE_REPLAY, @"s", cmd | shift);
   addItem(file, @"Show Screenshots and Recordings", TAG_SCREENSHOTS_FOLDER, nil, 0);
   NSMenu *device = submenu(bar, @"Device");
   // The display's shape, as Android Studio's device picker; dragging the window's edges resizes it freely.

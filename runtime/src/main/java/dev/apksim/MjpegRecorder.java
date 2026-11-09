@@ -143,6 +143,47 @@ final class MjpegRecorder {
 
   // ---------------------------------------------------------------- AVI (RIFF) layout
 
+  /**
+   * A whole movie at once from JPEGs already encoded (the flight recorder's screen): the same layout as a live
+   * recording, with every size known up front, so it can go to a stream (a zip entry) that cannot seek.
+   */
+  static void writeAvi(java.io.OutputStream os, int w, int h, int fps, List<byte[]> frames) throws IOException {
+    long chunks = 0;
+    for (byte[] f : frames) chunks += 8 + f.length + (f.length & 1);
+    int n = frames.size();
+    long total = 224 + chunks + 8 + 16L * n;
+    if (total > Integer.MAX_VALUE) throw new IOException("movie too large for an AVI");
+    ByteBuffer b = le(224);
+    b.put(fourcc("RIFF")).putInt((int) (total - 8)).put(fourcc("AVI "));
+    b.put(fourcc("LIST")).putInt(4 + 64 + 8 + 116).put(fourcc("hdrl"));
+    b.put(fourcc("avih")).putInt(56);
+    b.putInt(1_000_000 / fps).putInt(0).putInt(0).putInt(0x10);
+    b.putInt(n).putInt(0).putInt(1).putInt(0).putInt(w).putInt(h);
+    b.putInt(0).putInt(0).putInt(0).putInt(0);
+    b.put(fourcc("LIST")).putInt(4 + 64 + 48).put(fourcc("strl"));
+    b.put(fourcc("strh")).putInt(56).put(fourcc("vids")).put(fourcc("MJPG"));
+    b.putInt(0).putShort((short) 0).putShort((short) 0).putInt(0);
+    b.putInt(1).putInt(fps).putInt(0).putInt(n);
+    b.putInt(0).putInt(-1).putInt(0);
+    b.putShort((short) 0).putShort((short) 0).putShort((short) w).putShort((short) h);
+    b.put(fourcc("strf")).putInt(40);
+    b.putInt(40).putInt(w).putInt(h).putShort((short) 1).putShort((short) 24).put(fourcc("MJPG"));
+    b.putInt(w * h * 3).putInt(0).putInt(0).putInt(0).putInt(0);
+    b.put(fourcc("LIST")).putInt((int) (4 + chunks)).put(fourcc("movi"));
+    os.write(b.array(), 0, b.position());
+    ByteBuffer idx = le(8 + 16 * n);
+    idx.put(fourcc("idx1")).putInt(16 * n);
+    long at = 4;  // offsets count from the "movi" fourcc
+    for (byte[] f : frames) {
+      os.write(le(8).put(fourcc("00dc")).putInt(f.length).array());
+      os.write(f);
+      if ((f.length & 1) == 1) os.write(0);
+      idx.put(fourcc("00dc")).putInt(0x10).putInt((int) at).putInt(f.length);
+      at += 8 + f.length + (f.length & 1);
+    }
+    os.write(idx.array());
+  }
+
   private void writeHeaders() throws IOException {
     ByteBuffer b = le(4096);
     b.put(fourcc("RIFF")).putInt(0).put(fourcc("AVI "));                     // size patched at the end

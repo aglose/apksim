@@ -27,6 +27,11 @@ final class Storage {
 
   private Storage() {}
 
+  /** This process's scratch folder (work/tmp/PID), swept on a later launch once the process is gone. */
+  static Path scratch() {
+    return scratch != null ? scratch : Path.of(System.getProperty("java.io.tmpdir"));
+  }
+
   /** The launcher points java.io.tmpdir at work/tmp/PID, since the JDK reads it only at startup. */
   static void initScratch() throws IOException {
     if (scratch != null) return;  // a standby did it before it waited

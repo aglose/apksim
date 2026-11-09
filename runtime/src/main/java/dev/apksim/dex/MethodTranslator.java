@@ -2503,6 +2503,43 @@ final class MethodTranslator implements Opcodes {
       "org/webrtc/EglRenderer", "dev/apksim/video/SimEglRenderer");
 
   /**
+   * App calls to the framework's SQLite classes that go through dev.apksim.rec.Db, the flight recorder's db channel
+   * (docs/flight-recorder.md): each becomes a static call taking the receiver first, which is the call itself while the
+   * channel is off. Framework names, which R8 never renames. Listed here rather than read from Db, so translating
+   * never loads it.
+   */
+  private static final java.util.Set<String> DB_HOOKS = java.util.Set.of(
+      "android/database/sqlite/SQLiteDatabase.execSQL(Ljava/lang/String;)V",
+      "android/database/sqlite/SQLiteDatabase.execSQL(Ljava/lang/String;[Ljava/lang/Object;)V",
+      "android/database/sqlite/SQLiteDatabase.rawQuery(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.rawQuery(Ljava/lang/String;[Ljava/lang/String;Landroid/os/CancellationSignal;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.rawQueryWithFactory(Landroid/database/sqlite/SQLiteDatabase$CursorFactory;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.rawQueryWithFactory(Landroid/database/sqlite/SQLiteDatabase$CursorFactory;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Landroid/os/CancellationSignal;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.query(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.query(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.query(ZLjava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.query(ZLjava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Landroid/os/CancellationSignal;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.queryWithFactory(Landroid/database/sqlite/SQLiteDatabase$CursorFactory;ZLjava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.queryWithFactory(Landroid/database/sqlite/SQLiteDatabase$CursorFactory;ZLjava/lang/String;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Landroid/os/CancellationSignal;)Landroid/database/Cursor;",
+      "android/database/sqlite/SQLiteDatabase.insert(Ljava/lang/String;Ljava/lang/String;Landroid/content/ContentValues;)J",
+      "android/database/sqlite/SQLiteDatabase.insertOrThrow(Ljava/lang/String;Ljava/lang/String;Landroid/content/ContentValues;)J",
+      "android/database/sqlite/SQLiteDatabase.replace(Ljava/lang/String;Ljava/lang/String;Landroid/content/ContentValues;)J",
+      "android/database/sqlite/SQLiteDatabase.replaceOrThrow(Ljava/lang/String;Ljava/lang/String;Landroid/content/ContentValues;)J",
+      "android/database/sqlite/SQLiteDatabase.insertWithOnConflict(Ljava/lang/String;Ljava/lang/String;Landroid/content/ContentValues;I)J",
+      "android/database/sqlite/SQLiteDatabase.delete(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)I",
+      "android/database/sqlite/SQLiteDatabase.update(Ljava/lang/String;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+      "android/database/sqlite/SQLiteDatabase.updateWithOnConflict(Ljava/lang/String;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;I)I",
+      "android/database/sqlite/SQLiteDatabase.beginTransaction()V",
+      "android/database/sqlite/SQLiteDatabase.beginTransactionNonExclusive()V",
+      "android/database/sqlite/SQLiteDatabase.setTransactionSuccessful()V",
+      "android/database/sqlite/SQLiteDatabase.endTransaction()V",
+      "android/database/sqlite/SQLiteStatement.execute()V",
+      "android/database/sqlite/SQLiteStatement.executeUpdateDelete()I",
+      "android/database/sqlite/SQLiteStatement.executeInsert()J",
+      "android/database/sqlite/SQLiteStatement.simpleQueryForLong()J",
+      "android/database/sqlite/SQLiteStatement.simpleQueryForString()Ljava/lang/String;");
+
+  /**
    * JDK network calls in app code that go through dev.apksim.net.Net (docs/network.md "Where it hooks"): sockets and
    * TLS layered on them, URL connections, and the app setting an HTTPS connection's socket factory. JDK names, which R8 never renames, so minified OkHttp is covered too.
    * Each maps owner.name+descriptor to Net's static method, which takes the receiver as its first argument.
@@ -2544,6 +2581,11 @@ final class MethodTranslator implements Opcodes {
     if (opcode == INVOKESTATIC && "android/graphics/RenderEffect".equals(ownerName)
         && ("createRuntimeShaderEffect".equals(m.name()) || "createBlurEffect".equals(m.name()))) {
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/gpu/GpuEffects", m.name(), m.descriptor(), false);
+      return;
+    }
+    if (opcode == INVOKEVIRTUAL && ownerName.startsWith("android/database/sqlite/SQLite")
+        && DB_HOOKS.contains(ownerName + "." + m.name() + m.descriptor())) {
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/rec/Db", m.name(), "(L" + ownerName + ";" + m.descriptor().substring(1), false);
       return;
     }
     if (opcode == INVOKEVIRTUAL && (ownerName.startsWith("java/net/") || ownerName.startsWith("javax/net/"))) {

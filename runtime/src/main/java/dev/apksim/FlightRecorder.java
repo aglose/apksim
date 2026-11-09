@@ -1,0 +1,1002 @@
+package dev.apksim;
+
+import android.app.Activity;
+import android.app.Application;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.os.Bundle;
+import android.os.Parcel;
+import android.os.SystemClock;
+import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
+import android.view.View;
+import android.widget.TextView;
+import dev.apksim.net.Net;
+import dev.apksim.rec.JsonLine;
+import dev.apksim.rec.Rec;
+import dev.apksim.rec.Ring;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import org.robolectric.android.controller.ActivityController;
+
+/**
+ * The flight recorder (docs/flight-recorder.md): what the device did lately, kept in memory so the last N seconds
+ * can be saved as a bundle someone else opens, with a checkpoint to start a replay from. Each channel can be turned on
+ * and off while the app runs (`rec on|off CHANNEL...`, launch: `--rec CHANNELS`):
+ * <ul>
+ *   <li>input: every touch, wheel, key, character and Back the app is given, stamped with the simulated clock (the
+ *       uptime the app sees), and the device commands that change what it sees (rotate, appearance, open URL...);
+ *       what is typed into a password field is left out.
+ *   <li>logcat: the app's log lines ({@link AdbLog}'s ring, which the channel turns on).
+ *   <li>net: HTTP(S) exchanges, through the network layer in record mode with no file ({@link Net#capture}).
+ *   <li>db: SQLite calls through the framework ({@link dev.apksim.rec.Db}); `db+values` also keeps bound values.
+ *   <li>screen: a few frames a second, scaled down and JPEG-encoded off the raster thread, saved as a movie.
+ * </ul>
+ * A <b>checkpoint</b> is what a replay starts from: the activity stack (each one's intent and saved instance state)
+ * and a clone of the app's data folder (APFS: no bytes copied). Saving state is done as Android does it when the user
+ * leaves for a moment and comes back: the visible activities are stopped, every activity saves its state, and they are
+ * started and resumed again, in one turn of the main thread (no frame shows it). That is the one way a checkpoint
+ * shows in the app: its onStop/onStart/onResume run. Checkpoints are taken every {@code --rec-checkpoint} seconds
+ * (default 30) while input is recorded, only once the user has been idle for a second and only if there was input
+ * since the last one, and on `rec checkpoint now`.
+ *
+ * <p>The rings keep {@code --rec-window} seconds (default 120), and back to the checkpoint before that, so a save of
+ * the whole window always has a checkpoint to start from. Each ring also has a byte budget.
+ */
+final class FlightRecorder {
+  static final String FORMAT = "apksim-flight-recording/1";
+
+  // Channels. Static: the raster thread reads screen, translated app code reads Rec.db.
+  private static volatile boolean input;
+  private static volatile boolean logcat;
+  private static volatile boolean net;
+  static volatile boolean screen;
+
+  private static volatile long windowMs = 120_000;
+  private static volatile long checkpointEveryMs = 30_000;
+  private static final int SCREEN_FPS = Math.max(1, Math.min(15, Integer.getInteger("apksim.rec.screenFps", 5)));
+  private static final int SCREEN_MAX = Integer.getInteger("apksim.rec.screenMax", 960);  // longest side, pixels
+  private static final int SCREEN_QUALITY = 70;
+
+  /** Input events and device commands, as JSON lines. */
+  private static final Ring<Map<String, Object>> INPUT = new Ring<>(16L << 20, Rec::keepFromWallMs);
+  /** JPEG frames of the screen; the value's first 8 bytes are width and height (two ints). */
+  private static final Ring<byte[]> SCREEN = new Ring<>(64L << 20, Rec::keepFromWallMs);
+
+  private final Application app;
+  private final ArrayDeque<ActivityController<? extends Activity>> stack;
+  private final DeviceControls controls;
+
+  /**
+   * The launch options: -Dapksim.rec=CHANNELS (--rec), apksim.rec.window, apksim.rec.checkpoint. Net and db were
+   * turned on by {@link Rec#launch} before the app started; input, logcat and screen start here, with the Host.
+   */
+  FlightRecorder(Application app, ArrayDeque<ActivityController<? extends Activity>> stack, DeviceControls controls) {
+    this.app = app;
+    this.stack = stack;
+    this.controls = controls;
+    current = this;
+    String w = System.getProperty("apksim.rec.window");
+    if (w != null) windowMs = Math.max(5, Long.parseLong(w)) * 1000;
+    String cp = System.getProperty("apksim.rec.checkpoint");
+    if (cp != null) checkpointEveryMs = Math.max(0, Long.parseLong(cp)) * 1000;
+    List<String> on = Rec.launchChannels();
+    if (on.isEmpty()) return;
+    net = Net.capturedCount() >= 0;
+    List<String> rest = new ArrayList<>(on);
+    rest.removeAll(List.of("net", "db", "db+values"));
+    String r = rest.isEmpty() ? "" : set(true, rest);
+    System.err.println("[apksim] rec: " + status().split(" \\| ")[0] + (r.contains("error") ? "; " + r : ""));
+    if (input) wantCheckpoint = true;
+  }
+
+  // ---------------------------------------------------------------- the command
+
+  /** rec [status] | on|off [CHANNEL...] | window S | checkpoint [now|every S|off] | save [SECONDS] [FILE] | clear. */
+  String command(String[] a) throws Exception {
+    String op = a.length > 1 ? a[1] : "status";
+    List<String> rest = List.of(a).subList(Math.min(a.length, 2), a.length);
+    switch (op) {
+      case "status" -> {
+        return status();
+      }
+      case "on", "off" -> {
+        String r = set(op.equals("on"), rest.isEmpty() ? List.of("all") : rest);
+        if (op.equals("on") && input && checkpoints.isEmpty()) wantCheckpoint = true;  // something to start from
+        return r;
+      }
+      case "window" -> {
+        if (rest.isEmpty()) return "window " + windowMs / 1000 + " s";
+        windowMs = Math.max(5, Long.parseLong(rest.get(0))) * 1000;
+        return "window " + windowMs / 1000 + " s";
+      }
+      case "checkpoint" -> {
+        if (rest.isEmpty() || rest.get(0).equals("now")) return checkpoint("asked");
+        if (rest.get(0).equals("verify")) return verify(rest.size() > 1 ? Integer.parseInt(rest.get(1).replace("#", "")) : -1);
+        if (rest.get(0).equals("off")) {
+          checkpointEveryMs = 0;
+          return "checkpoints: only when asked";
+        }
+        if (rest.get(0).equals("every") && rest.size() > 1) {
+          checkpointEveryMs = Math.max(5, Long.parseLong(rest.get(1))) * 1000;
+          return "checkpoints: every " + checkpointEveryMs / 1000 + " s";
+        }
+        return "error: usage: rec checkpoint [now|every SECONDS|off]";
+      }
+      case "save" -> {
+        long seconds = windowMs / 1000;
+        String file = null;
+        for (String s : rest) {
+          if (s.matches("\\d+")) seconds = Long.parseLong(s);
+          else file = s;
+        }
+        return save(seconds, file);
+      }
+      case "clear" -> {
+        INPUT.clear();
+        SCREEN.clear();
+        Rec.DB.clear();
+        synchronized (checkpoints) {
+          for (Checkpoint c : checkpoints) Storage.deleteTree(c.dir);
+          checkpoints.clear();
+        }
+        return "cleared";
+      }
+      default -> {
+        return "error: usage: rec [status] | on|off [input|logcat|net|db|db+values|screen|all]... | window SECONDS"
+            + " | checkpoint [now|every SECONDS|off] | save [SECONDS] [FILE] | clear";
+      }
+    }
+  }
+
+  private static synchronized String set(boolean on, List<String> names) {
+    List<String> done = new ArrayList<>();
+    for (String n : names) {
+      switch (n) {
+        case "all" -> {
+          for (String c : List.of("input", "logcat", "net", "db", "screen")) done.add(one(on, c));
+        }
+        case "input", "logcat", "net", "db", "db+values", "screen" -> done.add(one(on, n));
+        default -> done.add("error: no channel " + n + " (input, logcat, net, db, db+values, screen, all)");
+      }
+    }
+    return String.join("; ", done);
+  }
+
+  private static String one(boolean on, String c) {
+    switch (c) {
+      case "input" -> input = on;
+      case "logcat" -> {
+        if (on) AdbLog.install();
+        logcat = on;
+      }
+      case "net" -> {
+        String r = Net.capture(on);
+        net = on && !r.startsWith("error");
+        return r;
+      }
+      case "db" -> {
+        Rec.db = on;
+        if (!on) Rec.dbValues = false;
+      }
+      case "db+values" -> {
+        Rec.db = on || Rec.db;
+        Rec.dbValues = on;
+      }
+      case "screen" -> screen = on;
+      default -> {
+      }
+    }
+    return c + ": " + (on ? "on" : "off");
+  }
+
+  private String status() {
+    List<String> on = new ArrayList<>();
+    if (input) on.add("input");
+    if (logcat) on.add("logcat");
+    if (net) on.add("net");
+    if (Rec.db) on.add(Rec.dbValues ? "db+values" : "db");
+    if (screen) on.add("screen");
+    StringBuilder b = new StringBuilder();
+    b.append("rec: ").append(on.isEmpty() ? "off" : String.join(" ", on));
+    b.append("; window ").append(windowMs / 1000).append(" s");
+    b.append("; checkpoints ").append(checkpointEveryMs == 0 ? "when asked" : "every " + checkpointEveryMs / 1000 + " s");
+    b.append(" | input ").append(INPUT.size()).append(" events");
+    if (logcat) b.append(", logcat ").append(AdbLog.installed() ? "kept" : "off");
+    if (net) b.append(", net ").append(Net.capturedCount()).append(" exchanges");
+    if (Rec.db || Rec.DB.size() > 0) b.append(", db ").append(Rec.DB.size()).append(" calls");
+    b.append(", screen ").append(SCREEN.size()).append(" frames (").append(SCREEN.bytes() >> 10).append(" KB)");
+    synchronized (checkpoints) {
+      b.append(" | checkpoints:");
+      if (checkpoints.isEmpty()) b.append(" none");
+      for (Checkpoint c : checkpoints) {
+        b.append(String.format(" #%d %ds ago (%s)", c.id, (System.currentTimeMillis() - c.wallMs) / 1000, c.why));
+      }
+    }
+    String s = lastSave;
+    if (s != null) b.append(" | last save: ").append(s);
+    return b.toString();
+  }
+
+  // ---------------------------------------------------------------- input
+
+  private static final String[] EVENTS = new String[32];
+
+  static {
+    EVENTS[SimWindow.DOWN] = "down";
+    EVENTS[SimWindow.UP] = "up";
+    EVENTS[SimWindow.MOVE] = "move";
+    EVENTS[SimWindow.WHEEL] = "wheel";
+    EVENTS[SimWindow.BACK] = "back";
+    EVENTS[SimWindow.CLOSE] = "close";
+    EVENTS[SimWindow.CHAR] = "char";
+    EVENTS[SimWindow.KEY] = "key";
+    EVENTS[SimWindow.RESIZE] = "resize";
+    EVENTS[SimWindow.CANCEL] = "cancel";
+    EVENTS[SimWindow.TOUCH2_CENTRE] = "touch2-centre";
+    EVENTS[SimWindow.TOUCH2_DOWN] = "touch2-down";
+    EVENTS[SimWindow.TOUCH2_MOVE] = "touch2-move";
+    EVENTS[SimWindow.TOUCH2_UP] = "touch2-up";
+  }
+
+  private static long lastInputWall;
+  private static long inputSinceCheckpoint;
+  private static int pointersDown;
+  private static int redacted;
+
+  /** An input event about to be dispatched to the app (main thread). `uptime`: the app's SystemClock.uptimeMillis. */
+  static void input(SimWindow.Event e, long uptime) {
+    int t = e.type();
+    if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN) pointersDown++;
+    else if (t == SimWindow.UP || t == SimWindow.CANCEL || t == SimWindow.TOUCH2_UP) pointersDown = Math.max(0, pointersDown - 1);
+    if (!input) return;
+    long wall = System.currentTimeMillis();
+    lastInputWall = wall;
+    inputSinceCheckpoint++;
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("t", uptime);
+    m.put("w", wall);
+    m.put("ev", t >= 0 && t < EVENTS.length && EVENTS[t] != null ? EVENTS[t] : "type-" + t);
+    m.put("type", t);
+    boolean typed = t == SimWindow.CHAR || (t == SimWindow.KEY && printableKey((int) e.value()));
+    if (typed && passwordFocused()) {
+      // What goes into a password field stays on this Mac; a replay types a placeholder there.
+      m.put("redacted", true);
+      redacted++;
+    } else {
+      m.put("x", e.x());
+      m.put("y", e.y());
+      m.put("v", e.value());
+    }
+    INPUT.add(wall, 96, m);
+  }
+
+  private static boolean printableKey(int code) {
+    return (code >= android.view.KeyEvent.KEYCODE_0 && code <= android.view.KeyEvent.KEYCODE_9)
+        || (code >= android.view.KeyEvent.KEYCODE_A && code <= android.view.KeyEvent.KEYCODE_Z)
+        || (code >= android.view.KeyEvent.KEYCODE_COMMA && code <= android.view.KeyEvent.KEYCODE_AT && code != android.view.KeyEvent.KEYCODE_TAB
+            && code != android.view.KeyEvent.KEYCODE_ENTER && code != android.view.KeyEvent.KEYCODE_DEL)
+        || code == android.view.KeyEvent.KEYCODE_PLUS
+        || (code >= android.view.KeyEvent.KEYCODE_NUMPAD_0 && code <= android.view.KeyEvent.KEYCODE_NUMPAD_RIGHT_PAREN);
+  }
+
+  /** Device commands a replay must repeat: they change what the app sees. Input commands arrive as their events. */
+  private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "size", "window",
+      "rotate", "animscale", "memory", "home", "resume", "lock", "unlock", "open", "push", "permission", "location",
+      "biometrics", "recreate", "process-death", "keyboard", "clock", "timezone", "bluetooth", "notifications", "jobs",
+      "pick", "clipboard", "paste", "bars", "thermal", "restart", "network");
+
+  /** A control command (or menu item) about to run (main thread): kept if a replay must repeat it. */
+  static void commandRan(String[] a) {
+    if (!input || a.length == 0 || !COMMANDS.contains(a[0])) return;
+    if (a[0].equals("network") && (a.length == 1 || a[1].equals("status") || a[1].equals("unmatched") || a[1].equals("save"))) return;
+    if ((a[0].equals("jobs") || a[0].equals("notifications")) && a.length == 1) return;  // listings
+    List<String> args = new ArrayList<>(List.of(a));
+    if (a[0].equals("clipboard") && a.length > 2 && a[1].equals("set")) {
+      // The text stays here: a replay sets a placeholder of the same length.
+      int n = String.join(" ", List.of(a).subList(2, a.length)).length();
+      args = new ArrayList<>(List.of("clipboard", "set"));
+      args.add("<" + n + " characters>");
+      redacted++;
+    }
+    long wall = System.currentTimeMillis();
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("t", SystemClock.uptimeMillis());
+    m.put("w", wall);
+    m.put("cmd", args);
+    INPUT.add(wall, 64 + 8L * args.size(), m);
+    inputSinceCheckpoint++;
+  }
+
+  // Whether the field that has the focus takes a password. Main thread; looked at again at most every 300 ms.
+  private static long passwordCheckedNanos;
+  private static boolean passwordCached;
+
+  private static boolean passwordFocused() {
+    long now = System.nanoTime();
+    if (now - passwordCheckedNanos < 300_000_000L) return passwordCached;
+    passwordCheckedNanos = now;
+    boolean pw = false;
+    try {
+      List<View> roots = Host.rootViews();
+      for (int i = roots.size() - 1; i >= 0; i--) {
+        View f = roots.get(i).findFocus();
+        if (f == null) continue;
+        if (f instanceof TextView tv) {
+          pw = password(tv);
+        } else if (f.getAccessibilityNodeProvider() != null) {
+          // Compose: the focused editable node of the semantics tree.
+          boolean[] found = {false};
+          Nodes.walk(List.of(f), n -> {
+            if (n.info.isFocused() && n.info.isEditable() && n.info.isPassword()) found[0] = true;
+          });
+          pw = found[0];
+        }
+        break;
+      }
+    } catch (RuntimeException e) {
+      pw = true;  // could not tell: leave it out
+    }
+    passwordCached = pw;
+    return pw;
+  }
+
+  private static boolean password(TextView tv) {
+    if (tv.getTransformationMethod() instanceof PasswordTransformationMethod) return true;
+    int type = tv.getInputType();
+    int cls = type & InputType.TYPE_MASK_CLASS;
+    int variation = type & InputType.TYPE_MASK_VARIATION;
+    return (cls == InputType.TYPE_CLASS_TEXT && (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD
+        || variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD || variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD))
+        || (cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+  }
+
+  // ---------------------------------------------------------------- screen
+
+  private static final Object FRAME_LOCK = new Object();
+  private static byte[] pending;  // raw BGRA pixels waiting for the encoder, guarded by FRAME_LOCK
+  private static int pendingW;
+  private static int pendingH;
+  private static long pendingWall;
+  private static long lastFrameNanos;
+  private static Thread encoder;
+
+  /** From the raster thread: the frame just presented. Copied at most SCREEN_FPS times a second. */
+  static void frame(ByteBuffer pixels, int w, int h) {
+    long now = System.nanoTime();
+    if (now - lastFrameNanos < 1_000_000_000L / SCREEN_FPS || pixels.remaining() != w * h * 4) return;
+    lastFrameNanos = now;
+    synchronized (FRAME_LOCK) {
+      if (pending == null || pending.length != pixels.remaining()) pending = new byte[pixels.remaining()];
+      pixels.duplicate().get(pending);
+      pendingW = w;
+      pendingH = h;
+      pendingWall = System.currentTimeMillis();
+      if (encoder == null) {
+        encoder = new Thread(FlightRecorder::encodeLoop, "apksim-rec-screen");
+        encoder.setDaemon(true);
+        encoder.setPriority(Thread.MIN_PRIORITY);
+        encoder.start();
+      }
+      FRAME_LOCK.notifyAll();
+    }
+  }
+
+  private static void encodeLoop() {
+    Bitmap src = null;
+    Bitmap scaled = null;
+    byte[] raw = null;
+    Paint filter = new Paint(Paint.FILTER_BITMAP_FLAG);
+    ByteArrayOutputStream jpeg = new ByteArrayOutputStream(1 << 18);
+    while (true) {
+      int w;
+      int h;
+      long wall;
+      synchronized (FRAME_LOCK) {
+        while (pendingWall == 0) {
+          try {
+            FRAME_LOCK.wait();
+          } catch (InterruptedException e) {
+            return;
+          }
+        }
+        if (raw == null || raw.length != pending.length) raw = new byte[pending.length];
+        System.arraycopy(pending, 0, raw, 0, pending.length);
+        w = pendingW;
+        h = pendingH;
+        wall = pendingWall;
+        pendingWall = 0;
+      }
+      try {
+        if (src == null || src.getWidth() != w || src.getHeight() != h) {
+          if (src != null) src.recycle();
+          src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        }
+        src.copyPixelsFromBuffer(ByteBuffer.wrap(raw));
+        float s = Math.min(1f, SCREEN_MAX / (float) Math.max(w, h));
+        int sw = Math.max(2, Math.round(w * s) & ~1);
+        int sh = Math.max(2, Math.round(h * s) & ~1);
+        if (scaled == null || scaled.getWidth() != sw || scaled.getHeight() != sh) {
+          if (scaled != null) scaled.recycle();
+          scaled = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+        }
+        new Canvas(scaled).drawBitmap(src, null, new Rect(0, 0, sw, sh), filter);
+        jpeg.reset();
+        jpeg.write(ByteBuffer.allocate(8).putInt(sw).putInt(sh).array());
+        scaled.compress(Bitmap.CompressFormat.JPEG, SCREEN_QUALITY, jpeg);
+        byte[] f = jpeg.toByteArray();
+        SCREEN.add(wall, f.length, f);
+      } catch (RuntimeException | IOException e) {
+        System.err.println("[apksim] rec: screen frame not kept: " + e);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- checkpoints
+
+  /** One checkpoint: where its files are and when (both clocks). */
+  record Checkpoint(int id, long wallMs, long uptimeMs, String why, Path dir, List<String> activities, List<String> notes,
+      Map<String, Object> device) {}
+
+  private static final List<Checkpoint> checkpoints = new ArrayList<>();  // oldest first; guarded by itself
+  private static int nextId = 1;
+  private static boolean wantCheckpoint;
+  private static long lastCheckpointWall;
+  /** Checkpoints a save in progress is reading: not deleted until it is done. */
+  private static final Set<Integer> pinned = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+  /** Each turn of the Host loop (main thread). */
+  void tick(boolean firstFrameDrawn) {
+    long now = System.currentTimeMillis();
+    moveCutoff(now);
+    if (!input || !firstFrameDrawn || stack.isEmpty()) return;
+    boolean due = wantCheckpoint
+        || (checkpointEveryMs > 0 && inputSinceCheckpoint > 0 && now - lastCheckpointWall >= checkpointEveryMs);
+    // Never in the middle of a gesture or right after input: a checkpoint waits for a second of quiet.
+    if (due && pointersDown == 0 && now - lastInputWall >= 1000 && !Host.inputQueued()) {
+      wantCheckpoint = false;
+      String r = checkpoint(checkpoints.isEmpty() ? "first" : "periodic");
+      if (r.startsWith("error")) System.err.println("[apksim] rec: " + r);
+    }
+  }
+
+  /** The rings keep the window, and back to the newest checkpoint at or before its start; older checkpoints go. */
+  private static void moveCutoff(long now) {
+    long from = now - windowMs;
+    long keep = from;
+    List<Checkpoint> gone = new ArrayList<>();
+    synchronized (checkpoints) {
+      int base = -1;
+      for (int i = 0; i < checkpoints.size(); i++) if (checkpoints.get(i).wallMs <= from) base = i;
+      if (base >= 0) keep = checkpoints.get(base).wallMs;
+      for (int i = 0; i < base; i++) {
+        Checkpoint c = checkpoints.get(i);
+        if (!pinned.contains(c.id)) gone.add(c);
+      }
+      checkpoints.removeAll(gone);
+    }
+    Rec.keepFrom(keep);
+    for (Checkpoint c : gone) Storage.deleteTree(c.dir);
+  }
+
+  /**
+   * Takes a checkpoint now (main thread): the stack's intents and saved states, and a clone of the app's data folder.
+   * The visible activities go to stopped and back, as when the user leaves the app for a moment.
+   */
+  String checkpoint(String why) {
+    if (stack.isEmpty()) return "error: no activity to checkpoint";
+    if (pointersDown > 0) return "error: a touch is down; try again after it";
+    long t0 = System.nanoTime();
+    long wall = System.currentTimeMillis();
+    long uptime = SystemClock.uptimeMillis();
+    int id;
+    synchronized (checkpoints) {
+      id = nextId++;
+    }
+    Path dir = Storage.scratch().resolve("rec").resolve("cp-" + id);
+    List<String> notes = new ArrayList<>();
+    List<String> names = new ArrayList<>();
+    List<ActivityController<? extends Activity>> topFirst = new ArrayList<>(stack);
+    List<ActivityController<? extends Activity>> bottomFirst = new ArrayList<>(topFirst);
+    java.util.Collections.reverse(bottomFirst);
+    List<byte[]> intents = new ArrayList<>();
+    List<byte[]> states = new ArrayList<>();
+    try {
+      Files.createDirectories(dir);
+      int[] before = new int[topFirst.size()];
+      for (int i = 0; i < topFirst.size(); i++) before[i] = Host.state(topFirst.get(i).get());
+      Crashes.app(() -> {
+        try {
+          // Down first (top first, as a device pauses and stops), every one saves (bottom first), then back up.
+          for (ActivityController<? extends Activity> c : topFirst) Host.moveTo(c, 0);
+          for (ActivityController<? extends Activity> c : bottomFirst) {
+            Activity act = c.get();
+            names.add(act.getClass().getName());
+            intents.add(marshall(p -> act.getIntent().writeToParcel(p, 0), act.getClass().getName() + "'s intent", notes));
+            Bundle b = new Bundle();
+            c.saveInstanceState(b);
+            states.add(marshall(p -> p.writeBundle(b), act.getClass().getName() + "'s state", notes));
+          }
+        } finally {
+          for (int i = topFirst.size() - 1; i >= 0; i--) Host.moveTo(topFirst.get(i), before[i]);
+        }
+      });
+      ActivityController<? extends Activity> top = stack.peek();
+      if (top != null && top.get().getWindow() != null) {
+        View decor = top.get().getWindow().peekDecorView();
+        if (decor != null) decor.invalidate();
+      }
+      long stateMs = (System.nanoTime() - t0) / 1_000_000;
+      try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(dir.resolve("state.bin")))) {
+        out.writeInt(names.size());
+        for (int i = 0; i < names.size(); i++) {
+          out.writeUTF(names.get(i));
+          writeBytes(out, intents.get(i));
+          writeBytes(out, states.get(i));
+        }
+      }
+      Path data = Host.dataDir();
+      if (data != null) {
+        cloneTree(data, dir.resolve("slot"));
+        Path device = data.resolveSibling(data.getFileName() + ".device");
+        if (Files.isDirectory(device)) cloneTree(device, dir.resolve("slot.device"));
+      } else {
+        notes.add("no data folder");
+      }
+      Map<String, Object> device = device();
+      Files.writeString(dir.resolve("device.json"), JsonLine.write(device) + "\n");
+      Checkpoint c = new Checkpoint(id, wall, uptime, why, dir, names, notes, device);
+      synchronized (checkpoints) {
+        checkpoints.add(c);
+      }
+      lastCheckpointWall = wall;
+      inputSinceCheckpoint = 0;
+      long ms = (System.nanoTime() - t0) / 1_000_000;
+      String r = "checkpoint #" + id + " (" + why + ", " + names.size() + " activit" + (names.size() == 1 ? "y" : "ies")
+          + ", state " + stateMs + " ms, all " + ms + " ms" + (notes.isEmpty() ? "" : "; " + String.join("; ", notes)) + ")";
+      System.err.println("[apksim] rec: " + r);
+      return r;
+    } catch (IOException | RuntimeException e) {
+      if (e instanceof Crashes.AppCrash crash) throw crash;
+      Storage.deleteTree(dir);
+      return "error: checkpoint failed: " + e;
+    }
+  }
+
+  /**
+   * Reads a checkpoint's state back as a replay will (`rec checkpoint verify [ID]`, the newest by default): each
+   * intent and Bundle unparcelled with the app's class loader, and every value in the Bundle read, so a Parcelable
+   * the app cannot recreate shows here and not at replay time.
+   */
+  private String verify(int id) throws IOException {
+    Checkpoint c = null;
+    synchronized (checkpoints) {
+      for (Checkpoint k : checkpoints) if (id < 0 || k.id == id) c = k;
+    }
+    if (c == null) return "error: no checkpoint " + (id < 0 ? "yet" : "#" + id);
+    ClassLoader loader = app.getClassLoader();
+    List<String> out = new ArrayList<>();
+    try (java.io.DataInputStream in = new java.io.DataInputStream(Files.newInputStream(c.dir.resolve("state.bin")))) {
+      int n = in.readInt();
+      for (int i = 0; i < n; i++) {
+        String name = in.readUTF();
+        byte[] intent = readBytes(in);
+        byte[] state = readBytes(in);
+        String what = name.substring(name.lastIndexOf('.') + 1);
+        if (intent != null) {
+          Parcel p = Parcel.obtain();
+          try {
+            p.unmarshall(intent, 0, intent.length);
+            p.setDataPosition(0);
+            android.content.Intent restored = android.content.Intent.CREATOR.createFromParcel(p);
+            what += " intent " + (restored.getComponent() != null ? restored.getComponent().getShortClassName() : restored.getAction());
+          } finally {
+            p.recycle();
+          }
+        }
+        if (state != null) {
+          Parcel p = Parcel.obtain();
+          try {
+            p.unmarshall(state, 0, state.length);
+            p.setDataPosition(0);
+            Bundle b = p.readBundle(loader);
+            int keys = 0;
+            for (String k : b.keySet()) {
+              b.get(k);  // unparcels it: a class the loader cannot find fails here
+              keys++;
+            }
+            what += ", state " + keys + " keys, " + state.length + " bytes";
+          } finally {
+            p.recycle();
+          }
+        }
+        out.add(what);
+      }
+    }
+    long files;
+    try (var w = Files.walk(c.dir.resolve("slot"))) {
+      files = w.filter(Files::isRegularFile).count();
+    } catch (IOException e) {
+      files = 0;
+    }
+    return "checkpoint #" + c.id + " ok: " + String.join("; ", out) + "; data " + files + " files";
+  }
+
+  private static byte[] readBytes(java.io.DataInputStream in) throws IOException {
+    int n = in.readInt();
+    if (n < 0) return null;
+    byte[] b = new byte[n];
+    in.readFully(b);
+    return b;
+  }
+
+  private interface ParcelWriter {
+    void write(Parcel p);
+  }
+
+  /** A parcelable's bytes, or null (noted) when it cannot be flattened: a Binder in a Bundle, say. */
+  private static byte[] marshall(ParcelWriter w, String what, List<String> notes) {
+    Parcel p = Parcel.obtain();
+    try {
+      w.write(p);
+      return p.marshall();
+    } catch (RuntimeException e) {
+      notes.add(what + " not saved: " + e);
+      return null;
+    } finally {
+      p.recycle();
+    }
+  }
+
+  private static void writeBytes(DataOutputStream out, byte[] b) throws IOException {
+    out.writeInt(b == null ? -1 : b.length);
+    if (b != null) out.write(b);
+  }
+
+  // A folder cloned (APFS: copy-on-write, no bytes copied), or copied where that is not possible (Linux, other volumes).
+  private static final MethodHandle COPYFILE = copyfile();
+
+  private static MethodHandle copyfile() {
+    if (!HostOs.MAC) return null;
+    try {
+      Linker l = Linker.nativeLinker();
+      return l.defaultLookup().find("copyfile").map(s -> l.downcallHandle(s, FunctionDescriptor.of(ValueLayout.JAVA_INT,
+          ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT))).orElse(null);
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  private static final int COPYFILE_ALL = 15;
+  private static final int COPYFILE_RECURSIVE = 1 << 15;
+  private static final int COPYFILE_NOFOLLOW_SRC = 1 << 18;
+  private static final int COPYFILE_CLONE = 1 << 24;
+
+  static void cloneTree(Path from, Path to) throws IOException {
+    if (COPYFILE != null) {
+      try (Arena a = Arena.ofConfined()) {
+        int r = (int) COPYFILE.invokeExact(a.allocateFrom(from.toString()), a.allocateFrom(to.toString()), MemorySegment.NULL,
+            COPYFILE_CLONE | COPYFILE_RECURSIVE | COPYFILE_ALL | COPYFILE_NOFOLLOW_SRC);
+        if (r == 0) return;
+      } catch (Throwable t) {
+        // copy below
+      }
+      Storage.deleteTree(to);
+    }
+    try (var walk = Files.walk(from)) {
+      for (Path p : (Iterable<Path>) walk::iterator) {
+        Path q = to.resolve(from.relativize(p).toString());
+        if (Files.isSymbolicLink(p)) continue;
+        if (Files.isDirectory(p)) Files.createDirectories(q);
+        else if (Files.isRegularFile(p)) Files.copy(p, q, StandardCopyOption.REPLACE_EXISTING);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- saving
+
+  private static volatile String lastSave;
+
+  /**
+   * Saves the last `seconds` (main thread gathers, a worker writes) to FILE, else work/screenshots: a zip with manifest.json, input.jsonl, logcat.txt,
+   * network.har, db.jsonl, screen.avi, and checkpoint/ (state.bin, stack.json, data.zip in SlotPack's format) for
+   * the newest checkpoint at or before the start. Answers at once with the file; `rec status` says when it is written.
+   */
+  String save(long seconds, String file) throws Exception {
+    return save(seconds, file, null);
+  }
+
+  private static volatile FlightRecorder current;
+
+  /**
+   * The app crashed and the process is about to end (Crashes.terminate, any thread): the window is saved now, in the
+   * calling thread, as `<package>-<time>-crash.apkrec`, with the exception in its manifest. Before the scratch folder
+   * (and the checkpoints in it) is deleted. Does nothing when no channel is on.
+   */
+  static void crashed(Throwable e) {
+    FlightRecorder r = current;
+    if (r == null || !(input || logcat || net || Rec.db || screen)) return;
+    try {
+      java.io.StringWriter w = new java.io.StringWriter();
+      if (e != null) e.printStackTrace(new java.io.PrintWriter(w));
+      synchronized (checkpoints) {
+        r.deviceNow = checkpoints.isEmpty() ? null : checkpoints.get(checkpoints.size() - 1).device;
+      }
+      if (r.deviceNow == null) r.deviceNow = Map.of();
+      System.err.println("[apksim] rec: the app crashed: " + r.save(windowMs / 1000, null, w.toString()));
+    } catch (Throwable t) {
+      System.err.println("[apksim] rec: could not save the crash: " + t);
+    }
+  }
+
+  /** `crash`: the stack trace of a crash being saved (synchronously, in this thread), else null (a worker writes). */
+  private String save(long seconds, String file, String crash) throws Exception {
+    if (!(input || logcat || net || Rec.db || screen) && INPUT.size() == 0 && SCREEN.size() == 0 && Rec.DB.size() == 0) {
+      return "error: the flight recorder is off: rec on [CHANNEL...], or launch with --rec all";
+    }
+    long to = System.currentTimeMillis();
+    long from = to - Math.max(1, seconds) * 1000;
+    Checkpoint cp = null;
+    synchronized (checkpoints) {
+      for (Checkpoint c : checkpoints) if (c.wallMs <= from) cp = c;
+      if (cp == null && !checkpoints.isEmpty()) cp = checkpoints.get(0);  // none that early: the oldest there is
+      if (cp != null) pinned.add(cp.id);
+    }
+    long start = cp != null ? Math.min(from, cp.wallMs) : from;
+    Path out;
+    if (file != null) {
+      out = Storage.absolute(file);
+    } else {
+      Path dir = DeviceControls.mediaDir();  // with screenshots and screen recordings (File > Show Screenshots and Recordings)
+      String stamp = new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to));
+      out = dir.resolve(app.getPackageName() + "-" + stamp + (crash != null ? "-crash" : "") + ".apkrec");
+    }
+    // Gathered here, on the main thread: what the app and the device look like now.
+    Map<String, Object> manifest = manifest(from, to, start, cp);
+    if (crash != null) manifest.put("crash", crash);
+    List<Ring.Item<Map<String, Object>>> events = INPUT.since(cp != null ? cp.wallMs : start);
+    List<AdbLog.Line> lines = new ArrayList<>();
+    if (logcat || AdbLog.installed()) {
+      for (AdbLog.Line l : AdbLog.since(0, 0).lines()) if (l.wallMs() >= start) lines.add(l);
+    }
+    byte[] har = Net.captured(start);
+    List<Ring.Item<Map<String, Object>>> db = Rec.DB.since(start);
+    List<Ring.Item<byte[]>> frames = new ArrayList<>();
+    Ring.Item<byte[]> first = SCREEN.atOrBefore(from);
+    if (first != null) frames.add(first);
+    for (Ring.Item<byte[]> f : SCREEN.since(from)) if (f != first) frames.add(f);
+    Checkpoint used = cp;
+    Path target = out;
+    String pkg = app.getPackageName();
+    lastSave = target + ": writing";
+    Runnable job = () -> {
+      long t0 = System.nanoTime();
+      try {
+        write(target, manifest, events, lines, har, db, frames, from, to, used, pkg);
+        long size = Files.size(target);
+        lastSave = target + ": " + (size >> 10) + " KB in " + (System.nanoTime() - t0) / 1_000_000 + " ms";
+        System.err.println("[apksim] rec: saved " + lastSave);
+      } catch (IOException | RuntimeException e) {
+        lastSave = target + ": failed: " + e;
+        System.err.println("[apksim] rec: save failed: " + e);
+      } finally {
+        if (used != null) pinned.remove(used.id);
+      }
+    };
+    if (crash != null) {
+      job.run();
+      return lastSave;
+    }
+    Thread t = new Thread(job, "apksim-rec-save");
+    t.setDaemon(false);  // a quit right after a save waits for it
+    t.start();
+    return "saving " + target + " (" + (to - start) / 1000 + " s" + (used == null ? ", no checkpoint" : ", from checkpoint #" + used.id) + ")";
+  }
+
+  /**
+   * The device as the app sees it now: display size and density, Robolectric's qualifier string (size, density,
+   * orientation, night mode, locale: what a replay sets first), and the `config` command's text. Main thread.
+   */
+  private Map<String, Object> device() {
+    Map<String, Object> device = new LinkedHashMap<>();
+    android.util.DisplayMetrics dm = app.getResources().getDisplayMetrics();
+    device.put("width", dm.widthPixels);
+    device.put("height", dm.heightPixels);
+    device.put("density", dm.density);
+    device.put("fontScale", app.getResources().getConfiguration().fontScale);
+    try {
+      device.put("qualifiers", org.robolectric.RuntimeEnvironment.getQualifiers());
+    } catch (RuntimeException e) {
+      // without them
+    }
+    try {
+      String config = controls.run(new String[] {"config"});
+      if (config != null) device.put("config", config);
+    } catch (Exception e) {
+      // without it
+    }
+    return device;
+  }
+
+  /** Set while a crash saves: the device read off the main thread would race it, so the last checkpoint's is used. */
+  private Map<String, Object> deviceNow;
+
+  private Map<String, Object> manifest(long from, long to, long start, Checkpoint cp) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("format", FORMAT);
+    m.put("created", java.time.Instant.ofEpochMilli(to).toString());
+    m.put("package", app.getPackageName());
+    try {
+      android.content.pm.PackageInfo pi = app.getPackageManager().getPackageInfo(app.getPackageName(), 0);
+      m.put("versionName", pi.versionName);
+      m.put("versionCode", pi.getLongVersionCode());
+    } catch (Exception e) {
+      // not known
+    }
+    String apk = System.getProperty("apksim.apk");
+    if (apk != null) m.put("apk", Path.of(apk).getFileName().toString());
+    Map<String, Object> window = new LinkedHashMap<>();
+    window.put("from", from);
+    window.put("to", to);
+    window.put("seconds", (to - from) / 1000);
+    window.put("uptimeAtSave", SystemClock.uptimeMillis());
+    window.put("keptFrom", start);
+    m.put("window", window);
+    m.put("device", deviceNow != null ? deviceNow : device());
+    List<String> on = new ArrayList<>();
+    if (input) on.add("input");
+    if (logcat) on.add("logcat");
+    if (net) on.add("net");
+    if (Rec.db) on.add(Rec.dbValues ? "db+values" : "db");
+    if (screen) on.add("screen");
+    m.put("channels", on);
+    if (cp != null) {
+      Map<String, Object> c = new LinkedHashMap<>();
+      c.put("id", cp.id);
+      c.put("wall", cp.wallMs);
+      c.put("uptime", cp.uptimeMs);
+      c.put("why", cp.why);
+      c.put("activities", cp.activities);
+      c.put("device", cp.device);
+      if (!cp.notes.isEmpty()) c.put("notes", cp.notes);
+      m.put("checkpoint", c);
+    }
+    List<String> notes = new ArrayList<>();
+    if (cp == null) notes.add("no checkpoint: this recording cannot be replayed, only read");
+    else if (cp.wallMs > from) notes.add("the oldest checkpoint is after the window's start: a replay starts " + (cp.wallMs - from) / 1000 + " s in");
+    if (redacted > 0) notes.add(redacted + " typed or clipboard input" + (redacted == 1 ? " was" : "s were") + " left out (password fields, clipboard text)");
+    if (INPUT.dropped() > 0) notes.add(INPUT.dropped() + " input events dropped for the memory budget");
+    if (SCREEN.dropped() > 0) notes.add(SCREEN.dropped() + " screen frames dropped for the memory budget");
+    if (Rec.DB.dropped() > 0) notes.add(Rec.DB.dropped() + " db calls dropped for the memory budget");
+    m.put("notes", notes);
+    return m;
+  }
+
+  private static void write(Path target, Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events,
+      List<AdbLog.Line> lines, byte[] har, List<Ring.Item<Map<String, Object>>> db, List<Ring.Item<byte[]>> frames,
+      long from, long to, Checkpoint cp, String pkg) throws IOException {
+    Files.createDirectories(target.toAbsolutePath().getParent());
+    Path tmp = target.resolveSibling(target.getFileName() + ".part");
+    try (OutputStream fo = Files.newOutputStream(tmp); ZipOutputStream z = new ZipOutputStream(fo)) {
+      Map<String, Object> counts = new LinkedHashMap<>();
+      counts.put("input", events.size());
+      counts.put("logcat", lines.size());
+      counts.put("db", db.size());
+      counts.put("screenFrames", frames.size());
+      String apk = System.getProperty("apksim.apk");
+      if (apk != null) {
+        try {
+          manifest.put("apkSha256", sha256(Path.of(apk)));
+        } catch (IOException e) {
+          // without it
+        }
+      }
+      StringBuilder in = new StringBuilder();
+      for (Ring.Item<Map<String, Object>> e : events) in.append(JsonLine.write(e.value())).append('\n');
+      put(z, "input.jsonl", in.toString().getBytes(StandardCharsets.UTF_8));
+      StringBuilder log = new StringBuilder();
+      for (AdbLog.Line l : lines) log.append(l.text()).append('\n');
+      put(z, "logcat.txt", log.toString().getBytes(StandardCharsets.UTF_8));
+      if (har != null) put(z, "network.har", har);
+      StringBuilder d = new StringBuilder();
+      for (Ring.Item<Map<String, Object>> e : db) d.append(JsonLine.write(e.value())).append('\n');
+      if (!db.isEmpty()) put(z, "db.jsonl", d.toString().getBytes(StandardCharsets.UTF_8));
+      if (!frames.isEmpty()) {
+        // A constant-rate movie from the frames kept (each repeated until the next), from the window's start to the save.
+        ByteBuffer size = ByteBuffer.wrap(frames.get(frames.size() - 1).value(), 0, 8);
+        int w = size.getInt();
+        int h = size.getInt();
+        List<byte[]> movie = new ArrayList<>();
+        int k = 0;
+        long step = 1000 / SCREEN_FPS;
+        for (long t = Math.max(from, frames.get(0).wallMs()); t <= to; t += step) {
+          while (k + 1 < frames.size() && frames.get(k + 1).wallMs() <= t) k++;
+          byte[] f = frames.get(k).value();
+          ByteBuffer fs = ByteBuffer.wrap(f, 0, 8);
+          if (fs.getInt() != w || fs.getInt() != h) continue;  // a frame from before a rotation: the movie has one size
+          movie.add(java.util.Arrays.copyOfRange(f, 8, f.length));
+        }
+        z.putNextEntry(new ZipEntry("screen.avi"));
+        MjpegRecorder.writeAvi(z, w, h, SCREEN_FPS, movie);
+        z.closeEntry();
+        StringBuilder times = new StringBuilder();
+        for (Ring.Item<byte[]> f : frames) times.append(f.wallMs()).append('\n');
+        put(z, "screen-times.txt", times.toString().getBytes(StandardCharsets.UTF_8));
+      }
+      if (cp != null) {
+        put(z, "checkpoint/state.bin", Files.readAllBytes(cp.dir.resolve("state.bin")));
+        Map<String, Object> stack = new LinkedHashMap<>();
+        stack.put("activities", cp.activities);
+        put(z, "checkpoint/stack.json", (JsonLine.write(stack) + "\n").getBytes(StandardCharsets.UTF_8));
+        if (Files.isDirectory(cp.dir.resolve("slot"))) {
+          ZipEntry e = new ZipEntry("checkpoint/data.zip");
+          z.putNextEntry(e);
+          // SlotPack's format (what apksim beam moves an app's data in): the folder handles it reads through never
+          // follow a link. It closes the stream it is given, so it gets one that does not close the bundle.
+          dev.apksim.serve.SlotPack.pack(cp.dir.getParent(), cp.dir.resolve("slot"), pkg, new java.io.FilterOutputStream(z) {
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+              out.write(b, off, len);
+            }
+
+            @Override
+            public void close() throws IOException {
+              flush();
+            }
+          });
+          z.closeEntry();
+        }
+      }
+      manifest.put("counts", counts);
+      put(z, "manifest.json", (JsonLine.write(manifest) + "\n").getBytes(StandardCharsets.UTF_8));
+    }
+    Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  private static void put(ZipOutputStream z, String name, byte[] b) throws IOException {
+    z.putNextEntry(new ZipEntry(name));
+    z.write(b);
+    z.closeEntry();
+  }
+
+  private static String sha256(Path p) throws IOException {
+    try (InputStream in = Files.newInputStream(p)) {
+      MessageDigest md = MessageDigest.getInstance("SHA-256");
+      byte[] buf = new byte[1 << 16];
+      int n;
+      while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+      StringBuilder b = new StringBuilder();
+      for (byte x : md.digest()) b.append(String.format("%02x", x));
+      return b.toString();
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+}
