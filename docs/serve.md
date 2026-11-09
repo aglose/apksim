@@ -277,6 +277,7 @@ The tab sends commands in the control channel's own words, and serve passes on o
 | Device menu | `device phone\|foldable\|tablet\|desktop\|tv`, a `--device-size` name or the app's own default size |
 | Open URL field | `open URL` (a URL without spaces) |
 | Locale, text size | `locale xx-YY`, `fontscale N` |
+| Mute audio, blank video, animation speed | `audio on\|mute`, `video on\|blank` (new codecs only), `animscale 0\|0.5\|1\|1.5\|2\|5\|10\|toggle`; not `audio off` / `video off`, which change the decoder list and are launch-only |
 
 Anything else (`shot FILE`, `record`, `pick FILE`, `quit`, ...) never reaches an instance from a tab: those read or
 write files on the machine.
