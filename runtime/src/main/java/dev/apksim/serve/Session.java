@@ -1035,6 +1035,9 @@ final class Session {
     return copyOut(d, rid + ".apkrec") ? kept : null;
   }
 
+  private final java.util.Set<String> failedCopies = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.concurrent.atomic.AtomicInteger STUCK = new java.util.concurrent.atomic.AtomicInteger();
+
   /** Copies one recording out of a beam instance's folder into the agent's own, never following a link. */
   private boolean copyOut(Path dir, String name) {
     try {
@@ -1044,6 +1047,9 @@ final class Session {
       Files.createDirectories(keptRecDir());
       Path tmp = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
       // A file the app swapped for a pipe would block an open for good: opened on a thread that is given up on.
+      // Java cannot open without blocking, so a worker stuck on a pipe cannot be stopped: a recording that timed out is
+      // never tried again, and no more than a few such workers may be stuck at once.
+      if (!failedCopies.add(name) || STUCK.get() >= 4) return false;
       java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
       CompletableFuture<Void> job = CompletableFuture.runAsync(() -> {
         try (java.io.InputStream in = Files.newInputStream(f, nf)) {
@@ -1054,7 +1060,14 @@ final class Session {
       }, r -> Thread.ofVirtual().start(r));
       try {
         job.get(30, TimeUnit.SECONDS);
+        failedCopies.remove(name);
       } catch (Exception e) {
+        if (!job.isDone()) {
+          STUCK.incrementAndGet();
+          job.whenComplete((v, t) -> STUCK.decrementAndGet());
+        } else {
+          failedCopies.remove(name);  // it failed on its own (not a blocked open): a later try may work
+        }
         cancelled.set(true);
         Files.deleteIfExists(tmp);
         return false;
