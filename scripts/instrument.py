@@ -814,12 +814,16 @@ article>div{{min-width:0}} h2{{font-size:16px;margin:0}} h2 span{{color:var(--di
         f.write(page)
 
 
+DROPPED_CLASS_ERRORS = set()  # classes whose listed initializationError was left out
+
+
 def drop_class_errors(a, tests):
     """As AndroidTestOrchestrator: its runner side drops a listed `initializationError` (JUnitValidator), so such a class
     (a Parameterized one with no parameters) is never run or reported. --keep-class-errors keeps them."""
     if a.keep_class_errors:
         return tests
     dropped = sorted({c for c, m in tests if m == "initializationError"})
+    DROPPED_CLASS_ERRORS.update(dropped)
     for c in dropped:
         print(f"leaving out {c}#initializationError, as the orchestrator does (--keep-class-errors keeps it)", file=sys.stderr)
     return [t for t in tests if t[1] != "initializationError"]
@@ -1078,6 +1082,11 @@ def main():
         sys.exit(0)
     # No results at all fails a run (no tests found), except for a shard, which can be empty by design (more shards
     # than tests, a selection smaller than the CI matrix): a process that did not finish has a "(run)" entry anyway.
+    # A suite that listed and held nothing but left-out initializationError entries is a run of no tests, as the
+    # orchestrator's is.
+    if not results and DROPPED_CLASS_ERRORS:
+        print("no tests left to run after leaving out initializationError entries", file=sys.stderr)
+        sys.exit(0)
     sys.exit(1 if failed or (not results and a.shards == 1) else 0)
 
 
