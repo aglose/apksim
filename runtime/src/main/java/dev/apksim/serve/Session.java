@@ -868,6 +868,9 @@ final class Session {
     if (t.matches("permission (allow|deny)")) return t;
     if (t.matches("locale [a-z]{2,3}(-[A-Z]{2})?")) return t;
     if (t.matches("fontscale (0\\.85|1|1\\.0|1\\.15|1\\.3|1\\.5|1\\.8|2|2\\.0)")) return t;
+    // Not `audio off` / `video off`: those change the decoder list, so they are launch-only.
+    if (t.matches("audio (on|mute)|video (on|blank)")) return t;
+    if (t.matches("animscale (0|0\\.5|1|1\\.5|2|5|10|toggle)")) return t;
     if (t.matches("open [a-zA-Z][a-zA-Z0-9+.-]*:[^\\s\\p{Cntrl}]{1,2000}")) return t;
     if (t.startsWith("type ")) {
       // Control commands are one line, split on spaces: runs of white space become one space.
@@ -887,6 +890,12 @@ final class Session {
       options.put("locale", cmd.substring(7));
     } else if (cmd.startsWith("fontscale ")) {
       options.put("fontscale", cmd.substring(10));
+    } else if (cmd.startsWith("audio ") || cmd.startsWith("video ")) {
+      options.put(cmd.substring(0, 5), cmd.substring(6));
+    } else if (cmd.startsWith("animscale ")) {
+      String v = cmd.substring(10);
+      if (v.equals("toggle")) v = "0".equals(options.get("animscale")) ? "1" : "0";
+      options.put("animscale", v);
     }
   }
 
