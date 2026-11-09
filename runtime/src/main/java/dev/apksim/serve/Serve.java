@@ -122,6 +122,11 @@ public final class Serve {
   private volatile long lastActivity = System.currentTimeMillis();
   private final java.util.concurrent.atomic.AtomicInteger busy = new java.util.concurrent.atomic.AtomicInteger();
   private static final ThreadLocal<Boolean> statusRequest = ThreadLocal.withInitial(() -> false);
+  /**
+   * Issue 181: the copies of saved sessions reopened in a tab (`bm<hex>` slot name -> saved id), written back over the
+   * saved slot when their session ends. One open at a time per saved session (see {@link #savedOpen}).
+   */
+  final Map<String, String> reopened = new ConcurrentHashMap<>();
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -930,6 +935,7 @@ public final class Serve {
     WebSocket ws = new WebSocket(s, in, out);
     Catalog.App app = catalog.find(r.param("app"));
     if (app == null) {
+      if (seed != null) reopened.remove(seed);
       SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
@@ -949,6 +955,14 @@ public final class Serve {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }
+    // A reopened saved session (issue 181) starts as it was saved (device, appearance, locale, font scale, permissions),
+    // as `apksim beam run` does, unless the page names them.
+    Map<String, Object> reopenedRec = beam && seed != null && reopened.containsKey(seed) ? store.saved(reopened.get(seed)) : null;
+    if (reopenedRec != null) {
+      for (String k : List.of("device", "appearance", "locale", "fontscale", "permissions")) {
+        if (reopenedRec.get(k) instanceof String v && !v.isEmpty()) options.putIfAbsent(k, v);
+      }
+    }
     // Only a device this server names (built in, --device-size, or the app's own default), never a client's own string;
     // anything else, or none, is the app's default device, else the phone.
     String device = options.get("device");
@@ -956,6 +970,7 @@ public final class Serve {
     Session session;
     synchronized (sessions) {
       if (sessions.size() >= max) {
+        if (seed != null) reopened.remove(seed);
         SlotPack.dropSeed(state, seed, null, System.err::println);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
@@ -968,6 +983,25 @@ public final class Serve {
       if (beam) {
         session.site = site;
         session.keep = store.config.saveSessions();
+        String sid = seed == null ? null : reopened.get(seed);
+        if (sid != null) {
+          // Issue 181: a reopened saved session; held (shared, as `run` holds it) until it ends.
+          java.nio.channels.FileChannel l = null;
+          try {
+            l = store.sessionLock(sid);
+            if (l.tryLock(0, Long.MAX_VALUE, true) != null) {
+              session.savedId = sid;
+              session.savedLock = l;
+              session.keep = true;
+              l = null;
+            }
+          } catch (IOException | java.nio.channels.OverlappingFileLockException e) {
+            // as a copy only: it is kept as a new saved session if kept at all
+          } finally {
+            if (l != null) l.close();
+          }
+          if (session.savedId == null) System.err.println("[beam] saved session " + sid + " is being forgotten: its copy runs on its own");
+        }
       }
       sessions.put(session.id, session);
     }
@@ -1035,6 +1069,103 @@ public final class Serve {
     }
     System.err.printf("[serve] beam: %s downloaded by a visitor's agent%n", a.name());
     Http.file(out, apk, "application/vnd.android.package-archive");
+  }
+
+  /** A start's answer for saved data: which saved session it reopened (`saved`) or copied (`dataFrom`). */
+  private static String localAnswer(String local) {
+    if (local == null) return "";
+    String id = local.substring(local.indexOf(' ') + 1);
+    return local.startsWith("@saved ") ? ",\"saved\":" + Http.q(id) : ",\"dataFrom\":" + Http.q(id);
+  }
+
+  /** Whether a saved session is open in a tab now (its copy held by a grant or a running session). */
+  boolean savedOpen(String id) {
+    for (var e : List.copyOf(reopened.entrySet())) {
+      String seed = e.getKey();
+      boolean live = agent.ownsSeed(seed) || sessions.values().stream().anyMatch(x -> seed.equals(x.seedSlot));
+      if (!live) reopened.remove(seed, e.getValue());  // its grant expired or its session ended
+      else if (e.getValue().equals(id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Issue 181: a saved session's data copied into a slot of the session's own (`bm<hex>-0`), as a moved session's is:
+   * packed from the saved slot (`k<id>-0` and its `.device`, through folder handles, links left out) and unpacked by
+   * {@link #seedFrom}, which checks it is the build's package. `@saved ID` reopens it (the copy goes back over the saved
+   * slot when the session ends: {@link Session}); `@from ID` starts a build on a copy, which leaves the saved session as
+   * it was, and only when the build is the same package signed by the same key as the saved one, as Android requires of
+   * an update that keeps an app's data. The slot's name, or throws why not.
+   */
+  private String savedSeed(String origin, String local, Path apk) throws IOException {
+    if (!local.startsWith("@saved ")) return copySaved(origin, local, apk);
+    synchronized (reopened) {  // two tabs reopening one saved session at once: one gets it
+      String id = local.substring(local.indexOf(' ') + 1);
+      if (savedOpen(id)) throw new IOException("saved session " + id + " is open in another tab on this Mac: close it first");
+      return copySaved(origin, local, apk);
+    }
+  }
+
+  private String copySaved(String origin, String local, Path apk) throws IOException {
+    boolean reopen = local.startsWith("@saved ");
+    String id = local.substring(local.indexOf(' ') + 1);
+    Map<String, Object> rec = store.saved(id);
+    if (rec == null || !origin.equals(rec.get("site"))) throw new IOException("saved session " + id + " is gone");
+    String pkg = String.valueOf(rec.get("package"));
+    if (!pkg.matches("[A-Za-z0-9._]{1,255}")) throw new IOException("saved session " + id + " names no app");
+    if (!reopen) {
+      String own = dev.apksim.ApkCache.manifestPackage(apk);
+      if (!pkg.equals(own)) {
+        throw new IOException("this build is " + own + ", saved session " + id + " is " + pkg + "'s data: an app starts only on its own");
+      }
+      List<String> saved = new ArrayList<>();
+      if (rec.get("signers") instanceof List<?> l) for (Object x : l) saved.add(String.valueOf(x));
+      String savedSha = rec.get("sha256") instanceof String h ? h : "";
+      if (saved.isEmpty() && catalog.hasBuild(savedSha)) saved = ApkSigners.of(catalog.buildFile(savedSha)).certs();
+      if (saved.isEmpty()) throw new IOException("saved session " + id + " does not say who signed its build, and that build is gone");
+      ApkSigners.Signers now;
+      try {
+        now = ApkSigners.of(apk);
+      } catch (IOException e) {
+        throw new IOException("this build's signer cannot be read (" + e.getMessage() + ")");
+      }
+      if (!now.certs().equals(saved)) {
+        throw new IOException("this build is signed by another key than saved session " + id + "'s (an update keeps the app's data"
+            + " only when the same key signs it: debug builds made on different machines have different debug keys)");
+      }
+    }
+    Path slot = state.resolve("cache/data").resolve(pkg).resolve("k" + id + "-0");
+    if (!Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) throw new IOException("saved session " + id + " has no data on this Mac");
+    Path dir = state.resolve("beam/import");
+    Files.createDirectories(dir);
+    Path zip = dir.resolve("saved-" + Long.toHexString(System.nanoTime()) + ".zip");
+    // Held while it is read: forget waits, and a `run` opening it meanwhile takes another slot instead of writing this one.
+    try (java.nio.channels.FileChannel sl = store.sessionLock(id);
+         java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(slot.resolve(".lock"), java.nio.file.StandardOpenOption.CREATE,
+             java.nio.file.StandardOpenOption.WRITE)) {
+      java.nio.channels.FileLock shared, own;
+      try {
+        shared = sl.tryLock(0, Long.MAX_VALUE, true);
+        own = ch.tryLock();
+      } catch (java.nio.channels.OverlappingFileLockException e) {
+        throw new IOException("it is in use on this Mac");
+      }
+      if (shared == null) throw new IOException("it is being forgotten");
+      if (own == null) throw new IOException("it is open on this Mac (apksim beam run): quit it first");
+      try (OutputStream f = new java.io.BufferedOutputStream(Files.newOutputStream(zip, java.nio.file.StandardOpenOption.CREATE_NEW))) {
+        SlotPack.pack(state, slot, pkg, f);
+      }
+      String name = seedFrom(zip, apk, agent.importing::add, agent.importing::remove);
+      if (reopen) reopened.put(name, id);
+      store.used(id);
+      System.err.printf("[beam] %s: saved session %s's data (%d KB) %s into %s%n", origin, id, Files.size(zip) >> 10,
+          reopen ? "reopened" : "copied for a newer build", name);
+      return name;
+    } catch (IOException | RuntimeException e) {
+      throw new IOException("saved session " + id + "'s data could not be copied: " + e.getMessage());
+    } finally {
+      Files.deleteIfExists(zip);
+    }
   }
 
   /**
@@ -1226,6 +1357,22 @@ public final class Serve {
     }
     switch (r.method() + " " + r.path()) {
       case "POST /beam/start" -> beamStart(r, o, out);
+      case "GET /beam/saved" -> {
+        // Issue 181: what this site may start on (its own saved sessions only), so a page can offer "start signed in".
+        StringBuilder b = new StringBuilder("[");
+        if (!"never".equals(agent.trust().get(o))) {
+          for (Map<String, Object> rec : store.savedFrom(o)) {
+            if (b.length() > 1) b.append(',');
+            String sha = rec.get("sha256") instanceof String h ? h : "";
+            b.append("{\"id\":").append(Http.q(String.valueOf(rec.get("id")))).append(",\"app\":").append(Http.q(String.valueOf(rec.get("app"))))
+                .append(",\"package\":").append(Http.q(String.valueOf(rec.get("package")))).append(",\"sha256\":").append(Http.q(sha))
+                .append(",\"build\":").append(catalog.hasBuild(sha)).append(",\"open\":").append(savedOpen(String.valueOf(rec.get("id"))))
+                .append(",\"saved\":").append(BeamStore.whole(rec.get("saved"))).append(",\"lastUsed\":").append(BeamStore.whole(rec.get("lastUsed")))
+                .append('}');
+          }
+        }
+        Http.json(out, 200, b.append(']').toString());
+      }
       case "POST /beam/upload" -> {
         Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
         if (g == null) {
@@ -1248,7 +1395,14 @@ public final class Serve {
         String got = g.sha256();
         System.err.printf("[beam] %s sent %s (%d MB)%n", o, a.name(), Files.size(a.path()) >> 20);
         String seed = null;
-        if (g.extra() != null) {
+        if (g.extra() != null && g.extra().startsWith("@")) {
+          try {
+            seed = savedSeed(o, g.extra(), a.path());
+          } catch (IOException e) {
+            Http.text(out, 409, e.getMessage());
+            return;
+          }
+        } else if (g.extra() != null) {
           try {
             seed = beamSeed(o, g.extra(), a.path());
           } catch (IOException e) {
@@ -1257,7 +1411,7 @@ public final class Serve {
           }
         }
         Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed))
-            + (seed == null ? "" : ",\"data\":true") + "}");
+            + (seed == null ? "" : ",\"data\":true") + (g.extra() != null && g.extra().startsWith("@") ? localAnswer(g.extra()) : "") + "}");
       }
       case "POST /beam/upload-data" -> {
         // Issue 173: the pack the agent could not download (the page's server behind a sign-in), sent by the tab.
@@ -1315,7 +1469,7 @@ public final class Serve {
       Http.text(out, 413, "the request body is limited to 64 KB");
       return;
     }
-    String sha, name, ticket, from, data, source;
+    String sha, name, ticket, from, data, source, local = null;
     long size;
     int protocol;
     List<String> launch;
@@ -1326,8 +1480,30 @@ public final class Serve {
       source = body.get("source") instanceof String u && u.length() <= 4000 ? u : null;
       data = body.get("data") instanceof Map<?, ?> d && d.get("ticket") instanceof String dt && dt.length() <= 300
           && d.get("url") instanceof String du && du.length() <= 2000 && !du.contains(" ") ? dt + " " + du : null;
-      if (!(body.get("sha256") instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
+      // Issue 181: a saved session reopened (`saved`), or a build started on a copy of one's data (`dataFrom`).
+      for (String k : List.of("saved", "dataFrom")) {
+        Object v = body.get(k);
+        if (v == null) continue;
+        if (!(v instanceof String id) || !id.matches("[0-9a-f]{12}")) throw new IOException("\"" + k + "\" takes a saved session's id (GET /beam/saved)");
+        if (local != null || data != null) throw new IOException("\"saved\", \"dataFrom\" and \"data\" each name the session's data: only one");
+        local = (k.equals("saved") ? "@saved " : "@from ") + id;
+      }
+      Map<String, Object> rec = null;
+      if (local != null) {
+        rec = store.saved(local.substring(local.indexOf(' ') + 1));
+        // Only the site it came from: another learns nothing, not even that it exists.
+        if (rec == null || !o.equals(rec.get("site"))) {
+          Http.text(out, 404, "no saved session " + local.substring(local.indexOf(' ') + 1) + " from " + o + " on this Mac (GET /beam/saved lists them)");
+          return;
+        }
+      }
+      Object h0 = body.get("sha256");
+      if (h0 == null && local != null && local.startsWith("@saved ") && rec.get("sha256") instanceof String rh) h0 = rh;  // its own build
+      if (!(h0 instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
       sha = h;
+      if (local != null && local.startsWith("@saved ") && !sha.equals(rec.get("sha256"))) {
+        throw new IOException("saved session " + rec.get("id") + " is another build's: start this build on a copy of its data with \"dataFrom\"");
+      }
       Object proto = body.get("protocol");
       String why = Beam.protocolProblem(proto == null ? null : proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
       if (why != null) {
@@ -1335,10 +1511,12 @@ public final class Serve {
         return;
       }
       protocol = proto == null ? 1 : Integer.parseInt(proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
-      name = body.get("name") instanceof String n ? n : null;
+      name = body.get("name") instanceof String n ? n : rec != null && local.startsWith("@saved ") && rec.get("app") instanceof String an ? an : null;
       size = body.get("size") instanceof Number n ? n.longValue() : -1;
       List<String> given = new ArrayList<>();
-      if (body.get("options") instanceof List<?> l) {
+      // A reopened session runs with the options it was saved with unless the page names them.
+      Object opts = body.get("options") == null && rec != null && local.startsWith("@saved ") ? rec.get("launch") : body.get("options");
+      if (opts instanceof List<?> l) {
         for (Object x : l) {
           if (!(x instanceof String str)) throw new IOException("\"options\" takes strings");
           given.add(str);
@@ -1347,6 +1525,10 @@ public final class Serve {
       launch = Catalog.launchOptions(given);
     } catch (IOException | RuntimeException e) {
       Http.text(out, 400, String.valueOf(e.getMessage()));
+      return;
+    }
+    if (local != null && savedOpen(local.substring(local.indexOf(' ') + 1))) {
+      Http.text(out, 409, "saved session " + local.substring(local.indexOf(' ') + 1) + " is open in another tab on this Mac: close it first");
       return;
     }
     if (size > maxUploadMb << 20) {
@@ -1389,7 +1571,15 @@ public final class Serve {
     }
     if (a != null) {
       String seed = null;
-      if (data != null) {
+      if (local != null) {
+        try {
+          seed = savedSeed(o, local, a.path());
+        } catch (IOException e) {
+          Http.text(out, 409, e.getMessage());
+          sweepBeam();
+          return;
+        }
+      } else if (data != null) {
         try {
           seed = beamSeed(o, data, a.path());
         } catch (IOException e) {
@@ -1399,11 +1589,11 @@ public final class Serve {
         }
       }
       Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed))
-          + ",\"via\":" + Http.q(via) + (seed == null ? "" : ",\"data\":true") + "}");
+          + ",\"via\":" + Http.q(via) + (seed == null ? "" : ",\"data\":true") + localAnswer(local) + "}");
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, data, protocol))
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol))
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 

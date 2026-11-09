@@ -179,7 +179,8 @@ keeping a session to use later is the visitor's choice.
     build: `--data-slots k<id>` (its saved data, no `--fresh`), its launch options and device, `--no-autofill`.
     What it does then is kept in the same slot.
   - `apksim beam forget ID`: erases its data; its build then gets the ordinary `keep-days` hold from now.
-  - Later: reopening a saved session in the tab (`/beam/start {"saved": ID}` from the site it came from).
+  - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
+    data (issue 181: "Saved data from the tab").
 - **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
   are not the place); the same as flags on `apksim beam` for a run in the foreground.
@@ -822,7 +823,7 @@ months apart in either direction.
   know.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
   built"). 0.20.0 and later speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
-  `source` (issues 177, 178).
+  `source` (issues 177, 178); the start's `saved` and `dataFrom` and `GET /beam/saved` (issue 181).
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
   (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
@@ -852,10 +853,11 @@ readable by any origin. Requests to the server carry its token as everything els
    "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
    (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
    store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
-   releases before 0.20.0). The agent may first prompt its owner (up to 2.5 minutes: keep the request open; `asking`
-   in step 2 says it is). Answers:
-   - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data): go to
-     step 5.
+   releases before 0.20.0). Or, for the site's saved data (step 8): `"saved": ID` (its own build: `sha256` may be left
+   out) or `"dataFrom": ID` beside a newer build's fields. The agent may first prompt its owner (up to 2.5 minutes: keep
+   the request open; `asking` in step 2 says it is). Answers:
+   - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data, with
+     `"saved"` or `"dataFrom"` naming the saved session it used): go to step 5.
    - `{"need": "upload", "upload": G, "why"?}`: the agent could not get the build itself. Fetch
      `SERVER/api/apps/ID/apk` (with the token) and `POST AGENT/beam/upload?upload=G` with it as the body. The answer is
      again one of these (a grant, or `need: data`).
@@ -863,8 +865,9 @@ readable by any origin. Requests to the server carry its token as everything els
      Fetch `SERVER/api/beam/data?ticket=T` (the data ticket from step 7, with the page's own credentials) and `POST
      AGENT/beam/upload-data?upload=D` with it as the body; the answer is the grant, with `"data": true`.
    - Errors are plain text: 403 (this origin refused by the Mac's owner, or a grant not this origin's or used), 409
-     (protocol: which side to update), 413 (too large), 400 (a bad body or an upload that does not match), 502 (in
-     protocol 1, the data could not be taken). Each grant lasts 2 minutes and is used once.
+     (protocol: which side to update; or saved data that cannot be used: open elsewhere, another package or key), 404
+     (no such saved session from this site), 413 (too large), 400 (a bad body or an upload that does not match), 502
+     (in protocol 1, the data could not be taken). Each grant lasts 2 minutes and is used once.
 5. **The session.** `ws://127.0.0.1:PORT/ws?app=APP&token=TOKEN&protocol=P` plus the same session parameters as
    serve's own `/ws` (device, appearance, locale, fontscale, open, codec...): the stream and input protocol are serve's
    (docs/serve.md, "Stream" and "Input"), byte for byte. An upgrade refused with 409 (protocol) leaves the grant
@@ -877,6 +880,10 @@ readable by any origin. Requests to the server carry its token as everything els
    `h {"error"}` (with no data slot yet the session runs on; any other error ends it). Then step 4 with `data`. If
    the Mac does not take it, open the server's session again with `&restore=TICKET`: an `r` line says whether the data
    came back (the pack is kept until the ticket expires, 5 minutes, and used once).
+8. **Saved data** (issue 181): `GET AGENT/beam/saved` → `[{"id", "app", "package", "sha256", "build", "open", "saved",
+   "lastUsed"}]`, this origin's saved sessions (404 from an agent before this). Step 4 with `"saved": ID` reopens one
+   (what the app writes is kept in it), with `"dataFrom": ID` starts a newer build of the same app, signed by the same
+   key, on a copy of it ("Saved data from the tab").
 
 ## Builds from an artifact store (2026-11-08, issue 177)
 
@@ -929,6 +936,56 @@ Space is easy to miss: the page looked stuck, then the start was refused.
   dialog waits, `APKSIM_BEAM_CONSENT=allow-after-2s`, for checks only; false after; `install --trust` with
   `--dry-run` listed by `trust list`, a non-origin refused) and `beam-page-check.py` (Chrome: a start for a site not
   yet allowed says so in the page while the stand-in dialog waits, then runs on the Mac).
+
+## Saved data from the tab (2026-11-08, issue 181)
+
+Some apps are useful only after a one-time setup (a sign-in, a device enrolled with a code approved elsewhere), and a
+page that runs a new build per pull request made the visitor repeat it for every build. A saved session (keep on, or
+`save-sessions on`) can now be used from the page that saved it.
+
+- **`GET /beam/saved`** → `[{"id", "app", "package", "sha256", "build", "open", "saved", "lastUsed"}]`: the saved
+  sessions that came from the calling origin (none for a site the owner refused), newest use first. `build`: its own
+  build is still on this Mac; `open`: a tab has it open now.
+- **Reopening one**: `POST /beam/start {"protocol", "saved": ID}`, from its own site only (any other gets the 404 an
+  unknown id gets). `sha256` may be left out (its own build is used); one naming another build is refused (400: that is
+  `dataFrom`). Its own build may be gone: with `sha256`, `ticket` and `url` as in any start it comes back the usual way.
+  The session runs with the launch options, device, appearance, locale, font scale and permissions it was saved with,
+  unless the page names them. The answer is the usual grant with `"data": true, "saved": ID`.
+  - It runs on a copy, not in the saved slot: the slot (`k<id>-0` and its `.device`) is packed as a hand-off is
+    (`SlotPack`, through folder handles, links left out) and unpacked into the session's own `bm<12 hex>-0`, so the beam
+    sandbox still lets an instance touch only `beam-N` and `bm` slots. Every beamed instance shares one sandbox, so
+    allowing `k` slots there would have let any site's app read every other site's saved sign-ins.
+  - When the session ends (however: the tab closed, the idle limit, a crash), the copy takes the saved slot's place
+    (`BeamStore.writeBack`: both slots' locks held, the old one moved aside and deleted, every rename undone if one
+    fails), as a device keeps what the app wrote. If it cannot (`apksim beam run` has the saved slot open), the copy is
+    kept as a new saved session instead, so nothing is lost.
+  - One tab at a time (409 for a second while a grant or session holds the first); the session holds
+    `saved/<id>.lock` shared, as `run` does, so `forget` and the `keep-saved-days` sweep leave it. The page cannot turn
+    keeping off for it (`keep off` is answered `k on`): only the Mac's owner erases a saved session.
+- **A newer build on its data**: `POST /beam/start` with the new build's `sha256`, `ticket`, `url` (or `source`) as
+  any start, plus `"dataFrom": ID`. The saved slot is copied as above into the new session's own slot only if the new
+  build has the same package (its manifest) and the same signers (`ApkSigners`: each signer certificate's SHA-256 from
+  the APK's v3 block, else v2, else v1's META-INF signature blocks; signatures are not verified, a build being found by
+  its hash) as the saved build, Android's own condition for an update that keeps an app's data; else 409 with why. A
+  saved record notes its build's signers (`signers`), so this works after the saved build itself is gone; a record
+  saved before this release needs its build still here. The copy is an ordinary moved session's slot: erased when the
+  session ends unless kept, which saves it as a new session; the saved one stays as it was, a template for the next
+  build. The answer says `"data": true, "dataFrom": ID`.
+- **Errors**: 404 (no such saved session from this site), 400 (`saved`, `dataFrom` and `data` together, or a reopen
+  naming another build), 409 (open in another tab or in `run`, another package, another key, or a copy that failed).
+  Both work after `need: upload` too (the tab sends the build, then the agent copies the data). Additive: an agent
+  before this ignores `saved` and `dataFrom` and starts the app with no data, so a page checks the answer's `saved` /
+  `dataFrom` (and `/beam/saved`'s 404 tells it the agent is older).
+- **Not done**: key rotation (v3's proof-of-rotation lineage) is not followed, so a build signed with a rotated key is
+  refused; a versionCode downgrade is not refused (Android refuses one unless the app is debuggable); serve keeping a
+  hand-off's pack past its 5-minute ticket (the issue's optional part 4: the operator would have to opt in, since a
+  pack can hold sign-ins); serve.html offers none of this yet (an embedding page uses the protocol below).
+- **Checked**: `beam-check.py` (the saved session listed to its site and not another; reopened by its site with no
+  build named, not by another, not twice; running on a `bm` copy with the saved data at app start; `keep off` answered
+  `k on`; what it wrote back in the saved slot after it ends, the copy gone, still one saved session; a newer build
+  (the test APK with a ZIP comment: another hash, same package and key), sent by the tab, starting on a copy with the
+  saved data, its copy erased and the saved session unchanged; and, with apksigner and keytool, the APK signed with
+  another key refused).
 
 ## A Linux agent: scope (2026-11-08, not started)
 

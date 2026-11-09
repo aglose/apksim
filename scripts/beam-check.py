@@ -17,6 +17,11 @@ it runs (another session's end sweeps meanwhile) and deleted with its cache entr
 app); `forget` erasing it and the next sweep its build; `save-sessions on` keeping every session; one agent per state
 folder; `sweep` leaving a running agent's builds alone.
 
+Then issue 181: `GET /beam/saved` listing a saved session to its own site only; the tab reopening it (`saved`) on a
+copy that goes back over the saved slot when it ends, never two at once; a newer build of the same app (here: the
+test APK with a ZIP comment, another hash) started on a copy of it (`dataFrom`); and, when apksigner and keytool are
+here, a build signed by another key refused.
+
 Everything runs in a state folder of its own (`APKSIM_HOME`, removed at the end), so the Mac's own agent, trusted
 sites and builds are not touched; its instances therefore start without the class cache or startup cache.
 """
@@ -744,6 +749,163 @@ def data_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def slot_nodes(pid):
+    """The test app's slot screen as `nodes` reads it, from an instance of the main state folder."""
+    f = os.path.join(STATE, "tmp", str(pid), "control.port")
+    for _ in range(20):
+        if os.path.exists(f):
+            try:
+                c = socket.create_connection(("127.0.0.1", int(open(f).read().strip())), timeout=30)
+                io = c.makefile("rw")
+                io.write("nodes\n")
+                io.flush()
+                out = io.readline()
+                c.close()
+                if "at app start" in out:
+                    return out
+            except (OSError, ValueError):
+                pass
+        time.sleep(1)
+    return ""
+
+
+def control(pid, cmd):
+    """One command to an instance of the main state folder over its control port; its answer."""
+    f = os.path.join(STATE, "tmp", str(pid), "control.port")
+    try:
+        c = socket.create_connection(("127.0.0.1", int(open(f).read().strip())), timeout=30)
+        io = c.makefile("rw")
+        io.write(cmd + "\n")
+        io.flush()
+        out = io.readline()
+        c.close()
+        return out
+    except (OSError, ValueError) as e:
+        return f"error: {e}"
+
+
+def at_start(nodes):
+    return [x for x in nodes.split(";") if "app start" in x][:1]
+
+
+def next_build(apk_bytes):
+    """The same build with a ZIP comment added: another SHA-256, the same package and signer (a newer build, as far as
+    the agent can tell)."""
+    import struct
+    eocd = apk_bytes.rfind(b"PK\x05\x06")
+    assert eocd >= 0 and len(apk_bytes) == eocd + 22, "the test APK has a ZIP comment already"
+    c = b"beam-check: the next build"
+    return apk_bytes[:eocd + 20] + struct.pack("<H", len(c)) + c
+
+
+def resigned(apk_path):
+    """The test APK signed with a key of its own (apksigner and keytool), or None when the build tools are not here."""
+    sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
+    signers = sorted(glob.glob(os.path.join(sdk, "build-tools", "*", "apksigner")))
+    keytool = shutil.which("keytool")
+    if not signers or not keytool:
+        return None
+    d = tempfile.mkdtemp(prefix="beam-check-sign-")
+    ks, out = os.path.join(d, "k.jks"), os.path.join(d, "other.apk")
+    subprocess.run([keytool, "-genkeypair", "-keystore", ks, "-storepass", "beamcheck", "-keypass", "beamcheck", "-alias", "k",
+                    "-keyalg", "RSA", "-keysize", "2048", "-validity", "100", "-dname", "CN=beam-check"], capture_output=True)
+    subprocess.run([signers[-1], "sign", "--ks", ks, "--ks-pass", "pass:beamcheck", "--out", out, apk_path], capture_output=True)
+    if not os.path.exists(out):
+        return None
+    with open(out, "rb") as f:
+        b = f.read()
+    shutil.rmtree(d, ignore_errors=True)
+    return b
+
+
+def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
+    """Issue 181: a saved session reopened from its own site's tab (on a copy of its data, written back when it ends),
+    listed to that site only, and a newer build of the same app started on a copy of it, which a build signed by another
+    key may not."""
+    g = agent(apksim, gp, "allow")
+    try:
+        st, _, body = req(gp, "GET", "/beam/saved", B)
+        listed = json.loads(body) if st == 200 else []
+        mine = [x for x in listed if x.get("id") == sid]
+        check(len(mine) == 1 and mine[0].get("package") == PKG and mine[0].get("build") is True and mine[0].get("open") is False
+              and mine[0].get("sha256") == sha, f"saved: GET /beam/saved lists it to its site ({listed})")
+        st, _, body = req(gp, "GET", "/beam/saved", A)
+        check(st == 200 and sid not in body.decode(), "saved: and not to another site")
+        st, _, body = req(gp, "POST", "/beam/start", A, {"protocol": 2, "saved": sid})
+        check(st == 404, f"saved: another site cannot reopen it ({st})")
+        check(req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": "zz"})[0] == 400, "saved: an id that is not one is refused")
+
+        # Its /sdcard file removed, to see the reopened session's Write come back into the saved slot.
+        sd_file = os.path.join(STATE, "cache", "data", PKG, f"k{sid}-0.device", "sdcard", "apksim-slot-check.txt")
+        check(os.path.exists(sd_file), "saved: its /sdcard file is in the saved slot's .device folder")
+        if os.path.exists(sd_file):
+            os.remove(sd_file)
+        st, _, body = req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": sid})
+        gr = json.loads(body) if st == 200 else {}
+        check(gr.get("saved") == sid and gr.get("data") is True and gr.get("via") == "cache" and "token" in gr,
+              f"saved: its site reopens it with no build named (its own) ({st}, {body[:100]!r})")
+        st, _, body = req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": sid})
+        check(st == 409 and b"open" in body, f"saved: not twice at once ({st}, {body[:80]!r})")
+        st, _, body = req(gp, "GET", "/beam/saved", B)
+        check(any(x.get("id") == sid and x.get("open") for x in (json.loads(body) if st == 200 else [])), "saved: listed as open meanwhile")
+        s = open_session(gp, gr, B)
+        check(len(s.frames) > 0 and session_info(s).get("keep") is True, "saved: the reopened session runs, and says it is kept")
+        seen = slot_nodes(s.stats.get("pid", 0))
+        check("at app start: setting=written" in seen and "sdcard=missing" in seen,
+              f"saved: the app starts with the saved data, on its saved screen ({at_start(seen)})")
+        copies = glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*-0"))
+        check(len(copies) == 1, "saved: it runs on a copy (the beam sandbox reaches no saved slot)")
+        s.ws.send("keep off")
+        s.pump(3, until=lambda: "k on" in s.texts)
+        check("k on" in s.texts, "saved: a page cannot turn keeping off for a saved session")
+        # By its text: with saved values the screen's lines wrap, so Write is lower than on a fresh one.
+        r = control(s.stats.get("pid", 0), "tap-text Write")
+        s.pump(1.5)
+        check("tapped" in r, f"saved: Write on the slot screen ({r.strip()[:60]})")
+        s.pump(1.5)
+        check(close_session(s), "saved: the reopened session ends")
+        check(until(lambda: os.path.exists(sd_file) and not glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*")), 15),
+              "saved: what it wrote is back in the saved slot, and the copy is gone")
+        check(saved_ids(apksim) == [sid], f"saved: still one saved session, the same ({saved_ids(apksim)})")
+
+        # A newer build of the same app (same package, same key) on a copy of the saved data.
+        nb = next_build(apk)
+        nsha = hashlib.sha256(nb).hexdigest()
+        start2 = dict(slot_start, sha256=nsha, size=len(nb), ticket=None, url=None, protocol=2, dataFrom=sid)
+        check(req(gp, "POST", "/beam/start", A, start2)[0] == 404, "dataFrom: not from another site")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, saved=sid))
+        check(st == 400, "dataFrom: not with saved too")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, dataFrom=None, saved=sid))
+        check(st == 400 and b"dataFrom" in body, f"saved: a saved session is not reopened with another build ({body[:90]!r})")
+        st, _, body = req(gp, "POST", "/beam/start", B, start2)
+        gu = json.loads(body) if st == 200 else {}
+        st, _, body = req(gp, "POST", f"/beam/upload?upload={gu.get('upload')}", B, nb) if gu.get("need") == "upload" else (st, {}, body)
+        gn = json.loads(body) if st == 200 else {}
+        check(gn.get("dataFrom") == sid and gn.get("data") is True and "token" in gn,
+              f"dataFrom: a newer build (sent by the tab) starts on a copy of it ({st}, {body[:100]!r})")
+        s = open_session(gp, gn, B)
+        seen = slot_nodes(s.stats.get("pid", 0))
+        check("at app start: setting=written" in seen and "sdcard=written" in seen,
+              f"dataFrom: the newer build starts with the saved data ({at_start(seen)})")
+        check(session_info(s).get("keep") is False, "dataFrom: the session itself is not kept unless asked")
+        check(close_session(s), "dataFrom: its session ends")
+        # Erased as any session's slot is: emptied but for its .lock, the folder itself left to the sweep.
+        check(until(lambda: all(not os.path.isdir(d) or os.listdir(d) in ([], [".lock"])
+                                for d in glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*"))), 15)
+              and saved_ids(apksim) == [sid] and os.path.exists(sd_file), "dataFrom: its copy is erased, the saved session left as it was")
+
+        other = resigned(apk_path)
+        if other is None:
+            print("  -- dataFrom: no apksigner and keytool here: another key's build not checked")
+        else:
+            st, _, body = req(gp, "POST", "/beam/start", B, dict(start2, sha256=hashlib.sha256(other).hexdigest(), size=len(other)))
+            gu = json.loads(body) if st == 200 else {}
+            st, _, body = req(gp, "POST", f"/beam/upload?upload={gu.get('upload')}", B, other)
+            check(st == 409 and b"another key" in body, f"dataFrom: a build signed by another key is refused ({st}, {body[:90]!r})")
+    finally:
+        stop(g)
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -1066,6 +1228,8 @@ def main():
         g = None
         r = beam(apksim, "sweep")
         check(r.returncode == 0 and os.path.exists(build_file(sha)), "keep: and apksim beam sweep keeps it too")
+        check(len(rec.get("signers", [])) == 1, f"keep: the record says who signed its build ({rec.get('signers')})")
+        saved_tab_checks(apksim, gp, apk, a.apk, sha, size, sid, slot_start)
 
         # run: the saved session in a headless local launch, with what it left.
         cp = gp + 3

@@ -237,7 +237,7 @@ final class BeamStore {
 
   /** What a session leaves for its saved record: the slot, what it ran, and where it came from. */
   record Leaving(Path slot, String app, String sha256, List<String> launch, String device, String appearance,
-      String locale, String fontScale, String permissions, String site) {}
+      String locale, String fontScale, String permissions, String site, List<String> signers) {}
 
   /**
    * Keeps a session's data slot (its instance has exited): renamed to `k<id>-0`, its `.device` beside it too, and
@@ -286,9 +286,11 @@ final class BeamStore {
         field(j, "fontscale", s.fontScale());
         field(j, "permissions", s.permissions());
         field(j, "site", s.site());
-        j.append("  \"launch\": [");
-        for (int i = 0; i < s.launch().size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(s.launch().get(i)));
-        j.append("],\n  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
+        list(j, "launch", s.launch());
+        // Who signed its build (issue 181): a newer build may start on this data only if the same key signed it, which
+        // is then checked against this even after the saved build itself is gone.
+        if (s.signers() != null) list(j, "signers", s.signers());
+        j.append("  \"saved\": ").append(now).append(",\n  \"lastUsed\": ").append(now).append("\n}\n");
         writeAtomically(savedDir.resolve(id + ".json"), j.toString());
         return id;
       } catch (IOException | RuntimeException e) {
@@ -315,8 +317,93 @@ final class BeamStore {
     }
   }
 
+  private static void list(StringBuilder j, String k, List<String> v) {
+    j.append("  ").append(Http.q(k)).append(": [");
+    for (int i = 0; i < v.size(); i++) j.append(i > 0 ? ", " : "").append(Http.q(v.get(i)));
+    j.append("],\n");
+  }
+
   private static void field(StringBuilder j, String k, String v) {
     if (v != null) j.append("  ").append(Http.q(k)).append(": ").append(Http.q(v)).append(",\n");
+  }
+
+  /**
+   * Issue 181: a saved session reopened in a tab ran on a copy of its slot (`bm<hex>-0`, the only kind of slot the beam
+   * sandbox lets an instance touch besides `beam-N`, so a site's app never reaches the saved data of another site's);
+   * once its instance has exited, the copy takes the saved slot's place (`k<id>-0` and its `.device`), as a device keeps
+   * what the app wrote. False when it cannot: the saved slot is open (`apksim beam run`) or a rename fails; the caller
+   * then keeps the copy as a new saved session, so nothing the app wrote is lost and the saved one is as it was.
+   */
+  synchronized boolean writeBack(Path copy, Map<String, Object> rec) {
+    Path dir = copy.toAbsolutePath().normalize();
+    String id = String.valueOf(rec.get("id"));
+    if (!id.matches("[0-9a-f]{12}") || !dir.startsWith(dataRoot.toAbsolutePath().normalize())
+        || !dir.getFileName().toString().matches("bm[0-9a-f]{12}-0") || !dir.getParent().getFileName().toString().equals(rec.get("package"))) {
+      return false;
+    }
+    Path target = dir.resolveSibling("k" + id + "-0");
+    Path device = dir.resolveSibling(dir.getFileName() + ".device"), deviceTarget = target.resolveSibling(target.getFileName() + ".device");
+    Path trash = beamDir.resolve("import").resolve("old-" + id + "-" + Long.toHexString(System.nanoTime()));
+    List<FileChannel> open = new ArrayList<>();
+    boolean dropTrash = true;
+    try {
+      // The copy's lock (its instance has gone) and the saved slot's (no `run` has it open), both held while they swap.
+      for (Path p : List.of(dir, target)) {
+        if (!Files.isDirectory(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+        FileChannel ch = FileChannel.open(p.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        open.add(ch);
+        FileLock l;
+        try {
+          l = ch.tryLock();
+        } catch (OverlappingFileLockException e) {
+          l = null;
+        }
+        if (l == null) return false;
+      }
+      Files.createDirectories(trash);
+      List<Path[]> done = new ArrayList<>();  // renames made, undone in reverse if a later one fails
+      try {
+        for (Path[] m : List.of(new Path[] {deviceTarget, trash.resolve("device")}, new Path[] {target, trash.resolve("slot")},
+            new Path[] {device, deviceTarget}, new Path[] {dir, target})) {
+          if (!Files.exists(m[0], java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+          Files.move(m[0], m[1], StandardCopyOption.ATOMIC_MOVE);
+          done.add(m);
+        }
+      } catch (IOException | RuntimeException e) {
+        System.err.println("[beam] could not put " + dir + " back as saved session " + id + ": " + e);
+        for (int i = done.size() - 1; i >= 0; i--) {
+          try {
+            Files.move(done.get(i)[1], done.get(i)[0], StandardCopyOption.ATOMIC_MOVE);
+          } catch (IOException | RuntimeException ex) {
+            System.err.println("[beam] could not undo " + done.get(i)[0] + " (left in " + trash + "): " + ex);
+            dropTrash = false;  // what is there may be the only copy of something
+          }
+        }
+        return false;
+      }
+      used(id);
+      return true;
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[beam] could not put " + dir + " back as saved session " + id + ": " + e);
+      return false;
+    } finally {
+      for (FileChannel ch : open) {
+        try {
+          ch.close();
+        } catch (IOException e) {
+          // released with the process
+        }
+      }
+      if (dropTrash) deleteTree(trash);  // the saved slot as it was before this session (never through a link)
+    }
+  }
+
+  /** The saved sessions that came from this site (issue 181's `GET /beam/saved`), newest use first. */
+  List<Map<String, Object>> savedFrom(String origin) {
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> r : saved()) if (origin.equals(r.get("site"))) out.add(r);
+    out.sort(Comparator.comparingLong((Map<String, Object> r) -> r.get("lastUsed") instanceof Number n ? n.longValue() : 0).reversed());
+    return out;
   }
 
   /** Notes a saved session's use (`run`): `keep-saved-days` counts from it. */
