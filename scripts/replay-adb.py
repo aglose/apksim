@@ -123,7 +123,7 @@ class Plan:
             ev = e.get("ev")
             if ev == "char":
                 ch = "x" if e.get("redacted") else chr(int(e.get("v", 63)))
-                if text and off - text[2] < 1500:
+                if text and off == text[2]:
                     text[1].append(ch)
                     text[2] = off
                 else:
@@ -148,6 +148,7 @@ class Plan:
                 flush()
                 pts = [(off, e["x"], e["y"])]
                 cancelled = False
+                ended = False
                 while i < len(events) and events[i].get("ev") in ("move", "up", "cancel", None) and "cmd" not in events[i]:
                     f = events[i]
                     i += 1
@@ -155,8 +156,11 @@ class Plan:
                     if f.get("ev") == "cancel":
                         cancelled = True
                     if f.get("ev") in ("up", "cancel"):
+                        ended = True
                         break
-                if cancelled:
+                if not ended:
+                    self.skip("gesture with no finger-up in the journal (not completed: it would invent a tap)")
+                elif cancelled:
                     self.skip("cancelled gesture (a completed tap would activate what was never clicked)")
                 else:
                     self.gesture(steps, pts, path_steps)
@@ -214,8 +218,8 @@ class Plan:
                 "window_animation_scale", "transition_animation_scale", "animator_duration_scale"))))
         elif name == "locale" and args and re.fullmatch(r"[A-Za-z0-9-]+", args[0]):
             steps.append((off, "shell", "cmd locale set-app-locales %s --locales %s" % (self.pkg, args[0])))
-        elif name == "open" and args and re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*:[^\s'\"`$;&|<>\\]+", args[0]):
-            steps.append((off, "shell", "am start -a android.intent.action.VIEW -d " + shlex.quote(args[0])))
+        elif name == "open" and args and re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x20\x7f]+", args[0]):
+            steps.append((off, "shell", "am start -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -p %s -d %s" % (self.pkg, shlex.quote(args[0]))))
         elif name == "home":
             steps.append((off, "key", 3))
         elif name == "back":
@@ -311,6 +315,15 @@ def prepare(adb, plan, z, args, report, warn):
     if plan.font:
         ok, out = adb.try_sh("settings put system font_scale %s" % plan.font)
         (report if ok else warn).append("font scale %s %s" % (plan.font, "set" if ok else "NOT set: " + out))
+    quals = str(dev.get("qualifiers") or "").replace("+", "-").split("-")
+    if "night" in quals or "notnight" in quals:
+        ok, out = adb.try_sh("cmd uimode night " + ("yes" if "night" in quals else "no"))
+        (report if ok else warn).append("%s mode %s" % ("dark" if "night" in quals else "light", "set" if ok else "NOT set: " + out))
+    loc = [q for q in quals if re.fullmatch(r"[a-z]{2,3}", q) and q not in ("ldrtl", "ldltr", "car", "tv", "xr")]
+    if loc:
+        tag = loc[0] + (("-" + quals[quals.index(loc[0]) + 1][1:]) if len(quals) > quals.index(loc[0]) + 1 and re.fullmatch(r"r[A-Z]{2}", quals[quals.index(loc[0]) + 1]) else "")
+        ok, out = adb.try_sh("cmd locale set-app-locales %s --locales %s" % (pkg, tag))
+        (report if ok else warn).append("locale %s %s" % (tag, "set" if ok else "NOT set: " + out))
     scale = (1.0, 1.0)
     if w and h and not args.scale_coordinates:
         state["display"] = True
@@ -340,9 +353,12 @@ def restore_data(adb, plan, z, report, warn):
     with tempfile.TemporaryDirectory(prefix="replay-adb-") as stage:
         count = 0
         for n in zin.namelist():
-            if n.endswith("/") or n == "package":
+            if n == "package":
                 continue
             if ".." in n.split("/") or n.startswith("/") or n.split("/")[0] not in ("slot", "device"):
+                continue
+            if n.endswith("/"):
+                os.makedirs(os.path.join(stage, n), exist_ok=True)  # an empty directory can be a marker
                 continue
             dest = os.path.join(stage, n)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -508,9 +524,12 @@ def main():
             if plan.stack:
                 ok, out = adb.try_sh("am start -n %s" % shlex.quote("%s/%s" % (plan.pkg, plan.stack[-1]["class"])))
                 if not ok:
-                    warn.append("could not start %s: %s" % (plan.stack[-1]["class"], out.splitlines()[-1] if out else ""))
+                    fail("could not start %s (input was not played, it would reach another app): %s"
+                         % (plan.stack[-1]["class"], out.splitlines()[-1] if out else ""))
             else:
-                adb.sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % plan.pkg, check=False)
+                ok, out = adb.try_sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % plan.pkg)
+                if not ok or "No activities found" in out:
+                    fail("could not launch %s (input was not played): %s" % (plan.pkg, out[-150:]))
             time.sleep(2)
             played = play(adb, plan, scale, args, warn)
         finally:
