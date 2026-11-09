@@ -43,14 +43,18 @@ elif a[0] == "pull":
     open(a[2], "wb").write(open(os.environ["FAKE_DEVICE_APK"], "rb").read())
 elif a[0] == "install":
     print("Success")
-elif a[0] == "exec-out":
-    sys.stdout.buffer.write(b"T" * 2048)
 elif a[0] == "shell":
     s = a[1]
     if s.startswith("pm path"):
         print("package:/data/app/x/base.apk")
     elif s.startswith("run-as") and s.endswith(" true"):
         sys.exit(0 if not os.environ.get("FAKE_NO_RUNAS") else 1)
+    elif "tar -cf -" in s:
+        import tarfile
+        t = tarfile.open(fileobj=sys.stdout.buffer, mode="w|")
+        t.add(d + "/log", arcname="databases/x.db")
+        t.close()
+        sys.exit(int(os.environ.get("FAKE_TAR_STATUS", "0")))
     elif "tar -xf -" in s:
         open(d + "/pushed.tar", "wb").write(sys.stdin.buffer.read())
     elif s.startswith("settings get"):
@@ -102,17 +106,17 @@ def main():
 
     r, log = run("--dry-run", "--data", "--settings", "all")
     check(r.returncode == 0 and "dry run" in r.stdout, "dry run succeeds: " + (r.stdout + r.stderr)[-200:])
-    check(not any('"install"' in l or "settings put" in l or "exec-out" in l for l in log), "dry run changes nothing on the device")
+    check(not any('"install"' in l or "settings put" in l or "tar -cf -" in l for l in log), "dry run changes nothing on the device")
     check("secure/android_id: it identifies the device" in r.stdout, "identity setting left out")
 
     r, log = run("--data")
     check(r.returncode == 1 and "--yes" in r.stderr, "no terminal and no --yes: refuses")
-    check(not any("exec-out" in l for l in log), "refusal touched nothing")
+    check(not any("tar -cf -" in l for l in log), "refusal touched nothing")
 
     r, log = run("--data", "--settings", "all", "--yes")
     text = " ".join(log)
     check(r.returncode == 0, "--data --settings --yes succeeds: " + (r.stdout + r.stderr)[-300:])
-    iback = next((i for i, l in enumerate(log) if "exec-out" in l), -1)
+    iback = next((i for i, l in enumerate(log) if "tar -cf -" in l), -1)
     istop = next((i for i, l in enumerate(log) if "force-stop" in l), -1)
     check(0 <= istop < iback, "app stopped before the backup is read")
     iclear = next((i for i, l in enumerate(log) if "rm -rf" in l), -1)
@@ -150,6 +154,10 @@ def main():
     r, log = run("--data", "--yes", FAKE_NO_RUNAS="1")
     check(r.returncode == 1 and "debuggable" in r.stderr and not any("rm -rf" in l for l in log), "not debuggable: stops before clearing")
 
+    r, log = run("--data", "--yes", FAKE_TAR_STATUS="2")
+    check(r.returncode == 1 and "back up" in r.stderr and not any("rm -rf" in l for l in log), "failed remote tar: nothing cleared")
+    check(oct(os.stat(backups).st_mode & 0o777) == "0o700" and all(os.stat(backups + "/" + n).st_mode & 0o077 == 0 for n in os.listdir(backups)),
+          "recovery files are private")
     other = tmp + "/other.apk"
     open(other, "wb").write(b"PK\x05\x06" + b"\0" * 18)
     r, log = run("--install", "replace", "--yes", FAKE_DEVICE_APK=other)

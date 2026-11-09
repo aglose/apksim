@@ -398,10 +398,13 @@ final class DeviceHandoff {
         if (lockCh != null) lockCh.close();
       }
       // What the device has now, before anything is written, kept in a script that puts it back.
-      Files.createDirectories(backups);
+      Files.createDirectories(backups, PRIVATE_DIR);
       Path undo = backups.resolve(backupName + "-undo.sh");
-      StringBuilder script = new StringBuilder("#!/bin/sh\n# puts back what beam to-device changed on " + serial + " (an installed build is not undone)\n");
+      StringBuilder script = new StringBuilder("#!/bin/sh\n# puts back what beam to-device changed on " + serial + " (an installed build is not undone)\nset -e\n");
       if (o.data()) {
+        // Nothing is cleared unless the archive is there and reads.
+        String t = q(backups.resolve(backupName + ".tar").toString());
+        script.append("test -s ").append(t).append(" && tar -tf ").append(t).append(" >/dev/null || { echo 'the backup archive is missing or unreadable' >&2; exit 1; }\n");
         script.append("adb -s ").append(serial).append(" shell ").append(q("am force-stop " + pkg)).append("\n");
         script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " sh -c " + q(CLEAR))).append("\n");
         script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " tar -xf - -C .")).append(" < ")
@@ -419,7 +422,8 @@ final class DeviceHandoff {
         lines.add(e.getKey() + ": " + (was == null ? "(unset)" : was) + " -> " + (e.getValue() == null ? "(deleted)" : e.getValue()));
       }
       optionsUndo(serial, pkg, rec, script);
-      Files.writeString(undo, script.toString(), java.nio.file.StandardOpenOption.CREATE_NEW);
+      Files.createFile(undo, PRIVATE_FILE);
+      Files.writeString(undo, script.toString());
       System.out.println("what the device has now is saved in " + undo + " (sh it to put it back)");
 
       if (install) {
@@ -467,6 +471,12 @@ final class DeviceHandoff {
     return 0;
   }
 
+  /** The recovery files hold the device's private data: this user only (the folder's default mode may be wider). */
+  private static final java.nio.file.attribute.FileAttribute<Set<java.nio.file.attribute.PosixFilePermission>> PRIVATE_DIR =
+      java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+  private static final java.nio.file.attribute.FileAttribute<Set<java.nio.file.attribute.PosixFilePermission>> PRIVATE_FILE =
+      java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+
   /** Empties the app's data folder but for the system's own `lib` link. */
   static final String CLEAR = "find . -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {} +";
 
@@ -509,9 +519,18 @@ final class DeviceHandoff {
       System.err.println("apksim beam to-device: could not stop " + pkg + " on the device: " + stop.out().strip());
       return 1;
     }
-    Process p = new ProcessBuilder("adb", "-s", serial, "exec-out", "run-as", pkg, "tar", "-cf", "-", ".")
+    // `shell` (shell protocol v2) is binary-safe and returns the remote tar's exit status, which `exec-out` does not.
+    Files.createFile(tar, PRIVATE_FILE);
+    Process p = new ProcessBuilder("adb", "-s", serial, "shell", "run-as " + pkg + " tar -cf - .")
         .redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(tar.toFile()).start();
-    if (!p.waitFor(10, TimeUnit.MINUTES) || p.exitValue() != 0 || Files.size(tar) < 512) {
+    boolean good = p.waitFor(10, TimeUnit.MINUTES) && p.exitValue() == 0 && Files.size(tar) >= 512;
+    // And read back whole here: a half-written or damaged archive is never taken for a backup.
+    if (good) {
+      Process t = new ProcessBuilder("/usr/bin/tar", "-tf", tar.toString()).redirectErrorStream(true)
+          .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+      good = t.waitFor() == 0;
+    }
+    if (!good) {
       p.destroyForcibly();
       Files.deleteIfExists(tar);
       System.err.println("apksim beam to-device: could not back up the device's app data; nothing changed");
