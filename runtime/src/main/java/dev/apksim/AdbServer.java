@@ -34,6 +34,23 @@ final class AdbServer {
   private static final int A_OKAY = 0x59414b4f;
   private static final int A_WRTE = 0x45545257;
   private static final int A_CLSE = 0x45534c43;
+  private static final java.util.concurrent.CountDownLatch FRAMEWORK_READY = new java.util.concurrent.CountDownLatch(1);
+
+  /** Called by Host once the sandbox is up: shell and exec requests held until now may run. */
+  static void frameworkReady() {
+    FRAMEWORK_READY.countDown();
+  }
+
+  /** Holds a shell/exec request until the framework is ready (Host.run, or SimRunner for test runs). */
+  private static boolean awaitFramework() {
+    try {
+      return FRAMEWORK_READY.await(60, java.util.concurrent.TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
   /** Checksums are optional from this version on; it is what current adb sends. */
   private static final int VERSION = 0x01000001;
   private static final int MAX_PAYLOAD = 256 * 1024;
@@ -275,6 +292,13 @@ final class AdbServer {
           // the raw stream here never has either: both deliver bytes as written.
           String cmd = service.substring(service.indexOf(':') + 1);
           boolean exec = service.startsWith("exec:");
+          if (!awaitFramework()) {
+            // Handling a command first would initialise framework classes (Looper) outside the sandbox.
+            s.out.write("apksim: still starting, retry\n".getBytes(StandardCharsets.UTF_8));
+            s.out.flush();
+            return;
+          }
+          if (s.isClosed()) return;  // the client gave up while the request was held
           if (cmd.isBlank() && !exec) new AdbShell(s.out).interactive(s.in);
           else new AdbShell(s.out, s.in, s::isClosed).run(cmd);
         }

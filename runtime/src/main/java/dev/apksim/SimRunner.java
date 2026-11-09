@@ -251,6 +251,9 @@ public class SimRunner extends RobolectricTestRunner {
         if (Crashes.installed() && !Crashes.wasLogged(crash)) Crashes.mainThreadDied(crash);
         throw crash;
       }
+      // Test runs have no Host loop to say so: the main Looper exists now, so held adb requests may run. (A normal
+      // launch waits for Host.)
+      if (TestActivities.testRun()) AdbServer.frameworkReady();
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
