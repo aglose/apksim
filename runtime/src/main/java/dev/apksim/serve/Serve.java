@@ -42,7 +42,7 @@ public final class Serve {
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
              apksim beam saved | run ID [OPTIONS] | forget ID | sweep | status
              apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
-             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
+             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                [allow-download URL] [disallow-download URL]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -398,7 +398,7 @@ public final class Serve {
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec());
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")

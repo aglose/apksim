@@ -232,8 +232,13 @@ final class Session {
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
     String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
     if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
-    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
+    // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
+    // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
     List<String> own = app.launch();
+    if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
+      cmd.addAll(List.of("--rec", serve.store.config.rec()));
+    }
+    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     for (int i = 0; i < own.size(); i++) {
       if (own.get(i).equals("--device")) i++;
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
