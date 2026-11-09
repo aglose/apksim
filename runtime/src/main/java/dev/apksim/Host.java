@@ -199,7 +199,9 @@ public class Host {
         while ((cmd = Control.QUEUE.poll()) != null) {
           // Logged so a scripted session can be followed afterwards. Not each move of a drag (a browser sends one per
           // frame) or the redraws a stream asks for, and not what is typed (passwords, pasted tokens): only its length.
-          String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)" : String.join(" ", cmd.args);
+          String shown = cmd.args[0].equals("type") ? "type (" + (String.join(" ", cmd.args).length() - 5) + " characters)"
+              : cmd.args[0].equals("devpush") && cmd.args.length > 1 ? "devpush " + cmd.args[1] + " (" + (cmd.args.length > 2 ? cmd.args[2].length() : 0) + " characters)"
+              : String.join(" ", cmd.args);
           if (!(cmd.args[0].equals("touch") && cmd.args.length > 1 && cmd.args[1].equals("move")) && !cmd.args[0].equals("redraw") && !cmd.args[0].equals("vsync")) System.err.printf("[apksim] control %tT %s%n", System.currentTimeMillis(), shown);
           if (cmd.args[0].equals("settle")) {
             // Answered later, from the loop, once the UI is quiet (or it gives up).

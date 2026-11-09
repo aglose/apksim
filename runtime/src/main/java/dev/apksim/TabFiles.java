@@ -38,19 +38,28 @@ final class TabFiles {
       Path p = AdbShell.Paths.host(dev, "/");
       if (p == null) return "error: " + dev + " is not mapped";
       byte[] bytes = Base64.getDecoder().decode(base64);
-      Files.createDirectories(p.getParent());
-      // Nothing may lead out of the folder it was named in: the real path of the parent stays under its mount's, and
-      // the file itself is not a link (a link the app made would write wherever it points).
+      // Nothing may lead out of the folder it was named in. Checked before anything is created: the deepest folder
+      // that exists must be inside the mount (a link the app made would otherwise get its new folders made outside),
+      // and again after the folders are made.
       Path mount = mountOf(dev);
-      if (mount != null) {
-        Path realMount = mount.toRealPath();
-        if (!p.getParent().toRealPath().startsWith(realMount)) return "error: a link leads out of " + dev;
+      Path realMount = mount == null ? null : mount.toRealPath();
+      if (realMount != null) {
+        Path up = p.getParent();
+        while (up != null && !Files.exists(up, LinkOption.NOFOLLOW_LINKS)) up = up.getParent();
+        if (up == null || !up.toRealPath().startsWith(realMount) || (!up.toRealPath().equals(realMount) && Files.isSymbolicLink(up))) return "error: a link leads out of " + dev;
       }
+      Files.createDirectories(p.getParent());
+      if (realMount != null && !p.getParent().toRealPath().startsWith(realMount)) return "error: a link leads out of " + dev;
       if (Files.isSymbolicLink(p) || Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)) return "error: " + dev + " is a link or a folder";
       // The app may have it open: a new file moved into place leaves the one it holds as it was (as adb push does).
-      Path tmp = p.resolveSibling("." + p.getFileName() + ".tabpush");
-      Files.write(tmp, bytes);
-      Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      // The temporary file is a fresh one of a random name, created exclusively (never a name the app could have linked).
+      Path tmp = p.resolveSibling("." + java.util.UUID.randomUUID() + ".tabpush");
+      try {
+        Files.write(tmp, bytes, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } finally {
+        Files.deleteIfExists(tmp);
+      }
       return "ok " + dev + " " + bytes.length;
     } catch (IllegalArgumentException e) {
       return "error: bad data";

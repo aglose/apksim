@@ -589,8 +589,17 @@ public final class Serve {
     return state.resolve("beam/cache").resolve(sha256);
   }
 
+  /** Issue 187: what a download needs once its session has ended, until its recordings age out (a week). */
+  private final Map<String, Object[]> keptRecs = new ConcurrentHashMap<>();
+
   void ended(Session s) {
     sessions.remove(s.id);
+    Session.Kept k = s.kept();
+    if (k != null) {
+      long now = System.currentTimeMillis();
+      keptRecs.values().removeIf(v -> (long) v[1] < now);
+      keptRecs.put(s.id, new Object[] {k, now + 7 * 24 * 3_600_000L});
+    }
     if (beam) {
       // Its build's hold starts now (a saved session's, or another running session's, keeps it anyway).
       catalog.released(catalog.buildHash(s.app.path()));
@@ -756,7 +765,7 @@ public final class Serve {
     }
     java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/api/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());
     if (fm.matches()) {
-      sessionFile(r, out, sessions.get(fm.group(1)), fm.group(2));
+      sessionFile(r, out, sessions.get(fm.group(1)), fm.group(2), fm.group(1));
       return;
     }
     switch (r.method() + " " + r.path()) {
@@ -868,17 +877,22 @@ public final class Serve {
     }
   }
 
+  private Session.Kept keptOf(String id) {
+    Object[] v = keptRecs.get(id);
+    return v == null || (long) v[1] < System.currentTimeMillis() ? null : (Session.Kept) v[0];
+  }
+
   /**
    * Issue 187: `POST /api/sessions/ID/files?path=` (a file into the running app) and `GET /api/sessions/ID/recordings/RID`
    * (a flight recording the tab saved with `rec save`). The same on the beam agent under `/beam/sessions/ID/...`. A session
    * that is not running (or not this caller's) is a 404.
    */
-  private void sessionFile(Http.Request r, OutputStream out, Session s, String what) throws IOException {
-    if (s == null) {
-      Http.text(out, 404, "no such session (or it has ended)");
-      return;
-    }
+  private void sessionFile(Http.Request r, OutputStream out, Session s, String what, String sid) throws IOException {
     if (what.equals("files")) {
+      if (s == null) {
+        Http.text(out, 404, "no such session (or it has ended)");
+        return;
+      }
       if (!r.method().equals("POST")) {
         Http.text(out, 405, "POST the file as the request body");
         return;
@@ -901,7 +915,14 @@ public final class Serve {
       Http.text(out, 405, "GET the recording");
       return;
     }
-    Path f = s.recording(what.substring("recordings/".length()));
+    String rid = what.substring("recordings/".length());
+    Path f = null;
+    if (s != null) f = s.recording(rid);
+    else {
+      Session.Kept k = keptOf(sid);
+      Path c = k == null || !k.rids().contains(rid) ? null : k.dir().resolve(rid + ".apkrec");
+      if (c != null && Files.isRegularFile(c, java.nio.file.LinkOption.NOFOLLOW_LINKS)) f = c;
+    }
     if (f == null) {
       Http.text(out, 404, "no such recording yet (rec save answers with its id; the file appears when it is written)");
       return;
@@ -1475,13 +1496,16 @@ public final class Serve {
     if (fm.matches()) {
       // Issue 187: this page's own session only: its origin, and the key the session sent that tab on its socket.
       Session x = sessions.get(fm.group(1));
+      Session.Kept k = x != null ? x.kept() : keptOf(fm.group(1));
+      String fk = x != null ? x.fileKey : k == null ? null : k.key();
+      String site = x != null ? x.site : k == null ? null : k.site();
       String key = r.param("key");
-      if (x == null || x.fileKey == null || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
-          x.fileKey.getBytes(StandardCharsets.UTF_8)) || !o.equals(x.site)) {
+      if (fk == null || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
+          fk.getBytes(StandardCharsets.UTF_8)) || !o.equals(site)) {
         Http.text(out, 404, "no such session (or it has ended)");
         return;
       }
-      sessionFile(r, out, x, fm.group(2));
+      sessionFile(r, out, x, fm.group(2), fm.group(1));
       return;
     }
     switch (r.method() + " " + r.path()) {

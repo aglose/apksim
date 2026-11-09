@@ -981,7 +981,7 @@ final class Session {
 
   /** Where this session's recordings are written: the instance's own out folder in a beam sandbox, else the server's. */
   private Path recDir() {
-    if (serve.beam) return pid > 0 ? serve.state.resolve("beam/out/" + pid + "/rec") : null;
+    if (serve.beam) return instancePid > 0 ? serve.state.resolve("beam/out/" + instancePid + "/rec") : null;  // the kernel-confirmed pid, not the app-reported one
     return serve.logs.resolve("rec-" + id);
   }
 
@@ -990,32 +990,54 @@ final class Session {
     return serve.logs.resolve("rec-" + id);
   }
 
-  /** The recording file, if this session made it and it is written (the instance moves it into place when complete). */
+  /**
+   * The recording file, if this session made it and it is written (the instance moves it into place when complete).
+   * A beam app can write its own out folder, so a file there is never opened by the agent as it stands: it is copied
+   * (without following links) into the agent's folder and that copy is served.
+   */
   Path recording(String rid) {
     if (!rid.matches("[0-9a-f]{12}") || !recordings.contains(rid)) return null;
-    for (Path d : new Path[] {recDir(), keptRecDir()}) {
-      Path f = d == null ? null : d.resolve(rid + ".apkrec");
-      if (f != null && Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return f;
+    Path kept = keptRecDir().resolve(rid + ".apkrec");
+    if (Files.isRegularFile(kept, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return kept;
+    Path d = recDir();
+    if (d == null) return null;
+    if (!serve.beam) {
+      Path f = d.resolve(rid + ".apkrec");
+      return Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? f : null;
     }
-    return null;
+    return copyOut(d, rid + ".apkrec") ? kept : null;
   }
 
-  /** After a beam instance exits: its recordings from the sandbox's out folder to the logs folder. */
-  private void keepRecordings() {
-    Path d = pid > 0 && serve.beam ? serve.state.resolve("beam/out/" + pid + "/rec") : null;
-    if (d == null || !Files.isDirectory(d)) return;
+  /** Copies one recording out of a beam instance's folder into the agent's own, never following a link. */
+  private boolean copyOut(Path dir, String name) {
     try {
+      java.nio.file.LinkOption nf = java.nio.file.LinkOption.NOFOLLOW_LINKS;
+      Path f = dir.resolve(name);
+      if (Files.isSymbolicLink(dir) || !Files.isRegularFile(f, nf)) return false;
       Files.createDirectories(keptRecDir());
-      try (java.util.stream.Stream<Path> l = Files.list(d)) {
-        for (Path f : (Iterable<Path>) l::iterator) {
-          if (f.getFileName().toString().endsWith(".apkrec") && Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-            Files.move(f, keptRecDir().resolve(f.getFileName()), StandardCopyOption.REPLACE_EXISTING);
-          }
-        }
+      Path tmp = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
+      try (java.io.InputStream in = Files.newInputStream(f, nf)) {
+        Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
       }
+      Files.move(tmp, keptRecDir().resolve(name), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      return true;
     } catch (IOException e) {
-      logLine("[serve] could not keep the recordings: " + e);
+      return false;
     }
+  }
+
+  /** After a beam instance exits: its recordings from the sandbox's out folder to the logs folder (copied, links refused). */
+  private void keepRecordings() {
+    Path d = serve.beam ? recDir() : null;
+    if (d == null || Files.isSymbolicLink(d) || !Files.isDirectory(d, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+    for (String rid : recordings) copyOut(d, rid + ".apkrec");
+  }
+
+  /** What a download needs after the session ends: the key and origin (beam), the ids, and where they are. */
+  record Kept(String key, String site, java.util.Set<String> rids, Path dir) {}
+
+  Kept kept() {
+    return recordings.isEmpty() ? null : new Kept(fileKey, site, new java.util.HashSet<>(recordings), keptRecDir());
   }
 
   /** `rec on|off [CHANNEL...]`, `rec checkpoint now`, `rec save [SECONDS]` from the tab; never a file name of its own. */
