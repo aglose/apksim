@@ -1036,46 +1036,75 @@ final class Session {
   }
 
   private final java.util.Set<String> failedCopies = java.util.concurrent.ConcurrentHashMap.newKeySet();
-  private static final java.util.concurrent.atomic.AtomicInteger STUCK = new java.util.concurrent.atomic.AtomicInteger();
+  private final java.util.Set<String> copying = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.concurrent.atomic.AtomicInteger COPIERS = new java.util.concurrent.atomic.AtomicInteger();
 
   /** Copies one recording out of a beam instance's folder into the agent's own, never following a link. */
   private boolean copyOut(Path dir, String name) {
+    java.nio.file.LinkOption nf = java.nio.file.LinkOption.NOFOLLOW_LINKS;
+    Path f = dir.resolve(name);
+    if (failedCopies.contains(name) || Files.isSymbolicLink(dir) || !Files.isRegularFile(f, nf)) return false;
+    // Java cannot open without blocking, so a worker stuck on a pipe cannot be stopped. Each worker holds one of a few
+    // slots until it has really finished (not until its caller gave up), one recording is copied by one worker at a
+    // time, and a recording whose copy timed out is not tried again.
+    if (!copying.add(name)) return false;
+    boolean slot = false;
+    for (int n = COPIERS.get(); n < 4 && !slot; n = COPIERS.get()) slot = COPIERS.compareAndSet(n, n + 1);
+    if (!slot) {
+      copying.remove(name);
+      return false;
+    }
+    Path tmp = null;
+    CompletableFuture<Void> job = null;
     try {
-      java.nio.file.LinkOption nf = java.nio.file.LinkOption.NOFOLLOW_LINKS;
-      Path f = dir.resolve(name);
-      if (Files.isSymbolicLink(dir) || !Files.isRegularFile(f, nf)) return false;
       Files.createDirectories(keptRecDir());
-      Path tmp = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
-      // A file the app swapped for a pipe would block an open for good: opened on a thread that is given up on.
-      // Java cannot open without blocking, so a worker stuck on a pipe cannot be stopped: a recording that timed out is
-      // never tried again, and no more than a few such workers may be stuck at once.
-      if (!failedCopies.add(name) || STUCK.get() >= 4) return false;
+      Path t = Files.createTempFile(keptRecDir(), ".copy", ".tmp");
+      tmp = t;
       java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
-      CompletableFuture<Void> job = CompletableFuture.runAsync(() -> {
+      job = CompletableFuture.runAsync(() -> {
         try (java.io.InputStream in = Files.newInputStream(f, nf)) {
-          if (!cancelled.get()) Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
+          if (!cancelled.get()) Files.copy(in, t, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
           throw new java.io.UncheckedIOException(e);
         }
       }, r -> Thread.ofVirtual().start(r));
+      job.whenComplete((v, e) -> {
+        COPIERS.decrementAndGet();
+        copying.remove(name);
+        if (cancelled.get()) {
+          try {
+            Files.deleteIfExists(t);
+          } catch (IOException ex) {
+            // left for the sweep
+          }
+        }
+      });
       try {
         job.get(30, TimeUnit.SECONDS);
-        failedCopies.remove(name);
-      } catch (Exception e) {
-        if (!job.isDone()) {
-          STUCK.incrementAndGet();
-          job.whenComplete((v, t) -> STUCK.decrementAndGet());
-        } else {
-          failedCopies.remove(name);  // it failed on its own (not a blocked open): a later try may work
-        }
+      } catch (java.util.concurrent.TimeoutException e) {
+        failedCopies.add(name);
         cancelled.set(true);
-        Files.deleteIfExists(tmp);
+        return false;
+      } catch (Exception e) {
+        Files.deleteIfExists(t);
         return false;
       }
-      Files.move(tmp, keptRecDir().resolve(name), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      Files.move(t, keptRecDir().resolve(name), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       return true;
     } catch (IOException e) {
+      if (tmp != null) {
+        try {
+          Files.deleteIfExists(tmp);
+        } catch (IOException ex) {
+          // left for the sweep
+        }
+      }
       return false;
+    } finally {
+      if (job == null) {
+        COPIERS.decrementAndGet();
+        copying.remove(name);
+      }
     }
   }
 
