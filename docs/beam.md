@@ -17,7 +17,7 @@ This page is the plan: what "seamless" has to mean, the design, then phases with
 | 1b Parity with a local launch | Done (see "Phase 1b as built"): the tab shows a new frame on as many display refreshes as the window, in every scenario measured; one refresh more latency (the encode) |
 | 1c What the Mac keeps, and for how long | Done (see "Phase 1c as built"): builds held 2 days (configurable) after their last session, sessions erased unless kept, `apksim beam saved|run|forget|config|sweep` |
 | Beam sandbox | Done (see "The beam sandbox"): beamed APKs reach nothing of the Mac's but their own slot, scratch and build caches |
-| 2 The agent downloads the APK itself | Done (see "Phase 2 as built"): with the server's ticket, from the page's own site; the tab relays it only when that fails |
+| 2 The agent downloads the APK itself | Done (see "Phase 2 as built"): with the server's ticket, from the page's own site, or from an artifact store its owner allowed (see "Builds from an artifact store"); the tab relays it only when that fails |
 | 3 Sizing, Show in Simulator | Done (see "Phase 3 as built"): Fill mode at the browser's pixel ratio, the simulator window as a second view, close hides it |
 | 4 Moving a running session | Done (see "Phase 4 as built"): server to Mac and back with no blank frame; a refused move stays; a dead agent offers the server. Left: reconnecting after sleep |
 | 5 The app's data moves with it | Done (see "Phase 5 as built"): a move from the server to the Mac takes the app's data slot and /sdcard and Settings values ("With its data"); the app quits on the server first |
@@ -821,7 +821,8 @@ months apart in either direction.
   least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
   know.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
-  built"). Releases after 0.19.1 speak 1-2.
+  built"). Releases after 0.19.1 speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
+  `source` (issues 177, 178).
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
   (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
@@ -841,14 +842,20 @@ readable by any origin. Requests to the server carry its token as everything els
    the `loopback-network` permission for `AGENT`: ask `/beam/hello` only once it is granted or the visitor chose the
    Mac, as the browser prompts on that request.
 2. **Is there an agent, and which protocol?** `GET AGENT/beam/hello` → `{"apksim", "protocol", "minProtocol",
-   "trusted"}`. Use `P = min(page's protocol, agent's protocol)` if it is at least both minimums; else stay on the
-   server and say which side to update. `trusted`: this origin will not be prompted.
+   "trusted", "asking"}`. Use `P = min(page's protocol, agent's protocol)` if it is at least both minimums; else stay
+   on the server and say which side to update. `trusted`: this origin will not be prompted. `asking`: the consent
+   dialog for this origin is up now (releases after 0.19.1; absent before): poll it while a start is pending (step 4)
+   to tell the visitor the Mac waits for them ("The consent wait").
 3. **The app's build.** `GET SERVER/api/apps/ID/beam` → `{"id", "name", "size", "sha256", "options", "ticket",
    "ticketSeconds"}` (409 while an added app still downloads).
 4. **A grant.** `POST AGENT/beam/start` with JSON `{"protocol": P, "sha256", "name", "size", "options", "ticket",
    "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
-   (step 7). The agent may first prompt its owner (up to 2.5 minutes: keep the request open). Answers:
-   - `{"app", "token", "via"}` (`via`: `cache` or `download`; `"data": true` when it took the data): go to step 5.
+   (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
+   store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
+   releases up to 0.19.1). The agent may first prompt its owner (up to 2.5 minutes: keep the request open; `asking`
+   in step 2 says it is). Answers:
+   - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data): go to
+     step 5.
    - `{"need": "upload", "upload": G, "why"?}`: the agent could not get the build itself. Fetch
      `SERVER/api/apps/ID/apk` (with the token) and `POST AGENT/beam/upload?upload=G` with it as the body. The answer is
      again one of these (a grant, or `need: data`).
@@ -870,6 +877,58 @@ readable by any origin. Requests to the server carry its token as everything els
    `h {"error"}` (with no data slot yet the session runs on; any other error ends it). Then step 4 with `data`. If
    the Mac does not take it, open the server's session again with `&restore=TICKET`: an `r` line says whether the data
    came back (the pack is kept until the ticket expires, 5 minutes, and used once).
+
+## Builds from an artifact store (2026-11-08, issue 177)
+
+Behind a sign-in proxy the agent's download from the page's server always fails, so the tab relays every build it
+lacks: the whole APK through the proxy into the tab, buffered as a Blob (Chrome streams request bodies only over
+HTTP/2, and the agent is HTTP/1.1 on loopback), then to the agent. Many deployments keep builds where the visitor's
+Mac reaches them directly and anonymously (CI artifacts), and the page knows that address and the hash.
+
+- **The page names it**: `/beam/start` takes `"source": URL` beside `sha256`. serve.html sends none (its builds are
+  its own); an embedding page with an artifact store does.
+- **The owner allows it**: `apksim beam config allow-download https://artifacts.example.com/builds/` (and
+  `disallow-download`), kept in `STATE/beam/downloads.json` and read at every start, so it takes effect without a
+  restart; `apksim beam config` and `apksim beam status` list them. A prefix is https (http only on 127.0.0.1,
+  localhost or [::1]), a host, no user, query or fragment; a source matches on that site exactly (no subdomains) and
+  at the prefix's path or below it as whole segments (`/builds` covers `/builds/x`, never `/builds-other`). A source
+  with a user, a fragment, a `.` or `..` segment, or `%2E`, `%2F`, `%5C` or a backslash in its path is never allowed
+  (a server could read it as another folder). The query is the source's own (signed addresses).
+- **The download** (`Serve.beamFetchSource`): tried first, before the page's server; no credentials, no cookies; a
+  redirect (up to 5) is followed only to an address that is allowed too; an APK's content type or
+  `application/octet-stream` (what artifact stores send: the hash, checked before anything is stored, says what the
+  file is); within `--max-upload`. Its answer says `"via": "source"`. When it is not allowed or fails, the page's
+  server is tried with the ticket, then the tab relays the APK (`need: upload`, its `why` naming the source's host
+  and the reason, never its path or query).
+- **What it lets a page do**: make the agent fetch an address on the visitor's network, which the owner's prefixes
+  bound; what it fetches is kept only if its hash is the one the page named. The consent prompt does not offer to
+  allow a download host (its dialog has room for three answers only); a team's setup instructions can add the
+  `config` line beside `apksim beam install --trust` ("The consent wait").
+- **Checked** (`beam-check.py`'s source section, with a stand-in artifact store): no plain-http or user-bearing
+  prefix; an address not allowed is not fetched and the tab is asked; an allowed one downloads with a store's
+  octet-stream type and is found by its hash the next time; a redirect within the prefix is followed, one out of it
+  is not; `/builds-other`, `..`, `%2e%2e` and `%2F` are not under `/builds`; a sign-in page is not a build; a hash
+  that does not match is not kept; `disallow-download` takes effect at once.
+
+## The consent wait (2026-11-08, issue 178)
+
+A new site's first `/beam/start` holds its request open while the agent's dialog waits for the Mac's owner (up to 2
+minutes), right after Chrome's own prompt for apps on this device, and a dialog behind other windows or on another
+Space is easy to miss: the page looked stuck, then the start was refused.
+
+- **`/beam/hello` says `"asking": true`** to the origin whose dialog is up now, and only to it (another page learns
+  nothing about which sites ask). serve.html polls it once a second while a start for a site not yet allowed is
+  pending, and says "apksim is asking on this Mac: choose Allow in its dialog (it may be behind other windows)" in the
+  start's overlay (or the move's chip), and in its log.
+- **A notification** (`display notification`, with a sound) comes with the dialog, so it is noticed when the dialog
+  is not; it is not waited for, and nothing happens if it fails.
+- **`apksim beam install --trust ORIGIN`** (repeatable) allows a site as `apksim beam trust allow` does, so a team's
+  setup instructions can pre-allow their own dashboard and skip the dialog entirely; the Homebrew cask's caveats
+  mention it.
+- **Checked**: `beam-check.py` (hello's `asking` true for the asking origin and false for another while a stand-in
+  dialog waits, `APKSIM_BEAM_CONSENT=allow-after-2s`, for checks only; false after; `install --trust` with
+  `--dry-run` listed by `trust list`, a non-origin refused) and `beam-page-check.py` (Chrome: a start for a site not
+  yet allowed says so in the page while the stand-in dialog waits, then runs on the Mac).
 
 ## A Linux agent: scope (2026-11-08, not started)
 
@@ -897,7 +956,7 @@ What it would take for `apksim beam` on a Linux desktop (the page offers beam on
 
 ## The launchd agent (2026-11-08)
 
-- **`apksim beam install [--port N] [--agent-idle S]`** (`BeamLaunchd`) writes two LaunchAgents to
+- **`apksim beam install [--port N] [--agent-idle S] [--trust ORIGIN]...`** (`BeamLaunchd`) writes two LaunchAgents to
   ~/Library/LaunchAgents and loads them (`launchctl bootstrap gui/UID`); `apksim beam uninstall` boots them out and
   deletes them; `apksim beam status` says whether it is installed. Opt-in, never done by the installer: an agent any
   page can reach (behind its consent prompt) is the visitor's choice. The Homebrew cask says how to install it.

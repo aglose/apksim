@@ -1021,7 +1021,7 @@ async function beamHello(asked) {
         + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
       return null;
     }
-    beam.protocol = common; beam.ok = true;
+    beam.protocol = common; beam.ok = true; beam.trusted = !!h.trusted;
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
   } catch (e) {
@@ -1070,9 +1070,31 @@ async function macGrant(q, gen, say, data) {
   // The agent asks its owner the first time this site runs an app there (a prompt on the Mac): this waits for it.
   // With the server's ticket and its download address the agent fetches a build it lacks itself (docs/beam.md,
   // phase 2); behind a sign-in it cannot pass, it asks this tab to send it instead (need: upload).
-  let g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
-      url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
+  // Meanwhile hello says whether that dialog is up (issue 178), so the page can tell the visitor it waits for them,
+  // not for the agent: the dialog may be behind other windows, right after the browser's own prompt.
+  let waiting = !beam.trusted, asked = false;
+  (async () => {
+    await new Promise(r => setTimeout(r, 500));
+    while (waiting && gen === startGen) {
+      try {
+        const h = await (await fetch(beam.url + "/beam/hello")).json();
+        if (!waiting || gen !== startGen) break;
+        if (h.asking && !asked) {
+          say("apksim is asking on this Mac: choose Allow in its dialog (it may be behind other windows).");
+          log("apksim is asking on this Mac whether this site may run apps there: waiting for its owner");
+        } else if (!h.asking && asked) say("Allowed, starting…");
+        asked = !!h.asking;
+      } catch (e) { break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  })();
+  let g;
+  try {
+    g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
+        url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
+  } finally { waiting = false; }
+  if (asked) say("Allowed, starting…");
   if (g.via === "download") log("this Mac downloaded the app from this server");
   if (g.why) log("this Mac could not download the app itself (" + g.why + "): this tab sends it");
   if (gen !== startGen) return null;

@@ -83,6 +83,8 @@ final class Beam {
                int protocol) {}
 
   private final Path trustFile;
+  /** URL prefixes the agent may download a build from when a page names one (`source`, issue 177). */
+  private final Path downloadsFile;
   /**
    * `ask` (the prompt), or `allow` / `deny` for checks only (scripts/beam-check.py): from `-Dapksim.beam.consent` or
    * `APKSIM_BEAM_CONSENT`, which only whoever starts the agent sets. A page can never change it.
@@ -98,12 +100,15 @@ final class Beam {
   /** Moved-data slots whose grant was just used (name -> when): its session is being set up. */
   private final Map<String, Long> seedsTaken = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
+  /** The origin whose consent dialog is up now, else null (`/beam/hello`'s `asking`, issue 178). */
+  private volatile String askingFor;
 
   private final Path state;
 
   Beam(Path state) {
     this.state = state;
     this.trustFile = state.resolve("beam/trust.json");
+    this.downloadsFile = state.resolve("beam/downloads.json");
   }
 
   /** The version line `/beam/hello` reports: an installed release's number, else "dev". */
@@ -178,11 +183,22 @@ final class Beam {
       String now = trust().get(origin);
       if ("never".equals(now)) return false;
       if ("always".equals(now)) return true;
-      String answer = switch (consentMode) {
-        case "allow" -> "Always Allow";
-        case "deny" -> "Don't Allow";
-        default -> prompt(origin, name, size);
-      };
+      String answer;
+      askingFor = origin;
+      try {
+        answer = switch (consentMode) {
+          case "allow" -> "Always Allow";
+          case "deny" -> "Don't Allow";
+          // For checks: the dialog's wait without a dialog (scripts/beam-check.py polls hello's `asking` meanwhile).
+          case "allow-after-2s" -> {
+            sleep(2000);
+            yield "Allow Once";
+          }
+          default -> prompt(origin, name, size);
+        };
+      } finally {
+        askingFor = null;
+      }
       System.err.printf("[beam] %s asked to run %s: %s%n", origin, name, answer);
       switch (answer) {
         case "Always Allow" -> {
@@ -203,8 +219,48 @@ final class Beam {
     }
   }
 
+  /**
+   * Whether the consent dialog is up for this origin now (`/beam/hello`'s `asking`): the page's start is waiting for
+   * the Mac's owner, not for the agent, and it can say so (issue 178). Only the asking origin's own: another page
+   * learns nothing about which sites ask.
+   */
+  boolean asking(String origin) {
+    return origin != null && origin.equals(askingFor);
+  }
+
+  private static void sleep(long ms) {
+    try {
+      Thread.sleep(ms);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * A notification beside the dialog (issue 178): a dialog behind other windows or on another Space is easy to miss,
+   * the more so right after the browser's own prompt for apps on this device. Not waited for, and nothing if it fails.
+   */
+  private static void notifyOwner(String origin) {
+    String script = "display notification " + appleScriptString(origin + " asks to run an app on this Mac: choose Allow in apksim's dialog")
+        + " with title \"apksim\" sound name \"default\"";
+    try {
+      Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true)
+          .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+      Thread.ofVirtual().name("apksim-beam-notify").start(() -> {
+        try {
+          if (!p.waitFor(10, TimeUnit.SECONDS)) p.destroyForcibly();
+        } catch (InterruptedException e) {
+          p.destroyForcibly();
+        }
+      });
+    } catch (IOException e) {
+      System.err.println("[beam] no notification: " + e.getMessage());
+    }
+  }
+
   /** The native prompt (AppleScript's dialog, in its own process: the agent's JVM has no window server connection). */
   private static String prompt(String origin, String name, long size) {
+    notifyOwner(origin);
     String what = name == null || name.isBlank() ? "an app" : "“" + name + "”";
     String sz = size > 0 ? " (" + Math.max(1, size >> 20) + " MB)" : "";
     String text = origin + " wants to run " + what + sz + " on this Mac.\n\n"
@@ -249,6 +305,101 @@ final class Beam {
 
   private static String appleScriptString(String s) {
     return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  // ---------------------------------------------------------------- downloads (issue 177)
+
+  /**
+   * A download prefix as it is kept, or null: https (http only for this Mac's own loopback addresses), a host, no user,
+   * query or fragment, and a path without `..` (none means `/`). Host lower-cased and a default port dropped, so it
+   * compares with {@link #downloadAllowed}'s form of a page's `source`.
+   */
+  static String downloadPrefix(String s) {
+    java.net.URI u = parsed(s);
+    if (u == null || u.getRawQuery() != null) return null;
+    String path = u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath();
+    return site(u) + path;
+  }
+
+  /** `scheme://host[:port]` of an address the agent may fetch (see {@link #downloadPrefix}), or null. */
+  private static String site(java.net.URI u) {
+    String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(java.util.Locale.ROOT);
+    String host = u.getHost() == null ? null : u.getHost().toLowerCase(java.util.Locale.ROOT);
+    if (host == null) return null;
+    boolean loopback = host.equals("127.0.0.1") || host.equals("localhost") || host.equals("[::1]");
+    if (!(scheme.equals("https") || scheme.equals("http") && loopback)) return null;
+    int port = u.getPort();
+    boolean defaultPort = port == -1 || scheme.equals("http") && port == 80 || scheme.equals("https") && port == 443;
+    return scheme + "://" + host + (defaultPort ? "" : ":" + port);
+  }
+
+  /**
+   * A URL the agent may take apart safely, or null: absolute, http(s), a host, no user or fragment, and no path
+   * segment that a server could read as another folder (`..`, `.`, or a slash or dot written as %2F / %2E).
+   */
+  private static java.net.URI parsed(String s) {
+    if (s == null || s.length() > 4000) return null;
+    java.net.URI u;
+    try {
+      u = new java.net.URI(s);
+    } catch (java.net.URISyntaxException e) {
+      return null;
+    }
+    if (!u.isAbsolute() || u.getRawUserInfo() != null || u.getRawFragment() != null || site(u) == null) return null;
+    String path = u.getRawPath() == null ? "" : u.getRawPath();
+    String lower = path.toLowerCase(java.util.Locale.ROOT);
+    if (lower.contains("%2f") || lower.contains("%2e") || lower.contains("%5c") || path.contains("\\")) return null;
+    for (String seg : path.split("/", -1)) if (seg.equals("..") || seg.equals(".")) return null;
+    return u;
+  }
+
+  /** The prefixes allowed, as kept (`apksim beam config allow-download`). */
+  synchronized List<String> downloads() {
+    List<String> d = new java.util.ArrayList<>();
+    try {
+      if (Files.isRegularFile(downloadsFile) && Json.parse(Files.readString(downloadsFile)) instanceof List<?> l) {
+        for (Object x : l) {
+          String p = x instanceof String str ? downloadPrefix(str) : null;
+          if (p != null && !d.contains(p)) d.add(p);
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[beam] cannot read " + downloadsFile + ": " + e.getMessage());
+    }
+    return d;
+  }
+
+  /** Adds or removes a prefix (already {@link #downloadPrefix}'s form), under trust's lock. */
+  synchronized void setDownload(String prefix, boolean allow) throws IOException {
+    Files.createDirectories(downloadsFile.getParent());
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(trustFile.resolveSibling("trust.lock"),
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+         java.nio.channels.FileLock l = ch.lock()) {
+      List<String> d = downloads();
+      d.remove(prefix);
+      if (allow) d.add(prefix);
+      StringBuilder b = new StringBuilder("[");
+      for (String p : d) b.append(b.length() > 1 ? "," : "").append("\n  ").append(Http.q(p));
+      b.append(d.isEmpty() ? "]\n" : "\n]\n");
+      Path tmp = downloadsFile.resolveSibling("downloads.json." + ProcessHandle.current().pid() + ".tmp");
+      Files.writeString(tmp, b, StandardCharsets.UTF_8);
+      Files.move(tmp, downloadsFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    }
+  }
+
+  /**
+   * Whether this Mac's owner lets the agent download from this address (a page's `source`, or a redirect on the way):
+   * on a prefix's site exactly, and at its path or below it (`/builds` covers `/builds` and `/builds/x`, never
+   * `/builds-other`). The parsed address, or null.
+   */
+  java.net.URI downloadAllowed(String address) {
+    java.net.URI u = parsed(address);
+    if (u == null) return null;
+    String at = site(u) + (u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath());
+    for (String p : downloads()) {
+      if (at.equals(p) || at.startsWith(p.endsWith("/") ? p : p + "/")) return u;
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------- grants
