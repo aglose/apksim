@@ -604,31 +604,49 @@ final class BeamStore {
       }
       case "config" -> {
         Config c = store.config;
+        Beam beam = new Beam(state);
+        boolean changed = false;
         for (int i = 0; i < args.size(); i += 2) {
           String k = args.get(i), v = i + 1 < args.size() ? args.get(i + 1) : null;
           switch (k) {
+            // Issue 177: where the agent may download a build a page names (`source`), read at every start (no restart).
+            case "allow-download", "disallow-download" -> {
+              String p = Beam.downloadPrefix(v);
+              if (p == null) {
+                System.err.println("apksim beam config " + k + ": takes a URL prefix such as https://artifacts.example.com/builds/"
+                    + " (https; http only on 127.0.0.1 or localhost; no user, query or fragment)");
+                return 2;
+              }
+              beam.setDownload(p, k.equals("allow-download"));
+              System.out.println((k.equals("allow-download") ? "downloads allowed from " : "downloads no longer allowed from ") + p);
+            }
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
               c = new Config(d, c.saveSessions(), c.keepSavedDays());
+              changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
               c = new Config(c.keepDays(), b, c.keepSavedDays());
+              changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
               c = new Config(c.keepDays(), c.saveSessions(), d);
+              changed = true;
             }
             default -> {
               return usage();
             }
           }
         }
-        if (!args.isEmpty()) store.writeConfig(c);
-        System.out.println(c.describe() + (args.isEmpty() ? "" : store.agentPort() >= 0 ? "  (the running agent reads it at its next start)" : ""));
+        if (changed) store.writeConfig(c);
+        System.out.println(c.describe() + (changed && store.agentPort() >= 0 ? "  (the running agent reads it at its next start)" : ""));
+        List<String> dl = beam.downloads();
+        System.out.println("downloads from: " + (dl.isEmpty() ? "none (the agent fetches builds only from the page's own server)" : String.join(", ", dl)));
         return 0;
       }
       case "status" -> {
@@ -661,6 +679,8 @@ final class BeamStore {
         List<String> never = trust.entrySet().stream().filter(e -> e.getValue().equals("never")).map(Map.Entry::getKey).toList();
         System.out.println("sites allowed: " + (always.isEmpty() ? "none" : String.join(", ", always))
             + (never.isEmpty() ? "" : "; refused: " + String.join(", ", never)));
+        List<String> dl = new Beam(state).downloads();
+        if (!dl.isEmpty()) System.out.println("downloads from: " + String.join(", ", dl));
         long bytes = 0;
         int builds = 0;
         Path uploads = state.resolve("beam/uploads");
@@ -702,9 +722,10 @@ final class BeamStore {
              apksim beam run ID [OPTIONS]       opens one in apksim's window, with the data it left
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
+                                [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
              apksim beam status                 what the agent runs, the sites it lets in, what it keeps
-             apksim beam install | uninstall    let pages start the agent through launchd (or not)""";
+             apksim beam install [--trust ORIGIN]... | uninstall    let pages start the agent through launchd (or not)""";
 
   private static int usage() {
     System.err.println(USAGE);

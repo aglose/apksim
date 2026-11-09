@@ -20,12 +20,17 @@ final class BeamLaunchd {
 
   private BeamLaunchd() {}
 
-  /** `install [--port N] [--label L] [--agent-idle S]` or `uninstall [--label L]`. Returns the exit code. */
+  /**
+   * `install [--port N] [--label L] [--agent-idle S] [--trust ORIGIN]...` or `uninstall [--label L]`. Returns the exit
+   * code. `--trust` allows a site as `apksim beam trust allow` does (issue 178: a team's setup instructions pre-allow
+   * their own dashboard, so its first start shows no dialog).
+   */
   static int command(Path launcher, Path state, String cmd, List<String> args) throws IOException, InterruptedException {
     String label = LABEL;
     int port = Beam.DEFAULT_PORT;
     int idle = 600;
     Path dryRun = null;  // --dry-run DIR: the jobs written there, nothing loaded (to look at them, or for checks)
+    List<String> trust = new ArrayList<>();
     for (int i = 0; i < args.size(); i++) {
       String a = args.get(i), v = i + 1 < args.size() ? args.get(++i) : null;
       if (v == null) return usage();
@@ -37,6 +42,14 @@ final class BeamLaunchd {
         case "--port" -> port = Integer.parseInt(v);
         case "--agent-idle" -> idle = Integer.parseInt(v);
         case "--dry-run" -> dryRun = Path.of(v);
+        case "--trust" -> {
+          String o = Serve.origin(v);
+          if (o == null || !cmd.equals("install")) {
+            System.err.println("--trust takes a site's origin such as https://dashboard.example.com (install only)");
+            return usage();
+          }
+          trust.add(o);
+        }
         default -> {
           return usage();
         }
@@ -74,6 +87,10 @@ final class BeamLaunchd {
             + "  <key>ProcessType</key><string>Interactive</string>\n" + env, logs.resolve("agent.log")));
     write(sweep, plist(label + ".sweep", guarded(exe, agent, sweep, label + ".sweep", label, List.of("beam", "sweep")),
         "  <key>StartInterval</key><integer>86400</integer>\n" + env, logs.resolve("sweep.log")));
+    for (String o : trust) {
+      new Beam(state).setTrust(o, "always");
+      System.out.println("allowed " + o + " (it runs apps here without asking; apksim beam trust revoke " + o + " undoes it)");
+    }
     if (dryRun != null) {
       System.out.println("wrote " + agent + " and " + sweep + " (not loaded)");
       return 0;
@@ -175,7 +192,7 @@ final class BeamLaunchd {
   }
 
   private static int usage() {
-    System.err.println("usage: apksim beam install [--port N] [--agent-idle SECONDS] [--dry-run DIR] | apksim beam uninstall");
+    System.err.println("usage: apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... [--dry-run DIR] | apksim beam uninstall");
     return 2;
   }
 }

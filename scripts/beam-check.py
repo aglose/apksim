@@ -387,6 +387,132 @@ def download_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def source_checks(apksim, apk, sha, size):
+    """Issues 177 and 178: a page names where its build is (`source`, an artifact store), and the agent downloads it
+    only from addresses its owner allowed (`apksim beam config allow-download`), following redirects only within them;
+    `/beam/hello` says `asking` to the asking page only while the consent dialog is up (a stand-in that answers "Allow
+    Once" after 2 s: APKSIM_BEAM_CONSENT=allow-after-2s, for checks only); `apksim beam install --trust` allows a site."""
+    import http.server
+    import threading
+    state = tempfile.mkdtemp(prefix="beam-check-src-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow-after-2s")
+    gp = free_port()
+    data = open(apk, "rb").read()
+
+    class Store(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path
+            if path in ("/builds/app.apk", "/other/app.apk", "/builds-other/app.apk") or path.startswith("/builds/app.apk?") \
+                    or path == "/builds/qredirect?sig=new":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")  # what artifact stores send
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            to = {"/builds/redirect": "/builds/app.apk?sig=abc", "/builds/qredirect?sig=old": "?sig=new", "/builds/out": f"http://127.0.0.1:{self.server.server_address[1]}/other/app.apk"}.get(path)
+            if to:
+                self.send_response(302)
+                self.send_header("Location", to)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html>sign in</html>")
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Store)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    U = f"http://127.0.0.1:{srv.server_address[1]}"
+    uploads = os.path.join(state, "beam", "uploads")
+
+    def cfg(*args):
+        return subprocess.run([apksim, "beam", "config", *args], capture_output=True, text=True, env=env, timeout=60)
+
+    def start(source, sha256=sha):
+        st, _, body = req(gp, "POST", "/beam/start", A, {"sha256": sha256, "name": "beam-check.apk", "size": size, "options": [], "source": source})
+        return json.loads(body) if st == 200 else {"status": st, "body": body[:200]}
+
+    def clear():
+        for f in glob.glob(os.path.join(uploads, "*")):
+            os.remove(f)
+    procs = []
+    try:
+        r = cfg("allow-download", "http://artifacts.example/builds/")
+        check(r.returncode == 2, "source: no plain-http prefix but on loopback")
+        r = cfg("allow-download", "https://u:p@artifacts.example/")
+        check(r.returncode == 2, "source: no prefix with a user in it")
+        r = cfg("allow-download", U + "/builds")
+        check(r.returncode == 0 and f"downloads from: {U}/builds" in r.stdout, f"source: config allow-download ({r.stdout.strip().splitlines()[-1:]})")
+        procs.append(subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env))
+        check(wait_up(gp, "/beam/hello"), "source: an agent of its own")
+
+        # The consent dialog's wait: hello says `asking` to the asking page, and only to it.
+        got = {}
+        t = threading.Thread(target=lambda: got.update(g=start(U + "/other/app.apk")))
+        t.start()
+        seen_a = until(lambda: json.loads(req(gp, "GET", "/beam/hello", A)[2]).get("asking") is True, 1.8)
+        seen_b = json.loads(req(gp, "GET", "/beam/hello", B)[2]).get("asking")
+        t.join(60)
+        after = json.loads(req(gp, "GET", "/beam/hello", A)[2]).get("asking")
+        check(seen_a and seen_b is False and after is False, f"source: hello says asking while the dialog is up, to that page only ({seen_a}, {seen_b}, {after})")
+        g = got.get("g", {})
+        check(g.get("need") == "upload" and "not allowed" in g.get("why", "") and not glob.glob(os.path.join(uploads, "*.apk")),
+              f"source: not from an address its owner did not allow ({g.get('why')})")
+        trust_r = subprocess.run([apksim, "beam", "trust", "allow", A], capture_output=True, text=True, env=env, timeout=60)
+        check(trust_r.returncode == 0, "source: the site allowed (no dialog from here on)")
+
+        g = start(U + "/builds/app.apk")
+        check(g.get("via") == "source" and "token" in g and os.path.exists(os.path.join(uploads, sha + ".apk")),
+              f"source: downloaded from an allowed address, with a store's octet-stream type ({g.get('via')}, {g.get('why')})")
+        check(start(U + "/builds/app.apk").get("via") == "cache", "source: found by its hash the next time")
+        clear()
+        g = start(U + "/builds/redirect")
+        check(g.get("via") == "source", f"source: a redirect within the allowed prefix is followed ({g.get('why')})")
+        clear()
+        g = start(U + "/builds/qredirect?sig=old")
+        check(g.get("via") == "source", f"source: a query-only redirect keeps the path ({g.get('why')})")
+        clear()
+        g = start(U + "/builds/out")
+        check(g.get("need") == "upload" and "redirected" in g.get("why", ""), f"source: not a redirect out of it ({g.get('why')})")
+        for bad in ("/builds-other/app.apk", "/builds/../other/app.apk", "/builds/%2e%2e/other/app.apk", "/builds/x%2Fy"):
+            g = start(U + bad)
+            check(g.get("need") == "upload" and "not allowed" in g.get("why", ""), f"source: {bad} is not under the prefix ({g.get('why')})")
+        g = start(U + "/builds/login")
+        check(g.get("need") == "upload" and "not an APK" in g.get("why", ""), f"source: a sign-in page is not a build ({g.get('why')})")
+        g = start(U + "/builds/app.apk", "4" * 64)
+        check(g.get("need") == "upload" and "SHA-256" in g.get("why", "") and not os.path.exists(os.path.join(uploads, "4" * 64 + ".apk")),
+              f"source: a download whose hash is not the one named is not kept ({g.get('why', '')[:60]})")
+        r = cfg("disallow-download", U + "/builds")
+        g = start(U + "/builds/app.apk")
+        check(r.returncode == 0 and g.get("need") == "upload" and "not allowed" in g.get("why", ""),
+              f"source: disallow-download takes effect at once ({g.get('why')})")
+
+        # install --trust: a team's setup pre-allows its dashboard (written, not loaded: --dry-run).
+        jobs = os.path.join(state, "jobs")
+        r = subprocess.run([apksim, "beam", "install", "--dry-run", jobs, "--trust", "https://dashboard.example/"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        listed = subprocess.run([apksim, "beam", "trust", "list"], capture_output=True, text=True, env=env, timeout=60).stdout
+        check(r.returncode == 0 and "always\thttps://dashboard.example" in listed, f"install --trust allows the site ({r.stdout.strip()[:80]})")
+        r = subprocess.run([apksim, "beam", "install", "--dry-run", jobs, "--trust", "https://dashboard.example/path"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 2, "install --trust takes an origin only")
+    finally:
+        srv.shutdown()
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            try:
+                p.wait(15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(10)
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def warm_checks(apksim, apk, sha, size):
     """`apksim beam --warm on`: a build's warm-up is a beamed instance, and what it translated and extracted goes into
     that build's cache, as a session's does, so the first session starts from it. A state folder of its own."""
@@ -710,6 +836,7 @@ def main():
 
     sandbox_checks(apksim, a.apk)
     download_checks(apksim, a.apk, sha, size)
+    source_checks(apksim, a.apk, sha, size)
     warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")

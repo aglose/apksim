@@ -7,7 +7,9 @@ Stop while the agent has not answered yet (its consent prompt: the answer is hel
 then opens no session anywhere; an agent that takes one session (`--max 1`) running a second tab's start on the server
 instead; a hidden tab's instance drawing a frame a second, its own pace again once the tab is back; and with an agent
 that speaks only newer, then only older, protocols than the page (APKSIM_BEAM_PROTOCOLS), "On this Mac" disabled with
-which side to update, the session on the server. A serve with
+which side to update, the session on the server; and a site not yet allowed, whose start waits for the consent dialog
+(a stand-in answering "Allow Once" after 2 s: APKSIM_BEAM_CONSENT=allow-after-2s), told so in the page
+("apksim is asking on this Mac", issue 178), then running there. A serve with
 --allow-beam and an agent on loopback ports, Chrome with a fresh profile; the page's origin is allowed for the run and
 revoked after.
 """
@@ -170,6 +172,27 @@ def main():
             cdp.ev(sv, 'document.getElementById("stop").click(); start(); 1')
             check(until(lambda: cdp.ev(sv, "window.apksimStats().frames > 0 && !ws.onMac"), 40), "  and the app runs on the server")
             cdp.ev(sv, 'document.getElementById("stop").click(); 1')
+
+        # 5. A site not yet allowed: while the consent dialog is up (a stand-in that answers "Allow Once" after 2 s),
+        # the page says it waits for the Mac's owner (issue 178), then the app runs on this Mac.
+        subprocess.run([apksim, "beam", "trust", "revoke", url], capture_output=True, check=True)
+        agent = procs[1]
+        agent.terminate()
+        agent.wait(20)
+        until(lambda: not up(gp, "/beam/hello"), 10)
+        procs[1] = subprocess.Popen([apksim, "beam", "--port", str(gp), "--max", "1"], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, env=dict(os.environ, APKSIM_BEAM_CONSENT="allow-after-2s"))
+        until(lambda: up(gp, "/beam/hello"), 30)
+        t = cdp.call("Target.createTarget", {"url": "about:blank"})
+        sa = cdp.call("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True})["sessionId"]
+        cdp.call("Page.navigate", {"url": f"{url}/?app={app}"}, sa)
+        time.sleep(1.5)
+        cdp.ev(sa, CHOOSE_MAC)  # starts it on this Mac (pref "mac" from the tabs above may have done so already)
+        said = until(lambda: "asking on this Mac" in (cdp.ev(sa, 'document.getElementById("overlayText").textContent') or "")
+                     or "asking on this Mac" in page_log(cdp, sa), 3)
+        check(said, "a start waiting for the consent dialog says so in the page")
+        check(until(lambda: cdp.ev(sa, "window.apksimStats().frames > 0 && ws.onMac"), 40), "  and the app runs on this Mac once allowed")
+        cdp.ev(sa, 'document.getElementById("stop").click(); 1')
     finally:
         for p in procs:
             p.terminate()

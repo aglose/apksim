@@ -41,8 +41,9 @@ public final class Serve {
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
              apksim beam saved | run ID [OPTIONS] | forget ID | sweep | status
-             apksim beam install [--port N] [--agent-idle SECONDS] | uninstall   (launchd starts it when a page asks)
-             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]""";
+             apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
+             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never]
+                               [allow-download URL] [disallow-download URL]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -1201,7 +1202,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -1302,7 +1303,11 @@ public final class Serve {
     }
   }
 
-  /** `POST /beam/start {"sha256", "name", "size", "options"}`: the prompt (for a new origin), then a grant. */
+  /**
+   * `POST /beam/start {"sha256", "name", "size", "options", "ticket", "url", "source", "data"}`: the prompt (for a new
+   * origin), then a grant. A build the agent lacks comes from `source` when its owner allows that address (issue 177),
+   * else from the page's server with the ticket, else the tab sends it (`need: upload`, with `why`).
+   */
   private void beamStart(Http.Request r, String o, OutputStream out) throws IOException {
     long length = r.chunked() ? -1 : r.contentLength();
     byte[] raw = r.content().readNBytes((int) Math.min(64 * 1024 + 1, length < 0 ? Long.MAX_VALUE : length));
@@ -1310,7 +1315,7 @@ public final class Serve {
       Http.text(out, 413, "the request body is limited to 64 KB");
       return;
     }
-    String sha, name, ticket, from, data;
+    String sha, name, ticket, from, data, source;
     long size;
     int protocol;
     List<String> launch;
@@ -1318,6 +1323,7 @@ public final class Serve {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
       ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
       from = body.get("url") instanceof String u && u.length() <= 2000 ? u : null;
+      source = body.get("source") instanceof String u && u.length() <= 4000 ? u : null;
       data = body.get("data") instanceof Map<?, ?> d && d.get("ticket") instanceof String dt && dt.length() <= 300
           && d.get("url") instanceof String du && du.length() <= 2000 && !du.contains(" ") ? dt + " " + du : null;
       if (!(body.get("sha256") instanceof String h) || !h.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" (64 hex digits) is required");
@@ -1354,14 +1360,31 @@ public final class Serve {
     Catalog.App a = catalog.byHash(sha, name, launch);
     String via = "cache";
     String why = null;
+    String label = name == null ? sha.substring(0, 12) : name;
+    if (a == null && source != null) {
+      // Issue 177: from where the page says the build is (an artifact store), only if this Mac's owner allowed it.
+      java.net.URI u = agent.downloadAllowed(source);
+      if (u == null) {
+        why = "this Mac's owner has not allowed downloads from that address on " + sourceSite(source)
+            + " (apksim beam config allow-download URL)";
+      } else {
+        try {
+          a = beamFetchSource(o, u, sha, name, size, launch);
+          via = "source";
+        } catch (IOException e) {
+          why = "from " + sourceSite(source) + ": " + e.getMessage();
+        }
+      }
+      if (a == null) System.err.println("[beam] could not download " + label + " for " + o + ": " + why);
+    }
     if (a == null && ticket != null && from != null) {
       // Phase 2: from the page's own server, with the ticket it was given; the tab relays it only if this fails.
       try {
         a = beamFetch(o, from, ticket, sha, name, size, launch);
         via = "download";
       } catch (IOException e) {
-        why = e.getMessage();
-        System.err.println("[beam] could not download " + (name == null ? sha.substring(0, 12) : name) + " from " + o + ": " + why);
+        why = (why == null ? "" : why + "; ") + (source == null ? "" : "from the page's server: ") + e.getMessage();
+        System.err.println("[beam] could not download " + label + " from " + o + ": " + e.getMessage());
       }
     }
     if (a != null) {
@@ -1413,28 +1436,82 @@ public final class Serve {
   private Catalog.App beamFetch(String origin, String from, String ticket, String sha, String name, long size, List<String> launch)
       throws IOException {
     java.net.URI u = pageAddress(origin, from, "/api/beam/apk");
+    return beamDownloadApk(origin, u.resolve(u.getRawPath() + "?ticket=" + java.net.URLEncoder.encode(ticket, StandardCharsets.UTF_8)),
+        null, false, sha, name, size, launch);
+  }
+
+  /**
+   * Issue 177: a build from where the page says it is (`source`, an artifact store the Mac reaches), on an address this
+   * Mac's owner allowed (`apksim beam config allow-download`). As from the page's server, but a redirect is followed
+   * when it stays on an allowed address (artifact stores hand out signed addresses), and a store's generic binary type
+   * is taken too (the hash, checked before anything is stored, says what the file is). No credentials are sent.
+   */
+  private Catalog.App beamFetchSource(String origin, java.net.URI u, String sha, String name, long size, List<String> launch)
+      throws IOException {
+    return beamDownloadApk(origin, u, agent::downloadAllowed, true, sha, name, size, launch);
+  }
+
+  /** The site of a page's `source`, for messages (never its path or query, which may carry a signature). */
+  private static String sourceSite(String source) {
+    try {
+      java.net.URI u = new java.net.URI(source);
+      return u.getHost() == null ? "that address" : u.getHost();
+    } catch (java.net.URISyntaxException e) {
+      return "that address";
+    }
+  }
+
+  /**
+   * Downloads an APK into the catalog (its hash checked before it is stored). `hop`: whether a redirect may go to an
+   * address (the parsed address, or null), up to 5; null follows none. `anyBinary`: also takes
+   * application/octet-stream. Throws why not.
+   */
+  private Catalog.App beamDownloadApk(String origin, java.net.URI u, java.util.function.Function<String, java.net.URI> hop,
+      boolean anyBinary, String sha, String name, long size, List<String> launch) throws IOException {
     if (size > maxUploadMb << 20) throw new IOException("too large");
     java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
         .followRedirects(java.net.http.HttpClient.Redirect.NEVER).connectTimeout(java.time.Duration.ofSeconds(10)).build();
-    java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(u.resolve(u.getRawPath() + "?ticket="
-            + java.net.URLEncoder.encode(ticket, StandardCharsets.UTF_8)))
-        .timeout(java.time.Duration.ofMinutes(10)).header("Accept", "application/vnd.android.package-archive").GET().build();
-    java.net.http.HttpResponse<InputStream> resp;
-    try {
-      resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new IOException("interrupted");
-    }
-    try (InputStream body = resp.body()) {
-      if (resp.statusCode() != 200) throw new IOException("the server answered " + resp.statusCode());
-      String type = resp.headers().firstValue("content-type").orElse("");
-      if (!type.startsWith("application/vnd.android.package-archive")) throw new IOException("the server sent " + (type.isEmpty() ? "no content type" : type) + ", not an APK");
-      long length = resp.headers().firstValueAsLong("content-length").orElse(-1);
-      if (length > maxUploadMb << 20) throw new IOException("too large: " + (length >> 20) + " MB");
-      Catalog.App a = catalog.upload(body, length, name, launch, sha);
-      System.err.printf("[beam] %s: downloaded %s (%d MB) itself%n", origin, a.name(), Files.size(a.path()) >> 20);
-      return a;
+    for (int hops = 0; ; hops++) {
+      java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(u).timeout(java.time.Duration.ofMinutes(10))
+          .header("Accept", "application/vnd.android.package-archive" + (anyBinary ? ", application/octet-stream" : "")).GET().build();
+      java.net.http.HttpResponse<InputStream> resp;
+      try {
+        resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted");
+      }
+      try (InputStream body = resp.body()) {
+        int code = resp.statusCode();
+        if (hop != null && List.of(301, 302, 303, 307, 308).contains(code)) {
+          String loc = resp.headers().firstValue("location").orElse(null);
+          if (loc == null) throw new IOException("the server answered " + code + " with no address");
+          if (hops >= 5) throw new IOException("too many redirects");
+          java.net.URI next;
+          try {
+            // A query-only address (`?sig=...`, a store refreshing a signature) keeps the path: URI.resolve would drop
+            // its last segment (RFC 2396), asking for the folder instead of the build.
+            String cur = u.toString(), base = cur.indexOf('?') < 0 ? cur : cur.substring(0, cur.indexOf('?'));
+            next = hop.apply(loc.startsWith("?") ? base + loc : u.resolve(new java.net.URI(loc)).toString());
+          } catch (java.net.URISyntaxException | IllegalArgumentException e) {
+            next = null;
+          }
+          if (next == null) throw new IOException("the server redirected to an address this Mac does not download from");
+          u = next;
+          continue;
+        }
+        if (code != 200) throw new IOException("the server answered " + code);
+        String type = resp.headers().firstValue("content-type").orElse("");
+        if (!(type.startsWith("application/vnd.android.package-archive") || anyBinary && type.startsWith("application/octet-stream"))) {
+          throw new IOException("the server sent " + (type.isEmpty() ? "no content type" : type) + ", not an APK");
+        }
+        long length = resp.headers().firstValueAsLong("content-length").orElse(-1);
+        if (length > maxUploadMb << 20) throw new IOException("too large: " + (length >> 20) + " MB");
+        Catalog.App a = catalog.upload(body, length, name, launch, sha);
+        System.err.printf("[beam] %s: downloaded %s (%d MB) itself%s%n", origin, a.name(), Files.size(a.path()) >> 20,
+            hop != null ? " from " + u.getHost() : "");
+        return a;
+      }
     }
   }
 

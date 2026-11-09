@@ -41,5 +41,7 @@ cask "apksim" do
       apksim --train
     To let pages of an apksim serve with --allow-beam run their apps on this Mac (each site asks you first):
       apksim beam install
+    Your team's own site can be allowed up front, so it does not ask:
+      apksim beam install --trust https://dashboard.example.com
   EOS
 end
