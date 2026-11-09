@@ -112,6 +112,10 @@ final class Session {
     this.app = app;
     // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
     this.options = new java.util.concurrent.ConcurrentHashMap<>(options);
+    // The animation scale the app is launched with (the launcher takes the last --anim-scale), so a first toggle starts from it.
+    List<String> own0 = app.launch();
+    int as = own0.lastIndexOf("--anim-scale");
+    if (as >= 0 && as + 1 < own0.size() && own0.get(as + 1).matches("[0-9]+(\\.[0-9]+)?")) this.options.putIfAbsent("animscale", own0.get(as + 1));
     this.ws = ws;
     ws.onPong = this::ponged;
     // The tab's device (checked by Serve), else the app's own default, else the phone.
