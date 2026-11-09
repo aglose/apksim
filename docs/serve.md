@@ -340,8 +340,11 @@ Mac also offers "Fill the page" (the display sized to the stage at the browser's
 Simulator", which only the agent accepts (docs/beam.md, phase 3). Changing where the app runs during a session moves
 it: the other side starts beside it and takes over on its first frame, with no blank frame between (phase 4).
 With "With its data" the move takes the app's data too (phase 5), relayed by the tab when the visitor's agent cannot
-download it itself (a sign-in in front of the server). A page that draws the stream itself follows docs/beam.md,
-"Beam client protocol".
+download it itself (a sign-in in front of the server). While the visitor's agent asks its owner whether this site may
+run apps there, the page says so ("apksim is asking on this Mac"). A page that draws the stream itself follows
+docs/beam.md, "Beam client protocol", and may also name where else its build can be downloaded (`source`, an artifact
+store), which the agent uses only for addresses its owner allowed (`apksim beam config allow-download`, docs/beam.md
+"Builds from an artifact store").
 
 ### Not in scope (yet)
 
