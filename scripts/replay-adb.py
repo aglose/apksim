@@ -364,6 +364,25 @@ def data_path(adb, pkg):
     return "run-as" if ok else None
 
 
+def valid_tar(data):
+    """True for a complete tar with at least one member; the stream must end with tar's zero blocks."""
+    import tarfile
+    if len(data) < 1024 or data[-1024:].strip(b"\0"):
+        return False
+    try:
+        n = 0
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+            for m in t:
+                n += 1
+                if m.isfile():
+                    f = t.extractfile(m)
+                    while f.read(1 << 20):
+                        pass
+        return n > 0
+    except (tarfile.TarError, EOFError, OSError):
+        return False
+
+
 def back_up(adb, pkg, how, args, report):
     """The app's data as it is now, on this machine, before it is replaced."""
     d = args.backup_dir or os.path.join(os.getcwd(), "replay-backup-%s-%s" % (pkg, time.strftime("%Y%m%d-%H%M%S")))
@@ -374,7 +393,9 @@ def back_up(adb, pkg, how, args, report):
         ok = not re.search(r"(?i)error|denied|failed", out)
     else:
         p = subprocess.run(adb.base + ["exec-out", "run-as %s tar -cf - ." % pkg], capture_output=True, timeout=600)
-        ok = p.returncode == 0 and len(p.stdout) > 0
+        # exec-out does not carry the remote command's exit status, so the archive itself is the evidence: it must be a
+        # whole tar (every member read to its end, the end-of-archive blocks present), not diagnostics or a cut stream.
+        ok = p.returncode == 0 and valid_tar(p.stdout)
         if ok:
             with open(os.path.join(d, "data.tar"), "wb") as f:
                 f.write(p.stdout)

@@ -63,4 +63,13 @@ check(kinds[5] == ("shell", "cmd uimode night yes"), "appearance")
 check(any("location" in s for s in p.skipped) and any("two-finger" in s for s in p.skipped), "unsupported input is listed")
 check(any("network: live" in n for n in p.notes), "report says the network was live")
 check(ra.parse_properties("global/a=b\\=c\n\\!system/x=\n") == {"global/a": "b=c", "!system/x": ""}, "settings.properties")
+import tarfile
+tb = io.BytesIO()
+with tarfile.open(fileobj=tb, mode="w") as t:
+    ti = tarfile.TarInfo("files/a")
+    ti.size = 3
+    t.addfile(ti, io.BytesIO(b"abc"))
+good = tb.getvalue()
+check(ra.valid_tar(good), "a whole tar is a backup")
+check(not ra.valid_tar(good[:700]) and not ra.valid_tar(b"run-as: package not debuggable\n"), "a cut tar or diagnostics are not")
 sys.exit(1 if bad else 0)
