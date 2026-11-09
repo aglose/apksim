@@ -52,8 +52,12 @@ final class DeviceHandoff {
 
   record Result(int code, String out) {}
 
-  /** Runs `adb` (with `-s serial`); stdout and stderr together. */
+  /** Runs `adb` (with `-s serial`); stdout and stderr together. Stdin is `stdin` or the file `stdinFile`. */
   static Result adb(String serial, List<String> args, byte[] stdin) throws IOException, InterruptedException {
+    return adb(serial, args, stdin, null);
+  }
+
+  static Result adb(String serial, List<String> args, byte[] stdin, Path stdinFile) throws IOException, InterruptedException {
     List<String> cmd = new ArrayList<>(List.of("adb"));
     if (serial != null) cmd.addAll(List.of("-s", serial));
     cmd.addAll(args);
@@ -61,17 +65,30 @@ final class DeviceHandoff {
     Thread feed = Thread.ofVirtual().start(() -> {
       try (OutputStream o = p.getOutputStream()) {
         if (stdin != null) o.write(stdin);
+        else if (stdinFile != null) Files.copy(stdinFile, o);
       } catch (IOException e) {
         // the process ended first: its exit code says so
       }
     });
-    byte[] out = p.getInputStream().readAllBytes();
+    // Drained on a thread of its own, so the deadline holds when adb hangs without closing its output.
+    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+    Thread drain = Thread.ofVirtual().start(() -> {
+      try (InputStream in = p.getInputStream()) {
+        in.transferTo(out);
+      } catch (IOException e) {
+        // closed on a timeout
+      }
+    });
     if (!p.waitFor(10, TimeUnit.MINUTES)) {
       p.destroyForcibly();
+      p.getInputStream().close();
       throw new IOException("adb " + String.join(" ", args) + " did not finish");
     }
-    feed.join();
-    return new Result(p.exitValue(), new String(out, StandardCharsets.UTF_8));
+    drain.join(10_000);
+    feed.join(10_000);
+    synchronized (out) {
+      return new Result(p.exitValue(), out.toString(StandardCharsets.UTF_8));
+    }
   }
 
   private static Result sh(String serial, String script) throws IOException, InterruptedException {
@@ -186,6 +203,22 @@ final class DeviceHandoff {
     return out;
   }
 
+  /**
+   * The component to `am start -n` for a saved `--activity` (`PKG/.Act`, `PKG/full.Name`, `.Act`, `full.Name`), or null
+   * for none or a simple name (which only the manifest resolves: the launcher activity is started then).
+   */
+  static String component(String pkg, String a) {
+    if (a == null) return null;
+    String cls = a;
+    int slash = a.indexOf('/');
+    if (slash >= 0) {
+      if (!a.substring(0, slash).equals(pkg)) return null;
+      cls = a.substring(slash + 1);
+    }
+    if (!cls.matches("\\.?[A-Za-z0-9_$]+(\\.[A-Za-z0-9_$]+)*") || !cls.startsWith(".") && !cls.contains(".")) return null;
+    return pkg + "/" + cls;
+  }
+
   static String launchValue(List<String> launch, String option) {
     for (int i = 0; i + 1 < launch.size(); i++) if (launch.get(i).equals(option)) return launch.get(i + 1);
     return null;
@@ -212,10 +245,10 @@ final class DeviceHandoff {
     List<String> launch = new ArrayList<>();
     if (rec.get("launch") instanceof List<?> l) for (Object x : l) launch.add(String.valueOf(x));
     launch = Catalog.launchOptions(launch);
-    String activity = launchValue(launch, "--activity");
-    if (activity != null && !activity.matches("\\.?[A-Za-z0-9_$.]{1,300}")) {
-      System.err.println("apksim beam to-device: the session's activity name is not one adb can start safely: " + activity);
-      return 1;
+    String activity = component(pkg, launchValue(launch, "--activity"));
+    if (activity == null && launchValue(launch, "--activity") != null) {
+      System.out.println("note: the session's activity " + launchValue(launch, "--activity")
+          + " is a simple name; the device's launcher activity is started instead");
     }
     String serial = device(o.serial());
     if (serial == null) return 1;
@@ -244,7 +277,7 @@ final class DeviceHandoff {
     } else {
       Path pulled = Files.createTempFile("apksim-device-", ".apk");
       try {
-        if (!devicePath.matches("/[A-Za-z0-9_./=\\-]{1,300}") || adb(serial, List.of("pull", devicePath, pulled.toString()), null).code() != 0) {
+        if (!devicePath.matches("/[A-Za-z0-9_./=~+\\-]{1,300}") || adb(serial, List.of("pull", devicePath, pulled.toString()), null).code() != 0) {
           System.err.println("apksim beam to-device: could not read the device's build of " + pkg + " (" + devicePath + ")");
           return 1;
         }
@@ -286,25 +319,34 @@ final class DeviceHandoff {
     // 2.-3. What is to be overwritten.
     List<String> notes = new ArrayList<>();
     Map<String, String> chosen = chooseSettings(sessionSettings(slot, launch), o.settings(), notes);
-    String backupName = serial.replaceAll("[^A-Za-z0-9._\\-]", "_") + "-" + LocalDateTime.now().format(STAMP);
+    byte[] rnd = new byte[3];
+    new java.security.SecureRandom().nextBytes(rnd);
+    // Unique per handoff (a second in the same second must not overwrite the first's recovery files).
+    String backupName = serial.replaceAll("[^A-Za-z0-9._\\-]", "_") + "-" + LocalDateTime.now().format(STAMP) + "-"
+        + java.util.HexFormat.of().formatHex(rnd);
     Path backups = store.stateDir().resolve("beam/device-backup");
+    List<String> launchChanges = new ArrayList<>();
+    if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) launchChanges.add("appearance " + a);
+    if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) launchChanges.add("font scale " + f);
+    if (rec.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) launchChanges.add("app locale " + l);
     System.out.println("to " + serial + ": " + pkg + " (" + rec.getOrDefault("app", "?") + ", session " + o.id() + ")");
     System.out.println("  build:    " + buildNote + (install ? " -> installing the session's build" : ""));
     System.out.println("  data:     " + (o.data() ? "replace the device's app data with the session's (the device's backed up to "
         + backups.resolve(backupName + ".tar") + ")" : "left as it is on the device (--data replaces it)"));
     System.out.println("  settings: " + (chosen.isEmpty() ? "none" : chosen.size() + " value(s): " + String.join(", ", chosen.keySet())));
     for (String n : notes) System.out.println("            " + n);
-    System.out.println("  start:    " + (activity != null ? pkg + "/" + activity : pkg + "'s launcher activity"));
+    System.out.println("  options:  " + (launchChanges.isEmpty() ? "none" : String.join(", ", launchChanges) + " (set on the device, old ones saved)"));
+    System.out.println("  start:    " + (activity != null ? activity : pkg + "'s launcher activity"));
     if (o.dry()) {
       System.out.println("(dry run: nothing was changed)");
       return 0;
     }
-    if ((o.data() || install || !chosen.isEmpty()) && !o.yes()) {
+    if ((o.data() || install || !chosen.isEmpty() || !launchChanges.isEmpty()) && !o.yes()) {
       if (System.console() == null || !System.console().isTerminal()) {
-        System.err.println("apksim beam to-device: this overwrites the device's state; run it in a terminal to be asked, or pass --yes");
+        System.err.println("apksim beam to-device: this changes the device's state; run it in a terminal to be asked, or pass --yes");
         return 1;
       }
-      System.out.print("Overwrite that on " + serial + "? [y/N] ");
+      System.out.print("Change that on " + serial + "? [y/N] ");
       String line = new BufferedReader(new InputStreamReader(System.in)).readLine();
       if (line == null || !line.strip().toLowerCase().startsWith("y")) {
         System.out.println("stopped; nothing changed");
@@ -312,11 +354,74 @@ final class DeviceHandoff {
       }
     }
 
+    Path tarOut = null;
     try (BeamStore.SavedHold held = store.hold(o.id(), false)) {
       if (held == null) {
         System.err.println("apksim beam to-device: " + o.id() + " is busy (being forgotten, or put back into): try again");
         return 1;
       }
+      // Checked again now that it is held: `forget` may have erased it since it was read.
+      if (store.saved(o.id()) == null || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS) && (o.data() || o.settings() != null)) {
+        System.err.println("apksim beam to-device: the session is gone; nothing changed");
+        return 1;
+      }
+      java.nio.channels.FileLock own = null;
+      java.nio.channels.FileChannel lockCh = null;
+      try {
+        if (Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          // The slot's own lock, as a tab's copy takes it: no `beam run` writes the data while it is read.
+          lockCh = java.nio.channels.FileChannel.open(slot.resolve(".lock"), java.nio.file.StandardOpenOption.CREATE,
+              java.nio.file.StandardOpenOption.WRITE);
+          try {
+            own = lockCh.tryLock();
+          } catch (java.nio.channels.OverlappingFileLockException e) {
+            own = null;
+          }
+          if (own == null) {
+            System.err.println("apksim beam to-device: the session is open on this Mac (apksim beam run): quit it first; nothing changed");
+            return 1;
+          }
+        }
+        // Everything read from the session is read now, under its lock and before the device is touched.
+        chosen = chooseSettings(sessionSettings(slot, launch), o.settings(), new ArrayList<>());
+        if (o.data()) {
+          tarOut = Files.createTempFile("apksim-slot-", ".tar");
+          ProcessBuilder tb = new ProcessBuilder("/usr/bin/tar", "-cf", tarOut.toString(), "--exclude", "./.lock", "-C", slot.toString(), ".");
+          tb.environment().put("COPYFILE_DISABLE", "1");  // no AppleDouble ._ files
+          if (tb.redirectErrorStream(true).start().waitFor() != 0) {
+            System.err.println("apksim beam to-device: could not pack the session's data; nothing changed");
+            return 1;
+          }
+        }
+      } finally {
+        if (own != null) own.release();
+        if (lockCh != null) lockCh.close();
+      }
+      // What the device has now, before anything is written, kept in a script that puts it back.
+      Files.createDirectories(backups);
+      Path undo = backups.resolve(backupName + "-undo.sh");
+      StringBuilder script = new StringBuilder("#!/bin/sh\n# puts back what beam to-device changed on " + serial + " (an installed build is not undone)\n");
+      if (o.data()) {
+        script.append("adb -s ").append(serial).append(" shell ").append(q("am force-stop " + pkg)).append("\n");
+        script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " sh -c " + q(CLEAR))).append("\n");
+        script.append("adb -s ").append(serial).append(" shell ").append(q("run-as " + pkg + " tar -xf - -C .")).append(" < ")
+            .append(q(backups.resolve(backupName + ".tar").toString())).append("\n");
+      }
+      List<String> lines = new ArrayList<>();
+      for (Map.Entry<String, String> e : chosen.entrySet()) {
+        String ns = e.getKey().substring(0, e.getKey().indexOf('/')), key = e.getKey().substring(e.getKey().indexOf('/') + 1);
+        String was = settingsGet(serial, ns, key);
+        if (was == null) {
+          script.append("adb -s ").append(serial).append(" shell ").append(q("settings delete " + ns + " " + key)).append("\n");
+        } else {
+          script.append("adb -s ").append(serial).append(" shell ").append(q("settings put " + ns + " " + key + " " + q(was))).append("\n");
+        }
+        lines.add(e.getKey() + ": " + (was == null ? "(unset)" : was) + " -> " + (e.getValue() == null ? "(deleted)" : e.getValue()));
+      }
+      optionsUndo(serial, pkg, rec, script);
+      Files.writeString(undo, script.toString(), java.nio.file.StandardOpenOption.CREATE_NEW);
+      System.out.println("what the device has now is saved in " + undo + " (sh it to put it back)");
+
       if (install) {
         Result r = adb(serial, List.of("install", "-r", "-d", catalog.buildFile(sha).toString()), null);
         if (r.code() != 0 || !r.out().contains("Success")) {
@@ -326,17 +431,26 @@ final class DeviceHandoff {
         System.out.println("installed the session's build");
       }
       if (o.data()) {
-        int code = putData(serial, pkg, slot, backups, backupName);
+        int code = putData(serial, pkg, tarOut, backups.resolve(backupName + ".tar"));
         if (code != 0) return code;
       }
-      if (!chosen.isEmpty()) {
-        int code = putSettings(serial, chosen, backups, backupName);
-        if (code != 0) return code;
+      for (Map.Entry<String, String> e : chosen.entrySet()) {
+        String ns = e.getKey().substring(0, e.getKey().indexOf('/')), key = e.getKey().substring(e.getKey().indexOf('/') + 1);
+        Result r = sh(serial, e.getValue() == null ? "settings delete " + ns + " " + key
+            : "settings put " + ns + " " + key + " " + q(e.getValue()));
+        if (r.code() != 0 || r.out().contains("Exception")) {
+          System.err.println("apksim beam to-device: could not set " + e.getKey() + ": " + r.out().strip() + " (sh " + undo + " puts back)");
+          return 1;
+        }
+      }
+      if (!lines.isEmpty()) {
+        System.out.println("settings changed (old -> new):");
+        for (String l : lines) System.out.println("  " + l);
       }
       List<String> missed = new ArrayList<>();
       options(serial, pkg, rec, missed);
       sh(serial, "am force-stop " + pkg);
-      Result start = activity != null ? sh(serial, "am start -n " + q(pkg + "/" + activity))
+      Result start = activity != null ? sh(serial, "am start -n " + q(activity))
           : sh(serial, "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1");
       if (start.code() != 0 || start.out().contains("Error")) {
         System.err.println("apksim beam to-device: could not start the app: " + start.out().strip());
@@ -347,91 +461,78 @@ final class DeviceHandoff {
       System.out.println("  not carried over: in-memory state, the back stack, network state"
           + (o.data() ? ", the session's /sdcard files" : "; app data (without --data)"));
       store.used(o.id());
+    } finally {
+      if (tarOut != null) Files.deleteIfExists(tarOut);
     }
     return 0;
   }
 
-  /** Backs the device's app data up, then replaces it with the slot's. */
-  private static int putData(String serial, String pkg, Path slot, Path backups, String name)
+  /** Empties the app's data folder but for the system's own `lib` link. */
+  static final String CLEAR = "find . -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {} +";
+
+  /** A setting's value as the device has it (one trailing newline dropped, nothing else), or null when unset. */
+  private static String settingsGet(String serial, String ns, String key) throws IOException, InterruptedException {
+    String v = sh(serial, "settings get " + ns + " " + key).out();
+    if (v.endsWith("\n")) v = v.substring(0, v.length() - 1);
+    if (v.endsWith("\r")) v = v.substring(0, v.length() - 1);
+    return v.equals("null") ? null : v;
+  }
+
+  /** The inverse of {@link #options}, appended to the restore script. */
+  private static void optionsUndo(String serial, String pkg, Map<String, Object> rec, StringBuilder script)
       throws IOException, InterruptedException {
+    String pre = "adb -s " + serial + " shell ";
+    if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("(yes|no|auto)").matcher(sh(serial, "cmd uimode night").out());
+      if (m.find()) script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
+    }
+    if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) {
+      String was = settingsGet(serial, "system", "font_scale");
+      script.append(pre).append(q(was == null ? "settings delete system font_scale" : "settings put system font_scale " + q(was))).append("\n");
+    }
+    if (rec.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) {
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\[([A-Za-z0-9,_\\-]*)\\]").matcher(sh(serial, "cmd locale get-app-locales " + pkg).out());
+      if (m.find()) script.append(pre).append(q("cmd locale set-app-locales " + pkg + " --locales " + q(m.group(1)))).append("\n");
+    }
+  }
+
+  /** Backs the device's app data up (the app stopped first), then replaces it with the packed slot. */
+  private static int putData(String serial, String pkg, Path packed, Path tar) throws IOException, InterruptedException {
     if (sh(serial, "run-as " + pkg + " true").code() != 0) {
       System.err.println("apksim beam to-device: run-as " + pkg + " is refused (the build is not debuggable); app data can only be"
           + " written to a debuggable build here (`adb root` on a userdebug device is not supported yet). Nothing changed.");
       return 1;
     }
-    Files.createDirectories(backups);
-    Path tar = backups.resolve(name + ".tar");
+    // Stopped before it is read: a running app could checkpoint a database halfway through the copy.
+    Result stop = sh(serial, "am force-stop " + pkg);
+    if (stop.code() != 0) {
+      System.err.println("apksim beam to-device: could not stop " + pkg + " on the device: " + stop.out().strip());
+      return 1;
+    }
     Process p = new ProcessBuilder("adb", "-s", serial, "exec-out", "run-as", pkg, "tar", "-cf", "-", ".")
         .redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(tar.toFile()).start();
-    if (p.waitFor() != 0 || Files.size(tar) < 512) {
+    if (!p.waitFor(10, TimeUnit.MINUTES) || p.exitValue() != 0 || Files.size(tar) < 512) {
+      p.destroyForcibly();
       Files.deleteIfExists(tar);
       System.err.println("apksim beam to-device: could not back up the device's app data; nothing changed");
       return 1;
     }
-    System.out.println("backed up the device's app data to " + tar
-        + " (put it back: adb -s " + serial + " shell run-as " + pkg + " tar -xf - -C . < " + tar + ")");
-    sh(serial, "am force-stop " + pkg);
-    // Everything in the data folder goes but the system's own `lib` link; then the slot's tree (its .lock aside).
-    Result clear = sh(serial, "run-as " + pkg + " sh -c " + q("find . -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {} +"));
+    System.out.println("backed up the device's app data to " + tar);
+    Result clear = sh(serial, "run-as " + pkg + " sh -c " + q(CLEAR));
     if (clear.code() != 0) {
-      System.err.println("apksim beam to-device: could not clear the device's app data: " + clear.out().strip()
-          + " (the backup is at " + tar + ")");
+      System.err.println("apksim beam to-device: could not clear the device's app data: " + clear.out().strip());
       return 1;
     }
-    ProcessBuilder tb = new ProcessBuilder("/usr/bin/tar", "-cf", "-", "--exclude", "./.lock", "-C", slot.toString(), ".");
-    tb.environment().put("COPYFILE_DISABLE", "1");  // no AppleDouble ._ files
-    Process t = tb.redirectError(ProcessBuilder.Redirect.INHERIT).start();
-    byte[] packed;
-    try (InputStream in = t.getInputStream()) {
-      packed = in.readAllBytes();
-    }
-    if (t.waitFor() != 0) {
-      System.err.println("apksim beam to-device: could not pack the session's data (the device's own is in " + tar + ")");
-      return 1;
-    }
-    Result put = adb(serial, List.of("shell", "run-as " + pkg + " tar -xf - -C ."), packed);
+    // Streamed from the file made under the slot's lock, not held in memory.
+    Result put = adb(serial, List.of("shell", "run-as " + pkg + " tar -xf - -C ."), null, packed);
     if (put.code() != 0) {
-      System.err.println("apksim beam to-device: writing the data failed: " + put.out().strip() + " (the device's own is in " + tar + ")");
+      System.err.println("apksim beam to-device: writing the data failed: " + put.out().strip());
       return 1;
     }
     // Files made through run-as belong to the app's uid and take the folder's SELinux label; restorecon where allowed.
     sh(serial, "run-as " + pkg + " restorecon -R . 2>/dev/null; true");
-    System.out.println("wrote the session's app data (" + packed.length / 1024 + " KB as tar)");
+    System.out.println("wrote the session's app data (" + Files.size(packed) / 1024 + " KB as tar)");
     return 0;
-  }
-
-  /** Puts the chosen settings, after saving what they were (and the commands that restore them). */
-  private static int putSettings(String serial, Map<String, String> chosen, Path backups, String name)
-      throws IOException, InterruptedException {
-    StringBuilder undo = new StringBuilder("#!/bin/sh\n# puts back the Settings values beam to-device changed on " + serial + "\n");
-    List<String> lines = new ArrayList<>();
-    for (Map.Entry<String, String> e : chosen.entrySet()) {
-      String ns = e.getKey().substring(0, e.getKey().indexOf('/')), key = e.getKey().substring(e.getKey().indexOf('/') + 1);
-      String was = sh(serial, "settings get " + ns + " " + key).out().strip();
-      boolean unset = was.isEmpty() || was.equals("null");
-      lines.add(e.getKey() + ": " + (unset ? "(unset)" : was) + " -> " + (e.getValue() == null ? "(deleted)" : e.getValue()));
-      undo.append("adb -s ").append(serial).append(" shell ")
-          .append(q(unset ? "settings delete " + ns + " " + key : "settings put " + ns + " " + key + " " + q(was))).append("\n");
-      Result r = sh(serial, e.getValue() == null ? "settings delete " + ns + " " + key
-          : "settings put " + ns + " " + key + " " + q(e.getValue()));
-      if (r.code() != 0 || r.out().contains("Exception")) {
-        System.err.println("apksim beam to-device: could not set " + e.getKey() + ": " + r.out().strip());
-        System.err.println("  earlier ones can be put back with: sh " + saveUndo(backups, name, undo));
-        return 1;
-      }
-    }
-    Path f = saveUndo(backups, name, undo);
-    System.out.println("settings changed (old -> new):");
-    for (String l : lines) System.out.println("  " + l);
-    System.out.println("  put them back with: sh " + f);
-    return 0;
-  }
-
-  private static Path saveUndo(Path backups, String name, StringBuilder undo) throws IOException {
-    Files.createDirectories(backups);
-    Path f = backups.resolve(name + "-settings.sh");
-    Files.writeString(f, undo.toString());
-    return f;
   }
 
   /** Appearance, font scale and locale; what has no device form is added to `missed`. */

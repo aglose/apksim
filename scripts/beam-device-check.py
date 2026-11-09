@@ -113,6 +113,8 @@ def main():
     text = " ".join(log)
     check(r.returncode == 0, "--data --settings --yes succeeds: " + (r.stdout + r.stderr)[-300:])
     iback = next((i for i, l in enumerate(log) if "exec-out" in l), -1)
+    istop = next((i for i, l in enumerate(log) if "force-stop" in l), -1)
+    check(0 <= istop < iback, "app stopped before the backup is read")
     iclear = next((i for i, l in enumerate(log) if "rm -rf" in l), -1)
     check(0 <= iback < iclear, "device data backed up before it is cleared")
     check(os.path.getsize(fake + "/pushed.tar") > 0, "slot written to the device")
@@ -125,11 +127,18 @@ def main():
     check(any("am start -n" in l and "dev.example.app/.Main" in l for l in log), "session's activity started")
     backups = home + "/beam/device-backup"
     names = os.listdir(backups) if os.path.isdir(backups) else []
-    check(any(n.endswith(".tar") for n in names) and any(n.endswith("-settings.sh") for n in names), "backup and restore script kept")
-    sh = [n for n in names if n.endswith("-settings.sh")]
+    check(any(n.endswith(".tar") for n in names) and any(n.endswith("-undo.sh") for n in names), "backup and restore script kept")
+    sh = [n for n in names if n.endswith("-undo.sh")]
     body = open(backups + "/" + sh[0]).read() if sh else ""
     check("settings put global foo" in body and "7" in body and "settings delete secure token" in body, "restore script has the old values")
 
+    r, log = run("--yes")
+    check(r.returncode == 0 and any("night yes" in l for l in log), "launch options alone run with --yes")
+    r, log = run()
+    check(r.returncode == 1 and "--yes" in r.stderr and not any("night" in l and "yes" in l for l in log),
+          "launch options alone need --yes too")
+    r, log = run("--data", "--yes")
+    check(len([n for n in os.listdir(backups) if n.endswith(".tar")]) >= 2, "each handoff has its own backup file")
     r, log = run("--settings", "secure/android_id", "--dry-run")
     check("refused secure/android_id" in r.stdout, "naming an identity key is refused")
 
