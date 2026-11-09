@@ -54,6 +54,7 @@ class Plan:
         if not isinstance(self.pkg, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", self.pkg):
             raise SystemExit("replay-adb: the manifest's package name is not a valid one")
         self.rot = 0
+        self.font = None
         self.plain = []
         self.pace = pace
         self.notes = ["network: live (a device cannot be given network.har's answers)"]
@@ -61,6 +62,9 @@ class Plan:
         cp = self.man.get("checkpoint")
         self.cp = cp
         self.device = (cp or {}).get("device") or self.man.get("device") or {}
+        fs = self.device.get("fontScale")
+        if isinstance(fs, (int, float)) and not isinstance(fs, bool) and 0.25 <= fs <= 4:
+            self.font = "%g" % fs
         names = set(z.namelist())
         self.stack = self.read_stack(z) if "checkpoint/state.bin" in names else []
         self.has_data = "checkpoint/data.zip" in names
@@ -143,19 +147,26 @@ class Plan:
             elif ev == "down":
                 flush()
                 pts = [(off, e["x"], e["y"])]
+                cancelled = False
                 while i < len(events) and events[i].get("ev") in ("move", "up", "cancel", None) and "cmd" not in events[i]:
                     f = events[i]
                     i += 1
                     pts.append((f["t"] - t0, f.get("x", pts[-1][1]), f.get("y", pts[-1][2])))
+                    if f.get("ev") == "cancel":
+                        cancelled = True
                     if f.get("ev") in ("up", "cancel"):
                         break
-                self.gesture(steps, pts, path_steps)
+                if cancelled:
+                    self.skip("cancelled gesture (a completed tap would activate what was never clicked)")
+                else:
+                    self.gesture(steps, pts, path_steps)
             elif ev == "wheel":
                 flush()
-                # x, y, amount: a scroll of that many notches, played as a swipe the other way (content follows the finger)
+                # x, y, amount (-deltaY/100: negative scrolls down): played as a swipe whose end is `amount` further down the
+                # screen, so the finger moves down for a scroll up, as it does on a device
                 amount = float(e.get("v", 0))
                 x, y = e["x"], e["y"]
-                steps.append((off, "swipe", (x, y, x, y - amount * 80, 120)))
+                steps.append((off, "swipe", (x, y, x, y + amount * 80, 120)))
                 self.notes.append("wheel events are played as swipes (approximate)")
             elif ev in ("resize", "close"):
                 self.skip(ev)
@@ -193,7 +204,7 @@ class Plan:
                 self.rot = 1 if self.rot % 2 == 0 else self.rot
             else:
                 return self.skip("rotate " + args[0])
-            steps.append((off, "shell", "settings put system accelerometer_rotation 0; settings put system user_rotation %d" % self.rot))
+            steps.append((off, "rotate", self.rot))
         elif name == "appearance" and args and args[0] in ("dark", "light"):
             steps.append((off, "shell", "cmd uimode night " + ("yes" if args[0] == "dark" else "no")))
         elif name == "fontscale" and args and re.fullmatch(r"[0-3](\.\d+)?", args[0]):
@@ -297,9 +308,9 @@ def prepare(adb, plan, z, args, report, warn):
         restore_data(adb, plan, z, report, warn)
     dev = plan.device
     w, h, dens = dev.get("width"), dev.get("height"), dev.get("density")
-    if dev.get("fontScale"):
-        ok, out = adb.try_sh("settings put system font_scale %s" % dev["fontScale"])
-        (report if ok else warn).append("font scale %s %s" % (dev["fontScale"], "set" if ok else "NOT set: " + out))
+    if plan.font:
+        ok, out = adb.try_sh("settings put system font_scale %s" % plan.font)
+        (report if ok else warn).append("font scale %s %s" % (plan.font, "set" if ok else "NOT set: " + out))
     scale = (1.0, 1.0)
     if w and h and not args.scale_coordinates:
         state["display"] = True
@@ -392,6 +403,7 @@ def restore_data(adb, plan, z, report, warn):
 def play(adb, plan, scale, args, warn):
     t0 = time.monotonic()
     done = 0
+    rot = [0]
     for off, kind, a in plan.steps:
         due = t0 + (off / 1000.0) / args.pace
         wait = due - time.monotonic()
@@ -401,6 +413,10 @@ def play(adb, plan, scale, args, warn):
         if line is None:
             continue
         ok, out = adb.try_sh(line)
+        if ok and kind == "rotate" and (a % 2) != (rot[0] % 2):
+            scale = (scale[1], scale[0])  # the axes swapped: so do their scale factors
+        if ok and kind == "rotate":
+            rot[0] = a
         if ok:
             done += 1
         else:
@@ -419,6 +435,8 @@ def step_line(kind, a, scale, pace):
     if kind == "text":
         t = re.sub(r"[^A-Za-z0-9._,@ -]", "", a).replace(" ", "%s")
         return ("input text " + shlex.quote(t)) if t else None
+    if kind == "rotate":
+        return "settings put system accelerometer_rotation 0; settings put system user_rotation %d" % a
     return a
 
 
@@ -428,8 +446,8 @@ def describe(plan, args):
     out = []
     if plan.has_data:
         out.append("restore the checkpoint's app data, /sdcard and Settings values for " + plan.pkg)
-    if dev.get("fontScale"):
-        out.append("settings put system font_scale %s" % dev["fontScale"])
+    if plan.font:
+        out.append("settings put system font_scale %s" % plan.font)
     if dev.get("width") and not args.scale_coordinates:
         out.append("wm size %dx%d; wm density %d" % (dev["width"], dev["height"], round((dev.get("density") or 2) * 160)))
     if plan.stack:
@@ -476,13 +494,16 @@ def main():
         adb = Adb(args.serial)
         adb.run("get-state")
         cap = None
+        capture_pid = ""
         try:
             scale = prepare(adb, plan, z, args, report, warn)
             if args.logcat:
                 adb.run("logcat", "-c", check=False)
             if args.capture:
-                cap = subprocess.Popen(adb.base + ["shell", "screenrecord --time-limit 180 /sdcard/apksim-replay.mp4"],
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Its own pid is kept, so ending the replay stops this recording and no other.
+                cap = subprocess.Popen(adb.base + ["shell", "echo $$; exec screenrecord --time-limit 180 /sdcard/apksim-replay.mp4"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                capture_pid = (cap.stdout.readline() or "").strip()
                 time.sleep(1)
             if plan.stack:
                 ok, out = adb.try_sh("am start -n %s" % shlex.quote("%s/%s" % (plan.pkg, plan.stack[-1]["class"])))
@@ -497,13 +518,17 @@ def main():
                 adb.sh("wm size reset; wm density reset", check=False)
             if cap is not None:
                 time.sleep(1)
-                adb.sh("pkill -INT screenrecord", check=False)
+                if capture_pid.isdigit():
+                    adb.sh("kill -INT " + capture_pid, check=False)
                 time.sleep(2)
                 if cap.poll() is None:
                     cap.terminate()
-                adb.run("pull", "/sdcard/apksim-replay.mp4", args.capture, check=False)
+                pulled = adb.run("pull", "/sdcard/apksim-replay.mp4", args.capture, check=False)
                 adb.sh("rm /sdcard/apksim-replay.mp4", check=False)
-                report.append("device screen recorded to " + args.capture)
+                if os.path.isfile(args.capture) and "error" not in pulled.lower():
+                    report.append("device screen recorded to " + args.capture)
+                else:
+                    warn.append("the screen capture could not be saved: " + pulled.strip()[:150])
             if args.logcat:
                 with open(args.logcat, "w") as f:
                     f.write(adb.run("logcat", "-d", check=False))
