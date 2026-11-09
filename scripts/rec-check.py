@@ -12,6 +12,11 @@ fetches, Authorization redacted), db calls (the trips table, no values), a well-
 checkpoint (state.bin, data.zip in SlotPack's format with the trips database). Then a second launch crashes on
 purpose (apksim://crash?kind=post) and must leave a `-crash.apkrec` whose manifest has the exception. OUT (default
 work/rec-check) is emptied first.
+
+Also: pasted text is left out, the checkpoint holds the databases in a read transaction (no "cloned as a file" note,
+no -shm in data.zip), a rotation keeps the movie's length (one frame per slot, fitted), two saves at once write two
+files, `rec clear` and `rec off logcat` keep what came before out of the next save, and a save followed at once by
+`quit` is still written.
 """
 import argparse, json, os, re, shutil, socket, struct, subprocess, sys, time, zipfile, io
 
@@ -138,6 +143,8 @@ def main():
         r2 = d.wait_text("urlconnection:")
         check(r2.startswith("urlconnection: 200"), f"HttpURLConnection fetch through the capture: {r2}")
         check(d("clipboard set a-secret-clipboard-value").startswith("ok"), "clipboard set")
+        pasted = d("paste")
+        print("  ..    " + pasted)
         check(d("rec off screen") == "screen: off", "screen off on the fly")
         time.sleep(0.5)
         check(d("rec on screen") == "screen: on", "screen on again")
@@ -146,8 +153,13 @@ def main():
         print("== checkpoint")
         cp = d("rec checkpoint now")
         check(cp.startswith("checkpoint #"), f"checkpoint now: {cp}")
+        check("cloned as a file" not in cp and "cloned as files" not in cp, "databases held in a read transaction while cloned")
         v = d("rec checkpoint verify")
         check(" ok: " in v and "MainActivity" in v and "data " in v, f"checkpoint reads back: {v}")
+        d("rotate landscape")
+        time.sleep(2)
+        d("rotate portrait")
+        time.sleep(2)
         d("tap 733 1533")
         time.sleep(1)
         print("== save")
@@ -160,10 +172,45 @@ def main():
             if "last save:" in status and "writing" not in status.split("last save:")[1]:
                 break
         check("KB in" in status.split("last save:")[-1], "saved: " + status.split("last save:")[-1].strip())
+
+        print("== two saves at once")
+        s1, s2 = d("rec save 20"), d("rec save 20")
+        f1, f2 = (re.match(r"saving (\S+)", x) for x in (s1, s2))
+        if check(bool(f1 and f2) and f1.group(1) != f2.group(1), f"two files: {s1[:90]} / {s2[:90]}"):
+            for _ in range(60):
+                if os.path.isfile(f1.group(1)) and os.path.isfile(f2.group(1)):
+                    break
+                time.sleep(0.5)
+            for f in (f1.group(1), f2.group(1)):
+                ok = os.path.isfile(f) and zipfile.is_zipfile(f) and "manifest.json" in zipfile.ZipFile(f).namelist()
+                check(ok, "a whole bundle: " + os.path.basename(f))
+                if os.path.isfile(f):
+                    shutil.move(f, os.path.join(bundle_dir, os.path.basename(f)))
+            leftovers = [f for f in os.listdir(os.path.dirname(f1.group(1))) if f.endswith(".part")]
+            check(not leftovers, f"no part files left: {leftovers}")
+
+        print("== clear, logcat off")
+        check(d("rec off logcat") == "logcat: off", "logcat off")
+        check(d("rec clear") == "cleared", "clear")
+        d("tap 130 1690")
+        time.sleep(1.5)
+        s = d("rec save 60 " + os.path.join(bundle_dir, "cleared.apkrec"))
+        check(s.startswith("saving "), f"save after clear: {s}")
+        print("== save, then quit at once")
+        s = d("rec save 60 " + os.path.join(bundle_dir, "quit.apkrec"))
         d("quit")
-        app.wait(30)
+        app.wait(60)
         app = None
+        check(os.path.isfile(os.path.join(bundle_dir, "quit.apkrec")), "the save before quit was written")
+        check(not [f for f in os.listdir(bundle_dir) if f.endswith(".part")], "no part file left behind")
         check_bundle(os.path.join(bundle_dir, "window.apkrec"))
+        print("== bundle cleared.apkrec")
+        z = zipfile.ZipFile(os.path.join(bundle_dir, "cleared.apkrec"))
+        check(z.read("logcat.txt") == b"", "no logcat from before the clear or while it was off")
+        har = json.loads(z.read("network.har"))["log"]["entries"] if "network.har" in z.namelist() else []
+        check(har == [], f"no network exchanges from before the clear ({len(har)})")
+        cmds = [json.loads(l).get("cmd") for l in z.read("input.jsonl").decode().splitlines()]
+        check(["open", "apksim://network"] not in cmds and "db.jsonl" not in z.namelist(), "no input or db calls from before the clear")
 
         print("== crash")
         app = launch(out, "crash.log", "--rec", "input,logcat,screen")
@@ -230,6 +277,10 @@ def check_bundle(path):
     check(any(c[:2] == ["open", "apksim://network"] for c in cmds) or cp.get("uptime", 0) > 0, f"device commands kept: {cmds}")
     raw = z.read("input.jsonl").decode()
     check("a-secret-clipboard-value" not in raw, "clipboard text left out of the input")
+    chars = [e for e in events if e.get("ev") == "char"]
+    pasted = [e for e in chars if e.get("pasted")]
+    check(all(e.get("redacted") and "v" not in e for e in pasted) and not [e for e in chars if "v" in e and e["v"] in map(ord, "a-secret")],
+          f"pasted characters left out ({len(pasted)} pasted)")
     log = z.read("logcat.txt").decode()
     check(len(log.splitlines()) > 5, f"logcat lines ({len(log.splitlines())})")
     har = json.loads(z.read("network.har"))["log"]["entries"]
@@ -247,10 +298,15 @@ def check_bundle(path):
         w, h, fps, frames, n, jpeg_ok = v
         check(frames == n and frames > 10 and jpeg_ok, f"{w}x{h} at {fps} fps, {frames} frames, index {n}")
         check(max(w, h) <= 960, "scaled down")
+        times = [int(t) for t in z.read("screen-times.txt").decode().split()]
+        t0 = max(man["window"]["from"], times[0])
+        slots = (man["window"]["to"] - t0) // (1000 // fps) + 1
+        check(frames == slots, f"one movie frame per slot through the rotation ({frames} of {slots})")
     data = zipfile.ZipFile(io.BytesIO(z.read("checkpoint/data.zip")))
     dn = data.namelist()
     check("package" in dn and data.read("package") == b"dev.apksim.composeapp", "data.zip names the package")
     check(any(n.startswith("slot/") and n.endswith("trips.db") for n in dn), "data.zip has the trips database")
+    check(not any(n.endswith("-shm") or n.endswith("-journal") for n in dn), "and no -shm or -journal files")
     st = z.read("checkpoint/state.bin")
     check(struct.unpack(">i", st[:4])[0] == 1, "state.bin has one activity")
 

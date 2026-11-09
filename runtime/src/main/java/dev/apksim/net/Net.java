@@ -91,12 +91,13 @@ public final class Net {
     String spec = System.getProperty("apksim.network");
     String profile = System.getProperty("apksim.networkProfile");
     String hosts = System.getProperty("apksim.networkHost");
+    // First: the flight recorder's in-memory capture (--rec net) redacts them too, with the layer otherwise off.
+    for (String r : list(System.getProperty("apksim.networkRedact"))) {
+      if (r.startsWith("-")) redact.remove(r.substring(1));
+      else redact.add(r);
+    }
     if (spec == null && profile == null && hosts == null) return;
     try {
-      for (String r : list(System.getProperty("apksim.networkRedact"))) {
-        if (r.startsWith("-")) redact.remove(r.substring(1));
-        else redact.add(r);
-      }
       for (String h : list(hosts)) {
         int eq = h.indexOf('=');
         if (eq < 0) throw new IllegalArgumentException("--network-host takes HOST=ADDR[:PORT], not " + h);
@@ -192,14 +193,24 @@ public final class Net {
       return on ? "error: net: the network layer is " + (mode == Mode.REPLAY ? "replaying" : "shaping (network conditions)")
           + " since before; capturing needs it off or recording (launch with --rec net)" : "net: off";
     }
+    if (recording.path != null) {
+      // A --network record file is the user's own recording: it goes on whatever the flight recorder does, which
+      // reads it (only the exchanges made while its channel was on: dev.apksim.rec.Rec.NET).
+      return on ? "net: capturing (from the --network record file)" : "net: off (the --network record file goes on)";
+    }
     recording.keep = on;
     return on ? "net: capturing" : "net: paused";
   }
 
-  /** The exchanges captured from epoch ms `from` on, as a HAR file; null when nothing is captured. */
-  public static synchronized byte[] captured(long from) {
+  /** The exchanges captured whose start `keep` accepts (epoch ms), as a HAR file; null when nothing is captured. */
+  public static synchronized byte[] captured(java.util.function.LongPredicate keep) {
     if (!active || mode != Mode.RECORD) return null;
-    return recording.har(from).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    return recording.har(keep).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  /** `rec clear`: forgets what the flight recorder's in-memory capture holds (a --network record file keeps its own). */
+  public static synchronized void clearCaptured() {
+    if (active && mode == Mode.RECORD && recording.path == null) recording.clearCaptured();
   }
 
   /** How many exchanges are held now (captured or recorded); -1 with no recording. */

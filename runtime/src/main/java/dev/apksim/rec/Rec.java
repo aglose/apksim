@@ -43,6 +43,7 @@ public final class Rec {
         case "net" -> {
           String r = dev.apksim.net.Net.capture(true, true);
           if (r.startsWith("error")) System.err.println("[apksim] rec: " + r);
+          else NET.on(System.currentTimeMillis());
         }
         case "db" -> db = true;
         case "db+values" -> {
@@ -59,5 +60,7 @@ public final class Rec {
   public static volatile boolean db;
   /** Bound values, ContentValues values and bind arguments in the db channel (off: their count and column names only). */
   public static volatile boolean dbValues;
+  /** When the net channel was on: a --network record file goes on recording while it is off. */
+  public static final Spans NET = new Spans();
   public static final Ring<Map<String, Object>> DB = new Ring<>(16L << 20, Rec::keepFromWallMs);
 }

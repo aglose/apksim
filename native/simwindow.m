@@ -54,7 +54,7 @@ static int pasteClipboard(void) {
   for (NSUInteger i = 0; i < text.length; i++) {
     unichar ch = [text characterAtIndex:i];
     if (ch == '\n' || ch == '\r') continue;  // A copied password often carries a trailing newline.
-    post(EV_CHAR, 0, 0, (float)ch);
+    post(EV_CHAR, 0, 1, (float)ch);  // y 1: pasted (SimWindow.PASTED), which the flight recorder leaves out
     n++;
   }
   return n;

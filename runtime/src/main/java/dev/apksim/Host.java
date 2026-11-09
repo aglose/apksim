@@ -674,6 +674,7 @@ public class Host {
     Exits.log(code, reason);
     SlotDevice.flush();
     ClassCache.flush();
+    FlightRecorder.awaitSaves(60_000);  // a `rec save` still writing reads checkpoints from the scratch folder
     Storage.deleteScratch();
     Standby.halt(code);
   }
@@ -1465,7 +1466,7 @@ public class Host {
         int n = 0;
         for (char ch : text == null ? new char[0] : text.toCharArray()) {
           if (ch == '\n' || ch == '\r') continue;  // A copied password often carries a trailing newline.
-          pendingScript.add(new SimWindow.Event(SimWindow.CHAR, 0, 0, ch));
+          pendingScript.add(new SimWindow.Event(SimWindow.CHAR, 0, SimWindow.PASTED, ch));
           n++;
         }
         return "pasted " + n + " characters";

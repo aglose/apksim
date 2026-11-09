@@ -239,11 +239,18 @@ final class Recording {
     return entries.size();
   }
 
-  /** The entries from epoch ms `from` on as a HAR file (the flight recorder's bundle). */
-  synchronized String har(long from) {
+  /** The entries whose start (epoch ms) `keep` accepts, as a HAR file (the flight recorder's bundle). */
+  synchronized String har(java.util.function.LongPredicate keep) {
     List<Entry> some = new ArrayList<>();
-    for (Entry e : entries) if (e.wallMs >= from) some.add(e);
+    for (Entry e : entries) if (keep.test(e.wallMs)) some.add(e);
     return Json.write(harRoot(some));
+  }
+
+  /** Forgets every entry (the flight recorder's `rec clear`; only for a recording with no file). */
+  synchronized void clearCaptured() {
+    entries.clear();
+    byKey.clear();
+    bytes = 0;
   }
 
   synchronized void certificates(String host, List<String> chain) {

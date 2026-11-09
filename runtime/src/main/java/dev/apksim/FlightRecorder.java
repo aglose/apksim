@@ -17,6 +17,7 @@ import dev.apksim.net.Net;
 import dev.apksim.rec.JsonLine;
 import dev.apksim.rec.Rec;
 import dev.apksim.rec.Ring;
+import dev.apksim.rec.Spans;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -81,14 +82,17 @@ final class FlightRecorder {
 
   private static volatile long windowMs = 120_000;
   private static volatile long checkpointEveryMs = 30_000;
-  private static final int SCREEN_FPS = Math.max(1, Math.min(15, Integer.getInteger("apksim.rec.screenFps", 5)));
-  private static final int SCREEN_MAX = Integer.getInteger("apksim.rec.screenMax", 960);  // longest side, pixels
+  // Read per launch (the constructor), not at class init: a standby loads this class before the launch's options.
+  private static volatile int screenFps = 5;
+  private static volatile int screenMax = 960;  // longest side, pixels
   private static final int SCREEN_QUALITY = 70;
 
   /** Input events and device commands, as JSON lines. */
   private static final Ring<Map<String, Object>> INPUT = new Ring<>(16L << 20, Rec::keepFromWallMs);
   /** JPEG frames of the screen; the value's first 8 bytes are width and height (two ints). */
   private static final Ring<byte[]> SCREEN = new Ring<>(64L << 20, Rec::keepFromWallMs);
+  /** When the logcat channel was on: AdbLog's ring goes on for adb whatever the channel does. */
+  private static final Spans LOGCAT = new Spans();
 
   private final Application app;
   private final ArrayDeque<ActivityController<? extends Activity>> stack;
@@ -107,9 +111,11 @@ final class FlightRecorder {
     if (w != null) windowMs = Math.max(5, Long.parseLong(w)) * 1000;
     String cp = System.getProperty("apksim.rec.checkpoint");
     if (cp != null) checkpointEveryMs = Math.max(0, Long.parseLong(cp)) * 1000;
+    screenFps = Math.max(1, Math.min(15, Integer.getInteger("apksim.rec.screenFps", 5)));
+    screenMax = Math.max(64, Integer.getInteger("apksim.rec.screenMax", 960));
     List<String> on = Rec.launchChannels();
     if (on.isEmpty()) return;
-    net = Net.capturedCount() >= 0;
+    net = Rec.NET.isOn();
     List<String> rest = new ArrayList<>(on);
     rest.removeAll(List.of("net", "db", "db+values"));
     String r = rest.isEmpty() ? "" : set(true, rest);
@@ -160,13 +166,20 @@ final class FlightRecorder {
         return save(seconds, file);
       }
       case "clear" -> {
+        long now = System.currentTimeMillis();
         INPUT.clear();
         SCREEN.clear();
         Rec.DB.clear();
+        LOGCAT.clear(now);  // AdbLog's ring stays for adb; a save just takes nothing from before now
+        Rec.NET.clear(now);
+        Net.clearCaptured();  // the in-memory capture; a --network record file keeps its own
+        redacted = 0;
+        List<Checkpoint> gone;
         synchronized (checkpoints) {
-          for (Checkpoint c : checkpoints) Storage.deleteTree(c.dir);
+          gone = retire(new ArrayList<>(checkpoints));
           checkpoints.clear();
         }
+        for (Checkpoint c : gone) Storage.deleteTree(c.dir);
         return "cleared";
       }
       default -> {
@@ -196,10 +209,14 @@ final class FlightRecorder {
       case "logcat" -> {
         if (on) AdbLog.install();
         logcat = on;
+        if (on) LOGCAT.on(System.currentTimeMillis());
+        else LOGCAT.off(System.currentTimeMillis());
       }
       case "net" -> {
         String r = Net.capture(on);
         net = on && !r.startsWith("error");
+        if (net) Rec.NET.on(System.currentTimeMillis());
+        else Rec.NET.off(System.currentTimeMillis());
         return r;
       }
       case "db" -> {
@@ -286,7 +303,12 @@ final class FlightRecorder {
     m.put("ev", t >= 0 && t < EVENTS.length && EVENTS[t] != null ? EVENTS[t] : "type-" + t);
     m.put("type", t);
     boolean typed = t == SimWindow.CHAR || (t == SimWindow.KEY && printableKey((int) e.value()));
-    if (typed && passwordFocused()) {
+    if (t == SimWindow.CHAR && e.y() == SimWindow.PASTED) {
+      // Pasted text is the clipboard's, which stays on this Mac wherever it goes; a replay pastes a placeholder.
+      m.put("pasted", true);
+      m.put("redacted", true);
+      redacted++;
+    } else if (typed && passwordFocused()) {
       // What goes into a password field stays on this Mac; a replay types a placeholder there.
       m.put("redacted", true);
       redacted++;
@@ -335,14 +357,11 @@ final class FlightRecorder {
     inputSinceCheckpoint++;
   }
 
-  // Whether the field that has the focus takes a password. Main thread; looked at again at most every 300 ms.
-  private static long passwordCheckedNanos;
-  private static boolean passwordCached;
-
+  /**
+   * Whether the field that has the focus takes a password (main thread). Looked at for every typed character: focus
+   * can move between two of them without a touch (a PIN field that moves on by itself after each digit).
+   */
   private static boolean passwordFocused() {
-    long now = System.nanoTime();
-    if (now - passwordCheckedNanos < 300_000_000L) return passwordCached;
-    passwordCheckedNanos = now;
     boolean pw = false;
     try {
       List<View> roots = Host.rootViews();
@@ -352,19 +371,25 @@ final class FlightRecorder {
         if (f instanceof TextView tv) {
           pw = password(tv);
         } else if (f.getAccessibilityNodeProvider() != null) {
-          // Compose: the focused editable node of the semantics tree.
-          boolean[] found = {false};
-          Nodes.walk(List.of(f), n -> {
-            if (n.info.isFocused() && n.info.isEditable() && n.info.isPassword()) found[0] = true;
-          });
-          pw = found[0];
+          // Compose: the focused editable node of the semantics tree. Asked for directly first (one node), else the
+          // whole tree is walked.
+          android.view.accessibility.AccessibilityNodeInfo n =
+              f.getAccessibilityNodeProvider().findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+          if (n != null && n.isFocused()) {
+            pw = n.isEditable() && n.isPassword();
+          } else {
+            boolean[] found = {false};
+            Nodes.walk(List.of(f), k -> {
+              if (k.info.isFocused() && k.info.isEditable() && k.info.isPassword()) found[0] = true;
+            });
+            pw = found[0];
+          }
         }
         break;
       }
     } catch (RuntimeException e) {
       pw = true;  // could not tell: leave it out
     }
-    passwordCached = pw;
     return pw;
   }
 
@@ -388,10 +413,10 @@ final class FlightRecorder {
   private static long lastFrameNanos;
   private static Thread encoder;
 
-  /** From the raster thread: the frame just presented. Copied at most SCREEN_FPS times a second. */
+  /** From the raster thread: the frame just presented. Copied at most screenFps times a second. */
   static void frame(ByteBuffer pixels, int w, int h) {
     long now = System.nanoTime();
-    if (now - lastFrameNanos < 1_000_000_000L / SCREEN_FPS || pixels.remaining() != w * h * 4) return;
+    if (now - lastFrameNanos < 1_000_000_000L / screenFps || pixels.remaining() != w * h * 4) return;
     lastFrameNanos = now;
     synchronized (FRAME_LOCK) {
       if (pending == null || pending.length != pixels.remaining()) pending = new byte[pixels.remaining()];
@@ -440,7 +465,7 @@ final class FlightRecorder {
           src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         }
         src.copyPixelsFromBuffer(ByteBuffer.wrap(raw));
-        float s = Math.min(1f, SCREEN_MAX / (float) Math.max(w, h));
+        float s = Math.min(1f, screenMax / (float) Math.max(w, h));
         int sw = Math.max(2, Math.round(w * s) & ~1);
         int sh = Math.max(2, Math.round(h * s) & ~1);
         if (scaled == null || scaled.getWidth() != sw || scaled.getHeight() != sh) {
@@ -469,8 +494,35 @@ final class FlightRecorder {
   private static int nextId = 1;
   private static boolean wantCheckpoint;
   private static long lastCheckpointWall;
-  /** Checkpoints a save in progress is reading: not deleted until it is done. */
-  private static final Set<Integer> pinned = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+  /**
+   * How many saves in progress are reading each checkpoint (by id), and the checkpoints already let go (aged out or
+   * cleared) whose files wait for their last reader. Both guarded by `checkpoints`.
+   */
+  private static final Map<Integer, Integer> readers = new java.util.HashMap<>();
+  private static final Map<Integer, Checkpoint> doomed = new java.util.HashMap<>();
+
+  /** Of checkpoints being let go (caller holds `checkpoints`): those to delete now; the rest wait for their readers. */
+  private static List<Checkpoint> retire(List<Checkpoint> gone) {
+    List<Checkpoint> now = new ArrayList<>();
+    for (Checkpoint c : gone) {
+      if (readers.containsKey(c.id)) doomed.put(c.id, c);
+      else now.add(c);
+    }
+    return now;
+  }
+
+  /** A save is done reading `c`: deleted if it was let go meanwhile and this was its last reader. */
+  private static void unpin(Checkpoint c) {
+    Checkpoint delete = null;
+    synchronized (checkpoints) {
+      int n = readers.merge(c.id, -1, Integer::sum);
+      if (n <= 0) {
+        readers.remove(c.id);
+        delete = doomed.remove(c.id);
+      }
+    }
+    if (delete != null) Storage.deleteTree(delete.dir);
+  }
 
   /** Each turn of the Host loop (main thread). */
   void tick(boolean firstFrameDrawn) {
@@ -491,18 +543,18 @@ final class FlightRecorder {
   private static void moveCutoff(long now) {
     long from = now - windowMs;
     long keep = from;
-    List<Checkpoint> gone = new ArrayList<>();
+    List<Checkpoint> gone;
     synchronized (checkpoints) {
       int base = -1;
       for (int i = 0; i < checkpoints.size(); i++) if (checkpoints.get(i).wallMs <= from) base = i;
       if (base >= 0) keep = checkpoints.get(base).wallMs;
-      for (int i = 0; i < base; i++) {
-        Checkpoint c = checkpoints.get(i);
-        if (!pinned.contains(c.id)) gone.add(c);
-      }
-      checkpoints.removeAll(gone);
+      List<Checkpoint> old = new ArrayList<>(checkpoints.subList(0, Math.max(0, base)));
+      checkpoints.subList(0, Math.max(0, base)).clear();
+      gone = retire(old);
     }
     Rec.keepFrom(keep);
+    LOGCAT.trim(keep);
+    Rec.NET.trim(keep);
     for (Checkpoint c : gone) Storage.deleteTree(c.dir);
   }
 
@@ -564,9 +616,17 @@ final class FlightRecorder {
       }
       Path data = Host.dataDir();
       if (data != null) {
-        cloneTree(data, dir.resolve("slot"));
-        Path device = data.resolveSibling(data.getFileName() + ".device");
-        if (Files.isDirectory(device)) cloneTree(device, dir.resolve("slot.device"));
+        // The databases are held in a read transaction while the folder is cloned, so each is cloned as of one
+        // commit even with a worker writing or checkpointing its WAL meanwhile (see holdDatabases).
+        List<android.database.sqlite.SQLiteDatabase> held = holdDatabases(data, notes);
+        try {
+          cloneTree(data, dir.resolve("slot"));
+          Path device = data.resolveSibling(data.getFileName() + ".device");
+          if (Files.isDirectory(device)) cloneTree(device, dir.resolve("slot.device"));
+        } finally {
+          release(held);
+        }
+        dropLockFiles(dir.resolve("slot"));
       } else {
         notes.add("no data folder");
       }
@@ -616,7 +676,11 @@ final class FlightRecorder {
             p.unmarshall(intent, 0, intent.length);
             p.setDataPosition(0);
             android.content.Intent restored = android.content.Intent.CREATOR.createFromParcel(p);
-            what += " intent " + (restored.getComponent() != null ? restored.getComponent().getShortClassName() : restored.getAction());
+            restored.setExtrasClassLoader(loader);
+            Bundle extras = restored.getExtras();
+            int values = extras == null ? 0 : readAll(extras, loader);
+            what += " intent " + (restored.getComponent() != null ? restored.getComponent().getShortClassName() : restored.getAction())
+                + (values > 0 ? " (" + values + " extras)" : "");
           } finally {
             p.recycle();
           }
@@ -627,12 +691,8 @@ final class FlightRecorder {
             p.unmarshall(state, 0, state.length);
             p.setDataPosition(0);
             Bundle b = p.readBundle(loader);
-            int keys = 0;
-            for (String k : b.keySet()) {
-              b.get(k);  // unparcels it: a class the loader cannot find fails here
-              keys++;
-            }
-            what += ", state " + keys + " keys, " + state.length + " bytes";
+            int values = readAll(b, loader);
+            what += ", state " + b.size() + " keys (" + values + " values), " + state.length + " bytes";
           } finally {
             p.recycle();
           }
@@ -649,6 +709,91 @@ final class FlightRecorder {
     return "checkpoint #" + c.id + " ok: " + String.join("; ", out) + "; data " + files + " files";
   }
 
+  /**
+   * Opens each SQLite database under the data folder a second time, read-only through the framework's SQLite, and
+   * starts a read transaction on it, for the time the folder is cloned. Each database file and its WAL then hold one
+   * commit's state between them: while a reader holds a snapshot, a WAL checkpoint copies no frame past it into the
+   * database file and the WAL is not restarted, so the WAL only grows; a rollback-journal database cannot be written
+   * at all. Recovery on open (the -shm file is left out) replays the WAL clone's committed frames. Databases of an app
+   * with its own SQLite library are cloned as files (see Natives.ownSqlite), as are files that do not open.
+   */
+  private static List<android.database.sqlite.SQLiteDatabase> holdDatabases(Path data, List<String> notes) {
+    List<android.database.sqlite.SQLiteDatabase> held = new ArrayList<>();
+    List<Path> files = new ArrayList<>();
+    try (var w = Files.walk(data)) {
+      w.filter(p -> Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS) && sqliteFile(p)).forEach(files::add);
+    } catch (IOException | java.io.UncheckedIOException e) {
+      notes.add("databases cloned as files: " + e);
+      return held;
+    }
+    if (files.isEmpty()) return held;
+    if (dev.apksim.Natives.ownSqlite) {
+      notes.add("databases cloned as files (the app has its own SQLite library)");
+      return held;
+    }
+    for (Path p : files) {
+      android.database.sqlite.SQLiteDatabase db = null;
+      try {
+        db = android.database.sqlite.SQLiteDatabase.openDatabase(p.toString(), null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READONLY | android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS);
+        db.beginTransactionReadOnly();
+        try (android.database.Cursor c = db.rawQuery("SELECT count(*) FROM sqlite_master", null)) {
+          c.moveToFirst();  // the first read takes the snapshot
+        }
+        held.add(db);
+      } catch (RuntimeException | LinkageError e) {
+        if (db != null) release(List.of(db));
+        notes.add(data.relativize(p) + " cloned as a file: " + e.getMessage());
+      }
+    }
+    return held;
+  }
+
+  private static void release(List<android.database.sqlite.SQLiteDatabase> held) {
+    for (android.database.sqlite.SQLiteDatabase db : held) {
+      try {
+        if (db.inTransaction()) db.endTransaction();
+      } catch (RuntimeException e) {
+        // closed below either way
+      }
+      try {
+        db.close();
+      } catch (RuntimeException e) {
+        // nothing more to do
+      }
+    }
+  }
+
+  /** A database file: not a -wal/-shm/-journal, and SQLite's header. */
+  private static boolean sqliteFile(Path p) {
+    String n = p.getFileName().toString();
+    if (n.endsWith("-wal") || n.endsWith("-shm") || n.endsWith("-journal")) return false;
+    byte[] head = new byte[16];
+    try (InputStream in = Files.newInputStream(p)) {
+      return in.readNBytes(head, 0, 16) == 16 && new String(head, StandardCharsets.ISO_8859_1).equals("SQLite format 3\0");
+    } catch (IOException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The clone's -shm files (a WAL index of the live connections, rebuilt from the WAL on open) and -journal files (an
+   * unfinished write the read transaction kept out of the database file) would only mislead the next open.
+   */
+  private static void dropLockFiles(Path slot) {
+    try (var w = Files.walk(slot)) {
+      for (Path p : (Iterable<Path>) w::iterator) {
+        String n = p.getFileName().toString();
+        if ((n.endsWith("-shm") || n.endsWith("-journal")) && Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          Path db = p.resolveSibling(n.substring(0, n.lastIndexOf('-')));
+          if (sqliteFile(db)) Files.deleteIfExists(p);
+        }
+      }
+    } catch (IOException | java.io.UncheckedIOException e) {
+      // left as they are
+    }
+  }
+
   private static byte[] readBytes(java.io.DataInputStream in) throws IOException {
     int n = in.readInt();
     if (n < 0) return null;
@@ -659,6 +804,34 @@ final class FlightRecorder {
 
   private interface ParcelWriter {
     void write(Parcel p);
+  }
+
+  /**
+   * Reads every value of a Bundle, and of the Bundles, arrays and lists in it, with the app's class loader: values
+   * stay parcelled until read, so a Parcelable the app cannot recreate fails only here. Returns how many were read.
+   */
+  @SuppressWarnings("deprecation")
+  private static int readAll(Bundle b, ClassLoader loader) {
+    b.setClassLoader(loader);
+    int n = 0;
+    for (String k : new ArrayList<>(b.keySet())) n += 1 + readValue(b.get(k), loader);
+    return n;
+  }
+
+  private static int readValue(Object v, ClassLoader loader) {
+    int n = 0;
+    if (v instanceof Bundle b) {
+      n += readAll(b, loader);
+    } else if (v instanceof android.os.PersistableBundle pb) {
+      for (String k : pb.keySet()) n += 1 + readValue(pb.get(k), loader);
+    } else if (v instanceof Object[] arr) {
+      for (Object o : arr) n += readValue(o, loader);
+    } else if (v instanceof Iterable<?> it) {
+      for (Object o : it) n += readValue(o, loader);
+    } else if (v instanceof android.util.SparseArray<?> sa) {
+      for (int i = 0; i < sa.size(); i++) n += readValue(sa.valueAt(i), loader);
+    }
+    return n;
   }
 
   /** A parcelable's bytes, or null (noted) when it cannot be flattened: a Binder in a Bundle, say. */
@@ -742,7 +915,7 @@ final class FlightRecorder {
    */
   static void crashed(Throwable e) {
     FlightRecorder r = current;
-    if (r == null || !(input || logcat || net || Rec.db || screen)) return;
+    if (r == null || !(anyOn() || anyKept())) return;
     try {
       java.io.StringWriter w = new java.io.StringWriter();
       if (e != null) e.printStackTrace(new java.io.PrintWriter(w));
@@ -754,39 +927,102 @@ final class FlightRecorder {
     } catch (Throwable t) {
       System.err.println("[apksim] rec: could not save the crash: " + t);
     }
+    awaitSaves(30_000);  // a `rec save` from before the crash, still writing
+  }
+
+  private static boolean anyOn() {
+    return input || logcat || net || Rec.db || screen;
+  }
+
+  /** Whether any channel still holds something from the rings' cutoff on, on or off now. */
+  private static boolean anyKept() {
+    long k = Rec.keepFromWallMs();
+    return INPUT.size() > 0 || SCREEN.size() > 0 || Rec.DB.size() > 0 || (LOGCAT.anySince(k) && AdbLog.installed())
+        || (Rec.NET.anySince(k) && Net.capturedCount() > 0);
+  }
+
+  // Saves being written, and the files they write: the process waits for them on the way out (Host.exit,
+  // Crashes.terminate), and no two write one file. Guarded by SAVES.
+  private static final Object SAVES = new Object();
+  private static final Set<Path> writing = new java.util.HashSet<>();
+  private static final java.util.concurrent.atomic.AtomicLong partSeq = new java.util.concurrent.atomic.AtomicLong();
+
+  /** Waits up to `ms` for the saves being written (Host.exit, before the scratch folder and its checkpoints go). */
+  static void awaitSaves(long ms) {
+    long end = System.currentTimeMillis() + ms;
+    synchronized (SAVES) {
+      while (!writing.isEmpty()) {
+        long left = end - System.currentTimeMillis();
+        if (left <= 0) {
+          System.err.println("[apksim] rec: gave up waiting for " + writing);
+          return;
+        }
+        try {
+          SAVES.wait(left);
+        } catch (InterruptedException e) {
+          return;
+        }
+      }
+    }
   }
 
   /** `crash`: the stack trace of a crash being saved (synchronously, in this thread), else null (a worker writes). */
   private String save(long seconds, String file, String crash) throws Exception {
-    if (!(input || logcat || net || Rec.db || screen) && INPUT.size() == 0 && SCREEN.size() == 0 && Rec.DB.size() == 0) {
+    if (!anyOn() && !anyKept()) {
       return "error: the flight recorder is off: rec on [CHANNEL...], or launch with --rec all";
     }
     long to = System.currentTimeMillis();
     long from = to - Math.max(1, seconds) * 1000;
+    Path out;
+    synchronized (SAVES) {
+      if (file != null) {
+        out = Storage.absolute(file);
+        if (writing.contains(out)) return "error: " + out + " is being saved already";
+      } else {
+        Path dir = DeviceControls.mediaDir();  // with screenshots and screen recordings (File > Show Screenshots and Recordings)
+        String stem = app.getPackageName() + "-" + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to))
+            + (crash != null ? "-crash" : "");
+        out = dir.resolve(stem + ".apkrec");
+        for (int n = 2; writing.contains(out) || Files.exists(out); n++) out = dir.resolve(stem + "-" + n + ".apkrec");
+      }
+      writing.add(out);
+    }
     Checkpoint cp = null;
     synchronized (checkpoints) {
       for (Checkpoint c : checkpoints) if (c.wallMs <= from) cp = c;
       if (cp == null && !checkpoints.isEmpty()) cp = checkpoints.get(0);  // none that early: the oldest there is
-      if (cp != null) pinned.add(cp.id);
+      if (cp != null) readers.merge(cp.id, 1, Integer::sum);
     }
     long start = cp != null ? Math.min(from, cp.wallMs) : from;
-    Path out;
-    if (file != null) {
-      out = Storage.absolute(file);
-    } else {
-      Path dir = DeviceControls.mediaDir();  // with screenshots and screen recordings (File > Show Screenshots and Recordings)
-      String stamp = new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to));
-      out = dir.resolve(app.getPackageName() + "-" + stamp + (crash != null ? "-crash" : "") + ".apkrec");
+    boolean[] started = {false};
+    try {
+      return save(out, from, to, start, cp, crash, started);
+    } catch (Exception | Error e) {
+      if (started[0]) throw e;  // the job released them
+      // Nothing is writing it after all.
+      if (cp != null) unpin(cp);
+      synchronized (SAVES) {
+        writing.remove(out);
+        SAVES.notifyAll();
+      }
+      throw e;
     }
+  }
+
+  /** The rest of save: `out` is reserved and `cp` (if any) pinned; the job written releases both. */
+  private String save(Path out, long from, long to, long start, Checkpoint cp, String crash, boolean[] started)
+      throws IOException, InterruptedException {
     // Gathered here, on the main thread: what the app and the device look like now.
     Map<String, Object> manifest = manifest(from, to, start, cp);
     if (crash != null) manifest.put("crash", crash);
     List<Ring.Item<Map<String, Object>>> events = INPUT.since(cp != null ? cp.wallMs : start);
+    // Logcat and net are kept by something that goes on with the channel off (adb's log, a --network record file):
+    // only what came while the channel was on, and after the last `rec clear`.
     List<AdbLog.Line> lines = new ArrayList<>();
-    if (logcat || AdbLog.installed()) {
-      for (AdbLog.Line l : AdbLog.since(0, 0).lines()) if (l.wallMs() >= start) lines.add(l);
+    if (AdbLog.installed()) {
+      for (AdbLog.Line l : AdbLog.since(0, 0).lines()) if (l.wallMs() >= start && LOGCAT.contains(l.wallMs())) lines.add(l);
     }
-    byte[] har = Net.captured(start);
+    byte[] har = Net.captured(w -> w >= start && Rec.NET.contains(w));
     List<Ring.Item<Map<String, Object>>> db = Rec.DB.since(start);
     List<Ring.Item<byte[]>> frames = new ArrayList<>();
     Ring.Item<byte[]> first = SCREEN.atOrBefore(from);
@@ -807,15 +1043,20 @@ final class FlightRecorder {
         lastSave = target + ": failed: " + e;
         System.err.println("[apksim] rec: save failed: " + e);
       } finally {
-        if (used != null) pinned.remove(used.id);
+        if (used != null) unpin(used);
+        synchronized (SAVES) {
+          writing.remove(target);
+          SAVES.notifyAll();
+        }
       }
     };
+    started[0] = true;
     if (crash != null) {
       job.run();
       return lastSave;
     }
     Thread t = new Thread(job, "apksim-rec-save");
-    t.setDaemon(false);  // a quit right after a save waits for it
+    t.setDaemon(true);  // Host.exit waits for it (awaitSaves): Standby.halt would not wait for any thread
     t.start();
     return "saving " + target + " (" + (to - start) / 1000 + " s" + (used == null ? ", no checkpoint" : ", from checkpoint #" + used.id) + ")";
   }
@@ -891,7 +1132,7 @@ final class FlightRecorder {
     List<String> notes = new ArrayList<>();
     if (cp == null) notes.add("no checkpoint: this recording cannot be replayed, only read");
     else if (cp.wallMs > from) notes.add("the oldest checkpoint is after the window's start: a replay starts " + (cp.wallMs - from) / 1000 + " s in");
-    if (redacted > 0) notes.add(redacted + " typed or clipboard input" + (redacted == 1 ? " was" : "s were") + " left out (password fields, clipboard text)");
+    if (redacted > 0) notes.add(redacted + " typed, pasted or clipboard input" + (redacted == 1 ? " was" : "s were") + " left out (password fields, pasted and clipboard text)");
     if (INPUT.dropped() > 0) notes.add(INPUT.dropped() + " input events dropped for the memory budget");
     if (SCREEN.dropped() > 0) notes.add(SCREEN.dropped() + " screen frames dropped for the memory budget");
     if (Rec.DB.dropped() > 0) notes.add(Rec.DB.dropped() + " db calls dropped for the memory budget");
@@ -903,7 +1144,9 @@ final class FlightRecorder {
       List<AdbLog.Line> lines, byte[] har, List<Ring.Item<Map<String, Object>>> db, List<Ring.Item<byte[]>> frames,
       long from, long to, Checkpoint cp, String pkg) throws IOException {
     Files.createDirectories(target.toAbsolutePath().getParent());
-    Path tmp = target.resolveSibling(target.getFileName() + ".part");
+    // Each save its own part file, moved into place once complete.
+    Path tmp = target.resolveSibling(target.getFileName() + "." + ProcessHandle.current().pid() + "-" + partSeq.incrementAndGet() + ".part");
+    boolean done = false;
     try (OutputStream fo = Files.newOutputStream(tmp); ZipOutputStream z = new ZipOutputStream(fo)) {
       Map<String, Object> counts = new LinkedHashMap<>();
       counts.put("input", events.size());
@@ -933,18 +1176,18 @@ final class FlightRecorder {
         ByteBuffer size = ByteBuffer.wrap(frames.get(frames.size() - 1).value(), 0, 8);
         int w = size.getInt();
         int h = size.getInt();
+        // Each kept frame becomes one JPEG, which every time slot it covers shares. A frame of another size (before a
+        // rotation or a resize) is fitted into the movie's, so the movie keeps its length and its timing.
+        java.util.IdentityHashMap<byte[], byte[]> jpegs = new java.util.IdentityHashMap<>();
         List<byte[]> movie = new ArrayList<>();
         int k = 0;
-        long step = 1000 / SCREEN_FPS;
+        long step = 1000 / screenFps;
         for (long t = Math.max(from, frames.get(0).wallMs()); t <= to; t += step) {
           while (k + 1 < frames.size() && frames.get(k + 1).wallMs() <= t) k++;
-          byte[] f = frames.get(k).value();
-          ByteBuffer fs = ByteBuffer.wrap(f, 0, 8);
-          if (fs.getInt() != w || fs.getInt() != h) continue;  // a frame from before a rotation: the movie has one size
-          movie.add(java.util.Arrays.copyOfRange(f, 8, f.length));
+          movie.add(jpegs.computeIfAbsent(frames.get(k).value(), f -> fitted(f, w, h)));
         }
         z.putNextEntry(new ZipEntry("screen.avi"));
-        MjpegRecorder.writeAvi(z, w, h, SCREEN_FPS, movie);
+        MjpegRecorder.writeAvi(z, w, h, screenFps, movie);
         z.closeEntry();
         StringBuilder times = new StringBuilder();
         for (Ring.Item<byte[]> f : frames) times.append(f.wallMs()).append('\n');
@@ -976,8 +1219,37 @@ final class FlightRecorder {
       }
       manifest.put("counts", counts);
       put(z, "manifest.json", (JsonLine.write(manifest) + "\n").getBytes(StandardCharsets.UTF_8));
+      done = true;
+    } finally {
+      if (!done) Files.deleteIfExists(tmp);
     }
     Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  /** A screen ring frame's JPEG, re-encoded letterboxed into w x h when it was kept at another size. */
+  private static byte[] fitted(byte[] f, int w, int h) {
+    ByteBuffer size = ByteBuffer.wrap(f, 0, 8);
+    int fw = size.getInt();
+    int fh = size.getInt();
+    if (fw == w && fh == h) return java.util.Arrays.copyOfRange(f, 8, f.length);
+    Bitmap src = android.graphics.BitmapFactory.decodeByteArray(f, 8, f.length - 8);
+    if (src == null) return java.util.Arrays.copyOfRange(f, 8, f.length);
+    Bitmap dst = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    try {
+      Canvas c = new Canvas(dst);
+      c.drawColor(android.graphics.Color.BLACK);
+      float s = Math.min(w / (float) fw, h / (float) fh);
+      int dw = Math.round(fw * s);
+      int dh = Math.round(fh * s);
+      c.drawBitmap(src, null, new Rect((w - dw) / 2, (h - dh) / 2, (w - dw) / 2 + dw, (h - dh) / 2 + dh),
+          new Paint(Paint.FILTER_BITMAP_FLAG));
+      ByteArrayOutputStream out = new ByteArrayOutputStream(f.length);
+      dst.compress(Bitmap.CompressFormat.JPEG, SCREEN_QUALITY, out);
+      return out.toByteArray();
+    } finally {
+      src.recycle();
+      dst.recycle();
+    }
   }
 
   private static void put(ZipOutputStream z, String name, byte[] b) throws IOException {

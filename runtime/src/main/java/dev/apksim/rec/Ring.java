@@ -34,7 +34,8 @@ public final class Ring<T> {
 
   /**
    * Drops what is older than the cutoff, but the newest of those stays: what held at the cutoff (the screen as it was
-   * when a still stretch began).
+   * when a still stretch began). Items normally arrive in time order, but not strictly (a thread stamps an item before
+   * it gets the ring's lock), so this only trims the front; {@link #since} looks at every item.
    */
   private void trim() {
     long from = keepFrom.getAsLong();
@@ -44,32 +45,26 @@ public final class Ring<T> {
       if (it.next().wallMs() > from) break;
       bytes -= items.removeFirst().bytes();
     }
-    while (bytes > maxBytes && items.size() > 1) {
+    while (bytes > maxBytes && !items.isEmpty()) {  // an item bigger than the whole budget goes too
       bytes -= items.removeFirst().bytes();
       dropped++;
     }
   }
 
-  /** Items from wallMs `from` on (all of them for Long.MIN_VALUE), oldest first. */
+  /** Items from wallMs `from` on (all of them for Long.MIN_VALUE), in time order. */
   public synchronized List<Item<T>> since(long from) {
     trim();
     List<Item<T>> out = new ArrayList<>();
-    for (Iterator<Item<T>> it = items.descendingIterator(); it.hasNext(); ) {
-      Item<T> i = it.next();
-      if (i.wallMs() < from) break;
-      out.add(i);
-    }
-    java.util.Collections.reverse(out);
+    for (Item<T> i : items) if (i.wallMs() >= from) out.add(i);
+    out.sort(java.util.Comparator.comparingLong(Item::wallMs));  // stable: equal stamps keep their order
     return out;
   }
 
   /** The newest item at or before wallMs `at`, or null. */
   public synchronized Item<T> atOrBefore(long at) {
-    for (Iterator<Item<T>> it = items.descendingIterator(); it.hasNext(); ) {
-      Item<T> i = it.next();
-      if (i.wallMs() <= at) return i;
-    }
-    return null;
+    Item<T> best = null;
+    for (Item<T> i : items) if (i.wallMs() <= at && (best == null || i.wallMs() >= best.wallMs())) best = i;
+    return best;
   }
 
   public synchronized void clear() {

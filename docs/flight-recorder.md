@@ -22,18 +22,20 @@ While the app runs (control channel, `adb shell apksim rec ...`, or `scripts/ctl
 ```
 rec                              status (one line): channels, counts, checkpoints, last save
 rec on [CHANNEL...]              start channels (none named: all)
-rec off [CHANNEL...]             stop them (what they kept stays until it ages out)
+rec off [CHANNEL...]             stop them (what they kept stays until it ages out, and can be saved)
 rec window SECONDS               how much the rings keep (default 120)
 rec checkpoint now               take a checkpoint
 rec checkpoint every SECONDS     periodic checkpoints (default 30 while input is recorded)
 rec checkpoint off               only when asked
 rec checkpoint verify [ID]       read a checkpoint back as a replay would
 rec save [SECONDS] [FILE]        save the last SECONDS (default: the window) to FILE
-rec clear                        forget everything kept
+rec clear                        forget everything kept (adb's own logcat and a --network record file stay)
 ```
 
 `rec save` answers at once with the file name. A worker thread writes the file, and `rec status` reports when it is
-done (`last save: FILE: 107 KB in 32 ms`). Without FILE, bundles go to `work/screenshots/<package>-<time>.apkrec`
+done (`last save: FILE: 107 KB in 32 ms`). Each save writes its own part file and moves it into place when it is
+complete; two saves in the same second get `-2`, `-3`... names, and `quit` (or closing the window) waits for saves
+still being written. Without FILE, bundles go to `work/screenshots/<package>-<time>.apkrec`
 (`~/.apksim/screenshots` for an installed release), next to screenshots and screen recordings. A FILE must be
 somewhere the launcher's sandbox lets the app write, which means under the state folder.
 
@@ -47,18 +49,19 @@ The `--rec*` options are read after the hand-off, so a recording launch still go
 | Channel | What it keeps | Where it hooks |
 |---|---|---|
 | `input` | Every touch, two-finger touch, wheel, key, character, Back and window resize the app is given, stamped with the app's `SystemClock.uptimeMillis` and the wall clock. Also the device commands a replay must repeat: rotate, appearance, locale, font scale, device, size, open URL, push, permission, location, biometrics, recreate, process-death, home/lock and back, network conditions, clock, and so on. | `Host.dispatch` (one place for the Mac window, `--control`, adb and `drive`) and `Host.runCommand` |
-| `logcat` | The app's `android.util.Log` lines | `AdbLog`'s ring (20k lines), which the channel turns on; each line now carries its wall time |
-| `net` | Every HTTP(S) exchange, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. |
+| `logcat` | The app's `android.util.Log` lines while the channel was on | `AdbLog`'s ring (20k lines), which the channel turns on; each line now carries its wall time. The ring goes on for `adb logcat` with the channel off, so a save keeps only lines from when it was on (`rec.Spans`) |
+| `net` | Every HTTP(S) exchange while the channel was on, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file |
 | `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept), the number of bound arguments, column names, time in µs, rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
 | `db+values` | As `db`, plus bound values, ContentValues and simpleQuery results | the same |
-| `screen` | 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
+| `screen` | 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`, read per launch) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
 
 Covered by `db`: Room's framework driver, SQLDelight's Android driver, `SQLiteOpenHelper` code. Not covered: a bundled
 SQLite (androidx.sqlite's `BundledSQLiteDriver`, which ships its own native library), or SQLite reached from native
 code.
 
 Every ring has a byte budget: input 16 MB, db 16 MB, screen 64 MB, net 64 MB with bodies. When a ring hits its budget
-the oldest items go first, and a saved bundle's manifest says how many were dropped.
+the oldest items go first (an item bigger than the whole budget goes too), and a saved bundle's manifest says how many
+were dropped.
 
 ## Checkpoints
 
@@ -82,16 +85,25 @@ checkpoints are not taken on every input:
   second without input, and never while a finger is down or scripted input is queued;
 - and on `rec checkpoint now`.
 
-The test app takes 7-13 ms per checkpoint (state 7 ms). Checkpoints live in the instance's scratch folder
+The test app takes 7-13 ms per checkpoint (state 3-7 ms). Checkpoints live in the instance's scratch folder
 (`work/tmp/<pid>/rec/`). The recorder keeps those inside the window plus the newest one before it, so a save of the
-whole window always has a checkpoint to start from, and the rings keep back to that checkpoint.
+whole window always has a checkpoint to start from, and the rings keep back to that checkpoint. A checkpoint a save is
+still reading is deleted only once the last such save is done, also after `rec clear`.
 
-The data is crash-consistent, not transaction-consistent: a database another thread is writing at that moment is
-cloned as power loss would leave it, which SQLite recovers from on open (its WAL is cloned with it).
+**Databases.** Stopping the activities does not stop the app's workers, so each SQLite database in the data folder is
+opened a second time (read-only, through the framework's SQLite) and held in a read transaction while the folder is
+cloned. While a reader holds a snapshot, SQLite copies no WAL frame past it into the database file and does not
+restart the WAL, so the database file and its WAL clone hold one commit's state between them (a rollback-journal
+database cannot be written meanwhile at all). The clone's `-shm` and `-journal` files are left out, and SQLite
+recovers from the WAL on open. An app that loads its own SQLite library (androidx.sqlite's bundled driver, SQLCipher)
+has its databases cloned as plain files: a second SQLite library in the process closing a file would drop the app's
+library's POSIX locks on it. The checkpoint's notes say so. Files other than databases (SharedPreferences, files/) are
+cloned one by one, as a power cut would leave them.
 
-`rec checkpoint verify` reads a checkpoint back as a replay will: every intent and Bundle is unparcelled with the
-app's class loader and every value read, so a Parcelable the app cannot recreate shows up now rather than at replay
-time.
+`rec checkpoint verify` reads a checkpoint back as a replay will: every intent (extras included) and Bundle is
+unparcelled with the app's class loader and every value read, Bundles, arrays and lists inside them too, so a
+Parcelable the app cannot recreate shows up now rather than at replay time. Parcelables' own fields are not looked
+into.
 
 ## The bundle (`.apkrec`, a zip)
 
@@ -102,7 +114,7 @@ time.
 | `logcat.txt` | threadtime lines from the checkpoint on |
 | `network.har` | HAR 1.2, readable by Chrome DevTools, Charles, and `--network replay` |
 | `db.jsonl` | one call per line |
-| `screen.avi`, `screen-times.txt` | Motion-JPEG at 5 fps from the window's start to the save (each frame repeated until the next, so the timing is real), and when each frame kept was presented |
+| `screen.avi`, `screen-times.txt` | Motion-JPEG at 5 fps from the window's start to the save (each frame repeated until the next, so the timing is real; frames from before a rotation or resize fitted into the last frame's size), and when each frame kept was presented |
 | `checkpoint/state.bin` | int count, then per activity (bottom first): UTF class name, int length + intent parcel, int length + Bundle parcel (-1: could not be parcelled, see notes) |
 | `checkpoint/stack.json`, `checkpoint/data.zip` | the stack's class names; the data in `SlotPack`'s format (`package`, `slot/…`, `device/…`), which `apksim beam`'s handoff already unpacks |
 
@@ -119,8 +131,9 @@ before the scratch folder that holds the checkpoints is deleted (`Crashes.termin
 A bundle is meant to be sent to someone else, so by default it leaves out:
 
 - characters and printable keys typed while a password field has the focus (a View with a password input type or
-  `PasswordTransformationMethod`, or a focused, editable Compose node with password semantics). These are recorded as
-  `{"redacted": true}`, and the manifest counts them;
+  `PasswordTransformationMethod`, or a focused, editable Compose node with password semantics), looked at for every
+  character. These are recorded as `{"redacted": true}`, and the manifest counts them;
+- pasted text (Cmd+V, `paste`), wherever it goes: `{"pasted": true, "redacted": true}` per character;
 - clipboard text (`clipboard set TEXT` is kept as its length);
 - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
 - database values, unless `db+values` is on.
@@ -133,7 +146,7 @@ logs. Treat a bundle from a signed-in session like the device itself.
 - Replay is not built yet (below).
 - Text that reaches the app without passing through input dispatch (an accessibility `setText`, autofill) is not in
   the input journal; its effects are in the checkpoints that follow.
-- `paste` is kept as a command, but the clipboard text it pastes is not, so a replay pastes something else.
+- Pasted characters are kept only as placeholders, so a replay pastes something else.
 - `net` cannot start over a layer that has been shaping or replaying since before (`network 3g` mid-session,
   `--network replay`): the answer says so. Launch with `--rec net` instead.
 - The rings live in this process. A crash saves them, but a `kill -9` loses them.

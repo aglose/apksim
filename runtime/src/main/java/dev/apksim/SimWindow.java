@@ -27,6 +27,12 @@ final class SimWindow {
   /** A one-finger gesture cancelled (UiAutomation's ACTION_CANCEL): the target gets ACTION_CANCEL, not a release. */
   static final int CANCEL = 14;
 
+  /**
+   * A CHAR event's y when the character comes from the clipboard (Cmd+V, `paste`), not the keyboard: the flight
+   * recorder leaves pasted text out. Dispatch reads only a CHAR's value.
+   */
+  static final float PASTED = 1;
+
   /** Raw input in device pixels. */
   record Event(int type, float x, float y, float value) {}
 
