@@ -342,6 +342,8 @@ def prepare(adb, plan, z, args, report, warn):
 
 
 state = {"display": False}
+IDENTITY = {"secure/android_id", "global/device_name", "secure/bluetooth_address", "secure/bluetooth_name",
+            "global/device_provisioned", "secure/user_setup_complete"}
 APP_DIRS = ("files", "databases", "shared_prefs", "cache", "code_cache", "no_backup")
 
 
@@ -368,11 +370,14 @@ def restore_data(adb, plan, z, report, warn):
         slot, dev = os.path.join(stage, "slot"), os.path.join(stage, "device")
         sp = os.path.join(dev, "settings.properties")
         if os.path.isfile(sp):
-            n = bad = 0
+            n = bad = skipped_id = 0
             for k, v in parse_properties(open(sp, encoding="utf-8").read()).items():
                 deleted = k.startswith("!")
                 ns, _, name = k.lstrip("!").partition("/")
                 if ns not in ("global", "secure", "system") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+                    continue
+                if "%s/%s" % (ns, name) in IDENTITY:
+                    skipped_id += 1  # the device's own identity is never overwritten by a recording's
                     continue
                 line = ("settings delete %s %s" % (ns, name)) if deleted else \
                     "settings put %s %s %s" % (ns, name, shlex.quote(v))
@@ -381,7 +386,7 @@ def restore_data(adb, plan, z, report, warn):
                     n += 1
                 else:
                     bad += 1
-            report.append("%d Settings values put back" % n)
+            report.append("%d Settings values put back" % n + (", %d device-identity ones left alone" % skipped_id if skipped_id else ""))
             if bad:
                 warn.append("%d Settings values could not be written (secure/global need the WRITE_SECURE_SETTINGS permission "
                             "or a rooted device)" % bad)
