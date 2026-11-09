@@ -113,9 +113,12 @@ final class Session {
     // A copy the session updates as the tab changes its settings (trackSetting): a kept session records what it ended with.
     this.options = new java.util.concurrent.ConcurrentHashMap<>(options);
     // The animation scale the app is launched with (the launcher takes the last --anim-scale), so a first toggle starts from it.
-    List<String> own0 = app.launch();
-    int as = own0.lastIndexOf("--anim-scale");
-    if (as >= 0 && as + 1 < own0.size() && own0.get(as + 1).matches("[0-9]+(\\.[0-9]+)?")) this.options.putIfAbsent("animscale", own0.get(as + 1));
+    List<String> launchArgs = app.launch();
+    int animScaleIndex = launchArgs.lastIndexOf("--anim-scale");
+    if (animScaleIndex >= 0 && animScaleIndex + 1 < launchArgs.size()) {
+      String launchScale = launchArgs.get(animScaleIndex + 1);
+      if (launchScale.matches("[0-9]+(\\.[0-9]+)?")) this.options.putIfAbsent("animscale", launchScale);
+    }
     this.ws = ws;
     ws.onPong = this::ponged;
     // The tab's device (checked by Serve), else the app's own default, else the phone.
@@ -879,7 +882,7 @@ final class Session {
     if (t.matches("locale [a-z]{2,3}(-[A-Z]{2})?")) return t;
     if (t.matches("fontscale (0\\.85|1|1\\.0|1\\.15|1\\.3|1\\.5|1\\.8|2|2\\.0)")) return t;
     // Not `audio off` / `video off`: those change the decoder list, so they are launch-only.
-    if (t.matches("audio (on|mute)|video (on|blank)")) return t;
+    if (t.matches("(?:audio (?:on|mute)|video (?:on|blank))")) return t;
     if (t.matches("animscale (0|0\\.5|1|1\\.5|2|5|10|toggle)")) return t;
     if (t.matches("open [a-zA-Z][a-zA-Z0-9+.-]*:[^\\s\\p{Cntrl}]{1,2000}")) return t;
     if (t.startsWith("type ")) {
@@ -901,7 +904,8 @@ final class Session {
     } else if (cmd.startsWith("fontscale ")) {
       options.put("fontscale", cmd.substring(10));
     } else if (cmd.startsWith("audio ") || cmd.startsWith("video ")) {
-      options.put(cmd.substring(0, 5), cmd.substring(6));
+      int sep = cmd.indexOf(' ');
+      options.put(cmd.substring(0, sep), cmd.substring(sep + 1));
     } else if (cmd.startsWith("animscale ")) {
       options.put("animscale", cmd.substring(10));
     }
