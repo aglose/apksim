@@ -123,7 +123,12 @@ final class NetEngine {
    * read an answer the engine is still decoding), so none is lost when the process ends right after it.
    */
   void flushAtExit() {
-    long until = System.currentTimeMillis() + 2000;
+    awaitInFlight(2000);
+    flushNow();
+  }
+
+  void awaitInFlight(long ms) {
+    long until = System.currentTimeMillis() + ms;
     synchronized (inFlight) {
       while (inFlight.get() > 0 && System.currentTimeMillis() < until) {
         try {
@@ -134,11 +139,10 @@ final class NetEngine {
         }
       }
     }
-    flushNow();
   }
 
   synchronized void flushNow() {
-    if (Net.mode != Net.Mode.RECORD) return;
+    if (Net.mode != Net.Mode.RECORD || Net.recording.path == null) return;  // null: the flight recorder's, in memory
     try {
       if (dirty || !Files.exists(Net.recording.path)) {
         dirty = false;
@@ -819,6 +823,8 @@ final class NetEngine {
 
     boolean recordExchange(Request req) throws IOException {
       long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
+      boolean keepAtStart = Net.recording.keep;
       long sent = t0;
       boolean expect = "100-continue".equalsIgnoreCase(req.header("Expect"));
       byte[] statusLine = null;
@@ -883,6 +889,9 @@ final class NetEngine {
       cout.flush();
 
       Recording.Entry e = new Recording.Entry();
+      e.wallMs = startWall;
+      e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+      e.keepAtStart = keepAtStart;
       e.method = req.method;
       e.url = req.url;
       e.httpVersion = req.version;

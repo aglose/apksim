@@ -89,6 +89,7 @@ final class HwRenderer {
       if (next != null) {
         SimWindow.present(next.getPlanes()[0].getBuffer());
         if (FrameStream.active()) FrameStream.frame(next.getPlanes()[0].getBuffer(), next.getWidth(), next.getHeight());
+        if (FlightRecorder.screen) FlightRecorder.frame(next.getPlanes()[0].getBuffer(), next.getWidth(), next.getHeight());
         synchronized (frameLock) {
           if (current != null) current.close();
           current = next;

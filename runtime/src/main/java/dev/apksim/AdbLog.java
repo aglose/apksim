@@ -18,8 +18,8 @@ import org.robolectric.shadows.ShadowLog;
  * watcher puts the tee back in front of whatever it set.
  */
 final class AdbLog {
-  /** One log line: level V D I W E F, its tag, and the line in logcat's threadtime format. */
-  record Line(char level, String tag, String text) {}
+  /** One log line: level V D I W E F, its tag, the line in logcat's threadtime format, and when (epoch ms). */
+  record Line(char level, String tag, String text, long wallMs) {}
 
   private static final int CAPACITY = 20_000;
   private static final ArrayDeque<Line> ring = new ArrayDeque<>();
@@ -67,6 +67,11 @@ final class AdbLog {
   /** Puts the tee back in front of ShadowLog.stream at once, if the log is kept (a crash about to be logged). */
   static synchronized void reattach() {
     if (tee != null) intercept();
+  }
+
+  /** Whether the log is kept (install has run). */
+  static synchronized boolean installed() {
+    return tee != null;
   }
 
   /** Whether what the app logs reaches this process's stderr (`logcat on`, APKSIM_LOGCAT), directly or past the tee. */
@@ -173,12 +178,13 @@ final class AdbLog {
         msg = s;
       }
       String stamp;
+      long wall = System.currentTimeMillis();
       synchronized (time) {
         time.setTimeZone(java.util.TimeZone.getDefault());  // the device's zone, as a device's logcat (--timezone)
-        stamp = time.format(new Date());
+        stamp = time.format(new Date(wall));
       }
       long tid = Thread.currentThread().getId();
-      Line l = new Line(level, tag, String.format("%s %5d %5d %c %-8s: %s", stamp, PID, tid, level, tag, msg));
+      Line l = new Line(level, tag, String.format("%s %5d %5d %c %-8s: %s", stamp, PID, tid, level, tag, msg), wall);
       last.set(l);
       add(l);
     }

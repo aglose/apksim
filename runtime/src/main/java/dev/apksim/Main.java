@@ -25,6 +25,7 @@ public final class Main {
       })));
     }
     dev.apksim.net.Net.configure();  // --network options: before any app code makes a connection
+    dev.apksim.rec.Rec.launch();  // --rec: its net and db channels are on before the app's first connection or query
     String zone = System.getProperty("apksim.timezone");
     if (zone != null) TimeZones.parse(zone);  // an unknown zone stops the launch here (TimeZones applies it)
     // A bad --device stops the launch here, one line and exit 2, before any port is opened or announced.

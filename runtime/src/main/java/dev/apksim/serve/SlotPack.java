@@ -30,7 +30,7 @@ import java.util.zip.ZipOutputStream;
  * Unpacking takes what a site sent: only regular files under those two roots, no absolute or `..` paths, no links, at
  * most {@link #MAX_FILES} files and {@link #MAX_BYTES} in all, into folders made fresh for it.
  */
-final class SlotPack {
+public final class SlotPack {
   static final long MAX_BYTES = 1L << 30;
   static final int MAX_FILES = 50_000;
   /** Entries listed in all, moved or not (links, pipes): what a walk may look at before it gives up. */
@@ -76,7 +76,7 @@ final class SlotPack {
     }
   }
 
-  static void pack(Path state, Path slot, String pkg, OutputStream out) throws IOException {
+  public static void pack(Path state, Path slot, String pkg, OutputStream out) throws IOException {
     pack(state, slot, pkg, out, new Progress());
   }
 

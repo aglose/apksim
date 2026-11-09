@@ -91,12 +91,15 @@ public final class Net {
     String spec = System.getProperty("apksim.network");
     String profile = System.getProperty("apksim.networkProfile");
     String hosts = System.getProperty("apksim.networkHost");
+    // First: the flight recorder's in-memory capture (--rec net) redacts them too, with the layer otherwise off.
+    for (String r : list(System.getProperty("apksim.networkRedact"))) {
+      if (r.startsWith("-")) redact.remove(r.substring(1));
+      else redact.add(r);
+    }
+    String t = System.getProperty("apksim.networkTrust");  // and trusts this certificate when it starts the engine
+    if (t != null) trust = Path.of(t);
     if (spec == null && profile == null && hosts == null) return;
     try {
-      for (String r : list(System.getProperty("apksim.networkRedact"))) {
-        if (r.startsWith("-")) redact.remove(r.substring(1));
-        else redact.add(r);
-      }
       for (String h : list(hosts)) {
         int eq = h.indexOf('=');
         if (eq < 0) throw new IllegalArgumentException("--network-host takes HOST=ADDR[:PORT], not " + h);
@@ -109,8 +112,6 @@ public final class Net {
         if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.substring(1, addr.length() - 1);
         hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(addr, hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
       }
-      String t = System.getProperty("apksim.networkTrust");
-      if (t != null) trust = Path.of(t);
       failUnmatched = !"respond".equals(System.getProperty("apksim.networkUnmatched", "fail"));
       recordedTiming = "recorded".equals(System.getProperty("apksim.networkReplayTiming", "none"));
       if (profile != null) launchConditions = Conditions.parse(profile);
@@ -147,6 +148,86 @@ public final class Net {
     }
   }
 
+  /**
+   * The flight recorder's net channel (dev.apksim.FlightRecorder, `rec on net`): every exchange kept in memory, as
+   * record mode would write it, from now on. With the network layer off it starts it in record mode with no file;
+   * connections made before then close, and the app reconnects through the engine, as after a change of network. A
+   * launch recording to a file (--network record) is captured as it is. Shaping (`network 3g`...) and replay cannot
+   * change mode underneath their connections: the answer says so.
+   */
+  public static synchronized String capture(boolean on) {
+    return capture(on, false);
+  }
+
+  /**
+   * `atLaunch`: from Main, right after configure() and before any app code: a layer shaping or mapping hosts since
+   * launch (--network-profile, --network-host) has no connections yet, so it can change to recording in memory.
+   */
+  public static synchronized String capture(boolean on, boolean atLaunch) {
+    if (atLaunch && on && active && mode == Mode.SHAPE) {
+      mode = Mode.RECORD;
+      recording = new Recording(null, new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact));
+      log("network " + describe());
+      return "net: capturing";
+    }
+    if (!active) {
+      if (!on) return "net: off";
+      Recording.Match match = new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact);
+      mode = Mode.RECORD;
+      recording = new Recording(null, match);
+      engine = new NetEngine();
+      try {
+        engine.start();
+      } catch (IOException e) {
+        engine = null;
+        mode = Mode.SHAPE;
+        recording = null;
+        return "error: net: the network layer did not start: " + e;
+      }
+      active = true;
+      int n = closeDirect();
+      log("network " + describe() + (n > 0 ? "; " + n + " connection" + (n == 1 ? "" : "s") + " made before closed" : ""));
+      return "net: capturing";
+    }
+    if (mode != Mode.RECORD) {
+      return on ? "error: net: the network layer is " + (mode == Mode.REPLAY ? "replaying" : "shaping (network conditions)")
+          + " since before; capturing needs it off or recording (launch with --rec net)" : "net: off";
+    }
+    if (recording.path != null) {
+      // A --network record file is the user's own recording: it goes on whatever the flight recorder does, which
+      // reads it (only the exchanges made while its channel was on: dev.apksim.rec.Rec.NET).
+      return on ? "net: capturing (from the --network record file)" : "net: off (the --network record file goes on)";
+    }
+    recording.keep = on;
+    return on ? "net: capturing" : "net: paused";
+  }
+
+  /**
+   * The exchanges captured whose start `keep` accepts (epoch ms), taken now, as a HAR file built when the result is
+   * called (on the flight recorder's save thread: a capture can hold 64 MB of bodies); null when nothing is captured.
+   */
+  public static synchronized java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
+    if (!active || mode != Mode.RECORD) return null;
+    java.util.function.Supplier<String> har = recording.harLater(keep);
+    return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  /** Waits up to `ms` for exchanges whose answer the app may already have but the engine has not recorded yet. */
+  public static void drain(long ms) {
+    NetEngine e = engine;
+    if (e != null) e.awaitInFlight(ms);
+  }
+
+  /** `rec clear`: forgets what the flight recorder's in-memory capture holds (a --network record file keeps its own). */
+  public static synchronized void clearCaptured() {
+    if (active && mode == Mode.RECORD && recording.path == null) recording.clearCaptured();
+  }
+
+  /** How many exchanges are held now (captured or recorded); -1 with no recording. */
+  public static synchronized int capturedCount() {
+    return active && mode == Mode.RECORD ? recording.size() : -1;
+  }
+
   /** A comma-separated list, lowercased: header names, hosts, match fields. */
   private static Set<String> list(String s) {
     Set<String> out = new java.util.LinkedHashSet<>();
@@ -167,7 +248,8 @@ public final class Net {
   static String describe() {
     StringBuilder b = new StringBuilder();
     b.append(switch (mode) {
-      case RECORD -> "recording to " + recording.path;
+      case RECORD -> recording.path == null ? "capturing for the flight recorder (in memory" + (recording.keep ? "" : ", paused") + ")"
+          : "recording to " + recording.path;
       case REPLAY -> "replaying " + recording.path + " (" + recording.entries.size() + " entries)";
       case SHAPE -> "live";
     });
@@ -292,7 +374,7 @@ public final class Net {
         return r;
       }
       case "save" -> {
-        if (mode != Mode.RECORD) return "error: not recording";
+        if (mode != Mode.RECORD || recording.path == null) return "error: not recording to a file";
         engine.flushNow();
         return "saved " + recording.entries.size() + " entries to " + recording.path;
       }
@@ -326,6 +408,7 @@ public final class Net {
     if (!active) {
       s.connect(a, timeout);
       directly(s, isa);  // for a `network offline` later
+      startedMeanwhile(s);
       return;
     }
     Conditions c = conditions;
@@ -388,7 +471,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
-    if (!active) return tracked(f.createSocket(host, port));
+    if (!active) return startedMeanwhile(tracked(f.createSocket(host, port)));
     return createSocket(f, new InetSocketAddress(host, port), host);
   }
 
@@ -418,6 +501,25 @@ public final class Net {
   }
 
   /** A socket connected without the engine: remembered, so going offline closes it. */
+  /**
+   * A socket connected directly because the layer was off when the connect began. If it came on meanwhile (`rec on
+   * net`), its closeDirect may have looked at the sockets before this one was registered: closed here instead, so
+   * nothing goes on past the engine. The app sees a connection that failed as the network changed, and retries.
+   * `active` is set before closeDirect runs, and this socket is registered before `active` is read, so one of the two
+   * closes it.
+   */
+  private static Socket startedMeanwhile(Socket s) throws IOException {
+    if (!active) return s;
+    // What the layer leaves alone stays: loopback and bypassed addresses (as tracked() and closeDirect do).
+    if (!(s.getRemoteSocketAddress() instanceof InetSocketAddress a) || bypass(a) || a.getAddress() == null
+        || a.getAddress().isLoopbackAddress() || a.getAddress().isAnyLocalAddress()) {
+      return s;
+    }
+    direct.remove(s);
+    s.close();
+    throw new ConnectException("connection reset: the network layer started while connecting");
+  }
+
   private static Socket tracked(Socket s) throws IOException {
     if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) directly(s, a);
     return s;
@@ -437,7 +539,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
-    if (!active) return tracked(f.createSocket(address, port));
+    if (!active) return startedMeanwhile(tracked(f.createSocket(address, port)));
     // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
     InetSocketAddress dest = new InetSocketAddress(address, port);
     return createSocket(f, dest, dest.getHostString());

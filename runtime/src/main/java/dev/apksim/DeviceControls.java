@@ -76,7 +76,7 @@ final class DeviceControls {
     "location bike", "location drive", "location none", "biometrics toggle", "biometrics match", "biometrics nomatch",
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
-    "bars status toggle", "bars nav toggle",
+    "bars status toggle", "bars nav toggle", "rec save",
   };
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
