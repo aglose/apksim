@@ -51,6 +51,10 @@ class Plan:
     def __init__(self, z, pace=1.0, path_steps=1):
         self.man = json.loads(z.read("manifest.json"))
         self.pkg = self.man["package"]
+        if not isinstance(self.pkg, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", self.pkg):
+            raise SystemExit("replay-adb: the manifest's package name is not a valid one")
+        self.rot = 0
+        self.plain = []
         self.pace = pace
         self.notes = ["network: live (a device cannot be given network.har's answers)"]
         self.skipped = []
@@ -74,6 +78,8 @@ class Plan:
         for _ in range(n):
             ln = struct.unpack(">H", b.read(2))[0]
             name = b.read(ln).decode("utf-8", "replace")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$.]*", name):
+                raise SystemExit("replay-adb: an activity name in state.bin is not a valid class name")
             sizes = []
             for _ in range(2):
                 k = struct.unpack(">i", b.read(4))[0]
@@ -91,7 +97,8 @@ class Plan:
         steps = []
         if not events:
             return steps
-        t0 = events[0]["t"]
+        t0 = (self.cp or {}).get("uptime", events[0]["t"])
+        t0 = min(t0, events[0]["t"])
         i = 0
         text = None  # [offset, chars]
 
@@ -126,7 +133,10 @@ class Plan:
                         text = [off, [], off]
                     text[1].append("x")
                     continue
-                steps.append((off, "key", int(e["v"])))
+                if e.get("x"):
+                    self.skip("key %d with modifiers (adb input cannot send them)" % int(e["v"]))
+                else:
+                    steps.append((off, "key", int(e["v"])))
             elif ev == "back":
                 flush()
                 steps.append((off, "key", 4))
@@ -172,10 +182,18 @@ class Plan:
     def command(self, steps, off, cmd):
         name, args = cmd[0], cmd[1:]
         if name == "rotate" and args:
-            rot = {"portrait": 0, "left": 1, "landscape": 1, "right": 3}.get(args[0])
-            if rot is None:
+            # DeviceControls: right is one quarter turn up, left three; portrait/landscape are absolute.
+            if args[0] == "right":
+                self.rot = (self.rot + 1) % 4
+            elif args[0] == "left":
+                self.rot = (self.rot + 3) % 4
+            elif args[0] == "portrait":
+                self.rot = 0
+            elif args[0] == "landscape":
+                self.rot = 1 if self.rot % 2 == 0 else self.rot
+            else:
                 return self.skip("rotate " + args[0])
-            steps.append((off, "shell", "settings put system accelerometer_rotation 0; settings put system user_rotation %d" % rot))
+            steps.append((off, "shell", "settings put system accelerometer_rotation 0; settings put system user_rotation %d" % self.rot))
         elif name == "appearance" and args and args[0] in ("dark", "light"):
             steps.append((off, "shell", "cmd uimode night " + ("yes" if args[0] == "dark" else "no")))
         elif name == "fontscale" and args and re.fullmatch(r"[0-3](\.\d+)?", args[0]):
@@ -233,13 +251,20 @@ class Adb:
     def sh(self, line, **kw):
         return self.run("shell", line, **kw)
 
+    def try_sh(self, line):
+        """Runs a shell line; (ok, output). A nonzero exit or an error message in the output is a failure."""
+        p = subprocess.run(self.base + ["shell", line], capture_output=True, timeout=300)
+        out = (p.stdout + p.stderr).decode("utf-8", "replace")
+        bad = re.search(r"(?i)\b(error|exception|permission denied|not found|unknown command|inaccessible)\b", out)
+        return p.returncode == 0 and not bad, out.strip()
+
 
 def fail(msg):
     print("replay-adb: " + msg, file=sys.stderr)
     sys.exit(1)
 
 
-def prepare(adb, plan, z, args, report):
+def prepare(adb, plan, z, args, report, warn):
     pkg = plan.pkg
     want = plan.man.get("apkSha256")
     if args.apk:
@@ -269,103 +294,150 @@ def prepare(adb, plan, z, args, report):
     if not plan.has_data:
         report.append("no checkpoint data in the bundle: the app starts with the data it has")
     else:
-        restore_data(adb, plan, z, report)
-    # The checkpoint's display
+        restore_data(adb, plan, z, report, warn)
     dev = plan.device
     w, h, dens = dev.get("width"), dev.get("height"), dev.get("density")
+    if dev.get("fontScale"):
+        ok, out = adb.try_sh("settings put system font_scale %s" % dev["fontScale"])
+        (report if ok else warn).append("font scale %s %s" % (dev["fontScale"], "set" if ok else "NOT set: " + out))
     scale = (1.0, 1.0)
     if w and h and not args.scale_coordinates:
+        state["display"] = True
         adb.sh("wm size %dx%d" % (w, h))
         if dens:
             adb.sh("wm density %d" % round(dens * 160))
         report.append("display set to %dx%d at %d dpi (reset at the end)" % (w, h, round((dens or 2) * 160)))
     elif w and h:
-        m = re.search(r"(?:Override|Physical) size: (\d+)x(\d+)", adb.sh("wm size"))
+        out = adb.sh("wm size")
+        # With an override, `wm size` prints the physical size first and the override second: the override is in effect.
+        m = re.search(r"Override size: (\d+)x(\d+)", out) or re.search(r"Physical size: (\d+)x(\d+)", out)
         if m:
             scale = (int(m.group(1)) / w, int(m.group(2)) / h)
             report.append("coordinates scaled by %.3f x %.3f to the device's %sx%s" % (scale[0], scale[1], m.group(1), m.group(2)))
     return scale
 
 
-def restore_data(adb, plan, z, report):
+state = {"display": False}
+APP_DIRS = ("files", "databases", "shared_prefs", "cache", "code_cache", "no_backup")
+
+
+def restore_data(adb, plan, z, report, warn):
     pkg = plan.pkg
     zin = zipfile.ZipFile(io.BytesIO(z.read("checkpoint/data.zip")))
-    if zin.namelist().count("package") and zin.read("package").decode().strip() != pkg:
+    if "package" in zin.namelist() and zin.read("package").decode().strip() != pkg:
         fail("data.zip is for another package")
-    stage = tempfile.mkdtemp(prefix="replay-adb-")
-    count = 0
-    for n in zin.namelist():
-        if n.endswith("/") or n == "package":
-            continue
-        if ".." in n.split("/") or n.startswith("/") or n.split("/")[0] not in ("slot", "device"):
-            continue
-        dest = os.path.join(stage, n)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(zin.read(n))
-        count += 1
-    slot, dev = os.path.join(stage, "slot"), os.path.join(stage, "device")
-    # Settings values first: they are not files on a device.
-    sp = os.path.join(dev, "settings.properties")
-    if os.path.isfile(sp):
-        n = 0
-        for k, v in parse_properties(open(sp, encoding="utf-8").read()).items():
-            deleted = k.startswith("!")
-            ns, _, name = k.lstrip("!").partition("/")
-            if ns not in ("global", "secure", "system") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+    with tempfile.TemporaryDirectory(prefix="replay-adb-") as stage:
+        count = 0
+        for n in zin.namelist():
+            if n.endswith("/") or n == "package":
                 continue
-            if deleted:
-                adb.sh("settings delete %s %s" % (ns, name), check=False)
+            if ".." in n.split("/") or n.startswith("/") or n.split("/")[0] not in ("slot", "device"):
+                continue
+            dest = os.path.join(stage, n)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(zin.read(n))
+            count += 1
+        slot, dev = os.path.join(stage, "slot"), os.path.join(stage, "device")
+        sp = os.path.join(dev, "settings.properties")
+        if os.path.isfile(sp):
+            n = bad = 0
+            for k, v in parse_properties(open(sp, encoding="utf-8").read()).items():
+                deleted = k.startswith("!")
+                ns, _, name = k.lstrip("!").partition("/")
+                if ns not in ("global", "secure", "system") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+                    continue
+                line = ("settings delete %s %s" % (ns, name)) if deleted else \
+                    "settings put %s %s %s" % (ns, name, shlex.quote(v))
+                ok, out = adb.try_sh(line)
+                if ok:
+                    n += 1
+                else:
+                    bad += 1
+            report.append("%d Settings values put back" % n)
+            if bad:
+                warn.append("%d Settings values could not be written (secure/global need the WRITE_SECURE_SETTINGS permission "
+                            "or a rooted device)" % bad)
+        if os.path.isdir(os.path.join(dev, "sdcard")):
+            out = adb.run("push", os.path.join(dev, "sdcard") + "/.", "/sdcard/", check=False)
+            if re.search(r"(?i)error|denied|failed", out):
+                warn.append("/sdcard was NOT fully put back: " + out.strip().splitlines()[-1])
             else:
-                adb.sh("settings put %s %s %s" % (ns, name, shlex.quote(v)), check=False)
-            n += 1
-        report.append("%d Settings values put back" % n)
-    if os.path.isdir(os.path.join(dev, "sdcard")):
-        adb.run("push", os.path.join(dev, "sdcard") + "/.", "/sdcard/", check=False)
-        report.append("/sdcard put back")
-    if not os.path.isdir(slot):
-        return
-    data = "/data/data/" + pkg
-    # Directly when adb may write there (an emulator with adb root, apksim itself), else through run-as.
-    probe = adb.run("push", os.path.join(stage, "slot", "."), data + "/", check=False)
-    if "error" not in probe.lower() and "denied" not in probe.lower() and "failed" not in probe.lower():
-        report.append("app data (%d files) pushed straight into %s" % (count, data))
-        return
-    adb.sh("rm -rf %s; mkdir -p %s" % (REMOTE, REMOTE))
-    adb.run("push", slot + "/.", REMOTE + "/")
-    adb.sh("chmod -R a+rX %s" % REMOTE)
-    out = adb.sh("run-as %s sh -c %s" % (pkg, shlex.quote(
-        "rm -rf ./files ./databases ./shared_prefs ./cache; cp -R %s/. ." % REMOTE)), check=False)
-    adb.sh("rm -rf " + REMOTE, check=False)
-    if out.strip():
-        fail("could not put the app's data back (the app must be debuggable for run-as, or adb root): " + out.strip())
-    report.append("app data (%d files) copied in through run-as" % count)
+                report.append("/sdcard put back")
+        data = "/data/data/" + pkg
+        # Directly when adb may write there (an emulator with adb root, apksim itself), else through run-as. The app's
+        # own folders are emptied first, so state the checkpoint does not have (an empty snapshot included) is gone.
+        ok, _ = adb.try_sh("rm -rf %s && mkdir -p %s" % (" ".join("%s/%s" % (data, d) for d in APP_DIRS), data))
+        if ok and os.path.isdir(slot):
+            probe = adb.run("push", slot + "/.", data + "/", check=False)
+            if not re.search(r"(?i)error|denied|failed", probe):
+                # Pushed as adb's user (root on such a device): give it to the app's uid and relabel it.
+                adb.try_sh("u=$(stat -c %%u %s) && chown -R $u:$u %s && restorecon -R %s" % (data, data, data))
+                report.append("app data (%d files) pushed straight into %s and handed to the app's uid" % (count, data))
+                return
+        elif ok:
+            report.append("the checkpoint's app data is empty: the app's folders were emptied")
+            return
+        adb.sh("rm -rf %s; mkdir -p %s" % (REMOTE, REMOTE))
+        adb.run("push", slot + "/.", REMOTE + "/")
+        adb.sh("chmod -R a+rX %s" % REMOTE)
+        clear = "; ".join("rm -rf ./%s" % d for d in APP_DIRS)
+        ok, out = adb.try_sh("run-as %s sh -c %s" % (pkg, shlex.quote(clear + "; cp -R %s/. ." % REMOTE)))
+        adb.sh("rm -rf " + REMOTE, check=False)
+        if not ok:
+            fail("could not put the app's data back (the app must be debuggable for run-as, or adb root): " + out)
+        report.append("app data (%d files) copied in through run-as" % count)
 
 
-def play(adb, plan, scale, args):
+def play(adb, plan, scale, args, warn):
     t0 = time.monotonic()
-    done = skipped = 0
+    done = 0
     for off, kind, a in plan.steps:
         due = t0 + (off / 1000.0) / args.pace
         wait = due - time.monotonic()
         if wait > 0:
             time.sleep(wait)
-        if kind == "tap":
-            line = "input tap %d %d" % (a[0] * scale[0], a[1] * scale[1])
-        elif kind == "swipe":
-            dur = max(1, int(a[4] / args.pace))
-            line = "input swipe %d %d %d %d %d" % (a[0] * scale[0], a[1] * scale[1], a[2] * scale[0], a[3] * scale[1], dur)
-        elif kind == "key":
-            line = "input keyevent %d" % a
-        elif kind == "text":
-            line = "input text " + shlex.quote(re.sub(r"[^A-Za-z0-9._,@-]", lambda m: "%s" if m.group(0) == " " else "", a))
-            if a.strip() == "":
-                continue
+        line = step_line(kind, a, scale, args.pace)
+        if line is None:
+            continue
+        ok, out = adb.try_sh(line)
+        if ok:
+            done += 1
         else:
-            line = a
-        adb.sh(line, check=False)
-        done += 1
+            warn.append("step at %d ms failed (%s): %s" % (off, line.split(";")[0][:60], out[:120]))
     return done
+
+
+def step_line(kind, a, scale, pace):
+    if kind == "tap":
+        return "input tap %d %d" % (a[0] * scale[0], a[1] * scale[1])
+    if kind == "swipe":
+        return "input swipe %d %d %d %d %d" % (a[0] * scale[0], a[1] * scale[1], a[2] * scale[0], a[3] * scale[1],
+                                               max(1, int(a[4] / pace)))
+    if kind == "key":
+        return "input keyevent %d" % a
+    if kind == "text":
+        t = re.sub(r"[^A-Za-z0-9._,@ -]", "", a).replace(" ", "%s")
+        return ("input text " + shlex.quote(t)) if t else None
+    return a
+
+
+def describe(plan, args):
+    """The plan as lines, for --dry-run: what would be sent to the device, in order."""
+    dev = plan.device
+    out = []
+    if plan.has_data:
+        out.append("restore the checkpoint's app data, /sdcard and Settings values for " + plan.pkg)
+    if dev.get("fontScale"):
+        out.append("settings put system font_scale %s" % dev["fontScale"])
+    if dev.get("width") and not args.scale_coordinates:
+        out.append("wm size %dx%d; wm density %d" % (dev["width"], dev["height"], round((dev.get("density") or 2) * 160)))
+    if plan.stack:
+        out.append("am start -n %s" % shlex.quote("%s/%s" % (plan.pkg, plan.stack[-1]["class"])))
+    for off, kind, a in plan.steps:
+        line = step_line(kind, a, (1.0, 1.0), args.pace)
+        out.append("+%6d ms  %s" % (off / args.pace, line))
+    return out
 
 
 def main():
@@ -389,69 +461,78 @@ def main():
     plan = Plan(z, args.pace, args.path_steps)
     if plan.man.get("format", "").split("/")[0] != "apksim-flight-recording":
         fail("not a flight recording")
-    report = []
+    report, warn, ops = [], [], []
     if not plan.cp:
         report.append("no checkpoint in the bundle: the replay starts from whatever state the app is in")
     if plan.stack:
-        top = plan.stack[-1]
-        if top["intent"] != 0 or any(a["state"] > 0 for a in plan.stack):
+        if plan.stack[-1]["intent"] != 0 or any(a["state"] > 0 for a in plan.stack):
             plan.notes.append("the intent's extras and the saved instance state are not restored (parcels this script "
                               "does not read); the top activity is started by its class")
+    played = 0
     if args.dry_run:
         report.append("dry run: nothing was sent to the device")
-        played = 0
+        ops = describe(plan, args)
     else:
         adb = Adb(args.serial)
         adb.run("get-state")
-        scale = prepare(adb, plan, z, args, report)
-        if args.logcat:
-            adb.run("logcat", "-c", check=False)
-        cap = False
-        if args.capture:
-            subprocess.Popen(adb.base + ["shell", "screenrecord --time-limit 180 /sdcard/apksim-replay.mp4"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cap = True
-            time.sleep(1)
-        top = plan.stack[-1]["class"] if plan.stack else None
-        if top:
-            out = adb.sh("am start -n %s/%s" % (plan.pkg, top))
-            if "Error" in out:
-                report.append("could not start %s: %s" % (top, out.strip().splitlines()[-1]))
-        else:
-            adb.sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % plan.pkg, check=False)
-        time.sleep(2)
+        cap = None
         try:
-            played = play(adb, plan, scale, args)
-        finally:
-            if not args.scale_coordinates and plan.device.get("width"):
-                adb.sh("wm size reset; wm density reset", check=False)
-        if cap:
-            time.sleep(1)
-            adb.sh("pkill -INT screenrecord", check=False)
+            scale = prepare(adb, plan, z, args, report, warn)
+            if args.logcat:
+                adb.run("logcat", "-c", check=False)
+            if args.capture:
+                cap = subprocess.Popen(adb.base + ["shell", "screenrecord --time-limit 180 /sdcard/apksim-replay.mp4"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
+            if plan.stack:
+                ok, out = adb.try_sh("am start -n %s" % shlex.quote("%s/%s" % (plan.pkg, plan.stack[-1]["class"])))
+                if not ok:
+                    warn.append("could not start %s: %s" % (plan.stack[-1]["class"], out.splitlines()[-1] if out else ""))
+            else:
+                adb.sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % plan.pkg, check=False)
             time.sleep(2)
-            adb.run("pull", "/sdcard/apksim-replay.mp4", args.capture, check=False)
-            adb.sh("rm /sdcard/apksim-replay.mp4", check=False)
-            report.append("device screen recorded to " + args.capture)
-        if args.logcat:
-            with open(args.logcat, "w") as f:
-                f.write(adb.run("logcat", "-d", check=False))
-            report.append("device log written to " + args.logcat)
+            played = play(adb, plan, scale, args, warn)
+        finally:
+            if state["display"]:
+                adb.sh("wm size reset; wm density reset", check=False)
+            if cap is not None:
+                time.sleep(1)
+                adb.sh("pkill -INT screenrecord", check=False)
+                time.sleep(2)
+                if cap.poll() is None:
+                    cap.terminate()
+                adb.run("pull", "/sdcard/apksim-replay.mp4", args.capture, check=False)
+                adb.sh("rm /sdcard/apksim-replay.mp4", check=False)
+                report.append("device screen recorded to " + args.capture)
+            if args.logcat:
+                with open(args.logcat, "w") as f:
+                    f.write(adb.run("logcat", "-d", check=False))
+                report.append("device log written to " + args.logcat)
     result = {
         "package": plan.pkg,
         "bundle": os.path.basename(args.bundle),
         "steps": len(plan.steps),
         "played": played,
         "skipped": sorted(set(plan.skipped)),
+        "failed": warn,
         "notes": report + sorted(set(plan.notes)),
     }
+    if args.dry_run:
+        result["plan"] = ops
     if args.json:
         print(json.dumps(result, indent=1))
     else:
         print("replay of %s: %d steps%s" % (result["bundle"], result["steps"], "" if args.dry_run else ", %d played" % played))
         for n in result["notes"]:
             print("  " + n)
+        for n in warn:
+            print("  PROBLEM: " + n)
         if result["skipped"]:
             print("  not replayed: " + "; ".join(result["skipped"]))
+        for l in ops:
+            print("    " + l)
+    if warn:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
