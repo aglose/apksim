@@ -168,7 +168,12 @@ final class FlightRecorder {
       case "clear" -> {
         long now = System.currentTimeMillis();
         INPUT.clear();
-        SCREEN.clear();
+        synchronized (FRAME_LOCK) {
+          screenGen++;  // a frame being encoded from before the clear is not added after it
+          pendingWall = 0;
+          SCREEN.clear();
+        }
+        if (screen) screenBaseline();
         Rec.DB.clear();
         LOGCAT.clear(now);  // AdbLog's ring stays for adb; a save just takes nothing from before now
         Rec.NET.clear(now);
@@ -227,7 +232,10 @@ final class FlightRecorder {
         Rec.db = on || Rec.db;
         Rec.dbValues = on;
       }
-      case "screen" -> screen = on;
+      case "screen" -> {
+        screen = on;
+        if (on) screenBaseline();
+      }
       default -> {
       }
     }
@@ -325,7 +333,8 @@ final class FlightRecorder {
         || (code >= android.view.KeyEvent.KEYCODE_A && code <= android.view.KeyEvent.KEYCODE_Z)
         || (code >= android.view.KeyEvent.KEYCODE_COMMA && code <= android.view.KeyEvent.KEYCODE_AT && code != android.view.KeyEvent.KEYCODE_TAB
             && code != android.view.KeyEvent.KEYCODE_ENTER && code != android.view.KeyEvent.KEYCODE_DEL)
-        || code == android.view.KeyEvent.KEYCODE_PLUS
+        || code == android.view.KeyEvent.KEYCODE_PLUS || code == android.view.KeyEvent.KEYCODE_STAR
+        || code == android.view.KeyEvent.KEYCODE_POUND || code == android.view.KeyEvent.KEYCODE_SPACE
         || (code >= android.view.KeyEvent.KEYCODE_NUMPAD_0 && code <= android.view.KeyEvent.KEYCODE_NUMPAD_RIGHT_PAREN);
   }
 
@@ -353,7 +362,9 @@ final class FlightRecorder {
     m.put("t", SystemClock.uptimeMillis());
     m.put("w", wall);
     m.put("cmd", args);
-    INPUT.add(wall, 64 + 8L * args.size(), m);
+    long size = 64;
+    for (String x : args) size += 16 + 2L * x.length();  // a push payload or an open URL can be long
+    INPUT.add(wall, size, m);
     inputSinceCheckpoint++;
   }
 
@@ -364,10 +375,10 @@ final class FlightRecorder {
   private static boolean passwordFocused() {
     boolean pw = false;
     try {
-      List<View> roots = Host.rootViews();
-      for (int i = roots.size() - 1; i >= 0; i--) {
-        View f = roots.get(i).findFocus();
-        if (f == null) continue;
+      // The window the characters go to (Host.sendChar's), not merely the topmost one.
+      View root = Host.keyTarget(Host.rootViews());
+      View f = root == null ? null : root.findFocus();
+      if (f != null) {
         if (f instanceof TextView tv) {
           pw = password(tv);
         } else if (f.getAccessibilityNodeProvider() != null) {
@@ -385,7 +396,6 @@ final class FlightRecorder {
             pw = found[0];
           }
         }
-        break;
       }
     } catch (RuntimeException e) {
       pw = true;  // could not tell: leave it out
@@ -410,8 +420,24 @@ final class FlightRecorder {
   private static int pendingW;
   private static int pendingH;
   private static long pendingWall;
-  private static long lastFrameNanos;
+  private static volatile long lastFrameNanos;
   private static Thread encoder;
+  /** Moves on at `rec clear`: a frame taken before it is not kept after it. Guarded by FRAME_LOCK. */
+  private static int screenGen;
+  private static int pendingGen;
+
+  /**
+   * After `rec on screen` or `rec clear` (main thread): a still screen presents no frame, so the windows are drawn
+   * again and the next one presented is kept whatever the frame rate limit says.
+   */
+  private static void screenBaseline() {
+    lastFrameNanos = 0;
+    try {
+      for (View r : Host.rootViews()) r.invalidate();
+    } catch (RuntimeException e) {
+      // the next change draws one anyway
+    }
+  }
 
   /** From the raster thread: the frame just presented. Copied at most screenFps times a second. */
   static void frame(ByteBuffer pixels, int w, int h) {
@@ -424,6 +450,7 @@ final class FlightRecorder {
       pendingW = w;
       pendingH = h;
       pendingWall = System.currentTimeMillis();
+      pendingGen = screenGen;
       if (encoder == null) {
         encoder = new Thread(FlightRecorder::encodeLoop, "apksim-rec-screen");
         encoder.setDaemon(true);
@@ -444,6 +471,7 @@ final class FlightRecorder {
       int w;
       int h;
       long wall;
+      int gen;
       synchronized (FRAME_LOCK) {
         while (pendingWall == 0) {
           try {
@@ -457,6 +485,7 @@ final class FlightRecorder {
         w = pendingW;
         h = pendingH;
         wall = pendingWall;
+        gen = pendingGen;
         pendingWall = 0;
       }
       try {
@@ -477,7 +506,9 @@ final class FlightRecorder {
         jpeg.write(ByteBuffer.allocate(8).putInt(sw).putInt(sh).array());
         scaled.compress(Bitmap.CompressFormat.JPEG, SCREEN_QUALITY, jpeg);
         byte[] f = jpeg.toByteArray();
-        SCREEN.add(wall, f.length, f);
+        synchronized (FRAME_LOCK) {
+          if (gen == screenGen) SCREEN.add(wall, f.length, f);
+        }
       } catch (RuntimeException | IOException e) {
         System.err.println("[apksim] rec: screen frame not kept: " + e);
       }
@@ -618,15 +649,17 @@ final class FlightRecorder {
       if (data != null) {
         // The databases are held in a read transaction while the folder is cloned, so each is cloned as of one
         // commit even with a worker writing or checkpointing its WAL meanwhile (see holdDatabases).
-        List<android.database.sqlite.SQLiteDatabase> held = holdDatabases(data, notes);
+        SlotDevice.flush();  // Settings values changed in the last 250 ms (or by the lifecycle above) are on disk
+        List<Path> live = openDatabases(data);
+        Map<Path, android.database.sqlite.SQLiteDatabase> held = holdDatabases(data, live, notes);
         try {
-          cloneTree(data, dir.resolve("slot"));
+          cloneTree(data, dir.resolve("slot"), live, notes);
           Path device = data.resolveSibling(data.getFileName() + ".device");
-          if (Files.isDirectory(device)) cloneTree(device, dir.resolve("slot.device"));
+          if (Files.isDirectory(device)) cloneTree(device, dir.resolve("slot.device"), List.of(), notes);
         } finally {
-          release(held);
+          release(held.values());
         }
-        dropLockFiles(dir.resolve("slot"));
+        dropLockFiles(data, dir.resolve("slot"), held.keySet());
       } else {
         notes.add("no data folder");
       }
@@ -710,28 +743,52 @@ final class FlightRecorder {
   }
 
   /**
-   * Opens each SQLite database under the data folder a second time, read-only through the framework's SQLite, and
-   * starts a read transaction on it, for the time the folder is cloned. Each database file and its WAL then hold one
-   * commit's state between them: while a reader holds a snapshot, a WAL checkpoint copies no frame past it into the
-   * database file and the WAL is not restarted, so the WAL only grows; a rollback-journal database cannot be written
-   * at all. Recovery on open (the -shm file is left out) replays the WAL clone's committed frames. Databases of an app
-   * with its own SQLite library are cloned as files (see Natives.ownSqlite), as are files that do not open.
+   * The databases under the data folder the app has open through the framework's SQLite
+   * (SQLiteDatabase.getActiveDatabases): the ones whose files hold its locks. Found without opening a file: closing any
+   * descriptor of a file drops every POSIX lock the process holds on it, SQLite's included. Empty for an app with its
+   * own SQLite library (Natives.ownSqlite), whose databases the framework does not see.
    */
-  private static List<android.database.sqlite.SQLiteDatabase> holdDatabases(Path data, List<String> notes) {
-    List<android.database.sqlite.SQLiteDatabase> held = new ArrayList<>();
-    List<Path> files = new ArrayList<>();
-    try (var w = Files.walk(data)) {
-      w.filter(p -> Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS) && sqliteFile(p)).forEach(files::add);
-    } catch (IOException | java.io.UncheckedIOException e) {
-      notes.add("databases cloned as files: " + e);
-      return held;
+  @SuppressWarnings("unchecked")
+  private static List<Path> openDatabases(Path data) {
+    List<Path> out = new ArrayList<>();
+    try {
+      // Real paths (no file opened): the app reaches its data folder through a link (Host's <pkg>-dataDir).
+      Path base = data.toRealPath();
+      java.lang.reflect.Method m = android.database.sqlite.SQLiteDatabase.class.getDeclaredMethod("getActiveDatabases");
+      m.setAccessible(true);
+      for (android.database.sqlite.SQLiteDatabase db : (List<android.database.sqlite.SQLiteDatabase>) m.invoke(null)) {
+        String path = db.getPath();
+        if (path == null || !db.isOpen()) continue;
+        Path p;
+        try {
+          p = Path.of(path).toRealPath();
+        } catch (IOException e) {
+          continue;  // deleted meanwhile
+        }
+        if (p.startsWith(base) && !out.contains(p)) out.add(p);
+      }
+    } catch (ReflectiveOperationException | RuntimeException | IOException e) {
+      // none known: every file is cloned as a file
     }
-    if (files.isEmpty()) return held;
+    return out;
+  }
+
+  /**
+   * Opens each database the app has open a second time, read-only through the framework's SQLite (which shares one
+   * set of locks per file between its connections), and starts a read transaction on it, for the time the folder is
+   * cloned. Each database file and its WAL then hold one commit's state between them: while a reader holds a
+   * snapshot, a WAL checkpoint copies no frame past it into the database file and the WAL is not restarted, so the WAL
+   * only grows; a rollback-journal database cannot be written at all. Recovery on open (the -shm file is left out)
+   * replays the WAL clone's committed frames. Databases of an app with its own SQLite library are cloned as files, as
+   * are those that do not open.
+   */
+  private static Map<Path, android.database.sqlite.SQLiteDatabase> holdDatabases(Path data, List<Path> live, List<String> notes) {
+    Map<Path, android.database.sqlite.SQLiteDatabase> held = new LinkedHashMap<>();
     if (dev.apksim.Natives.ownSqlite) {
       notes.add("databases cloned as files (the app has its own SQLite library)");
       return held;
     }
-    for (Path p : files) {
+    for (Path p : live) {
       android.database.sqlite.SQLiteDatabase db = null;
       try {
         db = android.database.sqlite.SQLiteDatabase.openDatabase(p.toString(), null,
@@ -740,16 +797,16 @@ final class FlightRecorder {
         try (android.database.Cursor c = db.rawQuery("SELECT count(*) FROM sqlite_master", null)) {
           c.moveToFirst();  // the first read takes the snapshot
         }
-        held.add(db);
+        held.put(p, db);
       } catch (RuntimeException | LinkageError e) {
         if (db != null) release(List.of(db));
-        notes.add(data.relativize(p) + " cloned as a file: " + e.getMessage());
+        notes.add(p.getFileName() + " cloned as a file: " + e.getMessage());
       }
     }
     return held;
   }
 
-  private static void release(List<android.database.sqlite.SQLiteDatabase> held) {
+  private static void release(java.util.Collection<android.database.sqlite.SQLiteDatabase> held) {
     for (android.database.sqlite.SQLiteDatabase db : held) {
       try {
         if (db.inTransaction()) db.endTransaction();
@@ -764,33 +821,20 @@ final class FlightRecorder {
     }
   }
 
-  /** A database file: not a -wal/-shm/-journal, and SQLite's header. */
-  private static boolean sqliteFile(Path p) {
-    String n = p.getFileName().toString();
-    if (n.endsWith("-wal") || n.endsWith("-shm") || n.endsWith("-journal")) return false;
-    byte[] head = new byte[16];
-    try (InputStream in = Files.newInputStream(p)) {
-      return in.readNBytes(head, 0, 16) == 16 && new String(head, StandardCharsets.ISO_8859_1).equals("SQLite format 3\0");
-    } catch (IOException e) {
-      return false;
-    }
-  }
-
   /**
-   * The clone's -shm files (a WAL index of the live connections, rebuilt from the WAL on open) and -journal files (an
-   * unfinished write the read transaction kept out of the database file) would only mislead the next open.
+   * For each database held while cloning, its clone's -shm file (a WAL index of the live connections, rebuilt from the
+   * WAL on open) and -journal file (an unfinished write the read transaction kept out of the database file) would only
+   * mislead the next open. A database cloned as a plain file keeps both: its journal may be needed to roll back.
    */
-  private static void dropLockFiles(Path slot) {
-    try (var w = Files.walk(slot)) {
-      for (Path p : (Iterable<Path>) w::iterator) {
-        String n = p.getFileName().toString();
-        if ((n.endsWith("-shm") || n.endsWith("-journal")) && Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-          Path db = p.resolveSibling(n.substring(0, n.lastIndexOf('-')));
-          if (sqliteFile(db)) Files.deleteIfExists(p);
-        }
+  private static void dropLockFiles(Path data, Path slot, java.util.Set<Path> held) {
+    for (Path db : held) {
+      try {
+        Path copy = slot.resolve(data.toRealPath().relativize(db).toString());
+        Files.deleteIfExists(copy.resolveSibling(copy.getFileName() + "-shm"));
+        Files.deleteIfExists(copy.resolveSibling(copy.getFileName() + "-journal"));
+      } catch (IOException e) {
+        // left as they are
       }
-    } catch (IOException | java.io.UncheckedIOException e) {
-      // left as they are
     }
   }
 
@@ -872,23 +916,47 @@ final class FlightRecorder {
   private static final int COPYFILE_NOFOLLOW_SRC = 1 << 18;
   private static final int COPYFILE_CLONE = 1 << 24;
 
-  static void cloneTree(Path from, Path to) throws IOException {
+  /**
+   * Clones `from` to `to`. APFS: copy-on-write (clonefile, which opens no descriptor, so the app's locks stay; checked
+   * against a held fcntl lock). Elsewhere (Linux, other volumes) a `cp` process copies it: copying here would open and
+   * close the app's open databases' files and drop its POSIX locks on them. Without cp, a copy here that leaves out
+   * the files of the open databases in `live`, noted.
+   */
+  static void cloneTree(Path from, Path to, List<Path> live, List<String> notes) throws IOException {
     if (COPYFILE != null) {
       try (Arena a = Arena.ofConfined()) {
         int r = (int) COPYFILE.invokeExact(a.allocateFrom(from.toString()), a.allocateFrom(to.toString()), MemorySegment.NULL,
             COPYFILE_CLONE | COPYFILE_RECURSIVE | COPYFILE_ALL | COPYFILE_NOFOLLOW_SRC);
         if (r == 0) return;
       } catch (Throwable t) {
-        // copy below
+        // copied below
       }
       Storage.deleteTree(to);
     }
+    try {
+      Files.createDirectories(to.getParent());
+      Process p = new ProcessBuilder("cp", "-pR", from.toString(), to.toString()).redirectErrorStream(true)
+          .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+      if (p.waitFor() == 0) return;
+    } catch (IOException e) {
+      // no cp: below
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    Storage.deleteTree(to);
+    java.util.Set<String> skip = new java.util.HashSet<>();
+    for (Path db : live) for (String s : List.of("", "-wal", "-shm", "-journal")) skip.add(db + s);
     try (var walk = Files.walk(from)) {
       for (Path p : (Iterable<Path>) walk::iterator) {
         Path q = to.resolve(from.relativize(p).toString());
         if (Files.isSymbolicLink(p)) continue;
-        if (Files.isDirectory(p)) Files.createDirectories(q);
-        else if (Files.isRegularFile(p)) Files.copy(p, q, StandardCopyOption.REPLACE_EXISTING);
+        if (Files.isDirectory(p)) {
+          Files.createDirectories(q);
+        } else if (!skip.isEmpty() && skip.contains(p.toRealPath().toString())) {
+          notes.add(from.relativize(p) + " left out (open, and no cp to copy it without dropping the app's locks)");
+        } else if (Files.isRegularFile(p)) {
+          Files.copy(p, q, StandardCopyOption.REPLACE_EXISTING);
+        }
       }
     }
   }
@@ -915,10 +983,14 @@ final class FlightRecorder {
    */
   static void crashed(Throwable e) {
     FlightRecorder r = current;
-    if (r == null || !(anyOn() || anyKept())) return;
+    java.io.StringWriter w = new java.io.StringWriter();
+    if (e != null) e.printStackTrace(new java.io.PrintWriter(w));
+    if (r == null) {
+      crashedEarly(w.toString());
+      return;
+    }
+    if (!(anyOn() || anyKept())) return;
     try {
-      java.io.StringWriter w = new java.io.StringWriter();
-      if (e != null) e.printStackTrace(new java.io.PrintWriter(w));
       synchronized (checkpoints) {
         r.deviceNow = checkpoints.isEmpty() ? null : checkpoints.get(checkpoints.size() - 1).device;
       }
@@ -928,6 +1000,66 @@ final class FlightRecorder {
       System.err.println("[apksim] rec: could not save the crash: " + t);
     }
     awaitSaves(30_000);  // a `rec save` from before the crash, still writing
+  }
+
+  /**
+   * A crash before the Host and its recorder exist (the Application's constructor, attach or onCreate): what the net
+   * and db channels, on since launch (Rec.launch), have, and the exception, without anything of the app's (it may
+   * not exist): no checkpoint, input or screen.
+   */
+  private static void crashedEarly(String crash) {
+    if (!(Rec.db || Rec.NET.isOn()) && Rec.DB.size() == 0) return;
+    try {
+      long to = System.currentTimeMillis();
+      String pkg = String.valueOf(System.getProperty("apksim.package", "app"));
+      Path out = reserve(DeviceControls.mediaDir(), pkg + "-" + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to)) + "-crash");
+      Map<String, Object> m = new LinkedHashMap<>();
+      m.put("format", FORMAT);
+      m.put("created", java.time.Instant.ofEpochMilli(to).toString());
+      m.put("package", pkg);
+      String apk = System.getProperty("apksim.apk");
+      if (apk != null) m.put("apk", Path.of(apk).getFileName().toString());
+      Map<String, Object> window = new LinkedHashMap<>();
+      window.put("from", Long.MIN_VALUE);
+      window.put("to", to);
+      m.put("window", window);
+      List<String> on = new ArrayList<>();
+      if (Rec.NET.isOn()) on.add("net");
+      if (Rec.db) on.add(Rec.dbValues ? "db+values" : "db");
+      m.put("channels", on);
+      m.put("notes", List.of("the app crashed before its first activity: no checkpoint, input or screen"));
+      m.put("crash", crash);
+      Net.drain(2000);
+      try {
+        write(out, m, List.of(), List.of(), Net.captured(Rec.NET::contains), Rec.DB.since(Long.MIN_VALUE), List.of(), 0, to, null, pkg);
+      } catch (IOException | RuntimeException x) {
+        Files.deleteIfExists(out);
+        throw x;
+      }
+      System.err.println("[apksim] rec: the app crashed during startup: saved " + out);
+    } catch (Throwable t) {
+      System.err.println("[apksim] rec: could not save the crash: " + t);
+    }
+  }
+
+  /**
+   * A new default bundle name in `dir` for `stem`, created empty so no other save, in this process or another one
+   * sharing the folder, takes it; -2, -3... when taken. The save then replaces it.
+   */
+  private static Path reserve(Path dir, String stem) throws IOException {
+    Files.createDirectories(dir);
+    for (int n = 1; ; n++) {
+      Path out = dir.resolve(stem + (n == 1 ? "" : "-" + n) + ".apkrec");
+      synchronized (SAVES) {
+        if (writing.contains(out)) continue;
+      }
+      try {
+        Files.createFile(out);
+        return out;
+      } catch (java.nio.file.FileAlreadyExistsException e) {
+        // taken: the next
+      }
+    }
   }
 
   private static boolean anyOn() {
@@ -945,7 +1077,25 @@ final class FlightRecorder {
   // Crashes.terminate), and no two write one file. Guarded by SAVES.
   private static final Object SAVES = new Object();
   private static final Set<Path> writing = new java.util.HashSet<>();
-  private static final java.util.concurrent.atomic.AtomicLong partSeq = new java.util.concurrent.atomic.AtomicLong();
+  /** Default names reserved as empty files (reserve), deleted again if their save fails. */
+  private static final Set<Path> placeholders = new java.util.HashSet<>();
+
+  /** A save of `target` is over; `ok`: it was written. */
+  private static void done(Path target, boolean ok) {
+    boolean placeholder;
+    synchronized (SAVES) {
+      placeholder = placeholders.remove(target);
+      writing.remove(target);
+      SAVES.notifyAll();
+    }
+    if (placeholder && !ok) {
+      try {
+        Files.deleteIfExists(target);
+      } catch (IOException e) {
+        // an empty file left over
+      }
+    }
+  }
 
   /** Waits up to `ms` for the saves being written (Host.exit, before the scratch folder and its checkpoints go). */
   static void awaitSaves(long ms) {
@@ -974,18 +1124,20 @@ final class FlightRecorder {
     long to = System.currentTimeMillis();
     long from = to - Math.max(1, seconds) * 1000;
     Path out;
-    synchronized (SAVES) {
-      if (file != null) {
-        out = Storage.absolute(file);
+    if (file != null) {
+      out = Storage.absolute(file);
+      synchronized (SAVES) {
         if (writing.contains(out)) return "error: " + out + " is being saved already";
-      } else {
-        Path dir = DeviceControls.mediaDir();  // with screenshots and screen recordings (File > Show Screenshots and Recordings)
-        String stem = app.getPackageName() + "-" + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to))
-            + (crash != null ? "-crash" : "");
-        out = dir.resolve(stem + ".apkrec");
-        for (int n = 2; writing.contains(out) || Files.exists(out); n++) out = dir.resolve(stem + "-" + n + ".apkrec");
+        writing.add(out);
       }
-      writing.add(out);
+    } else {
+      // With screenshots and screen recordings (File > Show Screenshots and Recordings).
+      out = reserve(DeviceControls.mediaDir(), app.getPackageName() + "-"
+          + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to)) + (crash != null ? "-crash" : ""));
+      synchronized (SAVES) {
+        writing.add(out);
+        placeholders.add(out);
+      }
     }
     Checkpoint cp = null;
     synchronized (checkpoints) {
@@ -1001,10 +1153,7 @@ final class FlightRecorder {
       if (started[0]) throw e;  // the job released them
       // Nothing is writing it after all.
       if (cp != null) unpin(cp);
-      synchronized (SAVES) {
-        writing.remove(out);
-        SAVES.notifyAll();
-      }
+      done(out, false);
       throw e;
     }
   }
@@ -1022,7 +1171,8 @@ final class FlightRecorder {
     if (AdbLog.installed()) {
       for (AdbLog.Line l : AdbLog.since(0, 0).lines()) if (l.wallMs() >= start && LOGCAT.contains(l.wallMs())) lines.add(l);
     }
-    byte[] har = Net.captured(w -> w >= start && Rec.NET.contains(w));
+    if (crash != null) Net.drain(2000);  // answers the app already has, being recorded, belong in the crash's HAR
+    java.util.function.Supplier<byte[]> har = Net.captured(w -> w >= start && Rec.NET.contains(w));
     List<Ring.Item<Map<String, Object>>> db = Rec.DB.since(start);
     List<Ring.Item<byte[]>> frames = new ArrayList<>();
     Ring.Item<byte[]> first = SCREEN.atOrBefore(from);
@@ -1034,8 +1184,10 @@ final class FlightRecorder {
     lastSave = target + ": writing";
     Runnable job = () -> {
       long t0 = System.nanoTime();
+      boolean ok = false;
       try {
         write(target, manifest, events, lines, har, db, frames, from, to, used, pkg);
+        ok = true;
         long size = Files.size(target);
         lastSave = target + ": " + (size >> 10) + " KB in " + (System.nanoTime() - t0) / 1_000_000 + " ms";
         System.err.println("[apksim] rec: saved " + lastSave);
@@ -1044,10 +1196,7 @@ final class FlightRecorder {
         System.err.println("[apksim] rec: save failed: " + e);
       } finally {
         if (used != null) unpin(used);
-        synchronized (SAVES) {
-          writing.remove(target);
-          SAVES.notifyAll();
-        }
+        done(target, ok);
       }
     };
     started[0] = true;
@@ -1141,11 +1290,12 @@ final class FlightRecorder {
   }
 
   private static void write(Path target, Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events,
-      List<AdbLog.Line> lines, byte[] har, List<Ring.Item<Map<String, Object>>> db, List<Ring.Item<byte[]>> frames,
+      List<AdbLog.Line> lines, java.util.function.Supplier<byte[]> har, List<Ring.Item<Map<String, Object>>> db, List<Ring.Item<byte[]>> frames,
       long from, long to, Checkpoint cp, String pkg) throws IOException {
     Files.createDirectories(target.toAbsolutePath().getParent());
     // Each save its own part file, moved into place once complete.
-    Path tmp = target.resolveSibling(target.getFileName() + "." + ProcessHandle.current().pid() + "-" + partSeq.incrementAndGet() + ".part");
+    // A random tag as well as the PID: containers sharing an output folder can all be PID 1.
+    Path tmp = target.resolveSibling(target.getFileName() + Storage.tmpTag());
     boolean done = false;
     try (OutputStream fo = Files.newOutputStream(tmp); ZipOutputStream z = new ZipOutputStream(fo)) {
       Map<String, Object> counts = new LinkedHashMap<>();
@@ -1167,7 +1317,7 @@ final class FlightRecorder {
       StringBuilder log = new StringBuilder();
       for (AdbLog.Line l : lines) log.append(l.text()).append('\n');
       put(z, "logcat.txt", log.toString().getBytes(StandardCharsets.UTF_8));
-      if (har != null) put(z, "network.har", har);
+      if (har != null) put(z, "network.har", har.get());
       StringBuilder d = new StringBuilder();
       for (Ring.Item<Map<String, Object>> e : db) d.append(JsonLine.write(e.value())).append('\n');
       if (!db.isEmpty()) put(z, "db.jsonl", d.toString().getBytes(StandardCharsets.UTF_8));

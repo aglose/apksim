@@ -239,11 +239,15 @@ final class Recording {
     return entries.size();
   }
 
-  /** The entries whose start (epoch ms) `keep` accepts, as a HAR file (the flight recorder's bundle). */
-  synchronized String har(java.util.function.LongPredicate keep) {
+  /**
+   * The entries whose start (epoch ms) `keep` accepts, chosen now, as a HAR file written when the result is called
+   * (the flight recorder's bundle, on its save thread). Entries do not change once added.
+   */
+  synchronized java.util.function.Supplier<String> harLater(java.util.function.LongPredicate keep) {
     List<Entry> some = new ArrayList<>();
     for (Entry e : entries) if (keep.test(e.wallMs)) some.add(e);
-    return Json.write(harRoot(some));
+    Map<String, List<String>> certs = new LinkedHashMap<>(certificates);
+    return () -> Json.write(harRoot(some, certs));
   }
 
   /** Forgets every entry (the flight recorder's `rec clear`; only for a recording with no file). */
@@ -262,7 +266,7 @@ final class Recording {
   }
 
   synchronized void save() throws IOException {
-    Map<String, Object> root = harRoot(entries);
+    Map<String, Object> root = harRoot(entries, certificates);
     // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
     // process per file).
     Path tmp = path.resolveSibling(path.getFileName() + ".apksim-tmp");
@@ -270,7 +274,7 @@ final class Recording {
     Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
   }
 
-  private Map<String, Object> harRoot(List<Entry> some) {
+  private Map<String, Object> harRoot(List<Entry> some, Map<String, List<String>> certificates) {
     List<Object> list = new ArrayList<>();
     for (Entry e : some) list.add(toHar(e));
     Map<String, Object> log = new LinkedHashMap<>();

@@ -178,7 +178,8 @@ def main():
         f1, f2 = (re.match(r"saving (\S+)", x) for x in (s1, s2))
         if check(bool(f1 and f2) and f1.group(1) != f2.group(1), f"two files: {s1[:90]} / {s2[:90]}"):
             for _ in range(60):
-                if os.path.isfile(f1.group(1)) and os.path.isfile(f2.group(1)):
+                # Each name is reserved as an empty file at once and replaced when the bundle is written.
+                if all(os.path.isfile(f) and os.path.getsize(f) > 0 for f in (f1.group(1), f2.group(1))):
                     break
                 time.sleep(0.5)
             for f in (f1.group(1), f2.group(1)):
@@ -186,7 +187,7 @@ def main():
                 check(ok, "a whole bundle: " + os.path.basename(f))
                 if os.path.isfile(f):
                     shutil.move(f, os.path.join(bundle_dir, os.path.basename(f)))
-            leftovers = [f for f in os.listdir(os.path.dirname(f1.group(1))) if f.endswith(".part")]
+            leftovers = [f for f in os.listdir(os.path.dirname(f1.group(1))) if f.endswith(".part") or f.endswith(".tmp")]
             check(not leftovers, f"no part files left: {leftovers}")
 
         print("== clear, logcat off")
@@ -202,7 +203,7 @@ def main():
         app.wait(60)
         app = None
         check(os.path.isfile(os.path.join(bundle_dir, "quit.apkrec")), "the save before quit was written")
-        check(not [f for f in os.listdir(bundle_dir) if f.endswith(".part")], "no part file left behind")
+        check(not [f for f in os.listdir(bundle_dir) if f.endswith(".part") or f.endswith(".tmp")], "no part file left behind")
         check_bundle(os.path.join(bundle_dir, "window.apkrec"))
         print("== bundle cleared.apkrec")
         z = zipfile.ZipFile(os.path.join(bundle_dir, "cleared.apkrec"))

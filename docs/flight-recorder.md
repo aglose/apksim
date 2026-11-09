@@ -34,8 +34,9 @@ rec clear                        forget everything kept (adb's own logcat and a 
 
 `rec save` answers at once with the file name. A worker thread writes the file, and `rec status` reports when it is
 done (`last save: FILE: 107 KB in 32 ms`). Each save writes its own part file and moves it into place when it is
-complete; two saves in the same second get `-2`, `-3`... names, and `quit` (or closing the window) waits for saves
-still being written. Without FILE, bundles go to `work/screenshots/<package>-<time>.apkrec`
+complete; a default name is reserved at once as an empty file (so two saves in the same second, even from two
+instances sharing the folder, get `-2`, `-3`... names), and `quit` (or closing the window) waits for saves still being
+written. Without FILE, bundles go to `work/screenshots/<package>-<time>.apkrec`
 (`~/.apksim/screenshots` for an installed release), next to screenshots and screen recordings. A FILE must be
 somewhere the launcher's sandbox lets the app write, which means under the state folder.
 
@@ -53,7 +54,7 @@ The `--rec*` options are read after the hand-off, so a recording launch still go
 | `net` | Every HTTP(S) exchange while the channel was on, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file |
 | `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept), the number of bound arguments, column names, time in µs, rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
 | `db+values` | As `db`, plus bound values, ContentValues and simpleQuery results | the same |
-| `screen` | 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`, read per launch) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
+| `screen` | Turning it on, or `rec clear`, redraws the windows so a still screen has a first frame. 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`, read per launch) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
 
 Covered by `db`: Room's framework driver, SQLDelight's Android driver, `SQLiteOpenHelper` code. Not covered: a bundled
 SQLite (androidx.sqlite's `BundledSQLiteDriver`, which ships its own native library), or SQLite reached from native
@@ -90,15 +91,19 @@ The test app takes 7-13 ms per checkpoint (state 3-7 ms). Checkpoints live in th
 whole window always has a checkpoint to start from, and the rings keep back to that checkpoint. A checkpoint a save is
 still reading is deleted only once the last such save is done, also after `rec clear`.
 
-**Databases.** Stopping the activities does not stop the app's workers, so each SQLite database in the data folder is
-opened a second time (read-only, through the framework's SQLite) and held in a read transaction while the folder is
+**Databases.** Stopping the activities does not stop the app's workers, so each SQLite database the app has open
+(the framework's list of open databases, so no file is opened to find them: closing any descriptor of a file drops
+every POSIX lock the process holds on it, SQLite's included) is opened a second time (read-only, through the
+framework's SQLite, which shares its locks between connections) and held in a read transaction while the folder is
 cloned. While a reader holds a snapshot, SQLite copies no WAL frame past it into the database file and does not
 restart the WAL, so the database file and its WAL clone hold one commit's state between them (a rollback-journal
-database cannot be written meanwhile at all). The clone's `-shm` and `-journal` files are left out, and SQLite
-recovers from the WAL on open. An app that loads its own SQLite library (androidx.sqlite's bundled driver, SQLCipher)
+database cannot be written meanwhile at all). For those databases the clone's `-shm` and `-journal` files are left
+out, and SQLite recovers from the WAL on open; a database cloned as a plain file keeps its journal. The APFS clone
+opens no file (checked: a held fcntl lock survives it). Where cloning is not possible (Linux, another volume) a `cp`
+process copies the folder, for the same reason; without one, the open databases are left out and noted. An app that loads its own SQLite library (androidx.sqlite's bundled driver, SQLCipher)
 has its databases cloned as plain files: a second SQLite library in the process closing a file would drop the app's
-library's POSIX locks on it. The checkpoint's notes say so. Files other than databases (SharedPreferences, files/) are
-cloned one by one, as a power cut would leave them.
+library's POSIX locks on it. The checkpoint's notes say so. Settings values are written out first. Files other than
+databases (SharedPreferences, files/) are cloned one by one, as a power cut would leave them.
 
 `rec checkpoint verify` reads a checkpoint back as a replay will: every intent (extras included) and Bundle is
 unparcelled with the app's class loader and every value read, Bundles, arrays and lists inside them too, so a
@@ -124,7 +129,10 @@ checkpoint at all, the bundle can be read but not replayed.
 
 **A crash saves a bundle by itself.** When the app crashes with any channel on, the window is saved as
 `work/screenshots/<package>-<time>-crash.apkrec`, with the stack trace in its manifest. This happens before the process ends, and
-before the scratch folder that holds the checkpoints is deleted (`Crashes.terminate`).
+before the scratch folder that holds the checkpoints is deleted (`Crashes.terminate`), after up to 2 s for network
+answers the app already has and the network layer is still writing down. A crash before the first activity (in the
+Application's constructor or onCreate) saves what the launch's `net` and `db` channels have, with no checkpoint,
+input or screen.
 
 ## Privacy
 

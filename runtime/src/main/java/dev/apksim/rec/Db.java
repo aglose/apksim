@@ -56,7 +56,9 @@ public final class Db {
     else if (result instanceof Cursor) m.put("result", "cursor");
     else if (result instanceof Number && !op.equals("simpleQueryForLong")) m.put("result", result);
     else if (result != null && Rec.dbValues) m.put("result", String.valueOf(result));
-    Rec.DB.add(wall, 64 + (sql == null ? 0 : 2L * sql.length()) + (args == null ? 0 : 2L * args.toString().length()), m);
+    long size = 64 + (sql == null ? 0 : 2L * sql.length()) + (args == null ? 0 : 2L * args.toString().length());
+    for (String k : new String[] {"result", "error"}) if (m.get(k) instanceof String v) size += 2L * v.length();  // a long simpleQueryForString
+    Rec.DB.add(wall, size, m);
   }
 
   private static String name(SQLiteDatabase db) {

@@ -123,7 +123,12 @@ final class NetEngine {
    * read an answer the engine is still decoding), so none is lost when the process ends right after it.
    */
   void flushAtExit() {
-    long until = System.currentTimeMillis() + 2000;
+    awaitInFlight(2000);
+    flushNow();
+  }
+
+  void awaitInFlight(long ms) {
+    long until = System.currentTimeMillis() + ms;
     synchronized (inFlight) {
       while (inFlight.get() > 0 && System.currentTimeMillis() < until) {
         try {
@@ -134,7 +139,6 @@ final class NetEngine {
         }
       }
     }
-    flushNow();
   }
 
   synchronized void flushNow() {

@@ -96,6 +96,8 @@ public final class Net {
       if (r.startsWith("-")) redact.remove(r.substring(1));
       else redact.add(r);
     }
+    String t = System.getProperty("apksim.networkTrust");  // and trusts this certificate when it starts the engine
+    if (t != null) trust = Path.of(t);
     if (spec == null && profile == null && hosts == null) return;
     try {
       for (String h : list(hosts)) {
@@ -110,8 +112,6 @@ public final class Net {
         if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.substring(1, addr.length() - 1);
         hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(addr, hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
       }
-      String t = System.getProperty("apksim.networkTrust");
-      if (t != null) trust = Path.of(t);
       failUnmatched = !"respond".equals(System.getProperty("apksim.networkUnmatched", "fail"));
       recordedTiming = "recorded".equals(System.getProperty("apksim.networkReplayTiming", "none"));
       if (profile != null) launchConditions = Conditions.parse(profile);
@@ -202,10 +202,20 @@ public final class Net {
     return on ? "net: capturing" : "net: paused";
   }
 
-  /** The exchanges captured whose start `keep` accepts (epoch ms), as a HAR file; null when nothing is captured. */
-  public static synchronized byte[] captured(java.util.function.LongPredicate keep) {
+  /**
+   * The exchanges captured whose start `keep` accepts (epoch ms), taken now, as a HAR file built when the result is
+   * called (on the flight recorder's save thread: a capture can hold 64 MB of bodies); null when nothing is captured.
+   */
+  public static synchronized java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
     if (!active || mode != Mode.RECORD) return null;
-    return recording.har(keep).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    java.util.function.Supplier<String> har = recording.harLater(keep);
+    return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  /** Waits up to `ms` for exchanges whose answer the app may already have but the engine has not recorded yet. */
+  public static void drain(long ms) {
+    NetEngine e = engine;
+    if (e != null) e.awaitInFlight(ms);
   }
 
   /** `rec clear`: forgets what the flight recorder's in-memory capture holds (a --network record file keeps its own). */
