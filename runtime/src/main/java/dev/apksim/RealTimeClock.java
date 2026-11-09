@@ -237,7 +237,7 @@ final class RealTimeClock {
         for (Message n = (Message) NEXT.get(m); n != null; n = (Message) NEXT.get(n)) {
           if (n.isAsynchronous()) {
             if (frameAt < 0) frameAt = n.getWhen();
-          } else if (n.getWhen() <= nowMs) {
+          } else if (n.getWhen() <= nowMs && !TestRecorder.isTask(n)) {
             waiting = true;
           }
         }

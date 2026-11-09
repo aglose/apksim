@@ -132,7 +132,7 @@ final class TestRecorder {
         final android.os.Handler handler = main;
         timerTask = timer.schedule(() -> {
           try {
-            handler.post(() -> onDeadline(gen));
+            handler.post((Task) () -> onDeadline(gen));
           } catch (RuntimeException e) {
             // The looper went away with its test: nothing to capture.
           }
@@ -145,12 +145,23 @@ final class TestRecorder {
     post();
   }
 
+  /**
+   * The recorder's own main-thread messages. {@link RealTimeClock} does not count one held behind a sync barrier as work
+   * waiting for the barrier's frame: a capture queued every 1/fps s made each idle() wait out a frame in real time and
+   * kept the barrier streak from starting, so a short Espresso test polling in a loop timed out (issue 197).
+   */
+  interface Task extends Runnable {}
+
+  static boolean isTask(android.os.Message m) {
+    return m.getCallback() instanceof Task;
+  }
+
   private static void post() {
     if (posted) return;
     if (main == null) main = new android.os.Handler(Looper.getMainLooper());
     posted = true;
     final int gen = generation;
-    main.post(() -> {
+    main.post((Task) () -> {
       if (gen != generation) return;  // queued by an earlier test
       posted = false;
       if (!ON || !active || failed || capturing || !pending) return;
