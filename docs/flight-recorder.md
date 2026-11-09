@@ -171,7 +171,7 @@ scripts/replay-adb.py session.apkrec -s SERIAL [--apk APK] [--pace 2] [--capture
 scripts/replay-adb.py session.apkrec --dry-run       # the plan and the report, no device
 ```
 
-It checks the installed APK against `apkSha256` (`--apk` installs a file after checking it against the same hash),
+It replaces the app's data, `/sdcard` files and Settings values on the device, so it needs `--yes`, and it saves the app's current data first (`--backup-dir DIR`, default `./replay-backup-PKG-TIME`; `--no-backup` skips it). It finds out whether the data can be written at all before it changes anything. It checks the installed APK against `apkSha256` (`--apk` installs a file after checking it against the same hash),
 stops the app, puts the checkpoint's data back (`data.zip`'s app folder through `run-as`, so the build must be
 debuggable, or straight over adb where that may write; `/sdcard` by push; Settings values by `settings put`), sets
 the checkpoint's display with `wm size` / `wm density` (reset at the end; `--scale-coordinates` scales the input

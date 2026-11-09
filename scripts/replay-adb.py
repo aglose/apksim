@@ -225,7 +225,11 @@ class Plan:
         elif name == "back":
             steps.append((off, "key", 4))
         elif name in ("lock", "unlock"):
-            steps.append((off, "key", 26 if name == "lock" else 82))
+            # SLEEP / WAKEUP are the discrete keys (POWER toggles, 82 is MENU); an unsecured keyguard is then dismissed.
+            steps.append((off, "key", 223 if name == "lock" else 224))
+            if name == "unlock":
+                steps.append((off, "shell", "wm dismiss-keyguard"))
+                self.notes.append("unlock wakes the screen and dismisses an unsecured keyguard; a secured one stays")
         else:
             self.skip(" ".join(cmd[:2]) if cmd else "command")
 
@@ -270,7 +274,9 @@ class Adb:
         """Runs a shell line; (ok, output). A nonzero exit or an error message in the output is a failure."""
         p = subprocess.run(self.base + ["shell", line], capture_output=True, timeout=300)
         out = (p.stdout + p.stderr).decode("utf-8", "replace")
-        bad = re.search(r"(?i)\b(error|exception|permission denied|not found|unknown command|inaccessible)\b", out)
+        # Diagnostics only: `am start` echoes its intent, so a URL or class containing "error" is not a failure.
+        bad = re.search(r"(?im)^(error\b|exception\b|java\.\S+(exception|error)|security\s*exception|.*permission denied"
+                        r"|.*: (inaccessible or not found|not found)\s*$|.*unknown command)", out)
         return p.returncode == 0 and not bad, out.strip()
 
 
@@ -309,7 +315,7 @@ def prepare(adb, plan, z, args, report, warn):
     if not plan.has_data:
         report.append("no checkpoint data in the bundle: the app starts with the data it has")
     else:
-        restore_data(adb, plan, z, report, warn)
+        restore_data(adb, plan, z, report, warn, args)
     dev = plan.device
     w, h, dens = dev.get("width"), dev.get("height"), dev.get("density")
     if plan.font:
@@ -347,11 +353,50 @@ IDENTITY = {"secure/android_id", "global/device_name", "secure/bluetooth_address
 APP_DIRS = ("files", "databases", "shared_prefs", "cache", "code_cache", "no_backup")
 
 
-def restore_data(adb, plan, z, report, warn):
+def data_path(adb, pkg):
+    """How the app's data can be written, found without changing anything: 'direct' (adb may write there), 'run-as'
+    (a debuggable build), or None."""
+    data = "/data/data/" + pkg
+    ok, _ = adb.try_sh("mkdir -p %s/.apksim-probe && rm -rf %s/.apksim-probe" % (data, data))
+    if ok:
+        return "direct"
+    ok, _ = adb.try_sh("run-as %s true" % pkg)
+    return "run-as" if ok else None
+
+
+def back_up(adb, pkg, how, args, report):
+    """The app's data as it is now, on this machine, before it is replaced."""
+    d = args.backup_dir or os.path.join(os.getcwd(), "replay-backup-%s-%s" % (pkg, time.strftime("%Y%m%d-%H%M%S")))
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    if how == "direct":
+        out = adb.run("pull", "/data/data/" + pkg, d, check=False)
+        ok = not re.search(r"(?i)error|denied|failed", out)
+    else:
+        p = subprocess.run(adb.base + ["exec-out", "run-as %s tar -cf - ." % pkg], capture_output=True, timeout=600)
+        ok = p.returncode == 0 and len(p.stdout) > 0
+        if ok:
+            with open(os.path.join(d, "data.tar"), "wb") as f:
+                f.write(p.stdout)
+    if not ok:
+        fail("could not back up the app's current data (pass --no-backup to replace it anyway)")
+    report.append("the app's previous data is saved in " + d)
+
+
+def restore_data(adb, plan, z, report, warn, args):
     pkg = plan.pkg
     zin = zipfile.ZipFile(io.BytesIO(z.read("checkpoint/data.zip")))
     if "package" in zin.namelist() and zin.read("package").decode().strip() != pkg:
         fail("data.zip is for another package")
+    # Before anything on the device changes: can the data be written at all, and does the person agree to replace it.
+    how = data_path(adb, pkg)
+    if how is None:
+        fail("the app's data cannot be written: the build must be debuggable (run-as) or adb root")
+    if not args.yes:
+        fail("replaying replaces %s's data, /sdcard files and Settings values on this device with the checkpoint's; "
+             "it is backed up first. Pass --yes to go on" % pkg)
+    if not args.no_backup:
+        back_up(adb, pkg, how, args, report)
     with tempfile.TemporaryDirectory(prefix="replay-adb-") as stage:
         count = 0
         for n in zin.namelist():
@@ -397,27 +442,33 @@ def restore_data(adb, plan, z, report, warn):
             else:
                 report.append("/sdcard put back")
         data = "/data/data/" + pkg
-        # Directly when adb may write there (an emulator with adb root, apksim itself), else through run-as. The app's
-        # own folders are emptied first, so state the checkpoint does not have (an empty snapshot included) is gone.
-        ok, _ = adb.try_sh("rm -rf %s && mkdir -p %s" % (" ".join("%s/%s" % (data, d) for d in APP_DIRS), data))
-        if ok and os.path.isdir(slot):
-            probe = adb.run("push", slot + "/.", data + "/", check=False)
-            if not re.search(r"(?i)error|denied|failed", probe):
-                # Pushed as adb's user (root on such a device): give it to the app's uid and relabel it.
-                adb.try_sh("u=$(stat -c %%u %s) && chown -R $u:$u %s && restorecon -R %s" % (data, data, data))
-                report.append("app data (%d files) pushed straight into %s and handed to the app's uid" % (count, data))
+        # The app's own folders are emptied first, so state the checkpoint does not have (an empty snapshot included) is gone.
+        if how == "direct":
+            ok, out = adb.try_sh("rm -rf %s && mkdir -p %s" % (" ".join("%s/%s" % (data, d) for d in APP_DIRS), data))
+            if not ok:
+                fail("could not clear the app's data folders: " + out)
+            if not os.path.isdir(slot):
+                report.append("the checkpoint's app data is empty: the app's folders were emptied")
                 return
-        elif ok:
-            report.append("the checkpoint's app data is empty: the app's folders were emptied")
+            probe = adb.run("push", slot + "/.", data + "/", check=False)
+            if re.search(r"(?i)error|denied|failed", probe):
+                fail("could not push the app's data: " + probe.strip()[-150:])
+            # Pushed as adb's user (root on such a device): give it to the app's uid and relabel it.
+            adb.try_sh("u=$(stat -c %%u %s) && chown -R $u:$u %s && restorecon -R %s" % (data, data, data))
+            report.append("app data (%d files) pushed straight into %s and handed to the app's uid" % (count, data))
             return
-        adb.sh("rm -rf %s; mkdir -p %s" % (REMOTE, REMOTE))
-        adb.run("push", slot + "/.", REMOTE + "/")
-        adb.sh("chmod -R a+rX %s" % REMOTE)
         clear = "; ".join("rm -rf ./%s" % d for d in APP_DIRS)
-        ok, out = adb.try_sh("run-as %s sh -c %s" % (pkg, shlex.quote(clear + "; cp -R %s/. ." % REMOTE)))
-        adb.sh("rm -rf " + REMOTE, check=False)
+        copy = clear + ("; cp -R %s/. ." % REMOTE if os.path.isdir(slot) else "")
+        try:
+            if os.path.isdir(slot):
+                adb.sh("rm -rf %s; mkdir -p %s" % (REMOTE, REMOTE))
+                adb.run("push", slot + "/.", REMOTE + "/")
+                adb.sh("chmod -R a+rX %s" % REMOTE)
+            ok, out = adb.try_sh("run-as %s sh -c %s" % (pkg, shlex.quote(copy)))
+        finally:
+            adb.sh("rm -rf " + REMOTE, check=False)  # also after a failed push or Ctrl-C: it holds private data
         if not ok:
-            fail("could not put the app's data back (the app must be debuggable for run-as, or adb root): " + out)
+            fail("could not put the app's data back through run-as: " + out)
         report.append("app data (%d files) copied in through run-as" % count)
 
 
@@ -484,6 +535,9 @@ def main():
     ap.add_argument("bundle")
     ap.add_argument("-s", "--serial")
     ap.add_argument("--apk")
+    ap.add_argument("--yes", action="store_true", help="agree to replace the app's data, /sdcard and Settings values")
+    ap.add_argument("--backup-dir", help="where the app's current data is saved first (default ./replay-backup-PKG-TIME)")
+    ap.add_argument("--no-backup", action="store_true", help="replace the data without saving it first")
     ap.add_argument("--allow-other-build", action="store_true")
     ap.add_argument("--require-build", action="store_true", help="refuse when the installed APK cannot be pulled and hashed")
     ap.add_argument("--pace", type=float, default=1.0, help="2: twice as fast, 0.5: half speed")
