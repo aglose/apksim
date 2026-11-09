@@ -60,7 +60,7 @@ elif a[0] == "shell":
     elif s.startswith("settings get"):
         print({"global/foo": "7", "secure/token": "null"}.get(s.split()[2] + "/" + s.split()[3], "null"))
     elif s == "cmd uimode night":
-        print("Night mode: no")
+        print("Night mode: " + os.environ.get("FAKE_NIGHT", "no"))
         sys.exit(1 if os.environ.get("FAKE_NO_UIMODE") else 0)
     elif s.startswith("am start"):
         print("Starting: Intent")
@@ -166,7 +166,10 @@ def main():
     check(oct(os.stat(backups).st_mode & 0o777) == "0o700" and all(os.stat(backups + "/" + n).st_mode & 0o077 == 0 for n in os.listdir(backups)),
           "recovery files are private")
     r, log = run("--data", "--yes", FAKE_NO_UIMODE="1")
-    check(r.returncode != 0 and not any("rm -rf" in l or "put" in l for l in log), "an unreadable old value: nothing changed")
+    check(r.returncode == 0 and not any("night yes" in l for l in log), "unreadable night mode: appearance left alone, the rest goes ahead")
+    r, log = run("--data", "--yes", FAKE_NIGHT="custom_schedule")
+    body = open(max((backups + "/" + n for n in os.listdir(backups) if n.endswith("-undo.sh")), key=os.path.getmtime)).read()
+    check("night custom_schedule" in body, "a custom night mode is restored as it was")
     other = tmp + "/other.apk"
     open(other, "wb").write(b"PK\x05\x06" + b"\0" * 18)
     r, log = run("--install", "replace", "--yes", FAKE_DEVICE_APK=other)

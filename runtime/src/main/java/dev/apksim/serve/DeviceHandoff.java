@@ -465,7 +465,8 @@ final class DeviceHandoff {
         }
         lines.add(e.getKey() + ": " + (was == null ? "(unset)" : was) + " -> " + (e.getValue() == null ? "(deleted)" : e.getValue()));
       }
-      optionsUndo(serial, pkg, rec, script);
+      Set<String> skip = new java.util.HashSet<>();
+      optionsUndo(serial, pkg, rec, script, skip);
       Files.createFile(undo, PRIVATE_FILE);
       Files.writeString(undo, script.toString(), StandardCharsets.UTF_8);
       System.out.println("what the device has now is saved in " + undo + " (sh it to put it back)");
@@ -496,7 +497,7 @@ final class DeviceHandoff {
         for (String l : lines) System.out.println("  " + l);
       }
       List<String> missed = new ArrayList<>();
-      options(serial, pkg, rec, missed);
+      options(serial, pkg, rec, missed, skip);
       sh(serial, "am force-stop " + pkg);
       Result start = activity != null ? sh(serial, "am start -n " + q(activity))
           : sh(serial, "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1");
@@ -548,14 +549,18 @@ final class DeviceHandoff {
   }
 
   /** The inverse of {@link #options}, appended to the restore script. */
-  private static void optionsUndo(String serial, String pkg, Map<String, Object> rec, StringBuilder script)
+  private static void optionsUndo(String serial, String pkg, Map<String, Object> rec, StringBuilder script, Set<String> skip)
       throws IOException, InterruptedException {
     String pre = "adb -s " + q(serial) + " shell ";
     if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
       Result r = sh(serial, "cmd uimode night");
-      java.util.regex.Matcher m = java.util.regex.Pattern.compile("(yes|no|auto)").matcher(r.out());
-      if (r.code() != 0 || !m.find()) throw new IOException("cannot read the device's night mode (" + r.out().strip() + "); nothing was changed");
-      script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\b(yes|no|auto|custom_schedule|custom_bedtime)\\b").matcher(r.out());
+      if (r.code() == 0 && m.find()) {
+        script.append(pre).append(q("cmd uimode night " + m.group(1))).append("\n");
+      } else {
+        // Not restorable, so not changed: the rest of the handoff goes ahead.
+        skip.add("appearance");
+      }
     }
     if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) {
       String was = settingsGet(serial, "system", "font_scale");
@@ -616,9 +621,10 @@ final class DeviceHandoff {
   }
 
   /** Appearance, font scale and locale; what has no device form is added to `missed`. */
-  private static void options(String serial, String pkg, Map<String, Object> rec, List<String> missed)
+  private static void options(String serial, String pkg, Map<String, Object> rec, List<String> missed, Set<String> skip)
       throws IOException, InterruptedException {
-    if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
+    if (skip.contains("appearance")) missed.add("appearance (the device's night mode could not be read, so it was left alone)");
+    else if (rec.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) {
       if (sh(serial, "cmd uimode night " + (a.equals("dark") ? "yes" : "no")).code() != 0) missed.add("appearance " + a);
     }
     if (rec.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) {
