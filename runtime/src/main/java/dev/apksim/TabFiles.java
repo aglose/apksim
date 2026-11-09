@@ -42,6 +42,11 @@ final class TabFiles {
       // that exists must be inside the mount (a link the app made would otherwise get its new folders made outside),
       // and again after the folders are made.
       Path mount = mountOf(dev);
+      // A mount the app made a link (its /sdcard, the scratch folder) is not a boundary: the link's target would be. The
+      // app's data folder is the framework's own and may be reached through a link.
+      if (mount != null && !dev.startsWith("/data/data/") && !dev.startsWith("/data/user/") && Files.isSymbolicLink(mount)) {
+        return "error: a link leads out of " + dev;
+      }
       Path realMount = mount == null ? null : mount.toRealPath();
       if (realMount != null) {
         Path up = p.getParent();

@@ -599,6 +599,20 @@ public final class Serve {
       long now = System.currentTimeMillis();
       keptRecs.values().removeIf(v -> (long) v[1] < now);
       keptRecs.put(s.id, new Object[] {k, now + 7 * 24 * 3_600_000L});
+      // On disk too: an agent that exits when idle must still answer a later download (reloaded by keptOf).
+      try {
+        Files.createDirectories(k.dir());
+        java.util.Properties pr = new java.util.Properties();
+        pr.setProperty("key", k.key() == null ? "" : k.key());
+        pr.setProperty("site", k.site() == null ? "" : k.site());
+        pr.setProperty("rids", String.join(",", k.rids()));
+        pr.setProperty("expires", Long.toString(now + 7 * 24 * 3_600_000L));
+        try (java.io.OutputStream o = Files.newOutputStream(k.dir().resolve("meta.properties"))) {
+          pr.store(o, null);
+        }
+      } catch (IOException e) {
+        System.err.println("[serve] could not keep the recordings' access: " + e);
+      }
     }
     if (beam) {
       // Its build's hold starts now (a saved session's, or another running session's, keeps it anyway).
@@ -879,7 +893,22 @@ public final class Serve {
 
   private Session.Kept keptOf(String id) {
     Object[] v = keptRecs.get(id);
-    return v == null || (long) v[1] < System.currentTimeMillis() ? null : (Session.Kept) v[0];
+    if (v != null) return (long) v[1] < System.currentTimeMillis() ? null : (Session.Kept) v[0];
+    if (!id.matches("[0-9a-f]{12}")) return null;
+    Path dir = logs.resolve("rec-" + id);
+    java.util.Properties pr = new java.util.Properties();
+    try (java.io.InputStream in = Files.newInputStream(dir.resolve("meta.properties"), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      pr.load(in);
+      long exp = Long.parseLong(pr.getProperty("expires", "0"));
+      if (exp < System.currentTimeMillis()) return null;
+      String key = pr.getProperty("key", ""), site = pr.getProperty("site", "");
+      Session.Kept k = new Session.Kept(key.isEmpty() ? null : key, site.isEmpty() ? null : site,
+          new java.util.HashSet<>(java.util.Arrays.asList(pr.getProperty("rids", "").split(","))), dir);
+      keptRecs.put(id, new Object[] {k, exp});
+      return k;
+    } catch (IOException | RuntimeException e) {
+      return null;
+    }
   }
 
   /**

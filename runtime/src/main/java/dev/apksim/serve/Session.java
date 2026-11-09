@@ -939,7 +939,25 @@ final class Session {
         throw new PushRefused(413, "this session has taken its " + serve.maxPushTotalMb + " MB of files");
       }
     }
-    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream((int) Math.max(0, Math.min(length, max)));
+    // The body, its copy and its Base64 text are alive together: ~3 times its size, reserved before any is allocated, out
+    // of one budget for every session (the launcher's heap is small), and given back when this upload is done.
+    long reserve = 3 * (length >= 0 ? length : max);
+    if (INFLIGHT.addAndGet(reserve) > INFLIGHT_MAX) {
+      INFLIGHT.addAndGet(-reserve);
+      throw new PushRefused(503, "busy: other uploads are using the server's memory, try again");
+    }
+    try {
+      return pushReserved(path, body, length, max);
+    } finally {
+      INFLIGHT.addAndGet(-reserve);
+    }
+  }
+
+  private static final java.util.concurrent.atomic.AtomicLong INFLIGHT = new java.util.concurrent.atomic.AtomicLong();
+  private static final long INFLIGHT_MAX = 96L << 20;
+
+  private String pushReserved(String path, java.io.InputStream body, long length, long max) throws IOException {
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream((int) Math.max(0, Math.min(length, 1 << 20)));
     byte[] chunk = new byte[1 << 16];
     long left = length >= 0 ? length : max + 1;
     while (left > 0) {
