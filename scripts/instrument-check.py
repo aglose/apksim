@@ -289,7 +289,7 @@ SCENARIOS = {
     "hang-long-message": (1, 3, 9, ["p.C000#m1"]),  # an exception message of several lines, then a deep stack
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     # --isolate: every test's JUnit entry says how long its process took to start and to exit.
-    "isolate-phases": (0, 10, 10, []),
+    "isolate-phases": (0, 10, 9, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
