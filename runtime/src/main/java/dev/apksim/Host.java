@@ -1219,8 +1219,9 @@ public class Host {
         new MotionEvent.PointerProperties[] {props}, new MotionEvent.PointerCoords[] {coords},
         0, 0, 1f, 1f, 0, 0, rotary ? InputDevice.SOURCE_ROTARY_ENCODER : InputDevice.SOURCE_MOUSE, 0);
     List<View> roots = rootViews();
-    if (!roots.isEmpty()) {
-      View top = roots.get(roots.size() - 1);
+    // Rotary input goes to the focused window, as keys do; a mouse wheel to the topmost.
+    View top = rotary ? keyTarget(roots) : roots.isEmpty() ? null : roots.get(roots.size() - 1);
+    if (top != null) {
       int[] at = position(top);
       m.offsetLocation(-at[0], -at[1]);  // raw on the screen, x and y in the window
       top.dispatchGenericMotionEvent(m);

@@ -18,7 +18,7 @@ public class WearableActivityController {
   public static final String EXTRA_LOWBIT_AMBIENT = "com.google.android.wearable.compat.extra.LOWBIT_AMBIENT";
 
   /** The shared library's version (androidx.wear's SharedLibraryVersion reads it): the current one. */
-  private static final int SHARED_LIBRARY_VERSION = 1_00_000 + 8;
+  private static final int SHARED_LIBRARY_VERSION = com.google.android.wearable.WearableSharedLib.version();
 
   private static final List<WearableActivityController> LIVE = new ArrayList<>();
   private static boolean ambientNow;
@@ -61,7 +61,16 @@ public class WearableActivityController {
     }
   }
 
-  public void onResume() {}
+  public void onResume() {
+    // A recreated activity's new controller joins the ambient state the device is in.
+    boolean now = ambient();
+    if (enabled && ambient != now) {
+      synchronized (LIVE) {
+        if (!LIVE.contains(this)) LIVE.add(this);
+      }
+      change(now);
+    }
+  }
 
   public void onPause() {}
 

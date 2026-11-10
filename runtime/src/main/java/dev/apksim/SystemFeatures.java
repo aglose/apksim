@@ -85,6 +85,7 @@ final class SystemFeatures {
       for (String f : TV) want.put(f, true);
     } else if (d.watch()) {
       for (String f : HANDHELD) want.put(f, false);
+      for (String f : list().keySet()) if (f.startsWith("android.hardware.telephony")) want.put(f, false);
       for (String f : WATCH) want.put(f, true);
     } else {
       for (String f : HANDHELD) want.put(f, true);
