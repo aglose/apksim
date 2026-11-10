@@ -54,6 +54,13 @@ import org.robolectric.util.ReflectionHelpers;
 @ConscryptMode(ConscryptMode.Mode.OFF)
 public class Host {
   private static final long IDLE_POLL_NANOS = 2_000_000L;
+  /**
+   * The longest the loop sleeps when nothing is happening (idleWait). Under MAX_CATCH_UP_MS, so the clock catches up
+   * with the time slept on the next turn rather than dropping it as a stall.
+   */
+  private static final long IDLE_SLEEP_MAX_MS = 40;
+  /** Input more recent than this keeps the loop polling: a gesture's events come a few ms apart. */
+  private static final long IDLE_AFTER_INPUT_NANOS = 100_000_000L;
   private static final long FRAME_NANOS = 1_000_000_000L / 120;
   /** The frame grid's rate: 120 Hz, or what --max-fps / the maxfps command cap it at (Features). */
   private static long gridHz() {
@@ -149,6 +156,8 @@ public class Host {
         : Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
 
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
+    idleSleep = Boolean.parseBoolean(System.getProperty("apksim.idleSleep", "true"));
+    wakeHandler = new android.os.Handler(Looper.getMainLooper());
     long lastInput = 0;
     long last = System.nanoTime();
     clockBaseMs = SystemClock.uptimeMillis();
@@ -159,6 +168,7 @@ public class Host {
     long emptySince = 0;
     while (!closed) {
       try {
+        turnWakes = wakeCount.get();  // a wake from here on cuts this turn's idleWait short
         long start = System.nanoTime();
         // About one event per 8 ms: a gesture needs time and looper turns between its events, or the app's
         // gesture detectors see no movement. Real mouse input rarely hits this limit.
@@ -285,7 +295,7 @@ public class Host {
           // next activity from a posted message or a coroutine: the app runs on for a moment before apksim ends.
           if (emptySince == 0) emptySince = System.nanoTime();
           if (System.nanoTime() - emptySince >= Exits.LINGER_MS * 1_000_000L) break;
-          pace(last);
+          pace(last, false);
           continue;
         }
         emptySince = 0;
@@ -321,7 +331,10 @@ public class Host {
           }
         }
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
-        if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
+        // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
+        boolean quiet = idleSleep && !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
+            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+        if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last, quiet);
       } catch (Throwable crash) {
         // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a
         // device the main thread dies with it (Crashes). Returns only with -Dapksim.crashes=log.
@@ -547,7 +560,7 @@ public class Host {
   }
 
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
-  private void pace(long clockSynced) {
+  private void pace(long clockSynced, boolean quiet) {
     long wait = IDLE_POLL_NANOS;
     // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
     long hz = gridHz();
@@ -573,7 +586,52 @@ public class Host {
         wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
       }
     }
+    if (!wanted && quiet && idleWait(clockSynced)) return;
     if (wait > 50_000L) LockSupport.parkNanos(wait);
+  }
+
+  /** -Dapksim.idleSleep=false keeps the 2 ms poll when idle (A/B). */
+  private static boolean idleSleep = true;
+  /** Set while the main thread sleeps in idleWait; wake() clears it. */
+  private static final java.util.concurrent.atomic.AtomicBoolean parked = new java.util.concurrent.atomic.AtomicBoolean();
+  private static volatile android.os.Handler wakeHandler;
+  private static final Runnable NOTHING = () -> {};
+  private static final java.util.concurrent.atomic.AtomicLong wakeCount = new java.util.concurrent.atomic.AtomicLong();
+  /** wakeCount when this loop turn began. Main thread only. */
+  private long turnWakes;
+
+  /**
+   * Sleeps until the next main-queue message is due (at most IDLE_SLEEP_MAX_MS), returning early when another thread
+   * posts to the main queue (Robolectric's poll wakes on an executable message: a worker's post, a coroutine resuming on
+   * Dispatchers.Main, a video picture) or wake() is called (a control command, window input). Polling every 2 ms
+   * instead kept an idle instance at 2.5-5% of a core. False if there is too little time to bother.
+   */
+  private boolean idleWait(long clockSynced) {
+    long nowMs = SystemClock.uptimeMillis();
+    long elapsedMs = (System.nanoTime() - clockSynced) / 1_000_000L;
+    long sleepMs = IDLE_SLEEP_MAX_MS - Math.max(0, elapsedMs);
+    Duration next = ((org.robolectric.shadows.ShadowPausedLooper) shadowOf(Looper.getMainLooper())).getNextScheduledTaskTime();
+    if (!next.isZero()) sleepMs = Math.min(sleepMs, next.toMillis() - nowMs - elapsedMs);
+    if (sleepMs < 3) return false;
+    parked.set(true);
+    // A wake that came after the loop's checks but before parked was set posted nothing: do not sleep through it.
+    if (wakeCount.get() != turnWakes) {
+      parked.set(false);
+      return true;
+    }
+    try {
+      ((org.robolectric.shadows.ShadowPausedLooper) shadowOf(Looper.getMainLooper())).poll(sleepMs);
+    } finally {
+      parked.set(false);
+    }
+    return true;
+  }
+
+  /** Wakes the loop if it sleeps in idleWait. Any thread; does nothing when there is no running Host (test runs). */
+  static void wake() {
+    wakeCount.incrementAndGet();
+    android.os.Handler h = wakeHandler;
+    if (h != null && parked.compareAndSet(true, false)) h.post(NOTHING);
   }
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();

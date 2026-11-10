@@ -75,6 +75,27 @@ What the 94 MB of live heap is (class histogram and a heap dump):
   the test environment set up ~100 ms sooner; less than the 180 ms the provider costs, as the two threads compete
   for class loading. A one-class test run: 1.63 → 1.50 s wall, the same CPU.
 - **C3:** the screenshot bitmap is made for each shot and recycled after it. The suite (157 tests) passes.
+- **D1:** when nothing is wanted (no frame, input in the last 100 ms, queued script, drag, `settle` or command), Host
+  sleeps in Robolectric's `ShadowPausedLooper.poll` until the next main-queue message is due, at most 40 ms (under the
+  50 ms stall limit, so the clock keeps the time slept). A post to the main queue from any thread ends it, as do
+  control commands (`Control.submit`) and window input (`apksim-input-wait`, woken by `simwindow.m`'s queue);
+  `-Dapksim.idleSleep=false` keeps the 2 ms poll. Measured side by side with nothing attached, 30 s windows: headless
+  0.21-0.41 s of CPU against 0.45-0.60 s, windowed 0.81 against 1.24 s. A command reaches an idle loop in 1.3 ms;
+  window resizes reach a frame no later; `timer-check.py` drift -131 ms in 60 s (the old loop: -223 ms);
+  `overlay-input-check.py`, `settle`, `serve-check.py` (tap to frame 30 ms, Shader tab 120 fps) and the suite pass.
+  Not near zero, as hoped: what is left is the JVM's own threads and Robolectric waking every background looper (the
+  ConnectivityThread) at each clock step, ~25 a second now. The earlier 2.4-4.8% baseline included the JIT's
+  warm-up; settled, the 2 ms poll was ~1.5-2%.
+
+## Found not to work as planned
+
+- **C1 (map `resources.arsc`):** Robolectric's binary resources code holds the table as a `byte[]` from end to end
+  (`FileMap.getDataPtr`, `Asset.getBuffer`, `ResTable`, four `ShadowArsc*` shadows), so it cannot be mapped without
+  replacing all of them. Its NATIVE resources mode (`-Drobolectric.resourcesMode=NATIVE`) would read a stored table
+  through the real AssetManager2, but this runtime's native library does not register `ApkAssets`' natives: the test
+  app ends at once with `UnsatisfiedLinkError: ApkAssets.nativeLoad`. Doing C1 means a native runtime built with the
+  resources natives, then a stored copy of the framework's resources, and the fidelity check that switching every
+  app's resource implementation needs. Moved to the bets (E4).
 
 ## Step 0: make the numbers one command
 
@@ -199,6 +220,10 @@ archivable), hence a cold start or a standby per APK. Spike: frames for one DEX 
 **E2. A standby prepared for the last APK** (AGENTS.md, "Not tried"): its classes defined, and with E1 its cache.
 Worth it only if E1's spike shows the gain, since it doubles standby memory unless C4 is in.
 
+**E4. Robolectric's NATIVE resources mode** (C1's way through): build the native runtime with `ApkAssets` and
+`AssetManager` natives, keep the framework's `resources.arsc` stored so AssetManager2 maps it, and compare every
+screen the snapshot specs cover in both modes. 17.5 MB an instance and the table's parse at each cold start.
+
 **E3. A standby for test runs and for Linux.** A C1 standby that `instrument.py` hands shards and reruns to would take
 most of the 1.55 s off each test process; Linux needs the hand-off without `sandbox-exec`. After A and B, when the
 remaining cold cost is known.
@@ -218,8 +243,8 @@ remaining cold cost is known.
 | 0 Numbers in `stats`, `bench.py`, the gate | small | - | - | part done: `stats`, `bench.py --mem`; the gate and call-site count left |
 | A1 BouncyCastle | small | -180 ms cold | - | done: -95 ms cold, -110 ms a test process |
 | C3 Screenshot bitmap on demand | small | -6 to -16 MB | - | done |
-| C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | |
-| D1 Idle loop | medium | idle CPU ~0 | - | |
+| C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | blocked: needs the native resources mode (E4) |
+| D1 Idle loop | medium | idle CPU ~0 | - | done: idle CPU -40 to -55%, not ~0 |
 | B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | |
 | A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | |
 | C4 Standbys give way, D2 idle GC | small each | 364 MB back under pressure; no mid-scroll stall | - | |
@@ -227,6 +252,6 @@ remaining cold cost is known.
 | B2 Jar rewrite | large | the rest of linking | B1 | |
 | E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | |
 
-A1, C3, C1 and D1 are independent and can go in parallel sessions; B1, A2 and A3 all change the cold path and should
+A1, C3 and D1 are done; C1 is blocked (E4). B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process
 ~1.55 → ~0.9 s before its first test, warm ~0.32 → ~0.27 s, an idle instance ~375 → ~300 MB, idle CPU near zero.

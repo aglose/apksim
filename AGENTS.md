@@ -37,7 +37,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     drawn then and again at the vsync (`frames` counts the frames `held for their vsync`). A vsync asked for since the
     last frame waits for the display's next one, and while a timed drag (`swipe ... MS`) runs the loop turns at each
     vsync and sends the move there, as a device consumes batched touch input in the vsync's frame; other input goes
-    out 7 ms apart. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    out 7 ms apart. When nothing is wanted (no frame, no input for 100 ms, no command or `settle`), it sleeps in
+    Robolectric's `ShadowPausedLooper.poll` until the next main-queue message is due, at most 40 ms: a post to the main
+    queue ends it, as do `Control.submit` and window input (`apksim-input-wait` thread); `-Dapksim.idleSleep=false`
+    keeps the old 2 ms poll. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
     (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
     twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
     one. The first frame waits for the bottom window that is

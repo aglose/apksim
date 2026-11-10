@@ -1671,7 +1671,7 @@ final class AdbShell {
       return "error: " + e;
     }
     Control.Pending p = new Control.Pending(args);
-    Control.QUEUE.add(p);
+    Control.submit(p);
     return p.await();
   }
 

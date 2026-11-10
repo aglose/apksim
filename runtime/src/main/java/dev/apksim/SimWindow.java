@@ -62,8 +62,21 @@ final class SimWindow {
       windowOpen = true;
       nativeSetCloseHides(closeHidesWanted);  // a stream viewer may have come before the window (a cold launch)
     }
+    // Host's loop sleeps while nothing happens (Host.idleWait); window input wakes it from here.
+    Thread waiter = new Thread(() -> {
+      long seen = 0;
+      while (true) {
+        long now = nativeWaitInput(seen, 1000);
+        if (now != seen) Host.wake();
+        seen = now;
+      }
+    }, "apksim-input-wait");
+    waiter.setDaemon(true);
+    waiter.start();
     Timing.mark("window-open");
   }
+
+  private static native long nativeWaitInput(long seen, int timeoutMs);
 
   /** Whether the window (and its library) is up: natives other than the open's may be called from then. */
   private static boolean windowOpen;
