@@ -577,6 +577,8 @@ that reaches the wrong window fails it (`keyTarget` in `Host`: keys go to the to
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run).
+`apksim://drawer` opens `DrawerActivity`: a `DrawerLayout` with three items that count clicks, settling through
+ViewDragHelper's Scroller (`DrawerSettleTest`, opt-in, see `--realtime-clock`).
 `apksim://dialogs[?open=full|modal|nonmodal|compose]` opens `DialogsActivity`: a full-screen dialog, a small
 (touch-modal) one, a small FLAG_NOT_TOUCH_MODAL one or a Compose Dialog over it; under all but the third accessibility
 reports only the dialog. Each counts taps on its "Count" button, for clicks at a centred dialog's node bounds
@@ -959,14 +961,22 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N [--timings XML] [--shard I]]
 [--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [--test-timeout SEC]
-[-- APKSIM_OPTS]` runs a
+[--order interleave|longest-first|suite] [--exit-marks] [--reap-early SEC] [-- APKSIM_OPTS]` runs a
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
 process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
 (a test's shard is `abs(description.hashCode() % N)`, AndroidJUnitRunner's `abs(hash) % N` except for a hash of
 `Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests); with `--timings XML` (an
 earlier run's JUnit XML) the shards are balanced by measured time instead, longest first, each named with `-e class`,
-and `--shard I` runs only one of them (a CI matrix). `--record-deps FILE` records which of the app's and tests'
+and `--shard I` runs only one of them (a CI matrix); with `--isolate` the tests' start order is `--order` (default
+`interleave`: the longest and shortest remaining alternate, so a machine's heaviest tests do not all start together and
+push one another past a `Timeout`; `longest-first` was the old order; docs/affected-tests.md). `--exit-marks`
+(`-Dapksim.exitMarks=true`) prints under each isolated test where its process's exit went (`exit marks`: profile,
+class cache, scratch removal, the non-daemon threads left; `halt marks` from `Standby.halt`: net flush, next standby,
+cache sweep), and makes apksim print `APKSIM_EXIT: STATUS` right after `INSTRUMENTATION_CODE`; `--isolate --reap-early
+SEC` takes that line as the process's end, frees its `-j` slot and finishes the teardown in the background, killing the
+process group after SEC s (off by default; everything a test leaves, bundles, recordings, outputs, listeners, is
+written before it; only the class cache save, scratch removal and cache sweep come after). `--record-deps FILE` records which of the app's and tests'
 classes each test runs code of (`-Dapksim.deps=true`: the translator adds a probe to every method of the app's
 packages, `dex/Probes`, and Instrument's `DepsListener` reports each test's classes on stdout), and `--affected-by FILE
 --changed PATH...|--diff REV` runs only the tests that reached a class compiled from a changed `.kt`/`.java` file (by
@@ -1142,7 +1152,11 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   before their deadline and spin the rest (`RealTimeClock.waitUntil`) where the OS overshoots sleeps: macOS VM CI
   runners woke a 16 ms sleep ~115 ms late, so a tap's idle took seconds (issue 201). `--precise-waits on|off|auto`
   (default auto: five 5 ms sleeps probed on first use; margin 4x the median overshoot, 200 ms at most, none under
-  3 ms; one stderr line says so). Costs a core while a main thread waits.
+  3 ms; one stderr line says so). Costs a core while a main thread waits. `-Dapksim.barrierStreakMs=N` sets the
+  250 ms streak (issue 215): a DrawerLayout settling through ViewDragHelper's Scroller (no animator) looks like an
+  endless animation for that long, so an Espresso click right after `openDrawer` acted mid-slide and missed
+  (`DrawerSettleTest` on `apksim://drawer`, `-e drawerRepro true -e realtimeClock true`: fails at 250, passes at 500
+  and 1000 with `RealTimeSwipeTest` still passing; the default is unchanged, and spotting a running Scroller is not done).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
 - Processes started together share one per-APK cache folder (`work/cache/<apk name>-<content key>`, `ApkCache`):
