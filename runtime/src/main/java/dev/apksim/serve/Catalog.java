@@ -46,7 +46,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec");
+      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file");
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
@@ -158,6 +158,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
+    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -169,6 +170,26 @@ final class Catalog {
             + String.join(" ", new java.util.TreeSet<>(LAUNCH_OPTIONS)) + " " + String.join(" ", LAUNCH_FLAGS) + ")");
       }
       String v = i + 1 < given.size() ? given.get(++i) : null;
+      if (o.equals("--sdcard-file")) {
+        // Inline contents (text: or base64) for a path under /sdcard: never a host file. Longer than a plain value may be.
+        if (v == null || v.length() > dev.apksim.SdcardSeeds.FILE_MAX * 2) throw new IOException("--sdcard-file needs PATH=VALUE of at most 64 KB");
+        // A line break in an argument would become a second one in the .ref files that persist launch options: base64.
+        if (v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) throw new IOException("--sdcard-file: use base64 for contents with line breaks or control characters");
+        try {
+          sdcardTotal += dev.apksim.SdcardSeeds.parse(v).bytes().length;
+        } catch (IllegalArgumentException e) {
+          throw new IOException(e.getMessage());
+        }
+        if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 72 KB in all");
+        // The launcher's own budget counts each seed's arguments (value plus the option and property names) and its count.
+        sdcardArgChars += v.getBytes(StandardCharsets.UTF_8).length + 32;  // bytes: the exec limit counts them
+        if (sdcardArgChars > dev.apksim.SdcardSeeds.ARG_CHARS_MAX || ++sdcardSeeds > dev.apksim.SdcardSeeds.COUNT_MAX) {
+          throw new IOException("--sdcard-file: at most " + dev.apksim.SdcardSeeds.COUNT_MAX + " files and 96 KB of arguments in all");
+        }
+        out.add(o);
+        out.add(v);
+        continue;
+      }
       // One argument each (no shell is involved), but never something the launcher would read as an option.
       if (v == null || v.isEmpty() || v.startsWith("-") && !v.matches("-?\\d+(\\.\\d+)?") || v.length() > 300
           || v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {

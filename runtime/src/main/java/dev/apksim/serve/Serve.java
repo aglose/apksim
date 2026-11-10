@@ -852,9 +852,9 @@ public final class Serve {
       return;
     }
     long length = r.chunked() ? -1 : r.contentLength();
-    byte[] raw = r.content().readNBytes((int) Math.min(64 * 1024 + 1, length < 0 ? Long.MAX_VALUE : length));
-    if (raw.length > 64 * 1024) {
-      Http.text(out, 413, "the request body is limited to 64 KB");
+    byte[] raw = r.content().readNBytes((int) Math.min(BODY_MAX + 1, length < 0 ? Long.MAX_VALUE : length));
+    if (raw.length > BODY_MAX) {
+      Http.text(out, 413, "the request body is limited to " + BODY_MAX / 1024 + " KB");
       return;
     }
     try {
@@ -1644,11 +1644,14 @@ public final class Serve {
    * origin), then a grant. A build the agent lacks comes from `source` when its owner allows that address (issue 177),
    * else from the page's server with the ticket, else the tab sends it (`need: upload`, with `why`).
    */
+  /** JSON bodies of addApp and beamStart: room for 256 KB of --sdcard-file contents as base64, and the rest. */
+  private static final int BODY_MAX = 400 * 1024;
+
   private void beamStart(Http.Request r, String o, OutputStream out) throws IOException {
     long length = r.chunked() ? -1 : r.contentLength();
-    byte[] raw = r.content().readNBytes((int) Math.min(64 * 1024 + 1, length < 0 ? Long.MAX_VALUE : length));
-    if (raw.length > 64 * 1024) {
-      Http.text(out, 413, "the request body is limited to 64 KB");
+    byte[] raw = r.content().readNBytes((int) Math.min(BODY_MAX + 1, length < 0 ? Long.MAX_VALUE : length));
+    if (raw.length > BODY_MAX) {
+      Http.text(out, 413, "the request body is limited to " + BODY_MAX / 1024 + " KB");
       return;
     }
     String sha, name, ticket, from, data, source, local = null;
