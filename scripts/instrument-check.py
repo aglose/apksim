@@ -271,6 +271,9 @@ SCENARIOS = {
     # --timings: a listing, then 3 shards of 7 s each (C000's three 5 s tests apart, the 1 s ones two to a shard).
     "balanced": (0, 4, 9, []),
     # 3,000 tests of long names over 2 shards by time: each shard's -e class list is two arguments' worth.
+    # --isolate --shards 3 --shard 0 --timings: the same split, shard 0 (a 5 s test, C002's, listed after the 1 s ones, and two
+    # 1 s ones) run a process a test, -j 1, the 5 s test first: a listing, then 3 processes.
+    "balanced-isolate": (0, 4, 3, []),
     "balanced-big": (0, 5, 3000, []),
     # --affected-by: a change to C000.kt runs C000's tests and C002's, which the deps file has no record of.
     "affected": (0, 2, 6, []),
@@ -359,9 +362,10 @@ def extra_args(sc, d):
     if "balanced" in sc:
         xml = os.path.join(d, "timings.xml")
         with open(xml, "w") as f:
-            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
+            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == (2 if sc == "balanced-isolate" else 0) else 1}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
-        return ["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
+        return (["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
+                + (["--isolate", "-j", "1", "--shards", "3", "--shard", "0"] if sc == "balanced-isolate" else []))
     if sc.startswith("interrupt"):
         return ["--test-timeout", "0"]
     if sc.startswith("hang") or sc in ("slow", "cidfile-hang"):
@@ -478,6 +482,7 @@ def main():
                 (f"{len(cases)} entries, expected {entries}", len(cases) != entries),
                 ("an entry twice", len(set(names)) != len(names)),
                 ("a test run twice", len(set(ran)) != len(ran)),
+                (f"ran {ran}, expected the 5 s test first", sc == "balanced-isolate" and not ran[0].startswith("p.C002#")),
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),

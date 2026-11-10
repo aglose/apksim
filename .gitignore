@@ -10,3 +10,5 @@ local.properties
 CLAUDE.local.md
 AGENTS.local.md
 dist/
+__pycache__/
+*.pyc
