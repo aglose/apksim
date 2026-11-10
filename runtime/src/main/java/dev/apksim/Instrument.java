@@ -119,10 +119,18 @@ final class Instrument {
       return 0;
     }
     if (Boolean.parseBoolean(args.get("log"))) {
-      // "-e log true": report every test as passed without running it (how tools list a suite).
+      // "-e log true": report every test as passed without running it (how tools list a suite). With "-e
+      // apksimListIgnored true" (instrument.py --isolate), a test @Ignore'd on its method or class is reported ignored
+      // instead, as running it would: such a test needs no process of its own (issue 205). One that skips only at run
+      // time (an assumption) is still listed as passed. Off by default, as a device's runner lists none as ignored.
+      boolean ignored = Boolean.parseBoolean(args.get("apksimListIgnored"));
       Description all = request.getRunner().getDescription();
       raw.testRunStarted(all);
       for (Description d : leaves(all, new ArrayList<>())) {
+        if (ignored && isIgnored(d)) {
+          raw.testIgnored(d);
+          continue;
+        }
         raw.testStarted(d);
         raw.testFinished(d);
       }
@@ -360,6 +368,13 @@ final class Instrument {
         return "shard " + i + " of " + n;
       }
     };
+  }
+
+  /** Whether JUnit would report this test ignored without running anything: @Ignore on its method or its class. */
+  private static boolean isIgnored(Description d) {
+    if (d.getAnnotation(org.junit.Ignore.class) != null) return true;
+    Class<?> c = d.getTestClass();
+    return c != null && c.isAnnotationPresent(org.junit.Ignore.class);
   }
 
   private static List<Description> leaves(Description d, List<Description> out) {

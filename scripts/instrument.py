@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
+Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
                      [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
@@ -19,6 +19,10 @@ backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runn
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does. Like the Orchestrator's runner side, it leaves a listed
 `initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
+A test @Ignore'd on its method or class is reported ignored without a process (the listing asks apksim for them with
+`-e apksimListIgnored true`); one that skips only at run time (an assumption) still gets its process. `--run-ignored`
+gives each a process, as the Orchestrator does (apksim sets up no runner listeners in a process whose every test is
+ignored, so the app's own listeners do not hear of them either way).
 --reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
 ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
 nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
@@ -900,6 +904,21 @@ article>div{{min-width:0}} h2{{font-size:16px;margin:0}} h2 span{{color:var(--di
 
 
 DROPPED_CLASS_ERRORS = set()  # classes whose listed initializationError was left out
+IGNORED = set()  # --isolate: (class, method) the listing reported @Ignore'd, which then get no process
+
+
+def listing_args(a):
+    """The -e arguments a listing runs with. Under --isolate (without --run-ignored) apksim is also asked to report
+    @Ignore'd tests as ignored (`-e apksimListIgnored true`), so that they need no process; a runtime that does not know
+    the argument lists them as passed, and they run as before."""
+    extra = [("apksimListIgnored", "true")] if a.isolate and not a.run_ignored else []
+    return a.e + [("log", "true")] + extra
+
+
+def note_ignored(a, listed):
+    """Remembers the tests a --isolate listing reported ignored (see listing_args)."""
+    if a.isolate and not a.run_ignored:
+        IGNORED.update((c, m) for c, m, s, _ in listed if s == "ignored")
 
 
 def drop_class_errors(a, tests):
@@ -916,11 +935,12 @@ def drop_class_errors(a, tests):
 
 def list_suite(a, passthrough):
     """The suite as a.e names it, listed by apksim (`-e log true`): [(class, method)], or exits if it cannot be listed."""
-    listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+    listed = apksim(a.app, a.test, listing_args(a), passthrough)
     why = incomplete(listed, parse(listed.stdout))
     if why:
         sys.stderr.write(listed.stderr[-4000:])
         sys.exit(f"listing the suite failed: {why}")
+    note_ignored(a, parse(listed.stdout))
     return drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
 
 
@@ -951,6 +971,9 @@ def main():
     p.add_argument("app")
     p.add_argument("test")
     p.add_argument("--isolate", action="store_true")
+    p.add_argument("--run-ignored", action="store_true",
+                   help="--isolate: give @Ignore'd tests a process each, as the Orchestrator does (by default they "
+                   "are reported ignored without one)")
     p.add_argument("--keep-class-errors", action="store_true",
                    help="keep listed initializationError entries in --isolate's and --shards' suites (the orchestrator drops them)")
     p.add_argument("-j", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 3)))
@@ -1097,7 +1120,8 @@ def main():
         tests = selected
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
-        listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+        listed = apksim(a.app, a.test, listing_args(a), passthrough)
+        note_ignored(a, parse(listed.stdout))
         tests = drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
         why = incomplete(listed, parse(listed.stdout))
         if why:
@@ -1114,6 +1138,15 @@ def main():
                   + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
             tests = lists[a.shard]
         suite_order = {t: i for i, t in enumerate(tests)}
+        # @Ignore'd tests (as the listing reported them) are reported ignored without a process: one would only start
+        # up, report the test ignored and exit. (Its runner listeners would not hear of it either: apksim sets none up
+        # in a process whose every test is ignored.)
+        skipped = [t for t in tests if t in IGNORED]
+        if skipped:
+            tests = [t for t in tests if t not in IGNORED]
+            print(f"{len(skipped)} @Ignore'd tests reported ignored without a process", file=sys.stderr)
+            for t in skipped:
+                results.append((t[0], t[1], "ignored", "", 0.0))
         order = a.order if timings else "suite"
         if order == "longest-first":
             tests = affected.longest_first(tests, timings)

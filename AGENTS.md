@@ -27,6 +27,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
     BouncyCastleProvider: ~100 ms off a cold first frame and a test process's start; `-Dapksim.initAhead=false`).
+    Its jar is unsigned in `work/lib` (`gradle deps` strips the signature files): the JVM's AOT cache skips signed jars,
+    and with them its ~670 classes are in the cache (issue 205).
     Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment
     is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
     sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
@@ -859,7 +861,8 @@ code runs before the launch. It then waits for the JIT queue to drain (~2.2 s fr
 - An instance from a standby has the standby's environment and PID, not the launcher's: `scripts/ctl.py` reads the
   APK from `work/tmp/<pid>/launch.info`. Resolve paths from commands with `Storage.absolute`, not
   `Path.toAbsolutePath` (the JDK fixes that at JVM start).
-- `-Dapksim.timing=verbose` prints finer startup marks (app info, classes, sandbox, application state, host setup).
+- `-Dapksim.timing=verbose` prints finer startup marks (app info, classes, sandbox, application state, host setup),
+  each with the process's CPU time so far (all threads).
 - Tried without gain: one merged uncompressed class-path jar (the JDK's 40-jar search per app class was not the
   cost), lower JIT thresholds (`CompileThresholdScaling` flooded the compile queue), more compiler threads.
 - Measured 2026-11-03 (JFR, `-Dapksim.timing=verbose`): of a ~310 ms warm launch of the test app, the APK index and
@@ -1012,9 +1015,13 @@ a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`:
 Each test gets a fresh Application and data folder (the app's persistent data is not used), but app statics carry over
 within a process. `scripts/instrument.py APP TEST [--isolate] [-j N] [--shards N [--timings XML] [--shard I]]
 [--xml FILE] [--record-deps FILE | --affected-by FILE --changed PATH...|--diff REV] [--test-timeout SEC]
-[--order interleave|longest-first|suite] [--exit-marks] [--reap-early SEC] [-- APKSIM_OPTS]` runs a
+[--order interleave|longest-first|suite] [--exit-marks] [--reap-early SEC] [--run-ignored] [-- APKSIM_OPTS]` runs a
 suite and writes JUnit XML (with each test's time, from when its output arrived); `--isolate` gives every test its own
-process, as the AndroidX Test Orchestrator with `clearPackageData` does; `--shards N` splits the suite over N processes
+process, as the AndroidX Test Orchestrator with `clearPackageData` does, except that a test `@Ignore`'d on its method or
+class is reported ignored without one (its listing passes `-e apksimListIgnored true`, which makes `Instrument`'s `-e log
+true` listing report such tests ignored rather than passed; an assumption's skip still needs its process;
+`--run-ignored` gives them one, as the Orchestrator does; the app's runner listeners hear of them neither way, as a
+process whose every test is ignored sets none up; issue 205); `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
 (a test's shard is `abs(description.hashCode() % N)`, AndroidJUnitRunner's `abs(hash) % N` except for a hash of
 `Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests); with `--timings XML` (an

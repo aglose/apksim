@@ -274,6 +274,24 @@ screen the snapshot specs cover in both modes. 17.5 MB an instance and the table
 most of the 1.55 s off each test process; Linux needs the hand-off without `sandbox-exec`. After A and B, when the
 remaining cold cost is known.
 
+Measured for issue 205 (2026-11-10, after A and B; `-Dapksim.timing=verbose` now prints each mark's process CPU): a
+one-test process of the test app reaches its first test's setup at ~0.8 s and ~1.3 CPU-seconds. Of that, what does not
+depend on the app (JVM, sandbox, native runtime) is ~0.52 s and ~0.92 CPU-seconds; the rest is the runner probe, the
+app's classes and its Application. A standby would take at most that ~0.5 s of wall time off each process and no CPU:
+its boot runs once per test all the same, since each test needs a fresh JVM for its statics. On the CI Macs of the
+issue, CPU-bound at `-j 4`, that is little, so E3 is not done; it pays only where cores sit idle. What did pay:
+
+- **Bouncy Castle in the AOT cache:** the JVM's AOT cache skips every class of a signed jar, and bcprov (~670 classes,
+  loaded by `AndroidTestEnvironment` in every process) is signed. `gradle deps` now strips the signature files (OpenJDK
+  does not require JCE providers to be signed). One-test process, 8 interleaved runs: 1.71 → 1.64 CPU-seconds, 1.49 →
+  1.43 s. The suite (208 tests, `--isolate -j 4`, 3 interleaved runs, medians): 63.6 → 62.1 s, 374 → 364 CPU-seconds.
+- **@Ignore'd tests without a process** (`instrument.py --isolate`, `-e apksimListIgnored true`): each one saved ~1 s
+  here and 2.5-16.6 s on the issue's CI.
+
+Still spun at run time in every test process: ~1,100 `LambdaForm$MH` hidden classes, most likely the method handle
+adaptations B1's direct binding still builds (`filterArguments`, `asType`; not traced), which the JDK 24 AOT cache does
+not keep. B2 would remove most of the call sites they serve.
+
 ## Measured for this plan and dropped
 
 - **A2 (the font map from a file):** measured inside a launch, `loadPreinstalledSystemFontMap` takes 34 ms, not the ~115
@@ -288,6 +306,11 @@ remaining cold cost is known.
   loading. Not done.
 - **C6 (a smaller young generation for fleets):** stays an option (`--jvm -Xmn32m`, cold launches), as measured above.
 
+- **An AOT cache trained on a test run** (issue 205, idea 2): trained on two of the test app's test classes instead of a
+  launch, a one-test process of another class took 1.56 s and 1.85 CPU-seconds against 1.58 and 1.86 with the launch's
+  cache (6 interleaved runs; 2.39 and 2.75 with none). The launch's cache already holds the framework, Robolectric and
+  JUnit; what a test run adds is the app's and test APK's own classes, which come from DEX through `AppClasses` and
+  cannot be archived. Not done.
 - `-XX:ArchiveRelocationMode=0`: the 69 MB of written AOT cache pages and the launch time did not move.
 - A smaller initial heap with tight free ratios (`-Xms96m`, `MaxHeapFreeRatio=25`): same launch time, same
   footprint. The old generation is all live, so there is nothing to give back; shrink the live set instead (C1, C2).
