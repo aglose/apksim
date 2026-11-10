@@ -67,6 +67,9 @@ the tests (docs, JVM unit tests: `--ignore '*.md' --ignore '*/src/test/*'`).
 --timings XML (an earlier run's --xml; repeatable) makes --shards split the tests by their measured times, longest first,
 each shard given an `-e class` list, instead of by hash. --shard I runs only shard I (0-based) of the N, for CI jobs
 on separate machines; every job must be given the same suite, timings and change.
+With --isolate, --shards N --shard I (required: the processes are the tests, so there is no "all shards at once") runs
+shard I's tests, balanced by the same rule (by count without timings), each in its own process, -j at a time. With
+--timings --isolate starts the longest tests first, so the last slots to finish hold short tests.
 """
 import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
@@ -938,9 +941,8 @@ def main():
 
     t0 = time.time()
     results = []  # (class, method, status, stack, seconds)
-    if a.shards > 1 and a.isolate:
-        p.error("--shards splits a suite over processes that each run many tests; --isolate gives every test its own"
-                " process already (use -j for how many at a time)")
+    if a.shards > 1 and a.isolate and a.shard is None:
+        p.error("--shards with --isolate splits the tests over machines, and each runs its own: give --shard I")
     if a.shard is not None and not 0 <= a.shard < a.shards:
         p.error("--shard I runs shard I of --shards N: 0 <= I < N")
     if a.record_deps and a.affected_by:
@@ -972,7 +974,7 @@ def main():
             print(f"{len(selected)} of {len(listing)} tests affected by {len(changed)} changed files"
                   + (f" ({unknown} of them new or not recorded)" if unknown else ""), file=sys.stderr)
     timings = affected.read_timings(a.timings)
-    if a.shards > 1 and (timings or selected is not None):
+    if a.shards > 1 and not a.isolate and (timings or selected is not None):
         # Shards by measured time (or, without timings, by count), each named with -e class.
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets which tests each shard runs itself")
@@ -993,7 +995,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
             for got in pool.map(balanced, which):
                 results += got
-    elif a.shards > 1:
+    elif a.shards > 1 and not a.isolate:
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets -e numShards and shardIndex itself")
         which = range(a.shards) if a.shard is None else [a.shard]
@@ -1026,6 +1028,18 @@ def main():
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
     if a.isolate:
+        if a.shards > 1:  # this machine's share: balanced by measured time (by count without timings)
+            if any(k in ("numShards", "shardIndex") for k, _ in a.e):
+                p.error("--shards sets which tests each shard runs itself")
+            lists, totals = affected.balance(tests, timings, a.shards)
+            print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
+                  + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
+            tests = lists[a.shard]
+        suite_order = {t: i for i, t in enumerate(tests)}
+        if timings:
+            tests = affected.longest_first(tests, timings)
+        print(f"{len(tests)} tests to run, longest first" if timings else f"{len(tests)} tests to run", file=sys.stderr)
+
         def one(t):
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
@@ -1047,6 +1061,7 @@ def main():
                 print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
                       + (f" (start-up {ph[0]:.1f} s, test {ph[1]:.1f} s, exit {ph[2]:.1f} s)" if ph else ""),
                       file=sys.stderr)
+        results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
 
     failed = [r for r in results if r[2] == "failed"]
     for c, m, s, st, _ in failed:
