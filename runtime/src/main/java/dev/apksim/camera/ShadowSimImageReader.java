@@ -35,6 +35,8 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
   private boolean closed;
   private final ArrayDeque<FakeImage> queued = new ArrayDeque<>();
   private int acquired;
+  /** Images handed out and not closed: closing the reader invalidates them, as on a device. */
+  private final java.util.Set<FakeImage> held = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
   private final ArrayDeque<ByteBuffer> freeBuffers = new ArrayDeque<>();
 
   // ImageFormat's and PixelFormat's values (the instrumented framework's constants are not compile-time constants).
@@ -72,7 +74,7 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
   }
 
   /** Queues the camera's frame (sensor-oriented ARGB, the reader's size) as an Image and tells the reader's listener. */
-  static boolean offer(ImageReader r, Bitmap raw, long timestamp) {
+  static boolean offer(ImageReader r, Bitmap raw, long timestamp, int jpegOrientation) {
     ShadowSimImageReader s = of(r);
     if (s == null) return false;
     int w = r.getWidth(), h = r.getHeight(), format = r.getImageFormat();
@@ -97,7 +99,7 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
       case JPEG -> {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         raw.compress(Bitmap.CompressFormat.JPEG, 90, out);
-        byte[] bytes = out.toByteArray();
+        byte[] bytes = withOrientation(out.toByteArray(), jpegOrientation);
         ByteBuffer b = ByteBuffer.allocateDirect(bytes.length);
         b.put(bytes).flip();
         image.planes = new Image.Plane[] {new FakePlane(b, 0, 0)};
@@ -125,6 +127,32 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
       });
     }
     return true;
+  }
+
+  /**
+   * The JPEG with an EXIF Orientation for the request's JPEG_ORIENTATION, as a camera HAL that does not turn the pixels
+   * writes it: the sensor-oriented picture then shows upright in a viewer. Bitmap.compress writes no EXIF.
+   */
+  static byte[] withOrientation(byte[] jpeg, int degrees) {
+    int tag = switch (((degrees % 360) + 360) % 360) {
+      case 90 -> 6;
+      case 180 -> 3;
+      case 270 -> 8;
+      default -> 1;
+    };
+    byte[] app1 = {
+      (byte) 0xFF, (byte) 0xE1, 0, 34,  // APP1, its length (with these two bytes)
+      'E', 'x', 'i', 'f', 0, 0,
+      'M', 'M', 0, 42, 0, 0, 0, 8,  // big-endian TIFF header, IFD0 at 8
+      0, 1,  // one entry: Orientation, SHORT, count 1
+      0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, (byte) tag, 0, 0,
+      0, 0, 0, 0,  // no next IFD
+    };
+    byte[] out = new byte[jpeg.length + app1.length];
+    System.arraycopy(jpeg, 0, out, 0, 2);  // SOI
+    System.arraycopy(app1, 0, out, 2, app1.length);
+    System.arraycopy(jpeg, 2, out, 2 + app1.length, jpeg.length - 2);
+    return out;
   }
 
   private static ByteBuffer sized(ByteBuffer b, int size) {
@@ -204,14 +232,15 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
 
   private FakeImage next() {
     if (closed) throw new IllegalStateException("ImageReader is closed");
-    if (queued.isEmpty()) return null;
     if (acquired >= reader.getMaxImages()) {
       throw new IllegalStateException(String.format("maxImages (%d) has already been acquired, call #close before"
           + " acquiring more.", reader.getMaxImages()));
     }
+    if (queued.isEmpty()) return null;
     acquired++;
     FakeImage image = queued.poll();
     image.acquired = true;
+    held.add(image);
     return image;
   }
 
@@ -221,6 +250,8 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
       closed = true;
       for (FakeImage i : queued) i.invalidate();
       queued.clear();
+      for (FakeImage i : held) i.invalidate();
+      held.clear();
       freeBuffers.clear();
     }
     reflector(ImageReaderReflector.class, reader).close();
@@ -228,7 +259,7 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
 
   void released(FakeImage image) {
     synchronized (lock) {
-      if (image.acquired) acquired--;
+      if (image.acquired && held.remove(image)) acquired--;
       if (image.buffer != null && !closed && freeBuffers.size() < 2) freeBuffers.add(image.buffer);
     }
   }

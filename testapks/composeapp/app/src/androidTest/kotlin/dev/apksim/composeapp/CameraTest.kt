@@ -209,13 +209,19 @@ class CameraTest {
     waitFor("10 frames") { lumas.size >= 10 }
     // A still capture between the repeating frames, as an app takes a picture.
     var stillDone = false
-    session!!.capture(device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply { addTarget(still.surface) }.build(),
+    session!!.capture(device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+      addTarget(still.surface)
+      set(CaptureRequest.JPEG_ORIENTATION, 90)
+    }.build(),
       object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureSequenceCompleted(s: CameraCaptureSession, sequenceId: Int, frameNumber: Long) { stillDone = true }
       }, handler)
     waitFor("a JPEG") { jpeg != null && stillDone }
     val picture = android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg!!.size)
     assertEquals("1920x1080", "${picture.width}x${picture.height}")
+    // The request's JPEG_ORIENTATION as EXIF, as a camera that leaves the pixels sensor-oriented writes it.
+    val exif = android.media.ExifInterface(java.io.ByteArrayInputStream(jpeg))
+    assertEquals(android.media.ExifInterface.ORIENTATION_ROTATE_90, exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 0))
     session!!.stopRepeating()
     session!!.close()
     device.close()

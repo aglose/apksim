@@ -183,11 +183,24 @@ public final class FakeCamera {
       synchronized (d) {
         d.singles.removeIf(s -> s.session == session && dropped.add(s));
       }
-      for (Sequence s : dropped) s.tell(cb -> cb.onCaptureSequenceAborted(s.session, s.id));
+      for (Sequence s : dropped) onCameraThread(() -> s.tell(cb -> cb.onCaptureSequenceAborted(s.session, s.id)));
     }
   }
 
+  /**
+   * Tells a sequence's callback it ended, on the camera thread after the frame in flight (if any) has been delivered:
+   * a device reports onCaptureSequenceCompleted only after the sequence's last onCaptureCompleted.
+   */
   private static void end(Sequence s) {
+    onCameraThread(() -> ended(s));
+  }
+
+  private static void onCameraThread(Runnable r) {
+    start();
+    thread.execute(r);
+  }
+
+  private static void ended(Sequence s) {
     long last = s.lastFrame;
     if (last >= 0) {
       s.tell(cb -> cb.onCaptureSequenceCompleted(s.session, s.id, last));
@@ -277,7 +290,8 @@ public final class FakeCamera {
     seq.tell(cb -> cb.onCaptureStarted(session, request, timestamp, frameNumber));
     for (Surface target : request.getTargets()) {
       try {
-        deliver(target, device.getId(), n, wall, timestamp);
+        Integer jpeg = request.get(CaptureRequest.JPEG_ORIENTATION);
+        deliver(target, device.getId(), n, wall, timestamp, jpeg == null ? 0 : jpeg);
       } catch (RuntimeException ex) {
         System.err.println("[apksim] camera: a frame for " + target + ": " + ex);
       }
@@ -302,7 +316,7 @@ public final class FakeCamera {
     return front(cameraId) ? (sensor + displayRotation) % 360 : (sensor - displayRotation + 360) % 360;
   }
 
-  private static void deliver(Surface target, String cameraId, long n, long wall, long timestamp) {
+  private static void deliver(Surface target, String cameraId, long n, long wall, long timestamp, int jpegOrientation) {
     ImageReader reader = readerOf(target);
     if (reader != null) {
       int w = reader.getWidth(), h = reader.getHeight(), format = reader.getImageFormat();
@@ -312,7 +326,7 @@ public final class FakeCamera {
         return;
       }
       Bitmap raw = raw(w, h, imageRotation(cameraId), n, wall);
-      if (ShadowSimImageReader.offer(reader, raw, timestamp)) {
+      if (ShadowSimImageReader.offer(reader, raw, timestamp, jpegOrientation)) {
         images.incrementAndGet();
       } else {
         dropped.incrementAndGet();
