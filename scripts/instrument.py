@@ -281,7 +281,7 @@ def apksim(app, test, extra_args, apksim_opts):
                 exit_code.append(int(line.split(": ")[1]))
             except ValueError:
                 pass
-            if REAP_EARLY and "INSTRUMENTATION_CODE: " in "".join(lines[-5:]) and not quit_sent.is_set():
+            if REAP_EARLY and any(l.startswith("INSTRUMENTATION_CODE: ") for l in reversed(lines)) and not quit_sent.is_set():
                 break
             continue
         lines.append(line)
