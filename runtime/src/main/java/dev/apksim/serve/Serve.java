@@ -1640,7 +1640,6 @@ public final class Serve {
     byte[] rnd = new byte[6];
     RANDOM.nextBytes(rnd);
     String name = prefix + HexFormat.of().formatHex(rnd);
-    if (prefix.equals("ks") && !holdSeed(name)) throw new IOException("its slot is held elsewhere: try again");
     // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
     // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
     Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
@@ -1649,6 +1648,8 @@ public final class Serve {
         || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
       throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
     }
+    // Held (ks) only now, past the checks that can throw: from here every failure gives it back.
+    if (prefix.equals("ks") && !holdSeed(name)) throw new IOException("its slot is held elsewhere: try again");
     claim.accept(name);
     try {
       SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));

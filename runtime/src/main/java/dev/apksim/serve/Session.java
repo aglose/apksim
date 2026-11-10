@@ -220,7 +220,20 @@ final class Session {
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
     serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;
-    if (!serve.beam) prepareKept(apk);
+    if (!serve.beam) {
+      prepareKept(apk);
+      // The tab may have left while the APK was read or its kept data unpacked: stop() erased what it saw then, which
+      // was not this slot (named just now). It goes here, then its hold (another session may take the key meanwhile:
+      // it reads the kept pack, not this copy).
+      if (ended) {
+        String seed = seedSlot;
+        if (seed != null && seed.startsWith("ks")) {
+          SlotPack.dropSeed(serve.state, seed, null, this::logLine);
+          serve.releaseSeed(seed);
+        }
+        return;
+      }
+    }
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
