@@ -102,6 +102,9 @@ final class Session {
   volatile String keptState;
   /** The APK this session launched (a URL-added app's download included, whose catalog entry has no path). */
   volatile Path launchApk;
+  /** That APK's SHA-256 and verified signers, read before the instance starts: what the kept data is labelled with. */
+  volatile String launchSha;
+  volatile List<String> launchSigners;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -1641,12 +1644,20 @@ final class Session {
     String state, why = null;
     try {
       keepPkg = dev.apksim.ApkCache.manifestPackage(apk);
+      // The build's identity now, before it launches: a local --apps file replaced while the session runs must not
+      // label this session's data as the replacement's (which could then reopen it, signed by another key).
+      launchSha = serve.catalog.sha256(apk);
+      try {
+        launchSigners = ApkSigners.of(apk).certs();
+      } catch (IOException e) {
+        launchSigners = List.of();  // only this build reopens it then
+      }
       KeptStore.Found f = seedSlot != null ? null : serve.kept.find(keepId, keepPkg);
       if (seedSlot != null) state = "restored";
       else if (f == null) state = "new";
       else {
-        boolean same = serve.catalog.sha256(apk).equals(f.sha256());
-        List<String> signers = same ? f.signers() : ApkSigners.of(apk).certs();
+        boolean same = launchSha.equals(f.sha256());
+        List<String> signers = same ? f.signers() : launchSigners;
         if (!same && (f.signers().isEmpty() || !signers.equals(f.signers()))) {
           state = "refused";
           why = "this build is signed by another key than the one its data was kept with (an update keeps an app's data only"
@@ -1680,23 +1691,16 @@ final class Session {
       logLine("[serve] not kept: the app's data is not in the slot it was given");
       return;
     }
-    Path apk = launchApk;
-    if (apk == null) {
-      logLine("[serve] not kept: the session's APK is not known");
+    if (launchSha == null || launchSigners == null) {
+      logLine("[serve] not kept: the session's build is not known");
       return;
     }
     Path pack = null;
     try {
       pack = serve.kept.newPack(keepId, keepPkg);
       long skipped = packWithDeadline(expected, pack);
-      List<String> signers;
-      try {
-        signers = ApkSigners.of(apk).certs();
-      } catch (IOException e) {
-        signers = List.of();  // only this build reopens it then
-      }
       long size = Files.size(pack);
-      serve.kept.save(keepId, keepPkg, pack, serve.catalog.sha256(apk), signers);
+      serve.kept.save(keepId, keepPkg, pack, launchSha, launchSigners);
       pack = null;
       logLine("[serve] kept the app's data (" + (size >> 10) + " KB)" + (skipped > 0 ? ", less " + skipped + " links or special files" : ""));
     } catch (IOException | RuntimeException e) {

@@ -52,8 +52,41 @@ final class KeptStore {
     this.secret = ("apksim-kept\0" + (token == null ? "" : token)).getBytes(StandardCharsets.UTF_8);
   }
 
+  /** Held while this server keeps sessions: one server per state folder owns the store (claim). */
+  private java.nio.channels.FileChannel lockChannel;
+  private volatile boolean owned;
+
   boolean on() {
-    return max > 0;
+    return max > 0 && owned;
+  }
+
+  /**
+   * Takes the store for this server (an exclusive lock on `kept/.lock`, held for the process's life), once it has bound
+   * its port. Another server on the same state folder keeps nothing meanwhile: two would reserve the same key in two
+   * processes, and each would sweep what the other uses. With `--keep-max 0` it is never taken, so such a server
+   * neither keeps nor deletes anything.
+   */
+  boolean claim() {
+    if (max <= 0) return false;
+    try {
+      Files.createDirectories(dir);
+      java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(dir.resolve(".lock"),
+          java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+      java.nio.channels.FileLock l = ch.tryLock();
+      if (l == null) {
+        ch.close();
+        return false;
+      }
+      lockChannel = ch;
+      owned = true;
+      return true;
+    } catch (IOException | java.nio.channels.OverlappingFileLockException e) {
+      return false;
+    }
+  }
+
+  boolean owned() {
+    return owned;
   }
 
   static boolean validKey(String key) {
@@ -152,7 +185,13 @@ final class KeptStore {
       p.setProperty("saved", Long.toString(now));
       p.setProperty("used", Long.toString(now));
       writeMeta(e, p);  // the commit: from here this pack is the kept one
-      if (before != null && !before.equals(pack)) Files.deleteIfExists(before);
+      if (before != null && !before.equals(pack)) {
+        try {
+          Files.deleteIfExists(before);
+        } catch (IOException x) {
+          // best effort: the save stands, and the sweep removes a pack no metadata names
+        }
+      }
     }
     sweep();
   }
@@ -201,12 +240,13 @@ final class KeptStore {
    * has open; and packs left half written (a server that stopped mid-pack). Hourly and after each save.
    */
   synchronized void sweep() {
-    if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return;
+    if (!owned || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return;
     long now = System.currentTimeMillis();
     List<Object[]> live = new ArrayList<>();  // {entry, used}
     try (Stream<Path> ids = Files.list(dir)) {
       for (Path d : ids.toList()) {
         String id = d.getFileName().toString();
+        if (id.equals(".lock")) continue;  // the store's own lock (claim): deleting it would let a second server take a new one
         if (!id.matches("[0-9a-f]{32}") || !Files.isDirectory(d, LinkOption.NOFOLLOW_LINKS)) {
           SlotPack.deleteTree(d);
           continue;

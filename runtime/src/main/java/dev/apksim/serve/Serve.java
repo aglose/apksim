@@ -448,8 +448,6 @@ public final class Serve {
     catalog.onReady = warmer::enqueue;
     if (!beam) {
       kept = new KeptStore(state.resolve(home + "/kept"), token, keepMax, keepDays != null ? keepDays : 14);
-      dropUnusedSeeds();
-      kept.sweep();
     }
     ServerSocket server;
     if (launchd) {
@@ -475,6 +473,16 @@ public final class Serve {
     if (beam) System.err.printf("[beam] agent on 127.0.0.1:%d (protocol %d), up to %d sessions; sites allowed: %s%n", server.getLocalPort(),
         Beam.PROTOCOL, max, agent.trust().entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList());
     if (beam) System.err.println("[beam] keeps: " + store.config.describe() + "; " + store.saved().size() + " saved sessions");
+    // Kept sessions (issue 221): only once the port is ours, and only by the one server that holds the store, so a
+    // second server on this state folder (a busy port, or --keep-max 0) deletes nothing.
+    if (kept != null && keepMax > 0) {
+      if (kept.claim()) {
+        dropUnusedSeeds();
+        kept.sweep();
+      } else {
+        System.err.println("[serve] another server keeps sessions in " + state + ": this one keeps none");
+      }
+    }
     warmStandby();
     boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
@@ -489,8 +497,10 @@ public final class Serve {
       if (beam) sweepBeam();
       else {
         catalog.sweep(24 * 3_600_000L);
-        kept.sweep();
-        dropUnusedSeeds();
+        if (kept.owned()) {
+          kept.sweep();
+          dropUnusedSeeds();
+        }
       }
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
@@ -1582,7 +1592,8 @@ public final class Serve {
         throw new IOException("its data is gone (restored already, or expired)");
       }
       try {
-        return seedFrom(zip, app.path(), n -> {}, n -> {});
+        // Serve's own namespace (ks): an agent sharing the state folder sweeps bm slots it does not know.
+        return seedFrom(zip, app.path(), "ks", n -> {}, n -> {});
       } finally {
         Files.deleteIfExists(zip);
       }

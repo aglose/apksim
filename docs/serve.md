@@ -47,7 +47,9 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
 - `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
   in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).
-  Off by default: kept data outlives the session it came from.
+  Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on
+  `serve/kept/.lock`, taken once its port is bound); another started on the same folder keeps none and deletes none
+  (its tabs are told `off`), and a server with `--keep-max 0` never touches what was kept.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
 - `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
@@ -103,7 +105,8 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   is `reopened`; another build is `copied` only when the same key signs both, as Android keeps an update's data, and
   otherwise `refused` (it starts empty and keeps nothing, so what was kept stays). The tab is told which after the APK
   is ready and before the app launches, as `d {"kept":"new"|"reopened"|"copied"|"refused"|"failed"|"busy"|"off","why"}`
-  (`restored` when `restore=` data came with it, which wins and is then kept). A session that ends with its data kept
+  (`restored` when `restore=` data came with it, which wins and is then kept). Kept data is labelled with the build's
+  SHA-256 and signers as read when its session started, so replacing a catalog file meanwhile changes nothing. A session that ends with its data kept
   says so in its log.
 - **One session per key:** a second start with a key in use runs without the kept data and keeps nothing (`busy`), or,
   with `keepBusy=refuse`, gets `409` before the upgrade.
