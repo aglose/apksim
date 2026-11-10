@@ -65,7 +65,7 @@ That trade is where both the speed and the limits come from.
 | | apksim | Android emulator |
 |---|---|---|
 | **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its native libraries for the host's ABI loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
-| **To first frame** | ~0.2-0.5 s warm, ~1.4-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
+| **To first frame** | ~0.2-0.5 s warm, ~1.1-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
 | **Memory** | ~550-780 MB per instance | 3-4 GB |
 | **Install step** | None: `apksim app.apk` | `adb install` onto a booted device |
 | **Many at once** | 32 headless instances of the test app ran at once in about 7 GB on a 12-core Mac ([docs/parallel.md](docs/parallel.md)) | A few, each with its own multi-GB VM |
@@ -370,7 +370,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.23.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.24.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -419,9 +419,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.23.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.24.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.23.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.24.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -542,11 +542,16 @@ framework. A *cold* launch starts a JVM.
 
 | | Window | First frame, warm | Cold | Memory |
 |---|---|---|---|---|
-| apksim, small Compose app | 0.01 s | 0.22 s | 1.35 s | ~550-780 MB |
+| apksim, small Compose app | 0.01 s | 0.20 s | 1.15 s | ~550-780 MB |
 | apksim, a large app (R8 release build, 12 MB DEX, SQLite and WebRTC native code) | 0.01 s | 0.36 s | 1.5 s | |
 | apksim, the same app's debug build (179 MB APK) | 0.01 s | 0.48 s | 1.6 s | |
 | Stock emulator, Quick Boot snapshot (small app) | - | | 8.3-9.0 s | 3-4 GB |
 | Stock emulator, full boot | - | | 18 s | 3.3-4 GB |
+
+Since 0.24.0 framework calls are bound straight to their shadows, Bouncy Castle and Conscrypt load on threads of their
+own, and an idle instance sleeps until there is work: on the small app, cold first frame 2.08 → 1.15 s, warm 317 →
+198 ms, a one-class test process 1.64 → 0.90 s, its 157-test suite 24.0 → 19.4 s with half the CPU, and idle CPU
+40-55% lower ([docs/perf-plan.md](docs/perf-plan.md)). The large app's rows were measured before that.
 
 **Frame rate.** Frames follow the display's vsync. On a 120 Hz display, normal UI, a full-screen noise shader and the
 large app's sheet animation all average 117-120 fps. Frames that miss are typically 9-12 ms, not dropped. What's
