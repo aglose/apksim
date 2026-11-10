@@ -75,7 +75,7 @@ def push(s, path, data):
 def on_disk(name):
     """What the running sessions' seed slots hold: (files/NAME contents, /sdcard/NAME contents), one per slot."""
     out = []
-    for slot in glob.glob(os.path.join(a.state, "cache/data/*/bm*-0")):
+    for slot in glob.glob(os.path.join(a.state, "cache/data/*/ks*-0")):
         f, sd = os.path.join(slot, "files", name), os.path.join(slot + ".device", "sdcard", name)
         out.append((open(f).read() if os.path.exists(f) else None, open(sd).read() if os.path.exists(sd) else None))
     return out

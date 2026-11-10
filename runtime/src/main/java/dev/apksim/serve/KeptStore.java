@@ -24,8 +24,10 @@ import javax.crypto.spec.SecretKeySpec;
  * its data slot and `.device` folder (app data, /sdcard, Settings) here when it ends, packed as a hand-off is
  * ({@link SlotPack}), and a later session with the same key and an APK of the same package starts on it.
  *
- * <p>On disk: `STATE/serve/kept/<id>/<package>/data.zip` and `meta.properties` (the build's SHA-256, its signers,
- * when it was saved and last used). `id` is an HMAC of the key under the server's token, so a key reaches only what
+ * <p>On disk: `STATE/serve/kept/<id>/<package>/data-<16 hex>.zip` and `meta.properties` (which pack is current, the
+ * build's SHA-256, its signers, when it was saved and last used). A save writes a new pack beside the current one and
+ * then replaces the metadata naming it, in one rename: until then the previous pack and its metadata stand, whatever
+ * stops the save. `id` is an HMAC of the key under the server's token, so a key reaches only what
  * the same token kept, and the key itself is stored nowhere. One session at a time per id ({@link #take}); `--keep-max`
  * packages kept in all (least recently used go first) and `--keep-days` unused bound the disk.
  */
@@ -87,12 +89,22 @@ final class KeptStore {
     return dir.resolve(id).resolve(pkg);
   }
 
+  private static final String PACK = "data-[0-9a-f]{16}\\.zip";
+
+  /** The pack the metadata names, or null. */
+  private static Path current(Path e, Properties p) {
+    String name = p.getProperty("data", "");
+    if (!name.matches(PACK)) return null;
+    Path zip = e.resolve(name);
+    return Files.isRegularFile(zip, LinkOption.NOFOLLOW_LINKS) ? zip : null;
+  }
+
   /** What `id` kept for `pkg`, or null. */
   synchronized Found find(String id, String pkg) throws IOException {
     Path e = entry(id, pkg);
-    Path zip = e.resolve("data.zip");
-    if (!Files.isRegularFile(zip, LinkOption.NOFOLLOW_LINKS)) return null;
     Properties p = meta(e);
+    Path zip = current(e, p);
+    if (zip == null) return null;
     List<String> signers = new ArrayList<>();
     for (String s : p.getProperty("signers", "").split(",")) if (!s.isEmpty()) signers.add(s);
     return new Found(zip, p.getProperty("sha256", ""), signers, num(p, "saved"), num(p, "used"), Files.size(zip));
@@ -117,21 +129,30 @@ final class KeptStore {
     if (!Files.isDirectory(e, LinkOption.NOFOLLOW_LINKS) || !e.toRealPath().equals(dir.toRealPath().resolve(id).resolve(pkg))) {
       throw new IOException("the kept folder is not a plain folder: " + e);
     }
-    return e.resolve("data.zip." + tmpTag());
+    return e.resolve("data-" + HexFormat.of().formatHex(randomBytes()) + ".zip");
+  }
+
+  private static byte[] randomBytes() {
+    byte[] b = new byte[8];
+    new java.security.SecureRandom().nextBytes(b);
+    return b;
   }
 
   /** Puts a finished pack in place of what `id` kept for `pkg`, then drops the least recently used over `--keep-max`. */
   void save(String id, String pkg, Path pack, String sha256, List<String> signers) throws IOException {
     synchronized (this) {
       Path e = entry(id, pkg);
-      Files.move(pack, e.resolve("data.zip"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      if (!pack.getParent().equals(e) || !pack.getFileName().toString().matches(PACK)) throw new IOException("not a pack of this entry: " + pack);
+      Path before = current(e, meta(e));
       long now = System.currentTimeMillis();
       Properties p = new Properties();
+      p.setProperty("data", pack.getFileName().toString());
       p.setProperty("sha256", sha256 == null ? "" : sha256);
       p.setProperty("signers", signers == null ? "" : String.join(",", signers));
       p.setProperty("saved", Long.toString(now));
       p.setProperty("used", Long.toString(now));
-      writeMeta(e, p);
+      writeMeta(e, p);  // the commit: from here this pack is the kept one
+      if (before != null && !before.equals(pack)) Files.deleteIfExists(before);
     }
     sweep();
   }
@@ -195,7 +216,9 @@ final class KeptStore {
           try (Stream<Path> files = Files.list(e)) {
             for (Path f : files.toList()) {
               String fn = f.getFileName().toString();
-              if ((fn.startsWith("data.zip.") || fn.startsWith("meta.properties.")) && now - Files.getLastModifiedTime(f, LinkOption.NOFOLLOW_LINKS).toMillis() > 3_600_000L
+              // A pack no metadata names (a save that stopped before its commit), or metadata half written.
+              boolean stray = fn.matches(PACK) ? !f.equals(current(e, meta(e))) : fn.startsWith("meta.properties.");
+              if (stray && now - Files.getLastModifiedTime(f, LinkOption.NOFOLLOW_LINKS).toMillis() > 3_600_000L
                   && !busy(id)) {
                 Files.deleteIfExists(f);
               }
@@ -203,7 +226,7 @@ final class KeptStore {
           }
           Properties p = meta(e);
           long used = Math.max(num(p, "used"), num(p, "saved"));
-          if (!Files.isRegularFile(e.resolve("data.zip"), LinkOption.NOFOLLOW_LINKS)) {
+          if (current(e, p) == null) {
             if (!busy(id) && now - Files.getLastModifiedTime(e, LinkOption.NOFOLLOW_LINKS).toMillis() > 3_600_000L) SlotPack.deleteTree(e);
             continue;
           }

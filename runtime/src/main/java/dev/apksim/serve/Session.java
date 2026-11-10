@@ -100,6 +100,8 @@ final class Session {
   volatile String keepId;
   volatile String keepPkg;
   volatile String keptState;
+  /** The APK this session launched (a URL-added app's download included, whose catalog entry has no path). */
+  volatile Path launchApk;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -211,6 +213,7 @@ final class Session {
     // Waits for an added app's download; a closed tab or the idle limit stops the wait (not the shared download).
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
+    launchApk = apk;
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
     serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;
@@ -471,7 +474,7 @@ final class Session {
     Path dir = slot.toAbsolutePath().normalize();
     Path data = serve.state.resolve("cache/data").toAbsolutePath().normalize();
     if (dir.getParent() == null || !data.equals(dir.getParent().getParent())
-        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12})-[0-9]+")) {
+        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12}|ks[0-9a-f]{12})-[0-9]+")) {
       return "the app's data slot is not one of this server's";
     }
     long pid = instancePid;
@@ -1650,7 +1653,7 @@ final class Session {
               + " when the same key signs it): it starts without it, and keeps nothing";
           keepPkg = null;
         } else {
-          seedSlot = serve.seedFrom(f.zip(), apk, n -> {}, n -> {});
+          seedSlot = serve.seedFrom(f.zip(), apk, "ks", n -> {}, n -> {});
           serve.kept.touch(keepId, keepPkg);
           state = same ? "reopened" : "copied";
         }
@@ -1663,7 +1666,7 @@ final class Session {
     if (keepPkg != null && seedSlot == null) {
       byte[] rnd = new byte[6];
       new java.security.SecureRandom().nextBytes(rnd);
-      seedSlot = "bm" + HexFormat.of().formatHex(rnd);
+      seedSlot = "ks" + HexFormat.of().formatHex(rnd);
     }
     keptState = state;
     ws.sendText("d {\"kept\":" + Http.q(state) + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
@@ -1677,18 +1680,23 @@ final class Session {
       logLine("[serve] not kept: the app's data is not in the slot it was given");
       return;
     }
+    Path apk = launchApk;
+    if (apk == null) {
+      logLine("[serve] not kept: the session's APK is not known");
+      return;
+    }
     Path pack = null;
     try {
       pack = serve.kept.newPack(keepId, keepPkg);
       long skipped = packWithDeadline(expected, pack);
       List<String> signers;
       try {
-        signers = ApkSigners.of(app.path()).certs();
+        signers = ApkSigners.of(apk).certs();
       } catch (IOException e) {
         signers = List.of();  // only this build reopens it then
       }
       long size = Files.size(pack);
-      serve.kept.save(keepId, keepPkg, pack, serve.catalog.sha256(app.path()), signers);
+      serve.kept.save(keepId, keepPkg, pack, serve.catalog.sha256(apk), signers);
       pack = null;
       logLine("[serve] kept the app's data (" + (size >> 10) + " KB)" + (skipped > 0 ? ", less " + skipped + " links or special files" : ""));
     } catch (IOException | RuntimeException e) {
@@ -1778,7 +1786,7 @@ final class Session {
     // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
     String slotName = dir.getFileName().toString();
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !(slotName.startsWith(serve.home + "-") || slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data
+        || !(slotName.startsWith(serve.home + "-") || slotName.matches("(bm|ks)[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data; ks: kept (serve)
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;
@@ -1795,7 +1803,7 @@ final class Session {
       SlotPack.deleteTree(dir.resolveSibling(dir.getFileName() + ".device"));
       l.release();
       // A seed slot's name is used once (kept, moved or restored data): its empty folder would only pile up.
-      if (slotName.matches("bm[0-9a-f]{12}-[0-9]+")) SlotPack.deleteTree(dir);
+      if (slotName.matches("(bm|ks)[0-9a-f]{12}-[0-9]+")) SlotPack.deleteTree(dir);
     } catch (IOException | RuntimeException e) {
       logLine.accept("[serve] could not erase " + dir + ": " + e);
     }

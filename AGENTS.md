@@ -921,7 +921,7 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
 Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
-(14), `/ws?keep=KEY` runs the app in a seed slot (`bm<hex>-0`) of the server's naming and, when the session ends, packs
+(14), `/ws?keep=KEY` runs the app in a seed slot (`ks<hex>-0`, which beam's sweep never takes) of the server's naming and, when the session ends, packs
 it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with
 that key on the same package starts on it (`reopened`, or `copied` for another build with the same signer, `refused`
 for another signer), told to the tab as `d {"kept":...}`. One session per key (`busy`, or `keepBusy=refuse`: 409);

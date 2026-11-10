@@ -96,7 +96,9 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   user and a profile name; anything else is `400` before the upgrade. When the session ends, its data slot and
   `.device` folder (the app's files, databases and preferences, its /sdcard and Settings values) are packed as a
   hand-off is (`SlotPack`: no links or special files, at most 50,000 files and 1 GB) into
-  `STATE/serve/kept/<id>/<package>/`, replacing what the key kept for that package, instead of being erased.
+  `STATE/serve/kept/<id>/<package>/`, replacing what the key kept for that package, instead of being erased. A new
+  pack is written beside the old one and becomes the kept one in a single rename of its metadata, so a save that
+  fails or a server that stops mid-save leaves the previous data as it was.
 - **Reopening:** a later session with the same key, on an APK of the same package, starts on that data: the same build
   is `reopened`; another build is `copied` only when the same key signs both, as Android keeps an update's data, and
   otherwise `refused` (it starts empty and keeps nothing, so what was kept stays). The tab is told which after the APK
@@ -113,7 +115,7 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   has it). Both need the token, and DELETE an allowed `Origin`, as a POST does.
 - What is kept is the app's own data, not the session: the app starts cold on it (its activity stack, the device and
   the tab's settings are the new session's). A session that crashed is kept as it ended; `DELETE` starts the key over.
-- The instance runs in a slot the server names (`bm<12 hex>-0`, not `serve-N`), and only that slot is packed, whatever
+- The instance runs in a slot the server names (`ks<12 hex>-0`, not `serve-N`; an `apksim beam` agent sharing the state folder never sweeps `ks` slots), and only that slot is packed, whatever
   the instance prints.
 
 ### When a session ends badly

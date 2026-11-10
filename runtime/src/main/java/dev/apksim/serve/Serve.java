@@ -490,6 +490,7 @@ public final class Serve {
       else {
         catalog.sweep(24 * 3_600_000L);
         kept.sweep();
+        dropUnusedSeeds();
       }
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
@@ -1074,16 +1075,16 @@ public final class Serve {
   }
 
   /**
-   * Seed slots (`cache/data/<package>/bm<hex>-0`: kept or restored data unpacked for a session) that no instance holds
-   * and no session of this server names: left by a server that stopped between unpacking and its session's end.
+   * Kept sessions' slots (`cache/data/<package>/ks<hex>-0`) that no instance holds and no session of this server names,
+   * an hour old: left by a server that stopped between unpacking and its session's end. Startup and hourly.
    */
   private void dropUnusedSeeds() {
     try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {
       for (Path pkg : pkgs) {
-        try (var slots = Files.newDirectoryStream(pkg, "bm*-0")) {
+        try (var slots = Files.newDirectoryStream(pkg, "ks*-0")) {
           for (Path slot : slots) {
             String name = slot.getFileName().toString().replaceFirst("-0$", "");
-            if (!name.matches("bm[0-9a-f]{12}") || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot)) || locked(slot)) continue;
+            if (!name.matches("ks[0-9a-f]{12}") || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot)) || locked(slot)) continue;
             if (System.currentTimeMillis() - Files.getLastModifiedTime(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < 3_600_000L) continue;
             SlotPack.dropSeed(state, name, null, System.err::println);
           }
@@ -1111,10 +1112,24 @@ public final class Serve {
     }
     boolean refuseBusy = "refuse".equals(r.param("keepBusy"));
     String keepId = keepKey == null || !kept.on() ? null : kept.id(keepKey);
-    if (keepId != null && refuseBusy && kept.busy(keepId)) {
+    // Reserved before the upgrade, so two starts on one key cannot both pass: the loser gets 409 (refuse) or runs
+    // without the kept data. Released below unless the session took it (it releases it when it ends).
+    boolean took = keepId != null && kept.take(keepId);
+    if (keepId != null && !took && refuseBusy) {
       Http.text(out, 409, "a session is using this key");
       return;
     }
+    boolean[] handed = {false};
+    try {
+      upgraded(r, s, in, out, site, seed, key, keepKey, keepId, took, handed);
+    } finally {
+      if (took && !handed[0]) kept.release(keepId);
+    }
+  }
+
+  /** The rest of a session's start, once its key (if any) is reserved; `handed[0]` set once a session holds it. */
+  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String key,
+      String keepKey, String keepId, boolean took, boolean[] handed) throws IOException {
     out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
         + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
@@ -1186,20 +1201,16 @@ public final class Serve {
         ws.close("busy");
         return;
       }
-      boolean took = keepId != null && kept.take(keepId);
-      if (keepId != null && !took && refuseBusy) {
-        if (seed != null) SlotPack.dropSeed(state, seed, null, System.err::println);
-        ws.sendText("x a session is using this key");
-        ws.close("busy");
-        return;
-      }
       byte[] id = new byte[6];
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
       session.seedSlot = seed;  // the agent's moved data, or the server's restored data
       if (keepKey != null) {
         if (keepId == null) session.keptState = "off";
-        else if (took) session.keepId = keepId;
+        else if (took) {
+          session.keepId = keepId;  // released when the session ends (Session.eraseData)
+          handed[0] = true;
+        }
         else session.keptState = "busy";
       }
       if (beam) {
@@ -1519,6 +1530,16 @@ public final class Serve {
    */
   String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
       throws IOException {
+    return seedFrom(zip, apk, "bm", claim, unclaim);
+  }
+
+  /**
+   * As above, into a slot named `<prefix><12 hex>`: `bm` for moved and restored data (the agent's sweep knows those),
+   * `ks` for serve's kept sessions, which only serve's own sweep looks at (an agent sharing the state folder must not
+   * take a kept session's slot for one of its own left behind).
+   */
+  String seedFrom(Path zip, Path apk, String prefix, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+      throws IOException {
     String pkg = SlotPack.packageOf(zip);
     if (pkg == null) throw new IOException("the data names no app");
     // Only into the build's own app folder: a pack naming another package (the owner's own app, say) would otherwise
@@ -1527,7 +1548,7 @@ public final class Serve {
     if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
     byte[] rnd = new byte[6];
     RANDOM.nextBytes(rnd);
-    String name = "bm" + HexFormat.of().formatHex(rnd);
+    String name = prefix + HexFormat.of().formatHex(rnd);
     // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
     // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
     Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
