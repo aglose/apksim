@@ -81,7 +81,8 @@ is in the browser.
    change; `hello` identifies it, so a port taken by something else is detected). Instances run as serve's do but
    with `--window hidden` instead of `--headless` (so the Mac window can be shown later), `--data-slots beam`,
    `--no-autofill` (a site chose this APK: never the owner's saved sign-ins), no `--adb`, the launch options
-   limited to `Catalog.LAUNCH_OPTIONS` as today. One session per tab, ended when the tab's WebSocket closes, as now.
+   limited to `Catalog.LAUNCH_OPTIONS` as today (including `--sdcard-file PATH=text:TEXT|BASE64`, a file written to the
+   session's `/sdcard` before the app starts, over what a reused slot had; 64 KB a file, 256 KB in all). One session per tab, ended when the tab's WebSocket closes, as now.
    New endpoints:
    - `GET /beam/hello`: `{apksim, protocol, trusted}` (whether the calling `Origin` is already allowed). Readable by
      any origin (CORS), and says nothing else to an origin that is not trusted. Chrome 156 sent no Private Network

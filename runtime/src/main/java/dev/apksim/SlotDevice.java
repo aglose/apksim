@@ -81,6 +81,7 @@ final class SlotDevice {
       ShadowEnvironment.setExternalStorageRemovable(p.toFile(), false);
     }
 
+    seedFiles(sd);
     defaults = snapshot();
     Map<String, String> stored = read(d.resolve(SETTINGS));
     stored.forEach(SlotDevice::apply);
@@ -91,6 +92,34 @@ final class SlotDevice {
     // Ctrl-C or SIGTERM on a cold launch, or the app's System.exit, end the JVM past every other flush: a value set
     // within the last 250 ms would be lost. A no-op once close() has run, so never the reset's defaults.
     Runtime.getRuntime().addShutdownHook(new Thread(SlotDevice::close, "apksim-slot-settings"));
+  }
+
+  /**
+   * Writes the launch's {@code --sdcard-file} seeds into the slot's /sdcard, over what the slot had (the option always
+   * wins), before the app's process starts any code. Never through a link the app left in the slot: a seed whose path
+   * runs through one is refused.
+   */
+  static void seedFiles(Path sd) throws IOException {
+    long total = 0;
+    for (int i = 0; ; i++) {
+      String s = System.getProperty("apksim.sdcard." + i);
+      if (s == null) return;
+      SdcardSeeds.File f = SdcardSeeds.parse(s);
+      total += f.bytes().length;
+      if (total > SdcardSeeds.TOTAL_MAX) {
+        throw new IllegalArgumentException("--sdcard-file: over " + SdcardSeeds.TOTAL_MAX / 1024 + " KB in all");
+      }
+      Path target = sd.resolve(f.path()).normalize();
+      Path real = sd.toRealPath();
+      Path parent = target.getParent();
+      Files.createDirectories(parent);
+      if (!parent.toRealPath().startsWith(real) || Files.isSymbolicLink(target) || Files.isDirectory(target)) {
+        throw new IllegalArgumentException("--sdcard-file " + f.path() + ": leads out of /sdcard or is a folder");
+      }
+      Path tmp = target.resolveSibling("." + target.getFileName() + Storage.tmpTag());
+      Files.write(tmp, f.bytes());
+      Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    }
   }
 
   /**

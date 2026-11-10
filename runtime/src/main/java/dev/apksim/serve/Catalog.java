@@ -46,7 +46,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--network-profile", "--device", "--rec");
+      "--audio", "--biometrics", "--network-profile", "--device", "--rec", "--sdcard-file");
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
@@ -158,6 +158,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
+    int sdcardTotal = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -169,6 +170,19 @@ final class Catalog {
             + String.join(" ", new java.util.TreeSet<>(LAUNCH_OPTIONS)) + " " + String.join(" ", LAUNCH_FLAGS) + ")");
       }
       String v = i + 1 < given.size() ? given.get(++i) : null;
+      if (o.equals("--sdcard-file")) {
+        // Inline contents (text: or base64) for a path under /sdcard: never a host file. Longer than a plain value may be.
+        if (v == null || v.length() > dev.apksim.SdcardSeeds.FILE_MAX * 2) throw new IOException("--sdcard-file needs PATH=VALUE of at most 64 KB");
+        try {
+          sdcardTotal += dev.apksim.SdcardSeeds.parse(v).bytes().length;
+        } catch (IllegalArgumentException e) {
+          throw new IOException(e.getMessage());
+        }
+        if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 256 KB in all");
+        out.add(o);
+        out.add(v);
+        continue;
+      }
       // One argument each (no shell is involved), but never something the launcher would read as an option.
       if (v == null || v.isEmpty() || v.startsWith("-") && !v.matches("-?\\d+(\\.\\d+)?") || v.length() > 300
           || v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {

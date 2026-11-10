@@ -179,6 +179,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --setting)
       [[ "$2" =~ ^(global|secure|system):[^=]+= ]] || { echo "--setting takes global|secure|system:KEY=VALUE" >&2; exit 2; }
       EXTRA+=("-Dapksim.setting.${SETTING_N:-0}=$2"); SETTING_N=$((${SETTING_N:-0} + 1)); shift 2 ;;
+    # A file written to /sdcard before the app starts (repeatable): PATH=text:TEXT or PATH=BASE64 (SlotDevice.java).
+    --sdcard-file)
+      [[ "$2" =~ ^[^=]+= ]] || { echo "--sdcard-file takes PATH=text:TEXT or PATH=BASE64" >&2; exit 2; }
+      EXTRA+=("-Dapksim.sdcard.${SDCARD_N:-0}=$2"); SDCARD_N=$((${SDCARD_N:-0} + 1)); shift 2 ;;
     --build)
       [[ "$2" == ?*=* ]] || { echo "--build takes FIELD=VALUE" >&2; exit 2; }
       EXTRA+=("-Dapksim.build.${2%%=*}=${2#*=}"); shift 2 ;;
@@ -292,7 +296,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*|-Dapksim.sdcard.*) ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*) ;;

@@ -105,6 +105,12 @@ if [[ ${#ADB_ARGS[@]} -gt 0 ]]; then
 fi
 stop again
 
+# --sdcard-file (SdcardSeeds): a file in /sdcard before onCreate, over what the slot had.
+echo "== --sdcard-file over the slot's file"
+start seeded.log --sdcard-file apksim-slot-check.txt=text:from-option
+expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=written seed=seeded sdcard=from-option$'
+stop seeded
+
 echo "== --fresh"
 start erased.log --fresh
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=null seed=null sdcard=missing$'
