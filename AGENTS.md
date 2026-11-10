@@ -109,6 +109,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
     the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
     async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
+  - `org.robolectric.internal.bytecode.InvokeDynamicSupport` and `ShadowInvalidator` (apksim's copies, ahead of
+    Robolectric's on the class path): every framework call site is bound straight to its shadow or original, without
+    Robolectric's SwitchPoint guard, fallback and per-site stack-trace cleaning (a quarter of a cold launch in method
+    handle chains, ~35-50 MB). An invalidation resets that class's sites to bind again at their next call. Traces are
+    cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
+    `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there

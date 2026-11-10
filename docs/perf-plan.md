@@ -87,6 +87,30 @@ What the 94 MB of live heap is (class histogram and a heap dump):
   ConnectivityThread) at each clock step, ~25 a second now. The earlier 2.4-4.8% baseline included the JIT's
   warm-up; settled, the 2 ms poll was ~1.5-2%.
 
+- **B1:** `org.robolectric.internal.bytecode.InvokeDynamicSupport` and `ShadowInvalidator` in apksim.jar, ahead of
+  Robolectric's: each framework call site is bound straight to its shadow or original method, with no SwitchPoint guard,
+  fallback or per-site `catchException`; an invalidation (a test with other shadows) resets that class's sites to a
+  fallback that binds again at their next call, which is when Robolectric's guard would have. Stack traces are cleaned
+  by Robolectric's rules where apksim reports them (`StackTraces`: crashes, test failures before any listener hears
+  them, bundles), and a crash's logged trace is identical to before. `-Dapksim.directCallSites=false` is Robolectric's
+  binding, `-Dapksim.cleanStackTraces=true` keeps its per-site cleaning. Measured (`bench.py 4 --mem`, two interleaved
+  rounds; cold six interleaved runs with timing marks):
+
+  | | Robolectric's | Direct |
+  |---|---|---|
+  | Cold first frame | 1,906-1,950 ms | 1,610-1,673 ms |
+  | Warm first frame | 326-339 ms | 264-265 ms |
+  | Footprint, cold instance 5 s after first frame | 387-388 MB | 345-354 MB |
+  | Footprint, warm instance | 428-436 MB | 384 MB |
+  | Standby | 372-391 MB | 340-356 MB |
+  | Test app suite (157 tests) | 24.0 s, 16.8 s user CPU | 21.2 s, 11.0 s user CPU |
+  | Main thread per fling frame | 1.85 / 1.21 ms | 1.39 / 0.79 ms |
+
+  Per-site cleaning alone was ~145 ms of the cold launch (direct with cleaning: 1,696 ms). What changed for the app: an
+  exception it catches and prints itself (`e.printStackTrace()`, `Log.e(tag, msg, e)`) now shows framework methods as a
+  trampoline frame plus a `$$robo$$` one, as live thread dumps always did. Suite, `bundle-check.py`, crash traces from
+  a configuration change and a posted Runnable (identical under both bindings) checked; the Linux image only in CI.
+
 ## Found not to work as planned
 
 - **C1 (map `resources.arsc`):** Robolectric's binary resources code holds the table as a `byte[]` from end to end
@@ -245,7 +269,7 @@ remaining cold cost is known.
 | C3 Screenshot bitmap on demand | small | -6 to -16 MB | - | done |
 | C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | blocked: needs the native resources mode (E4) |
 | D1 Idle loop | medium | idle CPU ~0 | - | done: idle CPU -40 to -55%, not ~0 |
-| B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | |
+| B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | done: -290 ms cold, -65 ms warm, -35 to -50 MB, -34% suite CPU |
 | A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | |
 | C4 Standbys give way, D2 idle GC | small each | 364 MB back under pressure; no mid-scroll stall | - | |
 | A3 Native load on a thread | medium, risky | -150 ms cold | A1, A2 | |

@@ -71,7 +71,7 @@ final class Crashes {
       if (own) {
         try {
           System.err.print("[apksim] exception in apksim's thread \"" + t.getName() + "\" ");
-          e.printStackTrace();
+          StackTraces.clean(e).printStackTrace();
         } catch (Throwable ignored) {
           // Only that thread ends, as before.
         }
@@ -225,6 +225,11 @@ final class Crashes {
   private static void ensureLogged(Thread t, Throwable e) {
     if (logged == e) return;
     logged = e;
+    try {
+      StackTraces.clean(e);  // as a device's trace reads (InvokeDynamicSupport no longer cleans each call site's)
+    } catch (Throwable ignored) {
+      // Logged as it is.
+    }
     String message = "FATAL EXCEPTION: " + threadName(t) + processLine;
     boolean inLog = false;
     try {

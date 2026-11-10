@@ -86,7 +86,7 @@ public final class Main {
     Crashes.install();
     Result r = new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
-      if (!Crashes.wasLogged(f.getException())) f.getException().printStackTrace();
+      if (!Crashes.wasLogged(f.getException())) StackTraces.clean(f.getException()).printStackTrace();
     }
     System.err.printf("[apksim] translated %d classes in %d ms, %d from cache, %d ahead%n", classes.translated,
         classes.translateNanos / 1_000_000, classes.cached(), classes.translatedAhead());
