@@ -91,6 +91,10 @@ def fake():
         if sc == "listing-fails":
             sys.exit(3)
         for n, (c, m) in enumerate(tests + ([empty] if lists_empty else [])):
+            if (c, m) in IGNORED_TESTS.get(sc, ()) and e.get("apksimListIgnored") == "true":
+                block(c, m, n + 1, 1)
+                block(c, m, n + 1, -3)  # as Instrument's listing reports an @Ignore'd test when asked
+                continue
             block(c, m, n + 1, 1)
             block(c, m, n + 1, 0)
         if sc.startswith("init-error-incomplete"):  # the listing dies before its end
@@ -115,6 +119,11 @@ def fake():
             print("dies between tests", file=sys.stderr)
             sys.exit(134)
         block(c, m, n + 1, 1)
+        if (c, m) in IGNORED_TESTS.get(sc, ()):
+            with open(os.path.join(state, "ignored-ran"), "a") as f:
+                f.write(f"{c}#{m}\n")
+            block(c, m, n + 1, -3)
+            continue
         with open(os.path.join(state, "ran"), "a") as f:
             f.write(f"{c}#{m}\n")
         if sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and (c, m) == ("p.C000", "m1") and ran_before(state, f"{c}#{m}"):
@@ -302,6 +311,11 @@ SCENARIOS = {
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     # --isolate: every test's JUnit entry says how long its process took to start and to exit.
     "isolate-phases": (0, 10, 9, []),
+    # isolate-ignored: p.C001#m1 and p.C002's three tests are @Ignore'd: the listing reports them ignored, and they
+    # get no process (a listing and 5 processes).
+    "isolate-ignored": (0, 6, 9, []),
+    # --run-ignored: each gets its process, as before (a listing and 9 processes), and is reported ignored by it.
+    "isolate-ignored-run": (0, 10, 9, []),
     # --reap-early 2: every process reports its status and then hangs in its teardown. The slots free at once, the
     # processes (and their children) are killed after 2 s, and the script waits for that before it ends.
     "reap-early-hang": (0, 10, 9, []),
@@ -344,6 +358,8 @@ SCENARIOS = {
     "init-error-only-balanced": (0, 1, 0, []),
     "init-error-incomplete-balanced": (1, 1, 0, []),  # "listing the suite failed", and no report
 }
+IGNORED_TESTS = {sc: {("p.C001", "m1"), ("p.C002", "m0"), ("p.C002", "m1"), ("p.C002", "m2")}
+                 for sc in ("isolate-ignored", "isolate-ignored-run")}
 SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3,
           "cidfile-sharded": 2, "init-error-balanced": 3, "init-error-balanced-keep": 3, "init-error-only-balanced": 3,
           "init-error-incomplete-balanced": 3}
@@ -373,6 +389,8 @@ def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
     if sc == "isolate-phases":
         return ["--isolate", "-j", "3"]
+    if sc.startswith("isolate-ignored"):
+        return ["--isolate", "-j", "3"] + (["--run-ignored"] if sc.endswith("-run") else [])
     if sc == "reap-early-hang":
         return ["--isolate", "-j", "3", "--reap-early", "2", "--exit-marks"]
     if sc.startswith("init-error") and "isolate" in sc:
@@ -454,6 +472,8 @@ def main():
             r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
             took = time.time() - start
             calls = open(os.path.join(d, "calls")).read().split()
+            skipped = sorted(f"{c.get('classname')}#{c.get('name')}" for c in ET.parse(xml).iter("testcase")
+                             if c.find("skipped") is not None) if os.path.exists(xml) else []
             cases = [(c.get("classname"), c.get("name"), c.find("failure") is not None,
                       (c.find("failure").text or "") if c.find("failure") is not None else "")
                      for c in ET.parse(xml).iter("testcase")] if os.path.exists(xml) else []
@@ -543,6 +563,12 @@ def main():
                  and any(c == "p.Empty" for c, _ in names)),
                 ("start-up and exit seconds missing", sc == "isolate-phases" and any(
                     {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
+                (f"skipped {skipped}, expected the 4 @Ignore'd tests", sc.startswith("isolate-ignored")
+                 and skipped != sorted(f"{c}#{m}" for c, m in IGNORED_TESTS[sc])),
+                ("an @Ignore'd test given a process", sc == "isolate-ignored"
+                 and os.path.exists(os.path.join(d, "ignored-ran"))),
+                ("no process for each @Ignore'd test", sc == "isolate-ignored-run"
+                 and len(read(os.path.join(d, "ignored-ran")).split()) != 4),
                 ("no teardown that hung", sc == "reap-early-hang" and len(pids) < 18),
                 (f"took {took:.0f} s", took > (30 if sc != "reap-early-hang" else 20)),
             ] if bad]

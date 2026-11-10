@@ -15,8 +15,15 @@ public final class Timing {
 
   public static synchronized void mark(String stage) {
     long t = System.currentTimeMillis() - t0;
-    LOG.append(String.format("%-20s %6d ms%n", stage, t));
-    if (!Boolean.getBoolean("apksim.quiet")) System.err.printf("[apksim] %-20s %6d ms%n", stage, t);
+    // Verbose marks also give the process's CPU time so far, all threads (JIT, GC and helper threads included).
+    String cpu = "verbose".equals(System.getProperty("apksim.timing")) ? String.format("  cpu %6d ms", cpuMs()) : "";
+    LOG.append(String.format("%-20s %6d ms%s%n", stage, t, cpu));
+    if (!Boolean.getBoolean("apksim.quiet")) System.err.printf("[apksim] %-20s %6d ms%s%n", stage, t, cpu);
+  }
+
+  private static long cpuMs() {
+    return ((com.sun.management.OperatingSystemMXBean) java.lang.management.ManagementFactory.getOperatingSystemMXBean())
+        .getProcessCpuTime() / 1_000_000;
   }
 
   /** A standby took a launch: from now on, times count from that launch's start. */

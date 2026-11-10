@@ -1,3 +1,6 @@
+import java.nio.file.FileSystems
+import java.nio.file.Files as NioFiles
+
 plugins { java }
 repositories { mavenCentral(); google() }
 java { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -21,6 +24,20 @@ tasks.register<Copy>("deps") {
     doFirst { delete(fileTree("work/lib") { include("nativeruntime-dist-compat-*.jar") }) }
     from(configurations.runtimeClasspath)
     into("work/lib")
+    // The JVM's AOT cache skips every class of a signed jar, and Bouncy Castle's (~670 classes, loaded by Robolectric's
+    // test environment in every launch and test process) is signed. Without its signature files the cache holds them:
+    // ~75 ms of CPU and ~60 ms off each test process (issue 205). OpenJDK does not require JCE providers to be signed.
+    doLast {
+        fileTree("work/lib") { include("*.jar") }.forEach { jar ->
+            FileSystems.newFileSystem(jar.toPath()).use { fs ->
+                val meta = fs.getPath("META-INF")
+                if (!NioFiles.isDirectory(meta)) return@use
+                NioFiles.list(meta).use { s -> s.toList() }
+                    .filter { Regex(".*\\.(SF|RSA|DSA|EC)").matches(it.fileName.toString()) }
+                    .forEach { NioFiles.delete(it) }
+            }
+        }
+    }
 }
 tasks.register<Copy>("linuxArm64Runtime") {
     from({ linuxArm64Runtime.map { zipTree(it) } }) { include("native/linux/aarch64/*.so"); eachFile { path = name } }
