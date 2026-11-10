@@ -115,7 +115,8 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   shown in `/api/status`. Everyone who holds one token shares its keys: make them unguessable.
 - `GET /api/kept/KEY`: `{"inUse", "packages": [{"package", "sha256", "size", "saved", "used"}]}`.
   `DELETE /api/kept/KEY` forgets everything that key kept (`{"forgot": N}`; `404` for nothing, `409` while a session
-  has it). Both need the token, and DELETE an allowed `Origin`, as a POST does.
+  has it). Both need the token, and DELETE an allowed `Origin`, as a POST does; a server that does not own the store
+  answers `503`.
 - What is kept is the app's own data, not the session: the app starts cold on it (its activity stack, the device and
   the tab's settings are the new session's). A session that crashed is kept as it ended; `DELETE` starts the key over.
 - The instance runs in a slot the server names (`ks<12 hex>-0`, not `serve-N`; an `apksim beam` agent sharing the state folder never sweeps `ks` slots), and only that slot is packed, whatever

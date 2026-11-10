@@ -104,8 +104,11 @@ final class KeptStore {
     }
   }
 
-  /** Takes the key for one session; false when another session has it. */
-  boolean take(String id) {
+  /**
+   * Takes the key for one session; false when another session has it. On the store's monitor, as forget and sweep
+   * decide on it: a DELETE or an expiry that saw the key free finishes before a session can take it.
+   */
+  synchronized boolean take(String id) {
     return inUse.add(id);
   }
 
@@ -113,8 +116,13 @@ final class KeptStore {
     return inUse.contains(id);
   }
 
+  /** Gives the key back, then sweeps: a save swept while the key was held, so its other packages counted but could not go. */
   void release(String id) {
-    if (id != null) inUse.remove(id);
+    if (id == null) return;
+    synchronized (this) {
+      inUse.remove(id);
+    }
+    if (owned && max > 0) Thread.ofVirtual().name("serve-kept-sweep").start(this::sweep);
   }
 
   private Path entry(String id, String pkg) throws IOException {

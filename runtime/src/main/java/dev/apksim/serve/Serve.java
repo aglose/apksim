@@ -1073,6 +1073,12 @@ public final class Serve {
       Http.text(out, 400, "a key is 1-128 letters, digits and . _ ~ -");
       return;
     }
+    // Only the server that owns the store (KeptStore.claim) answers: another on the same state folder knows nothing of
+    // the owner's sessions, so it could delete a key one of them holds.
+    if (!kept.owned()) {
+      Http.text(out, 503, "this server keeps no sessions (--keep-max, or another server on this state folder keeps them)");
+      return;
+    }
     String id = kept.id(key);
     if (r.method().equals("GET")) {
       Http.json(out, 200, kept.describe(id));
