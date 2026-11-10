@@ -1101,12 +1101,85 @@ public final class Serve {
             String name = slot.getFileName().toString().replaceFirst("-0$", "");
             if (!name.matches("ks[0-9a-f]{12}") || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot)) || locked(slot)) continue;
             if (System.currentTimeMillis() - Files.getLastModifiedTime(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < 3_600_000L) continue;
-            SlotPack.dropSeed(state, name, null, System.err::println);
+            // Only with its hold (a session of any server keeps it from naming the slot until it is packed and erased),
+            // and checked again under it.
+            try (java.nio.channels.FileChannel hold = seedHold(name)) {
+              if (hold == null || locked(slot) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+              SlotPack.dropSeed(state, name, null, System.err::println);
+            }
           }
         }
       }
     } catch (IOException | RuntimeException e) {
       // no app data yet, or the next round
+    }
+    // Holds whose slot is gone (a session's ends with its slot; one that stopped leaves the file).
+    try (var holds = Files.newDirectoryStream(state.resolve(home + "/seeds"), "ks*.lock")) {
+      for (Path h : holds) {
+        String name = h.getFileName().toString().replaceFirst("\\.lock$", "");
+        if (!name.matches("ks[0-9a-f]{12}") || seedHolds.containsKey(name)) continue;
+        try (java.nio.channels.FileChannel hold = seedHold(name)) {
+          if (hold == null) continue;
+          boolean gone;
+          try (var pkgs = Files.list(state.resolve("cache/data"))) {
+            gone = pkgs.noneMatch(p -> Files.exists(p.resolve(name + "-0"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+          }
+          if (gone) Files.deleteIfExists(h);
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // none yet
+    }
+  }
+
+  /**
+   * Serve's seed slots (`ks`) are held, across every server sharing the state folder, by an exclusive lock on
+   * `serve/seeds/<name>.lock` from before the slot is made until its session has packed and erased it: the instance's
+   * own lock on the slot ends with the instance, before that. {@link #dropUnusedSeeds} deletes a slot only with its hold.
+   */
+  private final Map<String, java.nio.channels.FileChannel> seedHolds = new ConcurrentHashMap<>();
+
+  /** The hold on a seed slot's name, or null when another holds it (a session here or on another server). */
+  private java.nio.channels.FileChannel seedHold(String name) throws IOException {
+    Path dir = state.resolve(home + "/seeds");
+    Files.createDirectories(dir);
+    java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(dir.resolve(name + ".lock"),
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+    try {
+      if (ch.tryLock() != null) return ch;
+    } catch (java.nio.channels.OverlappingFileLockException e) {
+      // this process holds it
+    }
+    ch.close();
+    return null;
+  }
+
+  /** Takes the hold for a session's seed slot (kept sessions and restores); false when it cannot. */
+  boolean holdSeed(String name) {
+    try {
+      java.nio.channels.FileChannel ch = seedHold(name);
+      if (ch == null) return false;
+      seedHolds.put(name, ch);
+      return true;
+    } catch (IOException e) {
+      return false;
+    }
+  }
+
+  /** Gives a seed slot's hold back, once its session has packed and erased it (or it was never used). */
+  void releaseSeed(String name) {
+    java.nio.channels.FileChannel ch = name == null ? null : seedHolds.remove(name);
+    if (ch == null) return;
+    try {
+      // Its slot is gone: the file goes while still held (a sweeper that opened it meanwhile then finds no slot).
+      Files.deleteIfExists(state.resolve(home + "/seeds").resolve(name + ".lock"));
+    } catch (IOException e) {
+      // the sweep removes it
+    }
+    try {
+      ch.close();
+    } catch (IOException e) {
+      // released with the channel either way
     }
   }
 
@@ -1157,6 +1230,7 @@ public final class Serve {
         reopenedChanged.remove(seed);
       }
       SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
+      releaseSeed(seed);
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
       return;
@@ -1199,6 +1273,7 @@ public final class Serve {
       reopened.remove(seed);
       reopenedChanged.remove(seed);
       SlotPack.dropSeed(state, seed, null, System.err::println);
+      releaseSeed(seed);
       ws.sendText("x saved session " + reopenSid + " is busy on this Mac (being copied for a newer build, or forgotten): start it again");
       ws.close("busy");
       return;
@@ -1212,6 +1287,7 @@ public final class Serve {
           reopenedChanged.remove(seed);
         }
         SlotPack.dropSeed(state, seed, null, System.err::println);
+        releaseSeed(seed);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
         return;
@@ -1564,6 +1640,7 @@ public final class Serve {
     byte[] rnd = new byte[6];
     RANDOM.nextBytes(rnd);
     String name = prefix + HexFormat.of().formatHex(rnd);
+    if (prefix.equals("ks") && !holdSeed(name)) throw new IOException("its slot is held elsewhere: try again");
     // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
     // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
     Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
@@ -1577,6 +1654,7 @@ public final class Serve {
       SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
     } catch (IOException | RuntimeException e) {
       unclaim.accept(name);
+      releaseSeed(name);
       throw e;
     }
     return name;

@@ -1689,7 +1689,14 @@ final class Session {
     if (keepPkg != null && seedSlot == null) {
       byte[] rnd = new byte[6];
       new java.security.SecureRandom().nextBytes(rnd);
-      seedSlot = "ks" + HexFormat.of().formatHex(rnd);
+      String name = "ks" + HexFormat.of().formatHex(rnd);
+      if (serve.holdSeed(name)) {
+        seedSlot = name;
+      } else {
+        state = "failed";
+        why = "its slot could not be held: it starts without kept data, and keeps nothing";
+        keepPkg = null;
+      }
     }
     keptState = state;
     ws.sendText("d {\"kept\":" + Http.q(state) + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
@@ -1736,6 +1743,7 @@ final class Session {
     } finally {
       closeSavedLock();
       if (serve.kept != null) serve.kept.release(keepId);
+      if (!serve.beam) serve.releaseSeed(seedSlot);  // packed and erased: another server's sweep may look at it now
       if (seedSlot != null) {  // its saved session may be opened again now
         serve.reopened.remove(seedSlot);
         serve.reopenedChanged.remove(seedSlot);

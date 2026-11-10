@@ -119,7 +119,9 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   answers `503`.
 - What is kept is the app's own data, not the session: the app starts cold on it (its activity stack, the device and
   the tab's settings are the new session's). A session that crashed is kept as it ended; `DELETE` starts the key over.
-- The instance runs in a slot the server names (`ks<12 hex>-0`, not `serve-N`; an `apksim beam` agent sharing the state folder never sweeps `ks` slots), and only that slot is packed, whatever
+- The instance runs in a slot the server names (`ks<12 hex>-0`, not `serve-N`; an `apksim beam` agent sharing the state folder never sweeps `ks` slots), and the session holds an exclusive lock on `serve/seeds/<name>.lock` from naming
+  the slot until it has packed and erased it; a server's sweep of leftover `ks` slots (hourly, on every server sharing the
+  folder) deletes one only with that lock, unlocked by any instance and an hour untouched, and only that slot is packed, whatever
   the instance prints.
 
 ### When a session ends badly
