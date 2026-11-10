@@ -30,7 +30,11 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
       throws CameraAccessException {
     checkIfCameraClosedOrInError();
     long creation = FakeCamera.replacingSessions(device);
-    Executor state = handler != null ? handler::post : Runnable::run;
+    // No Handler means the calling thread's Looper, as CameraDeviceImpl's checkHandler resolves it: kept now, so the
+    // session's later callbacks (onClosed) go there whichever thread closes it.
+    if (handler == null && android.os.Looper.myLooper() != null) handler = new Handler(android.os.Looper.myLooper());
+    Handler h = handler;
+    Executor state = h != null ? h::post : Runnable::run;
     super.createCaptureSession(outputs, new Registering(callback, new java.util.HashSet<>(outputs), state, creation), handler);
   }
 
