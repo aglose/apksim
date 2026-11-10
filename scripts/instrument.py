@@ -302,7 +302,7 @@ def apksim(app, test, extra_args, apksim_opts):
                 marks[t][1] = now
             block = {}
     dumped.set()
-    early = bool(exit_code) and p.poll() is None and REAP_EARLY > 0 and not timed_out
+    early = bool(exit_code) and REAP_EARLY > 0 and not timed_out
     if not early:
         p.wait()
     exited = time.time()
