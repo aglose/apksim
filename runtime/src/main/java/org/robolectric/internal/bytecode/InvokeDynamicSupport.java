@@ -175,6 +175,7 @@ public class InvokeDynamicSupport {
    */
   static void invalidated(Collection<String> classNames) {
     if (!DIRECT) return;
+    List<RoboCallSite> reset = new ArrayList<>();
     synchronized (SITES) {
       generation++;
       for (String name : classNames) {
@@ -182,9 +183,14 @@ public class InvokeDynamicSupport {
         if (list == null) continue;
         for (RoboCallSite site : list) {
           site.setTarget(fallback(site, site instanceof MethodCallSite ? BIND_CALL_SITE : BIND_INIT_CALL_SITE));
+          reset.add(site);
         }
       }
     }
+    // A MutableCallSite's new target need not reach threads already running through it until synced (Robolectric's
+    // SwitchPoint invalidation did that for its guarded sites): before invalidation returns, every thread sees the
+    // fallback.
+    if (!reset.isEmpty()) java.lang.invoke.MutableCallSite.syncAll(reset.toArray(new java.lang.invoke.MutableCallSite[0]));
   }
 
   /** Calls binder(site) to get the target, then invokes it with the call's arguments. */

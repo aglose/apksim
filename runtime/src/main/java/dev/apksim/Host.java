@@ -333,11 +333,12 @@ public class Host {
         }
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
-        boolean quiet = idleSleep && !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
+        boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
             && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+        boolean quiet = idleSleep && still;  // -Dapksim.idleSleep=false: the 2 ms poll, but Host.Memory still sees stillness
         // Not a turn that drew or has a frame coming: render() has cleared the dirty flags quiet reads, so a screen that
         // animates without input would otherwise count as still.
-        memory.tick(quiet && !firstFrame && frames == framesAtTurnStart && ShadowChoreographer.getNextVsyncTimeNanos() == 0);
+        memory.tick(still && frames == framesAtTurnStart && ShadowChoreographer.getNextVsyncTimeNanos() == 0);
         if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last, quiet);
       } catch (Throwable crash) {
         // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a
