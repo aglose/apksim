@@ -120,6 +120,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     handle chains, ~35-50 MB). An invalidation resets that class's sites to bind again at their next call. Traces are
     cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
     `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
+    `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there
