@@ -42,7 +42,9 @@ final class FrameStream {
   /**
    * `pace MS` from the serve relay (a tab that decodes slower than the app draws): at most one new frame is encoded per
    * this many ns, the newest at that time, so the H.264 stream stays a valid chain at a lower rate instead of dropping to
-   * keyframes. 0: every frame. Guarded by LOCK.
+   * keyframes. 0: every frame. Each H.264 subscriber has its own request; this is the slowest of them, worked out again
+   * when one asks, joins or leaves (recomputePace), and 0 while a JPEG subscriber is attached (one capture feeds both
+   * codecs, and a JPEG viewer needs no pacing). Guarded by LOCK.
    */
   private static long paceNanos;
   private static long lastNewNanos;  // when the last new frame (not a refinement or repeat) was encoded
@@ -90,16 +92,30 @@ final class FrameStream {
     }
   }
 
-  private static void setPace(String ms) {
+  private static void setPace(Subscriber s, String ms) {
     try {
       long v = Math.max(0, Math.min(1000, Long.parseLong(ms.trim())));
       synchronized (LOCK) {
-        paceNanos = v * 1_000_000;
+        s.paceNanos = v * 1_000_000;
+        recomputePace();
         LOCK.notifyAll();
       }
     } catch (NumberFormatException e) {
       // ignored
     }
+  }
+
+  /** Called with LOCK held. */
+  private static void recomputePace() {
+    long pace = 0;
+    for (Subscriber s : SUBSCRIBERS) {
+      if (!s.h264) {
+        pace = 0;
+        break;
+      }
+      pace = Math.max(pace, s.paceNanos);
+    }
+    paceNanos = pace;
   }
 
   private static long epochMicros() {
@@ -135,7 +151,7 @@ final class FrameStream {
           }
           String cmd = line.toString().trim();
           if (h264 && cmd.equals("key")) s.askKey();
-          else if (h264 && cmd.startsWith("pace ")) setPace(cmd.substring(5));
+          else if (h264 && cmd.startsWith("pace ")) setPace(s, cmd.substring(5));
           line.setLength(0);
         }
       } catch (IOException e) {
@@ -147,10 +163,10 @@ final class FrameStream {
     eof.start();
     startEncoder();
     synchronized (LOCK) {
-      paceNanos = 0;  // a new viewer starts at the app's own rate
       FrameStream.quality = Math.max(10, Math.min(100, quality));
       if (h264) FrameStream.kbps = Math.max(100, Math.min(100_000, kbps));
       SUBSCRIBERS.add(s);
+      recomputePace();
       SimWindow.closeHides(true);
       // The new subscriber needs the current screen even if it does not change (s.needsFrame): the last frame is
       // encoded again for it, and the redraw below covers a first subscriber, before any frame was kept.
@@ -163,7 +179,7 @@ final class FrameStream {
     } finally {
       synchronized (LOCK) {
         SUBSCRIBERS.remove(s);
-        if (!hasCodec(true)) paceNanos = 0;  // the pace was its viewer's
+        recomputePace();  // its pace goes with it
         SimWindow.closeHides(!SUBSCRIBERS.isEmpty());
         wake = true;  // the encoder lets go of an H.264 encoder no one needs any more
         LOCK.notifyAll();
@@ -375,6 +391,8 @@ final class FrameStream {
     private final ArrayDeque<Frame> queue = new ArrayDeque<>();  // guarded by this
     private boolean waitKey = true;  // H.264: dropping frames until a keyframe; guarded by this
     private boolean closed;  // guarded by this
+    /** This viewer's `pace` request in ns (0: none). Guarded by LOCK. */
+    long paceNanos;
     /** No frame offered yet (H.264: no keyframe): the encoder sends it the current screen even if unchanged. */
     volatile boolean needsFrame = true;
 

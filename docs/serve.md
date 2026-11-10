@@ -315,7 +315,8 @@ inside itself:
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
   After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
   puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
-  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower.
+  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. An instance with
+  several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.
   The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs` and `ackGapMs`. The window and byte
   budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,

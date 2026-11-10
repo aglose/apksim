@@ -841,7 +841,9 @@ final class Session {
         double gap = (t - lastAckNanos) / 1e6;
         ackGapMs = ackGapMs < 0 ? gap : ackGapMs + (gap - ackGapMs) * 0.2;
       }
-      lastAckNanos = t;
+      // Only between acks with a frame still in flight: once the flight drains, the time to the next ack is the app's
+      // (a still screen), not the tab's.
+      lastAckNanos = inFlight > 0 ? t : 0;
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
