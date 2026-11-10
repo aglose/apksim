@@ -237,7 +237,7 @@ def apksim(app, test, extra_args, apksim_opts):
         for chunk in p.stderr:
             err.append(chunk)
 
-    reader = threading.Thread(target=read_err)
+    reader = threading.Thread(target=read_err, daemon=bool(REAP_EARLY))
     reader.start()
     exit_code = []  # the status the process reported (apksim.exitMarks) ahead of its teardown
     lines, seconds, started, block, deps = [], {}, {}, {}, []
@@ -311,7 +311,7 @@ def apksim(app, test, extra_args, apksim_opts):
     def reap():
         """Early: the result and the outputs are complete, so the slot is free; the process's teardown (class cache
         save, scratch removal) goes on here, for REAP_EARLY s at most, then the process group is killed."""
-        drain = threading.Thread(target=lambda: p.stdout.read())  # (a full pipe must not block its teardown)
+        drain = threading.Thread(target=lambda: p.stdout.read(), daemon=True)  # (a full pipe must not block its teardown)
         drain.start()
         try:
             p.wait(timeout=REAP_EARLY)
@@ -319,8 +319,17 @@ def apksim(app, test, extra_args, apksim_opts):
             warn(f"instrument.py: a process still tearing down {REAP_EARLY:g} s after its result was killed")
             kill()
             p.wait()
-        drain.join()
-        reader.join()
+        # The launcher is gone, but a child may hold its pipes: the readers get the deadline too, then the process
+        # group is killed (which closes them), then a last short wait; a reader still stuck is a daemon-less leak we
+        # leave to the OS (the thread is made a daemon below), not a hang of this script.
+        end = time.monotonic() + REAP_EARLY
+        for t in (drain, reader):
+            t.join(max(0.0, end - time.monotonic()))
+        if drain.is_alive() or reader.is_alive():
+            warn(f"instrument.py: a process kept its output open {REAP_EARLY:g} s after its result: its group was killed")
+            kill()
+            for t in (drain, reader):
+                t.join(5)
         late = " | ".join(re.findall(r"^\[apksim\] (?:exit|halt) marks: (.*)$", "".join(err), re.M))
         if EXIT_MARKS and late:  # (the test's line is long printed: the slot was not held for these)
             name = "#".join(next(iter(marks), ("?", "?")))
