@@ -19,6 +19,9 @@ typedef struct { int type; float x, y, v; } Event;
 static Event queue[QUEUE_SIZE];
 static int qHead, qTail;
 static pthread_mutex_t qLock = PTHREAD_MUTEX_INITIALIZER;
+// Counts events posted, so a Java thread can sleep until the next one (nativeWaitInput) and wake Host's idle loop.
+static pthread_cond_t qPosted = PTHREAD_COND_INITIALIZER;
+static long qSeq;
 
 static void post(int type, float x, float y, float v) {
   pthread_mutex_lock(&qLock);
@@ -27,7 +30,21 @@ static void post(int type, float x, float y, float v) {
     queue[qTail] = (Event){type, x, y, v};
     qTail = next;
   }
+  qSeq++;
+  pthread_cond_broadcast(&qPosted);
   pthread_mutex_unlock(&qLock);
+}
+
+// Waits up to timeoutMs for an event posted after `seen` (a value it returned before); returns the current count.
+JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeWaitInput(JNIEnv *env, jclass c, jlong seen, jint timeoutMs) {
+  pthread_mutex_lock(&qLock);
+  if (qSeq == seen) {
+    struct timespec rel = {timeoutMs / 1000, (long)(timeoutMs % 1000) * 1000000L};
+    pthread_cond_timedwait_relative_np(&qPosted, &qLock, &rel);
+  }
+  long now = qSeq;
+  pthread_mutex_unlock(&qLock);
+  return now;
 }
 
 #define SURFACES 3

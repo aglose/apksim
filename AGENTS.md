@@ -25,6 +25,11 @@ Read README.md for results and limits; this file covers how to work on the code.
   to that hand-off: each fork there cost a few ms.
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
+    A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
+    BouncyCastleProvider: ~100 ms off a cold first frame and a test process's start; `-Dapksim.initAhead=false`).
+    Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment
+    is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
+    sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
@@ -34,7 +39,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     drawn then and again at the vsync (`frames` counts the frames `held for their vsync`). A vsync asked for since the
     last frame waits for the display's next one, and while a timed drag (`swipe ... MS`) runs the loop turns at each
     vsync and sends the move there, as a device consumes batched touch input in the vsync's frame; other input goes
-    out 7 ms apart. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    out 7 ms apart. When nothing is wanted (no frame, no input for 100 ms, no command or `settle`), it sleeps in
+    Robolectric's `ShadowPausedLooper.poll` until the next main-queue message is due, at most 40 ms: a post to the main
+    queue ends it, as do `Control.submit` and window input (`apksim-input-wait` thread); `-Dapksim.idleSleep=false`
+    keeps the old 2 ms poll. `Host.Memory`: once the screen has been still for 2 s and the footprint has grown by
+    `-Dapksim.idleGcMB` (256) since the last check, a full collection runs then (HotSpot does not count native memory);
+    under the Mac's memory pressure GpuBitmaps' caches go and a collection runs at once, and a standby quits
+    (`Footprint.pressure`). Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
     (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
     twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
     one. The first frame waits for the bottom window that is
@@ -103,6 +114,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`untracedDevice`: ShadowTrace's tags 0, every call a no-op), set before every setup since Robolectric's reset,
     the standby's warmup included, turns its checks back on: ShadowTrace threw "Section is already running" for an
     async section begun twice, which ended a large app opening a screen. Test runs keep ShadowTrace as it is.
+  - `org.robolectric.internal.bytecode.InvokeDynamicSupport` and `ShadowInvalidator` (apksim's copies, ahead of
+    Robolectric's on the class path): every framework call site is bound straight to its shadow or original, without
+    Robolectric's SwitchPoint guard, fallback and per-site stack-trace cleaning (a quarter of a cold launch in method
+    handle chains, ~35-50 MB). An invalidation resets that class's sites to bind again at their next call. Traces are
+    cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
+    `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
+    `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there
@@ -279,7 +297,7 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times, cold and warm), `startup-gate.py` (CI's startup-time gate: this build against an anchor
+  `bench.py` (launch times, cold and warm; `--mem` adds footprints), `startup-gate.py` (CI's startup-time gate: this build against an anchor
   release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
@@ -367,7 +385,7 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
+(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).

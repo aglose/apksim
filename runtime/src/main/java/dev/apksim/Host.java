@@ -54,6 +54,13 @@ import org.robolectric.util.ReflectionHelpers;
 @ConscryptMode(ConscryptMode.Mode.OFF)
 public class Host {
   private static final long IDLE_POLL_NANOS = 2_000_000L;
+  /**
+   * The longest the loop sleeps when nothing is happening (idleWait). Under MAX_CATCH_UP_MS, so the clock catches up
+   * with the time slept on the next turn rather than dropping it as a stall.
+   */
+  private static final long IDLE_SLEEP_MAX_MS = 40;
+  /** Input more recent than this keeps the loop polling: a gesture's events come a few ms apart. */
+  private static final long IDLE_AFTER_INPUT_NANOS = 100_000_000L;
   private static final long FRAME_NANOS = 1_000_000_000L / 120;
   /** The frame grid's rate: 120 Hz, or what --max-fps / the maxfps command cap it at (Features). */
   private static long gridHz() {
@@ -77,7 +84,6 @@ public class Host {
   private Application app;
   private int w;
   private int h;
-  private Bitmap bitmap;
   private HwRenderer hw;
   private DeviceControls controls;
   private FlightRecorder recorder;
@@ -132,7 +138,6 @@ public class Host {
     dev.apksim.video.ShadowSimMediaCodec.install();
     w = app.getResources().getDisplayMetrics().widthPixels;
     h = app.getResources().getDisplayMetrics().heightPixels;
-    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
     recorder = new FlightRecorder(app, stack, controls);
@@ -151,6 +156,8 @@ public class Host {
         : Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
 
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
+    idleSleep = Boolean.parseBoolean(System.getProperty("apksim.idleSleep", "true"));
+    wakeHandler = new android.os.Handler(Looper.getMainLooper());
     long lastInput = 0;
     long last = System.nanoTime();
     clockBaseMs = SystemClock.uptimeMillis();
@@ -161,6 +168,8 @@ public class Host {
     long emptySince = 0;
     while (!closed) {
       try {
+        turnWakes = wakeCount.get();  // a wake from here on cuts this turn's idleWait short
+        long framesAtTurnStart = frames;
         long start = System.nanoTime();
         // About one event per 8 ms: a gesture needs time and looper turns between its events, or the app's
         // gesture detectors see no movement. Real mouse input rarely hits this limit.
@@ -287,7 +296,7 @@ public class Host {
           // next activity from a posted message or a coroutine: the app runs on for a moment before apksim ends.
           if (emptySince == 0) emptySince = System.nanoTime();
           if (System.nanoTime() - emptySince >= Exits.LINGER_MS * 1_000_000L) break;
-          pace(last);
+          pace(last, false);
           continue;
         }
         emptySince = 0;
@@ -323,7 +332,14 @@ public class Host {
           }
         }
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
-        if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last);
+        // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
+        boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
+            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+        boolean quiet = idleSleep && still;  // -Dapksim.idleSleep=false: the 2 ms poll, but Host.Memory still sees stillness
+        // Not a turn that drew or has a frame coming: render() has cleared the dirty flags quiet reads, so a screen that
+        // animates without input would otherwise count as still.
+        memory.tick(still && frames == framesAtTurnStart && ShadowChoreographer.getNextVsyncTimeNanos() == 0);
+        if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last, quiet);
       } catch (Throwable crash) {
         // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a
         // device the main thread dies with it (Crashes). Returns only with -Dapksim.crashes=log.
@@ -549,7 +565,7 @@ public class Host {
   }
 
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
-  private void pace(long clockSynced) {
+  private void pace(long clockSynced, boolean quiet) {
     long wait = IDLE_POLL_NANOS;
     // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
     long hz = gridHz();
@@ -575,7 +591,98 @@ public class Host {
         wait = (nextLine - nowMs) * 1_000_000 - (System.nanoTime() - clockSynced);
       }
     }
+    if (!wanted && quiet && idleWait(clockSynced)) return;
     if (wait > 50_000L) LockSupport.parkNanos(wait);
+  }
+
+  private final Memory memory = new Memory();
+
+  /**
+   * Native memory, which HotSpot does not count towards collecting (ART does): Bitmaps, HWUI display lists and
+   * renderers are freed only when a collection finds their Java objects, so a session's footprint climbed by hundreds of
+   * MB and then dropped at a ~150 ms full collection wherever it fell, mid-scroll included (docs/plan.md, step 2). Here,
+   * once the screen has been still for 2 s and the footprint has grown by -Dapksim.idleGcMB (256) since the last one, a
+   * collection runs then (D2). When the Mac is short of memory, the scaled-bitmap caches go and a collection runs at
+   * once (C4). Checked once a second.
+   */
+  private static final class Memory {
+    private static final long GROWTH = Long.getLong("apksim.idleGcMB", 256) << 20;
+    private long busySince = System.nanoTime();
+    private long nextCheck;
+    private long baseline = -1;
+    private int lastPressure = 1;
+
+    void tick(boolean quiet) {
+      long now = System.nanoTime();
+      if (!quiet) busySince = now;
+      if (now - nextCheck < 0) return;
+      nextCheck = now + 1_000_000_000L;
+      int pressure = Footprint.pressure();
+      boolean pressed = pressure > 1 && lastPressure == 1;
+      lastPressure = pressure;
+      long fp = Footprint.bytes();
+      if (fp < 0) return;
+      if (baseline < 0) baseline = fp;
+      boolean idleGrowth = GROWTH > 0 && now - busySince > 2_000_000_000L && fp - baseline > GROWTH;
+      if (!pressed && !idleGrowth) {
+        baseline = Math.min(baseline, fp);
+        return;
+      }
+      if (pressed) dev.apksim.gpu.GpuBitmaps.trim();
+      long t0 = System.nanoTime();
+      System.gc();
+      long after = Footprint.bytes();
+      if (!Boolean.getBoolean("apksim.quiet")) {
+        System.err.printf("[apksim] %s: collected in %d ms, footprint %d -> %d MB%n", pressed ? "memory pressure" : "idle",
+            (System.nanoTime() - t0) / 1_000_000, fp >> 20, after >> 20);
+      }
+      // Native memory goes when the Cleaners run, just after: measured again from the next check.
+      baseline = -1;
+    }
+  }
+
+  /** -Dapksim.idleSleep=false keeps the 2 ms poll when idle (A/B). */
+  private static boolean idleSleep = true;
+  /** Set while the main thread sleeps in idleWait; wake() clears it. */
+  private static final java.util.concurrent.atomic.AtomicBoolean parked = new java.util.concurrent.atomic.AtomicBoolean();
+  private static volatile android.os.Handler wakeHandler;
+  private static final Runnable NOTHING = () -> {};
+  private static final java.util.concurrent.atomic.AtomicLong wakeCount = new java.util.concurrent.atomic.AtomicLong();
+  /** wakeCount when this loop turn began. Main thread only. */
+  private long turnWakes;
+
+  /**
+   * Sleeps until the next main-queue message is due (at most IDLE_SLEEP_MAX_MS), returning early when another thread
+   * posts to the main queue (Robolectric's poll wakes on an executable message: a worker's post, a coroutine resuming on
+   * Dispatchers.Main, a video picture) or wake() is called (a control command, window input). Polling every 2 ms
+   * instead kept an idle instance at 2.5-5% of a core. False if there is too little time to bother.
+   */
+  private boolean idleWait(long clockSynced) {
+    long nowMs = SystemClock.uptimeMillis();
+    long elapsedMs = (System.nanoTime() - clockSynced) / 1_000_000L;
+    long sleepMs = IDLE_SLEEP_MAX_MS - Math.max(0, elapsedMs);
+    Duration next = ((org.robolectric.shadows.ShadowPausedLooper) shadowOf(Looper.getMainLooper())).getNextScheduledTaskTime();
+    if (!next.isZero()) sleepMs = Math.min(sleepMs, next.toMillis() - nowMs - elapsedMs);
+    if (sleepMs < 3) return false;
+    parked.set(true);
+    // A wake that came after the loop's checks but before parked was set posted nothing: do not sleep through it.
+    if (wakeCount.get() != turnWakes) {
+      parked.set(false);
+      return true;
+    }
+    try {
+      ((org.robolectric.shadows.ShadowPausedLooper) shadowOf(Looper.getMainLooper())).poll(sleepMs);
+    } finally {
+      parked.set(false);
+    }
+    return true;
+  }
+
+  /** Wakes the loop if it sleeps in idleWait. Any thread; does nothing when there is no running Host (test runs). */
+  static void wake() {
+    wakeCount.incrementAndGet();
+    android.os.Handler h = wakeHandler;
+    if (h != null && parked.compareAndSet(true, false)) h.post(NOTHING);
   }
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
@@ -1259,26 +1366,34 @@ public class Host {
   private void resizeDisplay(int newW, int newH, boolean actualSize) {
     w = newW;
     h = newH;
-    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw.resize(w, h, actualSize);
   }
 
-  /** {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window. */
+  /**
+   * {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window.
+   * The bitmap is made for the shot and freed after it: kept for the life of the instance it held a display's worth of
+   * native memory (5.9 MB on a phone, 16 MB on a tablet) that only screenshots use.
+   */
   private void saveFrame(String path, boolean display) throws Exception {
-    hw.withLatestFrame(pixels -> {
-      pixels.rewind();
-      bitmap.copyPixelsFromBuffer(pixels);
-      pixels.rewind();
-    });
-    if (display && SimWindow.displayAvailable()) {
-      ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
-      if (SimWindow.displayImage(shot, w, h)) {
-        shot.rewind();
-        bitmap.copyPixelsFromBuffer(shot);
+    Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    try {
+      hw.withLatestFrame(pixels -> {
+        pixels.rewind();
+        bitmap.copyPixelsFromBuffer(pixels);
+        pixels.rewind();
+      });
+      if (display && SimWindow.displayAvailable()) {
+        ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
+        if (SimWindow.displayImage(shot, w, h)) {
+          shot.rewind();
+          bitmap.copyPixelsFromBuffer(shot);
+        }
       }
-    }
-    try (FileOutputStream out = new FileOutputStream(path)) {
-      bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+      try (FileOutputStream out = new FileOutputStream(path)) {
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+      }
+    } finally {
+      bitmap.recycle();
     }
   }
 
@@ -1619,7 +1734,10 @@ public class Host {
         // clockAheadMs: how far SystemClock has run ahead of real time since the loop started (negative: behind, from
         // stalls it does not replay). It should stay within a frame or two; app timers fire early by as much.
         long ahead = SystemClock.uptimeMillis() - clockBaseMs - (System.nanoTime() - clockBaseNanos) / 1_000_000L;
-        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s clockAheadMs=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
+        // footprintMb: the process as the system counts it (Footprint), which Java's heap figure is a fraction of.
+        long fp = Footprint.bytes();
+        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d", frames,
+            (rt.totalMemory() - rt.freeMemory()) >> 20, fp < 0 ? -1 : fp >> 20, Footprint.cpuMs(),
             ProcessHandle.current().pid(), dataDir, ahead);
       }
       case "redraw" -> {

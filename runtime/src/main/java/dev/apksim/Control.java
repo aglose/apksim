@@ -39,6 +39,12 @@ final class Control {
 
   static final ConcurrentLinkedQueue<Pending> QUEUE = new ConcurrentLinkedQueue<>();
 
+  /** Queues a command for Host's loop and wakes the loop if it sleeps (Host.idleWait). */
+  static void submit(Pending p) {
+    QUEUE.add(p);
+    Host.wake();
+  }
+
   private Control() {}
 
   private static void serve(Socket socket) {
@@ -60,7 +66,7 @@ final class Control {
           return;
         }
         Pending p = new Pending(args);
-        QUEUE.add(p);
+        submit(p);
         out.println(p.await());
       }
     } catch (IOException | InterruptedException | RuntimeException e) {

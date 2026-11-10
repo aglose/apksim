@@ -24,7 +24,7 @@ import java.util.Map;
  * <p>Main thread only (where Views and Compose record). A node scaled again by HWUI (a graphicsLayer scale) samples
  * the copy a second time, slightly softer than one pass from the original. `-Dapksim.gpuBitmaps=false` turns it off.
  */
-final class GpuBitmaps {
+public final class GpuBitmaps {
   /**
    * Not in test runs: their recordings are dropped, never rasterized, and no frame ticks, so copies would be made for
    * nothing and never freed.
@@ -247,8 +247,12 @@ final class GpuBitmaps {
   /** Once a frame, on the main thread: lets go of copies and sources no longer drawn. */
   static void tick() {
     frame++;
+    release(frame - KEEP_FRAMES);
+  }
+
+  /** Lets go of copies and sources last drawn before frame {@code stale}. */
+  private static void release(long stale) {
     if (SCALED.isEmpty() && SEEN.isEmpty() && DRAWN.isEmpty() && SOURCES.isEmpty()) return;
-    long stale = frame - KEEP_FRAMES;
     for (Iterator<Entry> i = SCALED.values().iterator(); i.hasNext(); ) {
       Entry e = i.next();
       if (e.used < stale) {
@@ -267,6 +271,14 @@ final class GpuBitmaps {
         i.remove();
       }
     }
+  }
+
+  /**
+   * The system is short of memory (Host): lets go of every copy and source not drawn in the current frame, as tick()
+   * does for those not drawn for a while. Main thread.
+   */
+  public static void trim() {
+    release(frame);
   }
 
   /** For the `shaders` command. */

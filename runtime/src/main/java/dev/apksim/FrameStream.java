@@ -119,7 +119,7 @@ final class FrameStream {
       wake = true;
       LOCK.notifyAll();
     }
-    Control.QUEUE.add(new Control.Pending(new String[] {"redraw"}));
+    Control.submit(new Control.Pending(new String[] {"redraw"}));
     try {
       s.run();
     } finally {

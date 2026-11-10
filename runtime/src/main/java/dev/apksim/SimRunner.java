@@ -235,6 +235,7 @@ public class SimRunner extends RobolectricTestRunner {
     @Override
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
+      conscryptAhead();
       TimeZones.applyLaunchZone();  // --timezone: the JDK's, android.icu's and user.timezone (Joda-Time)
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
       SimClock.applyLaunchOption();
@@ -281,6 +282,29 @@ public class SimRunner extends RobolectricTestRunner {
       } catch (Exception e) {
         System.err.println("[apksim] gesture thresholds: " + e);
       }
+    }
+
+    private static boolean conscryptStarted;
+
+    /**
+     * Conscrypt's native library, loaded on a thread of its own as the first test environment is set up (a standby's
+     * warm-up loads it on its main thread: StandbyWarmup.conscrypt). OkHttp's Android platform asks
+     * Conscrypt.isAvailable() from AndroidX Startup's initializer, before Application.onCreate, which extracted and
+     * loaded it on the main thread: ~200 ms of a cold launch of an app with OkHttp. Not before this point: Conscrypt
+     * reads android.os.Build, whose class must initialize inside the sandbox (from Main it broke the launch).
+     */
+    private static synchronized void conscryptAhead() {
+      if (conscryptStarted || !Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) return;
+      conscryptStarted = true;
+      Thread t = new Thread(() -> {
+        try {
+          Class.forName("org.conscrypt.Conscrypt", true, ClassLoader.getSystemClassLoader()).getMethod("isAvailable").invoke(null);
+        } catch (Throwable e) {
+          // The app finds out itself if it asks.
+        }
+      }, "apksim-conscrypt");
+      t.setDaemon(true);
+      t.start();
     }
 
     /**

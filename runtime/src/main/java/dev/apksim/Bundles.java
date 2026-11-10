@@ -602,7 +602,7 @@ public final class Bundles {
     b.append('\n');
     if (t != null) {
       StringWriter w = new StringWriter();
-      t.printStackTrace(new PrintWriter(w));
+      StackTraces.clean(t).printStackTrace(new PrintWriter(w));
       b.append("\n").append(w).append('\n');
     }
     return b.toString();

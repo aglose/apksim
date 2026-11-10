@@ -483,6 +483,8 @@ final class Instrument {
 
     @Override
     public void testFailure(Failure f) {
+      // Before the listeners after this one (the run's, TestRunnerSetup.LISTENERS) hear it: as a device's trace reads.
+      StackTraces.clean(f.getException());
       if (f.getDescription().isTest() && failure == null) {
         code = FAILURE;
         failure = f;
@@ -499,6 +501,7 @@ final class Instrument {
 
     @Override
     public void testAssumptionFailure(Failure f) {
+      StackTraces.clean(f.getException());
       code = ASSUMPTION;
       failure = f;
     }
@@ -545,7 +548,7 @@ final class Instrument {
     private static String trace(Failure f) {
       if (f == null) return "";
       StringWriter w = new StringWriter();
-      f.getException().printStackTrace(new PrintWriter(w));
+      StackTraces.clean(f.getException()).printStackTrace(new PrintWriter(w));
       return w.toString();
     }
 
