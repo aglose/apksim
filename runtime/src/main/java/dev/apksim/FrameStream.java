@@ -59,11 +59,27 @@ final class FrameStream {
     synchronized (LOCK) {
       if (latest == null || latest.length != pixels.remaining()) latest = new byte[pixels.remaining()];
       pixels.duplicate().get(latest);
+      if (Device.peek().watch()) roundMask(latest, w, h);
       latestW = w;
       latestH = h;
       latestMicros = micros;
       fresh = true;
       LOCK.notifyAll();
+    }
+  }
+
+  /** A watch's screen is round: everything outside the inscribed circle is black (alpha 0), for the client to show as a circle. */
+  static void roundMask(byte[] bgra, int w, int h) {
+    double r = Math.min(w, h) / 2.0, cx = w / 2.0, cy = h / 2.0;
+    for (int y = 0; y < h; y++) {
+      double dy = y + 0.5 - cy;
+      double half = r * r - dy * dy;
+      int x0 = half <= 0 ? w : (int) Math.ceil(cx - Math.sqrt(half) - 0.5);
+      int x1 = half <= 0 ? w : (int) Math.floor(cx + Math.sqrt(half) - 0.5);
+      int row = y * w * 4;
+      if (x0 > w) x0 = w;
+      if (x0 > 0) java.util.Arrays.fill(bgra, row, row + Math.min(x0, w) * 4, (byte) 0);
+      if (x1 < w - 1) java.util.Arrays.fill(bgra, row + Math.max(x1 + 1, 0) * 4, row + w * 4, (byte) 0);
     }
   }
 

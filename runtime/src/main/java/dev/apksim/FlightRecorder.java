@@ -285,6 +285,7 @@ final class FlightRecorder {
     EVENTS[SimWindow.KEY] = "key";
     EVENTS[SimWindow.RESIZE] = "resize";
     EVENTS[SimWindow.CANCEL] = "cancel";
+    EVENTS[SimWindow.ROTARY] = "rotary";
     EVENTS[SimWindow.TOUCH2_CENTRE] = "touch2-centre";
     EVENTS[SimWindow.TOUCH2_DOWN] = "touch2-down";
     EVENTS[SimWindow.TOUCH2_MOVE] = "touch2-move";
@@ -342,12 +343,13 @@ final class FlightRecorder {
   private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "size", "window",
       "rotate", "animscale", "memory", "home", "resume", "lock", "unlock", "open", "push", "permission", "location",
       "biometrics", "recreate", "process-death", "keyboard", "clock", "timezone", "bluetooth", "notifications", "jobs",
-      "pick", "clipboard", "paste", "bars", "thermal", "restart", "network");
+      "pick", "clipboard", "paste", "bars", "thermal", "restart", "network", "ambient");
 
   /** A control command (or menu item) about to run (main thread): kept if a replay must repeat it. */
   static void commandRan(String[] a) {
     if (!input || a.length == 0 || !COMMANDS.contains(a[0])) return;
     if (a[0].equals("network") && (a.length == 1 || a[1].equals("status") || a[1].equals("unmatched") || a[1].equals("save"))) return;
+    if (a[0].equals("ambient") && a.length == 1) return;  // the status query
     if ((a[0].equals("jobs") || a[0].equals("notifications")) && a.length == 1) return;  // listings
     List<String> args = new ArrayList<>(List.of(a));
     if (a[0].equals("clipboard") && a.length > 2 && a[1].equals("set")) {
