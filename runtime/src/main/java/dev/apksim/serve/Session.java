@@ -134,24 +134,8 @@ final class Session {
   private volatile boolean h264;
   /** H.264 frames that may wait for the tab before it drops to the next keyframe. */
   private static final int MAX_WAITING = 3;
-  /**
-   * Drop-to-keyframe cycles so far (a tab that cannot keep up: each one is a freeze), and the pace asked of the instance
-   * since (ms between new frames, 0 for none). A keyframe is several times a P-frame, so dropping to one only makes a slow
-   * tab slower; the relay instead has the encoder produce fewer frames, still a valid chain.
-   */
-  volatile int keyDrops;
-  private volatile int paceMs;
-  private long lastDropNanos;
-  private long lastPaceNanos;
-  /**
-   * Easing: after {@link #easeWaitNanos} without a drop the pace is tried 15% quicker ({@link #eased}, the pace before it
-   * kept in {@link #goodPaceMs}). A drop while that trial runs puts the old pace back and doubles the wait (to 128 s at
-   * most), so a tab at its limit is probed ever more rarely instead of freezing every few seconds.
-   */
-  private long easeWaitNanos = EASE_WAIT_NANOS;
-  private int goodPaceMs;
-  private boolean eased;
-  private static final long EASE_WAIT_NANOS = 8_000_000_000L;
+  /** Pacing for a tab slower than the app (issue 232). Guarded by this. */
+  private final Pacer pacer = new Pacer();
   /** Smoothed gap between acks while another frame was in flight (ms): what the tab takes per frame when it is the limit. */
   private double ackGapMs = -1;
   private long lastAckNanos;
@@ -739,15 +723,7 @@ final class Session {
           double gap = (n - lastFrameNanos) / 1e6;
           if (lastFrameNanos != 0 && gap <= 250) frameIntervalMs += (gap - frameIntervalMs) * 0.1;
           lastFrameNanos = n;
-          if (h264 && paceMs > 0 && n - lastDropNanos > easeWaitNanos && n - lastPaceNanos > easeWaitNanos) {
-            // No drops for a while: let the instance speed up a step; a drop puts it back. Under the instance's own
-            // frame interval (8 ms at 120 Hz) a pace changes nothing, so it goes.
-            goodPaceMs = paceMs;
-            eased = true;
-            paceMs = paceMs * 85 / 100 <= 8 ? 0 : paceMs * 85 / 100;
-            lastPaceNanos = n;
-            paceAsk = paceMs;
-          }
+          if (h264) paceAsk = pacer.frame(n);
           if (!h264) {
             waiting.clear();
             waiting.add(frame);
@@ -759,28 +735,8 @@ final class Session {
             // The tab is behind: what waits goes, and so does every frame until a keyframe.
             waiting.clear();
             dropToKey = askKey = true;
-            keyDrops++;
-            // One drop alone may be a hiccup (the tab busy while its page starts): only drops that repeat, or one under
-            // a pace already set, are a tab that cannot keep up.
-            boolean repeated = paceMs > 0 || eased || (lastDropNanos != 0 && n - lastDropNanos < 2_000_000_000L);
-            lastDropNanos = n;
-            if (eased) {
-              // The quicker pace was too quick: the one that held, and a longer wait before the next try.
-              eased = false;
-              easeWaitNanos = Math.min(easeWaitNanos * 2, 16 * EASE_WAIT_NANOS);
-              paceMs = paceAsk = goodPaceMs;
-              lastPaceNanos = n;
-            } else if (repeated && tabFrameMs() > 0) {
-              // Only from the tab's own measured rate: the app's frame interval says nothing about the tab.
-              double want = tabFrameMs() * 1.15;
-              // A drop under a pace that has had a second to take effect: the estimate was too low, so a quarter slower.
-              if (paceMs > 0 && n - lastPaceNanos > 1_000_000_000L) want = Math.max(want, paceMs * 1.25);
-              int ms = (int) Math.min(250, Math.ceil(want));
-              if (ms > paceMs) {
-                paceMs = paceAsk = ms;
-                lastPaceNanos = n;
-              }
-            }
+            int p = pacer.dropped(n, tabFrameMs());
+            if (p >= 0) paceAsk = p;
           } else if (!dropToKey) {
             waiting.add(frame);
           }
@@ -841,26 +797,27 @@ final class Session {
       inFlight--;
       inFlightBytes -= f[1];
       long t = System.nanoTime();
-      if (h264 && inFlight > 0 && lastAckNanos != 0) {
-        double gap = (t - lastAckNanos) / 1e6;
-        ackGapMs = ackGapMs < 0 ? gap : ackGapMs + (gap - ackGapMs) * 0.2;
+      if (h264) {
+        Pacer.AckGap g = Pacer.ackGap(ackGapMs, lastAckNanos, t, inFlight);
+        ackGapMs = g.gapMs();
+        lastAckNanos = g.baselineNanos();
       }
-      // Only between acks with a frame still in flight: once the flight drains, the time to the next ack is the app's
-      // (a still screen), not the tab's.
-      lastAckNanos = inFlight > 0 ? t : 0;
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
   }
 
-  /**
-   * What the tab takes per frame when it is the limit, in ms, or -1 before it is known: the gap between acks while
-   * another frame was in flight; with a window of one (`--in-flight 1`) no frame ever is, and each frame's ack round
-   * trip (the quickest recent one) is that time instead.
-   */
+  private synchronized int pacerKeyDrops() {
+    return pacer.keyDrops;
+  }
+
+  private synchronized int pacerPaceMs() {
+    return pacer.paceMs;
+  }
+
+  /** What the tab takes per frame when it is the limit, in ms, or -1 before it is known (Pacer.tabFrameMs). */
   private synchronized double tabFrameMs() {
-    if (ackGapMs > 0) return ackGapMs;
-    return window() <= 1 ? ackRttMs() : -1;
+    return Pacer.tabFrameMs(ackGapMs, window(), ackRttMs());
   }
 
   /** The quickest of the recent ping round trips in ms, or -1 before the first. */
@@ -1475,7 +1432,7 @@ final class Session {
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
         + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
-        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + keyDrops + ",\"paceMs\":" + paceMs + ",\"ackGapMs\":" + Math.round(ackGapMs) + "}";
+        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + pacerKeyDrops() + ",\"paceMs\":" + pacerPaceMs() + ",\"ackGapMs\":" + Math.round(ackGapMs) + "}";
   }
 
   // ---------------------------------------------------------------- the end
