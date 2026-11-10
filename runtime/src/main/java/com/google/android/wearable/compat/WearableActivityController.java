@@ -27,6 +27,7 @@ public class WearableActivityController {
   private final AmbientCallback callback;
   private boolean enabled;
   private boolean ambient;
+  private boolean resumed;
 
   public WearableActivityController(String tag, Activity activity, AmbientCallback callback) {
     this.activity = activity;
@@ -63,6 +64,7 @@ public class WearableActivityController {
 
   public void onResume() {
     // A recreated activity's new controller joins the ambient state the device is in.
+    resumed = true;
     boolean now = ambient();
     if (enabled && ambient != now) {
       synchronized (LIVE) {
@@ -72,9 +74,13 @@ public class WearableActivityController {
     }
   }
 
-  public void onPause() {}
+  public void onPause() {
+    resumed = false;
+  }
 
-  public void onStop() {}
+  public void onStop() {
+    resumed = false;
+  }
 
   public void onDestroy() {
     synchronized (LIVE) {
@@ -91,7 +97,8 @@ public class WearableActivityController {
     }
     boolean told = false;
     for (WearableActivityController c : now) {
-      if (!c.enabled || c.ambient == on) continue;
+      // Callbacks come between onResume and onPause; a paused activity is told when it resumes.
+      if (!c.enabled || !c.resumed || c.ambient == on) continue;
       told = true;
       Runnable r = () -> c.change(on);
       if (Looper.myLooper() == Looper.getMainLooper()) r.run();
