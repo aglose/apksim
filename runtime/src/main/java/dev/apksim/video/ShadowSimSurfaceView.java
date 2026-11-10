@@ -35,6 +35,9 @@ public class ShadowSimSurfaceView extends ShadowSurfaceView {
   private Surface surface;
   private int width;
   private int height;
+  // The buffer size the app asked for (SurfaceHolder.setFixedSize), else 0: the view's size.
+  private int fixedWidth;
+  private int fixedHeight;
 
   /** Test runs keep Robolectric's SurfaceView: an app's tests may drive its fake holder. Read each time: a standby
    * JVM loads this class before it knows whether its launch is a test run. */
@@ -57,8 +60,8 @@ public class ShadowSimSurfaceView extends ShadowSurfaceView {
 
   /** Creates the surface once the view has a size, and reports size changes, as the system does after layout. */
   private void update() {
-    int w = real.getWidth(), h = real.getHeight();
-    if (w <= 0 || h <= 0 || !real.isAttachedToWindow()) return;
+    if (real.getWidth() <= 0 || real.getHeight() <= 0 || !real.isAttachedToWindow()) return;
+    int w = fixedWidth > 0 ? fixedWidth : real.getWidth(), h = fixedHeight > 0 ? fixedHeight : real.getHeight();
     if (surface == null) {
       texture = new SurfaceTexture(false);
       VideoSurfaces.attach(texture, real);
@@ -126,8 +129,17 @@ public class ShadowSimSurfaceView extends ShadowSurfaceView {
     @Override public void removeCallback(Callback callback) { callbacks.remove(callback); }
     @Override public boolean isCreating() { return false; }
     @Override public void setType(int type) {}
-    @Override public void setFixedSize(int w, int h) {}
-    @Override public void setSizeFromLayout() {}
+    // A fixed size is the buffers' size, which surfaceChanged reports (CameraX's PreviewView waits for its camera
+    // resolution there); the view still shows them scaled to its bounds.
+    @Override public void setFixedSize(int w, int h) {
+      fixedWidth = w;
+      fixedHeight = h;
+      real.post(ShadowSimSurfaceView.this::update);
+    }
+    @Override public void setSizeFromLayout() {
+      fixedWidth = fixedHeight = 0;
+      real.post(ShadowSimSurfaceView.this::update);
+    }
     @Override public void setFormat(int format) {}
     @Override public void setKeepScreenOn(boolean screenOn) {}
     @Override public Canvas lockCanvas() { return null; }

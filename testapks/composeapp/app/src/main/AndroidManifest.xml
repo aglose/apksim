@@ -162,6 +162,15 @@
             </intent-filter>
         </activity>
         <!-- apksim://video: a 1080p60 clip looping full-screen in a TextureView. -->
+        <!-- apksim://camera[?mode=compatible]: a CameraX preview and analysis of the front camera's frames. -->
+        <activity android:name=".CameraActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="camera" />
+            </intent-filter>
+        </activity>
         <activity android:name=".VideoActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

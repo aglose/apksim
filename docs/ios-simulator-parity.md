@@ -21,7 +21,7 @@ software keyboard with IME insets, and an adb device (`--adb PORT`, then `adb co
 screencap).
 Everything except the window-only parts also works in the Linux image.
 
-Not yet: device bezels, external display, other API levels, CREATE_DOCUMENT (save) pickers, sharing files from Linux, audio, camera, binding to app services in general (only FCM's
+Not yet: device bezels, external display, other API levels, CREATE_DOCUMENT (save) pickers, sharing files from Linux, audio, the Mac's webcam as a camera, binding to app services in general (only FCM's
 is wired), widgets, installing other apps and `jdwp` on the adb device, a view inspector beyond `nodes`/`a11y`.
 
 ## Shared groundwork (do these first)
@@ -94,7 +94,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Permissions | Real prompts; `simctl privacy grant/revoke/reset` | Robolectric default | When `requestPermissions` is called, show a Cocoa alert (Allow / Deny / Only this time) and answer through `onRequestPermissionsResult`; `permission grant/revoke/reset` commands | M |
 | Keychain / secure storage | `simctl keychain` | Unknown: `AndroidKeyStore` is not provided by Robolectric | Provide a JCA `AndroidKeyStore` backed by an in-memory or file keystore under app data, so EncryptedSharedPreferences and token storage work; `keystore reset` | M |
 | Audio out / microphone | Mac audio | Stubbed | `AudioTrack`/`MediaPlayer`/`SoundPool` → AVAudioEngine; AAudio/OpenSL in `bionic`-side stubs → CoreAudio; `AudioRecord` → Mac mic (asks the macOS permission) | L |
-| Camera | Not supported in iOS Simulator | Not supported | Beyond parity, but cheap relative to value: Camera2/CameraX shadow fed by AVFoundation from the Mac camera, or a still-image/video file source | L |
+| Camera | Not supported in iOS Simulator | `--camera fake`: a back and a front camera, Camera2 and CameraX frames of a test pattern or a still image, `camera` command, Features > Camera | Not yet: the Mac's webcam (AVFoundation), a looping video file, encoder (VideoCapture) Surfaces | M |
 
 ## App lifecycle and system integration
 

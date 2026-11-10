@@ -46,7 +46,14 @@ public class ShadowSimTextureView extends ShadowTextureView {
   @Override
   protected void draw(Canvas canvas) {
     Bitmap picture = VideoSurfaces.picture(ensureSurface());
-    if (picture != null) canvas.drawBitmap(picture, null, new Rect(0, 0, real.getWidth(), real.getHeight()), FILTER);
+    if (picture == null) return;
+    // The view's transform (setTransform) maps the content in its bounds, as HWUI applies it to the texture layer: a
+    // camera preview (CameraX's PreviewView) turns and scales its picture with it.
+    android.graphics.Matrix m = real.getTransform(null);
+    int save = canvas.save();
+    if (!m.isIdentity()) canvas.concat(m);
+    canvas.drawBitmap(picture, null, new Rect(0, 0, real.getWidth(), real.getHeight()), FILTER);
+    canvas.restoreToCount(save);
   }
 
   @Implementation

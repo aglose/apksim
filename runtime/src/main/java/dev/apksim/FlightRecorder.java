@@ -342,7 +342,7 @@ final class FlightRecorder {
   private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "size", "window",
       "rotate", "animscale", "memory", "home", "resume", "lock", "unlock", "open", "push", "permission", "location",
       "biometrics", "recreate", "process-death", "keyboard", "clock", "timezone", "bluetooth", "notifications", "jobs",
-      "pick", "clipboard", "paste", "bars", "thermal", "restart", "network");
+      "pick", "clipboard", "paste", "bars", "thermal", "restart", "network", "camera");
 
   /** A control command (or menu item) about to run (main thread): kept if a replay must repeat it. */
   static void commandRan(String[] a) {

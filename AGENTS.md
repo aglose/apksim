@@ -255,6 +255,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
   - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
+  - `Cameras`, `camera/` (`FakeCamera`, `Scene`, `ShadowSimCameraCaptureSession`, `ShadowSimImageReader`,
+    `ShadowSimCameraManager`): the simulated cameras (`--camera fake`, see "Camera").
   - `FrameStream`: the screen as JPEG or H.264 frames for `apksim serve` (see "apksim serve"; H.264 is
     `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
@@ -450,6 +452,8 @@ instance startService runs, and an `android:process` service gets its local bind
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
 only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
+`camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
+open and streaming devices, frames, images, drops, outputs).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
 overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
@@ -494,7 +498,8 @@ Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R, Sav
 Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
-Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
+Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Camera > Off/Test Pattern/Image
+File... (`--camera fake`), Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
 Accessibility Audit), and Device > Status Bar / Navigation Bar (see `bars`). Permission requests
 and biometric prompts show as sheets on the window; notifications as a banner (click opens it).
@@ -519,7 +524,7 @@ the `default` slot's: Robolectric's `unknown` failed a backend's format check), 
 Robolectric's few (touchscreen, wifi*, telephony*), then what an emulator of the device's kind lists for what apksim
 simulates: bluetooth, bluetooth_le, location*, multitouch*, faketouch, fingerprint, audio.output, both screen
 orientations; a TV drops touchscreen, telephony, GPS and fingerprint and has leanback and type.television, a desktop
-adds type.pc; no camera*, as apksim has none: the Settings tab's Camera button only asks the permission. The `device`
+adds type.pc; no camera* unless `--camera fake` (see "Camera"). The `device`
 command re-applies them for the new kind. `pm list features` and getSystemAvailableFeatures list them), `--feature
 NAME[=false]` (repeatable, after the defaults: `=false` takes one away, a default too) and
 `--build FIELD=VALUE` (repeatable: any public static Build or Build.VERSION field, `MODEL=Pixel 9`,
@@ -588,6 +593,9 @@ file `/sdcard/apksim-slot-check.txt` as Application.onCreate saw them ("at app s
 first and the file, plus typed values (Global putInt, Secure putLong, System putFloat; "typed:" reads them back with the
 typed getters: the slot keeps text, as Android's provider does, and the getters parse it) (`scripts/slot-check.sh`
 drives it across launches, and checks `adb shell settings get` when adb is on PATH).
+`apksim://camera[?mode=compatible]` opens `CameraActivity`: CameraX's Preview in a PreviewView (a SurfaceView; `compatible`:
+a TextureView) and an ImageAnalysis on the front camera, "camera: N frames, 1280x720 YUV, rotation 270"; the Settings
+tab's Camera button opens it once the permission is granted on a device with a camera (`--camera fake`; `CameraTest`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 `apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
@@ -672,6 +680,44 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   (docs/network.md says what it would need), WebSocket replay (relayed while recording). Checks:
   `scripts/network-check.sh APK OUT [IMAGE]` (CI runs it in the image from `ci-smoke.sh`) and `NetworkReplayTest`
   (`-e networkReplay true` with `--network replay testapks/composeapp/app/src/androidTest/network/greeting.har`).
+
+## Camera
+`--camera fake` (`Cameras`, issue 219; `fake=IMAGE` for a still image, resolved like any path) declares
+android.hardware.camera, camera.any and camera.front and lists two cameras in CameraManager, as an emulator: "0" back
+(sensor 90) and "1" front (270), LIMITED, 1280x720 and 1920x1080 in YUV_420_888, JPEG and PRIVATE at 30 fps. A front
+camera alone with android.hardware.camera declared (it means a back camera) made CameraX refuse to start ("Expected
+camera missing from device"). `ShadowSimCameraManager`: openCamera throws SecurityException without CAMERA (Robolectric
+opened it anyway). Robolectric's CameraDevice opens and configures sessions but never produces a frame, so
+`ShadowSimCameraCaptureSession` hands capture, burst and repeating requests (Handler or Executor), stopRepeating,
+abortCaptures and close to `FakeCamera`, which runs them on its own thread (`apksim-camera`) at 30 fps, as a device
+does: each frame takes the next single capture, else the repeating request; draws the `Scene` (colour bars, a white bar
+sweeping across every 2 s, frame number and time, a black triangle at the top; or the still image; or black for
+`camera off`) into each target Surface; and calls onCaptureStarted and onCaptureCompleted with a TotalCaptureResult
+(SENSOR_TIMESTAMP, 3A converged, the request's modes echoed) on the callback's handler or executor, then
+onCaptureSequenceCompleted/Aborted as sequences end. Timestamps are SystemClock.elapsedRealtimeNanos, kept strictly
+increasing (the simulated clock may stand still in a test run): CameraX pairs Images with results by timestamp.
+Targets: an ImageReader's Surface (Robolectric's native Surface shadow names its reader) gets an Image from
+`ShadowSimImageReader` (a subclass of Robolectric's native ImageReader shadow; readers the camera never wrote to, HWUI's
+included, are Robolectric's): YUV_420_888 as a device's NV21-backed planes (Y, then U and V views of one interleaved
+buffer, pixel stride 2, direct ByteBuffers for native readers), JPEG, RGBA_8888, or PRIVATE without planes, under the
+reader's maxImages (a frame with no free buffer is dropped, as the camera stalls on a device). A TextureView's or
+SurfaceView's Surface gets a picture through `VideoSurfaces`, as video does. Orientation follows the device: an
+ImageReader's buffer is the scene turned so that the rotation apps compute ((sensor + display) mod 360 front, (sensor -
+display) back) makes it upright; a TextureView shows the buffer as the camera's transform turns it (mirrored for the
+front camera) and CameraX's PreviewView corrects for the display with the view's transform, which `ShadowSimTextureView`
+now applies; a SurfaceView's buffer is composited with the display's rotation, so it shows the scene upright.
+Two framework gaps this needed: a Surface made from a SurfaceTexture had no native object, so `isValid()` was false and
+CameraX's SurfaceRequest refused the preview ("invalid surface"): `video.ShadowSimSurface` gives it a negative handle that
+no native code sees (every native Surface method answers for it), and answers for SurfaceNatives' JNI methods Robolectric's
+runtime lacks (isValid, release threw UnsatisfiedLinkError for an ImageReader's Surface). And `ShadowSimSurfaceView`'s
+holder honours setFixedSize in surfaceChanged (PreviewView waits there for the camera's resolution).
+`camera pattern|image PATH|off` and Features > Camera (Image File... opens the file panel) switch the source; `camera`
+alone reports it. In test runs it is reachable through `executeShellCommand("apksim camera ...")` until the next setup.
+serve accepts `--camera off|fake` as an app option and `camera pattern|off` from a tab. Not done: the Mac's webcam, a
+looping video file, Surfaces of encoders (VideoCapture, MediaRecorder: they get nothing), reprocessing, the flight
+recorder (no frames recorded). `CameraTest` (`-e camera fake|off` with `--camera fake|off`; CI runs both) covers
+detection, the permission, Camera2 into an ImageReader (layout, changing frames, orientation, results) and CameraX's
+Preview and ImageAnalysis on `apksim://camera`.
 
 ## Video
 WebRTC (libwebrtc in the APK) works end to end: `bionic_net.c` translates sockets and emulates the netlink
@@ -1127,7 +1173,9 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
   test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
-  the control commands it reaches are animscale, fontscale, network, bars, timezone, bluetooth and thermal (`ShellCommandTest`, `ThermalTest`).
+  the control commands it reaches are animscale, fontscale, network, bars, timezone, bluetooth, thermal and camera
+  (`ShellCommandTest`, `ThermalTest`), and `pm grant|revoke PKG PERMISSION` (Robolectric's granted set, reset at the next
+  test's setup; `CameraTest`).
 - The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
   in framework code at its uptime clock, so the framework thought it was 1970 while the app's own code and the JDK
   knew the date (DateUtils.isToday(now) was false). The uptime clock stays simulated, and the wall clock does not jump
