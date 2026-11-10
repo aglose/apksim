@@ -83,8 +83,13 @@ def main():
     check(code == 0, "the suite passes while recording")
     base = cases(work + "/base.xml")
     doc = affected.read_deps(work + "/deps.json.gz")
-    every = sorted(base)
-    check(set(doc["tests"]) >= {f"{c}#{m}" for c, m in every}, f"every one of the {len(every)} tests has a record")
+    # The test app's @Ignore'd tests (IgnoredTest.kt) never start, so no code of theirs runs and they have no record:
+    # selection always picks them, which costs nothing (instrument.py --isolate reports them without a process).
+    ignored = {("dev.apksim.composeapp.IgnoredTest", "ignoredOnItsMethod"), ("dev.apksim.composeapp.IgnoredClassTest", "null")}
+    check(ignored <= set(base) and not {f"{c}#{m}" for c, m in ignored} & set(doc["tests"]),
+          "the @Ignore'd tests are listed and have no record")
+    every = sorted(set(base) - ignored)
+    check(set(doc["tests"]) >= {f"{c}#{m}" for c, m in every}, f"every one of the {len(every)} tests that run has a record")
 
     for path, old, new in CASES:
         name = os.path.basename(path)
@@ -136,7 +141,7 @@ def main():
     print("balanced shards")
     code, err = instrument(work, "base", "--shards", "3", "--timings", "base.xml", "--xml", "shards.xml")
     ran = cases(work + "/shards.xml")
-    check(code == 0 and sorted(ran) == every, f"--shards 3 --timings runs each of the {len(every)} tests once")
+    check(code == 0 and sorted(ran) == sorted(base), f"--shards 3 --timings runs each of the {len(base)} tests once")
     for line in err.splitlines():
         if "shard" in line:
             print("        " + line.strip())
