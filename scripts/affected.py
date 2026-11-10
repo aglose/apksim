@@ -383,6 +383,14 @@ def read_timings(paths):
     return out
 
 
+def longest_first(tests, timings):
+    """[tests] with the longest measured time first (ties and, for tests with no time, the median, in the given order):
+    started in that order, the last slots to finish hold short tests."""
+    known = sorted(timings.values())
+    default = known[len(known) // 2] if known else 1.0
+    return sorted(tests, key=lambda t: -timings.get(t, default))
+
+
 def balance(tests, timings, shards):
     """[tests] in [shards] lists of nearly equal measured time: longest first, each to the shard with the least so far
     (tests without a time count as the median of those with one). Returns (lists, their predicted seconds)."""

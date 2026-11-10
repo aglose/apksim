@@ -171,6 +171,10 @@ to the first shard). A shard can be empty (more shards than tests, or a selectio
 shard's run passes, while a run without shards that finds no tests still fails. Each shard then runs its tests in the suite's order, named with `-e class` through `narrow()`, so its
 crash recovery works as for one process. The predicted time of each shard is printed before the run.
 
+With `--isolate` the same split picks a machine's tests (`--shards N --shard I`; `--shard` is required, since each test is
+a process and `-j` already sets how many run at once): the tests of shard I run each in its own process, and with `--timings`
+the longest start first (a machine's last slots then hold short tests). Without `--timings` the split is by count.
+
 The split needs the suite's list, so a balanced run starts with a listing process (a few seconds); hash sharding needs
 none.
 
