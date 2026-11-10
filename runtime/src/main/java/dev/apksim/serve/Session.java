@@ -1676,7 +1676,9 @@ final class Session {
       keepPkg = dev.apksim.ApkCache.manifestPackage(apk);
       // The build's identity now, before it launches: a local --apps file replaced while the session runs must not
       // label this session's data as the replacement's (which could then reopen it, signed by another key).
-      launchSha = serve.catalog.sha256(apk);
+      // Hashed here, not through the catalog's cache (keyed by size and time, which a replacement may share): with no
+      // signers to compare (an unsigned build, or one whose signature cannot be read) the hash alone tells builds apart.
+      launchSha = freshSha256(apk);
       try {
         launchSigners = ApkSigners.of(apk).certs();
       } catch (IOException e) {
@@ -1720,6 +1722,18 @@ final class Session {
     keptState = state;
     ws.sendText("d {\"kept\":" + Http.q(state) + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
     logLine("[serve] kept data: " + state + (why == null ? "" : ": " + why));
+  }
+
+  /** An APK's SHA-256, read in full now. */
+  private static String freshSha256(Path apk) throws IOException {
+    try (java.io.InputStream in = Files.newInputStream(apk)) {
+      java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+      byte[] buf = new byte[1 << 16];
+      for (int n; (n = in.read(buf)) > 0; ) md.update(buf, 0, n);
+      return HexFormat.of().formatHex(md.digest());
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IOException(e);
+    }
   }
 
   /** Issue 221: the slot this session ran in, packed into its key's store (when it ended in the slot it was given). */
