@@ -1032,12 +1032,12 @@ def main():
             r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)
             got = parse(r.stdout)
             why = incomplete(r, got)
+            if t in r.phases:  # (kept even when the process then died or hung at exit: that is when it matters)
+                PHASES[t] = r.phases[t]
             if not got or why:
                 return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r),
                         time.time() - start)
             c, m, s, st = got[0]
-            if (c, m) in r.phases:
-                PHASES[(c, m)] = r.phases[(c, m)]
             return (c, m, s, st, time.time() - start)
 
         with concurrent.futures.ThreadPoolExecutor(a.j) as pool:
