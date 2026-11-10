@@ -46,7 +46,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--network-profile", "--device", "--rec", "--sdcard-file");
+      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file");
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 

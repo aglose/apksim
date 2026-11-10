@@ -19,9 +19,9 @@ import org.robolectric.util.ReflectionHelpers;
  * read them to decide what to offer: one treated a device without android.hardware.bluetooth as having no Bluetooth.
  * apksim adds what it simulates (Bluetooth and BLE, location, multitouch, audio output, a fingerprint sensor, both
  * screen orientations), and per device kind what an emulator of that kind reports: a TV has no touchscreen,
- * telephony, GPS or fingerprint, and has leanback; a desktop is android.hardware.type.pc. No camera: apksim has none
- * (the app's camera permission can be granted, but no frames come), so `--feature android.hardware.camera.any` is
- * for apps that must see one. Then the launch's {@code --feature NAME[=false]} (-Dapksim.features=a,b=false), which
+ * telephony, GPS or fingerprint, and has leanback; a desktop is android.hardware.type.pc. No camera unless `--camera fake`
+ * (Cameras: the three camera features; the permission can be granted, but no frames come yet), and
+ * `--feature android.hardware.camera.any` is for an app that must see one without a CameraManager camera. Then the launch's {@code --feature NAME[=false]} (-Dapksim.features=a,b=false), which
  * can also take a default away.
  */
 final class SystemFeatures {
@@ -79,6 +79,7 @@ final class SystemFeatures {
       for (String f : HANDHELD) want.put(f, true);
       if (d.kind().equals("desktop")) want.put("android.hardware.type.pc", true);
     }
+    if (Cameras.fake()) for (String f : Cameras.FEATURES) want.put(f, true);  // --camera fake
     want.putAll(launchOptions());
     Map<String, Boolean> list = list();
     for (Map.Entry<String, Boolean> e : want.entrySet()) {

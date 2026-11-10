@@ -178,7 +178,7 @@ gets, after the session's own (device, appearance, locale...) and before the APK
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--sdcard-file` (a file written to `/sdcard` before the app starts: `PATH=text:TEXT` or `PATH=BASE64`,
 inline, at most 64 KB a file and 72 KB in all, `..` refused), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
-`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, `--device`, and the flags
+`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera`, `--network-profile`, `--device`, and the flags
 `--soft-keyboard` and `--move-shared-data` (macOS: load a 4 KB-aligned native library whose data shares a page with its
 code, experimental; it only changes how the app's own libraries are mapped, and does nothing on Linux).
 `serve --move-shared-data` gives it to every app, since apps rarely control how their third-party libraries are aligned. A
