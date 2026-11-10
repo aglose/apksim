@@ -58,6 +58,37 @@ final class Footprint {
     return -1;
   }
 
+  /** The system's memory pressure: 1 normal, 2 warning, 4 critical (macOS's levels); 1 where it cannot be read. */
+  static int pressure() {
+    if (!HostOs.MAC) return 1;
+    try {
+      MethodHandle h = sysctl();
+      if (h == null) return 1;
+      try (Arena a = Arena.ofConfined()) {
+        MemorySegment value = a.allocate(ValueLayout.JAVA_INT);
+        MemorySegment size = a.allocate(ValueLayout.JAVA_LONG);
+        size.set(ValueLayout.JAVA_LONG, 0, 4);
+        int r = (int) h.invokeExact(a.allocateFrom("kern.memorystatus_vm_pressure_level"), value, size, MemorySegment.NULL, 0L);
+        return r == 0 ? value.get(ValueLayout.JAVA_INT, 0) : 1;
+      }
+    } catch (Throwable e) {
+      return 1;
+    }
+  }
+
+  private static MethodHandle sysctl;
+  private static boolean sysctlLooked;
+
+  private static synchronized MethodHandle sysctl() {
+    if (!sysctlLooked) {
+      sysctlLooked = true;
+      Linker l = Linker.nativeLinker();
+      sysctl = l.defaultLookup().find("sysctlbyname").map(s -> l.downcallHandle(s, FunctionDescriptor.of(ValueLayout.JAVA_INT,
+          ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG))).orElse(null);
+    }
+    return sysctl;
+  }
+
   /** CPU time this process has used, in ms, or -1. */
   static long cpuMs() {
     return ProcessHandle.current().info().totalCpuDuration().map(java.time.Duration::toMillis).orElse(-1L);

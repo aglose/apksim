@@ -111,6 +111,28 @@ What the 94 MB of live heap is (class histogram and a heap dump):
   trampoline frame plus a `$$robo$$` one, as live thread dumps always did. Suite, `bundle-check.py`, crash traces from
   a configuration change and a posted Runnable (identical under both bindings) checked; the Linux image only in CI.
 
+- **A5:** the slow install state was Conscrypt. OkHttp's Android platform asks `Conscrypt.isAvailable()` from AndroidX
+  Startup's initializer, before Application.onCreate, and on a cold launch that extracted and loaded Conscrypt's native
+  library on the main thread (~200 ms; a standby's warm-up already loads it). It now loads on a thread of its own as
+  the first test environment is set up (`SimRunner.conscryptAhead`). Not from `Main`: Conscrypt reads
+  `android.os.Build`, which then initialized outside the sandbox and broke the launch. Cold first frame 1,229 → 1,115
+  ms (5 interleaved pairs); a one-class test run 1.64 → 0.90 s.
+- **C4 (in part) and D2:** a standby quits when the Mac reports memory pressure (`Footprint.pressure`:
+  `kern.memorystatus_vm_pressure_level` through the foreign function API), and the next launch is cold. A running
+  instance under pressure drops `GpuBitmaps`' copies and sources not drawn in the current frame and collects at once;
+  once the screen has been still for 2 s and its footprint has grown by `-Dapksim.idleGcMB` (256) since the last
+  check, it collects then rather than mid-scroll (`Host.Memory`). Checked with a 24 MB threshold: a 58 ms collection
+  after the bitmaps screen. Not done: standbys' idle time following use, and why two of another checkout's standbys
+  outlived their hour (their build predates main).
+- **Step 0 (rest):** `-Dapksim.profile=true` prints its report at the end of a test run too. `FastNativeLoader` marks
+  `native-dlopen`, `native-static-init` and `native-fonts` under `-Dapksim.timing=verbose`. The startup gate's cold and
+  footprint budgets are not done: the gate runs on a Mac CI runner, and moving its anchor is the owner's call
+  (docs/startup-gate.md).
+
+**Where a cold launch stands now** (test app, `-Dapksim.timing=verbose`): JVM 96 ms, APK indexed ~215, native runtime
+loaded ~470 (dlopen 47, deferred static initializers 52, fonts 33), framework ready ~830, first frame ~1,115.
+`bench.py 4 --mem`: cold 1,146 ms, warm 198 ms, instance 350 MB cold and 386 MB warm, standby 350 MB.
+
 ## Found not to work as planned
 
 - **C1 (map `resources.arsc`):** Robolectric's binary resources code holds the table as a `byte[]` from end to end
@@ -254,6 +276,18 @@ remaining cold cost is known.
 
 ## Measured for this plan and dropped
 
+- **A2 (the font map from a file):** measured inside a launch, `loadPreinstalledSystemFontMap` takes 34 ms, not the ~115
+  ms the sampler suggested; `serializeFontMap` then `deserializeFontMap` would bring it to 0.5 ms (33 typefaces from
+  408 KB). ~33 ms of a cold launch only (a standby has it), against a risk to every app's text rendering; not done.
+- **A3 (native runtime on a thread):** what is left of the native load is ~100 ms (dlopen and the deferred static
+  initializers), and libandroid_runtime's JNI_OnLoad looks up static fields and methods, which initializes framework
+  classes: off the main thread before the sandbox is set up, that is the trap the Conscrypt attempt fell into. Not done.
+- **D3 (class bytes without a copy):** the copy is ~8 MB for the test app's ~2,800 classes, a millisecond or two of
+  memcpy. Not worth a custom class source.
+- **C5 (the framework jar's index):** ~2 MB, and moving resources off the class path touches Robolectric's resource
+  loading. Not done.
+- **C6 (a smaller young generation for fleets):** stays an option (`--jvm -Xmn32m`, cold launches), as measured above.
+
 - `-XX:ArchiveRelocationMode=0`: the 69 MB of written AOT cache pages and the launch time did not move.
 - A smaller initial heap with tight free ratios (`-Xms96m`, `MaxHeapFreeRatio=25`): same launch time, same
   footprint. The old generation is all live, so there is nothing to give back; shrink the live set instead (C1, C2).
@@ -264,17 +298,19 @@ remaining cold cost is known.
 
 | Step | Size | Expected | Needs | Status |
 |---|---|---|---|---|
-| 0 Numbers in `stats`, `bench.py`, the gate | small | - | - | part done: `stats`, `bench.py --mem`; the gate and call-site count left |
+| 0 Numbers in `stats`, `bench.py`, the gate | small | - | - | done but the gate's budgets (owner's call) |
 | A1 BouncyCastle | small | -180 ms cold | - | done: -95 ms cold, -110 ms a test process |
 | C3 Screenshot bitmap on demand | small | -6 to -16 MB | - | done |
 | C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | blocked: needs the native resources mode (E4) |
 | D1 Idle loop | medium | idle CPU ~0 | - | done: idle CPU -40 to -55%, not ~0 |
 | B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | done: -290 ms cold, -65 ms warm, -35 to -50 MB, -34% suite CPU |
-| A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | |
-| C4 Standbys give way, D2 idle GC | small each | 364 MB back under pressure; no mid-scroll stall | - | |
-| A3 Native load on a thread | medium, risky | -150 ms cold | A1, A2 | |
-| B2 Jar rewrite | large | the rest of linking | B1 | |
-| E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | |
+| A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | dropped: 33 ms, a rendering risk |
+| C4 Standbys give way, D2 idle GC | small each | 364 MB back under pressure; no mid-scroll stall | - | done (standby idle time by use left) |
+| A3 Native load on a thread | medium, risky | -150 ms cold | A1, A2 | dropped: ~100 ms left, initializes classes outside the sandbox |
+| B2 Jar rewrite | large | the rest of linking | B1 | not started: weeks; B1 took most of linking's cost |
+| E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | not started: spikes of weeks each |
+| A5 Install state in test runs | small | - | - | done: Conscrypt ahead, -115 ms cold, a test process 0.90 s |
+| E4 Native resources mode | large | -17.5 MB | a native runtime rebuild | not started |
 
 A1, C3 and D1 are done; C1 is blocked (E4). B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process

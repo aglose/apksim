@@ -27,7 +27,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
     BouncyCastleProvider: ~100 ms off a cold first frame and a test process's start; `-Dapksim.initAhead=false`).
-    docs/perf-plan.md is the plan for memory, launch and run time.
+    Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment
+    is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
+    sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
@@ -40,7 +42,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     out 7 ms apart. When nothing is wanted (no frame, no input for 100 ms, no command or `settle`), it sleeps in
     Robolectric's `ShadowPausedLooper.poll` until the next main-queue message is due, at most 40 ms: a post to the main
     queue ends it, as do `Control.submit` and window input (`apksim-input-wait` thread); `-Dapksim.idleSleep=false`
-    keeps the old 2 ms poll. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    keeps the old 2 ms poll. `Host.Memory`: once the screen has been still for 2 s and the footprint has grown by
+    `-Dapksim.idleGcMB` (256) since the last check, a full collection runs then (HotSpot does not count native memory);
+    under the Mac's memory pressure GpuBitmaps' caches go and a collection runs at once, and a standby quits
+    (`Footprint.pressure`). Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
     (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
     twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
     one. The first frame waits for the bottom window that is

@@ -334,6 +334,7 @@ public class Host {
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean quiet = idleSleep && !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
             && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+        memory.tick(quiet && !firstFrame);
         if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last, quiet);
       } catch (Throwable crash) {
         // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a
@@ -588,6 +589,52 @@ public class Host {
     }
     if (!wanted && quiet && idleWait(clockSynced)) return;
     if (wait > 50_000L) LockSupport.parkNanos(wait);
+  }
+
+  private final Memory memory = new Memory();
+
+  /**
+   * Native memory, which HotSpot does not count towards collecting (ART does): Bitmaps, HWUI display lists and
+   * renderers are freed only when a collection finds their Java objects, so a session's footprint climbed by hundreds of
+   * MB and then dropped at a ~150 ms full collection wherever it fell, mid-scroll included (docs/plan.md, step 2). Here,
+   * once the screen has been still for 2 s and the footprint has grown by -Dapksim.idleGcMB (256) since the last one, a
+   * collection runs then (D2). When the Mac is short of memory, the scaled-bitmap caches go and a collection runs at
+   * once (C4). Checked once a second.
+   */
+  private static final class Memory {
+    private static final long GROWTH = Long.getLong("apksim.idleGcMB", 256) << 20;
+    private long busySince = System.nanoTime();
+    private long nextCheck;
+    private long baseline = -1;
+    private int lastPressure = 1;
+
+    void tick(boolean quiet) {
+      long now = System.nanoTime();
+      if (!quiet) busySince = now;
+      if (now - nextCheck < 0) return;
+      nextCheck = now + 1_000_000_000L;
+      int pressure = Footprint.pressure();
+      boolean pressed = pressure > 1 && lastPressure == 1;
+      lastPressure = pressure;
+      long fp = Footprint.bytes();
+      if (fp < 0) return;
+      if (baseline < 0) baseline = fp;
+      boolean idleGrowth = GROWTH > 0 && now - busySince > 2_000_000_000L && fp - baseline > GROWTH;
+      if (!pressed && !idleGrowth) {
+        baseline = Math.min(baseline, fp);
+        return;
+      }
+      if (pressed) dev.apksim.gpu.GpuBitmaps.trim();
+      long t0 = System.nanoTime();
+      System.gc();
+      long after = Footprint.bytes();
+      if (!Boolean.getBoolean("apksim.quiet")) {
+        System.err.printf("[apksim] %s: collected in %d ms, footprint %d -> %d MB%n", pressed ? "memory pressure" : "idle",
+            (System.nanoTime() - t0) / 1_000_000, fp >> 20, after >> 20);
+      }
+      // Native memory goes when the Cleaners run, just after: measured again from the next check.
+      baseline = -1;
+    }
   }
 
   /** -Dapksim.idleSleep=false keeps the 2 ms poll when idle (A/B). */

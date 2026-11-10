@@ -78,6 +78,7 @@ public final class Main {
     Timing.mark("apk-indexed");
     if (testApk != null) {
       int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classes);
+      if (Boolean.getBoolean("apksim.profile")) Sampler.report();  // -Dapksim.profile=true: the whole run's samples
       ClassCache.flush();
       Storage.deleteScratch();
       Standby.halt(code);
