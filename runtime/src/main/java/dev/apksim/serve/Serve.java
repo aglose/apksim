@@ -1218,6 +1218,16 @@ public final class Serve {
       }
       took = kept.take(keepId);
     }
+    // The ending session gives the key back just before it leaves the session list, and counts against --max until
+    // then: a restart on a full server (--max 1) would otherwise be told every session is in use.
+    while (took && keyEnding(keepId) && System.currentTimeMillis() - waitFrom < 60_000) {
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
     if (keepId != null && !took && refuseBusy) {
       Http.text(out, 409, "a session is using this key");
       return;
