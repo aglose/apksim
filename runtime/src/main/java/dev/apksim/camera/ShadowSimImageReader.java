@@ -162,14 +162,11 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
     return b;
   }
 
-  private static final ThreadLocal<int[]> PIXELS = new ThreadLocal<>();
+  /** Scratch pixels per size (a request may fill readers of several sizes every frame). */
+  private static final ThreadLocal<java.util.Map<Integer, int[]>> PIXELS = ThreadLocal.withInitial(java.util.HashMap::new);
 
   private static int[] pixels(Bitmap raw, int w, int h) {
-    int[] p = PIXELS.get();
-    if (p == null || p.length != w * h) {
-      p = new int[w * h];
-      PIXELS.set(p);
-    }
+    int[] p = PIXELS.get().computeIfAbsent(w * h, int[]::new);
     raw.getPixels(p, 0, w, 0, 0, w, h);
     return p;
   }

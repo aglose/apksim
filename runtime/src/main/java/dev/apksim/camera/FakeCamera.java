@@ -120,6 +120,8 @@ public final class FakeCamera {
   }
 
   private static final class DeviceState {
+    /** Sessions that have queued requests on this device: a new session closes them, as on a device. */
+    final java.util.Set<CameraCaptureSession> sessions = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     Sequence repeating;
     final ArrayDeque<Sequence> singles = new ArrayDeque<>();
     long frameNumber;
@@ -149,6 +151,7 @@ public final class FakeCamera {
     DeviceState d = DEVICES.computeIfAbsent(device, k -> new DeviceState());
     Sequence ended = null;
     synchronized (d) {
+      d.sessions.add(session);
       if (repeating) {
         ended = d.repeating;
         d.repeating = s;
@@ -159,6 +162,21 @@ public final class FakeCamera {
     if (ended != null) end(ended);
     start();
     return s.id;
+  }
+
+  /**
+   * A new capture session on the device (ShadowSimCameraDevice): the earlier ones close first, their requests ending
+   * and their onClosed called, as the camera service replaces a session. Robolectric's left them streaming.
+   */
+  static void replacingSessions(CameraDevice device) {
+    DeviceState d = DEVICES.get(device);
+    if (d == null) return;
+    List<CameraCaptureSession> old;
+    synchronized (d) {
+      old = new ArrayList<>(d.sessions);
+      d.sessions.clear();
+    }
+    for (CameraCaptureSession s : old) s.close();
   }
 
   /** CameraCaptureSession.stopRepeating: the repeating request ends after the frame in flight. */

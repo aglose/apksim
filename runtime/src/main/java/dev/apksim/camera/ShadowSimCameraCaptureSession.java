@@ -43,9 +43,12 @@ public class ShadowSimCameraCaptureSession extends ShadowCameraCaptureSessionImp
     if (request == null) throw new IllegalArgumentException("request must not be null");
     if (request.getTargets().isEmpty()) throw new IllegalArgumentException("Each request must have at least one Surface target");
     if (ReflectionHelpers.<Boolean>getField(session, "mClosed")) throw new IllegalStateException("Session has been closed; further changes are illegal.");
+    java.util.concurrent.atomic.AtomicBoolean closing = ReflectionHelpers.getField(device(), "mClosing");
+    if (closing != null && closing.get()) throw new IllegalStateException("CameraDevice was already closed");
   }
 
-  private int submit(List<CaptureRequest> requests, CameraCaptureSession.CaptureCallback callback, Executor executor,
+  /** Validation and queueing, and close, under this session's lock: nothing is queued once close has begun. */
+  private synchronized int submit(List<CaptureRequest> requests, CameraCaptureSession.CaptureCallback callback, Executor executor,
       boolean repeating) {
     if (requests == null || requests.isEmpty()) throw new IllegalArgumentException("Requests must have at least one element");
     for (CaptureRequest r : requests) checkRequest(r);
@@ -103,18 +106,18 @@ public class ShadowSimCameraCaptureSession extends ShadowCameraCaptureSessionImp
   }
 
   @Implementation
-  protected void stopRepeating() {
+  protected synchronized void stopRepeating() {
     FakeCamera.stopRepeating(session);
   }
 
   @Implementation
-  protected void abortCaptures() {
+  protected synchronized void abortCaptures() {
     FakeCamera.abort(session);
   }
 
   @Implementation
   @Override
-  protected void close() {
+  protected synchronized void close() {
     if (ReflectionHelpers.<Boolean>getField(session, "mClosed")) return;  // closing twice does nothing, as on a device
     FakeCamera.abort(session);
     ReflectionHelpers.setField(session, "mClosed", true);
