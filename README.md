@@ -74,7 +74,7 @@ That trade is where both the speed and the limits come from.
 | **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
 | **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
-| **System services** | Stand-ins: no Play Services, Health Connect, camera or sensors; no other apps | The real ones, and Google Play images |
+| **System services** | Stand-ins: no Play Services, Health Connect or sensors, a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
 
@@ -177,7 +177,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--sdcard-file PATH=VALUE` | A file written to `/sdcard/PATH` in the data slot before the app starts, over any file the slot had, for apps that read a config file once in `Application.onCreate`. `VALUE` is `text:TEXT` or base64, never a host file; at most 64 KB a file and 72 KB in all. Repeatable; allowed in `serve` catalog lines and URL adds and in beam |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
-| | `--camera off\|fake` | A simulated front camera (default off): declares `android.hardware.camera`, `.any` and `.front` and lists one camera, id `0`, in `CameraManager` with 1280x720 and 1920x1080 YUV_420_888/JPEG/PRIVATE streams. No frames are delivered yet (opening it works; previews stay empty) |
+| | `--camera off\|fake\|fake=IMAGE` | Simulated cameras (default off): declares `android.hardware.camera`, `.any` and `.front` and lists a back camera (id `0`) and a front one (`1`) in `CameraManager`, with 1280x720 and 1920x1080 YUV_420_888/JPEG/PRIVATE streams. Opening one needs the `CAMERA` permission; Camera2 sessions and CameraX (`Preview`, `ImageAnalysis`, `ImageCapture`) get 30 fps frames of a moving test pattern, or of the still `IMAGE`. The `camera pattern\|image PATH\|off` command and Features > Camera switch it while the app runs (`off`: black frames, as Android's camera privacy toggle) |
 | | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
 | Per-instance costs | `--max-fps N` | At most N frames a second (1-120), not the display's rate. Animations keep their speed in fewer frames, and the app still sees the display's refresh rate. The biggest saving for many headless instances: the test app's Shader tab costs about 0.7 of a core at 120 fps and 0.2 at 30 |
 | | `--video on\|blank\|off` | `blank`: players play at their pace but nothing is decoded or drawn (TextureViews stay empty). `off`: no video decoders are listed, as on a device without them. Launch only for `off` |
@@ -573,7 +573,8 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
 ## Limitations
 
 - **It isn't a device.**
-  - **System services** are stand-ins: no Play Services, Health Connect, real camera or sensors.
+  - **System services** are stand-ins: no Play Services, Health Connect or sensors; the camera (`--camera fake`) shows
+    a test pattern or a still image, not the Mac's webcam.
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.

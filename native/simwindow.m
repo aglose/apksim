@@ -88,7 +88,7 @@ enum {
   TAG_LOCATION_BIKE, TAG_LOCATION_DRIVE, TAG_LOCATION_NONE, TAG_BIOMETRICS_ENROLLED, TAG_BIOMETRICS_MATCH,
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
-  TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY,
+  TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY, TAG_CAMERA_OFF, TAG_CAMERA_PATTERN, TAG_CAMERA_IMAGE,
 };
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
@@ -283,6 +283,15 @@ static void buildMenus(NSMenu *bar) {
   addItem(net, @"Lossy", TAG_NETWORK_LOSSY, nil, 0);
   netItem.submenu = net;
   [features addItem:netItem];
+  // The fake camera's source (--camera fake; Cameras.java). Image File... opens the file panel from the Java side.
+  NSMenuItem *camItem = [[NSMenuItem alloc] initWithTitle:@"Camera" action:nil keyEquivalent:@""];
+  NSMenu *cam = [[NSMenu alloc] initWithTitle:@"Camera"];
+  cam.autoenablesItems = NO;
+  addItem(cam, @"Off", TAG_CAMERA_OFF, nil, 0);
+  addItem(cam, @"Test Pattern", TAG_CAMERA_PATTERN, nil, 0);
+  addItem(cam, @"Image File…", TAG_CAMERA_IMAGE, nil, 0);
+  camItem.submenu = cam;
+  [features addItem:camItem];
   [features addItem:[NSMenuItem separatorItem]];
   addItem(features, @"Open URL…", TAG_OPEN_URL, @"o", cmd | shift);
   NSMenu *window = submenu(bar, @"Window");

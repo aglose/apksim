@@ -1701,6 +1701,22 @@ final class AdbShell {
       case "thermal" -> {
         return Thermal.command(a);
       }
+      case "camera" -> {
+        return Cameras.command(a);  // until the next test's setup
+      }
+      case "permission" -> {
+        // `pm grant|revoke PKG NAME` in a test run: Robolectric's granted set, which the next test's setup resets.
+        if (a.length < 3 || !a[1].matches("grant|revoke")) return "error: permission grant|revoke NAME... in a test run";
+        for (int i = 2; i < a.length; i++) {
+          String p = a[i].contains(".") ? a[i] : "android.permission." + a[i];
+          if (a[1].equals("grant")) {
+            org.robolectric.Shadows.shadowOf(app()).grantPermissions(p);
+          } else {
+            org.robolectric.Shadows.shadowOf(app()).denyPermissions(p);
+          }
+        }
+        return "ok";
+      }
       default -> {
         return "error: " + a[0] + " is not available in a test run";
       }

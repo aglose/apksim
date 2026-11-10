@@ -51,7 +51,13 @@ fun DeviceFeatures() {
   val context = LocalContext.current
   var camera by remember { mutableStateOf("not asked") }
   var location by remember { mutableStateOf("no fix") }
-  val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { camera = if (it) "granted" else "denied" }
+  // Once granted, on a device with a camera (apksim: --camera fake), the CameraX preview screen.
+  val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+    camera = if (it) "granted" else "denied"
+    if (it && context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY)) {
+      context.startActivity(android.content.Intent(context, CameraActivity::class.java))
+    }
+  }
   val lm = context.getSystemService(LocationManager::class.java)
   val askLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
     if (ok) {

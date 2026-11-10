@@ -199,6 +199,9 @@ final class Catalog {
         throw new IOException("--device takes " + String.join(", ", Session.DEVICES) + " or WxH[@density] such as 1280x720@1.5"
             + " (160-4096 dp a side, density 0.75-4, at most 4096 pixels a side)");
       }
+      if (o.equals("--camera") && !v.matches("off|fake")) {
+        throw new IOException("--camera takes off or fake (no image file here)");
+      }
       if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
         throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");
       }

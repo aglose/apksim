@@ -193,8 +193,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
-    # A simulated front camera (Cameras.java): off (default) or fake (camera features + one CameraManager camera).
-    --camera) [[ "$2" =~ ^(off|fake)$ ]] || { echo "--camera takes off|fake" >&2; exit 2; }; EXTRA+=("-Dapksim.camera=$2"); shift 2 ;;
+    # Simulated cameras (Cameras.java): off (default), fake (camera features, a back and a front camera in CameraManager,
+    # a moving test pattern at 30 fps) or fake=IMAGE (that still image instead).
+    --camera) [[ "$2" =~ ^(off|fake|fake=.+)$ ]] || { echo "--camera takes off|fake|fake=IMAGE" >&2; exit 2; }; EXTRA+=("-Dapksim.camera=$2"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;

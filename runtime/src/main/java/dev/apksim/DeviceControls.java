@@ -76,7 +76,7 @@ final class DeviceControls {
     "location bike", "location drive", "location none", "biometrics toggle", "biometrics match", "biometrics nomatch",
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
-    "bars status toggle", "bars nav toggle", "rec save",
+    "bars status toggle", "bars nav toggle", "rec save", "camera off", "camera pattern", "camera image {file}",
   };
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
@@ -198,6 +198,10 @@ final class DeviceControls {
   static String menuCommand(int tag) {
     if (tag <= 0 || tag >= MENU.length) return null;
     String c = MENU[tag];
+    if (c.contains("{file}")) {
+      Cameras.pickImage();  // runs `camera image PATH` itself once a file is chosen
+      return null;
+    }
     if (c.contains("{text}")) {
       String text = SimWindow.takeText();
       if (text == null || text.isBlank()) return null;
@@ -518,6 +522,10 @@ final class DeviceControls {
         String r = Biometrics.run(a);
         SimWindow.setMenuState(TAG_BIOMETRICS_ENROLLED, Biometrics.enrolled);
         return r;
+      }
+      case "camera" -> {
+        // camera [pattern|image PATH|off]: what the fake camera sees (--camera fake), or its state.
+        return Cameras.command(a);
       }
       case "bluetooth" -> {
         // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).

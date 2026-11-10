@@ -66,7 +66,7 @@ public final class VideoSurfaces {
    * The SurfaceTexture a Surface was made from. Android's Surface(SurfaceTexture) names the surface after it, which is
    * all that survives here (the native half is a stand-in).
    */
-  static SurfaceTexture textureOf(android.view.Surface surface) {
+  public static SurfaceTexture textureOf(android.view.Surface surface) {
     if (surface == null) return null;
     String name = ReflectionHelpers.getField(surface, "mName");
     if (name == null) return null;
@@ -76,6 +76,12 @@ public final class VideoSurfaces {
     return null;
   }
 
+  /** The view showing [surface] (a TextureView or a SurfaceView), or null. */
+  public static View viewOf(SurfaceTexture surface) {
+    Entry e = surface == null ? null : ENTRIES.get(surface);
+    return e == null ? null : e.view;
+  }
+
   /** The size the view showing [surface] draws at, or null. */
   static int[] viewSize(SurfaceTexture surface) {
     Entry e = surface == null ? null : ENTRIES.get(surface);
@@ -83,7 +89,7 @@ public final class VideoSurfaces {
   }
 
   /** Shows [picture] (null clears) and, as SurfaceTexture would, tells the view's listener on the main thread. */
-  static void publish(SurfaceTexture surface, Bitmap picture) {
+  public static void publish(SurfaceTexture surface, Bitmap picture) {
     Entry e = ENTRIES.get(surface);
     if (e == null) return;
     if (picture != null) published.incrementAndGet();

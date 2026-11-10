@@ -1213,6 +1213,8 @@ final class Session {
     // Not `audio off` / `video off`: those change the decoder list, so they are launch-only.
     if (t.matches("(?:audio (?:on|mute)|video (?:on|blank))")) return t;
     if (t.matches("animscale (0|0\\.5|1|1\\.5|2|5|10|toggle)")) return t;
+    // What the fake camera sees (--camera fake), never `camera image PATH`: a tab names no host file.
+    if (t.matches("camera (pattern|off)")) return t;
     if (t.matches("open [a-zA-Z][a-zA-Z0-9+.-]*:[^\\s\\p{Cntrl}]{1,2000}")) return t;
     if (t.startsWith("type ")) {
       // Control commands are one line, split on spaces: runs of white space become one space.

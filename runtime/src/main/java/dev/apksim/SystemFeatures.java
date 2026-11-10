@@ -20,7 +20,7 @@ import org.robolectric.util.ReflectionHelpers;
  * apksim adds what it simulates (Bluetooth and BLE, location, multitouch, audio output, a fingerprint sensor, both
  * screen orientations), and per device kind what an emulator of that kind reports: a TV has no touchscreen,
  * telephony, GPS or fingerprint, and has leanback; a desktop is android.hardware.type.pc. No camera unless `--camera fake`
- * (Cameras: the three camera features; the permission can be granted, but no frames come yet), and
+ * (Cameras: the three camera features, a back and a front camera with frames), and
  * `--feature android.hardware.camera.any` is for an app that must see one without a CameraManager camera. Then the launch's {@code --feature NAME[=false]} (-Dapksim.features=a,b=false), which
  * can also take a default away.
  */

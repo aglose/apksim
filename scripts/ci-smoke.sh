@@ -191,6 +191,28 @@ echo "--activity: started and kept $started of 3 times, running after back: $run
 [[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
   || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
 
+# The simulated cameras (issue 219): with --camera fake CameraX binds the test app's apksim://camera (a Preview in a
+# SurfaceView and an ImageAnalysis on the front camera), and both get the test pattern's frames.
+CAM_PORT=7405 CAM_NAME=$NAME-camera
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" "$CAM_NAME" >/dev/null 2>&1 || true' EXIT
+docker run -d --name "$CAM_NAME" --platform "$PLATFORM" -p "127.0.0.1:$CAM_PORT:$CAM_PORT" -v "$OUT:/work" "$IMAGE" \
+  --camera fake --permissions grant --activity .CameraActivity --control "$CAM_PORT" --control-bind 0.0.0.0 app.apk >/dev/null
+cam() { python3 "$ROOT/scripts/drive.py" "$CAM_PORT" "$@"; }
+for _ in $(seq 1 120); do cam ping 2>/dev/null | grep -q pong && break; sleep 1; done
+analysed=""
+for _ in $(seq 1 30); do
+  analysed="$(cam nodes | grep -oE 'text="camera: [1-9][0-9]* frames, 1280x720 YUV, rotation 270"' || true)"
+  [[ -n "$analysed" ]] && break
+  sleep 1
+done
+previews="$(cam camera | grep -oE 'previews [0-9]+' || true)"
+cam quit >/dev/null 2>&1 || true
+docker logs "$CAM_NAME" > "$OUT/camera.log" 2>&1 || true
+docker rm -f "$CAM_NAME" >/dev/null 2>&1 || true
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+echo "Camera: $analysed, $previews"
+[[ -n "$analysed" && "$previews" =~ previews\ [1-9] ]] || { echo "CameraX got no frames from --camera fake" >&2; exit 1; }
+
 # Uncaught exceptions crash the app as on a device (issue 104): FATAL EXCEPTION in the log with the stack, and the
 # process ends with RuntimeInit's exit status 10. One escaping a coroutine on the main thread (viewModelScope.launch),
 # and one thrown in the Application's attachBaseContext, before onCreate. Named containers, removed after each timed

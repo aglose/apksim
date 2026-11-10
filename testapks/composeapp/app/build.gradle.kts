@@ -69,6 +69,10 @@ dependencies {
   implementation(libs.androidx.compose.material3.adaptive)
   // Video: the Settings tab's "Play clip" (HEVC + AAC through MediaCodec and AudioTrack)
   implementation(libs.androidx.media3.exoplayer)
+  // apksim://camera: a CameraX preview and frame analysis on apksim's fake camera (--camera fake).
+  implementation(libs.androidx.camera.camera2)
+  implementation(libs.androidx.camera.lifecycle)
+  implementation(libs.androidx.camera.view)
   // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
   implementation(libs.okhttp)
   // Time zones: Joda-Time up to 2.10 reads user.timezone before the JDK's default (apksim://timezone, WallClockTest;
