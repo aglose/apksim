@@ -19,7 +19,10 @@ backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runn
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does. Like the Orchestrator's runner side, it leaves a listed
 `initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
-Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
+--reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
+ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
+nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
+--exit-marks shows where a process's exit time went. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
 test's start, `apksim.exit_seconds`: its end to the process exiting), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
@@ -86,8 +89,12 @@ LAUNCHER = [ROOT + "/apksim"]
 RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
 
 
+MARKS = {}  # --exit-marks: (class, method) -> what apksim reported of its exit
 PHASES = {}  # --isolate: (class, method) -> (start-up, test, exit) seconds of its process, for the report
+EXIT_MARKS = False  # --exit-marks: apksim reports where its exit time goes (stderr, shown per test)
+REAP_EARLY = 0  # --reap-early SEC (--isolate): a process counts as done once it has reported its exit status; its teardown gets SEC s
 TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
+REAPERS = []  # --reap-early: the threads finishing processes that reported their result
 LIVE = {}  # the processes running now: {Popen: its kill()}, for an interrupt (they are not in our process group)
 # Held while a process starts and is entered in LIVE, and while stopping takes LIVE: so every process is either in
 # what stopping kills or never starts. Reentrant: the signal handler runs on the main thread, which may hold it.
@@ -165,6 +172,8 @@ def apksim(app, test, extra_args, apksim_opts):
     cmd = launcher + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
+    if REAP_EARLY or EXIT_MARKS:  # the process reports its exit status ahead of its teardown, and what the teardown cost
+        apksim_opts = ["--jvm", "-Dapksim.exitMarks=true"] + list(apksim_opts)
     cmd += apksim_opts + [app]
     # Reentrant: the signal handler runs on the main thread, and its stop() kills this process while the main thread
     # may be in kill_lock itself (the cleanup below). Other locks the handler takes: LIVE_LOCK, also reentrant.
@@ -224,9 +233,15 @@ def apksim(app, test, extra_args, apksim_opts):
             MAIN_SPAWNING[0] = False
     if main and STOPPING:  # a signal came while this thread started it: its handler left the stopping to this
         stop(STOPPING[0])
-    err = []
-    reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
+    err = []  # (chunks as they arrive: a process reaped early is still being read)
+
+    def read_err():
+        for chunk in p.stderr:
+            err.append(chunk)
+
+    reader = threading.Thread(target=read_err, daemon=bool(REAP_EARLY))
     reader.start()
+    exit_code = []  # the status the process reported (apksim.exitMarks) ahead of its teardown
     lines, seconds, started, block, deps = [], {}, {}, {}, []
     marks = {}  # (class, method): [wall time its start block arrived, wall time its end block arrived]
     spawned = time.time()
@@ -263,6 +278,14 @@ def apksim(app, test, extra_args, apksim_opts):
         if line.startswith(affected.PREFIX):
             deps.append(line)
             continue
+        if line.startswith("APKSIM_EXIT: "):  # not part of the run's output
+            try:
+                exit_code.append(int(line.split(": ")[1]))
+            except ValueError:
+                pass
+            if REAP_EARLY and any(l.startswith("INSTRUMENTATION_CODE: ") for l in reversed(lines)) and not quit_sent.is_set():
+                break
+            continue
         lines.append(line)
         m = re.match(r"INSTRUMENTATION_STATUS: (class|test)=(.*)", line)
         if m:
@@ -279,35 +302,79 @@ def apksim(app, test, extra_args, apksim_opts):
                 marks[t][1] = now
             block = {}
     dumped.set()
-    p.wait()
+    early = bool(exit_code) and REAP_EARLY > 0 and not timed_out
+    if not early:
+        p.wait()
     exited = time.time()
     done.set()
     if dog:
         dog.join()  # (a kill under way reads the cidfile: the client's end, closing its output, comes first)
-    reader.join()
-    if cidfile and p.returncode < 0 and not timed_out:
-        with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
-            if CLEANUP_DELAY:
-                time.sleep(CLEANUP_DELAY)
-            remove_container()
-    with LIVE_LOCK:
-        LIVE.pop(p, None)
-        stopping = bool(STOPPING)
-    if user_cidfile:
+
+    def reap():
+        """Early: the result and the outputs are complete, so the slot is free; the process's teardown (class cache
+        save, scratch removal) goes on here, for REAP_EARLY s at most, then the process group is killed."""
+        drain = threading.Thread(target=lambda: p.stdout.read(), daemon=True)  # (a full pipe must not block its teardown)
+        drain.start()
         try:
-            c = container_id()
-            if c:  # (beside it, then renamed over it: a run of shards leaves the last one's, whole)
-                tmp = f"{user_cidfile}.{os.getpid()}.{threading.get_ident()}"
-                with open(tmp, "w") as f:
-                    f.write(c)
-                os.replace(tmp, user_cidfile)
-        except OSError as e:
-            warn(f"instrument.py: could not write the container ID to --cidfile {user_cidfile} ({e})")
-    if cid_dir and not stopping:  # (a stop's kill may still read it; this script ends with it anyway)
-        shutil.rmtree(cid_dir, ignore_errors=True)
+            p.wait(timeout=REAP_EARLY)
+        except subprocess.TimeoutExpired:
+            warn(f"instrument.py: a process still tearing down {REAP_EARLY:g} s after its result was killed")
+            kill()
+            p.wait()
+        # The launcher is gone, but a child may hold its pipes: the readers get the deadline too, then the process
+        # group is killed (which closes them), then a last short wait; a reader still stuck is a daemon-less leak we
+        # leave to the OS (the thread is made a daemon below), not a hang of this script.
+        end = time.monotonic() + REAP_EARLY
+        for t in (drain, reader):
+            t.join(max(0.0, end - time.monotonic()))
+        if drain.is_alive() or reader.is_alive():
+            warn(f"instrument.py: a process kept its output open {REAP_EARLY:g} s after its result: its group was killed")
+            kill()
+            for t in (drain, reader):
+                t.join(5)
+        late = " | ".join(re.findall(r"^\[apksim\] (?:exit|halt) marks: (.*)$", "".join(err), re.M))
+        if EXIT_MARKS and late:  # (the test's line is long printed: the slot was not held for these)
+            name = "#".join(next(iter(marks), ("?", "?")))
+            print(f"      exit (after the result) {name}: {late}", file=sys.stderr)
+        after_exit()
+
+    def after_exit():
+        if cidfile and p.returncode < 0 and not timed_out:
+            with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
+                if CLEANUP_DELAY:
+                    time.sleep(CLEANUP_DELAY)
+                remove_container()
+        with LIVE_LOCK:
+            LIVE.pop(p, None)
+        if user_cidfile:
+            try:
+                c = container_id()
+                if c:  # (beside it, then renamed over it: a run of shards leaves the last one's, whole)
+                    tmp = f"{user_cidfile}.{os.getpid()}.{threading.get_ident()}"
+                    with open(tmp, "w") as f:
+                        f.write(c)
+                    os.replace(tmp, user_cidfile)
+            except OSError as e:
+                warn(f"instrument.py: could not write the container ID to --cidfile {user_cidfile} ({e})")
+        if cid_dir and not STOPPING:  # (a stop's kill may still read it; this script ends with it anyway)
+            shutil.rmtree(cid_dir, ignore_errors=True)
+
+    if early:
+        # Its status is the one it reported. A background thread, not a daemon: this script waits for it at the end
+        # (REAPERS), so no process outlives the run.
+        t = threading.Thread(target=reap)
+        t.start()
+        REAPERS.append(t)
+        returncode = exit_code[0]
+    else:
+        reader.join()
+        after_exit()
+        returncode = p.returncode
+    stopping = bool(STOPPING)
     if deps:
         RECORDED.append(deps)
-    r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
+    r = subprocess.CompletedProcess(p.args, returncode, "".join(lines), "".join(err))
+    r.exit_marks = " | ".join(re.findall(r"^\[apksim\] (?:exit|halt) marks: (.*)$", r.stderr, re.M))
     r.seconds = seconds
     # Where a process's time went: spawn to the test's start block (JVM, framework, app state), and the test's end
     # block to the process exiting (listeners, shutdown, the launcher's exit).
@@ -874,7 +941,7 @@ def run_tests(a, passthrough, listing, tests, label=""):
 
 
 def main():
-    global TEST_TIMEOUT
+    global TEST_TIMEOUT, REAP_EARLY, EXIT_MARKS
     argv = sys.argv[1:]
     passthrough = []
     if "--" in argv:
@@ -906,6 +973,12 @@ def main():
     p.add_argument("--ignore", action="append", default=[], metavar="GLOB")
     p.add_argument("--timings", action="append", default=[], metavar="XML")
     p.add_argument("--shard", type=int, metavar="I")
+    p.add_argument("--exit-marks", action="store_true",
+                   help="--isolate: show, per test, where its process's exit time went (apksim's profile, class cache, "
+                        "scratch removal, cache sweep, and the threads still alive)")
+    p.add_argument("--reap-early", type=float, default=0, metavar="SEC",
+                   help="--isolate: a process counts as done, and its slot free, once it has printed its result and "
+                        "exit status; its teardown goes on in the background for SEC s at most, then it is killed (0: off)")
     p.add_argument("--order", choices=("interleave", "longest-first", "suite"), default="interleave",
                    help="--isolate --timings: the order tests start in (default interleave: alternately the longest and shortest)")
     p.add_argument("--test-timeout", type=float, default=TEST_TIMEOUT, metavar="SEC")
@@ -913,6 +986,7 @@ def main():
     if a.test_timeout < 0:
         p.error("--test-timeout SEC: 0 for no limit, else the seconds a process may go without a test starting or ending")
     TEST_TIMEOUT = a.test_timeout
+    REAP_EARLY, EXIT_MARKS = (a.reap_early if a.isolate else 0), a.exit_marks
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, interrupted)
     redact = []
@@ -1053,6 +1127,8 @@ def main():
             r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)
             got = parse(r.stdout)
             why = incomplete(r, got)
+            if r.exit_marks:
+                MARKS[t] = r.exit_marks
             if t in r.phases:  # (kept even when the process then died or hung at exit: that is when it matters)
                 PHASES[t] = r.phases[t]
             if not got or why:
@@ -1068,6 +1144,8 @@ def main():
                 print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
                       + (f" (start-up {ph[0]:.1f} s, test {ph[1]:.1f} s, exit {ph[2]:.1f} s)" if ph else ""),
                       file=sys.stderr)
+                if EXIT_MARKS and MARKS.get((res[0], res[1])):
+                    print(f"      exit: {MARKS[(res[0], res[1])]}", file=sys.stderr)
         results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
 
     failed = [r for r in results if r[2] == "failed"]

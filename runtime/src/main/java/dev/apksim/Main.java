@@ -78,9 +78,31 @@ public final class Main {
     Timing.mark("apk-indexed");
     if (testApk != null) {
       int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classes);
+      // -Dapksim.exitMarks=true (instrument.py --exit-marks / --reap-early): where the time between the result and
+      // the process ending goes, and the exit status ahead of it, so a caller can count the slot free once the
+      // result and the outputs are complete and let the rest (class cache save, scratch removal) finish unwatched.
+      boolean marks = Boolean.getBoolean("apksim.exitMarks");
+      long tn = System.nanoTime();
+      if (marks) {
+        dev.apksim.net.Net.flush();  // a recording's last exchanges, before a caller may stop waiting
+        System.out.println("APKSIM_EXIT: " + code);
+        System.out.flush();
+      }
+      long t0 = System.nanoTime();
       if (Boolean.getBoolean("apksim.profile")) Sampler.report();  // -Dapksim.profile=true: the whole run's samples
+      long t1 = System.nanoTime();
       ClassCache.flush();
+      long t2 = System.nanoTime();
       Storage.deleteScratch();
+      long t3 = System.nanoTime();
+      if (marks) {
+        StringBuilder live = new StringBuilder();
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+          if (t.isAlive() && !t.isDaemon() && t != Thread.currentThread()) live.append(' ').append(t.getName());
+        }
+        System.err.printf("[apksim] exit marks: net flush %d ms, profile %d ms, class cache %d ms, scratch %d ms; non-daemon threads:%s%n",
+            (t0 - tn) / 1_000_000, (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000, (t3 - t2) / 1_000_000, live.length() == 0 ? " none" : live);
+      }
       Standby.halt(code);
     }
     // A device's default uncaught-exception handler (RuntimeInit's): FATAL EXCEPTION in the log, then the process ends.

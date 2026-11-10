@@ -136,6 +136,12 @@ def fake():
             sys.exit(134)
         block(c, m, n + 1, 0)
     print("INSTRUMENTATION_CODE: -1")
+    if sc == "reap-early-hang":  # reports its status as apksim does (-Dapksim.exitMarks), then a teardown that never ends
+        print("APKSIM_EXIT: 0", flush=True)
+        child = subprocess.Popen(["sleep", "300"])  # (holds the pipes too, as a child of the launcher could)
+        with open(os.path.join(state, "pids"), "a") as f:
+            f.write(f"{os.getpid()}\n{child.pid}\n")
+        time.sleep(300)
     if sc == "at-exit":
         sys.exit(134)
 
@@ -296,6 +302,9 @@ SCENARIOS = {
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
     # --isolate: every test's JUnit entry says how long its process took to start and to exit.
     "isolate-phases": (0, 10, 9, []),
+    # --reap-early 2: every process reports its status and then hangs in its teardown. The slots free at once, the
+    # processes (and their children) are killed after 2 s, and the script waits for that before it ends.
+    "reap-early-hang": (0, 10, 9, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
@@ -364,6 +373,8 @@ def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
     if sc == "isolate-phases":
         return ["--isolate", "-j", "3"]
+    if sc == "reap-early-hang":
+        return ["--isolate", "-j", "3", "--reap-early", "2", "--exit-marks"]
     if sc.startswith("init-error") and "isolate" in sc:
         return ["--isolate", "-j", "3"] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
     if "balanced" in sc:
@@ -532,7 +543,8 @@ def main():
                  and any(c == "p.Empty" for c, _ in names)),
                 ("start-up and exit seconds missing", sc == "isolate-phases" and any(
                     {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
-                (f"took {took:.0f} s", took > 30),
+                ("no teardown that hung", sc == "reap-early-hang" and len(pids) < 18),
+                (f"took {took:.0f} s", took > (30 if sc != "reap-early-hang" else 20)),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
             if problems:
