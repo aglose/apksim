@@ -19,8 +19,7 @@ backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runn
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does. Like the Orchestrator's runner side, it leaves a listed
 `initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
-A test the listing reports as ignored (@Ignore) is reported skipped without a process (one that skips through an assumption
-at run time still gets one). Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
+Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
 test's start, `apksim.exit_seconds`: its end to the process exiting), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
@@ -1016,15 +1015,10 @@ def main():
         results = run_tests(a, passthrough, listing, selected) if selected is not None else one_process(a, passthrough)
     elif selected is not None:
         tests = selected
-        ignored_listed = set()
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
         listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
-        listed_tests = parse(listed.stdout)
-        tests = drop_class_errors(a, [(c, m) for c, m, _, _ in listed_tests])
-        # A test the listing reports as ignored (@Ignore) is reported so without a process; one that skips through an
-        # assumption at run time still gets one.
-        ignored_listed = {(c, m) for c, m, st, _ in listed_tests if st == "ignored"}
+        tests = drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
         why = incomplete(listed, parse(listed.stdout))
         if why:
             sys.stderr.write(listed.stderr[-4000:])
@@ -1033,8 +1027,6 @@ def main():
 
     if a.isolate:
         def one(t):
-            if t in ignored_listed:
-                return (t[0], t[1], "ignored", "", 0.0)
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
             r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)

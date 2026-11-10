@@ -92,7 +92,7 @@ def fake():
             sys.exit(3)
         for n, (c, m) in enumerate(tests + ([empty] if lists_empty else [])):
             block(c, m, n + 1, 1)
-            block(c, m, n + 1, -3 if sc == "isolate-ignored" and (c, m) == ("p.C001", "m1") else 0)
+            block(c, m, n + 1, 0)
         if sc.startswith("init-error-incomplete"):  # the listing dies before its end
             sys.exit(3)
         print("INSTRUMENTATION_CODE: -1")
@@ -288,9 +288,8 @@ SCENARIOS = {
     "hang-long-frame-cause": (1, 3, 9, ["p.C000#m1"]),  # as hang-deep-cause, with oversized frames and a line after
     "hang-long-message": (1, 3, 9, ["p.C000#m1"]),  # an exception message of several lines, then a deep stack
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
-    # --isolate: the listing reports p.C001#m1 as ignored: reported skipped with no process of its own (a listing and
-    # 8 processes), and every other test's JUnit entry says how long its process took to start and to exit.
-    "isolate-ignored": (0, 9, 9, []),
+    # --isolate: every test's JUnit entry says how long its process took to start and to exit.
+    "isolate-phases": (0, 10, 10, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
@@ -357,7 +356,7 @@ LONG_MESSAGE = ("java.lang.VerifyError: Bad type on operand stack\nException Det
 
 def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
-    if sc == "isolate-ignored":
+    if sc == "isolate-phases":
         return ["--isolate", "-j", "3"]
     if sc.startswith("init-error") and "isolate" in sc:
         return ["--isolate", "-j", "3"] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
@@ -442,8 +441,6 @@ def main():
             texts = {f"{c}#{m}": t for c, m, _, t in cases}
             props = {f"{c.get('classname')}#{c.get('name')}": {q.get("name") for q in c.iter("property")}
                      for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
-            skipped = sorted(f"{c.get('classname')}#{c.get('name')}" for c in ET.parse(xml).iter("testcase")
-                             if c.find("skipped") is not None) if os.path.exists(xml) else []
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
             hung = ([t for t in ("p.C000#m1", "(run)#incomplete") if t in failed]
@@ -506,10 +503,8 @@ def main():
                  and ("leaving out p.Empty#initializationError" in r.stderr) == sc.endswith("-keep")),
                 ("an entry for p.Empty", sc.startswith("init-error") and not sc.endswith("isolate-keep")
                  and any(c == "p.Empty" for c, _ in names)),
-                (f"skipped {skipped}", sc == "isolate-ignored" and skipped != ["p.C001#m1"]),
-                ("the ignored test got a process", sc == "isolate-ignored" and "p.C001#m1" in ran),
-                ("start-up and exit seconds missing", sc == "isolate-ignored" and any(
-                    {"apksim.startup_seconds", "apksim.exit_seconds"} - v for t, v in props.items() if t != "p.C001#m1")),
+                ("start-up and exit seconds missing", sc == "isolate-phases" and any(
+                    {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
                 (f"took {took:.0f} s", took > 30),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
