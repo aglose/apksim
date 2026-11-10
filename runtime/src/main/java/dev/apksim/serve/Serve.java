@@ -476,13 +476,12 @@ public final class Serve {
     // Kept sessions (issue 221): only once the port is ours, and only by the one server that holds the store, so a
     // second server on this state folder (a busy port, or --keep-max 0) deletes nothing.
     if (kept != null && keepMax > 0) {
-      if (kept.claim()) {
-        dropUnusedSeeds();
-        kept.sweep();
-      } else {
-        System.err.println("[serve] another server keeps sessions in " + state + ": this one keeps none");
-      }
+      if (kept.claim()) kept.sweep();
+      else System.err.println("[serve] another server keeps sessions in " + state + ": this one keeps none");
     }
+    // Every server's own leftovers (kept or restored data a stopped server unpacked), whoever owns the kept store: a
+    // slot is dropped only unlocked and an hour old, so another server's session in flight is left alone.
+    if (kept != null) dropUnusedSeeds();
     warmStandby();
     boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
@@ -497,10 +496,8 @@ public final class Serve {
       if (beam) sweepBeam();
       else {
         catalog.sweep(24 * 3_600_000L);
-        if (kept.owned()) {
-          kept.sweep();
-          dropUnusedSeeds();
-        }
+        kept.sweep();  // the owner only (KeptStore.sweep)
+        dropUnusedSeeds();
       }
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
@@ -1091,8 +1088,10 @@ public final class Serve {
   }
 
   /**
-   * Kept sessions' slots (`cache/data/<package>/ks<hex>-0`) that no instance holds and no session of this server names,
-   * an hour old: left by a server that stopped between unpacking and its session's end. Startup and hourly.
+   * Serve's seed slots (`cache/data/<package>/ks<hex>-0`: kept or restored data) that no instance holds and no session
+   * of this server names, untouched for an hour: left by a server that stopped between unpacking and its session's end.
+   * Startup and hourly, on every server sharing the state folder. A session refreshes its slot's time as its instance
+   * ends (Session.keepData), so another server's sweep never takes one being packed.
    */
   private void dropUnusedSeeds() {
     try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {

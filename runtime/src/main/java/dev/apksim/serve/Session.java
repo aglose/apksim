@@ -1431,6 +1431,18 @@ final class Session {
 
   /** Quit, then kill after 5 s; then close the connections and erase the data slot. */
   private void endInstance() {
+    // A seed slot's time refreshed while the instance still holds its lock: another server's sweep of unused seed slots
+    // (Serve.dropUnusedSeeds) takes only one unlocked and untouched for an hour, which a long session's slot would be
+    // once its instance has gone, while this one packs it (keepData) or erases it.
+    String seed = seedSlot;
+    Path slot = dataDir;
+    if (!serve.beam && seed != null && slot != null && slot.getFileName().toString().equals(seed + "-0")) {
+      try {
+        Files.setLastModifiedTime(slot, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+      } catch (IOException | RuntimeException e) {
+        // its own server's sweep still knows the session
+      }
+    }
     // Best effort, on its own thread: an app whose main thread hangs stops reading commands, and a write to its full
     // socket would block. Ending the process below does not wait for it, and closing the socket frees that write.
     Thread.ofVirtual().name("serve-quit-" + id).start(() -> {
