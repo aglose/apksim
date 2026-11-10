@@ -119,12 +119,16 @@ public class ShadowSimImageReader extends ShadowNativeImageReader {
       s.queued.add(image);
     }
     if (listener != null && executor != null) {
-      executor.execute(() -> {
-        synchronized (s.lock) {
-          if (s.closed) return;
-        }
-        listener.onImageAvailable(r);
-      });
+      try {
+        executor.execute(() -> {
+          synchronized (s.lock) {
+            if (s.closed) return;
+          }
+          listener.onImageAvailable(r);
+        });
+      } catch (Throwable t) {
+        FakeCamera.appCallbackFailed(t);  // the app's listener threw, run inline by a direct executor
+      }
     }
     return true;
   }

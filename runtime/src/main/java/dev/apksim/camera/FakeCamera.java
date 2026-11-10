@@ -115,7 +115,30 @@ public final class FakeCamera {
     }
 
     void tell(java.util.function.Consumer<CameraCaptureSession.CaptureCallback> call) {
-      if (callback != null) executor.execute(() -> call.accept(callback));
+      if (callback == null) return;
+      try {
+        executor.execute(() -> call.accept(callback));
+      } catch (Throwable t) {
+        appCallbackFailed(t);
+      }
+    }
+  }
+
+  /**
+   * An app's callback threw where it ran on the camera thread (a direct executor). On a device that is one of the
+   * app's binder threads, so the exception is the app's crash: it goes to the default handler on a thread named like
+   * one (the app's handler, or Crashes' FATAL EXCEPTION and exit), not to apksim's own-thread logging.
+   */
+  static void appCallbackFailed(Throwable t) {
+    Thread binder = new Thread(() -> {
+      Thread self = Thread.currentThread();
+      self.getUncaughtExceptionHandler().uncaughtException(self, t);
+    }, "binder:" + ProcessHandle.current().pid() + "_camera");
+    binder.start();
+    try {
+      binder.join();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -168,11 +191,38 @@ public final class FakeCamera {
    * A new capture session on the device (ShadowSimCameraDevice): the earlier ones close first, their requests ending
    * and their onClosed called, as the camera service replaces a session. Robolectric's left them streaming.
    */
+  /** What a session was configured with: its output Surfaces (null if any was deferred) and its callback's executor. */
+  record SessionInfo(java.util.Set<Surface> outputs, Executor stateExecutor) {}
+
+  private static final Map<CameraCaptureSession, SessionInfo> SESSIONS =
+      java.util.Collections.synchronizedMap(new WeakHashMap<>());
+
   /** A session configured on the device (ShadowSimCameraDevice), before it queues anything. */
-  static void configured(CameraDevice device, CameraCaptureSession session) {
+  static void configured(CameraDevice device, CameraCaptureSession session, SessionInfo info) {
+    SESSIONS.put(session, info);
     DeviceState d = DEVICES.computeIfAbsent(device, k -> new DeviceState());
     synchronized (d) {
       d.sessions.add(session);
+    }
+  }
+
+  static SessionInfo info(CameraCaptureSession session) {
+    return SESSIONS.get(session);
+  }
+
+  /**
+   * Waits (up to a second) until the camera thread has finished what it is doing, the frame in flight and the
+   * sequence ends queued before this call: a session's onClosed comes after its last results, as on a device.
+   */
+  static void awaitCameraThread() {
+    ScheduledExecutorService t = thread;
+    if (t == null || Thread.currentThread().getName().equals("apksim-camera")) return;
+    try {
+      t.submit(() -> {}).get(1, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (Exception e) {
+      // stopped by a reset, or slower than a second: close anyway
     }
   }
 
@@ -249,6 +299,7 @@ public final class FakeCamera {
   public static void reset() {
     ScheduledExecutorService t;
     synchronized (FakeCamera.class) {
+      generation++;  // a thread that outlasts the wait below delivers nothing more, and keeps its caches to itself
       t = thread;
       thread = null;
     }
@@ -261,10 +312,6 @@ public final class FakeCamera {
       }
     }
     DEVICES.clear();
-    RAW.clear();
-    RAW_FRAME.clear();
-    PREVIEWS.clear();
-    PREVIEW_NEXT.clear();
     outputs.clear();
     pattern();
   }
@@ -276,7 +323,8 @@ public final class FakeCamera {
       th.setDaemon(true);
       return th;
     });
-    t.scheduleAtFixedRate(FakeCamera::tick, 0, 1_000_000_000L / FPS, TimeUnit.NANOSECONDS);
+    long gen = generation;
+    t.scheduleAtFixedRate(() -> tick(gen), 0, 1_000_000_000L / FPS, TimeUnit.NANOSECONDS);
     thread = t;
   }
 
@@ -291,18 +339,34 @@ public final class FakeCamera {
 
   // ---------------------------------------------------------------- frames
 
-  private static final Scene SCENE = new Scene();
-  private static final Map<Long, Bitmap> RAW = new HashMap<>();
-  private static final Map<SurfaceTexture, Bitmap[]> PREVIEWS = new WeakHashMap<>();
-  private static final Map<SurfaceTexture, Integer> PREVIEW_NEXT = new WeakHashMap<>();
-  private static long sceneFrame;
-  private static int displayRotation;
+  /**
+   * What one camera thread draws with: the scene, buffers and preview pools, its frame count and the display's rotation.
+   * Each thread has its own, so a thread a reset could not stop in time never shares them with the next one.
+   */
+  private static final class Worker {
+    final Scene scene = new Scene();
+    final Map<Long, Bitmap> raw = new HashMap<>();
+    final Map<Long, Long> rawFrame = new HashMap<>();
+    final Map<SurfaceTexture, Bitmap[]> previews = new WeakHashMap<>();
+    final Map<SurfaceTexture, Integer> previewNext = new WeakHashMap<>();
+    long sceneFrame;
+    int displayRotation;
+  }
 
-  private static void tick() {
+  private static final ThreadLocal<Worker> WORKER = ThreadLocal.withInitial(Worker::new);
+  /** Bumped by each reset: a camera thread of an earlier generation delivers nothing more. */
+  private static volatile long generation;
+
+  private static boolean stale(long gen) {
+    return gen != generation;
+  }
+
+  private static void tick(long gen) {
     try {
+      if (stale(gen)) return;
       long now = SystemClock.elapsedRealtimeNanos();
       long wall = System.currentTimeMillis();
-      displayRotation = displayRotation();
+      WORKER.get().displayRotation = displayRotation();
       for (Map.Entry<CameraDevice, DeviceState> e : DEVICES.entrySet()) {
         CameraDevice device = e.getKey();
         DeviceState d = e.getValue();
@@ -335,20 +399,21 @@ public final class FakeCamera {
           d.lastTimestamp = timestamp;
           seq.lastFrame = frameNumber;
         }
-        frame(device, seq, request, frameNumber, timestamp, wall, lastOfSequence);
+        frame(gen, device, seq, request, frameNumber, timestamp, wall, lastOfSequence);
       }
     } catch (Throwable t) {
       System.err.println("[apksim] camera: " + t);
     }
   }
 
-  private static void frame(CameraDevice device, Sequence seq, CaptureRequest request, long frameNumber,
+  private static void frame(long gen, CameraDevice device, Sequence seq, CaptureRequest request, long frameNumber,
       long timestamp, long wall, boolean lastOfSequence) {
-    long n = sceneFrame++;
+    long n = WORKER.get().sceneFrame++;
     frames.incrementAndGet();
     CameraCaptureSession session = seq.session;
     seq.tell(cb -> cb.onCaptureStarted(session, request, timestamp, frameNumber));
     for (Surface target : request.getTargets()) {
+      if (stale(gen)) return;
       try {
         Integer jpeg = request.get(CaptureRequest.JPEG_ORIENTATION);
         deliver(target, device.getId(), n, wall, timestamp, jpeg == null ? 0 : jpeg);
@@ -356,6 +421,7 @@ public final class FakeCamera {
         System.err.println("[apksim] camera: a frame for " + target + ": " + ex);
       }
     }
+    if (stale(gen)) return;
     TotalCaptureResult result = result(device.getId(), request, seq.id, frameNumber, timestamp);
     seq.tell(cb -> cb.onCaptureCompleted(session, request, result));
     if (lastOfSequence) seq.tell(cb -> cb.onCaptureSequenceCompleted(session, seq.id, frameNumber));
@@ -372,6 +438,7 @@ public final class FakeCamera {
 
   /** The clockwise turn an app gives the camera's image to show it upright on the display, as CameraX computes it. */
   private static int imageRotation(String cameraId) {
+    int displayRotation = WORKER.get().displayRotation;
     int sensor = sensorOrientation(cameraId);
     return front(cameraId) ? (sensor + displayRotation) % 360 : (sensor - displayRotation + 360) % 360;
   }
@@ -399,37 +466,39 @@ public final class FakeCamera {
     // it (by the sensor orientation into the display's natural orientation, mirrored for a front camera), and CameraX's
     // PreviewView corrects for the display's rotation with the view's transform. A SurfaceView's buffer is composited
     // with the display's rotation as well, so it shows the scene upright (mirrored for a front camera) in the window.
+    Worker w = WORKER.get();
     boolean surfaceView = VideoSurfaces.viewOf(texture) instanceof android.view.SurfaceView;
+    int displayRotation = w.displayRotation;
     boolean sideways = displayRotation % 180 != 0;
     int pw = surfaceView && sideways ? PREVIEW_W : PREVIEW_H, ph = surfaceView && sideways ? PREVIEW_H : PREVIEW_W;
     int turn = surfaceView ? 0 : (sensorOrientation(cameraId) - imageRotation(cameraId) + 360) % 360;
     outputs.put("preview@" + Integer.toHexString(System.identityHashCode(texture)), pw + "x" + ph);
     // Three pictures per preview, used in turn: the view may still be drawing the last one.
-    Bitmap[] pool = PREVIEWS.computeIfAbsent(texture, k -> new Bitmap[3]);
-    int i = PREVIEW_NEXT.merge(texture, 1, (a, b) -> (a + b) % 3);
+    Bitmap[] pool = w.previews.computeIfAbsent(texture, k -> new Bitmap[3]);
+    int i = w.previewNext.merge(texture, 1, (a, b) -> (a + b) % 3);
     if (pool[i] == null || pool[i].getWidth() != pw || pool[i].getHeight() != ph) {
       pool[i] = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888);
     }
     Bitmap picture = pool[i];
-    SCENE.draw(new Canvas(picture), pw, ph, turn, front(cameraId), n, wall);
+    w.scene.draw(new Canvas(picture), pw, ph, turn, front(cameraId), n, wall);
     VideoSurfaces.publish(texture, picture);
     previews.incrementAndGet();
   }
 
   /** The scene as the sensor's buffer holds it, w x h, drawn once per frame and size (camera thread only). */
-  private static final Map<Long, Long> RAW_FRAME = new HashMap<>();
 
   private static Bitmap raw(int w, int h, int rotation, long n, long wall) {
     long key = (long) w << 32 | h;
-    Bitmap b = RAW.get(key);
+    Worker worker = WORKER.get();
+    Bitmap b = worker.raw.get(key);
     if (b == null) {
       b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-      RAW.put(key, b);
+      worker.raw.put(key, b);
     }
-    Long drawn = RAW_FRAME.get(key);
+    Long drawn = worker.rawFrame.get(key);
     if (drawn == null || drawn != n) {
-      SCENE.draw(new Canvas(b), w, h, (360 - rotation) % 360, false, n, wall);
-      RAW_FRAME.put(key, n);
+      worker.scene.draw(new Canvas(b), w, h, (360 - rotation) % 360, false, n, wall);
+      worker.rawFrame.put(key, n);
     }
     return b;
   }

@@ -6,7 +6,11 @@ import android.hardware.camera2.impl.CameraDeviceImpl;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.os.Handler;
 import android.view.Surface;
+import android.hardware.camera2.params.OutputConfiguration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Executor;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.RealObject;
@@ -26,7 +30,8 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
       throws CameraAccessException {
     checkIfCameraClosedOrInError();
     FakeCamera.replacingSessions(device);
-    super.createCaptureSession(outputs, new Registering(callback), handler);
+    Executor state = handler != null ? handler::post : Runnable::run;
+    super.createCaptureSession(outputs, new Registering(callback, new java.util.HashSet<>(outputs), state), handler);
   }
 
   @Implementation
@@ -35,10 +40,21 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
     checkIfCameraClosedOrInError();
     FakeCamera.replacingSessions(device);
     SessionConfiguration c = new SessionConfiguration(config.getSessionType(), config.getOutputConfigurations(),
-        config.getExecutor(), new Registering(config.getStateCallback()));
+        config.getExecutor(), new Registering(config.getStateCallback(), surfaces(config), config.getExecutor()));
     if (config.getInputConfiguration() != null) c.setInputConfiguration(config.getInputConfiguration());
     if (config.getSessionParameters() != null) c.setSessionParameters(config.getSessionParameters());
     super.createCaptureSession(c);
+  }
+
+  /** The configuration's output Surfaces, or null when one is deferred (added later) and they cannot all be known. */
+  private static Set<Surface> surfaces(SessionConfiguration config) {
+    Set<Surface> all = new HashSet<>();
+    for (OutputConfiguration o : config.getOutputConfigurations()) {
+      List<Surface> s = o.getSurfaces();
+      if (s.isEmpty() || s.contains(null)) return null;
+      all.addAll(s);
+    }
+    return all;
   }
 
   /**
@@ -47,9 +63,11 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
    */
   private final class Registering extends CameraCaptureSession.StateCallback {
     private final CameraCaptureSession.StateCallback app;
+    private final FakeCamera.SessionInfo info;
 
-    Registering(CameraCaptureSession.StateCallback app) {
+    Registering(CameraCaptureSession.StateCallback app, Set<Surface> outputs, Executor stateExecutor) {
       this.app = app;
+      this.info = new FakeCamera.SessionInfo(outputs, stateExecutor);
     }
 
     /** StateCallback is instrumented, and javac does not see its (synthetic) implementation of this. */
@@ -62,7 +80,7 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
     }
 
     @Override public void onConfigured(CameraCaptureSession session) {
-      FakeCamera.configured(device, session);
+      FakeCamera.configured(device, session, info);
       app.onConfigured(session);
     }
 

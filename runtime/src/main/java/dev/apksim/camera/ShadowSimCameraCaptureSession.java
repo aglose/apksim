@@ -43,6 +43,14 @@ public class ShadowSimCameraCaptureSession extends ShadowCameraCaptureSessionImp
     if (request == null) throw new IllegalArgumentException("request must not be null");
     if (request.getTargets().isEmpty()) throw new IllegalArgumentException("Each request must have at least one Surface target");
     if (ReflectionHelpers.<Boolean>getField(session, "mClosed")) throw new IllegalStateException("Session has been closed; further changes are illegal.");
+    FakeCamera.SessionInfo info = FakeCamera.info(session);
+    if (info != null && info.outputs() != null) {
+      for (android.view.Surface target : request.getTargets()) {
+        if (!info.outputs().contains(target)) {
+          throw new IllegalArgumentException("CaptureRequest contains unconfigured Input/Output Surface!");
+        }
+      }
+    }
     java.util.concurrent.atomic.AtomicBoolean closing = ReflectionHelpers.getField(device(), "mClosing");
     if (closing != null && closing.get()) throw new IllegalStateException("CameraDevice was already closed");
   }
@@ -117,10 +125,19 @@ public class ShadowSimCameraCaptureSession extends ShadowCameraCaptureSessionImp
 
   @Implementation
   @Override
-  protected synchronized void close() {
-    if (ReflectionHelpers.<Boolean>getField(session, "mClosed")) return;  // closing twice does nothing, as on a device
-    FakeCamera.abort(session);
-    ReflectionHelpers.setField(session, "mClosed", true);
-    super.close();
+  protected void close() {
+    // Closed at once (nothing more is queued), but onClosed comes after the frame in flight and the sequence ends, on
+    // the session's callback executor: an app may release its outputs there. The wait is outside the session's lock,
+    // which a capture callback on the camera thread may need.
+    synchronized (this) {
+      if (ReflectionHelpers.<Boolean>getField(session, "mClosed")) return;  // closing twice does nothing, as on a device
+      ReflectionHelpers.setField(session, "mClosed", true);
+      FakeCamera.abort(session);
+    }
+    FakeCamera.awaitCameraThread();
+    FakeCamera.SessionInfo info = FakeCamera.info(session);
+    Executor state = info == null ? Runnable::run : info.stateExecutor();
+    state.execute(() -> ShadowSimCameraCaptureSession.super.close());
   }
+
 }
