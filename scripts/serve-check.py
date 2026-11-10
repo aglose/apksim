@@ -161,8 +161,9 @@ class Session:
                 key = self.codec == "h264" and len(p) > 20 and p[20] == 1
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
                                     hashlib.sha1(p[20:]).hexdigest(), key, p[21:] if self.codec == "h264" else b""))
-                if self.acking and self.ack_delay:
-                    self.acks.append((time.time() + self.ack_delay, "ack", None))
+                delay = self.frame_ack_delay()
+                if self.acking and delay:
+                    self.acks.append((time.time() + delay, "ack", None))
                 elif self.acking:
                     self.ws.send("ack")
             elif op == 1:
@@ -180,7 +181,8 @@ class Session:
                 if t.startswith("x "):
                     print("     session ended: " + t[2:])
                     return False
-            elif op == 9:  # a ping: its pong, held as a slow link would
+            elif op == 9:  # a ping: its pong, held as a slow link would (the link's delay only: a browser answers pings
+                # without waiting for the page or its decoder)
                 if self.ack_delay:
                     self.acks.append((time.time() + self.ack_delay, "pong", p))
                 else:
@@ -190,6 +192,10 @@ class Session:
             if until and until():
                 return True
         return until is None or until()
+
+    def frame_ack_delay(self):
+        """Seconds to hold a frame's ack: the link's delay."""
+        return self.ack_delay
 
     def after(self, cmds, wait=1.5):
         """Sends commands; the frames that arrived after them."""
@@ -599,25 +605,18 @@ def nal_types(unit):
 
 
 class SlowTab(Session):
-    """A tab whose decoder takes decode_ms per frame, one after another: each ack is sent once the frames before it and
-    its own decode are done (as the page acks after its VideoDecoder outputs the frame)."""
+    """A tab whose decoder takes decode_ms per frame, one after another, on a link with no delay: each ack is sent once
+    the frames before it and its own decode are done (as the page acks after its VideoDecoder outputs the frame). Pongs
+    are not held: a browser answers pings without waiting for the page."""
     decode_ms = 0
     _due = 0.0
-    _tests = 0
 
-    @property
-    def ack_delay(self):
-        # pump() reads this twice per frame (a truthiness test, then the delay): only the second takes a decode slot.
-        self._tests += 1
+    def frame_ack_delay(self):
+        if not self.decode_ms:
+            return 0
         now = time.time()
-        if self._tests % 2:
-            return max(self._due - now, 0.001)
         self._due = max(self._due, now) + self.decode_ms / 1000
         return self._due - now
-
-    @ack_delay.setter
-    def ack_delay(self, v):
-        pass
 
 
 def check_h264_pacing(url, token, app, a):
