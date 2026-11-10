@@ -651,7 +651,8 @@ def data_checks(apksim, apk, sha, size):
         pid = mac.stats.get("pid", 0)
         mac.ws.s.close()
         until(lambda: not alive(pid), 20)
-        check(until(lambda: all(not os.listdir(d) or os.listdir(d) == [".lock"] for d in seeded), 15), "data: which is erased when its session ends")
+        # A seed slot (bm) goes whole once erased; an empty one with its .lock was the old way.
+        check(until(lambda: all(not os.path.isdir(d) or os.listdir(d) in ([], [".lock"]) for d in seeded), 15), "data: which is erased when its session ends")
 
         # Behind a sign-in the agent cannot pass (issue 173): a protocol 1 page still gets the 502 it understands; in
         # protocol 2 the agent asks the tab for the APK, then for the data, which the tab fetched with its own
