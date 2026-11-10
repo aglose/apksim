@@ -173,7 +173,10 @@ crash recovery works as for one process. The predicted time of each shard is pri
 
 With `--isolate` the same split picks a machine's tests (`--shards N --shard I`; `--shard` is required, since each test is
 a process and `-j` already sets how many run at once): the tests of shard I run each in its own process, and with `--timings`
-the longest start first (a machine's last slots then hold short tests). Without `--timings` the split is by count.
+the start order is `--order`: `interleave` (default) alternates the longest and the shortest test, so long tests start early
+but not stacked together (a suite's heaviest tests started side by side took 33 s against 21-29 s alone and hit a 30 s
+`Timeout`), `longest-first` is the earlier behaviour, `suite` keeps the suite's order. Without `--timings` the split is by
+count and tests start in the suite's order.
 
 The split needs the suite's list, so a balanced run starts with a listing process (a few seconds); hash sharding needs
 none.

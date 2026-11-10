@@ -274,6 +274,9 @@ SCENARIOS = {
     # --isolate --shards 3 --shard 0 --timings: the same split, shard 0 (a 5 s test, C002's, listed after the 1 s ones, and two
     # 1 s ones) run a process a test, -j 1, the 5 s test first: a listing, then 3 processes.
     "balanced-isolate": (0, 4, 3, []),
+    # The same, with distinct times and --order: the launch order is checked in full (interleave is the default).
+    "balanced-isolate-longest": (0, 4, 3, []),
+    "balanced-isolate-suite": (0, 4, 3, []),
     "balanced-big": (0, 5, 3000, []),
     # --affected-by: a change to C000.kt runs C000's tests and C002's, which the deps file has no record of.
     "affected": (0, 2, 6, []),
@@ -366,10 +369,11 @@ def extra_args(sc, d):
     if "balanced" in sc:
         xml = os.path.join(d, "timings.xml")
         with open(xml, "w") as f:
-            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == (2 if sc == "balanced-isolate" else 0) else 1}"/>'
+            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{(5 if c == (2 if sc.startswith("balanced-isolate") else 0) else 1) + (0.1 * (3 * c + m) if sc.startswith("balanced-isolate") else 0)}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
         return (["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
-                + (["--isolate", "-j", "1", "--shards", "3", "--shard", "0"] if sc == "balanced-isolate" else []))
+                + (["--isolate", "-j", "1", "--shards", "3", "--shard", "0"] if sc.startswith("balanced-isolate") else [])
+                + (["--order", sc.split("-")[-1] + ("-first" if sc.endswith("longest") else "")] if sc in ("balanced-isolate-longest", "balanced-isolate-suite") else []))
     if sc.startswith("interrupt"):
         return ["--test-timeout", "0"]
     if sc.startswith("hang") or sc in ("slow", "cidfile-hang"):
@@ -482,6 +486,23 @@ def main():
             longest = max(int(n) for n in calls[1::2])
             ran_log = os.path.join(d, "ran")
             ran = open(ran_log).read().splitlines() if os.path.exists(ran_log) else []
+            expected_order = None
+            if sc.startswith("balanced-isolate") and ran:
+                tm = {(c, m): float(t) for c, m, t in re.findall(r'classname="([^"]+)" name="([^"]+)" time="([^"]+)"', open(os.path.join(d, "timings.xml")).read())}
+                got = [tuple(x.split("#")) for x in ran]
+                srt = sorted(got, key=lambda t: -tm[t])  # longest first
+                suite = sorted(got)
+                if sc.endswith("longest"):
+                    expected_order = srt
+                elif sc.endswith("suite"):
+                    expected_order = suite
+                else:  # the default: alternately the longest and the shortest
+                    expected_order, lo, hi = [], 0, len(srt) - 1
+                    while lo <= hi:
+                        expected_order.append(srt[lo]); lo += 1
+                        if lo <= hi:
+                            expected_order.append(srt[hi]); hi -= 1
+                expected_order = ["#".join(t) for t in expected_order]
             problems = [p for p, bad in [
                 (f"exit {r.returncode}, expected {status}", r.returncode != status),
                 (f"{len(calls) // 2} processes, expected {processes}", len(calls) // 2 not in (processes if isinstance(processes, tuple) else (processes,))),
@@ -489,6 +510,7 @@ def main():
                 ("an entry twice", len(set(names)) != len(names)),
                 ("a test run twice", len(set(ran)) != len(ran)),
                 (f"ran {ran}, expected the 5 s test first", sc == "balanced-isolate" and not ran[0].startswith("p.C002#")),
+                (f"ran {ran}, expected {expected_order}", bool(expected_order) and ran != expected_order),
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),
