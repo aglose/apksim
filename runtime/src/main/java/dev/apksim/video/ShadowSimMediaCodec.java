@@ -60,6 +60,11 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       video(HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC, HEVC, MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52,
           MediaCodecInfo.CodecProfileLevel.HEVCProfileMain, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10);
     }
+    if (!VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
+      // Players (Media3) then drop the video renderer and play the rest, logging nothing an app owner would see.
+      System.err.println("[apksim] MediaCodec video/avc, video/hevc: no decoder on this host (no VideoToolbox, as on the Linux image);"
+          + " an app's video will not draw, its audio still plays");
+    }
     if (SimAudio.available()) {
       try {
         audio(AAC_DECODER, MediaFormat.MIMETYPE_AUDIO_AAC, AAC, MediaCodecInfo.CodecProfileLevel.AACObjectLC,
