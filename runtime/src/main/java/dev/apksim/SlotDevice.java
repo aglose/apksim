@@ -96,7 +96,7 @@ final class SlotDevice {
 
   /**
    * Writes the launch's {@code --sdcard-file} seeds into the slot's /sdcard, over what the slot had (the option always
-   * wins), before the app's process starts any code. Never through a link the app left in the slot: a seed whose path
+   * wins), before Application.onCreate (after the Application is constructed and attached, as the slot's settings). Never through a link the app left in the slot: a seed whose path
    * runs through one is refused.
    */
   static void seedFiles(Path sd) throws IOException {

@@ -158,7 +158,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
-    int sdcardTotal = 0;
+    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -181,6 +181,11 @@ final class Catalog {
           throw new IOException(e.getMessage());
         }
         if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 72 KB in all");
+        // The launcher's own budget counts each seed's arguments (value plus the option and property names) and its count.
+        sdcardArgChars += v.length() + 32;
+        if (sdcardArgChars > dev.apksim.SdcardSeeds.ARG_CHARS_MAX || ++sdcardSeeds > dev.apksim.SdcardSeeds.COUNT_MAX) {
+          throw new IOException("--sdcard-file: at most " + dev.apksim.SdcardSeeds.COUNT_MAX + " files and 96 KB of arguments in all");
+        }
         out.add(o);
         out.add(v);
         continue;

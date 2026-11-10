@@ -3,8 +3,8 @@ package dev.apksim;
 import java.nio.charset.StandardCharsets;
 
 /**
- * {@code --sdcard-file PATH=VALUE} (repeatable, -Dapksim.sdcard.N): a file written to /sdcard in the data slot before the
- * app's process starts any code ({@link SlotDevice#seedFiles}), for apps that read a config file once at
+ * {@code --sdcard-file PATH=VALUE} (repeatable, -Dapksim.sdcard.N): a file written to /sdcard in the data slot before
+ * Application.onCreate (the Application object itself is already constructed and attached, as with --setting) ({@link SlotDevice#seedFiles}), for apps that read a config file once at
  * Application.onCreate. VALUE is inline, never a host file: {@code text:TEXT} as UTF-8, else base64. apksim serve and
  * beam check their launch options with {@link #parse} too.
  */
@@ -14,6 +14,8 @@ public final class SdcardSeeds {
   public static final int TOTAL_MAX = 72 * 1024;  // base64 is 96 KB of arguments: twice in a launch's argv stays under macOS's 256 KB
   /** The arguments' text in all (what the launcher checks). */
   public static final int ARG_CHARS_MAX = 100_000;
+  /** Seeds in a launch (each also costs option and property names in the argument lists). */
+  public static final int COUNT_MAX = 32;
 
   private SdcardSeeds() {}
 
