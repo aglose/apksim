@@ -1332,10 +1332,12 @@ public class Host {
     int x = 0;
     int y = 0;
     if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
-      int hg = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()) & Gravity.HORIZONTAL_GRAVITY_MASK;
-      int vg = lp.gravity & Gravity.VERTICAL_GRAVITY_MASK;
-      x = hg == Gravity.CENTER_HORIZONTAL ? (w - rw) / 2 + lp.x : hg == Gravity.RIGHT ? w - rw - lp.x : lp.x;
-      y = vg == Gravity.CENTER_VERTICAL ? (h - rh) / 2 + lp.y : vg == Gravity.BOTTOM ? h - rh - lp.y : lp.y;
+      // As the window manager places it: an axis with no pull to either side (NO_GRAVITY, the default) is centred.
+      android.graphics.Rect out = new android.graphics.Rect();
+      Gravity.apply(Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()), rw, rh,
+          new android.graphics.Rect(0, 0, w, h), lp.x, lp.y, out);
+      x = out.left;
+      y = out.top;
     }
     return new int[] {x, y};
   }
