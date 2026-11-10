@@ -1022,6 +1022,7 @@ def main():
             print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
                   + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
             tests = lists[a.shard]
+        suite_order = {t: i for i, t in enumerate(tests)}
         if timings:
             tests = affected.longest_first(tests, timings)
         print(f"{len(tests)} tests to run, longest first" if timings else f"{len(tests)} tests to run", file=sys.stderr)
@@ -1042,6 +1043,7 @@ def main():
             for res in pool.map(one, tests):
                 results.append(res)
                 print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s", file=sys.stderr)
+        results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
 
     failed = [r for r in results if r[2] == "failed"]
     for c, m, s, st, _ in failed:
