@@ -188,13 +188,20 @@ final class Standby {
 
   /** Ends the process, passing the exit code to the launcher's client when this instance came from a standby. */
   static void halt(int code) {
+    long t0 = System.nanoTime();
     dev.apksim.net.Net.flush();  // a recording in progress
     spawnNext();
     System.err.flush();
     System.out.flush();
+    long t1 = System.nanoTime();
     // A short launch's cache sweep (at most once an hour), before the client is told: once told, the next launch may
     // start while this process still holds its data slot, and take instance-1 instead of default.
     ApkCache.beforeExit();
+    if (Boolean.getBoolean("apksim.exitMarks")) {  // (test runs: see Main)
+      System.err.printf("[apksim] halt marks: net flush and next standby %d ms, cache sweep %d ms%n",
+          (t1 - t0) / 1_000_000, (System.nanoTime() - t1) / 1_000_000);
+      System.err.flush();
+    }
     exiting = true;
     if (adopted) nativeSendExit(code);
     Runtime.getRuntime().halt(code);
