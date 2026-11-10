@@ -1103,9 +1103,11 @@ public final class Serve {
             if (System.currentTimeMillis() - Files.getLastModifiedTime(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < 3_600_000L) continue;
             // Only with its hold (a session of any server keeps it from naming the slot until it is packed and erased),
             // and checked again under it.
-            try (java.nio.channels.FileChannel hold = seedHold(name)) {
-              if (hold == null || locked(slot) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
-              SlotPack.dropSeed(state, name, null, System.err::println);
+            synchronized (seedHolds) {
+              try (java.nio.channels.FileChannel hold = seedHold(name)) {
+                if (hold == null || locked(slot) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+                SlotPack.dropSeed(state, name, null, System.err::println);
+              }
             }
           }
         }
@@ -1117,14 +1119,16 @@ public final class Serve {
     try (var holds = Files.newDirectoryStream(state.resolve(home + "/seeds"), "ks*.lock")) {
       for (Path h : holds) {
         String name = h.getFileName().toString().replaceFirst("\\.lock$", "");
-        if (!name.matches("ks[0-9a-f]{12}") || seedHolds.containsKey(name)) continue;
-        try (java.nio.channels.FileChannel hold = seedHold(name)) {
-          if (hold == null) continue;
-          boolean gone;
-          try (var pkgs = Files.list(state.resolve("cache/data"))) {
-            gone = pkgs.noneMatch(p -> Files.exists(p.resolve(name + "-0"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+        if (!name.matches("ks[0-9a-f]{12}")) continue;
+        synchronized (seedHolds) {
+          try (java.nio.channels.FileChannel hold = seedHold(name)) {
+            if (hold == null) continue;
+            boolean gone;
+            try (var pkgs = Files.list(state.resolve("cache/data"))) {
+              gone = pkgs.noneMatch(p -> Files.exists(p.resolve(name + "-0"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+            }
+            if (gone) Files.deleteIfExists(h);
           }
-          if (gone) Files.deleteIfExists(h);
         }
       }
     } catch (IOException | RuntimeException e) {
@@ -1139,8 +1143,13 @@ public final class Serve {
    */
   private final Map<String, java.nio.channels.FileChannel> seedHolds = new ConcurrentHashMap<>();
 
-  /** The hold on a seed slot's name, or null when another holds it (a session here or on another server). */
+  /**
+   * The hold on a seed slot's name, or null when another holds it (a session here or on another server). Never opens
+   * the file of a name this server holds: closing any channel to a file can release every lock the JVM has on it
+   * (POSIX), so a sweep's open and close would drop a running session's hold. Callers hold {@link #seedHolds}.
+   */
   private java.nio.channels.FileChannel seedHold(String name) throws IOException {
+    if (seedHolds.containsKey(name)) return null;
     Path dir = state.resolve(home + "/seeds");
     Files.createDirectories(dir);
     java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(dir.resolve(name + ".lock"),
@@ -1156,6 +1165,12 @@ public final class Serve {
 
   /** Takes the hold for a session's seed slot (kept sessions and restores); false when it cannot. */
   boolean holdSeed(String name) {
+    synchronized (seedHolds) {
+      return holdSeedLocked(name);
+    }
+  }
+
+  private boolean holdSeedLocked(String name) {
     try {
       java.nio.channels.FileChannel ch = seedHold(name);
       if (ch == null) return false;
@@ -1168,7 +1183,14 @@ public final class Serve {
 
   /** Gives a seed slot's hold back, once its session has packed and erased it (or it was never used). */
   void releaseSeed(String name) {
-    java.nio.channels.FileChannel ch = name == null ? null : seedHolds.remove(name);
+    if (name == null) return;
+    synchronized (seedHolds) {
+      releaseSeedLocked(name);
+    }
+  }
+
+  private void releaseSeedLocked(String name) {
+    java.nio.channels.FileChannel ch = seedHolds.get(name);
     if (ch == null) return;
     try {
       // Its slot is gone: the file goes while still held (a sweeper that opened it meanwhile then finds no slot).
@@ -1181,6 +1203,7 @@ public final class Serve {
     } catch (IOException e) {
       // released with the channel either way
     }
+    seedHolds.remove(name);  // only now: a sweep must not open its file while this channel still holds it
   }
 
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
