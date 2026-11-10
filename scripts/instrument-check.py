@@ -271,6 +271,9 @@ SCENARIOS = {
     # --timings: a listing, then 3 shards of 7 s each (C000's three 5 s tests apart, the 1 s ones two to a shard).
     "balanced": (0, 4, 9, []),
     # 3,000 tests of long names over 2 shards by time: each shard's -e class list is two arguments' worth.
+    # --isolate --shards 3 --shard 0 --timings: the same split, shard 0 (a 5 s test, C002's, listed after the 1 s ones, and two
+    # 1 s ones) run a process a test, -j 1, the 5 s test first: a listing, then 3 processes.
+    "balanced-isolate": (0, 4, 3, []),
     "balanced-big": (0, 5, 3000, []),
     # --affected-by: a change to C000.kt runs C000's tests and C002's, which the deps file has no record of.
     "affected": (0, 2, 6, []),
@@ -288,6 +291,8 @@ SCENARIOS = {
     "hang-long-frame-cause": (1, 3, 9, ["p.C000#m1"]),  # as hang-deep-cause, with oversized frames and a line after
     "hang-long-message": (1, 3, 9, ["p.C000#m1"]),  # an exception message of several lines, then a deep stack
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
+    # --isolate: every test's JUnit entry says how long its process took to start and to exit.
+    "isolate-phases": (0, 10, 9, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
@@ -354,14 +359,17 @@ LONG_MESSAGE = ("java.lang.VerifyError: Bad type on operand stack\nException Det
 
 def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
+    if sc == "isolate-phases":
+        return ["--isolate", "-j", "3"]
     if sc.startswith("init-error") and "isolate" in sc:
         return ["--isolate", "-j", "3"] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
     if "balanced" in sc:
         xml = os.path.join(d, "timings.xml")
         with open(xml, "w") as f:
-            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == 0 else 1}"/>'
+            f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="{5 if c == (2 if sc == "balanced-isolate" else 0) else 1}"/>'
                                             for c in range(3) for m in range(3)) + "</testsuite>")
-        return ["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
+        return (["--timings", xml] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
+                + (["--isolate", "-j", "1", "--shards", "3", "--shard", "0"] if sc == "balanced-isolate" else []))
     if sc.startswith("interrupt"):
         return ["--test-timeout", "0"]
     if sc.startswith("hang") or sc in ("slow", "cidfile-hang"):
@@ -435,6 +443,8 @@ def main():
                       (c.find("failure").text or "") if c.find("failure") is not None else "")
                      for c in ET.parse(xml).iter("testcase")] if os.path.exists(xml) else []
             texts = {f"{c}#{m}": t for c, m, _, t in cases}
+            props = {f"{c.get('classname')}#{c.get('name')}": {q.get("name") for q in c.iter("property")}
+                     for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
             hung = ([t for t in ("p.C000#m1", "(run)#incomplete") if t in failed]
@@ -478,6 +488,7 @@ def main():
                 (f"{len(cases)} entries, expected {entries}", len(cases) != entries),
                 ("an entry twice", len(set(names)) != len(names)),
                 ("a test run twice", len(set(ran)) != len(ran)),
+                (f"ran {ran}, expected the 5 s test first", sc == "balanced-isolate" and not ran[0].startswith("p.C002#")),
                 (f"failed {got_failed}, expected {sorted(failed)}", got_failed != sorted(failed)),
                 (f"an argument of {longest} bytes", longest > 100_000),
                 (f"the failure text lacks {missing}", bool(missing)),
@@ -497,6 +508,8 @@ def main():
                  and ("leaving out p.Empty#initializationError" in r.stderr) == sc.endswith("-keep")),
                 ("an entry for p.Empty", sc.startswith("init-error") and not sc.endswith("isolate-keep")
                  and any(c == "p.Empty" for c, _ in names)),
+                ("start-up and exit seconds missing", sc == "isolate-phases" and any(
+                    {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
                 (f"took {took:.0f} s", took > 30),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))

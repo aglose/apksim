@@ -19,6 +19,8 @@ backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runn
 (a crash at startup) ends the run: the tests still without one are reported failed as not run.
 With --isolate each test runs in a process of its own, N at a time, as the Orchestrator with clearPackageData does. Like the Orchestrator's runner side, it leaves a listed
 `initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
+Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
+test's start, `apksim.exit_seconds`: its end to the process exiting), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
 process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
@@ -65,6 +67,9 @@ the tests (docs, JVM unit tests: `--ignore '*.md' --ignore '*/src/test/*'`).
 --timings XML (an earlier run's --xml; repeatable) makes --shards split the tests by their measured times, longest first,
 each shard given an `-e class` list, instead of by hash. --shard I runs only shard I (0-based) of the N, for CI jobs
 on separate machines; every job must be given the same suite, timings and change.
+With --isolate, --shards N --shard I (required: the processes are the tests, so there is no "all shards at once") runs
+shard I's tests, balanced by the same rule (by count without timings), each in its own process, -j at a time. With
+--timings --isolate starts the longest tests first, so the last slots to finish hold short tests.
 """
 import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
@@ -79,6 +84,7 @@ LAUNCHER = [ROOT + "/apksim"]
 RECORDED = []  # --record-deps: each process's dependency lines, taken out of its output
 
 
+PHASES = {}  # --isolate: (class, method) -> (start-up, test, exit) seconds of its process, for the report
 TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
 LIVE = {}  # the processes running now: {Popen: its kill()}, for an interrupt (they are not in our process group)
 # Held while a process starts and is entered in LIVE, and while stopping takes LIVE: so every process is either in
@@ -131,6 +137,7 @@ def thread_dump_tests(dump):
 
 def apksim(app, test, extra_args, apksim_opts):
     """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
+    .phases: {(class, method): (seconds from spawn to its start, its run, seconds from its end to the process exiting)},
     from when each test's start and end blocks arrived (the output is read as it comes), and, when --test-timeout
     killed it, .timed_out (the limit) and .threads (the JUnit threads' stacks from a thread dump taken first)."""
     launcher, user_cidfile = list(LAUNCHER), None
@@ -219,6 +226,8 @@ def apksim(app, test, extra_args, apksim_opts):
     reader = threading.Thread(target=lambda: err.append(p.stderr.read()))
     reader.start()
     lines, seconds, started, block, deps = [], {}, {}, {}, []
+    marks = {}  # (class, method): [wall time its start block arrived, wall time its end block arrived]
+    spawned = time.time()
     # --test-timeout: when the process started or a test last started or ended (a hung test held the run for as long
     # as the CI job allowed: 67 minutes once). Past the limit: SIGQUIT (the JVM prints every thread's stack on its
     # stdout, read below), up to 5 s for that, then the kill.
@@ -261,11 +270,15 @@ def apksim(app, test, extra_args, apksim_opts):
             t = (block.get("class"), block.get("test"))
             if line.split(": ")[1].strip() == "1":
                 started[t] = time.time()
+                marks[t] = [started[t], None]
             elif t in started:
-                seconds[t] = time.time() - started.pop(t)
+                now = time.time()
+                seconds[t] = now - started.pop(t)
+                marks[t][1] = now
             block = {}
     dumped.set()
     p.wait()
+    exited = time.time()
     done.set()
     if dog:
         dog.join()  # (a kill under way reads the cidfile: the client's end, closing its output, comes first)
@@ -294,6 +307,9 @@ def apksim(app, test, extra_args, apksim_opts):
         RECORDED.append(deps)
     r = subprocess.CompletedProcess(p.args, p.returncode, "".join(lines), err[0] if err else "")
     r.seconds = seconds
+    # Where a process's time went: spawn to the test's start block (JVM, framework, app state), and the test's end
+    # block to the process exiting (listeners, shutdown, the launcher's exit).
+    r.phases = {t: (m[0] - spawned, m[1] - m[0], exited - m[1]) for t, m in marks.items() if m[1] is not None}
     r.timed_out = timed_out[0] if timed_out else None
     r.threads = thread_dump_tests(dump) if dump else ""
     return r
@@ -925,9 +941,8 @@ def main():
 
     t0 = time.time()
     results = []  # (class, method, status, stack, seconds)
-    if a.shards > 1 and a.isolate:
-        p.error("--shards splits a suite over processes that each run many tests; --isolate gives every test its own"
-                " process already (use -j for how many at a time)")
+    if a.shards > 1 and a.isolate and a.shard is None:
+        p.error("--shards with --isolate splits the tests over machines, and each runs its own: give --shard I")
     if a.shard is not None and not 0 <= a.shard < a.shards:
         p.error("--shard I runs shard I of --shards N: 0 <= I < N")
     if a.record_deps and a.affected_by:
@@ -959,7 +974,7 @@ def main():
             print(f"{len(selected)} of {len(listing)} tests affected by {len(changed)} changed files"
                   + (f" ({unknown} of them new or not recorded)" if unknown else ""), file=sys.stderr)
     timings = affected.read_timings(a.timings)
-    if a.shards > 1 and (timings or selected is not None):
+    if a.shards > 1 and not a.isolate and (timings or selected is not None):
         # Shards by measured time (or, without timings, by count), each named with -e class.
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets which tests each shard runs itself")
@@ -980,7 +995,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(len(which)) as pool:
             for got in pool.map(balanced, which):
                 results += got
-    elif a.shards > 1:
+    elif a.shards > 1 and not a.isolate:
         if any(k in ("numShards", "shardIndex") for k, _ in a.e):
             p.error("--shards sets -e numShards and shardIndex itself")
         which = range(a.shards) if a.shard is None else [a.shard]
@@ -1013,12 +1028,26 @@ def main():
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
     if a.isolate:
+        if a.shards > 1:  # this machine's share: balanced by measured time (by count without timings)
+            if any(k in ("numShards", "shardIndex") for k, _ in a.e):
+                p.error("--shards sets which tests each shard runs itself")
+            lists, totals = affected.balance(tests, timings, a.shards)
+            print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
+                  + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
+            tests = lists[a.shard]
+        suite_order = {t: i for i, t in enumerate(tests)}
+        if timings:
+            tests = affected.longest_first(tests, timings)
+        print(f"{len(tests)} tests to run, longest first" if timings else f"{len(tests)} tests to run", file=sys.stderr)
+
         def one(t):
             start = time.time()
             others = [kv for kv in a.e if kv[0] not in ("class", "package")]
             r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)
             got = parse(r.stdout)
             why = incomplete(r, got)
+            if t in r.phases:  # (kept even when the process then died or hung at exit: that is when it matters)
+                PHASES[t] = r.phases[t]
             if not got or why:
                 return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r),
                         time.time() - start)
@@ -1028,7 +1057,11 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(a.j) as pool:
             for res in pool.map(one, tests):
                 results.append(res)
-                print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s", file=sys.stderr)
+                ph = PHASES.get((res[0], res[1]))
+                print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
+                      + (f" (start-up {ph[0]:.1f} s, test {ph[1]:.1f} s, exit {ph[2]:.1f} s)" if ph else ""),
+                      file=sys.stderr)
+        results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
 
     failed = [r for r in results if r[2] == "failed"]
     for c, m, s, st, _ in failed:
@@ -1055,8 +1088,11 @@ def main():
                 rel = os.path.relpath(bundle, xml_dir) if bundle else None
                 movie = recordings.get((c, m))
                 mrel = os.path.relpath(movie, xml_dir) if movie else None
-                if rel or mrel:
+                ph = PHASES.get((c, m))
+                if rel or mrel or ph:
                     f.write("<properties>"
+                            + (f'<property name="apksim.startup_seconds" value="{ph[0]:.3f}"/>'
+                               f'<property name="apksim.exit_seconds" value="{ph[2]:.3f}"/>' if ph else "")
                             + (f'<property name="apksim.bundle" value={quoteattr(rel)}/>' if rel else "")
                             + (f'<property name="apksim.recording" value={quoteattr(mrel)}/>' if mrel else "")
                             + "</properties>")
