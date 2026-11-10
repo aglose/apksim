@@ -142,6 +142,15 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-start.xml -e startActivities true \
             -e class dev.apksim.composeapp.StartActivityTest,dev.apksim.composeapp.StackWindowsTest -- --start-activities
+      # The simulated camera: --camera fake declares the camera features and lists one front camera; off (the default) neither.
+      - name: Test run with a simulated camera
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          for m in fake off; do
+            python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+              --xml tests/junit-camera-$m.xml -e class dev.apksim.composeapp.CameraTest -e camera $m -- --camera $m
+            python3 scripts/ci-no-skips.py tests/junit-camera-$m.xml 2
+          done
       # Device identity given at launch (--serial, --feature, --build, --bluetooth) and a Settings value (--setting) are what the app
       # sees from Application.onCreate, and --feature NAME=false takes a default feature away.
       - name: Test run with a device identity

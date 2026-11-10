@@ -79,7 +79,7 @@ final class SystemFeatures {
       for (String f : HANDHELD) want.put(f, true);
       if (d.kind().equals("desktop")) want.put("android.hardware.type.pc", true);
     }
-    if (!d.tv() && Cameras.fake()) for (String f : Cameras.FEATURES) want.put(f, true);  // --camera fake
+    if (Cameras.fake()) for (String f : Cameras.FEATURES) want.put(f, true);  // --camera fake
     want.putAll(launchOptions());
     Map<String, Boolean> list = list();
     for (Map.Entry<String, Boolean> e : want.entrySet()) {
