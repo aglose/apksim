@@ -102,7 +102,7 @@ public final class Main {
    * registers every algorithm class: ~180 ms of a cold launch, on the main thread, interpreted, once the sandbox is
    * made. Nothing in it depends on the sandbox or the APK, so the class is initialized here on a thread of its own,
    * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
-   * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B).
+   * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B), and SimRunner's Conscrypt load with it.
    */
   private static void initTestEnvironmentAhead() {
     if (!Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) return;

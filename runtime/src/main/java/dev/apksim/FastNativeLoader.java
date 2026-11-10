@@ -37,9 +37,12 @@ public final class FastNativeLoader extends DefaultNativeRuntimeLoader {
     System.setProperty("graphics_native_classes", String.join(",", getGraphicsNatives()));
     System.setProperty("method_binding_format", METHOD_BINDING_FORMAT);
     System.load(dir.resolve(libraryName()).toString());
+    Timing.detail("native-dlopen");
     invokeDeferredStaticInitializers();
+    Timing.detail("native-static-init");
     setNativeSystemProperty("ro.hyphen.data.dir", dir.resolve("hyphen-data").toString());
     android.graphics.Typeface.loadPreinstalledSystemFontMap();
+    Timing.detail("native-fonts");
     android.text.Hyphenator.init();
     Timing.detail("native-loaded");
   }
