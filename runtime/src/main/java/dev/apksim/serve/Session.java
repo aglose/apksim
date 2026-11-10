@@ -1682,8 +1682,9 @@ final class Session {
       else if (f == null) state = "new";
       else {
         boolean same = launchSha.equals(f.sha256());
-        List<String> signers = same ? f.signers() : launchSigners;
-        if (!same && (f.signers().isEmpty() || !signers.equals(f.signers()))) {
+        // Signers compared even for the same build: the catalog's SHA-256 is cached by size and time, so a local --apps
+        // file replaced with another of both could pass as the build it replaced. Another build needs known signers.
+        if (!launchSigners.equals(f.signers()) || !same && f.signers().isEmpty()) {
           state = "refused";
           why = "this build is signed by another key than the one its data was kept with (an update keeps an app's data only"
               + " when the same key signs it): it starts without it, and keeps nothing";
