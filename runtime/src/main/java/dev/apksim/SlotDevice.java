@@ -121,7 +121,7 @@ final class SlotDevice {
         }
         if (!last && !Files.exists(target)) Files.createDirectory(target);
       }
-      Path tmp = target.resolveSibling("." + target.getFileName() + Storage.tmpTag());
+      Path tmp = target.resolveSibling(".seed" + Storage.tmpTag());
       Files.write(tmp, f.bytes());
       Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     }
