@@ -39,6 +39,13 @@ final class FrameStream {
   private static long latestMicros;
   private static boolean fresh;
   private static boolean keyWanted;  // guarded by LOCK
+  /**
+   * `pace MS` from the serve relay (a tab that decodes slower than the app draws): at most one new frame is encoded per
+   * this many ns, the newest at that time, so the H.264 stream stays a valid chain at a lower rate instead of dropping to
+   * keyframes. 0: every frame. Guarded by LOCK.
+   */
+  private static long paceNanos;
+  private static long lastNewNanos;  // when the last new frame (not a refinement or repeat) was encoded
   private static Thread encoder;
 
   private FrameStream() {}
@@ -83,6 +90,18 @@ final class FrameStream {
     }
   }
 
+  private static void setPace(String ms) {
+    try {
+      long v = Math.max(0, Math.min(1000, Long.parseLong(ms.trim())));
+      synchronized (LOCK) {
+        paceNanos = v * 1_000_000;
+        LOCK.notifyAll();
+      }
+    } catch (NumberFormatException e) {
+      // ignored
+    }
+  }
+
   private static long epochMicros() {
     java.time.Instant now = java.time.Instant.now();
     return now.getEpochSecond() * 1_000_000L + now.getNano() / 1000;
@@ -114,7 +133,9 @@ final class FrameStream {
             if (line.length() < 64) line.append((char) c);
             continue;
           }
-          if (h264 && line.toString().trim().equals("key")) s.askKey();
+          String cmd = line.toString().trim();
+          if (h264 && cmd.equals("key")) s.askKey();
+          else if (h264 && cmd.startsWith("pace ")) setPace(cmd.substring(5));
           line.setLength(0);
         }
       } catch (IOException e) {
@@ -126,6 +147,7 @@ final class FrameStream {
     eof.start();
     startEncoder();
     synchronized (LOCK) {
+      paceNanos = 0;  // a new viewer starts at the app's own rate
       FrameStream.quality = Math.max(10, Math.min(100, quality));
       if (h264) FrameStream.kbps = Math.max(100, Math.min(100_000, kbps));
       SUBSCRIBERS.add(s);
@@ -197,7 +219,10 @@ final class FrameStream {
               && latestH == lastH && !anyNeedsFrame() && Arrays.equals(lastEncoded, latest)) {
             fresh = false;
           }
-          if (fresh || keyWanted || wake) break;
+          long nowNs = System.nanoTime();
+          long paceDue = fresh && !keyWanted && !wake && paceNanos > 0 ? lastNewNanos + paceNanos : 0;
+          boolean paced = paceDue > nowNs;
+          if ((fresh || keyWanted || wake) && !paced) break;
           // No H.264 subscriber left: its encoder (native buffers, a VideoToolbox session) goes now, not at the
           // next frame, which a still screen may never present.
           if (video != null && !hasCodec(true)) {
@@ -208,7 +233,7 @@ final class FrameStream {
             // H.264 only: after a failed encode, the last frame again as a keyframe, a few times at most.
             boolean canRetry = failures > 0 && lastEncoded != null && hasCodec(true);
             // H.264 only: once frames stop, the last one encoded again, for the detail the bit rate left out.
-            boolean canRefine = video != null && refines < REFINES && lastEncoded != null && hasCodec(true);
+            boolean canRefine = !fresh && video != null && refines < REFINES && lastEncoded != null && hasCodec(true);
             long now = System.nanoTime();
             if (canRetry && now >= retryAt) {
               retry = true;
@@ -219,6 +244,7 @@ final class FrameStream {
               break;
             }
             long until = canRetry ? retryAt : canRefine ? refineAt : 0;
+            if (paced && (until == 0 || paceDue < until)) until = paceDue;
             LOCK.wait(until == 0 ? 0 : Math.max(1, (until - now) / 1_000_000));
           } catch (InterruptedException e) {
             return;
@@ -233,6 +259,7 @@ final class FrameStream {
         // The last frame encoded again: a refinement, a retry, or, on a still screen, a keyframe or a new subscriber's
         // first frame.
         repeat = refine || (!source && (key || needy));
+        if (!repeat) lastNewNanos = System.nanoTime();
         if (repeat) {
           if (lastEncoded == null) continue;
           if (raw == null || raw.length != lastEncoded.length) raw = new byte[lastEncoded.length];
