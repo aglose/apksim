@@ -52,7 +52,7 @@ final class Cameras {
     ShadowCameraCharacteristics s = Shadows.shadowOf(c);
     s.set(CameraCharacteristics.LENS_FACING, CameraMetadata.LENS_FACING_FRONT);
     s.set(CameraCharacteristics.SENSOR_ORIENTATION, 270);
-    s.set(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL, CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_FULL);
+    s.set(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL, CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED);
     s.set(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE, new Rect(0, 0, 1920, 1080));
     s.set(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE, new Size(1920, 1080));
     s.set(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES,
