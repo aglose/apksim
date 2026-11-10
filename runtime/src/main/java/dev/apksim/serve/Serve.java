@@ -36,7 +36,7 @@ public final class Serve {
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
-                          [--allow-beam] [--beam-port N]
+                          [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
@@ -75,6 +75,9 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /** Issue 221: `--keep-max N` kept sessions in all (0: none kept, the default), and the store (null on the agent). */
+  int keepMax;
+  KeptStore kept;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
   /** `--core-dumps`: instances may leave core files when they crash (off by default: a large app's is gigabytes). */
@@ -204,7 +207,11 @@ public final class Serve {
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(32, Long.parseLong(need(a, v))));
-        case "--allow-rec" -> s.allowRec = true;
+        case "--allow-rec" -> {
+          s.allowRec = true;
+          continue;  // no value: the next argument is an option of its own
+        }
+        case "--keep-max" -> s.keepMax = Math.max(0, Math.min(100_000, Integer.parseInt(need(a, v))));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--bitrate" -> {
@@ -405,9 +412,12 @@ public final class Serve {
             + "; stop it first (two would delete each other's builds)");
         System.exit(2);
       }
-    } else if (keepDays != null || saveSessions != null || keepSavedDays != null) {
-      usage("--keep-days, --save-sessions and --keep-saved-days are apksim beam's");
+    } else if (saveSessions != null || keepSavedDays != null) {
+      usage("--save-sessions and --keep-saved-days are apksim beam's");
+    } else if (keepDays != null && keepDays <= 0) {
+      usage("--keep-days takes a number of days above 0 (how long a kept session's data stays unused)");
     }
+    if (beam && keepMax > 0) usage("--keep-max is apksim serve's (the agent keeps sessions with --save-sessions)");
     logs = state.resolve(home + "/logs");
     InetAddress addr = InetAddress.getByName(bind);
     loopbackBind = addr.isLoopbackAddress();
@@ -436,6 +446,9 @@ public final class Serve {
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
     warmer = new Warmer(this);
     catalog.onReady = warmer::enqueue;
+    if (!beam) {
+      kept = new KeptStore(state.resolve(home + "/kept"), token, keepMax, keepDays != null ? keepDays : 14);
+    }
     ServerSocket server;
     if (launchd) {
       // launchd listens and hands the socket over on stdin (inetdCompatibility with Wait): what the plist names.
@@ -460,6 +473,15 @@ public final class Serve {
     if (beam) System.err.printf("[beam] agent on 127.0.0.1:%d (protocol %d), up to %d sessions; sites allowed: %s%n", server.getLocalPort(),
         Beam.PROTOCOL, max, agent.trust().entrySet().stream().filter(e -> e.getValue().equals("always")).map(Map.Entry::getKey).toList());
     if (beam) System.err.println("[beam] keeps: " + store.config.describe() + "; " + store.saved().size() + " saved sessions");
+    // Kept sessions (issue 221): only once the port is ours, and only by the one server that holds the store, so a
+    // second server on this state folder (a busy port, or --keep-max 0) deletes nothing.
+    if (kept != null && keepMax > 0) {
+      if (kept.claim()) kept.sweep();
+      else System.err.println("[serve] another server keeps sessions in " + state + ": this one keeps none");
+    }
+    // Every server's own leftovers (kept or restored data a stopped server unpacked), whoever owns the kept store: a
+    // slot is dropped only unlocked and an hour old, so another server's session in flight is left alone.
+    if (kept != null) dropUnusedSeeds();
     warmStandby();
     boolean mac = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
     if (warm.equals("on") || warm.equals("auto") && !mac) warmer.enqueueAll(catalog.listed());
@@ -472,7 +494,11 @@ public final class Serve {
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
     timer.scheduleWithFixedDelay(() -> {
       if (beam) sweepBeam();
-      else catalog.sweep(24 * 3_600_000L);
+      else {
+        catalog.sweep(24 * 3_600_000L);
+        kept.sweep();  // the owner only (KeptStore.sweep)
+        dropUnusedSeeds();
+      }
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> {
@@ -706,7 +732,7 @@ public final class Serve {
     if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
       Http.CORS_ORIGIN.set(origin);
       if (r.method().equals("OPTIONS")) {
-        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST, DELETE",
             "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
         return;
       }
@@ -775,6 +801,10 @@ public final class Serve {
     }
     if (r.method().equals("GET") && r.path().matches("/api/sessions/[0-9a-f]{12}/log")) {
       sessionLog(r.path().substring("/api/sessions/".length(), "/api/sessions/".length() + 12), out);
+      return;
+    }
+    if (r.path().startsWith("/api/kept/") && (r.method().equals("GET") || r.method().equals("DELETE"))) {
+      keptRoute(r, out);
       return;
     }
     java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/api/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());
@@ -1029,6 +1059,153 @@ public final class Serve {
     websocket(r, s, in, out, null, null);
   }
 
+  /**
+   * Issue 221: `GET /api/kept/KEY` (what this token's key kept, per package: build, size, when saved and last used) and
+   * `DELETE /api/kept/KEY` (forgets it all; `409` while a session has it). The key is the client's; only its HMAC under
+   * this server's token is stored, so another token's key of the same name is another entry.
+   */
+  private void keptRoute(Http.Request r, OutputStream out) throws IOException {
+    String key = r.path().substring("/api/kept/".length());
+    if (!KeptStore.validKey(key)) {
+      Http.text(out, 400, "a key is 1-128 letters, digits and . _ ~ -, starting with a letter or digit");
+      return;
+    }
+    // Only the server that owns the store (KeptStore.claim) answers: another on the same state folder knows nothing of
+    // the owner's sessions, so it could delete a key one of them holds.
+    if (!kept.owned()) {
+      Http.text(out, 503, "this server keeps no sessions (--keep-max, or another server on this state folder keeps them)");
+      return;
+    }
+    String id = kept.id(key);
+    if (r.method().equals("GET")) {
+      Http.json(out, 200, kept.describe(id));
+      return;
+    }
+    int n = kept.forget(id);
+    if (n < 0) Http.text(out, 409, "a session is using this key: end it first");
+    else if (n == 0) Http.text(out, 404, "nothing is kept under this key");
+    else Http.json(out, 200, "{\"forgot\":" + n + "}");
+  }
+
+  /**
+   * Serve's seed slots (`cache/data/<package>/ks<hex>-0`: kept or restored data) that no instance holds and no session
+   * of this server names, untouched for an hour: left by a server that stopped between unpacking and its session's end.
+   * Startup and hourly, on every server sharing the state folder. A session refreshes its slot's time as its instance
+   * ends (Session.keepData), so another server's sweep never takes one being packed.
+   */
+  private void dropUnusedSeeds() {
+    try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {
+      for (Path pkg : pkgs) {
+        try (var slots = Files.newDirectoryStream(pkg, "ks*-0")) {
+          for (Path slot : slots) {
+            String name = slot.getFileName().toString().replaceFirst("-0$", "");
+            if (!name.matches("ks[0-9a-f]{12}") || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot)) || locked(slot)) continue;
+            if (System.currentTimeMillis() - Files.getLastModifiedTime(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < 3_600_000L) continue;
+            // Only with its hold (a session of any server keeps it from naming the slot until it is packed and erased),
+            // and checked again under it.
+            synchronized (seedHolds) {
+              try (java.nio.channels.FileChannel hold = seedHold(name)) {
+                if (hold == null || locked(slot) || !Files.isDirectory(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+                SlotPack.dropSeed(state, name, null, System.err::println);
+              }
+            }
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // no app data yet, or the next round
+    }
+    // Holds whose slot is gone (a session's ends with its slot; one that stopped leaves the file).
+    try (var holds = Files.newDirectoryStream(state.resolve(home + "/seeds"), "ks*.lock")) {
+      for (Path h : holds) {
+        String name = h.getFileName().toString().replaceFirst("\\.lock$", "");
+        if (!name.matches("ks[0-9a-f]{12}")) continue;
+        synchronized (seedHolds) {
+          try (java.nio.channels.FileChannel hold = seedHold(name)) {
+            if (hold == null) continue;
+            boolean gone;
+            try (var pkgs = Files.list(state.resolve("cache/data"))) {
+              gone = pkgs.noneMatch(p -> Files.exists(p.resolve(name + "-0"), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+            }
+            if (gone) Files.deleteIfExists(h);
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // none yet
+    }
+  }
+
+  /**
+   * Serve's seed slots (`ks`) are held, across every server sharing the state folder, by an exclusive lock on
+   * `serve/seeds/<name>.lock` from before the slot is made until its session has packed and erased it: the instance's
+   * own lock on the slot ends with the instance, before that. {@link #dropUnusedSeeds} deletes a slot only with its hold.
+   */
+  private final Map<String, java.nio.channels.FileChannel> seedHolds = new ConcurrentHashMap<>();
+
+  /**
+   * The hold on a seed slot's name, or null when another holds it (a session here or on another server). Never opens
+   * the file of a name this server holds: closing any channel to a file can release every lock the JVM has on it
+   * (POSIX), so a sweep's open and close would drop a running session's hold. Callers hold {@link #seedHolds}.
+   */
+  private java.nio.channels.FileChannel seedHold(String name) throws IOException {
+    if (seedHolds.containsKey(name)) return null;
+    Path dir = state.resolve(home + "/seeds");
+    Files.createDirectories(dir);
+    java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(dir.resolve(name + ".lock"),
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+    try {
+      if (ch.tryLock() != null) return ch;
+    } catch (java.nio.channels.OverlappingFileLockException e) {
+      // this process holds it
+    }
+    ch.close();
+    return null;
+  }
+
+  /** Takes the hold for a session's seed slot (kept sessions and restores); false when it cannot. */
+  boolean holdSeed(String name) {
+    synchronized (seedHolds) {
+      return holdSeedLocked(name);
+    }
+  }
+
+  private boolean holdSeedLocked(String name) {
+    try {
+      java.nio.channels.FileChannel ch = seedHold(name);
+      if (ch == null) return false;
+      seedHolds.put(name, ch);
+      return true;
+    } catch (IOException e) {
+      return false;
+    }
+  }
+
+  /** Gives a seed slot's hold back, once its session has packed and erased it (or it was never used). */
+  void releaseSeed(String name) {
+    if (name == null) return;
+    synchronized (seedHolds) {
+      releaseSeedLocked(name);
+    }
+  }
+
+  private void releaseSeedLocked(String name) {
+    java.nio.channels.FileChannel ch = seedHolds.get(name);
+    if (ch == null) return;
+    try {
+      // Its slot is gone: the file goes while still held (a sweeper that opened it meanwhile then finds no slot).
+      Files.deleteIfExists(state.resolve(home + "/seeds").resolve(name + ".lock"));
+    } catch (IOException e) {
+      // the sweep removes it
+    }
+    try {
+      ch.close();
+    } catch (IOException e) {
+      // released with the channel either way
+    }
+    seedHolds.remove(name);  // only now: a sweep must not open its file while this channel still holds it
+  }
+
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed) throws IOException {
     String key = r.header("sec-websocket-key");
@@ -1036,6 +1213,64 @@ public final class Serve {
       Http.text(out, 400, "expected a WebSocket upgrade");
       return;
     }
+    // Issue 221: a kept session's key (`keep=KEY`), and what a start does when another session has it (`keepBusy=fresh`,
+    // the default: it runs without the kept data and keeps nothing; `refuse`: 409, before the upgrade).
+    String keepKey = beam ? null : r.param("keep");
+    if (keepKey != null && keepKey.isEmpty()) keepKey = null;
+    if (keepKey != null && !KeptStore.validKey(keepKey)) {
+      Http.text(out, 400, "keep: a key is 1-128 letters, digits and . _ ~ -, starting with a letter or digit");
+      return;
+    }
+    boolean refuseBusy = "refuse".equals(r.param("keepBusy"));
+    String keepId = keepKey == null || !kept.on() ? null : kept.id(keepKey);
+    // Reserved before the upgrade, so two starts on one key cannot both pass: the loser gets 409 (refuse) or runs
+    // without the kept data. Released below unless the session took it (it releases it when it ends).
+    boolean took = keepId != null && kept.take(keepId);
+    // The page's Start again, or a reload, opens the next session while the last one on the key still ends (its tab's
+    // close may not even have arrived yet) and packs its data: waited for, 3 s for the close to come, then as long as
+    // the key's session is ending (60 s at most), so the next one starts on what it kept rather than without it.
+    long waitFrom = System.currentTimeMillis();
+    while (keepId != null && !took) {
+      long waited = System.currentTimeMillis() - waitFrom;
+      if (waited > 60_000 || waited > 3_000 && !keyEnding(keepId)) break;
+      try {
+        Thread.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      took = kept.take(keepId);
+    }
+    // The ending session gives the key back just before it leaves the session list, and counts against --max until
+    // then: a restart on a full server (--max 1) would otherwise be told every session is in use.
+    while (took && keyEnding(keepId) && System.currentTimeMillis() - waitFrom < 60_000) {
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    if (keepId != null && !took && refuseBusy) {
+      Http.text(out, 409, "a session is using this key");
+      return;
+    }
+    boolean[] handed = {false};
+    try {
+      upgraded(r, s, in, out, site, seed, key, keepKey, keepId, took, handed);
+    } finally {
+      if (took && !handed[0]) kept.release(keepId);
+    }
+  }
+
+  /** Whether the session holding this kept key is ending (it gives the key back once its data is packed). */
+  private boolean keyEnding(String keepId) {
+    return sessions.values().stream().anyMatch(x -> keepId.equals(x.keepId) && x.ending());
+  }
+
+  /** The rest of a session's start, once its key (if any) is reserved; `handed[0]` set once a session holds it. */
+  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String key,
+      String keepKey, String keepId, boolean took, boolean[] handed) throws IOException {
     out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
         + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
@@ -1048,6 +1283,7 @@ public final class Serve {
         reopenedChanged.remove(seed);
       }
       SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
+      releaseSeed(seed);
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
       return;
@@ -1090,6 +1326,7 @@ public final class Serve {
       reopened.remove(seed);
       reopenedChanged.remove(seed);
       SlotPack.dropSeed(state, seed, null, System.err::println);
+      releaseSeed(seed);
       ws.sendText("x saved session " + reopenSid + " is busy on this Mac (being copied for a newer build, or forgotten): start it again");
       ws.close("busy");
       return;
@@ -1103,6 +1340,7 @@ public final class Serve {
           reopenedChanged.remove(seed);
         }
         SlotPack.dropSeed(state, seed, null, System.err::println);
+        releaseSeed(seed);
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
         return;
@@ -1111,6 +1349,14 @@ public final class Serve {
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
       session.seedSlot = seed;  // the agent's moved data, or the server's restored data
+      if (keepKey != null) {
+        if (keepId == null) session.keptState = "off";
+        else if (took) {
+          session.keepId = keepId;  // released when the session ends (Session.eraseData)
+          handed[0] = true;
+        }
+        else session.keptState = "busy";
+      }
       if (beam) {
         session.site = site;
         session.keep = store.config.saveSessions();
@@ -1426,7 +1672,17 @@ public final class Serve {
    * (from its manifest), only into a plain app folder. `claim` and `unclaim` are told the slot's name around the
    * unpack (the agent's sweep must leave it meanwhile). The slot's name, or throws why not.
    */
-  private String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+  String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+      throws IOException {
+    return seedFrom(zip, apk, "bm", claim, unclaim);
+  }
+
+  /**
+   * As above, into a slot named `<prefix><12 hex>`: `bm` for moved and restored data (the agent's sweep knows those),
+   * `ks` for serve's kept sessions, which only serve's own sweep looks at (an agent sharing the state folder must not
+   * take a kept session's slot for one of its own left behind).
+   */
+  String seedFrom(Path zip, Path apk, String prefix, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
       throws IOException {
     String pkg = SlotPack.packageOf(zip);
     if (pkg == null) throw new IOException("the data names no app");
@@ -1436,7 +1692,7 @@ public final class Serve {
     if (!pkg.equals(own)) throw new IOException("the data is " + pkg + "'s, not this app's (" + own + ")");
     byte[] rnd = new byte[6];
     RANDOM.nextBytes(rnd);
-    String name = "bm" + HexFormat.of().formatHex(rnd);
+    String name = prefix + HexFormat.of().formatHex(rnd);
     // Into the app's own folder, never through a link: beamed instances may make an app's folder there (the sandbox
     // lets them make a folder only, but one made before that rule, or by anything else, is checked here).
     Path data = state.resolve("cache/data"), pkgDir = data.resolve(pkg);
@@ -1445,11 +1701,14 @@ public final class Serve {
         || !pkgDir.toRealPath().equals(data.toRealPath().resolve(pkg))) {
       throw new IOException("the app's data folder is not a plain folder: " + pkgDir);
     }
+    // Held (ks) only now, past the checks that can throw: from here every failure gives it back.
+    if (prefix.equals("ks") && !holdSeed(name)) throw new IOException("its slot is held elsewhere: try again");
     claim.accept(name);
     try {
       SlotPack.unpack(zip, pkgDir.resolve(name + "-0"));
     } catch (IOException | RuntimeException e) {
       unclaim.accept(name);
+      releaseSeed(name);
       throw e;
     }
     return name;
@@ -1470,7 +1729,8 @@ public final class Serve {
         throw new IOException("its data is gone (restored already, or expired)");
       }
       try {
-        return seedFrom(zip, app.path(), n -> {}, n -> {});
+        // Serve's own namespace (ks): an agent sharing the state folder sweeps bm slots it does not know.
+        return seedFrom(zip, app.path(), "ks", n -> {}, n -> {});
       } finally {
         Files.deleteIfExists(zip);
       }

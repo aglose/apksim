@@ -286,7 +286,7 @@ public final class SlotPack {
    * starts, would otherwise leave the app's data unlisted for good. `except` (the slot an instance runs in) is kept.
    */
   static void dropSeed(Path state, String name, Path except, java.util.function.Consumer<String> log) {
-    if (name == null || !name.matches("bm[0-9a-f]{12}")) return;
+    if (name == null || !name.matches("(bm|ks)[0-9a-f]{12}")) return;
     try (Stream<Path> pkgs = Files.list(state.resolve("cache/data"))) {
       for (Path pkg : pkgs.toList()) {
         Path slot = pkg.resolve(name + "-0");

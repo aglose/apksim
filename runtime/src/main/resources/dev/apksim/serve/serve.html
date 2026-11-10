@@ -335,6 +335,8 @@ function sessionQuery() {
   if (state.device) q.set("device", state.device);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
+  // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).
+  for (const k of ["keep", "keepBusy"]) if (params.get(k)) q.set(k, params.get(k));
   return q;
 }
 function openSocket(url, onMac, fallback) {
@@ -496,6 +498,14 @@ function onText(t) {
   else if (kind === "k") {
     $("keep").checked = body === "on";
     log(body === "on" ? "this Mac keeps the app and its data when the session ends (apksim beam saved)" : "this Mac erases the app's data when the session ends");
+  }
+  else if (kind === "d") {
+    const d = JSON.parse(body);
+    const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
+      new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
+      busy: "another session has this key: it starts without the kept data, and keeps nothing",
+      off: "this server keeps no sessions (--keep-max)" };
+    log("kept session: " + (d.why || said[d.kept] || d.kept));
   }
   else if (kind === "s") stats(JSON.parse(body));
   else if (kind === "h") { const f = ws && ws.onHandoff; if (f) { ws.onHandoff = null; f(JSON.parse(body)); } }

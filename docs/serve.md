@@ -16,7 +16,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
              [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
-             [--allow-beam] [--beam-port N]
+             [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -45,6 +45,11 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   of them in all.
 - `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
+- `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
+  in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).
+  Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on
+  `serve/kept/.lock`, taken once its port is bound); another started on the same folder keeps none and deletes none
+  (its tabs are told `off`), and a server with `--keep-max 0` never touches what was kept.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
 - `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
@@ -82,6 +87,45 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   against `--max` until its instance has exited.
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
+
+### Kept sessions (issue 221)
+
+With `--keep-max N`, a session can keep its app's data for a later one, so a slow sign-in is done once rather than every
+session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
+
+- **Keeping:** `/ws?app=ID&keep=KEY` (the page passes on `keep` and `keepBusy` from its own link, so an embedding page
+  or a shared link can name them). `KEY` is the client's: 1-128 letters, digits and `. _ ~ -`, starting with a letter or digit (`/api/kept/..`
+  would not reach the server as written), for example a hash of a
+  user and a profile name; anything else is `400` before the upgrade. When the session ends, its data slot and
+  `.device` folder (the app's files, databases and preferences, its /sdcard and Settings values) are packed as a
+  hand-off is (`SlotPack`: no links or special files, at most 50,000 files and 1 GB) into
+  `STATE/serve/kept/<id>/<package>/`, replacing what the key kept for that package, instead of being erased. A new
+  pack is written beside the old one and becomes the kept one in a single rename of its metadata, so a save that
+  fails or a server that stops mid-save leaves the previous data as it was.
+- **Reopening:** a later session with the same key, on an APK of the same package, starts on that data: the same build
+  is `reopened`; another build is `copied` only when the same key signs both, as Android keeps an update's data, and
+  otherwise `refused` (it starts empty and keeps nothing, so what was kept stays). The tab is told which after the APK
+  is ready and before the app launches, as `d {"kept":"new"|"reopened"|"copied"|"refused"|"failed"|"busy"|"off","why"}`
+  (`restored` when `restore=` data came with it, which wins and is then kept). Kept data is labelled with the build's
+  SHA-256 and signers as read when its session started, so replacing a catalog file meanwhile changes nothing. A session that ends with its data kept
+  says so in its log.
+- **One session per key:** a start whose key is in use first waits (before the upgrade) up to 3 s for the session on
+  it to begin ending, then for as long as it is ending (its data being packed: 60 s at most), so the page's Start again
+  or a reload starts on what the last session kept. Past that it runs without the kept data and keeps nothing (`busy`),
+  or, with `keepBusy=refuse`, gets `409`.
+- **Scope:** the store's `<id>` is an HMAC of the key under the server's token, so a key reaches only what was kept
+  under the same token (another token, or a changed one, finds nothing), and the key itself is stored nowhere and never
+  shown in `/api/status`. Everyone who holds one token shares its keys: make them unguessable.
+- `GET /api/kept/KEY`: `{"inUse", "packages": [{"package", "sha256", "size", "saved", "used"}]}`.
+  `DELETE /api/kept/KEY` forgets everything that key kept (`{"forgot": N}`; `404` for nothing, `409` while a session
+  has it). Both need the token, and DELETE an allowed `Origin`, as a POST does; a server that does not own the store
+  answers `503`.
+- What is kept is the app's own data, not the session: the app starts cold on it (its activity stack, the device and
+  the tab's settings are the new session's). A session that crashed is kept as it ended; `DELETE` starts the key over.
+- The instance runs in a slot the server names (`ks<12 hex>-0`, not `serve-N`; an `apksim beam` agent sharing the state folder never sweeps `ks` slots), and the session holds an exclusive lock on `serve/seeds/<name>.lock` from naming
+  the slot until it has packed and erased it; a server's sweep of leftover `ks` slots (hourly, on every server sharing the
+  folder) deletes one only with that lock, unlocked by any instance and an hour untouched, and only that slot is packed, whatever
+  the instance prints.
 
 ### When a session ends badly
 
@@ -339,7 +383,9 @@ that no deep link names, data entered).
   know it). Uploads unused for a day are deleted.
 - The log endpoint serves what the instance printed (its own and the app's log lines), to token holders only, and
   only that text; sessions' logs can hold whatever an app logs, so treat the token as access to them.
-- The app data slot is erased at the end of a session (above). Apps run in apksim's sandbox on the Mac
+- The app data slot is erased at the end of a session (above), unless the session was started with `keep=KEY` on a
+  server with `--keep-max` (kept sessions, above): then it is kept, under that key and the server's token, until
+  `--keep-days` unused, `--keep-max` or a `DELETE`. Apps run in apksim's sandbox on the Mac
   (`sandbox-exec`: no writes outside apksim's state folder, no reads of credentials), and the container is the
   sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
   by different people on one machine, which can read the state folder: give each trust boundary its own serve (its
@@ -414,6 +460,12 @@ a drag gives delta frames only, a `key` request on a still screen brings a keyfr
 gets at most two frames, and once it acknowledges again the stream resumes at a keyframe. It prints the numbers
 below.
 `scripts/ci-smoke.sh` runs it against the Linux image with a token on a non-loopback bind, as CI does.
+`scripts/kept-check.py URL --state DIR [--token FILE]` checks kept sessions against a server started with
+`--keep-max N --max 2` or more (DIR is its state folder, where it looks at the running app's data slot): a key's
+pushed files and /sdcard are there for the next session on that key and not for another key, a key in use gives `busy`
+or `409`, a reopened session's change is kept in turn, a restart on the same key starts on the last change, and
+`DELETE` forgets it. `--exec "docker exec NAME"` reads the slot inside a container; `ci-smoke.sh` runs it against the
+Linux image.
 
 ## Measured (2026-11-05, test app, phone 822x1782)
 

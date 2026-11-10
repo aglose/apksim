@@ -322,7 +322,9 @@ blank video and change animation speed in a running session (`audio`, `video`, `
 file into the app's storage (`POST /api/sessions/ID/files?path=`), and, when the server runs with `--allow-rec`, save
 a flight recording and download it. On a Mac a session's first frame comes in 0.2-0.4 s, a tap
 shows in ~30 ms on the same machine, and animations stream at up to 120 fps. Loopback only unless a token is set;
-sessions end when the tab closes or after 10 minutes idle, and their app data is erased. See
+sessions end when the tab closes or after 10 minutes idle, and their app data is erased, unless the server keeps
+sessions (`--keep-max N`) and the session named a key (`keep=KEY`): then the next session with that key starts
+signed in where the last one left off. See
 [docs/serve.md](docs/serve.md).
 
 ## Instrumented tests and CI

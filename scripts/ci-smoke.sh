@@ -323,4 +323,19 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE2_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE2_PORT" --token "$OUT/serve.token" --ack-delay 200 --in-flight 4 \
   | tee "$OUT/serve-check-slow.log"
+# Kept sessions (issue 221): a third serve that keeps them; the check reads the running app's slot inside the container.
+SERVE3_NAME=apksim-serve-kept-$$ SERVE3_PORT=7404
+docker run -d --name "$SERVE3_NAME" --platform "$PLATFORM" -p "127.0.0.1:$SERVE3_PORT:8080" -v "$OUT:/work" "$IMAGE" \
+  serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --max 3 --keep-max 10 >/dev/null
+trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker logs "$SERVE_NAME" > "$OUT/serve.log" 2>&1 || true
+  docker cp "$SERVE_NAME:/opt/apksim/work/serve/logs" "$OUT/serve-sessions" >/dev/null 2>&1 || true
+  docker logs "$SERVE2_NAME" > "$OUT/serve-slow.log" 2>&1 || true
+  docker cp "$SERVE2_NAME:/opt/apksim/work/serve/logs" "$OUT/serve-slow-sessions" >/dev/null 2>&1 || true
+  docker logs "$SERVE3_NAME" > "$OUT/serve-kept.log" 2>&1 || true
+  docker cp "$SERVE3_NAME:/opt/apksim/work/serve/logs" "$OUT/serve-kept-sessions" >/dev/null 2>&1 || true
+  docker rm -f "$SERVE_NAME" "$SERVE2_NAME" "$SERVE3_NAME" >/dev/null 2>&1 || true' EXIT
+for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE3_PORT/api/health" >/dev/null && break; sleep 1; done
+python3 "$ROOT/scripts/kept-check.py" "http://127.0.0.1:$SERVE3_PORT" --token "$OUT/serve.token" --state /opt/apksim/work \
+  --exec "docker exec $SERVE3_NAME" | tee "$OUT/kept-check.log"
 echo "smoke test passed"

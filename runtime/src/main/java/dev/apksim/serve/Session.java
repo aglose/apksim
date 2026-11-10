@@ -92,7 +92,25 @@ final class Session {
   volatile BeamStore.SavedHold savedLock;
   /** The saved record's `changed` when its copy was made: a write-back over data changed since is refused. */
   volatile long savedChanged;
+  /**
+   * Issue 221 (serve): the kept session's store id (an HMAC of the tab's `keep=KEY`), held for this session alone, else
+   * null; the package its data is kept under (null: nothing is kept when it ends); and what its start found, told to
+   * the tab as `d {"kept": ...}` ("off", "busy" without an id).
+   */
+  volatile String keepId;
+  volatile String keepPkg;
+  volatile String keptState;
+  /** The APK this session launched (a URL-added app's download included, whose catalog entry has no path). */
+  volatile Path launchApk;
+  /** That APK's SHA-256 and verified signers, read before the instance starts: what the kept data is labelled with. */
+  volatile String launchSha;
+  volatile List<String> launchSigners;
   private volatile boolean ended;
+
+  /** The session has been told to stop (its instance quits, then its data is erased or kept). */
+  boolean ending() {
+    return ended;
+  }
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
   // JPEG: at most one frame waits, the newest. H.264: every frame from a keyframe on waits (each needs the one before),
@@ -203,9 +221,24 @@ final class Session {
     // Waits for an added app's download; a closed tab or the idle limit stops the wait (not the shared download).
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded
+    launchApk = apk;
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
     serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;
+    if (!serve.beam) {
+      prepareKept(apk);
+      // The tab may have left while the APK was read or its kept data unpacked: stop() erased what it saw then, which
+      // was not this slot (named just now). It goes here, then its hold (another session may take the key meanwhile:
+      // it reads the kept pack, not this copy).
+      if (ended) {
+        String seed = seedSlot;
+        if (seed != null && seed.startsWith("ks")) {
+          SlotPack.dropSeed(serve.state, seed, null, this::logLine);
+          serve.releaseSeed(seed);
+        }
+        return;
+      }
+    }
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
@@ -462,7 +495,7 @@ final class Session {
     Path dir = slot.toAbsolutePath().normalize();
     Path data = serve.state.resolve("cache/data").toAbsolutePath().normalize();
     if (dir.getParent() == null || !data.equals(dir.getParent().getParent())
-        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12})-[0-9]+")) {
+        || !dir.getFileName().toString().matches("(" + java.util.regex.Pattern.quote(serve.home) + "|bm[0-9a-f]{12}|ks[0-9a-f]{12})-[0-9]+")) {
       return "the app's data slot is not one of this server's";
     }
     long pid = instancePid;
@@ -1420,6 +1453,18 @@ final class Session {
 
   /** Quit, then kill after 5 s; then close the connections and erase the data slot. */
   private void endInstance() {
+    // A seed slot's time refreshed while the instance still holds its lock: another server's sweep of unused seed slots
+    // (Serve.dropUnusedSeeds) takes only one unlocked and untouched for an hour, which a long session's slot would be
+    // once its instance has gone, while this one packs it (keepData) or erases it.
+    String seed = seedSlot;
+    Path slot = dataDir;
+    if (!serve.beam && seed != null && slot != null && slot.getFileName().toString().equals(seed + "-0")) {
+      try {
+        Files.setLastModifiedTime(slot, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+      } catch (IOException | RuntimeException e) {
+        // its own server's sweep still knows the session
+      }
+    }
     // Best effort, on its own thread: an app whose main thread hangs stops reading commands, and a write to its full
     // socket would block. Ending the process below does not wait for it, and closing the socket frees that write.
     Thread.ofVirtual().name("serve-quit-" + id).start(() -> {
@@ -1614,11 +1659,128 @@ final class Session {
     SlotPack.deleteTree(out);  // never through a link
   }
 
+  /**
+   * Issue 221: a session started with `keep=KEY` runs in a seed slot (`bm<hex>`) of its own, so the slot it leaves is
+   * one this server named, not one the instance's output named: what that key kept for the build's package unpacked
+   * into it ("reopened": the same build; "copied": another build signed by the same key, as Android keeps an update's
+   * data), else a new empty one ("new"). Another signer, or data that cannot be unpacked, starts it empty and keeps
+   * nothing ("refused", "failed"), so what was kept stays as it was. Data restored from a hand-off (`restore=`) wins
+   * over what was kept, and is kept when it ends ("restored").
+   */
+  private void prepareKept(Path apk) {
+    if (keepId == null) {
+      if (keptState != null) {
+        ws.sendText("d {\"kept\":" + Http.q(keptState) + "}");
+        logLine("[serve] kept data: " + keptState + (keptState.equals("off") ? " (this server keeps nothing: --keep-max)" : " (another session has the key): nothing kept"));
+      }
+      return;
+    }
+    String state, why = null;
+    try {
+      keepPkg = dev.apksim.ApkCache.manifestPackage(apk);
+      // The build's identity now, before it launches: a local --apps file replaced while the session runs must not
+      // label this session's data as the replacement's (which could then reopen it, signed by another key).
+      // Hashed here, not through the catalog's cache (keyed by size and time, which a replacement may share): with no
+      // signers to compare (an unsigned build, or one whose signature cannot be read) the hash alone tells builds apart.
+      launchSha = freshSha256(apk);
+      try {
+        launchSigners = ApkSigners.of(apk).certs();
+      } catch (IOException e) {
+        launchSigners = List.of();  // only this build reopens it then
+      }
+      KeptStore.Found f = seedSlot != null ? null : serve.kept.find(keepId, keepPkg);
+      if (seedSlot != null) state = "restored";
+      else if (f == null) state = "new";
+      else {
+        boolean same = launchSha.equals(f.sha256());
+        // Signers compared even for the same build: the catalog's SHA-256 is cached by size and time, so a local --apps
+        // file replaced with another of both could pass as the build it replaced. Another build needs known signers.
+        if (!launchSigners.equals(f.signers()) || !same && f.signers().isEmpty()) {
+          state = "refused";
+          why = "this build is signed by another key than the one its data was kept with (an update keeps an app's data only"
+              + " when the same key signs it): it starts without it, and keeps nothing";
+          keepPkg = null;
+        } else {
+          seedSlot = serve.seedFrom(f.zip(), apk, "ks", n -> {}, n -> {});
+          serve.kept.touch(keepId, keepPkg);
+          state = same ? "reopened" : "copied";
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      state = "failed";
+      why = "its kept data could not be opened (" + e.getMessage() + "): it starts without it, and keeps nothing";
+      keepPkg = null;
+    }
+    if (keepPkg != null && seedSlot == null) {
+      byte[] rnd = new byte[6];
+      new java.security.SecureRandom().nextBytes(rnd);
+      String name = "ks" + HexFormat.of().formatHex(rnd);
+      if (serve.holdSeed(name)) {
+        seedSlot = name;
+      } else {
+        state = "failed";
+        why = "its slot could not be held: it starts without kept data, and keeps nothing";
+        keepPkg = null;
+      }
+    }
+    keptState = state;
+    ws.sendText("d {\"kept\":" + Http.q(state) + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
+    logLine("[serve] kept data: " + state + (why == null ? "" : ": " + why));
+  }
+
+  /** An APK's SHA-256, read in full now. */
+  private static String freshSha256(Path apk) throws IOException {
+    try (java.io.InputStream in = Files.newInputStream(apk)) {
+      java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+      byte[] buf = new byte[1 << 16];
+      for (int n; (n = in.read(buf)) > 0; ) md.update(buf, 0, n);
+      return HexFormat.of().formatHex(md.digest());
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IOException(e);
+    }
+  }
+
+  /** Issue 221: the slot this session ran in, packed into its key's store (when it ended in the slot it was given). */
+  private void keepData() {
+    Path expected = serve.state.resolve("cache/data").toAbsolutePath().normalize().resolve(keepPkg).resolve(seedSlot + "-0");
+    if (!dataDir.toAbsolutePath().normalize().equals(expected)) {
+      logLine("[serve] not kept: the app's data is not in the slot it was given");
+      return;
+    }
+    if (launchSha == null || launchSigners == null) {
+      logLine("[serve] not kept: the session's build is not known");
+      return;
+    }
+    Path pack = null;
+    try {
+      pack = serve.kept.newPack(keepId, keepPkg);
+      long skipped = packWithDeadline(expected, pack);
+      long size = Files.size(pack);
+      serve.kept.save(keepId, keepPkg, pack, launchSha, launchSigners);
+      pack = null;
+      logLine("[serve] kept the app's data (" + (size >> 10) + " KB)" + (skipped > 0 ? ", less " + skipped + " links or special files" : ""));
+    } catch (IOException | RuntimeException e) {
+      logLine("[serve] could not keep the app's data (" + e + "): what was kept before stays");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } finally {
+      if (pack != null) {
+        try {
+          Files.deleteIfExists(pack);
+        } catch (IOException e) {
+          // swept later
+        }
+      }
+    }
+  }
+
   private void eraseData() {
     try {
       eraseOrKeep();
     } finally {
       closeSavedLock();
+      if (serve.kept != null) serve.kept.release(keepId);
+      if (!serve.beam) serve.releaseSeed(seedSlot);  // packed and erased: another server's sweep may look at it now
       if (seedSlot != null) {  // its saved session may be opened again now
         serve.reopened.remove(seedSlot);
         serve.reopenedChanged.remove(seedSlot);
@@ -1663,6 +1825,7 @@ final class Session {
       }
       logLine("[beam] could not keep the data: erased");
     }
+    if (!serve.beam && keepId != null && keepPkg != null && seedSlot != null) keepData();
     eraseSlot(serve, dataDir, this::logLine);
   }
 
@@ -1684,7 +1847,7 @@ final class Session {
     // Only a slot of this server's own (serve-N, or beam-N for the agent, under the state folder's app data).
     String slotName = dir.getFileName().toString();
     if (!dir.startsWith(serve.state.resolve("cache/data").toAbsolutePath().normalize())
-        || !(slotName.startsWith(serve.home + "-") || slotName.matches("bm[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data
+        || !(slotName.startsWith(serve.home + "-") || slotName.matches("(bm|ks)[0-9a-f]{12}-[0-9]+"))) return;  // bm: moved or restored data; ks: kept (serve)
     Path lockFile = dir.resolve(".lock");
     try (FileChannel ch = FileChannel.open(lockFile, StandardOpenOption.WRITE)) {
       FileLock l;
@@ -1700,6 +1863,8 @@ final class Session {
       // And what the slot kept of the device beside it (SlotDevice: its /sdcard and Settings values).
       SlotPack.deleteTree(dir.resolveSibling(dir.getFileName() + ".device"));
       l.release();
+      // A seed slot's name is used once (kept, moved or restored data): its empty folder would only pile up.
+      if (slotName.matches("(bm|ks)[0-9a-f]{12}-[0-9]+")) SlotPack.deleteTree(dir);
     } catch (IOException | RuntimeException e) {
       logLine.accept("[serve] could not erase " + dir + ": " + e);
     }
