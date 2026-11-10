@@ -36,7 +36,7 @@ public final class Serve {
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
-                          [--allow-beam] [--beam-port N]
+                          [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
@@ -75,6 +75,9 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /** Issue 221: `--keep-max N` kept sessions in all (0: none kept, the default), and the store (null on the agent). */
+  int keepMax;
+  KeptStore kept;
   int launchTimeoutSeconds = 180;
   boolean noNetwork;
   /** `--core-dumps`: instances may leave core files when they crash (off by default: a large app's is gigabytes). */
@@ -204,7 +207,11 @@ public final class Serve {
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(32, Long.parseLong(need(a, v))));
-        case "--allow-rec" -> s.allowRec = true;
+        case "--allow-rec" -> {
+          s.allowRec = true;
+          continue;  // no value: the next argument is an option of its own
+        }
+        case "--keep-max" -> s.keepMax = Math.max(0, Math.min(100_000, Integer.parseInt(need(a, v))));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
         case "--bitrate" -> {
@@ -405,9 +412,12 @@ public final class Serve {
             + "; stop it first (two would delete each other's builds)");
         System.exit(2);
       }
-    } else if (keepDays != null || saveSessions != null || keepSavedDays != null) {
-      usage("--keep-days, --save-sessions and --keep-saved-days are apksim beam's");
+    } else if (saveSessions != null || keepSavedDays != null) {
+      usage("--save-sessions and --keep-saved-days are apksim beam's");
+    } else if (keepDays != null && keepDays <= 0) {
+      usage("--keep-days takes a number of days above 0 (how long a kept session's data stays unused)");
     }
+    if (beam && keepMax > 0) usage("--keep-max is apksim serve's (the agent keeps sessions with --save-sessions)");
     logs = state.resolve(home + "/logs");
     InetAddress addr = InetAddress.getByName(bind);
     loopbackBind = addr.isLoopbackAddress();
@@ -436,6 +446,11 @@ public final class Serve {
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
     warmer = new Warmer(this);
     catalog.onReady = warmer::enqueue;
+    if (!beam) {
+      kept = new KeptStore(state.resolve(home + "/kept"), token, keepMax, keepDays != null ? keepDays : 14);
+      dropUnusedSeeds();
+      kept.sweep();
+    }
     ServerSocket server;
     if (launchd) {
       // launchd listens and hands the socket over on stdin (inetdCompatibility with Wait): what the plist names.
@@ -472,7 +487,10 @@ public final class Serve {
     timer.scheduleWithFixedDelay(() -> sessions.values().forEach(Session::tick), 2, 2, TimeUnit.SECONDS);
     timer.scheduleWithFixedDelay(() -> {
       if (beam) sweepBeam();
-      else catalog.sweep(24 * 3_600_000L);
+      else {
+        catalog.sweep(24 * 3_600_000L);
+        kept.sweep();
+      }
       warmer.prune(catalog.listed().stream().map(Catalog.App::id).collect(java.util.stream.Collectors.toSet()));
     }, 0, 1, TimeUnit.HOURS);
     timer.scheduleWithFixedDelay(() -> {
@@ -706,7 +724,7 @@ public final class Serve {
     if (origin != null && allowedOrigins.contains(origin.toLowerCase(Locale.ROOT))) {
       Http.CORS_ORIGIN.set(origin);
       if (r.method().equals("OPTIONS")) {
-        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+        Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST, DELETE",
             "Access-Control-Allow-Headers: Authorization, Content-Type, X-Filename", "Access-Control-Max-Age: 600");
         return;
       }
@@ -775,6 +793,10 @@ public final class Serve {
     }
     if (r.method().equals("GET") && r.path().matches("/api/sessions/[0-9a-f]{12}/log")) {
       sessionLog(r.path().substring("/api/sessions/".length(), "/api/sessions/".length() + 12), out);
+      return;
+    }
+    if (r.path().startsWith("/api/kept/") && (r.method().equals("GET") || r.method().equals("DELETE"))) {
+      keptRoute(r, out);
       return;
     }
     java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/api/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());
@@ -1029,11 +1051,68 @@ public final class Serve {
     websocket(r, s, in, out, null, null);
   }
 
+  /**
+   * Issue 221: `GET /api/kept/KEY` (what this token's key kept, per package: build, size, when saved and last used) and
+   * `DELETE /api/kept/KEY` (forgets it all; `409` while a session has it). The key is the client's; only its HMAC under
+   * this server's token is stored, so another token's key of the same name is another entry.
+   */
+  private void keptRoute(Http.Request r, OutputStream out) throws IOException {
+    String key = r.path().substring("/api/kept/".length());
+    if (!KeptStore.validKey(key)) {
+      Http.text(out, 400, "a key is 1-128 letters, digits and . _ ~ -");
+      return;
+    }
+    String id = kept.id(key);
+    if (r.method().equals("GET")) {
+      Http.json(out, 200, kept.describe(id));
+      return;
+    }
+    int n = kept.forget(id);
+    if (n < 0) Http.text(out, 409, "a session is using this key: end it first");
+    else if (n == 0) Http.text(out, 404, "nothing is kept under this key");
+    else Http.json(out, 200, "{\"forgot\":" + n + "}");
+  }
+
+  /**
+   * Seed slots (`cache/data/<package>/bm<hex>-0`: kept or restored data unpacked for a session) that no instance holds
+   * and no session of this server names: left by a server that stopped between unpacking and its session's end.
+   */
+  private void dropUnusedSeeds() {
+    try (var pkgs = Files.newDirectoryStream(state.resolve("cache/data"))) {
+      for (Path pkg : pkgs) {
+        try (var slots = Files.newDirectoryStream(pkg, "bm*-0")) {
+          for (Path slot : slots) {
+            String name = slot.getFileName().toString().replaceFirst("-0$", "");
+            if (!name.matches("bm[0-9a-f]{12}") || sessions.values().stream().anyMatch(x -> name.equals(x.seedSlot)) || locked(slot)) continue;
+            if (System.currentTimeMillis() - Files.getLastModifiedTime(slot, java.nio.file.LinkOption.NOFOLLOW_LINKS).toMillis() < 3_600_000L) continue;
+            SlotPack.dropSeed(state, name, null, System.err::println);
+          }
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      // no app data yet, or the next round
+    }
+  }
+
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed) throws IOException {
     String key = r.header("sec-websocket-key");
     if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
       Http.text(out, 400, "expected a WebSocket upgrade");
+      return;
+    }
+    // Issue 221: a kept session's key (`keep=KEY`), and what a start does when another session has it (`keepBusy=fresh`,
+    // the default: it runs without the kept data and keeps nothing; `refuse`: 409, before the upgrade).
+    String keepKey = beam ? null : r.param("keep");
+    if (keepKey != null && keepKey.isEmpty()) keepKey = null;
+    if (keepKey != null && !KeptStore.validKey(keepKey)) {
+      Http.text(out, 400, "keep: a key is 1-128 letters, digits and . _ ~ -");
+      return;
+    }
+    boolean refuseBusy = "refuse".equals(r.param("keepBusy"));
+    String keepId = keepKey == null || !kept.on() ? null : kept.id(keepKey);
+    if (keepId != null && refuseBusy && kept.busy(keepId)) {
+      Http.text(out, 409, "a session is using this key");
       return;
     }
     out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
@@ -1107,10 +1186,22 @@ public final class Serve {
         ws.close("busy");
         return;
       }
+      boolean took = keepId != null && kept.take(keepId);
+      if (keepId != null && !took && refuseBusy) {
+        if (seed != null) SlotPack.dropSeed(state, seed, null, System.err::println);
+        ws.sendText("x a session is using this key");
+        ws.close("busy");
+        return;
+      }
       byte[] id = new byte[6];
       RANDOM.nextBytes(id);
       session = new Session(this, HexFormat.of().formatHex(id), app, options, ws);
       session.seedSlot = seed;  // the agent's moved data, or the server's restored data
+      if (keepKey != null) {
+        if (keepId == null) session.keptState = "off";
+        else if (took) session.keepId = keepId;
+        else session.keptState = "busy";
+      }
       if (beam) {
         session.site = site;
         session.keep = store.config.saveSessions();
@@ -1426,7 +1517,7 @@ public final class Serve {
    * (from its manifest), only into a plain app folder. `claim` and `unclaim` are told the slot's name around the
    * unpack (the agent's sweep must leave it meanwhile). The slot's name, or throws why not.
    */
-  private String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
+  String seedFrom(Path zip, Path apk, java.util.function.Consumer<String> claim, java.util.function.Consumer<String> unclaim)
       throws IOException {
     String pkg = SlotPack.packageOf(zip);
     if (pkg == null) throw new IOException("the data names no app");

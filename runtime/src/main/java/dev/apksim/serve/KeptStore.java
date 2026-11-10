@@ -1,0 +1,274 @@
+package dev.apksim.serve;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+/**
+ * Kept sessions on `apksim serve` (issue 221, docs/serve.md "Kept sessions"): a session started with `keep=KEY` leaves
+ * its data slot and `.device` folder (app data, /sdcard, Settings) here when it ends, packed as a hand-off is
+ * ({@link SlotPack}), and a later session with the same key and an APK of the same package starts on it.
+ *
+ * <p>On disk: `STATE/serve/kept/<id>/<package>/data.zip` and `meta.properties` (the build's SHA-256, its signers,
+ * when it was saved and last used). `id` is an HMAC of the key under the server's token, so a key reaches only what
+ * the same token kept, and the key itself is stored nowhere. One session at a time per id ({@link #take}); `--keep-max`
+ * packages kept in all (least recently used go first) and `--keep-days` unused bound the disk.
+ */
+final class KeptStore {
+  static final String KEY = "[A-Za-z0-9._~-]{1,128}";
+  private static final String PACKAGE = "[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+";
+
+  final Path dir;
+  final int max;
+  final double days;
+  private final byte[] secret;
+  private final Set<String> inUse = ConcurrentHashMap.newKeySet();
+
+  /** What was kept for a package: its pack, the build that wrote it and that build's signers. */
+  record Found(Path zip, String sha256, List<String> signers, long saved, long used, long size) {}
+
+  KeptStore(Path dir, String token, int max, double days) {
+    this.dir = dir;
+    this.max = max;
+    this.days = days;
+    // No token (loopback only): every client is one scope, as every client may do anything there anyway.
+    this.secret = ("apksim-kept\0" + (token == null ? "" : token)).getBytes(StandardCharsets.UTF_8);
+  }
+
+  boolean on() {
+    return max > 0;
+  }
+
+  static boolean validKey(String key) {
+    return key != null && key.matches(KEY);
+  }
+
+  /** The store's name for a key under this server's token (32 hex digits). */
+  String id(String key) {
+    try {
+      Mac mac = Mac.getInstance("HmacSHA256");
+      mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+      return HexFormat.of().formatHex(mac.doFinal(key.getBytes(StandardCharsets.UTF_8))).substring(0, 32);
+    } catch (java.security.GeneralSecurityException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /** Takes the key for one session; false when another session has it. */
+  boolean take(String id) {
+    return inUse.add(id);
+  }
+
+  boolean busy(String id) {
+    return inUse.contains(id);
+  }
+
+  void release(String id) {
+    if (id != null) inUse.remove(id);
+  }
+
+  private Path entry(String id, String pkg) throws IOException {
+    if (!id.matches("[0-9a-f]{32}") || pkg == null || !pkg.matches(PACKAGE) || pkg.length() > 255) throw new IOException("bad kept entry");
+    return dir.resolve(id).resolve(pkg);
+  }
+
+  /** What `id` kept for `pkg`, or null. */
+  synchronized Found find(String id, String pkg) throws IOException {
+    Path e = entry(id, pkg);
+    Path zip = e.resolve("data.zip");
+    if (!Files.isRegularFile(zip, LinkOption.NOFOLLOW_LINKS)) return null;
+    Properties p = meta(e);
+    List<String> signers = new ArrayList<>();
+    for (String s : p.getProperty("signers", "").split(",")) if (!s.isEmpty()) signers.add(s);
+    return new Found(zip, p.getProperty("sha256", ""), signers, num(p, "saved"), num(p, "used"), Files.size(zip));
+  }
+
+  /** Marks it used now (a session started on it), so `--keep-days` and `--keep-max` count from here. */
+  synchronized void touch(String id, String pkg) {
+    try {
+      Path e = entry(id, pkg);
+      Properties p = meta(e);
+      p.setProperty("used", Long.toString(System.currentTimeMillis()));
+      writeMeta(e, p);
+    } catch (IOException e) {
+      // counted from when it was saved
+    }
+  }
+
+  /** A new file in `id`'s package folder to pack into, then {@link #save}. */
+  Path newPack(String id, String pkg) throws IOException {
+    Path e = entry(id, pkg);
+    Files.createDirectories(e);
+    if (!Files.isDirectory(e, LinkOption.NOFOLLOW_LINKS) || !e.toRealPath().equals(dir.toRealPath().resolve(id).resolve(pkg))) {
+      throw new IOException("the kept folder is not a plain folder: " + e);
+    }
+    return e.resolve("data.zip." + tmpTag());
+  }
+
+  /** Puts a finished pack in place of what `id` kept for `pkg`, then drops the least recently used over `--keep-max`. */
+  void save(String id, String pkg, Path pack, String sha256, List<String> signers) throws IOException {
+    synchronized (this) {
+      Path e = entry(id, pkg);
+      Files.move(pack, e.resolve("data.zip"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      long now = System.currentTimeMillis();
+      Properties p = new Properties();
+      p.setProperty("sha256", sha256 == null ? "" : sha256);
+      p.setProperty("signers", signers == null ? "" : String.join(",", signers));
+      p.setProperty("saved", Long.toString(now));
+      p.setProperty("used", Long.toString(now));
+      writeMeta(e, p);
+    }
+    sweep();
+  }
+
+  /** Deletes what `id` kept, for every package: how many, or -1 while a session has it. */
+  synchronized int forget(String id) {
+    if (!id.matches("[0-9a-f]{32}")) return 0;
+    if (busy(id)) return -1;
+    Path d = dir.resolve(id);
+    int n = packages(d).size();
+    if (Files.isDirectory(d, LinkOption.NOFOLLOW_LINKS)) SlotPack.deleteTree(d);
+    return n;
+  }
+
+  /** `id`'s kept packages and what each holds, for `GET /api/kept/KEY`. */
+  synchronized String describe(String id) throws IOException {
+    StringBuilder b = new StringBuilder("{\"inUse\":" + busy(id) + ",\"packages\":[");
+    boolean first = true;
+    for (String pkg : packages(dir.resolve(id))) {
+      Found f = find(id, pkg);
+      if (f == null) continue;
+      if (!first) b.append(',');
+      first = false;
+      b.append("{\"package\":").append(Http.q(pkg)).append(",\"sha256\":").append(Http.q(f.sha256())).append(",\"size\":").append(f.size())
+          .append(",\"saved\":").append(f.saved()).append(",\"used\":").append(f.used()).append('}');
+    }
+    return b.append("]}").toString();
+  }
+
+  private static List<String> packages(Path d) {
+    List<String> out = new ArrayList<>();
+    if (!Files.isDirectory(d, LinkOption.NOFOLLOW_LINKS)) return out;
+    try (Stream<Path> all = Files.list(d)) {
+      all.forEach(p -> {
+        String n = p.getFileName().toString();
+        if (n.matches(PACKAGE) && Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)) out.add(n);
+      });
+    } catch (IOException e) {
+      // none
+    }
+    return out;
+  }
+
+  /**
+   * Drops what has gone unused for `--keep-days`, then the least recently used past `--keep-max`, never one a session
+   * has open; and packs left half written (a server that stopped mid-pack). Hourly and after each save.
+   */
+  synchronized void sweep() {
+    if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return;
+    long now = System.currentTimeMillis();
+    List<Object[]> live = new ArrayList<>();  // {entry, used}
+    try (Stream<Path> ids = Files.list(dir)) {
+      for (Path d : ids.toList()) {
+        String id = d.getFileName().toString();
+        if (!id.matches("[0-9a-f]{32}") || !Files.isDirectory(d, LinkOption.NOFOLLOW_LINKS)) {
+          SlotPack.deleteTree(d);
+          continue;
+        }
+        for (String pkg : packages(d)) {
+          Path e = d.resolve(pkg);
+          try (Stream<Path> files = Files.list(e)) {
+            for (Path f : files.toList()) {
+              String fn = f.getFileName().toString();
+              if ((fn.startsWith("data.zip.") || fn.startsWith("meta.properties.")) && now - Files.getLastModifiedTime(f, LinkOption.NOFOLLOW_LINKS).toMillis() > 3_600_000L
+                  && !busy(id)) {
+                Files.deleteIfExists(f);
+              }
+            }
+          }
+          Properties p = meta(e);
+          long used = Math.max(num(p, "used"), num(p, "saved"));
+          if (!Files.isRegularFile(e.resolve("data.zip"), LinkOption.NOFOLLOW_LINKS)) {
+            if (!busy(id) && now - Files.getLastModifiedTime(e, LinkOption.NOFOLLOW_LINKS).toMillis() > 3_600_000L) SlotPack.deleteTree(e);
+            continue;
+          }
+          if (busy(id)) {
+            live.add(new Object[] {e, Long.MAX_VALUE});  // counts toward --keep-max, but is never the one dropped
+            continue;
+          }
+          if (now - used > days * 86_400_000L) {
+            SlotPack.deleteTree(e);
+            System.err.println("[serve] a kept session's data went unused for " + BeamStore.num(days) + " days: deleted");
+          } else {
+            live.add(new Object[] {e, used});
+          }
+        }
+        if (packages(d).isEmpty() && !busy(id)) SlotPack.deleteTree(d);
+      }
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[serve] could not sweep kept sessions: " + e);
+      return;
+    }
+    if (live.size() > max) {
+      live.sort(Comparator.comparingLong(o -> (long) o[1]));
+      int dropped = 0;
+      for (int i = 0; i < live.size() - max && (long) live.get(i)[1] != Long.MAX_VALUE; i++) {
+        Path e = (Path) live.get(i)[0];
+        SlotPack.deleteTree(e);
+        Path d = e.getParent();
+        if (packages(d).isEmpty()) SlotPack.deleteTree(d);
+        dropped++;
+      }
+      if (dropped > 0) System.err.println("[serve] kept sessions over --keep-max " + max + ": the " + dropped + " least recently used deleted");
+    }
+  }
+
+  private static Properties meta(Path e) {
+    Properties p = new Properties();
+    Path f = e.resolve("meta.properties");
+    if (Files.isRegularFile(f, LinkOption.NOFOLLOW_LINKS)) {
+      try (InputStream in = Files.newInputStream(f, LinkOption.NOFOLLOW_LINKS)) {
+        p.load(in);
+      } catch (IOException | IllegalArgumentException x) {
+        // empty
+      }
+    }
+    return p;
+  }
+
+  private static void writeMeta(Path e, Properties p) throws IOException {
+    Path tmp = e.resolve("meta.properties." + tmpTag());
+    try (OutputStream o = Files.newOutputStream(tmp)) {
+      p.store(o, null);
+    }
+    Files.move(tmp, e.resolve("meta.properties"), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+  }
+
+  /** Beside its final name, renamed into place: PID and a random part (containers sharing a volume repeat PIDs). */
+  private static String tmpTag() {
+    return ProcessHandle.current().pid() + "-" + Long.toHexString(new java.security.SecureRandom().nextLong()) + ".tmp";
+  }
+
+  private static long num(Properties p, String k) {
+    try {
+      return Long.parseLong(p.getProperty(k, "0"));
+    } catch (NumberFormatException e) {
+      return 0;
+    }
+  }
+}

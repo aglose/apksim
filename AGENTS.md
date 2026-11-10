@@ -322,7 +322,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   back, the saved bundle, a crash bundle), `replay-adb.py` (a flight recording replayed on a device over adb, shipped in
   releases; `replay-adb-check.py` checks its plan on a synthetic bundle, no device), `beam-device-check.py` (`apksim beam
   to-device` against a stand-in `adb` and a temporary state folder), `tabfiles-check.py` (a tab's file pushes and their
-  refusals, and a recording saved and downloaded, against a running `apksim serve --allow-rec`),
+  refusals, and a recording saved and downloaded, against a running `apksim serve --allow-rec`), `kept-check.py` (kept
+  sessions on a running `apksim serve --keep-max N`),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
@@ -919,6 +920,12 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 /api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
+Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
+(14), `/ws?keep=KEY` runs the app in a seed slot (`bm<hex>-0`) of the server's naming and, when the session ends, packs
+it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with
+that key on the same package starts on it (`reopened`, or `copied` for another build with the same signer, `refused`
+for another signer), told to the tab as `d {"kept":...}`. One session per key (`busy`, or `keepBusy=refuse`: 409);
+`GET`/`DELETE /api/kept/KEY`. `scripts/kept-check.py URL --state DIR` checks it.
 `scripts/serve-check.py URL [--token FILE]` drives it as a tab would and prints first-frame time, latency, fps and
 memory; `ci-smoke.sh` runs it against the image. Measured 2026-11-05 (test app): Mac first frame 0.26-0.45 s warm,
 tap to frame ~25 ms, Shader tab streamed at 120 fps (4 ms encode, ~100 KB a frame), 370-620 MB resident per session;

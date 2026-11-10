@@ -92,6 +92,14 @@ final class Session {
   volatile BeamStore.SavedHold savedLock;
   /** The saved record's `changed` when its copy was made: a write-back over data changed since is refused. */
   volatile long savedChanged;
+  /**
+   * Issue 221 (serve): the kept session's store id (an HMAC of the tab's `keep=KEY`), held for this session alone, else
+   * null; the package its data is kept under (null: nothing is kept when it ends); and what its start found, told to
+   * the tab as `d {"kept": ...}` ("off", "busy" without an id).
+   */
+  volatile String keepId;
+  volatile String keepPkg;
+  volatile String keptState;
   private volatile boolean ended;
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
@@ -206,6 +214,7 @@ final class Session {
     // An APK whose cache is being warmed in the background: wait for it (a launch beside it would translate twice).
     serve.warmer.await(app, apk, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;
+    if (!serve.beam) prepareKept(apk);
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
@@ -1610,11 +1619,99 @@ final class Session {
     SlotPack.deleteTree(out);  // never through a link
   }
 
+  /**
+   * Issue 221: a session started with `keep=KEY` runs in a seed slot (`bm<hex>`) of its own, so the slot it leaves is
+   * one this server named, not one the instance's output named: what that key kept for the build's package unpacked
+   * into it ("reopened": the same build; "copied": another build signed by the same key, as Android keeps an update's
+   * data), else a new empty one ("new"). Another signer, or data that cannot be unpacked, starts it empty and keeps
+   * nothing ("refused", "failed"), so what was kept stays as it was. Data restored from a hand-off (`restore=`) wins
+   * over what was kept, and is kept when it ends ("restored").
+   */
+  private void prepareKept(Path apk) {
+    if (keepId == null) {
+      if (keptState != null) {
+        ws.sendText("d {\"kept\":" + Http.q(keptState) + "}");
+        logLine("[serve] kept data: " + keptState + (keptState.equals("off") ? " (this server keeps nothing: --keep-max)" : " (another session has the key): nothing kept"));
+      }
+      return;
+    }
+    String state, why = null;
+    try {
+      keepPkg = dev.apksim.ApkCache.manifestPackage(apk);
+      KeptStore.Found f = seedSlot != null ? null : serve.kept.find(keepId, keepPkg);
+      if (seedSlot != null) state = "restored";
+      else if (f == null) state = "new";
+      else {
+        boolean same = serve.catalog.sha256(apk).equals(f.sha256());
+        List<String> signers = same ? f.signers() : ApkSigners.of(apk).certs();
+        if (!same && (f.signers().isEmpty() || !signers.equals(f.signers()))) {
+          state = "refused";
+          why = "this build is signed by another key than the one its data was kept with (an update keeps an app's data only"
+              + " when the same key signs it): it starts without it, and keeps nothing";
+          keepPkg = null;
+        } else {
+          seedSlot = serve.seedFrom(f.zip(), apk, n -> {}, n -> {});
+          serve.kept.touch(keepId, keepPkg);
+          state = same ? "reopened" : "copied";
+        }
+      }
+    } catch (IOException | RuntimeException e) {
+      state = "failed";
+      why = "its kept data could not be opened (" + e.getMessage() + "): it starts without it, and keeps nothing";
+      keepPkg = null;
+    }
+    if (keepPkg != null && seedSlot == null) {
+      byte[] rnd = new byte[6];
+      new java.security.SecureRandom().nextBytes(rnd);
+      seedSlot = "bm" + HexFormat.of().formatHex(rnd);
+    }
+    keptState = state;
+    ws.sendText("d {\"kept\":" + Http.q(state) + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
+    logLine("[serve] kept data: " + state + (why == null ? "" : ": " + why));
+  }
+
+  /** Issue 221: the slot this session ran in, packed into its key's store (when it ended in the slot it was given). */
+  private void keepData() {
+    Path expected = serve.state.resolve("cache/data").toAbsolutePath().normalize().resolve(keepPkg).resolve(seedSlot + "-0");
+    if (!dataDir.toAbsolutePath().normalize().equals(expected)) {
+      logLine("[serve] not kept: the app's data is not in the slot it was given");
+      return;
+    }
+    Path pack = null;
+    try {
+      pack = serve.kept.newPack(keepId, keepPkg);
+      long skipped = packWithDeadline(expected, pack);
+      List<String> signers;
+      try {
+        signers = ApkSigners.of(app.path()).certs();
+      } catch (IOException e) {
+        signers = List.of();  // only this build reopens it then
+      }
+      long size = Files.size(pack);
+      serve.kept.save(keepId, keepPkg, pack, serve.catalog.sha256(app.path()), signers);
+      pack = null;
+      logLine("[serve] kept the app's data (" + (size >> 10) + " KB)" + (skipped > 0 ? ", less " + skipped + " links or special files" : ""));
+    } catch (IOException | RuntimeException e) {
+      logLine("[serve] could not keep the app's data (" + e + "): what was kept before stays");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } finally {
+      if (pack != null) {
+        try {
+          Files.deleteIfExists(pack);
+        } catch (IOException e) {
+          // swept later
+        }
+      }
+    }
+  }
+
   private void eraseData() {
     try {
       eraseOrKeep();
     } finally {
       closeSavedLock();
+      if (serve.kept != null) serve.kept.release(keepId);
       if (seedSlot != null) {  // its saved session may be opened again now
         serve.reopened.remove(seedSlot);
         serve.reopenedChanged.remove(seedSlot);
@@ -1659,6 +1756,7 @@ final class Session {
       }
       logLine("[beam] could not keep the data: erased");
     }
+    if (!serve.beam && keepId != null && keepPkg != null && seedSlot != null) keepData();
     eraseSlot(serve, dataDir, this::logLine);
   }
 
@@ -1696,6 +1794,8 @@ final class Session {
       // And what the slot kept of the device beside it (SlotDevice: its /sdcard and Settings values).
       SlotPack.deleteTree(dir.resolveSibling(dir.getFileName() + ".device"));
       l.release();
+      // A seed slot's name is used once (kept, moved or restored data): its empty folder would only pile up.
+      if (slotName.matches("bm[0-9a-f]{12}-[0-9]+")) SlotPack.deleteTree(dir);
     } catch (IOException | RuntimeException e) {
       logLine.accept("[serve] could not erase " + dir + ": " + e);
     }
