@@ -65,8 +65,13 @@ git fetch origin && git checkout --detach origin/main   # in the release worktre
 git tag -a vX.Y.Z -m "apksim X.Y.Z" && git push origin vX.Y.Z
 ```
 The tag must point at the merged docs commit. The pre-push hook allows tags. Then watch `release.yml`:
-`gh run list --workflow release.yml --limit 3`, `gh run watch RUN_ID` (background; takes a while: tarball, Linux
-images). It makes a **draft** release with the tarball, `SHA256SUMS` and the test app.
+`gh run list --workflow release.yml --limit 3`, then wait for it in a foreground Bash call with the 10-minute timeout,
+repeated until it ends (`gh run watch RUN_ID --exit-status --interval 30`; it takes 20-40 min: tarball, Linux images).
+It makes a **draft** release with the tarball, `SHA256SUMS` and the test app. Write the release notes (step 6.1)
+before you start waiting.
+**Never end the turn while the run is in progress.** A background watch ends the turn, and the draft then sits
+unpublished until the owner prompts again. Steps 5-7 (publish, tap and `:latest` checks, worktree removal, report) all
+happen in the same turn as the merges.
 **Stop** if the run fails: show the failing job's log tail (`gh run view RUN_ID --log-failed | tail -60`), fix on a
 branch via PR if it is a code or workflow problem, and delete and re-push the tag only after the fix is on main
 (tell the owner you are moving an unpublished tag). A failed upload can leave an incomplete draft release, and
@@ -80,7 +85,8 @@ then delete and re-push the tag.
 2. `gh release edit vX.Y.Z --notes-file FILE --draft=false` publishes the draft. (AGENTS.md says the draft is
    normally published by hand after reading its notes; this skill is that reading, so check the notes against the
    privacy rules once more before running it.) Publishing triggers the `tap` job (Homebrew cask) and `image-latest`.
-3. Watch those: `gh run list --workflow release.yml --limit 3`. Confirm the tap received the version:
+3. Watch those in the foreground too, as in step 5 (`gh run list --workflow release.yml --limit 3`, the run whose
+   event is `release`). Confirm the tap received the version:
    `gh api repos/aglose/homebrew-apksim/contents/Casks/apksim.rb --jq .content | base64 -d | grep version`.
 
 ## 7. Report
