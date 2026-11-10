@@ -84,6 +84,7 @@ public final class Main {
       boolean marks = Boolean.getBoolean("apksim.exitMarks");
       long t0 = System.nanoTime();
       if (marks) {
+        dev.apksim.net.Net.flush();  // a recording's last exchanges, before a caller may stop waiting
         System.out.println("APKSIM_EXIT: " + code);
         System.out.flush();
       }

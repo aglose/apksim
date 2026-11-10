@@ -311,14 +311,20 @@ def apksim(app, test, extra_args, apksim_opts):
     def reap():
         """Early: the result and the outputs are complete, so the slot is free; the process's teardown (class cache
         save, scratch removal) goes on here, for REAP_EARLY s at most, then the process group is killed."""
+        drain = threading.Thread(target=lambda: p.stdout.read())  # (a full pipe must not block its teardown)
+        drain.start()
         try:
             p.wait(timeout=REAP_EARLY)
         except subprocess.TimeoutExpired:
             warn(f"instrument.py: a process still tearing down {REAP_EARLY:g} s after its result was killed")
             kill()
             p.wait()
-        p.stdout.read()  # (whatever it printed after its status)
+        drain.join()
         reader.join()
+        late = " | ".join(re.findall(r"^\[apksim\] (?:exit|halt) marks: (.*)$", "".join(err), re.M))
+        if EXIT_MARKS and late:  # (the test's line is long printed: the slot was not held for these)
+            name = "#".join(next(iter(marks), ("?", "?")))
+            print(f"      exit (after the result) {name}: {late}", file=sys.stderr)
         after_exit()
 
     def after_exit():
