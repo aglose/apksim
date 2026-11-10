@@ -461,6 +461,11 @@ each `thermal` change, and `getCurrentThermalStatus` agrees (`apksim://system-so
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
+`rotary N` (the crown, `SOURCE_ROTARY_ENCODER`/`AXIS_SCROLL`; the wheel sends it on a watch device) and `ambient [on|off]` (Wear OS
+ambient mode through `com.google.android.wearable.compat.WearableActivityController`, apksim's stand-in for the watch's shared
+library, which androidx.wear.ambient finds; never entered unless asked). `--device watch|watch-small|watch-large`: round
+(qualifier `round`), UI_MODE_TYPE_WATCH, `android.hardware.type.watch`, no bars; `FrameStream.roundMask` clears the corners of
+streamed frames. Not done: a round mask in the Mac window, tiles and complications, a Wear test app.
 `bars [status on|off|toggle] [nav gesture|off|toggle]` (`SystemBars`; Device > Status Bar / Navigation Bar,
 `--status-bar on|off`, `--nav-bar gesture|off`): which system bars the device has, overriding the `--device` preset
 (phone, foldable, tablet: both; desktop, TV: neither) and kept across `device` switches. A bar that is off is not drawn

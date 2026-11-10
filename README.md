@@ -73,7 +73,7 @@ That trade is where both the speed and the limits come from.
 | **Device tests** | Same test APKs, JUnit XML; a large app's 4,107 device tests took ~4.7 min on a Mac and 8.3 min in the Linux image under Rosetta, against ~19 min on two CI emulators | Runs the tests as a device does |
 | **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
-| **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop and TV profiles | Any system image, many API levels |
+| **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
 | **System services** | Stand-ins: no Play Services, Health Connect or sensors, a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
@@ -146,6 +146,7 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 | `tablet` | 1280 × 800 | 2560 × 1600 px, the Nexus 10 profile |
 | `desktop` | 1440 × 900 | No system bars |
 | `tv` | 960 × 540 | 1080p; television UI mode, D-pad, no touchscreen |
+| `watch`, `watch-small`, `watch-large` | 227 × 227, 192 × 192, 240 × 240 | Wear OS: round screen (`isScreenRound`), watch UI mode and `android.hardware.type.watch`, no system bars. The wheel is the crown (rotary input; `rotary N`), `key STEM_1` / `STEM_2` / `STEM_PRIMARY` are the buttons, `ambient on\|off` enters ambient mode through a stand-in `com.google.android.wearable` library. `serve` streams the frame with the corners cleared (the Mac window shows a square) |
 | `WxH[@density]` | custom | For example `1024x768@1.5` |
 
 Density is 2 (xhdpi) unless given. You can also switch devices while the app runs, from the Device menu or with the

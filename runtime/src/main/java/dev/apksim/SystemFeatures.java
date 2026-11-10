@@ -20,7 +20,7 @@ import org.robolectric.util.ReflectionHelpers;
  * apksim adds what it simulates (Bluetooth and BLE, location, multitouch, audio output, a fingerprint sensor, both
  * screen orientations), and per device kind what an emulator of that kind reports: a TV has no touchscreen,
  * telephony, GPS or fingerprint, and has leanback; a desktop is android.hardware.type.pc. No camera unless `--camera fake`
- * (Cameras: the three camera features; the permission can be granted, but no frames come yet), and
+ * (Cameras: the three camera features, a back and a front camera with frames), and
  * `--feature android.hardware.camera.any` is for an app that must see one without a CameraManager camera. Then the launch's {@code --feature NAME[=false]} (-Dapksim.features=a,b=false), which
  * can also take a default away.
  */
@@ -35,6 +35,14 @@ final class SystemFeatures {
     "android.hardware.touchscreen.multitouch.distinct", "android.hardware.touchscreen.multitouch.jazzhand",
     "android.hardware.screen.portrait", "android.hardware.screen.landscape", "android.hardware.audio.output",
     "android.hardware.fingerprint", "android.software.input_methods", "android.software.secure_lock_screen",
+  };
+
+  /** A Wear OS watch's: round, touch (single), no telephony or fingerprint, standalone. */
+  private static final String[] WATCH = {
+    "android.hardware.bluetooth", "android.hardware.bluetooth_le", "android.hardware.location",
+    "android.hardware.location.gps", "android.hardware.location.network", "android.hardware.touchscreen",
+    "android.hardware.screen.portrait", "android.hardware.screen.landscape", "android.hardware.audio.output",
+    "android.hardware.type.watch", "android.software.input_methods", "android.software.secure_lock_screen",
   };
 
   /** A TV's (an Android TV emulator's, of the features above). */
@@ -75,6 +83,10 @@ final class SystemFeatures {
       for (String f : HANDHELD) want.put(f, false);
       for (String f : list().keySet()) if (f.startsWith("android.hardware.telephony")) want.put(f, false);
       for (String f : TV) want.put(f, true);
+    } else if (d.watch()) {
+      for (String f : HANDHELD) want.put(f, false);
+      for (String f : list().keySet()) if (f.startsWith("android.hardware.telephony")) want.put(f, false);
+      for (String f : WATCH) want.put(f, true);
     } else {
       for (String f : HANDHELD) want.put(f, true);
       if (d.kind().equals("desktop")) want.put("android.hardware.type.pc", true);

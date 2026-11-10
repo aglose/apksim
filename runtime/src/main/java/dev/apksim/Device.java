@@ -5,7 +5,7 @@ import java.util.List;
 
 /**
  * Screen shapes selectable with --device and the `device` command: a preset name, or a custom size "WxH" in dp with
- * an optional "@density" (e.g. 1024x768@1.5). The kind decides what the app is told besides the size: a TV has no
+ * an optional "@density" (e.g. 1024x768@1.5). The kind decides what the app is told besides the size: a watch is round (UI_MODE_TYPE_WATCH); a TV has no
  * touchscreen, a D-pad and UI_MODE_TYPE_TELEVISION; desktop and TV have no status or navigation bar.
  */
 record Device(String name, String kind, int widthDp, int heightDp, float density, int exactWidthPx, int exactHeightPx) {
@@ -20,6 +20,9 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     new Device("tablet", "tablet", 1280, 800, 2f),
     new Device("desktop", "desktop", 1440, 900, 2f),
     new Device("tv", "tv", 960, 540, 2f),  // 1080p at xhdpi, as Android TV reports it
+    new Device("watch", "watch", 227, 227, 2f),  // 454 px round, a Wear OS watch
+    new Device("watch-small", "watch", 192, 192, 2f),
+    new Device("watch-large", "watch", 240, 240, 2f),
   };
 
   /** The device the app runs on now: --device at launch, then the `device` command or the Device Type menu. */
@@ -98,7 +101,12 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
 
   /** Phones, foldables and tablets have a status bar and gesture navigation; desktop and TV have neither. */
   boolean systemBars() {
-    return !kind.equals("desktop") && !kind.equals("tv");
+    return !kind.equals("desktop") && !kind.equals("tv") && !kind.equals("watch");
+  }
+
+  /** A Wear OS watch: round screen, UI_MODE_TYPE_WATCH, no system bars of its own. */
+  boolean watch() {
+    return kind.equals("watch");
   }
 
   boolean tv() {
@@ -110,6 +118,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     return switch (kind) {
       case "tablet", "desktop" -> "tablet";
       case "tv" -> "tv";
+      case "watch" -> "watch";
       default -> "default";
     };
   }
@@ -133,6 +142,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     String size = longDp >= 960 && shortDp >= 720 ? "xlarge" : longDp >= 640 && shortDp >= 480 ? "large"
         : longDp >= 470 && shortDp >= 320 ? "normal" : "small";
     String isLong = longDp * 3 / 5 >= shortDp - 1 ? "long" : "notlong";
+    if (watch()) isLong = isLong + "-round";
     String orientation = widthDp > heightDp ? "land" : widthDp < heightDp ? "port" : "square";
     List<String> out = new ArrayList<>();
     String night = null;
@@ -144,6 +154,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     }
     out.add(screen(shortDp, size, isLong, orientation));
     if (tv()) out.add("television");
+    if (watch()) out.add("watch");
     if (night != null) out.add(night);
     out.add(density == 2f ? "xhdpi" : Math.round(density * 160) + "dpi");
     out.add(tv() ? "notouch" : "finger");

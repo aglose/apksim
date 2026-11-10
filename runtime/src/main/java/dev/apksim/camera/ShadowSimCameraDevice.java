@@ -29,18 +29,18 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
   protected void createCaptureSession(List<Surface> outputs, CameraCaptureSession.StateCallback callback, Handler handler)
       throws CameraAccessException {
     checkIfCameraClosedOrInError();
-    FakeCamera.replacingSessions(device);
+    long creation = FakeCamera.replacingSessions(device);
     Executor state = handler != null ? handler::post : Runnable::run;
-    super.createCaptureSession(outputs, new Registering(callback, new java.util.HashSet<>(outputs), state), handler);
+    super.createCaptureSession(outputs, new Registering(callback, new java.util.HashSet<>(outputs), state, creation), handler);
   }
 
   @Implementation
   @Override
   protected void createCaptureSession(SessionConfiguration config) throws CameraAccessException {
     checkIfCameraClosedOrInError();
-    FakeCamera.replacingSessions(device);
+    long creation = FakeCamera.replacingSessions(device);
     SessionConfiguration c = new SessionConfiguration(config.getSessionType(), config.getOutputConfigurations(),
-        config.getExecutor(), new Registering(config.getStateCallback(), surfaces(config), config.getExecutor()));
+        config.getExecutor(), new Registering(config.getStateCallback(), surfaces(config), config.getExecutor(), creation));
     if (config.getInputConfiguration() != null) c.setInputConfiguration(config.getInputConfiguration());
     if (config.getSessionParameters() != null) c.setSessionParameters(config.getSessionParameters());
     super.createCaptureSession(c);
@@ -64,9 +64,11 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
   private final class Registering extends CameraCaptureSession.StateCallback {
     private final CameraCaptureSession.StateCallback app;
     private final FakeCamera.SessionInfo info;
+    private final long creation;
 
-    Registering(CameraCaptureSession.StateCallback app, Set<Surface> outputs, Executor stateExecutor) {
+    Registering(CameraCaptureSession.StateCallback app, Set<Surface> outputs, Executor stateExecutor, long creation) {
       this.app = app;
+      this.creation = creation;
       this.info = new FakeCamera.SessionInfo(outputs, stateExecutor);
     }
 
@@ -80,7 +82,12 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
     }
 
     @Override public void onConfigured(CameraCaptureSession session) {
-      FakeCamera.configured(device, session, info);
+      // A session created again before this one's callback ran (both configurations pending) was replaced before it
+      // was configured: it only closes, as the camera service closes a replaced session.
+      if (!FakeCamera.configured(device, session, info, creation)) {
+        session.close();
+        return;
+      }
       app.onConfigured(session);
     }
 

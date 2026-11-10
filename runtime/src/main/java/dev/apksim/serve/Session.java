@@ -46,7 +46,7 @@ final class Session {
   private static final int MIN_IN_FLIGHT = 2;
   /** Bytes sent and not yet acknowledged, past the first {@link #MIN_IN_FLIGHT} frames: a slow link sees current frames. */
   private static final long IN_FLIGHT_BYTES = 1 << 20;
-  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv");
+  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large");
 
   final String id;
   final Catalog.App app;
@@ -1191,6 +1191,8 @@ final class Session {
     String t = text.strip();
     if (t.matches("touch (down|move|up|cancel) " + NUM + " " + NUM)) return t;
     if (t.matches("wheel " + NUM + " " + NUM + " " + NUM)) return t;
+    if (t.matches("rotary " + NUM)) return t;
+    if (t.matches("ambient (on|off)")) return t;
     if (t.matches("key [A-Z0-9_]{1,24}( [1-9])?( (ctrl|shift|alt|meta)){0,4}")) return t;
     if (t.matches("back|home|resume")) return t;
     // The tab's display pace (SimWindow.remoteVsync): only how this tab's instance times its frames.

@@ -387,7 +387,8 @@ final class DeviceControls {
       case "config" -> {
         // config: the configuration the app and its top activity see.
         Activity top = stack.isEmpty() ? null : stack.peek().get();
-        return "app " + app.getResources().getConfiguration() + (top == null ? "" : " | activity " + top.getResources().getConfiguration());
+        return "app " + app.getResources().getConfiguration() + " [isScreenRound=" + app.getResources().getConfiguration().isScreenRound()
+            + "]" + (top == null ? "" : " | activity " + top.getResources().getConfiguration());
       }
       case "clock" -> {
         // clock [ISO|epoch-ms|real]: the wall clock the app sees starts at that instant and runs on (SimClock)
@@ -530,6 +531,18 @@ final class DeviceControls {
         // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).
         return Bluetooth.command(a);
       }
+      case "ambient" -> {
+        // ambient [on|off]: Wear OS ambient mode (the stand-in com.google.android.wearable library): the activities that
+        // enabled it get onEnterAmbient/onExitAmbient. Never entered otherwise.
+        if (a.length < 2) return com.google.android.wearable.compat.WearableActivityController.ambient() ? "ambient on" : "ambient off";
+        if (!a[1].equals("on") && !a[1].equals("off")) return "usage: ambient [on|off]";
+        boolean on = a[1].equals("on");
+        boolean[] told = new boolean[1];
+        Crashes.app(() -> {
+          told[0] = com.google.android.wearable.compat.WearableActivityController.setAmbient(on);
+        });
+        return told[0] ? "ok" : "ok (no activity has ambient mode enabled)";
+      }
       case "thermal" -> {
         // thermal [none|light|moderate|severe|critical|emergency|shutdown]: PowerManager's thermal status (Thermal).
         // A listener's exception is the app's crash (Crashes), not a command error; bad arguments answer error: as usual.
@@ -616,7 +629,7 @@ final class DeviceControls {
         return "ok";
       }
       case "device" -> {
-        // device: what the app runs on; device phone|foldable|tablet|desktop|tv|WxH[@density]: switch to another.
+        // device: what the app runs on; device phone|foldable|tablet|desktop|tv|watch|watch-small|watch-large|WxH[@density]: switch to another.
         if (a.length < 2) return Device.current().describe() + " (" + w + "x" + h + " px); presets: " + Device.names();
         Device to = Device.named(a[1]);
         return reshape(to, to.widthPx(), to.heightPx(), true, before);

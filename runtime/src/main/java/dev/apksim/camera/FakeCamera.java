@@ -145,6 +145,8 @@ public final class FakeCamera {
   private static final class DeviceState {
     /** Sessions that have queued requests on this device: a new session closes them, as on a device. */
     final java.util.Set<CameraCaptureSession> sessions = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    /** createCaptureSession calls so far: a session configured for an earlier one was replaced before it was ready. */
+    long creations;
     Sequence repeating;
     final ArrayDeque<Sequence> singles = new ArrayDeque<>();
     long frameNumber;
@@ -189,7 +191,8 @@ public final class FakeCamera {
 
   /**
    * A new capture session on the device (ShadowSimCameraDevice): the earlier ones close first, their requests ending
-   * and their onClosed called, as the camera service replaces a session. Robolectric's left them streaming.
+   * and their onClosed called, as the camera service replaces a session (Robolectric's left them streaming). Returns
+   * this creation's number, which its configuration must still match.
    */
   /** What a session was configured with: its output Surfaces (null if any was deferred) and its callback's executor. */
   record SessionInfo(java.util.Set<Surface> outputs, Executor stateExecutor) {}
@@ -198,11 +201,13 @@ public final class FakeCamera {
       java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
   /** A session configured on the device (ShadowSimCameraDevice), before it queues anything. */
-  static void configured(CameraDevice device, CameraCaptureSession session, SessionInfo info) {
+  static boolean configured(CameraDevice device, CameraCaptureSession session, SessionInfo info, long creation) {
     SESSIONS.put(session, info);
     DeviceState d = DEVICES.computeIfAbsent(device, k -> new DeviceState());
     synchronized (d) {
+      if (creation != d.creations) return false;  // a newer createCaptureSession replaced it already
       d.sessions.add(session);
+      return true;
     }
   }
 
@@ -226,15 +231,17 @@ public final class FakeCamera {
     }
   }
 
-  static void replacingSessions(CameraDevice device) {
-    DeviceState d = DEVICES.get(device);
-    if (d == null) return;
+  static long replacingSessions(CameraDevice device) {
+    DeviceState d = DEVICES.computeIfAbsent(device, k -> new DeviceState());
     List<CameraCaptureSession> old;
+    long creation;
     synchronized (d) {
+      creation = ++d.creations;
       old = new ArrayList<>(d.sessions);
       d.sessions.clear();
     }
     for (CameraCaptureSession s : old) s.close();
+    return creation;
   }
 
   /** CameraCaptureSession.stopRepeating: the repeating request ends after the frame in flight. */
