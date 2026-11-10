@@ -25,6 +25,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   to that hand-off: each fork there cost a few ms.
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
+    A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
+    BouncyCastleProvider: ~100 ms off a cold first frame and a test process's start; `-Dapksim.initAhead=false`).
+    docs/perf-plan.md is the plan for memory, launch and run time.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
@@ -279,7 +282,7 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times, cold and warm), `startup-gate.py` (CI's startup-time gate: this build against an anchor
+  `bench.py` (launch times, cold and warm; `--mem` adds footprints), `startup-gate.py` (CI's startup-time gate: this build against an anchor
   release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
@@ -367,7 +370,7 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
+(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).

@@ -77,7 +77,6 @@ public class Host {
   private Application app;
   private int w;
   private int h;
-  private Bitmap bitmap;
   private HwRenderer hw;
   private DeviceControls controls;
   private FlightRecorder recorder;
@@ -132,7 +131,6 @@ public class Host {
     dev.apksim.video.ShadowSimMediaCodec.install();
     w = app.getResources().getDisplayMetrics().widthPixels;
     h = app.getResources().getDisplayMetrics().heightPixels;
-    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
     recorder = new FlightRecorder(app, stack, controls);
@@ -1259,26 +1257,34 @@ public class Host {
   private void resizeDisplay(int newW, int newH, boolean actualSize) {
     w = newW;
     h = newH;
-    bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     hw.resize(w, h, actualSize);
   }
 
-  /** {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window. */
+  /**
+   * {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window.
+   * The bitmap is made for the shot and freed after it: kept for the life of the instance it held a display's worth of
+   * native memory (5.9 MB on a phone, 16 MB on a tablet) that only screenshots use.
+   */
   private void saveFrame(String path, boolean display) throws Exception {
-    hw.withLatestFrame(pixels -> {
-      pixels.rewind();
-      bitmap.copyPixelsFromBuffer(pixels);
-      pixels.rewind();
-    });
-    if (display && SimWindow.displayAvailable()) {
-      ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
-      if (SimWindow.displayImage(shot, w, h)) {
-        shot.rewind();
-        bitmap.copyPixelsFromBuffer(shot);
+    Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    try {
+      hw.withLatestFrame(pixels -> {
+        pixels.rewind();
+        bitmap.copyPixelsFromBuffer(pixels);
+        pixels.rewind();
+      });
+      if (display && SimWindow.displayAvailable()) {
+        ByteBuffer shot = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
+        if (SimWindow.displayImage(shot, w, h)) {
+          shot.rewind();
+          bitmap.copyPixelsFromBuffer(shot);
+        }
       }
-    }
-    try (FileOutputStream out = new FileOutputStream(path)) {
-      bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+      try (FileOutputStream out = new FileOutputStream(path)) {
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+      }
+    } finally {
+      bitmap.recycle();
     }
   }
 
@@ -1619,7 +1625,10 @@ public class Host {
         // clockAheadMs: how far SystemClock has run ahead of real time since the loop started (negative: behind, from
         // stalls it does not replay). It should stay within a frame or two; app timers fire early by as much.
         long ahead = SystemClock.uptimeMillis() - clockBaseMs - (System.nanoTime() - clockBaseNanos) / 1_000_000L;
-        return String.format("frames=%d heapUsedMb=%d pid=%d data=%s clockAheadMs=%d", frames, (rt.totalMemory() - rt.freeMemory()) >> 20,
+        // footprintMb: the process as the system counts it (Footprint), which Java's heap figure is a fraction of.
+        long fp = Footprint.bytes();
+        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d", frames,
+            (rt.totalMemory() - rt.freeMemory()) >> 20, fp < 0 ? -1 : fp >> 20, Footprint.cpuMs(),
             ProcessHandle.current().pid(), dataDir, ahead);
       }
       case "redraw" -> {

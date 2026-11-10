@@ -11,7 +11,12 @@ public final class Main {
   private Main() {}
 
   public static void main(String[] args) throws Exception {
-    if (Standby.requested()) args = Standby.await(); else Timing.mark("jvm-main");
+    if (Standby.requested()) {
+      args = Standby.await();
+    } else {
+      Timing.mark("jvm-main");
+      initTestEnvironmentAhead();
+    }
     if (Boolean.getBoolean("apksim.profile")) Sampler.start();
     if (Boolean.getBoolean("apksim.traceExit")) {
       Runtime.getRuntime().addShutdownHook(new Thread(() -> Thread.getAllStackTraces().forEach((t, st) -> {
@@ -90,5 +95,25 @@ public final class Main {
     ClassCache.flush();
     Storage.deleteScratch();
     Standby.halt(r.wasSuccessful() ? 0 : 1);
+  }
+
+  /**
+   * Robolectric's AndroidTestEnvironment builds a BouncyCastleProvider in its static initializer, which loads and
+   * registers every algorithm class: ~180 ms of a cold launch, on the main thread, interpreted, once the sandbox is
+   * made. Nothing in it depends on the sandbox or the APK, so the class is initialized here on a thread of its own,
+   * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
+   * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B).
+   */
+  private static void initTestEnvironmentAhead() {
+    if (!Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) return;
+    Thread t = new Thread(() -> {
+      try {
+        Class.forName("org.robolectric.android.internal.AndroidTestEnvironment", true, ClassLoader.getSystemClassLoader());
+      } catch (Throwable e) {
+        // The main thread meets the same error when it gets there, and reports it.
+      }
+    }, "apksim-init-ahead");
+    t.setDaemon(true);
+    t.start();
   }
 }
