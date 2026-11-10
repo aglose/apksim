@@ -224,6 +224,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
     # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
     --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
+    # With --realtime-clock: spin the last part of short waits where OS sleeps overshoot (VMs). auto probes; on forces it.
+    --precise-waits) case "$2" in on) V=true ;; off) V=false ;; auto) V=auto ;; *) echo "--precise-waits on|off|auto" >&2; exit 2 ;; esac
+                     EXTRA+=("-Dapksim.preciseWaits=$V"); shift 2 ;;
     # Failure bundles (test runs): what each failing test left, in DIR/<class>/<method>-<hash>/ (docs/plan.md phase 5).
     --bundles) mkdir -p "$2" && BUNDLES="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.bundles=$BUNDLES"); shift 2 ;;
     --bundles-on) EXTRA+=("-Dapksim.bundles.on=$2"); shift 2 ;;

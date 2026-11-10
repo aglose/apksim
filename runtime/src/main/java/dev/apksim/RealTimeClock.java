@@ -94,6 +94,57 @@ final class RealTimeClock {
     return (ApksimClock.uptimeNanos() - simBaseNanos) - (System.nanoTime() - realBaseNanos);
   }
 
+  /**
+   * How long before a deadline a real-time wait stops sleeping and spins (-Dapksim.preciseWaits: true = 200 ms, false =
+   * never, auto = probed once). Some VMs (macOS CI runners) wake a short sleep 8x late (a 16 ms sleep took ~130 ms), which
+   * made every frame wait of a barrier several times slower than on a desktop Mac (issue 201).
+   */
+  private static volatile long spinMarginNanos = -1;
+
+  static long spinMargin() {
+    long m = spinMarginNanos;
+    if (m >= 0) return m;
+    String mode = System.getProperty("apksim.preciseWaits", "auto");
+    if (mode.equals("true")) m = 200_000_000L;
+    else if (mode.equals("false")) m = 0;
+    else {
+      long[] over = new long[5];
+      for (int i = 0; i < over.length; i++) {
+        long t = System.nanoTime();
+        try {
+          Thread.sleep(5);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return 0;  // an incomplete probe is not kept: a later wait probes again
+        }
+        over[i] = System.nanoTime() - t - 5_000_000L;
+      }
+      java.util.Arrays.sort(over);
+      long median = over[over.length / 2];
+      m = median < 3_000_000L ? 0 : Math.min(4 * median, 200_000_000L);
+      System.err.println("[apksim] realtime-clock: sleeps overshoot " + median / 1_000_000L + " ms"
+          + (m > 0 ? ", spinning the last " + m / 1_000_000L + " ms of short waits" : ""));
+    }
+    return spinMarginNanos = m;
+  }
+
+  /**
+   * Waits until {@code deadline} (System.nanoTime): sleeps while more than the spin margin is left, then spins. Throws
+   * InterruptedException on interrupt.
+   */
+  static void waitUntil(long deadline) throws InterruptedException {
+    long margin = spinMargin();
+    for (long left; (left = deadline - System.nanoTime()) > 0; ) {
+      if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
+      if (left > margin) {
+        long sleep = left - margin;
+        Thread.sleep(sleep / 1_000_000L, (int) (sleep % 1_000_000L));
+      } else {
+        Thread.onSpinWait();
+      }
+    }
+  }
+
   /** On the main thread: moves the clock up to real time, in whole milliseconds (Robolectric's resolution). */
   static void catchUp() {
     if (!on || catchingUp || Thread.currentThread() != main) return;
@@ -146,7 +197,8 @@ final class RealTimeClock {
     long ahead = aheadNanos();
     if (ahead <= 0) return;
     try {
-      TimeUnit.NANOSECONDS.sleep(ahead);
+      if (spinMargin() > 0) waitUntil(System.nanoTime() + ahead);
+      else TimeUnit.NANOSECONDS.sleep(ahead);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();  // a test's timeout: let it reach the test
     }
@@ -256,7 +308,8 @@ final class RealTimeClock {
     long waitMs = frameAt - ApksimClock.uptimeNanos() / 1_000_000L;
     if (waitMs <= 0 || waitMs > BARRIER_WAIT_MS) return;
     try {
-      Thread.sleep(waitMs);
+      if (spinMargin() > 0) waitUntil(System.nanoTime() + waitMs * 1_000_000L);
+      else Thread.sleep(waitMs);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return;

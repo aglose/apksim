@@ -230,6 +230,10 @@ public final class TestActivities {
       if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
       if (left <= 0) return;
       long step = Math.min(left, 2_000_000L);  // a short step, then the queue again
+      if (RealTimeClock.requested() && RealTimeClock.spinMargin() > 0) {  // sleeps overshoot on some VMs (issue 201)
+        RealTimeClock.waitUntil(System.nanoTime() + step);
+        continue;
+      }
       Thread.sleep(step / 1_000_000L, (int) (step % 1_000_000L));  // throws if interrupted meanwhile, clearing the flag
     }
   }
