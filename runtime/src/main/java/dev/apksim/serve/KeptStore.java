@@ -32,7 +32,8 @@ import javax.crypto.spec.SecretKeySpec;
  * packages kept in all (least recently used go first) and `--keep-days` unused bound the disk.
  */
 final class KeptStore {
-  static final String KEY = "[A-Za-z0-9._~-]{1,128}";
+  /** Starting with a letter or digit: `.` and `..` would be normalized out of `/api/kept/KEY` by browsers and clients. */
+  static final String KEY = "[A-Za-z0-9][A-Za-z0-9._~-]{0,127}";
   private static final String PACKAGE = "[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+";
 
   final Path dir;

@@ -1067,7 +1067,7 @@ public final class Serve {
   private void keptRoute(Http.Request r, OutputStream out) throws IOException {
     String key = r.path().substring("/api/kept/".length());
     if (!KeptStore.validKey(key)) {
-      Http.text(out, 400, "a key is 1-128 letters, digits and . _ ~ -");
+      Http.text(out, 400, "a key is 1-128 letters, digits and . _ ~ -, starting with a letter or digit");
       return;
     }
     // Only the server that owns the store (KeptStore.claim) answers: another on the same state folder knows nothing of
@@ -1218,7 +1218,7 @@ public final class Serve {
     String keepKey = beam ? null : r.param("keep");
     if (keepKey != null && keepKey.isEmpty()) keepKey = null;
     if (keepKey != null && !KeptStore.validKey(keepKey)) {
-      Http.text(out, 400, "keep: a key is 1-128 letters, digits and . _ ~ -");
+      Http.text(out, 400, "keep: a key is 1-128 letters, digits and . _ ~ -, starting with a letter or digit");
       return;
     }
     boolean refuseBusy = "refuse".equals(r.param("keepBusy"));

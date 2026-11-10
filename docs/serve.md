@@ -94,7 +94,8 @@ With `--keep-max N`, a session can keep its app's data for a later one, so a slo
 session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
 
 - **Keeping:** `/ws?app=ID&keep=KEY` (the page passes on `keep` and `keepBusy` from its own link, so an embedding page
-  or a shared link can name them). `KEY` is the client's: 1-128 letters, digits and `. _ ~ -`, for example a hash of a
+  or a shared link can name them). `KEY` is the client's: 1-128 letters, digits and `. _ ~ -`, starting with a letter or digit (`/api/kept/..`
+  would not reach the server as written), for example a hash of a
   user and a profile name; anything else is `400` before the upgrade. When the session ends, its data slot and
   `.device` folder (the app's files, databases and preferences, its /sdcard and Settings values) are packed as a
   hand-off is (`SlotPack`: no links or special files, at most 50,000 files and 1 GB) into

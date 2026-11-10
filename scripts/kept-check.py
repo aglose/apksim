@@ -94,6 +94,10 @@ def end(s, key):
 
 st, _ = sc.http(url, "/api/kept/bad%20key", token)
 sc.check(st == 400, f"a key with a space refused: {st}")
+st, _ = sc.http(url, "/api/kept/.hidden", token)
+sc.check(st == 400, f"a key starting with a dot refused: {st}")
+dots = sc.WS(url, f"/ws?app={app}&keep=..", {"Origin": sc.parts(url)[2], **({"Cookie": "apksim_token=" + token} if token else {})})
+sc.check(dots.status == 400, f"/ws with keep=.. refused before the upgrade: {dots.status}")
 sc.check(kept(K1).get("packages") == [], "nothing kept under a new key: " + str(kept(K1)))
 st, _ = delete("/api/kept/" + K1)
 sc.check(st == 404, f"DELETE of a key with nothing kept: {st}")
