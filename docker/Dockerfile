@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev u
 # H.264 and HEVC decoding for MediaCodec (native/linux/avdecoder_linux.c): FFmpeg's libavcodec with only those two
 # decoders and libswscale, built from the pinned release's source and linked statically into libvtdecoder.so below
 # (LGPL 2.1+, see THIRD-PARTY-NOTICES.md). Before COPY native so a change to apksim's own code does not rebuild it.
-# nasm is for x86_64's assembly (arm64 has NEON in C and intrinsics); pthreads is the C library's.
+# nasm is for x86_64's assembly (arm64's is assembled by gcc); pthreads is the C library's.
 ARG FFMPEG_VERSION=7.1.5
 ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils make $([ "$(uname -m)" = x86_64 ] && echo nasm) && \

@@ -79,9 +79,11 @@ static int avd_pull(AvDec *d) {
   if (d->queued >= QUEUE_MAX) return 0;
   int r = avcodec_receive_frame(d->ctx, d->frame);
   if (r < 0) return 0;
-  d->queue[d->queued++] = av_frame_clone(d->frame);
+  AVFrame *f = av_frame_clone(d->frame);
   av_frame_unref(d->frame);
-  return d->queue[d->queued - 1] != NULL;
+  if (!f) return 0;
+  d->queue[d->queued++] = f;
+  return 1;
 }
 
 // One access unit (or parameter sets) with its pts; AV_NOPTS_VALUE (INT64_MIN) for none. Length 0 starts draining.
@@ -104,7 +106,6 @@ static int avd_send(AvDec *d, const uint8_t *data, int length, int64_t pts) {
   if (r < 0) return r;
   memcpy(d->pkt->data, data, length);
   d->pkt->pts = pts;
-  d->pkt->dts = pts;
   r = avcodec_send_packet(d->ctx, d->pkt);
   while (r == AVERROR(EAGAIN) && avd_pull(d)) r = avcodec_send_packet(d->ctx, d->pkt);
   av_packet_unref(d->pkt);
