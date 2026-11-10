@@ -128,7 +128,7 @@ public final class FakeCamera {
 
   private static final Map<CameraDevice, DeviceState> DEVICES = new ConcurrentHashMap<>();
   private static final AtomicInteger SEQUENCES = new AtomicInteger();
-  private static ScheduledExecutorService thread;
+  private static volatile ScheduledExecutorService thread;
 
   // Counters for the `camera` command.
   static final AtomicLong frames = new AtomicLong();
@@ -183,7 +183,8 @@ public final class FakeCamera {
       synchronized (d) {
         d.singles.removeIf(s -> s.session == session && dropped.add(s));
       }
-      for (Sequence s : dropped) onCameraThread(() -> s.tell(cb -> cb.onCaptureSequenceAborted(s.session, s.id)));
+      // A burst that already delivered a frame ends completed with its last frame, one that delivered none aborted.
+      for (Sequence s : dropped) end(s);
     }
   }
 
@@ -197,7 +198,12 @@ public final class FakeCamera {
 
   private static void onCameraThread(Runnable r) {
     start();
-    thread.execute(r);
+    ScheduledExecutorService t = thread;
+    try {
+      if (t != null) t.execute(r);
+    } catch (java.util.concurrent.RejectedExecutionException e) {
+      // reset meanwhile: the test that owned the sequence is over
+    }
   }
 
   private static void ended(Sequence s) {
@@ -207,6 +213,34 @@ public final class FakeCamera {
     } else {
       s.tell(cb -> cb.onCaptureSequenceAborted(s.session, s.id));
     }
+  }
+
+  /**
+   * Between tests (SimRunner's reset): the camera thread stops (waiting for a frame in flight), and the devices, their
+   * requests and the picture caches go, so a test that left a repeating request running sends nothing into the next.
+   * The next submission starts a new thread.
+   */
+  public static void reset() {
+    ScheduledExecutorService t;
+    synchronized (FakeCamera.class) {
+      t = thread;
+      thread = null;
+    }
+    if (t != null) {
+      t.shutdownNow();
+      try {
+        t.awaitTermination(2, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    DEVICES.clear();
+    RAW.clear();
+    RAW_FRAME.clear();
+    PREVIEWS.clear();
+    PREVIEW_NEXT.clear();
+    outputs.clear();
+    pattern();
   }
 
   private static synchronized void start() {
