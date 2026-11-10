@@ -108,6 +108,7 @@ macOS-only).
 | Window | Cocoa window | Headless only (`shot`, control channel) |
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet |
+| MediaCodec video (H.264, HEVC) | VideoToolbox | None yet: no video decoders are listed, so a player (Media3) plays the audio and leaves the picture empty. One `[apksim] MediaCodec video/avc, video/hevc: no decoder on this host` line is logged at startup. A libavcodec or OpenH264 decoder behind `VideoToolbox`'s interface is the plan (issue 229) |
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
