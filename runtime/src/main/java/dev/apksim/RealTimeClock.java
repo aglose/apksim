@@ -250,7 +250,13 @@ final class RealTimeClock {
   private static long barrierSince = -1;
   /** Main thread only: when a look last found a barrier at the head, or -1. */
   private static long barrierSeen = -1;
-  private static final long BARRIER_STREAK_MS = 250;
+  /**
+   * `--jvm -Dapksim.barrierStreakMs=N` (issue 215): a Scroller-driven settle (DrawerLayout, ViewPager) is a finite run of
+   * barriers like an endless animation's, and counts as idle once the streak passes this, with Espresso acting on a
+   * view still moving. A drawer settles within ~600 ms, so 1000 covers it; 250 stays the default until a Mac run says
+   * what the longer idle wait costs a suite under an endless animation.
+   */
+  private static final long BARRIER_STREAK_MS = Long.getLong("apksim.barrierStreakMs", 250);
 
   /**
    * Main thread only: above 0 while a caller runs just the messages already due (Compose's test clock stepping a

@@ -72,7 +72,9 @@ each shard given an `-e class` list, instead of by hash. --shard I runs only sha
 on separate machines; every job must be given the same suite, timings and change.
 With --isolate, --shards N --shard I (required: the processes are the tests, so there is no "all shards at once") runs
 shard I's tests, balanced by the same rule (by count without timings), each in its own process, -j at a time. With
---timings --isolate starts the longest tests first, so the last slots to finish hold short tests.
+--timings --isolate orders the starts by --order: `interleave` (default) alternates the longest and the shortest test, so
+long tests start early but not together (stacked at the start, a machine's heaviest tests can slow each other past a
+test's own timeout); `longest-first`; `suite` keeps the suite's order.
 """
 import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
@@ -977,6 +979,8 @@ def main():
     p.add_argument("--reap-early", type=float, default=0, metavar="SEC",
                    help="--isolate: a process counts as done, and its slot free, once it has printed its result and "
                         "exit status; its teardown goes on in the background for SEC s at most, then it is killed (0: off)")
+    p.add_argument("--order", choices=("interleave", "longest-first", "suite"), default="interleave",
+                   help="--isolate --timings: the order tests start in (default interleave: alternately the longest and shortest)")
     p.add_argument("--test-timeout", type=float, default=TEST_TIMEOUT, metavar="SEC")
     a = p.parse_args(argv)
     if a.test_timeout < 0:
@@ -1110,9 +1114,12 @@ def main():
                   + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
             tests = lists[a.shard]
         suite_order = {t: i for i, t in enumerate(tests)}
-        if timings:
+        order = a.order if timings else "suite"
+        if order == "longest-first":
             tests = affected.longest_first(tests, timings)
-        print(f"{len(tests)} tests to run, longest first" if timings else f"{len(tests)} tests to run", file=sys.stderr)
+        elif order == "interleave":
+            tests = affected.interleaved(tests, timings)
+        print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}"), file=sys.stderr)
 
         def one(t):
             start = time.time()
