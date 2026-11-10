@@ -969,7 +969,8 @@ suite and writes JUnit XML (with each test's time, from when its output arrived)
 process, as the AndroidX Test Orchestrator with `clearPackageData` does, except that a test `@Ignore`'d on its method or
 class is reported ignored without one (its listing passes `-e apksimListIgnored true`, which makes `Instrument`'s `-e log
 true` listing report such tests ignored rather than passed; an assumption's skip still needs its process;
-`--run-ignored` gives them one, so the app's run listeners hear of them; issue 205); `--shards N` splits the suite over N processes
+`--run-ignored` gives them one, as the Orchestrator does; the app's runner listeners hear of them neither way, as a
+process whose every test is ignored sets none up; issue 205); `--shards N` splits the suite over N processes
 at once with AndroidJUnitRunner's `-e numShards N -e shardIndex I`, which `Instrument` takes as a device's runner does
 (a test's shard is `abs(description.hashCode() % N)`, AndroidJUnitRunner's `abs(hash) % N` except for a hash of
 `Integer.MIN_VALUE`, which matched no shard there; an empty shard is a run of no tests); with `--timings XML` (an

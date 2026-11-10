@@ -21,7 +21,8 @@ With --isolate each test runs in a process of its own, N at a time, as the Orche
 `initializationError` (a Parameterized class with no parameters) out, with a warning naming the class; `--keep-class-errors` keeps it.
 A test @Ignore'd on its method or class is reported ignored without a process (the listing asks apksim for them with
 `-e apksimListIgnored true`); one that skips only at run time (an assumption) still gets its process. `--run-ignored`
-gives each a process, as the Orchestrator does, so the app's own run listeners hear of them too.
+gives each a process, as the Orchestrator does (apksim sets up no runner listeners in a process whose every test is
+ignored, so the app's own listeners do not hear of them either way).
 --reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
 ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
 nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
@@ -971,8 +972,8 @@ def main():
     p.add_argument("test")
     p.add_argument("--isolate", action="store_true")
     p.add_argument("--run-ignored", action="store_true",
-                   help="--isolate: give @Ignore'd tests a process each, as the Orchestrator does, so the app's own run "
-                   "listeners hear of them (by default they are reported ignored without one)")
+                   help="--isolate: give @Ignore'd tests a process each, as the Orchestrator does (by default they "
+                   "are reported ignored without one)")
     p.add_argument("--keep-class-errors", action="store_true",
                    help="keep listed initializationError entries in --isolate's and --shards' suites (the orchestrator drops them)")
     p.add_argument("-j", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 3)))
@@ -1138,7 +1139,8 @@ def main():
             tests = lists[a.shard]
         suite_order = {t: i for i, t in enumerate(tests)}
         # @Ignore'd tests (as the listing reported them) are reported ignored without a process: one would only start
-        # up, report the test ignored and exit. The app's own run listeners do not hear of them (--run-ignored).
+        # up, report the test ignored and exit. (Its runner listeners would not hear of it either: apksim sets none up
+        # in a process whose every test is ignored.)
         skipped = [t for t in tests if t in IGNORED]
         if skipped:
             tests = [t for t in tests if t not in IGNORED]

@@ -19,7 +19,9 @@ Exit status: 0 within budget, 1 over budget, 2 the launches themselves failed or
 import argparse, ctypes, json, math, os, random, re, statistics, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MARK = re.compile(r"^\[apksim\] (\S.*?)\s+(-?\d+) ms$", re.M)
+# (-Dapksim.timing=verbose marks end with the process's CPU so far, "  cpu N ms", since issue 205; older releases'
+# do not.)
+MARK = re.compile(r"^\[apksim\] (\S.*?)\s+(-?\d+) ms(?:\s+cpu\s+-?\d+ ms)?$", re.M)
 
 
 def cpu_ticks():
