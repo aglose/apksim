@@ -81,6 +81,7 @@ final class SlotDevice {
       ShadowEnvironment.setExternalStorageRemovable(p.toFile(), false);
     }
 
+    seedFiles(sd);
     defaults = snapshot();
     Map<String, String> stored = read(d.resolve(SETTINGS));
     stored.forEach(SlotDevice::apply);
@@ -91,6 +92,39 @@ final class SlotDevice {
     // Ctrl-C or SIGTERM on a cold launch, or the app's System.exit, end the JVM past every other flush: a value set
     // within the last 250 ms would be lost. A no-op once close() has run, so never the reset's defaults.
     Runtime.getRuntime().addShutdownHook(new Thread(SlotDevice::close, "apksim-slot-settings"));
+  }
+
+  /**
+   * Writes the launch's {@code --sdcard-file} seeds into the slot's /sdcard, over what the slot had (the option always
+   * wins), before Application.onCreate (after the Application is constructed and attached, as the slot's settings). Never through a link the app left in the slot: a seed whose path
+   * runs through one is refused.
+   */
+  static void seedFiles(Path sd) throws IOException {
+    long total = 0;
+    for (int i = 0; ; i++) {
+      String s = System.getProperty("apksim.sdcard." + i);
+      if (s == null) return;
+      SdcardSeeds.File f = SdcardSeeds.parse(s);
+      total += f.bytes().length;
+      if (total > SdcardSeeds.TOTAL_MAX) {
+        throw new IllegalArgumentException("--sdcard-file: over " + SdcardSeeds.TOTAL_MAX / 1024 + " KB in all");
+      }
+      // Component by component, no link at any level (the root included) before anything is created or written.
+      if (Files.isSymbolicLink(sd)) throw new IllegalArgumentException("--sdcard-file: the slot's sdcard is a link");
+      Path target = sd;
+      String[] parts = f.path().split("/");
+      for (int k = 0; k < parts.length; k++) {
+        target = target.resolve(parts[k]);
+        boolean last = k == parts.length - 1;
+        if (Files.isSymbolicLink(target) || (last ? Files.isDirectory(target) : Files.exists(target) && !Files.isDirectory(target))) {
+          throw new IllegalArgumentException("--sdcard-file " + f.path() + ": leads out of /sdcard or is a folder");
+        }
+        if (!last && !Files.exists(target)) Files.createDirectory(target);
+      }
+      Path tmp = target.resolveSibling(".seed" + Storage.tmpTag());
+      Files.write(tmp, f.bytes());
+      Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    }
   }
 
   /**

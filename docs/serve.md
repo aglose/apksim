@@ -176,7 +176,8 @@ origin. Proxies usually rewrite `Host` to the upstream, keep the browser's `Orig
 A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch options that every session of it
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
-`--build`, `--setting`, `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
+`--build`, `--setting`, `--sdcard-file` (a file written to `/sdcard` before the app starts: `PATH=text:TEXT` or `PATH=BASE64`,
+inline, at most 64 KB a file and 72 KB in all, `..` refused), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
 `--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera` (`off` or `fake`, not
 `fake=IMAGE`: no host files), `--network-profile`, `--device`, and the flags
 `--soft-keyboard` and `--move-shared-data` (macOS: load a 4 KB-aligned native library whose data shares a page with its
