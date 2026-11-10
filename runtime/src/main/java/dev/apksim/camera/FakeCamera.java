@@ -213,6 +213,11 @@ public final class FakeCamera {
     }
   }
 
+  /** A closed session's info goes once onClosed has run: its callback may hold the session, so a weak key is not enough. */
+  static void forget(CameraCaptureSession session) {
+    SESSIONS.remove(session);
+  }
+
   static SessionInfo info(CameraCaptureSession session) {
     return SESSIONS.get(session);
   }
@@ -378,6 +383,7 @@ public final class FakeCamera {
       }
     }
     DEVICES.clear();
+    SESSIONS.clear();
     outputs.clear();
     pattern();
   }

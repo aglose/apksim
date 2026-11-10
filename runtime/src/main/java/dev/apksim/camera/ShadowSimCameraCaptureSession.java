@@ -137,7 +137,13 @@ public class ShadowSimCameraCaptureSession extends ShadowCameraCaptureSessionImp
     FakeCamera.awaitCameraThread();
     FakeCamera.SessionInfo info = FakeCamera.info(session);
     Executor state = info == null ? Runnable::run : info.stateExecutor();
-    state.execute(() -> ShadowSimCameraCaptureSession.super.close());
+    state.execute(() -> {
+      try {
+        ShadowSimCameraCaptureSession.super.close();
+      } finally {
+        FakeCamera.forget(session);  // its info holds the app's callback, which may hold the session
+      }
+    });
   }
 
 }
