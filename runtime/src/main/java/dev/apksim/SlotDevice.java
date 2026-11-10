@@ -109,12 +109,17 @@ final class SlotDevice {
       if (total > SdcardSeeds.TOTAL_MAX) {
         throw new IllegalArgumentException("--sdcard-file: over " + SdcardSeeds.TOTAL_MAX / 1024 + " KB in all");
       }
-      Path target = sd.resolve(f.path()).normalize();
-      Path real = sd.toRealPath();
-      Path parent = target.getParent();
-      Files.createDirectories(parent);
-      if (!parent.toRealPath().startsWith(real) || Files.isSymbolicLink(target) || Files.isDirectory(target)) {
-        throw new IllegalArgumentException("--sdcard-file " + f.path() + ": leads out of /sdcard or is a folder");
+      // Component by component, no link at any level (the root included) before anything is created or written.
+      if (Files.isSymbolicLink(sd)) throw new IllegalArgumentException("--sdcard-file: the slot's sdcard is a link");
+      Path target = sd;
+      String[] parts = f.path().split("/");
+      for (int k = 0; k < parts.length; k++) {
+        target = target.resolve(parts[k]);
+        boolean last = k == parts.length - 1;
+        if (Files.isSymbolicLink(target) || (last ? Files.isDirectory(target) : Files.exists(target) && !Files.isDirectory(target))) {
+          throw new IllegalArgumentException("--sdcard-file " + f.path() + ": leads out of /sdcard or is a folder");
+        }
+        if (!last && !Files.exists(target)) Files.createDirectory(target);
       }
       Path tmp = target.resolveSibling("." + target.getFileName() + Storage.tmpTag());
       Files.write(tmp, f.bytes());

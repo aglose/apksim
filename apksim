@@ -296,7 +296,9 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*|-Dapksim.sdcard.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.setting.*) ;;
+      # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
+      -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*) ;;

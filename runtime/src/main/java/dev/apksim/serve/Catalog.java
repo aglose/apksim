@@ -173,6 +173,8 @@ final class Catalog {
       if (o.equals("--sdcard-file")) {
         // Inline contents (text: or base64) for a path under /sdcard: never a host file. Longer than a plain value may be.
         if (v == null || v.length() > dev.apksim.SdcardSeeds.FILE_MAX * 2) throw new IOException("--sdcard-file needs PATH=VALUE of at most 64 KB");
+        // A line break in an argument would become a second one in the .ref files that persist launch options: base64.
+        if (v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) throw new IOException("--sdcard-file: use base64 for contents with line breaks or control characters");
         try {
           sdcardTotal += dev.apksim.SdcardSeeds.parse(v).bytes().length;
         } catch (IllegalArgumentException e) {
