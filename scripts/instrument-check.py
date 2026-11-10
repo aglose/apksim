@@ -291,6 +291,8 @@ SCENARIOS = {
     "hang-long-frame-cause": (1, 3, 9, ["p.C000#m1"]),  # as hang-deep-cause, with oversized frames and a line after
     "hang-long-message": (1, 3, 9, ["p.C000#m1"]),  # an exception message of several lines, then a deep stack
     "hang-sharded": (1, 5, 9, ["p.C000#m1"]),  # C000#m1 is in shard 2 (of 3): it lists, and reruns C002#m2
+    # --isolate: every test's JUnit entry says how long its process took to start and to exit.
+    "isolate-phases": (0, 10, 9, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
@@ -357,6 +359,8 @@ LONG_MESSAGE = ("java.lang.VerifyError: Bad type on operand stack\nException Det
 
 def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
+    if sc == "isolate-phases":
+        return ["--isolate", "-j", "3"]
     if sc.startswith("init-error") and "isolate" in sc:
         return ["--isolate", "-j", "3"] + (["--keep-class-errors"] if sc.endswith("-keep") else [])
     if "balanced" in sc:
@@ -439,6 +443,8 @@ def main():
                       (c.find("failure").text or "") if c.find("failure") is not None else "")
                      for c in ET.parse(xml).iter("testcase")] if os.path.exists(xml) else []
             texts = {f"{c}#{m}": t for c, m, _, t in cases}
+            props = {f"{c.get('classname')}#{c.get('name')}": {q.get("name") for q in c.iter("property")}
+                     for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
             hung = ([t for t in ("p.C000#m1", "(run)#incomplete") if t in failed]
@@ -502,6 +508,8 @@ def main():
                  and ("leaving out p.Empty#initializationError" in r.stderr) == sc.endswith("-keep")),
                 ("an entry for p.Empty", sc.startswith("init-error") and not sc.endswith("isolate-keep")
                  and any(c == "p.Empty" for c, _ in names)),
+                ("start-up and exit seconds missing", sc == "isolate-phases" and any(
+                    {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
                 (f"took {took:.0f} s", took > 30),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
