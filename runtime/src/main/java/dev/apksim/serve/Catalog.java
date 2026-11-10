@@ -182,7 +182,7 @@ final class Catalog {
         }
         if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 72 KB in all");
         // The launcher's own budget counts each seed's arguments (value plus the option and property names) and its count.
-        sdcardArgChars += v.length() + 32;
+        sdcardArgChars += v.getBytes(StandardCharsets.UTF_8).length + 32;  // bytes: the exec limit counts them
         if (sdcardArgChars > dev.apksim.SdcardSeeds.ARG_CHARS_MAX || ++sdcardSeeds > dev.apksim.SdcardSeeds.COUNT_MAX) {
           throw new IOException("--sdcard-file: at most " + dev.apksim.SdcardSeeds.COUNT_MAX + " files and 96 KB of arguments in all");
         }
