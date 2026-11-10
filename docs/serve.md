@@ -108,8 +108,10 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   (`restored` when `restore=` data came with it, which wins and is then kept). Kept data is labelled with the build's
   SHA-256 and signers as read when its session started, so replacing a catalog file meanwhile changes nothing. A session that ends with its data kept
   says so in its log.
-- **One session per key:** a second start with a key in use runs without the kept data and keeps nothing (`busy`), or,
-  with `keepBusy=refuse`, gets `409` before the upgrade.
+- **One session per key:** a start whose key is in use first waits (before the upgrade) up to 3 s for the session on
+  it to begin ending, then for as long as it is ending (its data being packed: 60 s at most), so the page's Start again
+  or a reload starts on what the last session kept. Past that it runs without the kept data and keeps nothing (`busy`),
+  or, with `keepBusy=refuse`, gets `409`.
 - **Scope:** the store's `<id>` is an HMAC of the key under the server's token, so a key reaches only what was kept
   under the same token (another token, or a changed one, finds nothing), and the key itself is stored nowhere and never
   shown in `/api/status`. Everyone who holds one token shares its keys: make them unguessable.

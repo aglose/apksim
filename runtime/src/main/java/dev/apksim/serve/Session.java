@@ -106,6 +106,11 @@ final class Session {
   volatile String launchSha;
   volatile List<String> launchSigners;
   private volatile boolean ended;
+
+  /** The session has been told to stop (its instance quits, then its data is erased or kept). */
+  boolean ending() {
+    return ended;
+  }
   private final CompletableFuture<Integer> port = new CompletableFuture<>();
   // Frame relay: the newest frame not sent yet, and how many the tab has not acknowledged. Guarded by this.
   // JPEG: at most one frame waits, the newest. H.264: every frame from a keyframe on waits (each needs the one before),

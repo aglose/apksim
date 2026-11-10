@@ -1203,6 +1203,21 @@ public final class Serve {
     // Reserved before the upgrade, so two starts on one key cannot both pass: the loser gets 409 (refuse) or runs
     // without the kept data. Released below unless the session took it (it releases it when it ends).
     boolean took = keepId != null && kept.take(keepId);
+    // The page's Start again, or a reload, opens the next session while the last one on the key still ends (its tab's
+    // close may not even have arrived yet) and packs its data: waited for, 3 s for the close to come, then as long as
+    // the key's session is ending (60 s at most), so the next one starts on what it kept rather than without it.
+    long waitFrom = System.currentTimeMillis();
+    while (keepId != null && !took) {
+      long waited = System.currentTimeMillis() - waitFrom;
+      if (waited > 60_000 || waited > 3_000 && !keyEnding(keepId)) break;
+      try {
+        Thread.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      took = kept.take(keepId);
+    }
     if (keepId != null && !took && refuseBusy) {
       Http.text(out, 409, "a session is using this key");
       return;
@@ -1213,6 +1228,11 @@ public final class Serve {
     } finally {
       if (took && !handed[0]) kept.release(keepId);
     }
+  }
+
+  /** Whether the session holding this kept key is ending (it gives the key back once its data is packed). */
+  private boolean keyEnding(String keepId) {
+    return sessions.values().stream().anyMatch(x -> keepId.equals(x.keepId) && x.ending());
   }
 
   /** The rest of a session's start, once its key (if any) is reserved; `handed[0]` set once a session holds it. */

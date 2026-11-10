@@ -140,7 +140,15 @@ s5, d = start(K1)
 sc.check(d.get("kept") == "reopened", "K1 a third time: " + str(d))
 disk = on_disk("kept.txt")
 sc.check(("two", "sd-one") in disk, "the second session's change was kept: " + str(disk))
-sc.check(end(s5, K1), "K1 ended")
+# The page's Start again: the tab closes and the next session starts at once, while the last one still packs.
+sc.check(push(s5, "files/kept.txt", b"three")[0] == 200, "changed again")
+s5.ws.send("", op=8, raw=b"")
+s5.ws.s.close()
+s5b, d = start(K1)
+sc.check(d.get("kept") == "reopened", "K1 restarted at once: " + str(d))
+disk = on_disk("kept.txt")
+sc.check(("three", "sd-one") in disk, "the restarted session has the last change: " + str(disk))
+sc.check(end(s5b, K1), "K1 ended")
 
 # 5. Forgotten: gone, and a session on it starts new.
 st, body = delete("/api/kept/" + K1)
