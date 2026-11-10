@@ -189,11 +189,15 @@ class CameraTest {
       }
     }, handler)
     var session: CameraCaptureSession? = null
+    val states = CopyOnWriteArrayList<String>()
     val outputs = listOf(OutputConfiguration(reader.surface), OutputConfiguration(still.surface))
     device.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, { handler.post(it) },
       object : CameraCaptureSession.StateCallback() {
         override fun onConfigured(s: CameraCaptureSession) { session = s }
         override fun onConfigureFailed(s: CameraCaptureSession) {}
+        override fun onActive(s: CameraCaptureSession) { states.add("active") }
+        override fun onReady(s: CameraCaptureSession) { states.add("ready") }
+        override fun onClosed(s: CameraCaptureSession) { states.add("closed") }
       }))
     waitFor("the session") { session != null }
     val results = ConcurrentHashMap<Long, TotalCaptureResult>()
@@ -223,7 +227,11 @@ class CameraTest {
     val exif = android.media.ExifInterface(java.io.ByteArrayInputStream(jpeg))
     assertEquals(android.media.ExifInterface.ORIENTATION_ROTATE_90, exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 0))
     session!!.stopRepeating()
+    // As a device's camera: active while it has requests, ready once the last one is done, closed after that.
+    waitFor("onReady after stopRepeating ($states)") { states.lastOrNull() == "ready" }
     session!!.close()
+    waitFor("onClosed ($states)") { states.lastOrNull() == "closed" }
+    assertEquals("active", states.first())
     device.close()
     reader.close()
     still.close()

@@ -147,6 +147,8 @@ public final class FakeCamera {
     final java.util.Set<CameraCaptureSession> sessions = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     /** createCaptureSession calls so far: a session configured for an earlier one was replaced before it was ready. */
     long creations;
+    /** Sessions with requests being processed, told onActive; told onReady once they have none (camera thread). */
+    final java.util.Set<CameraCaptureSession> active = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     Sequence repeating;
     final ArrayDeque<Sequence> singles = new ArrayDeque<>();
     long frameNumber;
@@ -195,7 +197,7 @@ public final class FakeCamera {
    * this creation's number, which its configuration must still match.
    */
   /** What a session was configured with: its output Surfaces (null if any was deferred) and its callback's executor. */
-  record SessionInfo(java.util.Set<Surface> outputs, Executor stateExecutor) {}
+  record SessionInfo(java.util.Set<Surface> outputs, Executor stateExecutor, CameraCaptureSession.StateCallback callback) {}
 
   private static final Map<CameraCaptureSession, SessionInfo> SESSIONS =
       java.util.Collections.synchronizedMap(new WeakHashMap<>());
@@ -244,6 +246,46 @@ public final class FakeCamera {
     return creation;
   }
 
+  /**
+   * onActive for a session that has requests to process and had none, onReady for one that has none left, on the
+   * session's callback executor as a device's camera reports them. Runs on the camera thread, around each frame and
+   * after stopRepeating and abortCaptures, so onReady follows the session's last results.
+   */
+  private static void states(DeviceState d) {
+    List<Runnable> calls = new ArrayList<>();
+    synchronized (d) {
+      java.util.Set<CameraCaptureSession> busy = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      if (d.repeating != null) busy.add(d.repeating.session);
+      for (Sequence s : d.singles) busy.add(s.session);
+      for (CameraCaptureSession s : busy) if (d.active.add(s)) calls.add(() -> tellState(s, true));
+      for (java.util.Iterator<CameraCaptureSession> it = d.active.iterator(); it.hasNext(); ) {
+        CameraCaptureSession s = it.next();
+        if (busy.contains(s)) continue;
+        it.remove();
+        calls.add(() -> tellState(s, false));
+      }
+    }
+    for (Runnable r : calls) r.run();
+  }
+
+  private static void tellState(CameraCaptureSession s, boolean active) {
+    SessionInfo info = SESSIONS.get(s);
+    if (info == null || info.callback() == null) return;
+    try {
+      if (ReflectionHelpers.<Boolean>getField(s, "mClosed")) return;  // a closed session hears onClosed only
+    } catch (RuntimeException ignored) {
+      // not a session impl: tell it anyway
+    }
+    try {
+      info.stateExecutor().execute(() -> {
+        if (active) info.callback().onActive(s);
+        else info.callback().onReady(s);
+      });
+    } catch (Throwable t) {
+      appCallbackFailed(t);
+    }
+  }
+
   /** CameraCaptureSession.stopRepeating: the repeating request ends after the frame in flight. */
   static void stopRepeating(CameraCaptureSession session) {
     for (DeviceState d : DEVICES.values()) {
@@ -255,6 +297,7 @@ public final class FakeCamera {
         }
       }
       if (ended != null) end(ended);
+      onCameraThread(() -> states(d));
     }
   }
 
@@ -268,6 +311,7 @@ public final class FakeCamera {
       }
       // A burst that already delivered a frame ends completed with its last frame, one that delivered none aborted.
       for (Sequence s : dropped) end(s);
+      onCameraThread(() -> states(d));
     }
   }
 
@@ -280,13 +324,28 @@ public final class FakeCamera {
   }
 
   private static void onCameraThread(Runnable r) {
-    start();
-    ScheduledExecutorService t = thread;
-    try {
-      if (t != null) t.execute(r);
-    } catch (java.util.concurrent.RejectedExecutionException e) {
-      // reset meanwhile: the test that owned the sequence is over
+    // Twice: the thread may have just stopped itself, all cameras closed (stopIfIdle), and a new one then starts.
+    for (int attempt = 0; attempt < 2; attempt++) {
+      start();
+      ScheduledExecutorService t = thread;
+      try {
+        if (t != null) t.execute(r);
+        return;
+      } catch (java.util.concurrent.RejectedExecutionException e) {
+        // stopped meanwhile (idle, or a reset): try the next thread once
+      }
     }
+  }
+
+  /**
+   * Once every camera is closed the thread stops, dropping what it drew with (its thread-local buffers, preview pools
+   * and pixel scratch), instead of waking 30 times a second for nothing; work queued on it still runs, and the next
+   * request starts a new one.
+   */
+  private static synchronized void stopIfIdle(long gen) {
+    if (gen != generation || !DEVICES.isEmpty() || thread == null) return;
+    thread.shutdown();
+    thread = null;
   }
 
   private static void ended(Sequence s) {
@@ -381,6 +440,7 @@ public final class FakeCamera {
           DEVICES.remove(device);
           continue;
         }
+        states(d);
         Sequence seq;
         CaptureRequest request;
         boolean lastOfSequence = false;
@@ -407,7 +467,9 @@ public final class FakeCamera {
           seq.lastFrame = frameNumber;
         }
         frame(gen, device, seq, request, frameNumber, timestamp, wall, lastOfSequence);
+        states(d);
       }
+      if (DEVICES.isEmpty()) stopIfIdle(gen);
     } catch (Throwable t) {
       System.err.println("[apksim] camera: " + t);
     }

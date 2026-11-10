@@ -73,7 +73,7 @@ public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
     Registering(CameraCaptureSession.StateCallback app, Set<Surface> outputs, Executor stateExecutor, long creation) {
       this.app = app;
       this.creation = creation;
-      this.info = new FakeCamera.SessionInfo(outputs, stateExecutor);
+      this.info = new FakeCamera.SessionInfo(outputs, stateExecutor, app);
     }
 
     /** StateCallback is instrumented, and javac does not see its (synthetic) implementation of this. */
