@@ -168,6 +168,14 @@ public final class FakeCamera {
    * A new capture session on the device (ShadowSimCameraDevice): the earlier ones close first, their requests ending
    * and their onClosed called, as the camera service replaces a session. Robolectric's left them streaming.
    */
+  /** A session configured on the device (ShadowSimCameraDevice), before it queues anything. */
+  static void configured(CameraDevice device, CameraCaptureSession session) {
+    DeviceState d = DEVICES.computeIfAbsent(device, k -> new DeviceState());
+    synchronized (d) {
+      d.sessions.add(session);
+    }
+  }
+
   static void replacingSessions(CameraDevice device) {
     DeviceState d = DEVICES.get(device);
     if (d == null) return;
