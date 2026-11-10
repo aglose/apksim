@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Checks kept sessions on a running `apksim serve --keep-max N --max 2` (or more; docs/serve.md "Kept sessions", issue 221).
 
-    scripts/kept-check.py URL --state DIR [--token FILE] [--app ID]
+    scripts/kept-check.py URL --state DIR [--exec PREFIX] [--token FILE] [--app ID]
 
-DIR is the server's state folder (`work/` in a checkout, `~/.apksim` for a release), where the check looks at the
-running app's data slot. A session with `keep=KEY` gets files pushed into its app's data and /sdcard; once it ends, a
+DIR is the server's state folder (`work/` in a checkout, `~/.apksim` for a release, `/opt/apksim/work` in the image),
+where the check looks at the running app's data slot; with `--exec "docker exec NAME"` it looks inside that container. A session with `keep=KEY` gets files pushed into its app's data and /sdcard; once it ends, a
 session with the same key starts on them, one with another key does not, a second session on a key in use runs without
 them (or gets 409 with `keepBusy=refuse`), what a reopened session changes is kept in turn, and `DELETE /api/kept/KEY`
 forgets it. Exits 1 on any failure.
@@ -15,6 +15,8 @@ import importlib.util
 import json
 import os
 import secrets
+import shlex
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -28,6 +30,7 @@ spec.loader.exec_module(sc)
 ap = argparse.ArgumentParser()
 ap.add_argument("url")
 ap.add_argument("--state", required=True)
+ap.add_argument("--exec", dest="exec_prefix", help="run the slot reads through this, e.g. 'docker exec NAME'")
 ap.add_argument("--token")
 ap.add_argument("--app")
 a = ap.parse_args()
@@ -74,6 +77,16 @@ def push(s, path, data):
 
 def on_disk(name):
     """What the running sessions' seed slots hold: (files/NAME contents, /sdcard/NAME contents), one per slot."""
+    if a.exec_prefix:
+        script = ('for s in "$0"/cache/data/*/ks*-0; do [ -d "$s" ] || continue; '
+                  'f=$(cat "$s/files/$1" 2>/dev/null || printf "\\001"); d=$(cat "$s.device/sdcard/$1" 2>/dev/null || printf "\\001"); '
+                  'printf "%s\\t%s\\n" "$f" "$d"; done')
+        r = subprocess.run(shlex.split(a.exec_prefix) + ["sh", "-c", script, a.state, name], capture_output=True, text=True)
+        out = []
+        for line in r.stdout.splitlines():
+            f, d = (line.split("\t") + [""])[:2]
+            out.append((None if f == "\x01" else f, None if d == "\x01" else d))
+        return out
     out = []
     for slot in glob.glob(os.path.join(a.state, "cache/data/*/ks*-0")):
         f, sd = os.path.join(slot, "files", name), os.path.join(slot + ".device", "sdcard", name)

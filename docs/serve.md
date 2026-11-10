@@ -460,7 +460,9 @@ below.
 `scripts/kept-check.py URL --state DIR [--token FILE]` checks kept sessions against a server started with
 `--keep-max N --max 2` or more (DIR is its state folder, where it looks at the running app's data slot): a key's
 pushed files and /sdcard are there for the next session on that key and not for another key, a key in use gives `busy`
-or `409`, a reopened session's change is kept in turn, and `DELETE` forgets it.
+or `409`, a reopened session's change is kept in turn, a restart on the same key starts on the last change, and
+`DELETE` forgets it. `--exec "docker exec NAME"` reads the slot inside a container; `ci-smoke.sh` runs it against the
+Linux image.
 
 ## Measured (2026-11-05, test app, phone 822x1782)
 
