@@ -26,6 +26,8 @@ final class SimWindow {
   static final int RESIZE = 13;
   /** A one-finger gesture cancelled (UiAutomation's ACTION_CANCEL): the target gets ACTION_CANCEL, not a release. */
   static final int CANCEL = 14;
+  /** The crown turned (`rotary N`, or the wheel on a watch): value is AXIS_SCROLL, negative clockwise; x, y the window point. */
+  static final int ROTARY = 15;
 
   /**
    * A CHAR event's y when the character comes from the clipboard (Cmd+V, `paste`), not the keyboard: the flight

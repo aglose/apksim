@@ -66,7 +66,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 ### Sessions
 
 - One session is one browser tab and one apksim instance: the APK, the device (phone, foldable, tablet, desktop,
-  TV), appearance, locale and font scale the tab asked for, and optionally a deep link opened once the app is up.
+  TV, watch, watch-small, watch-large: a round watch's stream has its corners cleared, and the wheel turns the crown), appearance, locale and font scale the tab asked for, and optionally a deep link opened once the app is up.
 - The instance is a normal launch: `apksim --headless --fresh --no-autofill --data-slots serve --control auto
   [options] APK` (`--no-autofill`: never the owner's saved sign-ins from `work/autofill`, which would sign a visitor
   in as them; `--data-slots serve`: app data in `serve-0`, `serve-1`..., never the `default`/`instance-N` slots an
@@ -292,7 +292,7 @@ The tab sends commands in the control channel's own words, and serve passes on o
 | Home button / click on the home screen | `home` / `resume` |
 | Rotate buttons | `rotate left\|right` |
 | Dark mode toggle | `appearance dark\|light` |
-| Device menu | `device phone\|foldable\|tablet\|desktop\|tv`, a `--device-size` name or the app's own default size |
+| Device menu | `device phone\|foldable\|tablet\|desktop\|tv\|watch\|watch-small\|watch-large` (also `rotary N`, `ambient on\|off`), a `--device-size` name or the app's own default size |
 | Open URL field | `open URL` (a URL without spaces) |
 | Locale, text size | `locale xx-YY`, `fontscale N` |
 | Mute audio, blank video, animation speed | `audio on\|mute`, `video on\|blank` (new codecs only), `animscale 0\|0.5\|1\|1.5\|2\|5\|10\|toggle`; not `audio off` / `video off`, which change the decoder list and are launch-only |

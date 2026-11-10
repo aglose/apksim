@@ -1077,7 +1077,8 @@ public class Host {
     switch (e.type()) {
       case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP, SimWindow.CANCEL -> dispatchTouch(e, now);
       case SimWindow.TOUCH2_CENTRE, SimWindow.TOUCH2_DOWN, SimWindow.TOUCH2_MOVE, SimWindow.TOUCH2_UP -> dispatchTouch2(e, now);
-      case SimWindow.WHEEL -> dispatchWheel(e, now);
+      case SimWindow.WHEEL -> dispatchWheel(e, now, Device.current().watch());
+      case SimWindow.ROTARY -> dispatchWheel(e, now, true);
       case SimWindow.BACK -> {
         if (!dispatchPredictiveBack()) sendKey(KeyEvent.KEYCODE_BACK, 0, now);
       }
@@ -1204,17 +1205,19 @@ public class Host {
     return m;
   }
 
-  private void dispatchWheel(SimWindow.Event e, long now) {
+  private void dispatchWheel(SimWindow.Event e, long now, boolean rotary) {
     MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
     props.id = 0;
     props.toolType = MotionEvent.TOOL_TYPE_MOUSE;
     MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords();
     coords.x = e.x();
     coords.y = e.y();
-    coords.setAxisValue(MotionEvent.AXIS_VSCROLL, e.value());
+    // On a watch the wheel is the crown: rotary input (what Wear's rotary scrolling reads), not a mouse wheel.
+    if (rotary) props.toolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+    coords.setAxisValue(rotary ? MotionEvent.AXIS_SCROLL : MotionEvent.AXIS_VSCROLL, e.value());
     MotionEvent m = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1,
         new MotionEvent.PointerProperties[] {props}, new MotionEvent.PointerCoords[] {coords},
-        0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        0, 0, 1f, 1f, 0, 0, rotary ? InputDevice.SOURCE_ROTARY_ENCODER : InputDevice.SOURCE_MOUSE, 0);
     List<View> roots = rootViews();
     if (!roots.isEmpty()) {
       View top = roots.get(roots.size() - 1);
@@ -1561,6 +1564,11 @@ public class Host {
           pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_MOVE, cx - d / 2, cy, 0));
         }
         pendingScript.add(new SimWindow.Event(SimWindow.TOUCH2_UP, cx - to / 2, cy, 0));
+      }
+      case "rotary" -> {
+        // rotary N: the crown turned N notches (positive: clockwise, scrolling down), as rotary input on any device.
+        float n = Float.parseFloat(a[1]);
+        pendingScript.add(new SimWindow.Event(SimWindow.ROTARY, 0, 0, -n));
       }
       case "key" -> {
         // key NAME [COUNT] [ctrl|shift|alt|meta ...]: a raw key, such as DEL, MOVE_END or A with ctrl.

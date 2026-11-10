@@ -285,6 +285,7 @@ final class FlightRecorder {
     EVENTS[SimWindow.KEY] = "key";
     EVENTS[SimWindow.RESIZE] = "resize";
     EVENTS[SimWindow.CANCEL] = "cancel";
+    EVENTS[SimWindow.ROTARY] = "rotary";
     EVENTS[SimWindow.TOUCH2_CENTRE] = "touch2-centre";
     EVENTS[SimWindow.TOUCH2_DOWN] = "touch2-down";
     EVENTS[SimWindow.TOUCH2_MOVE] = "touch2-move";
