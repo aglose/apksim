@@ -143,6 +143,15 @@ final class Session {
   private volatile int paceMs;
   private long lastDropNanos;
   private long lastPaceNanos;
+  /**
+   * Easing: after {@link #easeWaitNanos} without a drop the pace is tried 15% quicker ({@link #eased}, the pace before it
+   * kept in {@link #goodPaceMs}). A drop while that trial runs puts the old pace back and doubles the wait (to 128 s at
+   * most), so a tab at its limit is probed ever more rarely instead of freezing every few seconds.
+   */
+  private long easeWaitNanos = EASE_WAIT_NANOS;
+  private int goodPaceMs;
+  private boolean eased;
+  private static final long EASE_WAIT_NANOS = 8_000_000_000L;
   /** Smoothed gap between acks while another frame was in flight (ms): what the tab takes per frame when it is the limit. */
   private double ackGapMs = -1;
   private long lastAckNanos;
@@ -730,9 +739,12 @@ final class Session {
           double gap = (n - lastFrameNanos) / 1e6;
           if (lastFrameNanos != 0 && gap <= 250) frameIntervalMs += (gap - frameIntervalMs) * 0.1;
           lastFrameNanos = n;
-          if (h264 && paceMs > 0 && n - lastDropNanos > 8_000_000_000L && n - lastPaceNanos > 8_000_000_000L) {
-            // No drops for a while: let the instance speed up a step; another drop puts it back.
-            paceMs = paceMs * 85 / 100 <= 16 ? 0 : paceMs * 85 / 100;
+          if (h264 && paceMs > 0 && n - lastDropNanos > easeWaitNanos && n - lastPaceNanos > easeWaitNanos) {
+            // No drops for a while: let the instance speed up a step; a drop puts it back. Under the instance's own
+            // frame interval (8 ms at 120 Hz) a pace changes nothing, so it goes.
+            goodPaceMs = paceMs;
+            eased = true;
+            paceMs = paceMs * 85 / 100 <= 8 ? 0 : paceMs * 85 / 100;
             lastPaceNanos = n;
             paceAsk = paceMs;
           }
@@ -749,11 +761,21 @@ final class Session {
             dropToKey = askKey = true;
             keyDrops++;
             lastDropNanos = n;
-            int want = (int) Math.min(250, Math.ceil((ackGapMs > 0 ? ackGapMs : frameIntervalMs) * 1.15));
-            if (want > paceMs) {
-              paceMs = want;
+            if (eased) {
+              // The quicker pace was too quick: the one that held, and a longer wait before the next try.
+              eased = false;
+              easeWaitNanos = Math.min(easeWaitNanos * 2, 16 * EASE_WAIT_NANOS);
+              paceMs = paceAsk = goodPaceMs;
               lastPaceNanos = n;
-              paceAsk = want;
+            } else {
+              double want = (ackGapMs > 0 ? ackGapMs : frameIntervalMs) * 1.15;
+              // A drop under a pace that has had a second to take effect: the estimate was too low, so a quarter slower.
+              if (paceMs > 0 && n - lastPaceNanos > 1_000_000_000L) want = Math.max(want, paceMs * 1.25);
+              int ms = (int) Math.min(250, Math.ceil(want));
+              if (ms > paceMs) {
+                paceMs = paceAsk = ms;
+                lastPaceNanos = n;
+              }
             }
           } else if (!dropToKey) {
             waiting.add(frame);

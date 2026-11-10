@@ -313,7 +313,9 @@ inside itself:
   app draws would repeat that cycle and the video would freeze and jump (issue 232): after a drop serve sends the
   instance `pace MS` (about 1.15 times the tab's measured gap between acks, at most 250 ms), and the encoder makes at
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
-  After 8 s without a drop the pace eases by 15% (a faster tab gets its rate back; another drop raises it again).
+  After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
+  puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
+  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower.
   The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs` and `ackGapMs`. The window and byte
   budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,

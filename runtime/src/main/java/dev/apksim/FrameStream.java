@@ -163,6 +163,7 @@ final class FrameStream {
     } finally {
       synchronized (LOCK) {
         SUBSCRIBERS.remove(s);
+        if (!hasCodec(true)) paceNanos = 0;  // the pace was its viewer's
         SimWindow.closeHides(!SUBSCRIBERS.isEmpty());
         wake = true;  // the encoder lets go of an H.264 encoder no one needs any more
         LOCK.notifyAll();
