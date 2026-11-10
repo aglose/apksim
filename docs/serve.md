@@ -311,7 +311,7 @@ inside itself:
   behind drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same
   for serve, past 30 waiting). A keyframe is several times a delta, so a tab that decodes a little slower than the
   app draws would repeat that cycle and the video would freeze and jump (issue 232): after a second drop within 2 s serve sends the
-  instance `pace MS` (about 1.15 times the tab's measured gap between acks, at most 250 ms), and the encoder makes at
+  instance `pace MS` (about 1.15 times the tab's measured gap between acks, or its ack round trip with `--in-flight 1`, at most 250 ms), and the encoder makes at
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
   After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
   puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a

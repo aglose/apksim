@@ -770,9 +770,9 @@ final class Session {
               easeWaitNanos = Math.min(easeWaitNanos * 2, 16 * EASE_WAIT_NANOS);
               paceMs = paceAsk = goodPaceMs;
               lastPaceNanos = n;
-            } else if (repeated && ackGapMs > 0) {
+            } else if (repeated && tabFrameMs() > 0) {
               // Only from the tab's own measured rate: the app's frame interval says nothing about the tab.
-              double want = ackGapMs * 1.15;
+              double want = tabFrameMs() * 1.15;
               // A drop under a pace that has had a second to take effect: the estimate was too low, so a quarter slower.
               if (paceMs > 0 && n - lastPaceNanos > 1_000_000_000L) want = Math.max(want, paceMs * 1.25);
               int ms = (int) Math.min(250, Math.ceil(want));
@@ -851,6 +851,16 @@ final class Session {
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
+  }
+
+  /**
+   * What the tab takes per frame when it is the limit, in ms, or -1 before it is known: the gap between acks while
+   * another frame was in flight; with a window of one (`--in-flight 1`) no frame ever is, and each frame's ack round
+   * trip (the quickest recent one) is that time instead.
+   */
+  private synchronized double tabFrameMs() {
+    if (ackGapMs > 0) return ackGapMs;
+    return window() <= 1 ? ackRttMs() : -1;
   }
 
   /** The quickest of the recent ping round trips in ms, or -1 before the first. */
