@@ -760,6 +760,9 @@ final class Session {
             waiting.clear();
             dropToKey = askKey = true;
             keyDrops++;
+            // One drop alone may be a hiccup (the tab busy while its page starts): only drops that repeat, or one under
+            // a pace already set, are a tab that cannot keep up.
+            boolean repeated = paceMs > 0 || eased || (lastDropNanos != 0 && n - lastDropNanos < 2_000_000_000L);
             lastDropNanos = n;
             if (eased) {
               // The quicker pace was too quick: the one that held, and a longer wait before the next try.
@@ -767,8 +770,9 @@ final class Session {
               easeWaitNanos = Math.min(easeWaitNanos * 2, 16 * EASE_WAIT_NANOS);
               paceMs = paceAsk = goodPaceMs;
               lastPaceNanos = n;
-            } else {
-              double want = (ackGapMs > 0 ? ackGapMs : frameIntervalMs) * 1.15;
+            } else if (repeated && ackGapMs > 0) {
+              // Only from the tab's own measured rate: the app's frame interval says nothing about the tab.
+              double want = ackGapMs * 1.15;
               // A drop under a pace that has had a second to take effect: the estimate was too low, so a quarter slower.
               if (paceMs > 0 && n - lastPaceNanos > 1_000_000_000L) want = Math.max(want, paceMs * 1.25);
               int ms = (int) Math.min(250, Math.ceil(want));

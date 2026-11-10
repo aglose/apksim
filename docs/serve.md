@@ -310,7 +310,7 @@ inside itself:
   network or the app is the limit. H.264 frames each need the one before, so none is skipped: up to three wait, and a tab further
   behind drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same
   for serve, past 30 waiting). A keyframe is several times a delta, so a tab that decodes a little slower than the
-  app draws would repeat that cycle and the video would freeze and jump (issue 232): after a drop serve sends the
+  app draws would repeat that cycle and the video would freeze and jump (issue 232): after a second drop within 2 s serve sends the
   instance `pace MS` (about 1.15 times the tab's measured gap between acks, at most 250 ms), and the encoder makes at
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
   After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
