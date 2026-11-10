@@ -180,7 +180,7 @@ final class Catalog {
         } catch (IllegalArgumentException e) {
           throw new IOException(e.getMessage());
         }
-        if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 256 KB in all");
+        if (sdcardTotal > dev.apksim.SdcardSeeds.TOTAL_MAX) throw new IOException("--sdcard-file: over 72 KB in all");
         out.add(o);
         out.add(v);
         continue;

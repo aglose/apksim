@@ -9,9 +9,11 @@ import java.nio.charset.StandardCharsets;
  * beam check their launch options with {@link #parse} too.
  */
 public final class SdcardSeeds {
-  /** A file, and all of a launch's. */
+  /** A file, and all of a launch's (the exec budget of an argument list, which a launch repeats in its reproduction line, bounds the total). */
   public static final int FILE_MAX = 64 * 1024;
-  public static final int TOTAL_MAX = 256 * 1024;
+  public static final int TOTAL_MAX = 72 * 1024;  // base64 is 96 KB of arguments: twice in a launch's argv stays under macOS's 256 KB
+  /** The arguments' text in all (what the launcher checks). */
+  public static final int ARG_CHARS_MAX = 100_000;
 
   private SdcardSeeds() {}
 

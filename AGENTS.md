@@ -246,7 +246,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     defaults back, and a flush after it (the warm client hanging up after Host.run threw) erased the file; not
     animator_duration_scale or font_scale, which `animscale`/`fontscale` own). Apps keep a device id in /sdcard and a
     setup-done flag in Settings.Global on purpose; before, every launch lost them. `--fresh`, `ctl.py erase` and serve's
-    cleanup clear it with the slot; `--sdcard-file PATH=text:TEXT|BASE64` (repeatable; `SdcardSeeds`, 64 KB a file, 256 KB in all, inline so serve and beam allow it) writes a file into the slot's `sdcard/` before onCreate, over what the slot had; `--setting NS:KEY=VALUE` (repeatable) sets a value before onCreate, kept like a
+    cleanup clear it with the slot; `--sdcard-file PATH=text:TEXT|BASE64` (repeatable; `SdcardSeeds`, 64 KB a file, 72 KB in all, inline so serve and beam allow it) writes a file into the slot's `sdcard/` before onCreate, over what the slot had; `--setting NS:KEY=VALUE` (repeatable) sets a value before onCreate, kept like a
     `settings put`, and in test runs at each test's setup (one for animator_duration_scale or font_scale runs the
     control's code, `setAnimatorScale`/`setFontScale`, and is not kept; `--anim-scale` wins over an
     animator_duration_scale seed; the font scale is `--font-scale`, else the last

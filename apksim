@@ -182,6 +182,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # A file written to /sdcard before the app starts (repeatable): PATH=text:TEXT or PATH=BASE64 (SlotDevice.java).
     --sdcard-file)
       [[ "$2" =~ ^[^=]+= ]] || { echo "--sdcard-file takes PATH=text:TEXT or PATH=BASE64" >&2; exit 2; }
+      SDCARD_CHARS=$((${SDCARD_CHARS:-0} + ${#2}))
+      ((SDCARD_CHARS <= 100000)) || { echo "--sdcard-file: over 72 KB of contents in all" >&2; exit 2; }
       EXTRA+=("-Dapksim.sdcard.${SDCARD_N:-0}=$2"); SDCARD_N=$((${SDCARD_N:-0} + 1)); shift 2 ;;
     --build)
       [[ "$2" == ?*=* ]] || { echo "--build takes FIELD=VALUE" >&2; exit 2; }
