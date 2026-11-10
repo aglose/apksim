@@ -115,7 +115,7 @@ final class RealTimeClock {
           Thread.sleep(5);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
-          break;
+          return 0;  // an incomplete probe is not kept: a later wait probes again
         }
         over[i] = System.nanoTime() - t - 5_000_000L;
       }
