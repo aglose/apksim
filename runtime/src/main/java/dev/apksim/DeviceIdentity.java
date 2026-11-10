@@ -44,6 +44,7 @@ final class DeviceIdentity {
       ReflectionHelpers.setStaticField(Build.class, "SERIAL", serial);
       SystemFeatures.beforeApplicationOnCreate(app);
       Bluetooth.beforeApplicationOnCreate(app);
+      Cameras.install(app);
     } catch (RuntimeException e) {
       System.err.println("[apksim] device identity: " + e);
     }

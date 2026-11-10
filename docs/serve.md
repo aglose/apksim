@@ -177,7 +177,7 @@ A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
-`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--network-profile`, `--device`, and the flags
+`--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera`, `--network-profile`, `--device`, and the flags
 `--soft-keyboard` and `--move-shared-data` (macOS: load a 4 KB-aligned native library whose data shares a page with its
 code, experimental; it only changes how the app's own libraries are mapped, and does nothing on Linux).
 `serve --move-shared-data` gives it to every app, since apps rarely control how their third-party libraries are aligned. A
