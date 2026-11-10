@@ -391,6 +391,19 @@ def longest_first(tests, timings):
     return sorted(tests, key=lambda t: -timings.get(t, default))
 
 
+def interleaved(tests, timings):
+    """[tests] taken alternately from the long and the short end of the time-sorted list (longest, shortest, 2nd longest,
+    2nd shortest, ...): the long tests still start early, but each start is paired with a short one rather than with other
+    long ones, and the last slots to finish hold middling tests."""
+    ordered = longest_first(tests, timings)
+    out, lo, hi = [], 0, len(ordered) - 1
+    while lo <= hi:
+        out.append(ordered[lo]); lo += 1
+        if lo <= hi:
+            out.append(ordered[hi]); hi -= 1
+    return out
+
+
 def balance(tests, timings, shards):
     """[tests] in [shards] lists of nearly equal measured time: longest first, each to the shard with the least so far
     (tests without a time count as the median of those with one). Returns (lists, their predicted seconds)."""
