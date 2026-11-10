@@ -3,6 +3,24 @@
 # and is much faster. Build with scripts/docker-build.sh [TAG] [--platform linux/arm64], which stages the context.
 FROM eclipse-temurin:24-jdk AS build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev unzip zip libopenh264-dev && rm -rf /var/lib/apt/lists/*
+# H.264 and HEVC decoding for MediaCodec (native/linux/avdecoder_linux.c): FFmpeg's libavcodec with only those two
+# decoders and libswscale, built from the pinned release's source and linked statically into libvtdecoder.so below
+# (LGPL 2.1+, see THIRD-PARTY-NOTICES.md). Before COPY native so a change to apksim's own code does not rebuild it.
+# nasm is for x86_64's assembly (arm64 has NEON in C and intrinsics); pthreads is the C library's.
+ARG FFMPEG_VERSION=7.1.5
+ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils make $([ "$(uname -m)" = x86_64 ] && echo nasm) && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir /tmp/ffmpeg && cd /tmp/ffmpeg && \
+    curl -fsSL -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" && \
+    echo "$FFMPEG_SHA256  ffmpeg.tar.xz" | sha256sum -c - && \
+    tar xf ffmpeg.tar.xz && cd "ffmpeg-$FFMPEG_VERSION" && \
+    ./configure --prefix=/opt/ffmpeg --disable-everything --disable-programs --disable-doc --disable-network \
+      --disable-autodetect --disable-debug --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample \
+      --enable-pic --enable-static --disable-shared --enable-pthreads \
+      --enable-decoder=h264,hevc --enable-parser=h264,hevc --enable-swscale && \
+    make -j"$(nproc)" && make install && \
+    cd / && rm -rf /tmp/ffmpeg
 WORKDIR /src
 COPY native native
 COPY lib /opt/apksim/work/lib
@@ -13,6 +31,25 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
     # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl
+# MediaCodec's video decoders: libvtdecoder.so (dev.apksim.video.VideoToolbox's natives on libavcodec). FFmpeg's archives
+# are linked in with their symbols private (an APK may bring its own FFmpeg), so only the JNI functions are exported.
+# The decoder is checked here on two clips (B-frames and reordering, pts, size, colours, a reset), which is not shipped.
+COPY media /tmp/media
+RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libvtdecoder.so && \
+    gcc -O2 -shared -fPIC -fvisibility=hidden -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" -I$FF/include \
+      -o $L native/linux/avdecoder_linux.c \
+      -Wl,--exclude-libs,ALL -Wl,-Bsymbolic -Wl,--gc-sections -Wl,-z,defs -Wl,-z,noexecstack \
+      $FF/lib/libavcodec.a $FF/lib/libswscale.a $FF/lib/libavutil.a -lm -lpthread && \
+    strip --strip-unneeded $L && \
+    gcc -O2 -Wall -I$FF/include -o /tmp/avdecoder_check native/linux/avdecoder_check.c \
+      $FF/lib/libavcodec.a $FF/lib/libswscale.a $FF/lib/libavutil.a -lm -lpthread && \
+    /tmp/avdecoder_check /tmp/media/clip.h264 h264 640 360 && \
+    /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 && \
+    # the check must be able to fail: a wrong size is a failure
+    ! /tmp/avdecoder_check /tmp/media/clip.h264 h264 641 360 2>/dev/null && \
+    ! ldd $L | grep -E 'libav|libsw' && \
+    ! nm -D --defined-only $L | awk '{print $3}' | grep -vE '^(Java_dev_apksim_video_VideoToolbox_|_init$|_fini$|_edata$|_end$|__bss_start$)' && \
+    ls -l $L && rm -rf /tmp/media /tmp/avdecoder_check
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 # The newest of each, should an older one be left in work/lib; the others go.
 RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \

@@ -21,6 +21,7 @@ good-faith summary, not legal advice.
 | [Eclipse Temurin](https://adoptium.net/) JDK 24 (jlinked into release tarballs as `work/jre`) | Java runtime | GPLv2 with Classpath Exception |
 | [ANGLE](https://chromium.googlesource.com/angle/angle) (from `work/runtime/gles` or the Android SDK emulator) | Offscreen GLES in test runs | BSD 3-Clause |
 | [OpenH264](https://github.com/cisco/openh264) (Linux image, loaded at run time from the distribution's package) | H.264 encoding for `apksim serve` | BSD 2-Clause (Cisco's binary distribution has its own terms) |
+| [FFmpeg](https://ffmpeg.org/) 7.1.5 (Linux image: libavcodec's H.264 and HEVC decoders, libswscale and libavutil only, built from the release tarball at https://ffmpeg.org/releases/ and linked statically into `libvtdecoder.so`) | H.264 and HEVC decoding for MediaCodec on Linux | LGPL 2.1 or later (no GPL parts, no external libraries; its source is the tarball named in `docker/Dockerfile`, and the object files can be relinked with a modified FFmpeg by rebuilding the image) |
 | Mesa (Linux image) | Software GLES/EGL | MIT and others |
 
 The Compose test app in `testapks/composeapp` depends on AndroidX, Compose, Kotlin, ExoPlayer/Media3, OkHttp and
