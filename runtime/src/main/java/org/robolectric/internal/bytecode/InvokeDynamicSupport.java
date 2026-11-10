@@ -45,6 +45,11 @@ public class InvokeDynamicSupport {
 
   /** Sites bound directly, by the name of the class that declares them: what an invalidation must reset. */
   private static final Map<String, List<RoboCallSite>> SITES = new HashMap<>();
+  /**
+   * Counts invalidations (under SITES' lock). A binding looks its target up first and publishes it after: one that saw
+   * an invalidation come in between publishes the fallback instead, so its next call looks the target up again.
+   */
+  private static long generation;
 
   static {
     try {
@@ -109,12 +114,20 @@ public class InvokeDynamicSupport {
     return NOTHING;
   }
 
+  private static long generation() {
+    synchronized (SITES) {
+      return generation;
+    }
+  }
+
   private static MethodHandle bindInitCallSite(RoboCallSite site) {
+    long gen = generation();
     MethodHandle mh = RobolectricInternals.getShadowCreator(site.getTheClass());
-    return bind(site, mh, BIND_INIT_CALL_SITE);
+    return bind(site, mh, BIND_INIT_CALL_SITE, gen);
   }
 
   private static MethodHandle bindCallSite(MethodCallSite site) throws IllegalAccessException {
+    long gen = generation();
     MethodHandle mh = RobolectricInternals.findShadowMethodHandle(site.getTheClass(), site.getName(), site.type(),
         site.isStatic(), site.isNative());
     if (mh == null) {
@@ -126,7 +139,7 @@ public class InvokeDynamicSupport {
       }
     }
     try {
-      return bind(site, CLEAN ? cleanStackTraces(mh) : mh, BIND_CALL_SITE);
+      return bind(site, CLEAN ? cleanStackTraces(mh) : mh, BIND_CALL_SITE, gen);
     } catch (Throwable t) {
       t.printStackTrace();
       System.err.println(site.getTheClass());
@@ -134,19 +147,25 @@ public class InvokeDynamicSupport {
     }
   }
 
-  private static MethodHandle bind(RoboCallSite site, MethodHandle mh, MethodHandle binder) {
+  private static MethodHandle bind(RoboCallSite site, MethodHandle mh, MethodHandle binder, long gen) {
     if (!DIRECT) return bindWithFallback(site, mh, binder);
     try {
       mh = mh.asType(site.type());
     } catch (java.lang.invoke.WrongMethodTypeException e) {
       throw failed(site, e);
     }
-    // Registered before the target is set: an invalidation that comes in between resets it after we set it.
+    // Registered and published under the lock invalidated() takes, so neither can come between the two.
     synchronized (SITES) {
-      List<RoboCallSite> list = SITES.computeIfAbsent(site.getTheClass().getName(), k -> new ArrayList<>());
-      if (list.isEmpty() || list.get(list.size() - 1) != site) list.add(site);
+      if (gen != generation) {
+        // Shadows changed since mh was looked up: the call that bound runs through the fallback, which looks again.
+        MethodHandle again = fallback(site, binder);
+        site.setTarget(again);
+        return again;
+      }
+      // Each site is in the list once: it binds again only after invalidated() took it out.
+      SITES.computeIfAbsent(site.getTheClass().getName(), k -> new ArrayList<>()).add(site);
+      site.setTarget(mh);
     }
-    site.setTarget(mh);
     return mh;
   }
 
@@ -156,16 +175,15 @@ public class InvokeDynamicSupport {
    */
   static void invalidated(Collection<String> classNames) {
     if (!DIRECT) return;
-    List<RoboCallSite> reset = new ArrayList<>();
     synchronized (SITES) {
+      generation++;
       for (String name : classNames) {
         List<RoboCallSite> list = SITES.remove(name);
-        if (list != null) reset.addAll(list);
+        if (list == null) continue;
+        for (RoboCallSite site : list) {
+          site.setTarget(fallback(site, site instanceof MethodCallSite ? BIND_CALL_SITE : BIND_INIT_CALL_SITE));
+        }
       }
-    }
-    for (RoboCallSite site : reset) {
-      MethodHandle binder = site instanceof MethodCallSite ? BIND_CALL_SITE : BIND_INIT_CALL_SITE;
-      site.setTarget(fallback(site, binder));
     }
   }
 

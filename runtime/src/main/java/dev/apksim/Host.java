@@ -169,6 +169,7 @@ public class Host {
     while (!closed) {
       try {
         turnWakes = wakeCount.get();  // a wake from here on cuts this turn's idleWait short
+        long framesAtTurnStart = frames;
         long start = System.nanoTime();
         // About one event per 8 ms: a gesture needs time and looper turns between its events, or the app's
         // gesture detectors see no movement. Real mouse input rarely hits this limit.
@@ -334,7 +335,9 @@ public class Host {
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean quiet = idleSleep && !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
             && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
-        memory.tick(quiet && !firstFrame);
+        // Not a turn that drew or has a frame coming: render() has cleared the dirty flags quiet reads, so a screen that
+        // animates without input would otherwise count as still.
+        memory.tick(quiet && !firstFrame && frames == framesAtTurnStart && ShadowChoreographer.getNextVsyncTimeNanos() == 0);
         if (!firstFrame || ShadowChoreographer.getNextVsyncTimeNanos() == 0) pace(last, quiet);
       } catch (Throwable crash) {
         // App code (a posted Runnable, input, a lifecycle callback, a draw) threw out of the main looper: on a

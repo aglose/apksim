@@ -8,7 +8,7 @@ seconds apart. Both are measured unless --cold or --warm is given.
 --mem also reports memory: each launch then runs headless with a control port and, 5 s after its first frame, reads
 `stats` footprintMb (the physical footprint, as `footprint PID` shows it) before quitting; with warm launches, the
 standby's footprint too."""
-import os, re, socket, statistics, subprocess, sys, time
+import os, re, socket, statistics, subprocess, sys, threading, time
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 modes = [m for m in ("cold", "warm") if "--" + m in sys.argv] or ["cold", "warm"]
@@ -35,19 +35,38 @@ def launch_mem(apk, env):
     """One launch, held 5 s past its first frame: (window ms, first frame ms, footprint MB)."""
     p = subprocess.Popen([launcher, "--no-network", "--headless", "--control", "auto", apk], stderr=subprocess.PIPE,
                          stdout=subprocess.DEVNULL, text=True, env=env)
-    port = w = f = None
-    for line in p.stderr:
-        if m := re.search(r"control port (\d+)", line): port = int(m[1])
-        if m := re.search(r"window-open\s+(\d+) ms", line): w = int(m[1])
-        if m := re.search(r"first-frame\s+(\d+) ms", line): f = int(m[1]); break
+    marks = {}
+    first_frame = threading.Event()
+
+    def drain():
+        # Read stderr for the whole launch: a pipe left full would block the app's logging, and `stats` or `quit` with it.
+        for line in p.stderr:
+            for key, pattern in (("port", r"control port (\d+)"), ("window", r"window-open\s+(\d+) ms"),
+                                 ("frame", r"first-frame\s+(\d+) ms")):
+                if key not in marks and (m := re.search(pattern, line)):
+                    marks[key] = int(m[1])
+            if "frame" in marks:
+                first_frame.set()
+        first_frame.set()  # the process ended without one
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
     fp = None
-    if port and f:
-        time.sleep(5)
-        fp = int(re.search(r"footprintMb=(-?\d+)", ctl(port, "stats"))[1])
-        ctl(port, "quit")
-    p.stderr.close()
-    p.wait()
-    return w, f, fp
+    try:
+        first_frame.wait(120)
+        if "port" in marks and "frame" in marks:
+            time.sleep(5)
+            fp = int(re.search(r"footprintMb=(-?\d+)", ctl(marks["port"], "stats"))[1])
+            ctl(marks["port"], "quit")
+            p.wait(10)
+    except (OSError, subprocess.TimeoutExpired, TypeError):
+        pass
+    finally:
+        if p.poll() is None:
+            p.kill()
+        p.wait()
+        reader.join(5)
+    return marks.get("window"), marks.get("frame"), fp
 
 
 def standby_ready(timeout=20):
