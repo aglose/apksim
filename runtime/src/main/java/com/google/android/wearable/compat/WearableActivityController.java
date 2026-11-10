@@ -71,18 +71,24 @@ public class WearableActivityController {
         if (!LIVE.contains(this)) LIVE.add(this);
       }
       change(now);
+    } else if (ambient) {
+      handler.removeCallbacks(update);
+      handler.postDelayed(update, UPDATE_MS);
     }
   }
 
   public void onPause() {
     resumed = false;
+    handler.removeCallbacks(update);
   }
 
   public void onStop() {
     resumed = false;
+    handler.removeCallbacks(update);
   }
 
   public void onDestroy() {
+    handler.removeCallbacks(update);
     synchronized (LIVE) {
       LIVE.remove(this);
     }
@@ -113,8 +119,26 @@ public class WearableActivityController {
     }
   }
 
+  /** Wear OS updates an ambient screen about once a minute (onUpdateAmbient), while the activity is resumed. */
+  private static final long UPDATE_MS = 60_000;
+  private final Handler handler = new Handler(Looper.getMainLooper());
+  private final Runnable update = new Runnable() {
+    @Override public void run() {
+      if (!ambient || !resumed) return;
+      if (callback != null) callback.onUpdateAmbient();
+      handler.postDelayed(this, UPDATE_MS);
+    }
+  };
+
+  /** AmbientDelegate.dump forwards here; the state is all there is to print. */
+  public final void dump(String prefix, java.io.FileDescriptor fd, java.io.PrintWriter writer, String[] args) {
+    writer.println(prefix + "WearableActivityController: enabled=" + enabled + " ambient=" + ambient + " resumed=" + resumed);
+  }
+
   private void change(boolean on) {
     ambient = on;
+    handler.removeCallbacks(update);
+    if (on) handler.postDelayed(update, UPDATE_MS);
     if (callback == null) return;
     if (on) {
       Bundle b = new Bundle();
