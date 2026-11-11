@@ -27,7 +27,7 @@ final class A11yAudit {
       boolean named = !n.text().isEmpty() || !n.description().isEmpty() || n.info.getLabeledBy() != null;
       all.add(new Seen(r, actionable, named, n));
       if (!n.text().isEmpty() && cut.cutOff(n)) {
-        truncated.add("[" + r.left + "," + r.top + "," + r.right + "," + r.bottom + "] text cut off: \"" + flat(n.text()) + "\"");
+        truncated.add("[" + r.left + "," + r.top + "," + r.right + "," + r.bottom + "] text cut off: \"" + shown(n) + "\"");
       }
     });
     List<String> issues = new ArrayList<>(truncated);
@@ -56,8 +56,13 @@ final class A11yAudit {
   }
 
   private static String label(Nodes.Node n) {
-    String t = !n.text().isEmpty() ? n.text() : n.description();
-    return t.isEmpty() ? kind(n.info) : "\"" + flat(t) + "\"";
+    String t = !n.text().isEmpty() ? shown(n) : flat(n.description());
+    return t.isEmpty() ? kind(n.info) : "\"" + t + "\"";
+  }
+
+  /** A node's text for a diagnostic: never a password's, and on one line. */
+  private static String shown(Nodes.Node n) {
+    return n.info.isPassword() ? "•••" : flat(n.text());
   }
 
   /** Control replies are one line: a label's line breaks and tabs become spaces. */

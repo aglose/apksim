@@ -801,8 +801,9 @@ class Sweep:
         out = [[]]
         for e in self.ex.edges:
             if e["from"] == screen["id"] and e["to"] == screen["id"] and e["kind"] == "control" and e["action"] not in scrolled:
-                if len(out) <= self.args.sweep_actions and [e["cmd"]] not in out:
-                    out.append([e["cmd"]])
+                steps = list(e.get("steps") or [e["cmd"]])  # with a --fill, the fills come first
+                if len(out) <= self.args.sweep_actions and steps not in out:
+                    out.append(steps)
         return out
 
     def screen(self, inst, screen):
