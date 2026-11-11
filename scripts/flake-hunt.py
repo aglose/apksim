@@ -23,9 +23,10 @@ fail; the culprits and a command that reproduces the failure are printed. A fail
 reported as timing-dependent or nondeterministic, with the perturbations it showed under.
 --out DIR (default flake-hunt): flake-hunt.xml (JUnit: an entry per test and perturbation, failed when any run failed,
 "passed K of N" in the message; an entry per test that is flaky), index.html (the table, the culprits, the
-commands), runs/ (each run's JUnit XML and log). Exits 1 when a test is flaky or failing, else 0.
+commands), runs/ (each run's JUnit XML and log). Exits 1 when a test is flaky or failing, or a run failed as a whole
+(a "(run)" entry: a listener, a process that ended without accounting for its tests), else 0.
 """
-import argparse, html, json, os, random, shlex, subprocess, sys, time
+import argparse, html, json, os, random, shlex, signal, subprocess, sys, time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
@@ -81,22 +82,37 @@ class Hunt:
         self.n += 1
         base = os.path.join(self.runs_dir, f"{self.n:03d}-{label}")
         cmd = self.command(xml=base + ".xml", **kw)
+        argument = max(len(x.encode("utf-8")) for x in cmd)
+        if argument > 100_000:  # (Linux takes at most 128 KB in one argument)
+            sys.exit(f"the tests' names make a {argument}-byte argument: hunt in fewer tests at a time")
+        for f in (base + ".xml", base + ".log"):  # (an earlier hunt's, in a reused --out, must not be read as this run's)
+            if os.path.exists(f):
+                os.remove(f)
         hog = start_hogs(hogs)
+        ACTIVE[:] = hog
         t0 = time.time()
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True)
+            child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ACTIVE.append(child)
+            out, err = child.communicate()
+            p = subprocess.CompletedProcess(cmd, child.returncode, out, err)
         finally:
+            ACTIVE.clear()
             stop_hogs(hog)
         took = time.time() - t0
         with open(base + ".log", "w") as f:
             f.write("$ " + shlex.join(cmd) + "\n" + p.stdout + p.stderr)
-        results = {}
-        if os.path.exists(base + ".xml"):
+        results, ran = {}, []  # ran: the tests in the order the run reported them (its execution order in one process)
+        if not os.path.exists(base + ".xml"):
+            RUN_FAILURES.append(f"{label}: instrument.py exited {p.returncode} without a report (see {base}.log)")
+        else:
             for c in ET.parse(base + ".xml").iter("testcase"):
                 t = (c.get("classname"), c.get("name"))
                 if t[0].startswith("("):  # instrument.py's "(run)"/"(listing)" entries: the run itself failed
                     results[t] = "failed"
+                    RUN_FAILURES.append(f"{label}: {t[0]}#{t[1]} (see {base}.log)")
                     continue
+                ran.append(t)
                 f = c.find("failure")
                 results[t] = "failed" if f is not None else "skipped" if c.find("skipped") is not None else "passed"
                 if f is not None:
@@ -105,16 +121,37 @@ class Hunt:
         messages = results.pop(("__messages__", None), {})
         print(f"  {label}: " + ", ".join(f"{sum(1 for s in results.values() if s == k)} {k}"
                                          for k in ("passed", "failed", "skipped")) + f" ({took:.0f} s)", file=sys.stderr)
+        self.ran = ran
         return results, messages, base + ".log"
 
     def victim_fails(self, victim, before):
         """Delta debugging's test: does [victim] fail when [before] run ahead of it, in that order, in one process?"""
-        key = tuple(before)
+        key = (victim, tuple(before))
         if key not in self.trials:
             order = list(before) + [victim]
             got, _, _ = self.run("ddmin", tests=order, order=order)
             self.trials[key] = got.get(victim) == "failed"
         return self.trials[key]
+
+
+RUN_FAILURES = []  # runs that failed as a whole (a "(run)" entry, no report): the hunt fails with them
+ACTIVE = []  # the busy processes and the instrument.py child of the run under way, for a signal
+
+
+def stopped(signum, frame):
+    """SIGTERM/SIGHUP/SIGINT: the busy processes are in sessions of their own and would outlive us; instrument.py stops
+    its own test processes on SIGTERM."""
+    for x in list(ACTIVE):
+        try:
+            x.kill() if "-c" in x.args else x.terminate()  # (a busy process, or instrument.py: it stops its own)
+        except OSError:
+            pass
+    for x in list(ACTIVE):
+        try:
+            x.wait(30)
+        except subprocess.TimeoutExpired:
+            x.kill()
+    os._exit(128 + signum)
 
 
 def ddmin(items, fails):
@@ -196,6 +233,8 @@ def main():
     p.add_argument("--repo")
     p.add_argument("--ignore", action="append", default=[])
     a = p.parse_args(argv)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stopped)
     perturbs = [x.strip() for x in a.perturb.split(",") if x.strip()]
     bad = [x for x in perturbs if x not in PERTURBATIONS]
     if bad or a.n < 1:
@@ -240,7 +279,8 @@ def main():
             elif x == "shuffle":
                 order = shuffled(tests, rng, reverse=(i == 0))
                 got, msgs, _ = hunt.run(x, tests=tests, order=order)
-                note(x, got, msgs, order)
+                # (what ran, in its order: a class with @FixMethodOrder or Parameterized sets may keep their own)
+                note(x, got, msgs, [t for t in hunt.ran if t in got] or order)
             elif x == "isolate":
                 got, msgs, _ = hunt.run(x, tests=tests, isolate=True)
                 note(x, got, msgs)
@@ -255,7 +295,7 @@ def main():
     alone_ok = {t: all(s == "passed" for s in results["isolate"][t]) for t in tests} if "isolate" in results else {}
     culprits = {}  # victim -> (culprits, order of the minimal run, command)
     for x, t, order, _ in failures:
-        if t in culprits or order is None:
+        if t in culprits or order is None or t not in order:
             continue
         if "isolate" in results and not alone_ok[t]:
             continue  # fails alone too: not (only) order
@@ -300,6 +340,8 @@ def main():
                    for (c, m), v in verdicts.items()}, f, indent=1)
 
     print(f"\n{len(tests)} tests, {hunt.n} runs, {time.time() - t0:.0f} s")
+    for f in RUN_FAILURES:
+        print(f"run failed: {f}")
     width = max(len(f"{c}#{m}") for c, m in tests)
     print(f"{'test':{width}}  " + "  ".join(f"{x:>13}" for x in perturbs) + "  verdict")
     for t in tests:
@@ -310,7 +352,7 @@ def main():
         print(f"\n{t[0]}#{t[1]} fails after " + ", ".join(f"{c}#{m}" for c, m in minimal) + " in the same process:")
         print("  " + shlex.join(cmd))
     print(f"\n{os.path.join(a.out, 'index.html')}")
-    sys.exit(1 if any(v[0] != "stable" for v in verdicts.values()) else 0)
+    sys.exit(1 if RUN_FAILURES or any(v[0] != "stable" for v in verdicts.values()) else 0)
 
 
 def write_xml(path, tests, perturbs, results, verdicts, culprits, failures):

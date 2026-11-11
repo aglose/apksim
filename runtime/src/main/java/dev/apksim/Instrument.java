@@ -330,11 +330,17 @@ final class Instrument {
       if (hash > 0) rank.putIfAbsent(name.substring(0, hash), i);
       i++;
     }
-    return java.util.Comparator.comparingInt(d -> {
+    // A container that is not a named class (a Parameterized set, "[phone]") ranks by its earliest ranked test.
+    java.util.function.ToIntFunction<Description>[] of = new java.util.function.ToIntFunction[1];
+    of[0] = d -> {
       String c = d.getClassName();
       Integer r = d.getMethodName() != null ? rank.get(c + "#" + d.getMethodName()) : c == null ? null : rank.get(c);
-      return r == null ? Integer.MAX_VALUE : r;
-    });
+      if (r != null) return r;
+      int min = Integer.MAX_VALUE;
+      for (Description child : d.getChildren()) min = Math.min(min, of[0].applyAsInt(child));
+      return min;
+    };
+    return java.util.Comparator.comparingInt(of[0]);
   }
 
   /** {@link #selectorParts}, trimmed, without blank parts. */
