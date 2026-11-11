@@ -25,7 +25,7 @@ so the page can be sent on its own.
 OUT/in, mounted as /work). Exit 0 when a first bad build was found, 1 when none was (the oldest already bad, the newest
 good, or only skipped builds between), 2 for bad arguments.
 """
-import base64, html, json, os, re, shutil, subprocess, sys, time
+import base64, hashlib, html, json, os, re, shlex, shutil, subprocess, sys, time, zipfile
 
 ROOT = os.path.abspath(os.path.dirname(os.path.abspath(sys.argv[0])) + "/..")
 
@@ -33,6 +33,17 @@ ROOT = os.path.abspath(os.path.dirname(os.path.abspath(sys.argv[0])) + "/..")
 def die(msg):
     print(msg, file=sys.stderr)
     sys.exit(2)
+
+
+def file_part(x):
+    """The file an option names, whole (cert.pem) or after its last '=' (fake=/path/photo.png), or None."""
+    if x.startswith("-"):
+        return None
+    if os.path.isfile(x):
+        return x
+    if "=" in x and os.path.isfile(x.rsplit("=", 1)[1]):
+        return x.rsplit("=", 1)[1]
+    return None
 
 
 def natural(s):
@@ -71,13 +82,23 @@ def parse(argv):
     if opts["builds_file"]:
         base = os.path.dirname(os.path.abspath(opts["builds_file"]))
         for line in open(opts["builds_file"]):
-            line = line.split("#", 1)[0].strip()
-            if not line:
+            # Shell words: a quoted value keeps its spaces and a '#' inside it ('MODEL=Pixel 9'); '#' starts a comment.
+            parts = shlex.split(line, comments=True)
+            if not parts:
                 continue
-            parts = line.split()
-            # A file named in the build's options (--network-trust cert.pem) is relative to the builds file too.
-            opts_ = [os.path.normpath(os.path.join(base, x)) if not x.startswith("-") and os.path.exists(os.path.join(base, x)) else x
-                     for x in parts[1:]]
+
+            def rel(x):
+                # A file named in the build's options (--network-trust cert.pem, fake=photo.png) is relative to the
+                # builds file too.
+                if x.startswith("-"):
+                    return x
+                if os.path.exists(os.path.join(base, x)):
+                    return os.path.normpath(os.path.join(base, x))
+                if "=" in x and os.path.exists(os.path.join(base, x.rsplit("=", 1)[1])):
+                    k, v = x.rsplit("=", 1)
+                    return k + "=" + os.path.normpath(os.path.join(base, v))
+                return x
+            opts_ = [rel(x) for x in parts[1:]]
             builds.append({"apk": os.path.normpath(os.path.join(base, parts[0])), "opts": opts_, "shown": parts[1:]})
     if len(builds) < 2:
         die("bisect-rec.py: give at least two builds, oldest first")
@@ -93,7 +114,7 @@ def parse(argv):
         if x == "--control" or x.startswith("--control="):
             die("bisect-rec.py: --control would keep each replay running; leave it out")
     opts["inputs"] = [bundle] + [b["apk"] for b in builds] + ([opts["builds_file"]] if opts["builds_file"] else []) \
-        + [x for x in apksim_opts + [o for b in builds for o in b["opts"]] if not x.startswith("-") and os.path.isfile(x)]
+        + [f for f in (file_part(x) for x in apksim_opts + [o for b in builds for o in b["opts"]]) if f]
     return bundle, builds, apksim_opts, opts
 
 
@@ -129,6 +150,35 @@ class Bisect:
                                   capture_output=True, text=True).stdout.strip()
             self.platform = "linux/" + arch
             os.makedirs(os.path.join(self.out, "in"))
+            self.stage_recorded_build()
+
+    def stage_recorded_build(self):
+        """--image: an older bundle names no signer, and `apksim replay --apk` then finds the recorded build by its
+        file name beside the bundle to check another build's signer. When it is among the builds, a copy of it goes
+        there (OUT/in/NAME, beside the staged bundle)."""
+        try:
+            with zipfile.ZipFile(self.bundle) as z:
+                m = json.loads(z.read("manifest.json"))
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+            return
+        name, sha = m.get("apk"), m.get("apkSha256")
+        if not name or not sha or "/" in name or m.get("apkSigners"):
+            return
+        for b in self.builds:
+            h = hashlib.sha256()
+            with open(b["apk"], "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() == sha:
+                shutil.copy(b["apk"], os.path.join(self.out, "in", name))
+                return
+
+    def mapped(self, x):
+        """An option as the image sees it: a file it names staged into OUT/in, whole or after its '='."""
+        f = file_part(x)
+        if f is None:
+            return x
+        return self.inside(x) if f == x else x[: len(x) - len(f)] + self.inside(f)
 
     def inside(self, path):
         """A file as the image sees it: copied into OUT/in once per source path, under a name of its own (two builds
@@ -151,9 +201,14 @@ class Bisect:
         extra = b["opts"] + self.apksim_opts
         t0 = time.time()
         if self.image:
-            mapped = [self.inside(x) if os.path.isfile(x) else x for x in extra]
-            cmd = ["docker", "run", "--rm", "--platform", self.platform, "-v", f"{self.out}:/work", self.image,
-                   "replay", "--headless", "--apk", self.inside(b["apk"]), "--out", "/work/" + b["run"]] + mapped + [self.inside(self.bundle)]
+            mapped = [self.mapped(x) for x in extra]
+            args = ["replay", "--headless", "--apk", self.inside(b["apk"]), "--out", "/work/" + b["run"]] + mapped + [self.inside(self.bundle)]
+            # The container runs as root: what it writes into the mount is left writable by everyone, so the host user
+            # can empty this --out next time (as instrument.py's bundles are).
+            script = ("apksim " + " ".join(shlex.quote(x) for x in args) + "; s=$?; chmod -R a+rwX /work/" + shlex.quote(b["run"])
+                      + " /work/in 2>/dev/null; exit $s")
+            cmd = ["docker", "run", "--rm", "--platform", self.platform, "-v", f"{self.out}:/work", "--entrypoint", "bash",
+                   self.image, "-c", script]
         else:
             cmd = [os.path.join(ROOT, "apksim"), "replay", "--headless", "--apk", b["apk"], "--out", rundir] + extra + [self.bundle]
         with open(os.path.join(rundir, "replay.log"), "w") as log:
@@ -170,9 +225,17 @@ class Bisect:
             # Ended before its result (the app exited by itself, the last activity finished): not evidence either way.
             b["result"] = "skipped"
             b["why"] = f"the replay ended before its result (report: {rep_state or 'none'})"
-        elif code in (3, 10):
+        elif code == 3 and rep_state == "diverged":
             b["result"] = "bad"
-            b["why"] = "crashed" if code == 10 else "diverged"
+            b["why"] = "diverged"
+        elif code == 10:
+            # A crash, in the replay or before it (the app's start): bad either way.
+            b["result"] = "bad"
+            b["why"] = "crashed"
+        elif code == 3:
+            # Exit 3 without a diverged report: the app's own System.exit(3), not apksim's verdict.
+            b["result"] = "skipped"
+            b["why"] = f"exit 3 without a diverged report (report: {rep_state or 'none'})"
         else:
             b["result"] = "skipped"
             m = re.findall(r"^apksim replay: (.*)$|^\[apksim\] replay: cannot start: (.*)$", text, re.M)
