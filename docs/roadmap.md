@@ -17,7 +17,9 @@ are worked on at once, in nine lanes; each pull request carries a label saying w
 How the labels work with the release skill: `roadmap-r1` pull requests are opened ready for review; `roadmap-r2` and
 `roadmap-r3` ones are opened as **drafts**, and the release skill skips drafts. To cut the second release, mark the
 `roadmap-r2` drafts ready (`gh pr ready N`), then run the release; the same for the third. A pull request that stacks
-on another names its parent's branch as its base, and merges after it.
+on another names its parent's branch as its base, and merges after it: pull requests are squash-merged, so once the
+parent is on `main` the stacked branch is moved there with `git rebase --onto origin/main <parent's old tip>` and its
+base set to `main`.
 
 ## Items
 
@@ -97,19 +99,23 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-| Item | Lane | Label | State |
-|---|---|---|---|
-| 1 Replay | replay | r1 | started |
-| 2 Recording to test | replay | r2 | queued behind 4 |
-| 3 Trace viewer | viewer | r1 | started |
-| 4 Bisect | replay | r2 | queued behind 1 |
-| 5 Pre-warmed test processes | test processes | r1 | started |
-| 6 Flake hunter | test processes | r2 | queued behind 5 |
-| 7 Coverage | coverage | r2 | started |
-| 8 Conformance sweep | conformance | r1-r3 | started |
-| 9 PR preview, compare | serve | r1 | started |
-| 10 Report button, inspector | serve | r2 | queued behind 9 |
-| 11 Crawler | crawler | r1 | started |
-| 12 Resilience sweep | crawler | r2 | queued behind 11 |
-| 13 MCP server | mcp | r3 | started |
-| 14 BLE, linked instances | ble | r3 | started |
+As of 2026-11-11. This table says where each item's work is and nothing that changes by the hour: check results,
+whether a pull request is a draft and which branch it is based on are on its own page. "In review" means open and not
+merged.
+
+| Item | Lane | Label | Pull request | State |
+|---|---|---|---|---|
+| 1 Replay | replay | r1 | #254 | merged |
+| 2 Recording to test | replay | r2 | #262 | in review |
+| 3 Trace viewer | viewer | r1 | #251 | in review |
+| 4 Bisect | replay | r2 | #258 | in review |
+| 5 Pre-warmed test processes | test processes | r1 | #257 | in review |
+| 6 Flake hunter | test processes | r2 | #261 | in review |
+| 7 Coverage | coverage | r2 | #255 | in review |
+| 8 Conformance sweep | conformance | r1-r3 | #265, #266, #267 | first batch in review (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
+| 9 PR preview, compare | serve | r1 | #252 | in review |
+| 10 Report button, inspector | serve | r2 | #259 | in review |
+| 11 Crawler | crawler | r1 | #260 | in review |
+| 12 Resilience sweep | crawler | r2 | #263 | in review |
+| 13 MCP server | mcp | r3 | #250 | in review |
+| 14 BLE, linked instances | ble | r3 | #253, #256 | in review |
