@@ -161,8 +161,9 @@ class Session:
                 key = self.codec == "h264" and len(p) > 20 and p[20] == 1
                 self.frames.append((time.time() * 1000, present_us / 1000 - self.offset, encode_us / 1000, len(p), w, h,
                                     hashlib.sha1(p[20:]).hexdigest(), key, p[21:] if self.codec == "h264" else b""))
-                if self.acking and self.ack_delay:
-                    self.acks.append((time.time() + self.ack_delay, "ack", None))
+                delay = self.frame_ack_delay()
+                if self.acking and delay:
+                    self.acks.append((time.time() + delay, "ack", None))
                 elif self.acking:
                     self.ws.send("ack")
             elif op == 1:
@@ -180,7 +181,8 @@ class Session:
                 if t.startswith("x "):
                     print("     session ended: " + t[2:])
                     return False
-            elif op == 9:  # a ping: its pong, held as a slow link would
+            elif op == 9:  # a ping: its pong, held as a slow link would (the link's delay only: a browser answers pings
+                # without waiting for the page or its decoder)
                 if self.ack_delay:
                     self.acks.append((time.time() + self.ack_delay, "pong", p))
                 else:
@@ -190,6 +192,10 @@ class Session:
             if until and until():
                 return True
         return until is None or until()
+
+    def frame_ack_delay(self):
+        """Seconds to hold a frame's ack: the link's delay."""
+        return self.ack_delay
 
     def after(self, cmds, wait=1.5):
         """Sends commands; the frames that arrived after them."""
@@ -548,6 +554,7 @@ def main():
         d.ws.s.close()
     if a.h264 != "skip":
         check_h264(url, token, app, a)
+        check_h264_pacing(url, token, app, a)
     return finish()
 
 
@@ -595,6 +602,55 @@ def nal_types(unit):
             return types
         types.append(unit[i + 3] & 0x1F)
         i += 3
+
+
+class SlowTab(Session):
+    """A tab whose decoder takes decode_ms per frame, one after another, on a link with no delay: each ack is sent once
+    the frames before it and its own decode are done (as the page acks after its VideoDecoder outputs the frame). Pongs
+    are not held: a browser answers pings without waiting for the page."""
+    decode_ms = 0
+    _due = 0.0
+
+    def frame_ack_delay(self):
+        if not self.decode_ms:
+            return 0
+        now = time.time()
+        self._due = max(self._due, now) + self.decode_ms / 1000
+        return self._due - now
+
+
+def check_h264_pacing(url, token, app, a):
+    """A tab that decodes slower than the app draws (issue 232): the server paces the encoder to the tab rather than
+    dropping to a keyframe over and over, so the stream settles at the tab's rate on delta frames."""
+    if ACK_DELAY_MS:
+        return  # the slow-link run measures the window; pacing needs a tab that acks without a link's delay
+    s = SlowTab(url, token, app, a.device, codec="h264")
+    if not s.pump(a.first_frame_timeout, until=lambda: len(s.frames) > 0) or s.codec != "h264":
+        s.ws.s.close()
+        return
+    print("  -- H.264 pacing (a tab slower than the app)")
+    s.after(["touch down 720 1690", "touch up 720 1690"], 1.0)  # the Shader tab: every frame differs
+    n0, t0 = len(s.frames), time.time()
+    s.pump(2)
+    app_fps = (len(s.frames) - n0) / (time.time() - t0)
+    if app_fps < 40:  # only where the app draws fast enough for a tab to be slower than it (not the Linux image's CPU shader)
+        print(f"     skipped: the Shader tab streams {app_fps:.0f} fps here")
+        s.ws.s.close()
+        return
+    s.decode_ms = 2.5 * 1000 / app_fps  # well behind the app: drops to keyframes without pacing
+    s.pump(20)  # the first drops set the pace; it settles within ~15 s
+    n0, t0 = len(s.frames), time.time()
+    s.ws.send("stats")
+    s.pump(8)
+    tail = s.frames[n0:]
+    secs = time.time() - t0
+    keys = sum(1 for f in tail if f[7])
+    tab_fps = 1000 / s.decode_ms
+    pace = s.stats.get("paceMs", 0)
+    check(pace and pace > 0, f"a tab decoding {s.decode_ms:.0f} ms a frame gets a pace (paceMs {pace}, keyDrops {s.stats.get('keyDrops')})")
+    check(keys <= 1, f"paced, at most one keyframe in {secs:.0f} s ({keys}; drops to keyframes would be several a second)")
+    check(len(tail) / secs >= 0.5 * tab_fps, f"paced, the tab still gets at least half its rate ({len(tail) / secs:.1f} fps of {tab_fps:.0f})")
+    s.ws.s.close()
 
 
 def check_h264(url, token, app, a):

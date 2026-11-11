@@ -134,6 +134,11 @@ final class Session {
   private volatile boolean h264;
   /** H.264 frames that may wait for the tab before it drops to the next keyframe. */
   private static final int MAX_WAITING = 3;
+  /** Pacing for a tab slower than the app (issue 232). Guarded by this. */
+  private final Pacer pacer = new Pacer();
+  /** Smoothed gap between acks while another frame was in flight (ms): what the tab takes per frame when it is the limit. */
+  private double ackGapMs = -1;
+  private long lastAckNanos;
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
@@ -711,12 +716,14 @@ final class Session {
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
         boolean askKey = false;
+        int paceAsk = -1;
         synchronized (this) {
           long n = System.nanoTime();
           // Gaps over 250 ms are a still screen (unchanged images are not sent), not the app's frame rate.
           double gap = (n - lastFrameNanos) / 1e6;
           if (lastFrameNanos != 0 && gap <= 250) frameIntervalMs += (gap - frameIntervalMs) * 0.1;
           lastFrameNanos = n;
+          if (h264) paceAsk = pacer.frame(n);
           if (!h264) {
             waiting.clear();
             waiting.add(frame);
@@ -728,12 +735,15 @@ final class Session {
             // The tab is behind: what waits goes, and so does every frame until a keyframe.
             waiting.clear();
             dropToKey = askKey = true;
+            int p = pacer.dropped(n, tabFrameMs());
+            if (p >= 0) paceAsk = p;
           } else if (!dropToKey) {
             waiting.add(frame);
           }
           notifyAll();
         }
         if (askKey) askKey();
+        if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
       }
     } catch (IOException e) {
       // the instance went away, or ended the stream (H.264 that kept failing)
@@ -786,9 +796,28 @@ final class Session {
     if (f != null) {
       inFlight--;
       inFlightBytes -= f[1];
+      long t = System.nanoTime();
+      if (h264) {
+        Pacer.AckGap g = Pacer.ackGap(ackGapMs, lastAckNanos, t, inFlight);
+        ackGapMs = g.gapMs();
+        lastAckNanos = g.baselineNanos();
+      }
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
+  }
+
+  private synchronized int pacerKeyDrops() {
+    return pacer.keyDrops;
+  }
+
+  private synchronized int pacerPaceMs() {
+    return pacer.paceMs;
+  }
+
+  /** What the tab takes per frame when it is the limit, in ms, or -1 before it is known (Pacer.tabFrameMs). */
+  private synchronized double tabFrameMs() {
+    return Pacer.tabFrameMs(ackGapMs, window(), ackRttMs());
   }
 
   /** The quickest of the recent ping round trips in ms, or -1 before the first. */
@@ -837,11 +866,15 @@ final class Session {
 
   /** H.264: a keyframe next, from the instance (one is sent even if the screen is still). */
   private void askKey() {
+    sendStream("key\n");
+  }
+
+  private void sendStream(String line) {
     Socket s = stream;
     if (!h264 || s == null) return;
     try {
       synchronized (s) {
-        s.getOutputStream().write("key\n".getBytes(StandardCharsets.US_ASCII));
+        s.getOutputStream().write(line.getBytes(StandardCharsets.US_ASCII));
       }
     } catch (IOException e) {
       // the instance went away
@@ -1399,7 +1432,7 @@ final class Session {
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
         + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
-        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + "}";
+        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + pacerKeyDrops() + ",\"paceMs\":" + pacerPaceMs() + ",\"ackGapMs\":" + Math.round(ackGapMs) + "}";
   }
 
   // ---------------------------------------------------------------- the end

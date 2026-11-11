@@ -309,7 +309,16 @@ inside itself:
   (-1 before the first ack; it includes the tab's decode and draw) and `frameMs`, so a client can tell whether the
   network or the app is the limit. H.264 frames each need the one before, so none is skipped: up to three wait, and a tab further
   behind drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same
-  for serve, past 30 waiting). The window and byte budget apply to both codecs.
+  for serve, past 30 waiting). A keyframe is several times a delta, so a tab that decodes a little slower than the
+  app draws would repeat that cycle and the video would freeze and jump (issue 232): after a second drop within 2 s serve sends the
+  instance `pace MS` (about 1.15 times the tab's measured gap between acks, or its ack round trip with `--in-flight 1`, at most 250 ms), and the encoder makes at
+  most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
+  After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
+  puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
+  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. An instance with
+  several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.
+  The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs` and `ackGapMs`. The window and byte
+  budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
 - The page shows decoded frames at its display's refresh (`requestAnimationFrame`), as the Mac window shows its own at
