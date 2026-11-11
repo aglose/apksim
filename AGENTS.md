@@ -56,8 +56,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). A touch event's
     raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
-    Host places windows itself (`position`: gravity and offsets on the display; Robolectric's window session gives a
-    window that is not full-screen the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
+    Host places windows itself (`position`: gravity and offsets on the display with `Gravity.apply`, as the window
+    manager does, so an axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
+    gives a window that is not full-screen the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
     moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
     position (getLocationOnScreen, boundsInScreen, Compose's window position) is where the window is drawn. Before, a
     centred dialog's views thought they were at the top left, and `nodes`, `tap-text` and UiAutomator missed them.
@@ -941,7 +942,11 @@ in the image), answered `c h264`/`c jpeg`: no reordering, keyframes only at the 
 request, and a still screen encoded twice more to sharpen it; `--bitrate` (4000 kbps), `--codec jpeg` turns it off.
 Serve relays frames with at most two in flight per tab (the page acknowledges each one decoded and shows it at its
 next display refresh, from a queue of at most two, pacing the instance to that display with `vsync`; with H.264 a tab that
-falls behind drops to the next keyframe, which serve asks for), and passes on only input and device commands
+falls behind drops to the next keyframe, which serve asks for; when that repeats, the tab decoding slower than the app
+draws, serve sends the instance `pace MS` and `FrameStream` encodes at most one new frame per MS, the newest, so the
+stream stays a delta chain at the tab's rate instead of freezing on keyframes: `serve.Pacer`, issue 232, checked on a
+simulated clock by `scripts/check-pacer.sh` (CI) and end to end by `serve-check.py`'s slow tab (Mac only: the Linux
+image's CPU shader is too slow to outrun a tab); `s` stats `keyDrops`, `paceMs`, `ackGapMs`), and passes on only input and device commands
 (`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
 non-loopback `Host` header (DNS rebinding). Instances are never given `--adb` or `--control-bind`. A session ends when

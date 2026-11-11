@@ -315,7 +315,8 @@ apksim serve --bind 0.0.0.0 --token token.txt --apps builds/   # for others: the
 ```
 
 For people without Android tools: each tab runs the APK in its own instance on the server and streams its screen
-(JPEG frames, sent only when the screen changes); clicks, drags, the wheel and the keyboard go back as touches and
+(JPEG frames, or H.264 where the browser decodes it, sent only when the screen changes; a tab that decodes slower
+than the app draws gets fewer frames, not freezes); clicks, drags, the wheel and the keyboard go back as touches and
 keys. Back, Home, rotation, dark mode, device type, text size, locale and deep links are buttons, and "Copy link"
 gives a URL that opens the same app in the same settings. A page that drives the stream itself can also mute audio,
 blank video and change animation speed in a running session (`audio`, `video`, `animscale`; docs/serve.md), push a
@@ -377,7 +378,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.25.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.26.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -426,9 +427,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.25.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.26.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.25.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.26.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
