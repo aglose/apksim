@@ -21,6 +21,7 @@ final class InstallState {
     grantInstallPermissions(app);
     hostNetworks(app);
     installProviders(app);
+    standInBrowser(app);
   }
 
   /**
@@ -42,6 +43,70 @@ final class InstallState {
     }
     org.robolectric.Shadows.shadowOf(app).grantPermissions("android.permission.INTERNET");
     hostNetworks(app);
+  }
+
+  /** The stand-in browser's package: what resolves a web link, as a device with Chrome does. */
+  static final String BROWSER = "com.android.chrome";
+
+  /**
+   * A browser, as an emulator image has one: a package whose activity answers the VIEW probes browser-detecting code sends (a
+   * web link, with or without BROWSABLE), so `queryIntentActivities` and `resolveActivity` find it. OAuth SDKs (Auth0's
+   * WebAuthProvider, AppAuth) ask for one before they start and stop with "no compatible browser" otherwise (issue
+   * 236). A launch for it leaves the app, so Host hands it to the Mac's browser (DeviceControls.openOnHost). It has no
+   * CustomTabsService, so those SDKs fall back to a plain VIEW launch. Not for an app that is itself a browser
+   * (its own filters resolve first).
+   */
+  private static void standInBrowser(Application app) {
+    try {
+      android.content.pm.PackageManager pm = app.getPackageManager();
+      try {
+        pm.getPackageInfo(BROWSER, 0);
+        return;
+      } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+        // not there yet
+      }
+      android.content.pm.PackageInfo pi = new android.content.pm.PackageInfo();
+      pi.packageName = BROWSER;
+      pi.versionName = "130.0.0.0";
+      pi.applicationInfo = new android.content.pm.ApplicationInfo();
+      pi.applicationInfo.packageName = BROWSER;
+      pi.applicationInfo.name = "Chrome";
+      pi.applicationInfo.enabled = true;
+      pi.applicationInfo.flags = android.content.pm.ApplicationInfo.FLAG_SYSTEM;
+      android.content.pm.ActivityInfo ai = new android.content.pm.ActivityInfo();
+      ai.packageName = BROWSER;
+      ai.name = "com.google.android.apps.chrome.Main";
+      ai.exported = true;
+      ai.enabled = true;
+      ai.applicationInfo = pi.applicationInfo;
+      pi.activities = new android.content.pm.ActivityInfo[] {ai};
+      org.robolectric.shadows.ShadowPackageManager spm = org.robolectric.Shadows.shadowOf(pm);
+      spm.addPackage(pi);
+      android.content.ComponentName cn = new android.content.ComponentName(BROWSER, ai.name);
+      android.content.IntentFilter f = new android.content.IntentFilter(android.content.Intent.ACTION_VIEW);
+      f.addCategory(android.content.Intent.CATEGORY_DEFAULT);
+      f.addCategory(android.content.Intent.CATEGORY_BROWSABLE);
+      f.addDataScheme("http");
+      f.addDataScheme("https");
+      spm.addActivityIfNotPresent(cn);
+      // Robolectric cannot attach intent filters to an activity added this way, so the probes browser-detecting code
+      // sends are answered by intent: AppAuth's BrowserSelector (VIEW + BROWSABLE on http://www.example.com), Auth0's
+      // (the same without the category), https for either.
+      for (String url : new String[] {"http://www.example.com", "https://www.example.com", "http://example.com", "https://example.com"}) {
+        for (boolean browsable : new boolean[] {false, true}) {
+          android.content.Intent probe = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+          if (browsable) probe.addCategory(android.content.Intent.CATEGORY_BROWSABLE);
+          android.content.pm.ResolveInfo ri = new android.content.pm.ResolveInfo();
+          ri.activityInfo = ai;
+          ri.priority = 0;
+          ri.isDefault = true;
+          ri.match = 0x108000;
+          spm.addResolveInfoForIntentNoDefaults(probe, ri);
+        }
+      }
+    } catch (Exception | Error e) {
+      System.err.println("[apksim] stand-in browser: " + e);
+    }
   }
 
   /**

@@ -1120,6 +1120,28 @@ final class AdbShell {
         boolean brief = a.contains("--brief");
         // The launcher activity a device resolves, not --activity's: a home-only app has none.
         String launcher = System.getProperty("apksim.launcher");
+        if (a.contains("-a") || a.contains("-d")) {
+          // An intent (-a ACTION, -d URI, -c CATEGORY): what the package manager resolves for it, the stand-in browser
+          // included (issue 236). A browser's filter needs BROWSABLE, which `am start` adds for a web link.
+          Intent q = new Intent();
+          for (int i = 1; i + 1 < a.size(); i++) {
+            switch (a.get(i)) {
+              case "-a" -> q.setAction(a.get(i + 1));
+              case "-d" -> q.setData(android.net.Uri.parse(a.get(i + 1)));
+              case "-c" -> q.addCategory(a.get(i + 1));
+              default -> { }
+            }
+          }
+          ResolveInfo ri = onMain(() -> app().getPackageManager().resolveActivity(q, 0));
+          if (ri == null || ri.activityInfo == null) {
+            print("No activity found\n");
+            return 1;
+          }
+          String cn = ri.activityInfo.packageName + "/" + ri.activityInfo.name;
+          if (brief) print("priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\n" + cn + "\n");
+          else print("Activity Resolver Table:\n  " + cn + "\n");
+          return 0;
+        }
         if (!a.get(a.size() - 1).equals(pkg) || launcher == null) {
           print("No activity found\n");
           return 1;
