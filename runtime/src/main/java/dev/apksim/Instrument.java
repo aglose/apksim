@@ -105,6 +105,10 @@ final class Instrument {
     Request request = Request.runner(new org.junit.runners.Suite((Class<?>) null, runners) {});
     Filter filter = methodFilter(args.get("class"), args.get("notClass"));
     if (filter != null) request = request.filterWith(filter);
+    // -e apksimOrder A#m,B#n,... (scripts/flake-hunt.py): the tests in that order, as far as JUnit runs them (a class's
+    // tests together, classes in the order of their first listed test). Tests it does not name go last, as before.
+    java.util.Comparator<Description> order = orderComparator(args.get("apksimOrder"));
+    if (order != null) request = request.sortWith(order);
     Filter shard = shardFilter(args.get("numShards"), args.get("shardIndex"));
     boolean emptyShard = false;
     if (shard != null) {
@@ -308,6 +312,29 @@ final class Instrument {
       while (!out.isEmpty() && out.get(out.size() - 1).isEmpty()) out.remove(out.size() - 1);
     }
     return out;
+  }
+
+  /**
+   * -e apksimOrder: a test's rank is its place in the list, a class's the place of its first test there (so JUnit's
+   * class-by-class run follows the list); anything unnamed ranks after, in its old order (the sort is stable).
+   */
+  static java.util.Comparator<Description> orderComparator(String list) {
+    if (list == null || list.isBlank()) return null;
+    Map<String, Integer> rank = new java.util.HashMap<>();
+    int i = 0;
+    for (String part : selectorParts(list)) {
+      String name = part.trim();
+      if (name.isEmpty()) continue;
+      rank.putIfAbsent(name, i);
+      int hash = name.indexOf('#');
+      if (hash > 0) rank.putIfAbsent(name.substring(0, hash), i);
+      i++;
+    }
+    return java.util.Comparator.comparingInt(d -> {
+      String c = d.getClassName();
+      Integer r = d.getMethodName() != null ? rank.get(c + "#" + d.getMethodName()) : c == null ? null : rank.get(c);
+      return r == null ? Integer.MAX_VALUE : r;
+    });
   }
 
   /** {@link #selectorParts}, trimmed, without blank parts. */

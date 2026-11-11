@@ -283,6 +283,13 @@ jobs:
         run: |
           python3 scripts/pool-check.py app.apk test.apk --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" \
             --local tests
+      # The flake hunter (docs/flake-hunt.md): the test app's flaky-on-purpose tests found, the order-dependent one blamed
+      # on its culprit and reproduced, the timing-dependent one told apart.
+      - name: Flake hunter
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          python3 scripts/flake-hunt-check.py app.apk test.apk -n 1 --perturb suite,shuffle,isolate,realtime \
+            --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests
       # Failure bundles (--bundles): the test app's FailureBundle*Test classes fail on purpose, and each failure must
       # leave its screen, tree, log, threads and repro.sh (scripts/bundle-check.py says what it checks).
       - name: Failure bundles

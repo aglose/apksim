@@ -96,7 +96,7 @@ ENV APKSIM_HOME=/opt/apksim/work
 COPY --from=build /opt/apksim /opt/apksim
 COPY apksim /opt/apksim/apksim
 COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /opt/apksim/
-COPY train.sh instrument.py affected.py coverage.py snapshot.py crawl.py drive.py journey.py /opt/apksim/scripts/
+COPY train.sh instrument.py affected.py coverage.py snapshot.py crawl.py drive.py journey.py flake-hunt.py /opt/apksim/scripts/
 COPY apksim.jar /opt/apksim/work/apksim.jar
 # The JVM's ahead-of-time cache holds the framework for any APK; it must be built by this JVM, in this folder.
 ARG TRAIN=1
