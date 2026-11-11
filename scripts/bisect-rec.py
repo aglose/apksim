@@ -41,8 +41,9 @@ def file_part(x):
         return None
     if os.path.isfile(x):
         return x
-    if "=" in x and os.path.isfile(x.rsplit("=", 1)[1]):
-        return x.rsplit("=", 1)[1]
+    k, _, v = x.rpartition("=")
+    if k and v and os.path.isfile(v):
+        return v
     return None
 
 
@@ -92,10 +93,12 @@ def parse(argv):
                 # builds file too.
                 if x.startswith("-"):
                     return x
-                if os.path.exists(os.path.join(base, x)):
+                # Files only, and only a non-empty name after '=': "YQ==" or "secure:key=" end in '=' and an empty name
+                # would join to the builds folder itself.
+                if os.path.isfile(os.path.join(base, x)):
                     return os.path.normpath(os.path.join(base, x))
-                if "=" in x and os.path.exists(os.path.join(base, x.rsplit("=", 1)[1])):
-                    k, v = x.rsplit("=", 1)
+                k, _, v = x.rpartition("=")
+                if k and v and os.path.isfile(os.path.join(base, v)):
                     return k + "=" + os.path.normpath(os.path.join(base, v))
                 return x
             opts_ = [rel(x) for x in parts[1:]]
