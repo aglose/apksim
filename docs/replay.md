@@ -149,7 +149,8 @@ Each build is `apksim replay --headless --apk BUILD` (with the options after `--
 another signer than the recorded build's (the same rule as `--apk`, and as beam's data from another build), another
 package, an activity the recording's stack needs and the build lacks. The oldest build must replay good and the newest
 bad; between them a binary search replays about log2(N) builds, and goes around a skipped one by trying its nearest
-neighbours. When only skipped builds separate a good one from a bad one, it says so and names them.
+neighbours. When only skipped builds separate a good one from a bad one, it says so and names them, exits 1, and `bisect.json`
+lists them as `candidates` with no `firstBad`.
 
 `--timeout SEC` (default 600) ends a replay that runs longer, as for a build that hangs, and skips that build.
 `--builds FILE` takes a launch option with a build (`app.apk --feature X`), for builds that differ by a flag rather

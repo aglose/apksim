@@ -325,11 +325,14 @@ class Bisect:
                 else:
                     hi = found
             skipped_between = [self.builds[j]["label"] for j in range(lo + 1, hi) if self.builds[j].get("result") == "skipped"]
+            self.unresolved = [j + 1 for j in range(lo + 1, hi + 1)] if skipped_between else None
             if skipped_between:
                 verdict = (f"the first bad build is {self.builds[hi]['label']} or one of the skipped builds before it: "
                            + ", ".join(skipped_between))
         self.lo, self.hi = lo, hi
-        found = verdict is None or verdict.startswith("the first bad build is")
+        # Found only when one build is certain: skipped builds between the last good and the bad one leave it open
+        # (exit 1, and bisect.json names the candidates rather than a first bad build).
+        found = verdict is None
         if verdict is None:
             verdict = f"first bad build: {self.builds[hi]['label']} (last good: {self.builds[lo]['label']})"
         self.verdict = verdict
@@ -339,9 +342,11 @@ class Bisect:
         return 0 if found else 1
 
     def write(self):
+        unresolved = getattr(self, "unresolved", None)
         data = {"bundle": self.bundle, "verdict": self.verdict,
                 "lastGood": self.lo if self.lo is not None and self.builds[self.lo].get("result") == "good" else None,
-                "firstBad": self.hi if self.hi is not None and self.builds[self.hi].get("result") == "bad" else None,
+                "firstBad": self.hi if not unresolved and self.hi is not None and self.builds[self.hi].get("result") == "bad" else None,
+                "candidates": unresolved,
                 "builds": [{k: v for k, v in b.items() if k != "report"} | {"points": [
                     {"n": p["n"], "label": p["label"], "pixels": p["pixels"], "diverged": p["diverged"]}
                     for p in (b.get("report") or {}).get("points", [])]} for b in self.builds]}
@@ -357,7 +362,8 @@ class Bisect:
         rows = []
         for i, b in enumerate(self.builds):
             r = b.get("result", "not replayed")
-            mark = " (last good)" if i == self.lo and r == "good" else " (first bad)" if i == self.hi and r == "bad" else ""
+            first_bad = " (bad; skipped builds before it may be the first)" if getattr(self, "unresolved", None) else " (first bad)"
+            mark = " (last good)" if i == self.lo and r == "good" else first_bad if i == self.hi and r == "bad" else ""
             pts = (b.get("report") or {}).get("points", [])
             first = next((p for p in pts if p["diverged"]), None)
             detail = e(b.get("why", ""))
@@ -379,9 +385,10 @@ class Bisect:
                 good = self.builds[self.lo] if self.lo is not None and self.builds[self.lo].get("result") == "good" else None
                 if good and os.path.exists(os.path.join(self.out, good["run"], "points", nn + "-replayed.jpg")):
                     imgs.append(("last good: " + good["label"], f"{good['run']}/points/{nn}-replayed.jpg"))
-                imgs.append(("first bad: " + bad["label"], f"{bad['run']}/points/{nn}-replayed.jpg"))
+                imgs.append(("bad: " + bad["label"] if getattr(self, "unresolved", None) else "first bad: " + bad["label"],
+                             f"{bad['run']}/points/{nn}-replayed.jpg"))
                 if os.path.exists(os.path.join(self.out, bad["run"], "points", nn + "-diff.png")):
-                    imgs.append(("difference (first bad against the recording)", f"{bad['run']}/points/{nn}-diff.png"))
+                    imgs.append(("difference (" + ("bad" if getattr(self, "unresolved", None) else "first bad") + " against the recording)", f"{bad['run']}/points/{nn}-diff.png"))
                 # Embedded, so index.html can be sent on its own; data-src keeps where each came from.
                 def data(src):
                     kind = "image/png" if src.endswith(".png") else "image/jpeg"
