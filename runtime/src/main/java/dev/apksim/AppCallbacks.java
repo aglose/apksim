@@ -31,21 +31,21 @@ final class AppCallbacks {
   private AppCallbacks() {}
 
   private static final boolean ON = Boolean.parseBoolean(System.getProperty("apksim.keepAppCallbacks", "true"));
-  private static final List<Application.ActivityLifecycleCallbacks> activity = new ArrayList<>();
-  private static final List<ComponentCallbacks> component = new ArrayList<>();
+  /** The ending test's Application, until the next one's setup is done. */
+  private static Application previous;
 
-  /** Before Robolectric's reset: what the ending test's Application has registered. */
+  /**
+   * Before Robolectric's reset: which Application the ending test had. Its registrations are read only at carryOver,
+   * so what a singleton registers or unregisters through it meanwhile (during the next Application's onCreate, say)
+   * counts.
+   */
   static void beforeReset() {
-    activity.clear();
-    component.clear();
+    previous = null;
     if (!ON) return;
     try {
-      Application app = RuntimeEnvironment.getApplication();
-      if (app == null) return;
-      activity.addAll(apkOnes(ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks")));
-      component.addAll(apkOnes(componentCallbacks(app)));
+      previous = RuntimeEnvironment.getApplication();
     } catch (RuntimeException e) {
-      // no Application yet (the runner's probe), or nothing registered
+      // no Application yet (the runner's probe)
     }
   }
 
@@ -58,6 +58,13 @@ final class AppCallbacks {
    */
   static void carryOver(Application app) {
     if (!ON || app == null) return;
+    List<Application.ActivityLifecycleCallbacks> activity = new ArrayList<>();
+    List<ComponentCallbacks> component = new ArrayList<>();
+    if (previous != null && previous != app) {
+      activity.addAll(apkOnes(ReflectionHelpers.getField(previous, "mActivityLifecycleCallbacks")));
+      component.addAll(apkOnes(componentCallbacks(previous)));
+    }
+    previous = null;
     List<Application.ActivityLifecycleCallbacks> nowActivity = ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks");
     Set<Class<?>> activityClasses = classes(nowActivity);
     Set<Class<?>> componentClasses = classes(componentCallbacks(app));
@@ -67,8 +74,6 @@ final class AppCallbacks {
     for (ComponentCallbacks c : component) {
       if (!componentClasses.contains(c.getClass())) app.registerComponentCallbacks(c);
     }
-    activity.clear();
-    component.clear();
     Object controller = ReflectionHelpers.getField(app, "mCallbacksController");
     for (Iterator<WeakReference<Application>> it = earlier.iterator(); it.hasNext(); ) {
       Application old = it.next().get();

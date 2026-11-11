@@ -8,6 +8,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.apksim.composeapp.HarnessTestApplication
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -25,6 +26,23 @@ import org.junit.runners.MethodSorters
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class AppCallbacksConformanceTest {
+  /** Counts resumes; a class of its own per use, so the carry-over's class check cannot mix them up. */
+  open class Resumes : Application.ActivityLifecycleCallbacks {
+    val resumes = AtomicInteger()
+    override fun onActivityResumed(activity: Activity) { resumes.incrementAndGet() }
+    override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+    override fun onActivityStarted(activity: Activity) {}
+    override fun onActivityPaused(activity: Activity) {}
+    override fun onActivityStopped(activity: Activity) {}
+    override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) {}
+    override fun onActivityDestroyed(activity: Activity) {}
+  }
+
+  object Leaving : Resumes()
+  object Arriving : Resumes() {
+    @Volatile var handedOver = false
+  }
+
   object Singleton : Application.ActivityLifecycleCallbacks {
     var app: Application? = null
     val resumes = AtomicInteger()
@@ -66,5 +84,38 @@ class AppCallbacksConformanceTest {
     }
     assertEquals("unregistered, it hears nothing more", 0, launchAndCountResumes())
     Singleton.app = null
+  }
+
+  /**
+   * apksim only (a device has one Application, whose onCreate does not run again): what a singleton registers and
+   * unregisters through the Application it kept while the next test's Application starts is what the next test has.
+   */
+  @Test
+  fun c_aSingletonChangesItsRegistrationsWhileTheNextApplicationStarts() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val kept: Application = ApplicationProvider.getApplicationContext()
+      kept.registerActivityLifecycleCallbacks(Leaving)
+      HarnessTestApplication.onNextCreate = {
+        kept.unregisterActivityLifecycleCallbacks(Leaving)
+        kept.registerActivityLifecycleCallbacks(Arriving)
+        Arriving.handedOver = true
+      }
+    }
+  }
+
+  @Test
+  fun d_theNextTestHasThoseChanges() {
+    assumeTrue("a new Application started since the last test", Arriving.handedOver)
+    HarnessTestApplication.onNextCreate = null
+    Leaving.resumes.set(0)
+    Arriving.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    assertEquals("unregistered while the next Application started", 0, Leaving.resumes.get())
+    assertTrue("registered while the next Application started", Arriving.resumes.get() >= 1)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      ApplicationProvider.getApplicationContext<Application>().unregisterActivityLifecycleCallbacks(Arriving)
+    }
   }
 }

@@ -34,9 +34,13 @@ class HarnessTestApplication : ComposeApp() {
   override fun onCreate() {
     super.onCreate()
     created = true
+    onNextCreate?.also { onNextCreate = null }?.invoke(this)
   }
 
   companion object {
     @Volatile var created = false
+
+    /** Run once at the next test's Application.onCreate (a test run's new Application per test; AppCallbacksConformanceTest). */
+    @Volatile var onNextCreate: ((HarnessTestApplication) -> Unit)? = null
   }
 }
