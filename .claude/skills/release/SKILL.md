@@ -10,7 +10,8 @@ step; do not stop to ask between steps. Stop only at a **stop condition** below.
 
 Rules from AGENTS.md apply throughout (read "Git and pull requests" if unsure):
 - `main` changes only through PRs whose `linux-smoke` check passes. Merge with
-  `gh pr merge N --merge --author-email 7216340+aglose@users.noreply.github.com`. Never `--auto`, never `--squash`.
+  `gh pr merge N --squash --author-email 7216340+aglose@users.noreply.github.com` (`--rebase` for a PR whose commits
+  should stay apart). Never `--auto`, never `--merge`, and never a squash without `--author-email`.
 - Nothing personal in anything pushed: no names of the owner's apps, employer, servers, package names, hostnames,
   emails (except the noreply one). `scripts/hooks/check-private` enforces it.
 - No AI attribution anywhere: no `Co-Authored-By` trailer, no "Generated with" line in commits, PRs, release notes,
@@ -31,8 +32,9 @@ Oldest number first (a PR cut from another's branch merges after its parent). Fo
 1. `gh pr checks N`: wait (`gh pr checks N --watch`, run in background if long) until `linux-smoke` passes.
 2. Read Copilot's review comments (`gh pr view N --comments`, `gh api repos/aglose/apksim/pulls/N/comments`). Fix
    real issues on the PR's branch in a worktree and push; ignore nits.
-3. If it conflicts with main, merge `origin/main` into its branch (not a rebase) in a worktree, resolve, push, and
-   wait for checks again.
+3. If it conflicts with main, rebase its branch on `origin/main` in a worktree (not a merge of main into it),
+   resolve, `git push --force-with-lease`, and wait for checks again. A PR cut from one just squashed is rebased
+   with `git rebase --onto origin/main OLD_PARENT_TIP` so the parent's commits are not replayed.
 4. Merge it with the command above. Re-fetch before the next PR.
 
 **Stop** (report and ask) if: a check fails for a reason you cannot fix, a conflict needs a product decision, a PR
@@ -48,7 +50,8 @@ Fix it now: the docs branch, image tags and tag below all use this one VERSION.
 ## 4. Docs for what landed
 Work in a fresh worktree from the updated `origin/main`: `git worktree add ../apksim-release-docs -b docs-VERSION
 origin/main`.
-1. List what changed: `git log --merges --first-parent LAST_TAG..origin/main` and `git diff --stat LAST_TAG..origin/main`.
+1. List what changed: `git log --first-parent --oneline LAST_TAG..origin/main` (one squash commit per PR; older
+   PRs are merge commits) and `git diff --stat LAST_TAG..origin/main`.
 2. Update docs the changes made stale, and only those: README.md (results, features, limits, install and image tags),
    AGENTS.md (layout, commands, new classes and options), and the matching `docs/*.md`. Match the existing style:
    concrete numbers measured, what was checked, what is not done. Do not invent measurements; if a number needs a
