@@ -121,7 +121,7 @@ class Hunt:
         messages = results.pop(("__messages__", None), {})
         print(f"  {label}: " + ", ".join(f"{sum(1 for s in results.values() if s == k)} {k}"
                                          for k in ("passed", "failed", "skipped")) + f" ({took:.0f} s)", file=sys.stderr)
-        self.ran = ran
+        self.ran, self.returncode = ran, p.returncode
         return results, messages, base + ".log"
 
     def victim_fails(self, victim, before):
@@ -181,8 +181,15 @@ def ddmin(items, fails):
 
 def start_hogs(n):
     """[n] processes spinning a CPU each (the oversubscribed CPU), in their own process groups."""
-    return [subprocess.Popen([sys.executable, "-c", "while True: pass"], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for _ in range(n)]
+    hogs = []
+    try:
+        for _ in range(n):
+            hogs.append(subprocess.Popen([sys.executable, "-c", "while True: pass"], start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    except OSError:  # (a process limit: the ones started must not outlive the hunt)
+        stop_hogs(hogs)
+        raise
+    return hogs
 
 
 def stop_hogs(hogs):
@@ -252,7 +259,16 @@ def main():
     # The tests: a first run in the suite's order lists them (and counts as one of "suite"'s runs).
     print("listing the tests (a run in the suite's order):", file=sys.stderr)
     first, first_msgs, _ = hunt.run("suite", select=select)
+    first_ran = [t for t in hunt.ran if t in first]
     tests = [t for t in first if not t[0].startswith("(")]
+    if not tests and hunt.returncode == 0 and not RUN_FAILURES:
+        # (instrument.py's report of no tests: --affected-by found none the change reaches)
+        print("no tests selected: nothing to hunt in", file=sys.stderr)
+        write_xml(os.path.join(a.out, "flake-hunt.xml"), [], perturbs, {}, {}, {}, [])
+        write_html(os.path.join(a.out, "index.html"), [], perturbs, {}, {}, [], hunt.n, time.time() - t0)
+        with open(os.path.join(a.out, "verdicts.json"), "w") as f:
+            f.write("{}\n")
+        sys.exit(0)
     if not tests:
         sys.exit("no tests to hunt in: the first run reported none (see " + hunt.runs_dir + ")")
     print(f"{len(tests)} tests, {a.n} runs each of: {', '.join(perturbs)}", file=sys.stderr)
@@ -272,10 +288,11 @@ def main():
         for i in range(a.n):
             if x == "suite":
                 if i == 0:
-                    got, msgs = first, first_msgs
+                    got, msgs, ran = first, first_msgs, first_ran
                 else:
                     got, msgs, _ = hunt.run(x, tests=tests)
-                note(x, got, msgs)
+                    ran = [t for t in hunt.ran if t in got]
+                note(x, got, msgs, ran or None)  # (a suite-order dependency is reduced as a shuffled one is)
             elif x == "shuffle":
                 order = shuffled(tests, rng, reverse=(i == 0))
                 got, msgs, _ = hunt.run(x, tests=tests, order=order)
