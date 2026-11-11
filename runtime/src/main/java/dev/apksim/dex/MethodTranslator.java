@@ -127,6 +127,34 @@ final class MethodTranslator implements Opcodes {
     debugTypes = DEBUG_TYPES != null && DEBUG_TYPES.equals(owner + "." + methodName);
   }
 
+  private Coverage.Slots cov;
+  private int covMethod;
+  private boolean covIface;
+  private Map<Integer, Integer> covLines; // source line -> slot, for this method
+
+  /** Coverage: this method has slot {@code method}; each line its debug info names gets a counter of its own. */
+  void cover(Coverage.Slots slots, int method, boolean ownerIsInterface) {
+    cov = slots;
+    covMethod = method;
+    covIface = ownerIsInterface;
+  }
+
+  /** Counts a hit of the slot: the stack is left as it was found. */
+  private void covHit(int slot) {
+    if (covIface) {
+      mv.visitLdcInsn(org.objectweb.asm.Type.getObjectType(owner));
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/dex/Coverage", "get", "(Ljava/lang/Class;)[I", false);
+    } else {
+      mv.visitFieldInsn(GETSTATIC, owner, "$apksimCov", "[I");
+    }
+    pushInt(slot);
+    mv.visitInsn(DUP2);
+    mv.visitInsn(IALOAD);
+    mv.visitInsn(ICONST_1);
+    mv.visitInsn(IADD);
+    mv.visitInsn(IASTORE);
+  }
+
   void translate() {
     decode();
     readDebugInfo();
@@ -392,7 +420,7 @@ final class MethodTranslator implements Opcodes {
    */
   private void readDebugInfo() {
     int off = dex.i32(code + 8);
-    if (off == 0 || !ClassTranslator.DEBUG_INFO) return;
+    if (off == 0 || !(ClassTranslator.DEBUG_INFO || cov != null)) return;
     lines = new int[count + 1];
     String[] name = new String[regs];
     String[] desc = new String[regs];
@@ -455,13 +483,13 @@ final class MethodTranslator implements Opcodes {
           line += adj % 15 - 4;
           address += adj / 15;
           int i = insnFrom(address);
-          if (i < count && line > 0 && line <= 0xffff) lines[i] = line;
+          if (i < count && line > 0 && (line <= 0xffff || cov != null)) lines[i] = line; // coverage keeps big PC-encoded positions
         }
       }
     }
     for (int reg = 0; reg < regs; reg++) endLocal(out, reg, unitCount, name, desc, sig, from, live);
     out.sort((x, y) -> Integer.compare(x.start, y.start));
-    locals = out;
+    locals = ClassTranslator.DEBUG_INFO ? out : List.of(); // Coverage wants the lines only.
   }
 
   private void endLocal(List<Local> out, int reg, int address, String[] name, String[] desc, String[] sig, int[] from,
@@ -1638,8 +1666,13 @@ final class MethodTranslator implements Opcodes {
     // Branches, handlers and try bounds all lead to block starts (buildBlocks makes them so), so only those and the
     // end need a label; debug info (line numbers, local ranges) names every instruction.
     Label[] labels = new Label[count + 1];
-    if (lines != null || !locals.isEmpty()) {
+    if ((lines != null && cov == null) || !locals.isEmpty()) {
       for (int i = 0; i <= count; i++) labels[i] = new Label();
+    } else if (cov != null && lines != null) {
+      // Coverage: block starts and the first instruction of each line, which the line table and its counter name.
+      for (int bl = 0; bl < blockCount; bl++) labels[blockStart[bl]] = new Label();
+      for (int i = 0; i < count; i++) if (lines[i] != 0 && labels[i] == null) labels[i] = new Label();
+      labels[count] = new Label();
     } else {
       for (int bl = 0; bl < blockCount; bl++) labels[blockStart[bl]] = new Label();
       labels[count] = new Label();
@@ -1661,14 +1694,22 @@ final class MethodTranslator implements Opcodes {
     }
     copyParams();
     int[] s = new int[regs];
+    covLines = cov != null ? new HashMap<>() : null;
     for (int bl = 0; bl < blockCount; bl++) {
       boolean reachable = blockState[bl] != null;
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
+      int covLast = 0; // a line's repeated entries in one block count once
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         if (labels[i] != null) mv.visitLabel(labels[i]);
         if (lr != null) lr.at(i, reachable ? s : null, i == blockStart[bl]);
         // After the parameter copies for insn 0: a breakpoint there must already see the parameters.
-        if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
+        if (reachable && lines != null && lines[i] != 0) {
+          if (lines[i] <= 0xffff) mv.visitLineNumber(lines[i], labels[i]);
+          if (cov != null && lines[i] != covLast) {
+            covLast = lines[i];
+            covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));
+          }
+        }
         if (reachable) emitInsn(i, s, labels);
       }
     }
@@ -1680,6 +1721,10 @@ final class MethodTranslator implements Opcodes {
       mv.visitLabel(e.getValue());
       if (op[target] == 0x0d) {
         mv.visitVarInsn(ASTORE, slot(a[target]));
+        // The stub jumps past move-exception, which is where a catch's line is: count it here.
+        if (cov != null && lines != null && lines[target] != 0 && covLines != null) {
+          covHit(covLines.computeIfAbsent(lines[target], ln -> cov.line(covMethod, ln)));
+        }
       } else {
         mv.visitInsn(POP);
       }
@@ -1868,7 +1913,13 @@ final class MethodTranslator implements Opcodes {
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         mv.visitLabel(labels[i]);
-        if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
+        if (reachable && lines != null && lines[i] != 0) {
+          if (lines[i] <= 0xffff) mv.visitLineNumber(lines[i], labels[i]);
+          if (cov != null) {
+            if (covLines == null) covLines = new HashMap<>();
+            covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));
+          }
+        }
         if (reachable) emitInsn(i, s, labels);
       }
       // Falling out of a dead block is impossible, but the code after it must still be well formed.
