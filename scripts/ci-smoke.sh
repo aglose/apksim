@@ -99,6 +99,8 @@ if [[ "$(echo "$sources" | grep -c ': ')" -lt 12 ]] || echo "$sources" | grep -q
 fi
 drive back 'wait 1000' >/dev/null
 
+# Scripted BLE peripherals (docs/ble.md): apksim://ble scans, connects and shows a heart-rate preset's notifications.
+python3 "$ROOT/scripts/ble-check.py" "$PORT" > "$OUT/ble.log" 2>&1 && tail -1 "$OUT/ble.log" || { cat "$OUT/ble.log"; exit 1; }
 # Every zone source an app reads follows --timezone, Joda-Time's (it reads user.timezone) included, and `timezone ZONE`
 # changes them all and broadcasts ACTION_TIMEZONE_CHANGED, which the screen hears as joda-time-android does (the test
 # app's apksim://timezone, issue 91).

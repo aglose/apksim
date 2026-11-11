@@ -531,6 +531,10 @@ final class DeviceControls {
         // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).
         return Bluetooth.command(a);
       }
+      case "ble" -> {
+        // ble [add|remove|rssi|notify|set|disconnect ...]: scripted BLE peripherals (dev.apksim.ble.Ble, docs/ble.md).
+        return dev.apksim.ble.Ble.command(a);
+      }
       case "ambient" -> {
         // ambient [on|off]: Wear OS ambient mode (the stand-in com.google.android.wearable library): the activities that
         // enabled it get onEnterAmbient/onExitAmbient. Never entered otherwise.
