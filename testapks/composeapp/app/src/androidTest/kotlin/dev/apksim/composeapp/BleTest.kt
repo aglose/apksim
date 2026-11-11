@@ -449,6 +449,20 @@ class BleTest {
   }
 
   @Test
+  fun e_bbRevokingLocationMidScanStopsTheResults() {
+    shell("apksim ble add heart-rate")
+    val scan = Scan()
+    scanner.startScan(scan)
+    waitFor("a result") { scan.results.isNotEmpty() }
+    shell("pm revoke ${context.packageName} ${Manifest.permission.ACCESS_FINE_LOCATION}")
+    instrumentation.waitForIdleSync()
+    val before = scan.results.size
+    pass(3_000)
+    scanner.stopScan(scan)
+    assertEquals("no results once location is revoked", before, scan.results.size)
+  }
+
+  @Test
   fun e_cConnectingWithoutBluetoothConnectThrows() {
     shell("apksim ble add heart-rate")
     shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_CONNECT}")

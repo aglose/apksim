@@ -425,12 +425,16 @@ public final class Ble {
   }
 
   /**
-   * Whether results may reach the app now: the location permission as the scan started (the stack decides it then;
-   * revoking a runtime permission kills the app on a device, and granting one does not restart a scan), and location
-   * still on (checked at each delivery, as the stack's blockedByLocationOff is), unless the scan is neverForLocation.
+   * Whether results may reach the app now. The location permission is judged as the scan starts (the stack decides it
+   * then, and a permission granted later does not wake a running scan); at each delivery the scan permission and the
+   * location permission must still be held and location still be on (the stack's blockedByLocationOff), unless the
+   * scan is neverForLocation. A device kills an app whose runtime permission is revoked; apksim does not
+   * (`pm revoke` in a test run), so a revoked permission stops the results instead.
    */
   private static boolean deliverable(Scanner s) {
-    return s.location && (s.disavowed || locationEnabled());
+    if (!s.location) return false;
+    if (!granted(target() >= 31 ? Manifest.permission.BLUETOOTH_SCAN : Manifest.permission.BLUETOOTH_ADMIN)) return false;
+    return s.disavowed || locationAllowsResults();
   }
 
   private static void sight(Scanner s, Peripheral p) {
