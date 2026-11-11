@@ -48,7 +48,7 @@ fragment-ktx, fragment-testing, lifecycle-process, navigation-fragment and navig
 ## Batch 1: activity, fragment, lifecycle, navigation
 
 31 tests here and with the pause fix (#266), all passing on both sides; the two ProcessLifecycleOwner tests that
-need the AppCallbacks fix travel with it in #267 (a draft, under review).
+need the AppCallbacks fix travel with it in #267.
 
 | Class | Tests | Passes on both | Fails here only, before | Fixed by |
 |---|---|---|---|---|
@@ -69,13 +69,13 @@ need the AppCallbacks fix travel with it in #267 (a draft, under review).
    ProcessLifecycleOwner's resumed count stayed at -1 for the rest of the process (bisected over the suite's classes
    to that one test). Now only a resumed activity is paused; `-Dapksim.pauseOnlyResumed=false` restores the old call.
    Repro: `RotationConformanceTest`.
-2. **A process singleton's ActivityLifecycleCallbacks stay on the first test's Application** (fix in #267, a draft).
+2. **A process singleton's ActivityLifecycleCallbacks stay on the first test's Application** (fixed in #267).
    AndroidX ProcessLifecycleOwner registers them once a process, from AndroidX Startup's initializer, whose own
    singleton runs it once. Each test here gets a fresh Application, so from the second test on ProcessLifecycleOwner
    hears of no activity (traced: `activityStarted$lifecycle_process` and its siblings hit in the first test only) and
    stays in whatever state that test left: its documented 700 ms delay to CREATED never comes. The emulator passes
    both ProcessLifecycleOwner tests; here they fail after any other test. #267 shares one process-wide callback list
-   and controller across a run's Applications; its review is open.
+   and controller across a run's Applications.
 
 Also found while running the suite: `UncaughtExceptionTest` left its coroutine exception in kotlinx-coroutines-test's
 collector, which failed whichever Compose rule test ran next ("uncaught exceptions before the test started"); it now
