@@ -1715,7 +1715,11 @@ public class Host {
       }
       case "nodes" -> {
         // The windows accessibility reports (none a touch-modal or full-screen window covers); `nodes all`: every one.
-        return Nodes.dump(a.length > 1 && a[1].equals("all") ? rootViews() : AccessibleWindows.reported(rootViews()));
+        // `nodes tree [all]`: every node with its depth, class, id and flags (Nodes.tree), for scripts/crawl.py.
+        boolean tree = a.length > 1 && a[1].equals("tree");
+        boolean all = a.length > (tree ? 2 : 1) && a[tree ? 2 : 1].equals("all");
+        java.util.List<View> roots = all ? rootViews() : AccessibleWindows.reported(rootViews());
+        return tree ? Nodes.tree(roots) : Nodes.dump(roots);
       }
       case "logcat" -> {
         // logcat on|off: the app's android.util.Log output to this process's stderr (Robolectric drops it otherwise).

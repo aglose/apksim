@@ -5,7 +5,7 @@
 # (scripts/adb-check.py). Then the network check (scripts/network-check.sh), what a data slot keeps across launches
 # (scripts/slot-check.sh), the per-APK cache folder staying bounded (scripts/apk-cache-check.sh), screenshot tests on a small matrix
 # (scripts/snapshot.py): goldens recorded, matched on a rerun, and a changed screen caught, and `apksim serve` in the
-# image, driven as a browser tab would (scripts/serve-check.py). Screens, logs and snapshot reports go to OUT.
+# image, driven as a browser tab would (scripts/serve-check.py). The crawler (scripts/crawl-check.py) explores the test app's screens. Screens, logs and snapshot reports go to OUT.
 #   scripts/ci-smoke.sh IMAGE APK OUT [UISERVER_APK]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -302,6 +302,10 @@ assert rest and all(r["status"] == "match" for r in rest), \
     f"every other capture should match: {[(r['screen'], r['combo'], r['status']) for r in rest if r['status'] != 'match']}"
 print(f"changed screen caught: all {len(home)} home captures differ, all {len(rest)} others match")
 EOF
+
+# Automated exploration (scripts/crawl.py, docs/crawl.md) in the image, to depth 2: the tabs, Trips, SecondActivity and the dialogs found,
+# every path replayed and captured, a second walk giving the same graph, and a changed screen reported against a base launch.
+python3 "$ROOT/scripts/crawl-check.py" --docker "$IMAGE" --apk "$APK" --out "$OUT/crawl" --quick | tee "$OUT/crawl-check.log"
 
 # apksim serve: a token (any address but loopback needs one), only serve's port published, the test app listed.
 SERVE_NAME=apksim-serve-smoke-$$ SERVE_PORT=7402
