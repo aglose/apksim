@@ -444,6 +444,9 @@ class Explorer:
             if obs is None:
                 continue
             if obs["id"] not in self.screens:
+                if self.budget.max_screens is not None and len(self.screens) >= self.budget.max_screens:
+                    self.incomplete.append(f"--max-screens {self.budget.max_screens}: start {start or 'the launcher activity'} not added")
+                    continue
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
         depth = 0
         cut = False  # the time ran out inside a level: some screens or controls were left
@@ -528,20 +531,23 @@ class Explorer:
                 findings.append(self.crash_finding(e.crash, screen["path"]))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
         prep = []
+        filled = None
         if args.fill is not None:
             for a in candidates(here["recs"], self.skip_re, args.tap_unlabeled):
                 if a["kind"] == "field":
                     prep += [f"tap {a['x']} {a['y']}", f"type {args.fill}"]
+            filled = None
             try:
                 for step in prep:
                     inst.expect_ok(step)
                 inst.settle()
+                filled = parse_tree(inst.say("nodes tree"))
             except ReplayFailed:
                 prep = []
             except Gone as e:
                 findings.append(self.crash_finding(e.crash, self.full_path(screen, prep)))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended while filling fields"}
-        recs = here["recs"] if not prep else parse_tree(inst.say("nodes tree"))
+        recs = filled if prep and filled is not None else here["recs"]
         acts = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled) if a["kind"] == "control"]
         # Controls below the fold: scroll and read again, until nothing new shows.
         scrolls = []
@@ -554,13 +560,14 @@ class Explorer:
             try:
                 inst.expect_ok(sc)
                 inst.settle()
+                scrolled = parse_tree(inst.say("nodes tree"))
             except ReplayFailed:
                 break
             except Gone as e:
                 findings.append(self.crash_finding(e.crash, self.full_path(screen, prep + scrolls + [sc])))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended while scrolling"}
             scrolls.append(sc)
-            recs = parse_tree(inst.say("nodes tree"))
+            recs = scrolled
             aliases.add(structure(here["activity"], recs)[0])
             fresh = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled, scrolls=k) if a["kind"] == "control"
                      and a["label"] not in seen]
@@ -583,7 +590,15 @@ class Explorer:
             steps = prep + a["prefix"] + [a["cmd"]]
             try:
                 inst.reach_screen(screen, prep + a["prefix"])
-                inst.expect_ok(a["cmd"])
+                try:
+                    inst.expect_ok(a["cmd"])
+                except ReplayFailed as e:
+                    # tap-text compares the label as the app has it; `nodes tree` flattens tabs and line breaks
+                    if not a["cmd"].startswith("tap-text") or "not found" not in str(e):
+                        raise
+                    a["cmd"] = f"tap {a['x']} {a['y']}"
+                    steps = prep + a["prefix"] + [a["cmd"]]
+                    inst.expect_ok(a["cmd"])
                 inst.settle()
                 inst.say("pick cancel")
                 to = inst.observe()
@@ -644,7 +659,10 @@ class Explorer:
                 except ReplayFailed:
                     inst.reach_screen(screen)
                 inst.configure(combo)
-                screen["settled"] = inst.settle() if "settled" not in screen else inst.settle() and screen["settled"]
+                settled = inst.settle()
+                screen["settled"] = settled if "settled" not in screen else settled and screen["settled"]
+                if not settled:
+                    screen.setdefault("unsettled", []).append(name)
                 inst.expect_ok(f"shot {staged}")
                 shutil.move(staged, os.path.join(base_dir, name + ".png"))
                 screen["captures"][name] = f"{self.shots}/{screen['id']}/{name}.png"
@@ -690,7 +708,11 @@ def pair_builds(new, base, args):
         try:
             inst.reach(new.screens[sid]["path"])
             return inst.observe()["id"]
-        except (ReplayFailed, Gone):
+        except ReplayFailed:
+            return None
+        except Gone as e:
+            with base.lock:
+                base.findings.append(base.crash_finding(e.crash, new.screens[sid]["path"]))
             return None
 
     # The new build's paths, replayed on the base build's instances.
@@ -971,18 +993,28 @@ def main():
                 if not (p["id"] and p["base"]):
                     continue
                 d = {}
-                unstable = new.screens[p["id"]].get("settled") is False or base.screens[p["base"]].get("settled") is False
+                ns, bs = new.screens[p["id"]], base.screens[p["base"]]
+                unstable = set(ns.get("unsettled", [])) | set(bs.get("unsettled", []))
                 if unstable:
-                    p["unstable"] = True  # it animates for ever: its captures differ from run to run, so they are not compared
-                for c in ([] if unstable else doc["combos"]):
-                    a_, b_ = new.screens[p["id"]]["captures"].get(c), base.screens[p["base"]]["captures"].get(c)
+                    p["unstable"] = sorted(unstable)  # it animates for ever there: its captures differ from run to run, so they are not compared
+                for c in doc["combos"]:
+                    a_, b_ = ns["captures"].get(c), bs["captures"].get(c)
+                    if c in unstable:
+                        continue
+                    if not (a_ and b_):
+                        doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
+                                                "detail": f"{p['id']} {c}: no capture in {'the new' if not a_ else 'the base'} build to compare"})
+                        continue
                     if a_ and b_:
                         d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
                                            os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                        if d[c].get("error"):
+                            doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
+                                                    "detail": f"{p['id']} {c}: the image comparison failed: {d[c]['error']}"})
                 if d:
                     diffs[p["id"]] = d
                 if unstable and p["status"] == "same":
-                    p["why"] = "animates for ever: its captures are not compared"
+                    p["why"] = "animates for ever in " + ", ".join(sorted(unstable)) + ": those captures are not compared"
                 if p["status"] == "same" and any(x.get("differs") for x in d.values()):
                     p["status"] = "changed"
                     p["why"] = "looks different: " + ", ".join(c for c, x in d.items() if x.get("differs"))
@@ -1001,7 +1033,7 @@ def main():
     with open(os.path.join(out, "crawl.json"), "w") as f:
         json.dump(doc, f, indent=1)
     log(f"report: {os.path.join(out, 'report.html')}")
-    crashes = [f for f in doc["findings"] if f["kind"] == "crash"]
+    crashes = [f for f in doc["findings"] if f["kind"] in ("crash", "compare")]
     differs = [p for p in doc.get("compare", []) if p["status"] != "same"]
     for p in differs:
         log(f"{p['status']:>8}  {p['id'] or p['base']}  {p.get('why') or ''}")

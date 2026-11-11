@@ -150,6 +150,10 @@ def main():
     doc7, _, _ = crawl(args.apk, os.path.join(args.out, "budget"), "--start", "apksim://composeapp/home", "--max-seconds", "4",
                        "--no-captures", "-j", "1")
     check(bool(doc7["incomplete"]), "a deadline that falls inside a level says the walk is incomplete", str(doc7["incomplete"]))
+    doc8, _, _ = crawl(args.apk, os.path.join(args.out, "cap"), "--start", "apksim://composeapp/home", "--start", "apksim://slot",
+                       "--max-screens", "1", "--max-depth", "0", "--no-captures", "-j", "1")
+    check(len(doc8["screens"]) == 1 and any("--max-screens" in x for x in doc8["incomplete"]),
+          "--max-screens also limits the starting screens", f"{len(doc8['screens'])} screens, {doc8['incomplete']}")
     logs = os.listdir(os.path.join(c_dir, "logs"))
     check(any(n.startswith("new-instance-") for n in logs) and any(n.startswith("base-instance-") for n in logs),
           "the two builds of a comparison keep separate logs", str(logs[:6]))
