@@ -2,15 +2,18 @@
 """Runs a library's own device tests here and on an emulator, and tables where they differ (docs/conformance.md).
 
 Usage: conformance.py TEST.apk [--app APP.apk] [--out DIR] [--emulator SERIAL [--util APK]... | --emulator-xml FILE]
-                      [--here-xml FILE] [--name NAME] [-j N] [--isolate] [-e KEY VALUE]... [-- APKSIM_OPTION...]
+                      [--here-xml FILE] [--name NAME] [-j N] [--isolate] [--grant-permissions] [-e KEY VALUE]... [-- APKSIM_OPTION...]
 
 A library's androidTest APK instruments itself, so by default it is passed as both APKs (--app for a test APK that
 targets an app). Here it runs through scripts/instrument.py (JUnit XML in DIR/here.xml); with --emulator the same APK
-is installed on that adb device with `-t -g`, run with `am instrument -w -r` (DIR/emulator.xml, DIR/emulator.txt for
+is installed on that adb device (`-t`), run with `am instrument -w -r` (DIR/emulator.xml, DIR/emulator.txt for
 the raw output) and uninstalled again. It installs only test packages: a package the device already has is refused,
 so an emulator another session started keeps its apps. --util installs an androidTestUtil APK there for the run
 (the Test Services APK, androidx.test.services, which a device needs for Test Storage), and uninstalls it after. A process that crashes on the device ends `am instrument`;
 the tests it did not reach are run again, one class at a time, so one crash costs only its class's tail.
+Runtime permissions start denied on both sides (apksim's default, an install without -g); --grant-permissions grants
+them on both (apksim's --permissions grant, adb install -g). A run that a crash ends with no test in flight gets a
+failed "(run)" entry, as instrument.py gives one here.
 --here-xml / --emulator-xml reuse an earlier run's XML instead of running that side again (the emulator's answers
 do not change while apksim is being fixed).
 
@@ -44,8 +47,9 @@ def run_here(a, out):
         cmd.append("--isolate")
     for k, v in a.e:
         cmd += ["-e", k, v]
-    if a.apksim_opts:
-        cmd += ["--"] + a.apksim_opts
+    opts = (["--permissions", "grant"] if a.grant_permissions else []) + a.apksim_opts
+    if opts:
+        cmd += ["--"] + opts
     print("here:", " ".join(cmd), file=sys.stderr)
     if os.path.exists(xml):
         os.remove(xml)  # an earlier run's report must not stand in for this one's
@@ -110,6 +114,16 @@ def parse_raw(text):
     return results, finished
 
 
+RUN = "(run)"
+
+
+def note_run_crash(results, finished, raw):
+    """A run that ended early with no test in flight (a crash in @AfterClass, a listener, between tests) still fails:
+    a run-level entry carries it, as instrument.py's "(run)" entry does here."""
+    if not finished and not any(v == ("failed", CRASHED) for v in results.values()):
+        results[(RUN, "crash")] = ("failed", "the instrumentation process crashed outside any test")
+
+
 def am_instrument(serial, comp, extra, raw):
     cmd = ["am", "instrument", "-w", "-r"]
     for k, v in extra:
@@ -142,7 +156,11 @@ def run_emulator(a, out):
         for apk in reversed(apks):
             # Utilities (Test Services) are queryable by every package, as AGP installs them: package visibility
             # otherwise hides their providers from the test (Test Storage: "No content provider registered").
-            adb(serial, "install", "-t", "-g", *(["--force-queryable"] if apk in a.util else []), apk)
+            # Runtime permissions as apksim starts them: denied, unless --grant-permissions grants them on both sides.
+            # Utilities are installed as AGP installs them: granted and queryable.
+            util = apk in a.util
+            adb(serial, "install", "-t", *(["-g"] if util or a.grant_permissions else []),
+                *(["--force-queryable"] if util else []), apk)
             if apk in a.util:
                 # As AGP does for Test Services: it writes the test's output files under /sdcard.
                 adb(serial, "shell", "appops", "set", apk_package(apk), "MANAGE_EXTERNAL_STORAGE", "allow", check=False)
@@ -152,6 +170,7 @@ def run_emulator(a, out):
         comp = f"{pkgs[0]}/{insts[pkgs[0]][0]}"
         with open(os.path.join(out, "emulator.txt"), "w") as raw:
             results, finished = am_instrument(serial, comp, a.e, raw)
+            note_run_crash(results, finished, raw)
             if not finished:
                 # A crash ended the run: list the suite, then run each class with tests that never started again,
                 # whole (a Parameterized name's commas cannot be named in -e class), keeping only the results of
@@ -162,7 +181,10 @@ def run_emulator(a, out):
                     if (c, m) not in results:
                         left.setdefault(c, []).append(m)
                 for c, ms in left.items():
-                    got, _ = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] + [("class", c)], raw)
+                    before = dict(results)
+                    got, done = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] + [("class", c)], raw)
+                    if not done and not any(got.get(k) == ("failed", CRASHED) for k in got):
+                        results[(RUN, f"crash re-running {c}")] = ("failed", "the process crashed outside any test")
                     for m in ms:
                         results[(c, m)] = got.get((c, m), ("failed", "not run: the process crashed before it"))
     finally:
@@ -245,6 +267,7 @@ def main():
     p.add_argument("--here-xml", metavar="FILE")
     p.add_argument("-j", type=int, default=3)
     p.add_argument("--isolate", action="store_true")
+    p.add_argument("--grant-permissions", action="store_true")
     p.add_argument("-e", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
     a = p.parse_args(argv)
     a.e = [tuple(kv) for kv in a.e]

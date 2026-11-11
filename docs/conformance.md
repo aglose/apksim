@@ -13,7 +13,7 @@ python3 scripts/conformance.py TEST.apk [--app APP.apk] [--emulator SERIAL --uti
 
 A library's androidTest APK instruments itself, so it is passed alone (as both APKs); `--app` is for a test APK that
 targets an app. Here it runs through `scripts/instrument.py` (`work/conformance/NAME/here.xml`). With `--emulator` the
-same APKs are installed on that device (`adb install -t -g`; only packages it does not have, uninstalled afterwards,
+same APKs are installed on that device (`adb install -t`, `-g` with `--grant-permissions` as apksim gets `--permissions grant`; only packages it does not have, uninstalled afterwards,
 so an emulator another session runs keeps its apps), run with `am instrument -w -r`, and a run a crash ended is
 finished one class at a time. `--util` installs an androidTestUtil APK for the run, queryable and with
 MANAGE_EXTERNAL_STORAGE as AGP does it: the test app's runner writes through Test Storage, which on a device needs the
