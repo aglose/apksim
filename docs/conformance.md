@@ -47,35 +47,35 @@ fragment-ktx, fragment-testing, lifecycle-process, navigation-fragment and navig
 
 ## Batch 1: activity, fragment, lifecycle, navigation
 
-33 tests, all passing on both sides after the two fixes below (4.3 s here, one process).
+31 tests here and with the pause fix (#266), all passing on both sides; the two ProcessLifecycleOwner tests that
+need the AppCallbacks fix travel with it in #267 (a draft, under review).
 
 | Class | Tests | Passes on both | Fails here only, before | Fixed by |
 |---|---|---|---|---|
 | ActivityConformanceTest (back dispatch, result registration, ViewModel and saved state across recreate, FullyDrawnReporter, lifecycle order, insets, save order) | 9 | 9 | 0 | |
-| LifecycleConformanceTest (ProcessLifecycleOwner, repeatOnLifecycle, withStarted, currentStateFlow, lifecycleScope) | 6 | 6 | 1 | AppCallbacks; the pause fix in the full suite |
+| LifecycleConformanceTest (repeatOnLifecycle, withStarted, currentStateFlow, lifecycleScope) | 4 | 4 | 0 | |
 | FragmentConformanceTest (view lifecycle, recreate, back stack, results, DialogFragment, child fragments, back callbacks) | 9 | 9 | 0 | |
 | NavigationConformanceTest (NavHostFragment: navigate and back, popUpTo, deep links, recreate, results, navigateUp) | 6 | 6 | 0 | |
 | NavigationComposeConformanceTest (rememberSaveable across back, predictive back) | 2 | 2 | 0 | |
-| RotationConformanceTest (no second pause on a rotation while stopped) | 1 | 1 | 1 | the pause fix |
+| RotationConformanceTest (no second pause on a rotation while stopped; in #266) | 1 | 1 | 1 | the pause fix |
 
-### Causes found and fixed
+### Causes found
 
-1. **A process singleton's ActivityLifecycleCallbacks stayed on the first test's Application** (`AppCallbacks`).
+1. **A rotation paused a stopped activity again** (fixed in #266, `ShadowSimInstrumentation.callActivityOnPause`).
+   Robolectric's configuration change calls `Instrumentation.callActivityOnPause` whatever the activity's state
+   (traced: `ActivityController`'s `lambda$configurationChange`, line 497, on a stopped MainActivity, from
+   `StackWindowsTest#aStoppedActivityRotatedAndResumedShowsItsWindow`); a device pauses only a resumed activity
+   (`performPauseActivityIfNeeded`). Every ActivityLifecycleCallbacks heard a second onActivityPaused, and AndroidX
+   ProcessLifecycleOwner's resumed count stayed at -1 for the rest of the process (bisected over the suite's classes
+   to that one test). Now only a resumed activity is paused; `-Dapksim.pauseOnlyResumed=false` restores the old call.
+   Repro: `RotationConformanceTest`.
+2. **A process singleton's ActivityLifecycleCallbacks stay on the first test's Application** (fix in #267, a draft).
    AndroidX ProcessLifecycleOwner registers them once a process, from AndroidX Startup's initializer, whose own
    singleton runs it once. Each test here gets a fresh Application, so from the second test on ProcessLifecycleOwner
-   heard of no activity (traced: `activityStarted$lifecycle_process` and its siblings hit in the first test only) and
-   stayed in whatever state that test left. Now the callbacks (and ComponentCallbacks) of the previous test's
-   Application whose class came from the APK and that the new Application has not registered again are registered on
-   it. `-Dapksim.keepAppCallbacks=false` turns it off. Repro: `LifecycleConformanceTest#processLifecycleStopsAfterItsDelay`
-   after any other test.
-2. **A rotation paused a stopped activity again** (`ShadowSimInstrumentation.callActivityOnPause`). Robolectric's
-   configuration change calls `Instrumentation.callActivityOnPause` whatever the activity's state (traced:
-   `ActivityController`'s `lambda$configurationChange`, line 497, on a stopped MainActivity, from
-   `StackWindowsTest#aStoppedActivityRotatedAndResumedShowsItsWindow`); a device pauses only a resumed activity
-   (`performPauseActivityIfNeeded`). Every ActivityLifecycleCallbacks heard a second onActivityPaused, and
-   ProcessLifecycleOwner's resumed count stayed at -1 for the rest of the process, so it never reached CREATED again in
-   the full suite (bisected over the suite's classes to that one test). Now only a resumed activity is paused;
-   `-Dapksim.pauseOnlyResumed=false` restores the old call. Repro: `RotationConformanceTest`.
+   hears of no activity (traced: `activityStarted$lifecycle_process` and its siblings hit in the first test only) and
+   stays in whatever state that test left: its documented 700 ms delay to CREATED never comes. The emulator passes
+   both ProcessLifecycleOwner tests; here they fail after any other test. #267 shares one process-wide callback list
+   and controller across a run's Applications; its review is open.
 
 Also found while running the suite: `UncaughtExceptionTest` left its coroutine exception in kotlinx-coroutines-test's
 collector, which failed whichever Compose rule test ran next ("uncaught exceptions before the test started"); it now
