@@ -48,10 +48,14 @@ public class RunnerApplication {
     }
   }
 
+  /** Whether the probe (or a pooled process's warm-up) has run in this process: it runs once. */
+  private static boolean ran;
+
   /** Before the test classes' runners are made: finds what the runner's newApplication asks for. */
   static void probe(String instrumentation) {
-    if (instrumentation.equals("androidx.test.runner.AndroidJUnitRunner")) return;
+    if (ran || instrumentation.equals("androidx.test.runner.AndroidJUnitRunner")) return;
     if (!Boolean.parseBoolean(System.getProperty("apksim.runnerApplication", "true"))) return;  // the manifest's, as before
+    ran = true;
     long t0 = System.nanoTime();
     runnerClass = instrumentation;
     Result r;
@@ -80,6 +84,25 @@ public class RunnerApplication {
   }
 
   /**
+   * A pooled test process's warm-up when the probe did not run (plain AndroidJUnitRunner, or the probe switched off):
+   * the same test with no runner to create, so that the sandbox, the native runtime and a first (plain) Application
+   * are set up before the process is handed its test, as the probe sets them up for a suite with its own runner.
+   */
+  static void warm() {
+    if (ran) return;
+    ran = true;
+    probing = true;
+    try {
+      Result r = new JUnitCore().run(Request.aClass(RunnerApplication.class));
+      for (org.junit.runner.notification.Failure f : r.getFailures()) {
+        System.err.println("[apksim] pool: the warm-up failed (the test runs all the same): " + f.getException());
+      }
+    } finally {
+      probing = false;
+    }
+  }
+
+  /**
    * At each test's setup, before Robolectric replaces ApplicationInfo.className with the configured Application (the
    * probe's plain one): the manifest's own class, which a device passes to newApplication and a runner may test.
    */
@@ -97,6 +120,7 @@ public class RunnerApplication {
   public void probe() {
     Application app = RuntimeEnvironment.getApplication();
     if (manifestApplication == null) manifestApplication = Application.class.getName();  // a manifest without one
+    if (runnerClass == null) return;  // a pooled process's warm-up (warm): the environment was all it was for
     try {
       Instrumentation runner = (Instrumentation) Class.forName(runnerClass, true, RunnerApplication.class.getClassLoader())
           .getDeclaredConstructor().newInstance();

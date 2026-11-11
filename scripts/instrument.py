@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
+Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored] [--prewarm on|off|N]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
                      [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
@@ -23,6 +23,12 @@ A test @Ignore'd on its method or class is reported ignored without a process (t
 `-e apksimListIgnored true`); one that skips only at run time (an assumption) still gets its process. `--run-ignored`
 gives each a process, as the Orchestrator does (apksim sets up no runner listeners in a process whose every test is
 ignored, so the app's own listeners do not hear of them either way).
+--prewarm on|off|N (with --isolate; default on): a pool of test processes started ahead, -j of them (N with a number),
+each booting what no test decides (the JVM, the APKs' classes, the sandbox and native runtime through the runner probe)
+and then waiting for its test, which it reads on stdin (apksim's --pooled; `docker run` gets -i for it). A process taken
+for a test is replaced at once, so the next one boots while that test runs. Each still runs one test and exits, with
+the run's whole command line (-e arguments, --jvm options, bundles, recordings) as a cold one; start-up is then counted
+from the hand-over. A pooled process that dies or hangs is handled as a cold one would be (docs/test-pool.md).
 --reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
 ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
 nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
@@ -80,7 +86,7 @@ shard I's tests, balanced by the same rule (by count without timings), each in i
 long tests start early but not together (stacked at the start, a machine's heaviest tests can slow each other past a
 test's own timeout); `longest-first`; `suite` keeps the suite's order.
 """
-import argparse, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
+import argparse, collections, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
 import affected
 from xml.sax.saxutils import escape, quoteattr
@@ -148,11 +154,12 @@ def thread_dump_tests(dump):
     return text if kept == len(picked) else text + f"\n\n[... {len(picked) - kept} more threads]"
 
 
-def apksim(app, test, extra_args, apksim_opts):
-    """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
-    .phases: {(class, method): (seconds from spawn to its start, its run, seconds from its end to the process exiting)},
-    from when each test's start and end blocks arrived (the output is read as it comes), and, when --test-timeout
-    killed it, .timed_out (the limit) and .threads (the JUnit threads' stacks from a thread dump taken first)."""
+def spawn(app, test, extra_args, apksim_opts, pooled=False):
+    """Starts `apksim --instrument TEST [-e KEY VALUE]... OPTIONS APP` in a process group of its own, entered in LIVE,
+    its stderr read as it comes. A namespace: .p (the Popen), .kill() (its group, and its container), .err (stderr's
+    chunks so far), .reader (that thread), .after_exit(timed_out) (the container's and cidfile's cleanup once it has
+    ended), .ready (an Event: a pooled process has booted, or its stderr ended). [pooled]: a process of the --prewarm
+    pool, started with `--pooled` (and `docker run -i`): it boots, then reads its test's -e pairs on stdin (hand_over)."""
     launcher, user_cidfile = list(LAUNCHER), None
     # A container outlives its client (SIGKILL is not passed on): each process gets a cidfile of its own, so that a
     # kill can end its container. Docker refuses to run with a cidfile that exists, so a --cidfile in --apksim would
@@ -172,13 +179,14 @@ def apksim(app, test, extra_args, apksim_opts):
                 i += 1
         cid_dir = tempfile.mkdtemp(prefix="instrument-cid-")
         cidfile = os.path.join(cid_dir, "cid")
-        launcher = launcher[:run + 1] + ["--cidfile", cidfile] + launcher[run + 1:]
+        # (-i: a pooled process's stdin, where its test comes, must reach the container)
+        launcher = launcher[:run + 1] + ["--cidfile", cidfile] + (["-i"] if pooled else []) + launcher[run + 1:]
     cmd = launcher + ["--instrument", test]
     for k, v in extra_args:
         cmd += ["-e", k, v]
     if REAP_EARLY or EXIT_MARKS:  # the process reports its exit status ahead of its teardown, and what the teardown cost
         apksim_opts = ["--jvm", "-Dapksim.exitMarks=true"] + list(apksim_opts)
-    cmd += apksim_opts + [app]
+    cmd += list(apksim_opts) + (["--pooled"] if pooled else []) + [app]
     # Reentrant: the signal handler runs on the main thread, and its stop() kills this process while the main thread
     # may be in kill_lock itself (the cleanup below). Other locks the handler takes: LIVE_LOCK, also reentrant.
     cid, kill_lock = [], threading.RLock()
@@ -229,7 +237,8 @@ def apksim(app, test, extra_args, apksim_opts):
         MAIN_SPAWNING[0] = main
         try:
             # Its own process group (session), so a kill ends whatever it started too, and nothing but this script's.
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE if pooled else None, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
             if SPAWN_DELAY:
                 time.sleep(SPAWN_DELAY)
             LIVE[p] = kill
@@ -238,13 +247,129 @@ def apksim(app, test, extra_args, apksim_opts):
     if main and STOPPING:  # a signal came while this thread started it: its handler left the stopping to this
         stop(STOPPING[0])
     err = []  # (chunks as they arrive: a process reaped early is still being read)
+    ready = threading.Event()
 
     def read_err():
         for chunk in p.stderr:
             err.append(chunk)
+            if chunk.startswith("[apksim] pool: ready"):
+                ready.set()
+        ready.set()
 
     reader = threading.Thread(target=read_err, daemon=bool(REAP_EARLY))
     reader.start()
+
+    def after_exit(timed_out):
+        if cidfile and p.returncode < 0 and not timed_out:
+            with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
+                if CLEANUP_DELAY:
+                    time.sleep(CLEANUP_DELAY)
+                remove_container()
+        with LIVE_LOCK:
+            LIVE.pop(p, None)
+        if user_cidfile:
+            try:
+                c = container_id()
+                if c:  # (beside it, then renamed over it: a run of shards leaves the last one's, whole)
+                    tmp = f"{user_cidfile}.{os.getpid()}.{threading.get_ident()}"
+                    with open(tmp, "w") as f:
+                        f.write(c)
+                    os.replace(tmp, user_cidfile)
+            except OSError as e:
+                warn(f"instrument.py: could not write the container ID to --cidfile {user_cidfile} ({e})")
+        if cid_dir and not STOPPING:  # (a stop's kill may still read it; this script ends with it anyway)
+            shutil.rmtree(cid_dir, ignore_errors=True)
+
+    return argparse.Namespace(p=p, kill=kill, err=err, reader=reader, ready=ready, after_exit=after_exit)
+
+
+def hand_over(proc, args):
+    """Gives a pooled process its test: the -e pairs on its stdin as KEY NUL VALUE NUL, then closes it (an empty stdin
+    ends the process: TestPool). From a thread of its own, since a process still booting reads stdin only once ready.
+    One that died meanwhile is read as a process that died at start-up, as a cold one would be."""
+    def write():
+        try:
+            proc.p.stdin.buffer.write("".join(f"{k}\0{v}\0" for k, v in args).encode("utf-8"))
+            proc.p.stdin.close()
+        except (OSError, ValueError):
+            pass
+    threading.Thread(target=write, daemon=True).start()
+
+
+class Pool:
+    """--prewarm on (--isolate's default): test processes started ahead, each booting what no test decides (JVM,
+    framework, the APKs' classes, the runner probe) and then waiting for its test on stdin (`--pooled`,
+    docs/test-pool.md). [size] wait at once: a process taken for a test is replaced at once, so the next one boots
+    while that test runs, as long as tests are left for it. Each takes one test and exits."""
+
+    def __init__(self, size, args):
+        self.size, self.args, self.left = size, args, None  # left: processes still to start (None: until set_total)
+        self.started, self.waiting, self.lock = 0, collections.deque(), threading.Lock()
+        with self.lock:
+            for _ in range(size):
+                self._start()
+
+    def _start(self):
+        """Starts one more process, if tests are left for it: whether it did."""
+        if self.left is not None and self.left <= 0:
+            return False
+        try:
+            self.waiting.append(spawn(*self.args, pooled=True))
+        except RuntimeError:  # stopping
+            return False
+        self.started += 1
+        if self.left is not None:
+            self.left -= 1
+        return True
+
+    def set_total(self, n):
+        """There are [n] tests to run: so many processes in all, counting those already started."""
+        with self.lock:
+            self.left = n - self.started
+        if self.left < 0:
+            self.close(-self.left)
+
+    def take(self):
+        """A process for the next test (booting or booted), or None when the pool has none left to give."""
+        with self.lock:
+            if not self.waiting:
+                self._start()
+            proc = self.waiting.popleft() if self.waiting else None
+            while len(self.waiting) < self.size and self._start():
+                pass
+        return proc
+
+    def close(self, n=None):
+        """Ends [n] waiting processes (all by default) without a test: an empty stdin, and they exit."""
+        with self.lock:
+            if n is None:
+                self.left = 0
+            procs = [self.waiting.pop() for _ in range(len(self.waiting) if n is None else min(n, len(self.waiting)))]
+        for proc in procs:
+            hand_over(proc, [])
+        for proc in procs:
+            try:
+                proc.p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.p.wait()
+            proc.reader.join(5)
+            proc.after_exit(False)
+
+
+def apksim(app, test, extra_args, apksim_opts, pool=None, handed=()):
+    """Runs apksim --instrument; its output as subprocess.run's, plus .seconds: {(class, method): how long the test ran},
+    .phases: {(class, method): (seconds from spawn to its start, its run, seconds from its end to the process exiting)},
+    from when each test's start and end blocks arrived (the output is read as it comes), and, when --test-timeout
+    killed it, .timed_out (the limit) and .threads (the JUnit threads' stacks from a thread dump taken first).
+    With a [pool], [extra_args] are the pool's and [handed] (the test's -e pairs) go to one of its processes; "spawn"
+    above is then the hand-over, and .pooled says so."""
+    proc = pool.take() if pool else None
+    if proc:
+        hand_over(proc, handed)
+    else:
+        proc = spawn(app, test, list(extra_args) + list(handed), apksim_opts)
+    p, kill, err, reader = proc.p, proc.kill, proc.err, proc.reader
     exit_code = []  # the status the process reported (apksim.exitMarks) ahead of its teardown
     lines, seconds, started, block, deps = [], {}, {}, {}, []
     marks = {}  # (class, method): [wall time its start block arrived, wall time its end block arrived]
@@ -343,25 +468,7 @@ def apksim(app, test, extra_args, apksim_opts):
         after_exit()
 
     def after_exit():
-        if cidfile and p.returncode < 0 and not timed_out:
-            with kill_lock:  # the client died of a signal, not of its container's end: the container may live on
-                if CLEANUP_DELAY:
-                    time.sleep(CLEANUP_DELAY)
-                remove_container()
-        with LIVE_LOCK:
-            LIVE.pop(p, None)
-        if user_cidfile:
-            try:
-                c = container_id()
-                if c:  # (beside it, then renamed over it: a run of shards leaves the last one's, whole)
-                    tmp = f"{user_cidfile}.{os.getpid()}.{threading.get_ident()}"
-                    with open(tmp, "w") as f:
-                        f.write(c)
-                    os.replace(tmp, user_cidfile)
-            except OSError as e:
-                warn(f"instrument.py: could not write the container ID to --cidfile {user_cidfile} ({e})")
-        if cid_dir and not STOPPING:  # (a stop's kill may still read it; this script ends with it anyway)
-            shutil.rmtree(cid_dir, ignore_errors=True)
+        proc.after_exit(timed_out)
 
     if early:
         # Its status is the one it reported. A background thread, not a daemon: this script waits for it at the end
@@ -385,6 +492,7 @@ def apksim(app, test, extra_args, apksim_opts):
     r.phases = {t: (m[0] - spawned, m[1] - m[0], exited - m[1]) for t, m in marks.items() if m[1] is not None}
     r.timed_out = timed_out[0] if timed_out else None
     r.threads = thread_dump_tests(dump) if dump else ""
+    r.pooled = bool(pool)
     return r
 
 
@@ -960,6 +1068,19 @@ def run_tests(a, passthrough, listing, tests, label=""):
     return results
 
 
+def isolated_args(a):
+    """The -e arguments every --isolate process gets, before the one naming its test."""
+    return [kv for kv in a.e if kv[0] not in ("class", "package")]
+
+
+def start_pool(a, passthrough):
+    """--isolate's pool of pre-warmed processes (--prewarm on), or None."""
+    size = a.j if a.prewarm == "on" else 0 if a.prewarm == "off" else int(a.prewarm)
+    if not a.isolate or size < 1:
+        return None
+    return Pool(size, (a.app, a.test, isolated_args(a), passthrough))
+
+
 def main():
     global TEST_TIMEOUT, REAP_EARLY, EXIT_MARKS
     argv = sys.argv[1:]
@@ -1005,7 +1126,12 @@ def main():
     p.add_argument("--order", choices=("interleave", "longest-first", "suite"), default="interleave",
                    help="--isolate --timings: the order tests start in (default interleave: alternately the longest and shortest)")
     p.add_argument("--test-timeout", type=float, default=TEST_TIMEOUT, metavar="SEC")
+    p.add_argument("--prewarm", default="on", metavar="on|off|N",
+                   help="--isolate: keep test processes booted ahead (-j of them with on, the default, else N), each "
+                        "booting what no test decides and then taking one test (docs/test-pool.md)")
     a = p.parse_args(argv)
+    if a.prewarm not in ("on", "off") and not (a.prewarm.isdigit() and int(a.prewarm) >= 0):
+        p.error("--prewarm on|off|N: N processes kept booted ahead (on: -j of them)")
     if a.test_timeout < 0:
         p.error("--test-timeout SEC: 0 for no limit, else the seconds a process may go without a test starting or ending")
     TEST_TIMEOUT = a.test_timeout
@@ -1053,7 +1179,7 @@ def main():
     if a.record_deps:
         passthrough = ["--jvm", "-Dapksim.deps=true"] + passthrough
 
-    listing, selected = None, None  # selected: the tests to run, when not every test a.e names
+    listing, selected, pool = None, None, None  # selected: the tests to run, when not every test a.e names
     if a.affected_by:
         doc = affected.read_deps(a.affected_by)
         if not (a.changed or a.diff):
@@ -1120,6 +1246,7 @@ def main():
         tests = selected
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
     else:
+        pool = start_pool(a, passthrough)  # (its processes boot while the suite is listed)
         listed = apksim(a.app, a.test, listing_args(a), passthrough)
         note_ignored(a, parse(listed.stdout))
         tests = drop_class_errors(a, [(c, m) for c, m, _, _ in parse(listed.stdout)])
@@ -1154,10 +1281,15 @@ def main():
             tests = affected.interleaved(tests, timings)
         print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}"), file=sys.stderr)
 
+        if pool is None:
+            pool = start_pool(a, passthrough)
+        if pool:
+            pool.set_total(len(tests))
+
         def one(t):
             start = time.time()
-            others = [kv for kv in a.e if kv[0] not in ("class", "package")]
-            r = apksim(a.app, a.test, others + [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")], passthrough)
+            r = apksim(a.app, a.test, isolated_args(a), passthrough, pool,
+                       [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")])
             got = parse(r.stdout)
             why = incomplete(r, got)
             if r.exit_marks:
@@ -1170,8 +1302,8 @@ def main():
             c, m, s, st = got[0]
             return (c, m, s, st, time.time() - start)
 
-        with concurrent.futures.ThreadPoolExecutor(a.j) as pool:
-            for res in pool.map(one, tests):
+        with concurrent.futures.ThreadPoolExecutor(a.j) as threads:
+            for res in threads.map(one, tests):
                 results.append(res)
                 ph = PHASES.get((res[0], res[1]))
                 print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
@@ -1180,6 +1312,8 @@ def main():
                 if EXIT_MARKS and MARKS.get((res[0], res[1])):
                     print(f"      exit: {MARKS[(res[0], res[1])]}", file=sys.stderr)
         results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
+        if pool:
+            pool.close()
 
     failed = [r for r in results if r[2] == "failed"]
     for c, m, s, st, _ in failed:

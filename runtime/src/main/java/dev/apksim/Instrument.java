@@ -57,7 +57,6 @@ final class Instrument {
       System.err.printf("[apksim] %s targets %s, not %s%n", testApk.getFileName(), instr[1], pkg);
       return 2;
     }
-    Map<String, String> args = arguments();
     AppClasses tests = AppClasses.installTest(testApk, app);
     // For each test's InstrumentationRegistry.getInstrumentation().getContext(): the test APK's own (SimRunner).
     System.setProperty("apksim.testApk", testApk.toAbsolutePath().toString());
@@ -73,6 +72,9 @@ final class Instrument {
     // (WRAP_CONTENT) was measured at its own width and then again at the display's on every traversal, so Compose
     // never settled its layout and its tests never got idle.
     System.setProperty("robolectric.windowManager.useRequestedSize", "true");
+    // A pooled process (instrument.py --isolate's pool): boots what does not depend on the test, then is handed it.
+    if (TestPool.requested()) TestPool.await(instr[0], tests);
+    Map<String, String> args = arguments();
 
     long t0 = System.nanoTime();
     List<Class<?>> classes = testClasses(tests, args);

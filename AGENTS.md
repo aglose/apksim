@@ -1062,7 +1062,9 @@ class cache, scratch removal, the non-daemon threads left; `halt marks` from `St
 cache sweep), and makes apksim print `APKSIM_EXIT: STATUS` right after `INSTRUMENTATION_CODE`; `--isolate --reap-early
 SEC` takes that line as the process's end, frees its `-j` slot and finishes the teardown in the background, killing the
 process group after SEC s (off by default; everything a test leaves, bundles, recordings, outputs, listeners, is
-written before it; only the class cache save, scratch removal and cache sweep come after). `--record-deps FILE` records which of the app's and tests'
+written before it; only the class cache save, scratch removal and cache sweep come after). `--isolate` keeps `--prewarm`
+(`-j`, or N) processes booted ahead (`TestPool`, launcher `--pooled`: boots up to the runner probe, then reads its test's
+`-e` pairs on stdin), one test each as before; `--prewarm off` starts each cold (docs/test-pool.md). `--record-deps FILE` records which of the app's and tests'
 classes each test runs code of (`-Dapksim.deps=true`: the translator adds a probe to every method of the app's
 packages, `dex/Probes`, and Instrument's `DepsListener` reports each test's classes on stdout), and `--affected-by FILE
 --changed PATH...|--diff REV` runs only the tests that reached a class compiled from a changed `.kt`/`.java` file (by

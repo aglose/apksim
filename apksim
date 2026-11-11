@@ -234,6 +234,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
     --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); TEST_RUN=1; shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
+    # A pre-warmed test process (instrument.py --isolate's pool): boots, then reads the test's -e pairs from stdin.
+    --pooled) EXTRA+=("-Dapksim.pooled=true"); shift ;;
     # In a test run, the simulated clock follows real time instead of skipping idle time (timed UI as on a device).
     --realtime-clock) EXTRA+=("-Dapksim.realtimeClock=true"); shift ;;
     # With --realtime-clock: spin the last part of short waits where OS sleeps overshoot (VMs). auto probes; on forces it.
