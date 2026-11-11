@@ -34,6 +34,10 @@ inputs:
     description: Seconds the builds stay on the server (60 to 604800)
     required: false
     default: '259200'
+  author:
+    description: The login the comment is posted as (default: the token's own account, else any comment that starts with the marker)
+    required: false
+    default: ''
   github-token:
     description: Token that may comment on the pull request
     required: false
@@ -53,6 +57,7 @@ runs:
         BASE_APK: ${{ inputs.base-apk }}
         PREVIEW_NAME: ${{ inputs.name }}
         KEY: ${{ inputs.key }}
+        AUTHOR: ${{ inputs.author }}
         TTL: ${{ inputs.ttl }}
         PR: ${{ github.event.pull_request.number }}
         SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -60,5 +65,6 @@ runs:
         args=(--serve "$SERVE_URL" --apk "$APK" --name "$PREVIEW_NAME" --key "$KEY" --ttl "$TTL" --sha "$SHA")
         [[ -n "$PUBLIC_URL" ]] && args+=(--public-url "$PUBLIC_URL")
         [[ -n "$BASE_APK" ]] && args+=(--base-apk "$BASE_APK")
+        [[ -n "$AUTHOR" ]] && args+=(--author "$AUTHOR")
         [[ -n "$PR" ]] && args+=(--repo "$GITHUB_REPOSITORY" --pr "$PR")
         python3 "${{ github.action_path }}/../../../scripts/pr-preview.py" "${args[@]}"

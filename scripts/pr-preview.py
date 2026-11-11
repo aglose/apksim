@@ -174,6 +174,17 @@ class GitHub:
                 return None
             page += 1
 
+    def login(self):
+        """The account the token posts as, or None when it has none (an installation token answers 403/404)."""
+        req = urllib.request.Request(self.api + "/user")
+        req.add_unredirected_header("Authorization", "Bearer " + self.token)
+        req.add_header("Accept", "application/vnd.github+json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return (json.loads(r.read().decode() or "null") or {}).get("login")
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+
     def post_or_update(self, pr, key, body, author=None):
         existing = self.find(pr, f"<!-- {MARKER}:{key} -->", author)
         if existing:
@@ -201,9 +212,10 @@ def main(argv=None):
     ap.add_argument("--wait", type=int, default=300, help="seconds to wait for the server to have each build")
     ap.add_argument("--repo", help="OWNER/NAME of the repository to comment on (default $GITHUB_REPOSITORY)")
     ap.add_argument("--pr", type=int, help="the pull request's number: without it the comment is only printed")
-    ap.add_argument("--author", default="github-actions[bot]" if os.environ.get("GITHUB_ACTIONS") else None,
-                    help="the login the comment was posted as, which an update looks for (default github-actions[bot] in Actions; "
-                    "else any author whose comment starts with the marker)")
+    ap.add_argument("--author", default=None,
+                    help="the login the comment is posted as, which an update looks for. Default: the token's own account "
+                    "(GET /user, which a PAT answers); where the token has none (GITHUB_TOKEN, an App's) any author's comment "
+                    "that starts with the marker")
     ap.add_argument("--github-api", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
     ap.add_argument("--dry-run", action="store_true", help="add nothing, post nothing: print the comment with placeholder ids")
     a = ap.parse_args(argv)
@@ -247,7 +259,8 @@ def main(argv=None):
         return 0
     if not repo or not gh_token:
         die("posting needs --repo (or GITHUB_REPOSITORY) and GITHUB_TOKEN")
-    what, url = GitHub(a.github_api, gh_token, repo).post_or_update(a.pr, a.key, body, a.author)
+    gh = GitHub(a.github_api, gh_token, repo)
+    what, url = gh.post_or_update(a.pr, a.key, body, a.author or gh.login())
     print(f"{what} the preview comment on {repo}#{a.pr}" + (f": {url}" if url else ""))
     print("build id " + build_id + (", base id " + base_id if base_id else ""))
     return 0

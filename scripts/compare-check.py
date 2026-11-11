@@ -178,6 +178,10 @@ class StubGitHub(http.server.BaseHTTPRequestHandler):
     log = []
 
     def do_GET(self):
+        if self.path == "/user":  # a GITHUB_TOKEN has no account: the update then matches on the leading marker alone
+            self.log.append(("GET", self.path))
+            self.reply(b'{"message": "Resource not accessible by integration"}', 403)
+            return
         self.log.append(("GET", self.path))
         body = json.dumps([{"id": i, "body": b, "html_url": f"http://stub/c/{i}", "user": {"login": "github-actions[bot]"}}
                            for i, b in self.comments.items()]).encode()
