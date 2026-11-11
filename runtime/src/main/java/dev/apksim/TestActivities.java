@@ -507,6 +507,7 @@ public final class TestActivities {
   }
 
   static void beforeReset() {
+    AppCallbacks.beforeReset();
     composeIdling = null;
     parkCarryNanos = 0;
     // Until the next test publishes its own (SimRunner.useTestApkContext, after its Application starts), calls fall

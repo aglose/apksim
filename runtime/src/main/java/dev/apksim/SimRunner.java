@@ -258,6 +258,7 @@ public class SimRunner extends RobolectricTestRunner {
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
+      AppCallbacks.carryOver(RuntimeEnvironment.getApplication());  // a singleton's, from the previous test's Application
       RuntimeEnvironment.setQualifiers(System.getProperty("apksim.qualifiers"));
       SlotDevice.afterTestQualifiers();  // that reset a --setting system:font_scale onCreate had seen
       SystemBars.testSetUp();  // no system bars, as before, unless --status-bar/--nav-bar ask for them
