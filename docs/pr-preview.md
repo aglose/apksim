@@ -103,7 +103,7 @@ the browser:
 | `note.txt` | what the reviewer typed |
 | `settings.json` | app, session id, device, appearance, locale, text size, last deep link, screen size, stream, time, the page's address (no token) |
 | `screenshot.png` | the screen as drawn |
-| `recording.apkrec` | `rec save 300`: the last five minutes (docs/flight-recorder.md), served by `GET /api/sessions/ID/recordings/RID` as before |
+| `recording.apkrec` | `rec save 300`: the last five minutes of input and log and a checkpoint, which is **a copy of the app's data** (databases, preferences, files: sign-in state too) (docs/flight-recorder.md), served by `GET /api/sessions/ID/recordings/RID` as before. The card says so and has a box to leave it out |
 | `network.json` | the exchanges the inspector listed, when it is on |
 
 With `--issue-url 'https://github.com/OWNER/REPO/issues/new?title={title}&body={body}'` the page then opens that address in
@@ -111,7 +111,7 @@ a new tab of the reviewer's own browser (opened at the click and pointed at the 
 lines, URL-encoded (at most 4,000 characters), and says to attach the zip there. The template is checked at the server's start: https,
 no credentials, a `{title}` or `{body}`. The server only announces it in the session's `i` message (`rec`, `issueUrl`); the page does
 the rest, in the reviewer's session, so there is no token or account of the server's in any request to a tracker. The recording
-holds the app's logs and, with `net`, its calls: treat the zip like the token.
+holds the app's logs and a copy of its data: treat the zip like the token.
 
 ### Network inspector (`--inspect-network`)
 
@@ -121,7 +121,7 @@ that opens a panel:
 
 - **Requests**, as they happen: time, method, status, URL, milliseconds (`*`: a rule added some), a hint with sizes and the rule that
   answered. A connection the engine could not make is a row too (`DNS`/`CONNECT`, status 0). Click one for its headers and
-  bodies (at most 64 KB of each, binary shown as a size). Headers are redacted exactly as a recording's are (`Authorization`,
+  bodies (at most 64 KB of each, binary shown as a size; a row shows 1,500 characters of a long URL, the detail all of it; rows are buttons a keyboard reaches; replayed answers are rows too). Headers are redacted exactly as a recording's are (`Authorization`,
   `Cookie`, ... and `--network-redact`); bodies and URLs are as sent.
 - **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status (200-599) with a content type and body
   (64 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,

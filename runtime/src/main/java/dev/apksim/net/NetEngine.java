@@ -1037,7 +1037,25 @@ final class NetEngine {
       changed();
     }
 
+    /** The inspector's row for a replayed answer: a snapshot of this request and answer, never the fixture's entry itself. */
+    void inspectReplay(Request req, long startWall, int status, List<String[]> respHeaders, byte[] body) {
+      if (!Inspector.on) return;
+      Recording.Entry s = new Recording.Entry();
+      s.wallMs = startWall;
+      s.method = req.method;
+      s.url = req.url;
+      s.reqHeaders = redacted(req.headers);
+      s.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
+      s.reqTruncated = req.bodyTruncated;
+      s.status = status;
+      s.respHeaders = new ArrayList<>(respHeaders);
+      s.respBody = body;
+      s.timeMs = System.currentTimeMillis() - startWall;
+      Inspector.exchange(s, ruleId, addedMs);
+    }
+
     boolean replay(Request req) throws IOException {
+      long startWall = System.currentTimeMillis();
       if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
         // Recorded answered before its body (the server refused it at once): answered the same way, no body read.
         Recording.Entry early = Net.recording.findExpectAnswered(req.method, req.url, req.headers);
@@ -1045,6 +1063,7 @@ final class NetEngine {
           Conditions.sleep(Net.conditions.rtt());
           replayed.incrementAndGet();
           writeRecorded(req, early);
+          inspectReplay(req, startWall, early.status, redacted(early.respHeaders), early.respBody);
           return false;
         }
         cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
@@ -1073,10 +1092,12 @@ final class NetEngine {
         cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
         if (!req.method.equals("HEAD")) cout.write(body);
         cout.flush();
+        inspectReplay(req, startWall, 599, List.of(new String[] {"Content-Type", "text/plain; charset=utf-8"}, new String[] {"X-Apksim-Replay", "unmatched"}), body);
         return true;
       }
       replayed.incrementAndGet();
       writeRecorded(req, e);
+      inspectReplay(req, startWall, e.status, redacted(e.respHeaders), e.respBody);
       return true;
     }
 

@@ -35,6 +35,8 @@ public final class Inspector {
   static final int KEEP = 300;
   /** Bodies shown are cut at this many bytes (the instance and the link carry no more). */
   static final int BODY_MAX = 64 * 1024;
+  /** The most of a URL an event carries (`detail` has all of it). */
+  static final int URL_SHOWN = 1500;
   /** Rules at most; each costs a pattern match per request. */
   static final int MAX_RULES = 32;
 
@@ -132,7 +134,11 @@ public final class Inspector {
     if (e.reqTruncated && cl != null) reqBytes = parse(cl);
     // A body too big to keep has only its Content-Length to say how big; without one the size is unknown (-1).
     long respBytes = e.truncated ? (e.header(e.respHeaders, "Content-Length") == null ? -1 : parse(e.header(e.respHeaders, "Content-Length"))) : e.respBody.length;
-    String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(e.url) + ",\"status\":" + e.status
+    // The row shows at most URL_SHOWN characters of a URL (the engine takes request lines of 16 KB): the event stays small
+    // enough for the server to relay, and `detail` has the whole address.
+    boolean longUrl = e.url.length() > URL_SHOWN;
+    String url = longUrl ? e.url.substring(0, URL_SHOWN) + "…" : e.url;
+    String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(url) + (longUrl ? ",\"urlCut\":true" : "") + ",\"status\":" + e.status
         + ",\"ms\":" + (e.timeMs + addedMs) + ",\"reqBytes\":" + reqBytes + ",\"respBytes\":" + respBytes
         + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";
     Detail d = new Detail(e.method, e.url, e.status, List.copyOf(e.reqHeaders), List.copyOf(e.respHeaders), cut(e.reqBody), e.reqTruncated || big(e.reqBody),
@@ -185,6 +191,13 @@ public final class Inspector {
       return s == null ? 0 : Long.parseLong(s.trim());
     } catch (NumberFormatException e) {
       return 0;
+    }
+  }
+
+  /** The remembered events, for scripts/check-inspector-rules.sh. */
+  static List<String> eventsForCheck() {
+    synchronized (events) {
+      return List.copyOf(events);
     }
   }
 

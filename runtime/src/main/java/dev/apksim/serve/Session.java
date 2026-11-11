@@ -372,7 +372,8 @@ final class Session {
           return;
         }
         for (String line; (line = r.readLine()) != null; ) {
-          if (line.length() < 4000 && line.startsWith("{")) ws.sendText("n e " + line);
+          // The instance cuts a long URL itself (Inspector.URL_SHOWN): an event is a few KB, at most about 20 KB escaped.
+          if (line.length() < 40_000 && line.startsWith("{")) ws.sendText("n e " + line);
         }
       } catch (IOException e) {
         // the instance went away

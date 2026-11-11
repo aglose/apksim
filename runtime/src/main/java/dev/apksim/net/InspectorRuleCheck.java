@@ -36,6 +36,16 @@ public final class InspectorRuleCheck {
     boolean r = m("*a*a*a*a*a*a*a*a*a*a*a*ab", long1);
     long ms = (System.nanoTime() - t) / 1_000_000;
     check(!r && ms < 1000, "a pattern built to make a regex backtrack, on a 100 KB URL: " + ms + " ms");
+    // A long URL: the row carries a cut address, the detail all of it.
+    Inspector.on = true;
+    Recording.Entry e = new Recording.Entry();
+    e.method = "GET";
+    e.url = "https://example.com/?q=" + "é".repeat(14_000);
+    e.status = 200;
+    Inspector.exchange(e, 0, 0);
+    String d = Inspector.detail(new String[] {"network", "detail", "1"});
+    check(d.contains("\\u00e9".repeat(14_000)), "detail has the whole 14,000-character URL");
+    check(Inspector.eventsForCheck().get(0).length() < 12_000 && Inspector.eventsForCheck().get(0).contains("\"urlCut\":true"), "a row cuts a long URL and says so");
     if (failures > 0) {
       System.out.println(failures + " rule check(s) failed");
       System.exit(1);

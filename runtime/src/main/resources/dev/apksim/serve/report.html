@@ -31,6 +31,9 @@ body.embed #reportCard, body.embed #inspectCard, body.embed #insp { display: non
 <div class="card" id="reportCard">
   <h2>Report a problem</h2>
   <textarea id="reportNote" placeholder="What went wrong? (kept in the report)" aria-label="Note for the report"></textarea>
+  <label class="hint"><input id="reportRec" type="checkbox" checked> Include the recording</label>
+  <div class="hint">The recording is the last five minutes of input and log, and a copy of the app's data (its databases, preferences and
+    files, which may hold sign-in state) from a checkpoint. Share the zip only where that may go; untick to leave it out.</div>
   <div class="row"><button id="reportBtn" title="Saves the last minutes of this session (input and log), a screenshot, the device's settings and your note into one download">Download report</button></div>
   <div class="hint" id="reportHint"></div>
 </div>
@@ -151,13 +154,13 @@ $r("reportBtn").onclick = async () => {
   const issueTab = mine.info && mine.info.issueUrl ? window.open("", "_blank") : null;
   if (issueTab) try { issueTab.opener = null; } catch (e) { /* cross-origin already */ }
   try {
-    say("saving the recording…");
+    say($r("reportRec").checked ? "saving the recording…" : "making the report…");
     const files = [], enc = new TextEncoder(), note = mine.note;
     files.push(["note.txt", enc.encode(note + "\n")]);
     files.push(["settings.json", enc.encode(JSON.stringify(mine.settings, null, 2) + "\n")]);
     const png = await mine.png;
     if (png) files.push(["screenshot.png", new Uint8Array(await png.arrayBuffer())]);
-    const rec = await recording(mine);
+    const rec = $r("reportRec").checked ? await recording(mine) : null;
     if (rec) files.push(["recording.apkrec", rec]);
     if (mine.exchanges.length) files.push(["network.json", enc.encode(JSON.stringify(mine.exchanges, null, 1) + "\n")]);
     const blob = zip(files), name = "apksim-report-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".zip";
@@ -165,7 +168,7 @@ $r("reportBtn").onclick = async () => {
     a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    say("downloaded " + name + (rec ? "" : " (without a recording: " + (mine.info && mine.info.rec ? "none could be saved" : "the server does not record") + ")"));
+    say("downloaded " + name + (rec ? "" : $r("reportRec").checked ? " (without a recording: none could be saved)" : " (without the recording, as asked)"));
     // The reviewer's own browser opens the tracker's new-issue page; the zip is attached there by hand. Nothing is posted from here.
     if (mine.info && mine.info.issueUrl) {
       const first = note.split("\n")[0].trim().slice(0, 100) || "Problem in " + mine.info.app;
@@ -235,7 +238,11 @@ function drawRows() {
         row.appendChild(s);
       });
       row.title = "request " + fmtBytes(e.reqBytes) + ", response " + fmtBytes(e.respBytes) + (e.type ? ", " + e.type : "") + (e.rule ? ", answered by rule " + e.rule : "");
-      row.onclick = () => { selected = e.id; $r("inspSide").textContent = "loading…"; send("inspect detail " + e.id); drawRows(); };
+      const pick = () => { selected = e.id; $r("inspSide").textContent = "loading…"; send("inspect detail " + e.id); drawRows(); };
+      row.onclick = pick;
+      // Reachable by keyboard and announced as a button.
+      row.tabIndex = 0; row.setAttribute("role", "button"); row.setAttribute("aria-label", e.method + " " + e.url + ", status " + e.status + ", " + e.ms + " ms");
+      row.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } };
       return row;
     }));
     if (stick) box.scrollTop = box.scrollHeight;
