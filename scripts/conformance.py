@@ -78,6 +78,15 @@ def instrumentations(serial):
     return out
 
 
+def last_update(serial, pkg):
+    """The package's lastUpdateTime on the device (dumpsys package), or None when it is not installed."""
+    for line in adb(serial, "shell", "dumpsys", "package", shlex.quote(pkg), check=False).splitlines():
+        line = line.strip()
+        if line.startswith("lastUpdateTime="):
+            return line.split("=", 1)[1]
+    return None
+
+
 def installed(serial):
     return {l.split(":", 1)[1].strip() for l in adb(serial, "shell", "pm", "list", "packages").splitlines() if ":" in l}
 
@@ -167,8 +176,12 @@ def run_emulator(a, out):
     if focus and "Not Responding" in focus[0]:
         # A loaded Mac makes the emulator's System UI ANR; its dialog keeps every test's window from the focus.
         raise SystemExit(f"{serial}: an ANR dialog has the focus ({focus[0].strip()}): answer it (Wait) and run again")
+    installed_at = {}  # package -> its lastUpdateTime right after this run installed it
     try:
         for apk in reversed(apks):
+            pkg = apk_package(apk)
+            if pkg in installed(serial):  # again, just before: another session may have installed it meanwhile
+                raise SystemExit(f"{serial} now has {pkg} (installed by someone else meanwhile): stopping")
             # Utilities (Test Services) are queryable by every package, as AGP installs them: package visibility
             # otherwise hides their providers from the test (Test Storage: "No content provider registered").
             # Runtime permissions as apksim starts them: denied, unless --grant-permissions grants them on both sides.
@@ -176,6 +189,7 @@ def run_emulator(a, out):
             util = apk in a.util
             adb(serial, "install", "-t", *(["-g"] if util or a.grant_permissions else []),
                 *(["--force-queryable"] if util else []), apk)
+            installed_at[pkg] = last_update(serial, pkg)
             if apk in a.util:
                 # As AGP does for Test Services: it writes the test's output files under /sdcard.
                 adb(serial, "shell", "appops", "set", apk_package(apk), "MANAGE_EXTERNAL_STORAGE", "allow", check=False)
@@ -203,8 +217,13 @@ def run_emulator(a, out):
                     for m in ms:
                         results[(c, m)] = got.get((c, m), ("failed", "not run: the process crashed before it"))
     finally:
-        for pkg in pkgs:
-            adb(serial, "uninstall", pkg, check=False)
+        # Only what this run installed and nobody has installed over since (same lastUpdateTime): another session's
+        # install of the same package in the meantime keeps its app and data.
+        for pkg, stamp in installed_at.items():
+            if stamp is not None and last_update(serial, pkg) == stamp:
+                adb(serial, "uninstall", pkg, check=False)
+            else:
+                print(f"{serial}: {pkg} changed since this run installed it: left installed", file=sys.stderr)
     xml = os.path.join(out, "emulator.xml")
     write_xml(xml, results)
     return xml
