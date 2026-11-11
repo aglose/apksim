@@ -33,7 +33,8 @@ if CERT_ONLY:
     sys.exit(0)
 
 
-BOARD = []
+BOARD = []  # the last BOARD_MAX messages
+BOARD_MAX = 1000
 BOARD_LOCK = threading.Lock()
 
 
@@ -68,6 +69,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/v1/board":
             with BOARD_LOCK:
                 BOARD.append({"from": str(data.get("from", "?")), "text": str(data.get("text", ""))})
+                del BOARD[:-BOARD_MAX]
                 count = len(BOARD)
             self.send(200, {"count": count})
         else:
@@ -80,7 +82,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(200, {"greeting": "Plain hello", "served": "fixture"})
         elif self.path == "/v1/board":
             with BOARD_LOCK:
-                self.send(200, {"messages": list(BOARD)})
+                messages = list(BOARD)
+            self.send(200, {"messages": messages})  # outside the lock: a slow client holds up no one else
         else:
             self.send(404, {"error": "not found", "path": self.path})
 

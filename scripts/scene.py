@@ -127,6 +127,8 @@ class Scene:
         fx = self.spec.get("fixture")
         if not fx:
             return
+        if not isinstance(fx, dict) or not fx.get("command"):
+            raise ValueError("the fixture has no command")
         cmd = [self.expand(c) for c in fx["command"]]
         log_path = os.path.join(self.out, "fixture.log")
         # Its output goes straight to fixture.log, which is watched for the ready line: nothing is held in memory, a
@@ -137,9 +139,14 @@ class Scene:
         pattern = re.compile(fx.get("ready", r"ready (\d+)"))
         timeout = float(fx.get("timeout", 30))
         deadline = time.time() + timeout
+        seen, offset = "", 0
         while True:
-            with open(log_path, errors="replace") as f:
-                m = pattern.search(f.read())
+            with open(log_path, "rb") as f:  # only what was appended since the last look
+                f.seek(offset)
+                chunk = f.read()
+            offset += len(chunk)
+            seen = (seen + chunk.decode(errors="replace"))[-65536:]
+            m = pattern.search(seen)
             if m:
                 self.vars["fixture"] = m.group(1) if m.groups() else ""
                 print(f"fixture ready{' on port ' + self.vars['fixture'] if self.vars['fixture'] else ''}")
@@ -198,6 +205,8 @@ class Scene:
             while True:
                 # A reply counts only if it came by the deadline (UI reads queue behind the main thread's work).
                 role.last = self.nodes(role)
+                if failed(role.last):
+                    raise Failure(f"nodes: {role.last}")
                 present = text in role.last
                 if present == (word == "until") and time.time() <= deadline:
                     return
@@ -251,6 +260,7 @@ class Scene:
                     raise ValueError(f"step {n}: no role {t!r}")
                 work.setdefault(t, []).extend([cmds] if isinstance(cmds, str) else list(cmds))
         errors = {}
+        errors_lock = threading.Lock()
 
         def go(name, cmds):
             role = self.roles[name]
@@ -258,11 +268,13 @@ class Scene:
                 try:
                     self.run_command(role, c)
                 except Failure as e:
-                    errors[name] = f"{c!r}: {e}"
+                    with errors_lock:
+                        errors[name] = f"{c!r}: {e}"
                     return
                 except (OSError, ValueError, Closed) as e:
                     code = role.inst.proc.poll()
-                    errors[name] = f"{c!r}: lost its control connection: {e}" + (f" (exit status {code})" if code is not None else "")
+                    with errors_lock:
+                        errors[name] = f"{c!r}: lost its control connection: {e}" + (f" (exit status {code})" if code is not None else "")
                     return
         start = time.time()
         threads = [threading.Thread(target=go, args=(name, cmds)) for name, cmds in work.items()]
@@ -285,6 +297,7 @@ class Scene:
 
     def finish(self, keep):
         failures = {}
+        failures_lock = threading.Lock()
         if not keep:
             def shut(role):
                 inst = role.inst
@@ -300,7 +313,8 @@ class Scene:
                 else:
                     why = None if inst.proc.returncode == 0 else f"exited with status {inst.proc.returncode}"
                 if why:
-                    failures[role.name] = why.replace("'quit'", "shutting down")
+                    with failures_lock:
+                        failures[role.name] = why.replace("'quit'", "shutting down")
             threads = [threading.Thread(target=shut, args=(r,)) for r in self.roles.values()]
             for t in threads:
                 t.start()
