@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rGelxa1HmVhJVUp4wiBgBHBZTtjEy7kOHsvcCp+Gikw='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-BGUFQKA5ws4c6SWteOdPrNonff8ORJTTCGQK4p2Vo5M='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -440,6 +440,12 @@ function buildNetDetail(parent) {
   d.appendChild(bar); var body = el('pre', 'body'); body.id = 'nbody'; d.appendChild(body); parent.appendChild(d);
 }
 function hdrs(h) { return (h || []).map(function (x) { return x.name + ': ' + x.value; }).join('\n'); }
+function fromB64(t) { try { var bin = atob(t), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; } catch (x) { return null; } }
+function decodeText(bytes, mime) { // the declared charset, else UTF-8 (an unknown label falls back to it)
+  var cs = /charset=\s*"?([A-Za-z0-9_.:-]+)/i.exec(mime), dec;
+  try { dec = new TextDecoder(cs ? cs[1] : 'utf-8'); } catch (x) { dec = new TextDecoder('utf-8'); }
+  return dec.decode(bytes);
+}
 function showNet(o) {
   netCur = o; var body = $('nbody'); body.textContent = '';
   if (detailUrl) { URL.revokeObjectURL(detailUrl); detailUrl = null; } if (!o) { body.textContent = 'Select an exchange.'; return; }
@@ -447,23 +453,25 @@ function showNet(o) {
   if (netTab === 'req') body.textContent = (rq.method || '') + ' ' + (rq.url || '') + ' ' + (rq.httpVersion || '') + '\n\n' + hdrs(rq.headers);
   else if (netTab === 'res') body.textContent = (rs.status || '') + ' ' + (rs.statusText || '') + ' ' + (rs.httpVersion || '') + '\n\n' + hdrs(rs.headers) + '\n\ntiming: ' + JSON.stringify(e.timings || {}) + '\ntotal ' + Math.round(o.dur) + ' ms';
   else if (netTab === 'rbody' && rq.postData && rq.postData._apksimTruncated) body.textContent = '(request body omitted: it was over the capture limit)';
-  else if (netTab === 'rbody') body.textContent = rq.postData ? (rq.postData.mimeType || '') + '\n\n' + (rq.postData.text || '(no text)') : '(no request body)';
+  else if (netTab === 'rbody') {
+    var pd = rq.postData;
+    if (!pd) { body.textContent = '(no request body)'; return; }
+    var ptxt = pd.text, pmime = pd.mimeType || '';
+    if (ptxt == null) { body.textContent = pmime + '\n\n(no text)'; return; }
+    if (pd._encoding === 'base64') { var pb = fromB64(ptxt); if (pb) ptxt = decodeText(pb, pmime); }
+    body.textContent = pmime + '\n\n' + ptxt;
+  }
   else {
     var mime = c.mimeType || '', txt = c.text;
     if (c._apksimTruncated) { body.textContent = '(body omitted: it was over the capture limit; ' + (c.size || 0) + ' bytes)'; return; }
     if (txt == null) { body.textContent = '(no body recorded; ' + (c.size || 0) + ' bytes)'; return; }
-    var bytes = null;
-    if (c.encoding === 'base64') { try { var bin = atob(txt); bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); } catch (x) {} }
+    var bytes = c.encoding === 'base64' ? fromB64(txt) : null;
     if (bytes && /^image\/(png|jpeg|gif|webp)\b/.test(mime)) {
       var u = detailUrl = URL.createObjectURL(new Blob([bytes], { type: mime.split(';')[0] }));
       var im = el('img'); im.src = u; body.appendChild(im); return;
     }
     var s = txt;
-    if (bytes) { // the declared charset, else UTF-8 (an unknown label falls back to it)
-      var cs = /charset=\s*"?([A-Za-z0-9_.:-]+)/i.exec(mime), dec;
-      try { dec = new TextDecoder(cs ? cs[1] : 'utf-8'); } catch (x) { dec = new TextDecoder('utf-8'); }
-      s = dec.decode(bytes);
-    }
+    if (bytes) s = decodeText(bytes, mime);
     if (/json/.test(mime)) { try { s = JSON.stringify(JSON.parse(s), null, 2); } catch (x) {} }
     if (s.length > 1000000) s = s.slice(0, 1000000) + '\n... (' + (s.length - 1000000) + ' more characters not shown)';
     body.textContent = (mime ? mime + '\n\n' : '') + s;

@@ -114,7 +114,7 @@ def make(app, test, out):
 
 
 # ---------- synthetic recordings ----------
-def synth(src, dst, hostile=False, big=False):
+def synth(src, dst, hostile=False, big=False, bodies=False):
     zin = zipfile.ZipFile(src)
     man = json.loads(zin.read("manifest.json"))
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
@@ -132,6 +132,13 @@ def synth(src, dst, hostile=False, big=False):
                 e = har["log"]["entries"][0]
                 e["request"]["url"] = "http://evil.test/<img src=x onerror=window.__pwned=1>"
                 e["response"]["content"] = {"mimeType": "text/html", "text": "<script>window.__pwned=1</script>"}
+                data = json.dumps(har).encode()
+            elif n == "network.har" and bodies:
+                har = json.loads(data)
+                e = har["log"]["entries"][0]
+                b64 = lambda b: base64.b64encode(b).decode()
+                e["request"]["postData"] = {"mimeType": "text/plain; charset=iso-8859-1", "text": b64("caf\u00e9".encode("latin-1")), "_encoding": "base64"}
+                e["response"]["content"] = {"mimeType": "text/plain; charset=iso-8859-1", "text": b64("na\u00efve".encode("latin-1")), "encoding": "base64", "size": 5}
                 data = json.dumps(har).encode()
             elif big and n == "logcat.txt":
                 lines = data.decode().splitlines()
@@ -284,6 +291,20 @@ def drive_chrome(a, rec, bundle, out):
         check(ev(s3, "document.querySelector('img[src=x]') === null && document.querySelectorAll('#app b').length === 0"), "and made no elements")
         check("<img src=x" in ev(s3, "document.getElementById('app').textContent") or "<img src=x" in ev(s3, "document.getElementById('nbody').textContent"),
               "the text is shown literally")
+
+        # --- base64 bodies in a declared non-UTF-8 charset, request and response ---
+        bodies = os.path.join(out, "bodies.apkrec")
+        synth(rec, bodies, bodies=True)
+        s6 = tab("file://" + PAGE)
+        wait(s6, "!!window.__trace")
+        pick(s6, bodies)
+        check(wait(s6, "document.body.classList.contains('loaded')"), "the recording with base64 bodies loads")
+        ev(s6, "document.querySelector('#tabs button[data-id=net]').click(); 1")
+        ev(s6, "document.querySelector('#p-net .vl .row').click(); 1")
+        ev(s6, "[...document.querySelectorAll('#ndet button')][3].click(); 1")
+        check("caf\u00e9" in ev(s6, "document.getElementById('nbody').textContent"), "a base64 request body is decoded with its charset")
+        ev(s6, "[...document.querySelectorAll('#ndet button')][2].click(); 1")
+        check("na\u00efve" in ev(s6, "document.getElementById('nbody').textContent"), "a base64 response body is decoded with its charset")
 
         # --- timestamps that would make the timeline loop for ever ---
         for label, to in (("1e30", "1e30"), ("Infinity", "1e309")):
