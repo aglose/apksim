@@ -1,7 +1,9 @@
 package dev.apksim.composeapp.conformance
 
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.withStarted
@@ -19,6 +21,38 @@ import org.junit.runner.RunWith
 /** androidx.lifecycle as documented, checked on an API 36 emulator first (docs/conformance.md). */
 @RunWith(AndroidJUnit4::class)
 class LifecycleConformanceTest {
+  private fun processState(): Lifecycle.State {
+    var s: Lifecycle.State? = null
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { s = ProcessLifecycleOwner.get().lifecycle.currentState }
+    return s!!
+  }
+
+  /** ProcessLifecycleOwner follows the app's activities: RESUMED while one is. */
+  @Test
+  fun processLifecycleIsResumedWithAnActivity() {
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(Lifecycle.State.RESUMED, processState())
+    }
+  }
+
+  /**
+   * "ON_PAUSE, ON_STOP will be dispatched with a delay after a last activity passed through them" (700 ms): the
+   * process goes to CREATED once that delay has passed after the last activity stopped.
+   */
+  @Test
+  fun processLifecycleStopsAfterItsDelay() {
+    ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+      scenario.moveToState(Lifecycle.State.CREATED)
+      SystemClock.sleep(1500)
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(Lifecycle.State.CREATED, processState())
+      scenario.moveToState(Lifecycle.State.RESUMED)
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(Lifecycle.State.RESUMED, processState())
+    }
+  }
+
   /** repeatOnLifecycle(STARTED) runs its block while started, cancels it below, and runs it again on return. */
   @Test
   fun repeatOnLifecycleRestartsItsBlock() {

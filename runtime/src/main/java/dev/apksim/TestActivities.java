@@ -624,6 +624,7 @@ public final class TestActivities {
     protected void callApplicationOnCreate(android.app.Application app) {
       // A running instance takes its data slot first (not a standby's warm-up, which has no APK yet), and with
       // APKSIM_LOGCAT the app's log reaches stderr from onCreate on, not from Host.run (after it).
+      if (testRun()) AppCallbacks.adopt(app);  // the process's Application callbacks, before its providers and onCreate
       boolean instance = !testRun() && System.getProperty("apksim.package") != null;
       if (instance) {
         if (Boolean.getBoolean("apksim.logcat")) org.robolectric.shadows.ShadowLog.stream = System.err;
