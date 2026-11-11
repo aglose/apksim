@@ -28,6 +28,7 @@ import argparse
 import collections
 import os
 import re
+import shlex
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -46,8 +47,14 @@ def run_here(a, out):
     if a.apksim_opts:
         cmd += ["--"] + a.apksim_opts
     print("here:", " ".join(cmd), file=sys.stderr)
-    with open(os.path.join(out, "here.log"), "w") as log:
+    if os.path.exists(xml):
+        os.remove(xml)  # an earlier run's report must not stand in for this one's
+    log_path = os.path.join(out, "here.log")
+    with open(log_path, "w") as log:
+        # A nonzero exit with a report is failing tests; without one, the run itself failed.
         subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
+    if not os.path.exists(xml):
+        raise SystemExit(f"instrument.py wrote no report: see {log_path}")
     return xml
 
 
@@ -71,8 +78,14 @@ def installed(serial):
     return {l.split(":", 1)[1].strip() for l in adb(serial, "shell", "pm", "list", "packages").splitlines() if ":" in l}
 
 
+CRASHED = "the process crashed while this test ran"
+
+
 def parse_raw(text):
-    """am instrument -r output → {(class, method): (status, stack)}, and whether the run finished."""
+    """am instrument -r output → {(class, method): (status, stack)}, and whether the run finished.
+
+    A test that started (status 1) is failed until its own result replaces that, so the test a crash cut short keeps
+    the failure rather than being run again as if it never started."""
     results, cur = {}, {}
     key = None
     for line in text.splitlines():
@@ -83,7 +96,9 @@ def parse_raw(text):
         elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
             code = int(line.split(":", 1)[1])
             c, m = cur.get("class"), cur.get("test")
-            if c and m and code != 1:
+            if c and m and code == 1:
+                results.setdefault((c, m), ("failed", CRASHED))
+            elif c and m:
                 status = {0: "passed", -1: "failed", -2: "failed", -3: "ignored", -4: "skipped"}.get(code, "failed")
                 results[(c, m)] = (status, cur.get("stack", ""))
             cur, key = {}, None
@@ -96,10 +111,11 @@ def parse_raw(text):
 
 
 def am_instrument(serial, comp, extra, raw):
-    cmd = ["shell", "am", "instrument", "-w", "-r"]
+    cmd = ["am", "instrument", "-w", "-r"]
     for k, v in extra:
         cmd += ["-e", k, v]
-    text = adb(serial, *cmd, comp, check=False)
+    # adb shell hands one command line to the device's shell: quote each word (spaces, `$` of nested classes).
+    text = adb(serial, "shell", " ".join(shlex.quote(w) for w in cmd + [comp]), check=False)
     raw.write(text)
     return parse_raw(text)
 
@@ -137,17 +153,18 @@ def run_emulator(a, out):
         with open(os.path.join(out, "emulator.txt"), "w") as raw:
             results, finished = am_instrument(serial, comp, a.e, raw)
             if not finished:
-                # A crash ended the run: list the suite, then run what is left one class at a time.
+                # A crash ended the run: list the suite, then run each class with tests that never started again,
+                # whole (a Parameterized name's commas cannot be named in -e class), keeping only the results of
+                # those tests: the ones that ran keep their first result, the one the crash cut short its failure.
                 listed, _ = am_instrument(serial, comp, a.e + [("log", "true")], raw)
                 left = collections.OrderedDict()
                 for (c, m) in listed:
                     if (c, m) not in results:
                         left.setdefault(c, []).append(m)
                 for c, ms in left.items():
-                    names = ",".join(f"{c}#{m}" for m in ms)
-                    got, _ = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] + [("class", names)], raw)
+                    got, _ = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] + [("class", c)], raw)
                     for m in ms:
-                        results[(c, m)] = got.get((c, m), ("failed", "not run: the process crashed"))
+                        results[(c, m)] = got.get((c, m), ("failed", "not run: the process crashed before it"))
     finally:
         for pkg in pkgs:
             adb(serial, "uninstall", pkg, check=False)

@@ -26,6 +26,7 @@ raw = "\n".join([
     status("a.B", "bad", 1),
     status("a.B", "bad", -2, "java.lang.AssertionError: no\n\tat a.B.bad(B.kt:3)"),
     status("a.B", "skip", -4),
+    status("a.B", "cut", 1),
     "INSTRUMENTATION_RESULT: shortMsg=Process crashed.",
     "INSTRUMENTATION_CODE: 0",
 ])
@@ -33,6 +34,7 @@ results, finished = conformance.parse_raw(raw)
 assert results[("a.B", "ok")] == ("passed", ""), results
 assert results[("a.B", "bad")][0] == "failed" and "at a.B.bad" in results[("a.B", "bad")][1], results
 assert results[("a.B", "skip")][0] == "skipped", results
+assert results[("a.B", "cut")] == ("failed", conformance.CRASHED), "the test a crash cut short keeps a failure"
 assert not finished, "a crashed run must not count as finished"
 assert conformance.parse_raw("INSTRUMENTATION_CODE: -1\n")[1], "a complete run counts as finished"
 assert conformance.cause("java.lang.AssertionError: expected:<3> but was:<1>\n\tat x") == \
