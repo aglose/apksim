@@ -40,6 +40,8 @@ class AppCallbacksConformanceTest {
     override fun onActivityDestroyed(activity: Activity) {}
   }
 
+  object Survivor : Resumes()
+
   object Leaving : Resumes()
   object Arriving : Resumes() {
     @Volatile var handedOver = false
@@ -169,5 +171,37 @@ class AppCallbacksConformanceTest {
     }
     assertEquals("unregistered, it hears nothing more", 1, Memory.trims)
     Memory.app = null
+  }
+
+  private fun failedSetupRun() =
+    InstrumentationRegistry.getArguments().getString("appCallbacksFailedSetup") == "true"
+
+  /**
+   * Opt-in (`-e appCallbacksFailedSetup true`, apksim only), as h_ fails on purpose: a test whose Application setup
+   * fails between two that start does not lose the callbacks the earlier one's singleton registered. g_ registers one
+   * and makes the next Application's onCreate throw; h_'s setup fails; i_ still hears its activity.
+   */
+  @Test
+  fun g_aSingletonRegistersBeforeAFailedSetup() {
+    assumeTrue(failedSetupRun())
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      ApplicationProvider.getApplicationContext<Application>().registerActivityLifecycleCallbacks(Survivor)
+      HarnessTestApplication.onNextCreate = { throw IllegalStateException("Application.onCreate fails on purpose") }
+    }
+  }
+
+  @Test
+  fun h_thisTestsSetupFails() {
+    assumeTrue(failedSetupRun())
+  }
+
+  @Test
+  fun i_theNextTestStillHasTheSingletonsCallbacks() {
+    assumeTrue(failedSetupRun())
+    Survivor.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    assertTrue("the singleton hears an activity after a failed setup", Survivor.resumes.get() >= 1)
   }
 }

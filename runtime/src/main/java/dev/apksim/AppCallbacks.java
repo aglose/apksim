@@ -31,19 +31,23 @@ final class AppCallbacks {
   private AppCallbacks() {}
 
   private static final boolean ON = Boolean.parseBoolean(System.getProperty("apksim.keepAppCallbacks", "true"));
-  /** The ending test's Application, until the next one's setup is done. */
-  private static Application previous;
+  /**
+   * The Applications whose registrations the next carryOver takes: the ending test's, and any whose setup failed
+   * since the last carryOver (a singleton may have registered on one before it failed), oldest first.
+   */
+  private static final List<Application> pending = new ArrayList<>();
 
   /**
    * Before Robolectric's reset: which Application the ending test had. Its registrations are read only at carryOver,
    * so what a singleton registers or unregisters through it meanwhile (during the next Application's onCreate, say)
-   * counts.
+   * counts. A test whose setup failed never reached carryOver: its Application joins the pending ones rather than
+   * replacing them, so the next test that starts still gets the callbacks of the last one that did.
    */
   static void beforeReset() {
-    previous = null;
     if (!ON) return;
     try {
-      previous = RuntimeEnvironment.getApplication();
+      Application app = RuntimeEnvironment.getApplication();
+      if (app != null && !pending.contains(app)) pending.add(app);
     } catch (RuntimeException e) {
       // no Application yet (the runner's probe)
     }
@@ -60,11 +64,18 @@ final class AppCallbacks {
     if (!ON || app == null) return;
     List<Application.ActivityLifecycleCallbacks> activity = new ArrayList<>();
     List<ComponentCallbacks> component = new ArrayList<>();
-    if (previous != null && previous != app) {
-      activity.addAll(apkOnes(ReflectionHelpers.getField(previous, "mActivityLifecycleCallbacks")));
-      component.addAll(apkOnes(componentCallbacks(previous)));
+    Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    for (Application old : pending) {
+      if (old == app) continue;
+      for (Application.ActivityLifecycleCallbacks c : apkOnes(ReflectionHelpers.<List<Application.ActivityLifecycleCallbacks>>getField(old, "mActivityLifecycleCallbacks"))) {
+        if (seen.add(c)) activity.add(c);
+      }
+      for (ComponentCallbacks c : apkOnes(componentCallbacks(old))) {
+        if (seen.add(c)) component.add(c);
+      }
+      if (earlier.stream().noneMatch(r -> r.get() == old)) earlier.add(new WeakReference<>(old));
     }
-    previous = null;
+    pending.clear();
     List<Application.ActivityLifecycleCallbacks> nowActivity = ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks");
     Set<Class<?>> activityClasses = classes(nowActivity);
     Set<Class<?>> componentClasses = classes(componentCallbacks(app));
