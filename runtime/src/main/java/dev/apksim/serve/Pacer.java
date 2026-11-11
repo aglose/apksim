@@ -74,26 +74,41 @@ final class Pacer {
   }
 
   /**
-   * The tab's time per frame, in ms, or -1 before it is known: the gap between acks while another frame was in flight
-   * (ackGapMs); with a window of one no frame ever is, and the quickest recent ack round trip is that time instead.
+   * What a frame costs the path to the tab, in ms, or -1 before it is known: the larger of the tab's busy time per frame
+   * (busyMs) and the link's, a window's worth of frames per ack round trip. On a link with delay and a fast tab the link
+   * is the limit (200 ms with 4 in flight: 50 ms a frame); a slow decoder is its own. Before the first busy samples, a
+   * window of one has the quickest recent ack round trip.
    */
-  static double tabFrameMs(double ackGapMs, int window, double ackRttMs) {
-    if (ackGapMs > 0) return ackGapMs;
+  static double tabFrameMs(double busyMs, int window, double ackRttMs) {
+    if (busyMs >= 0) return Math.max(busyMs, ackRttMs > 0 && window > 0 ? ackRttMs / window : 0);
     return window <= 1 ? ackRttMs : -1;
   }
 
   /**
-   * Ack-gap sampling: the smoothed gap given an ack at now that leaves inFlight frames still in flight, with the last
-   * baseline (0: none). Returns the new gap and baseline. The baseline resets when the flight drains, so the time to
-   * the next ack, which is the app's (a still screen) rather than the tab's, is never sampled.
+   * The tab's busy time per frame, ms: a ring of the last {@link #SAMPLES}, whose plain mean is used. A frame's work
+   * begins at the later of the previous ack and its own arrival (sent plus the link's round trip, the quickest ping,
+   * which a tab answers without waiting for its decoder), so neither the app's idle time nor the link's delay counts.
+   * Timing every gap between acks while a frame was in flight took, on a 200 ms link where a frame nearly always is,
+   * the app's own frame interval (a still screen's ~140 ms) for the tab's time.
    */
-  record AckGap(double gapMs, long baselineNanos) {}
+  private static final int SAMPLES = 16;
+  private final double[] busy = new double[SAMPLES];
+  private int busyCount;
+  private long lastAckNanos;
 
-  static AckGap ackGap(double ackGapMs, long lastAckNanos, long now, int inFlight) {
-    if (inFlight > 0 && lastAckNanos != 0) {
-      double gap = (now - lastAckNanos) / 1e6;
-      ackGapMs = ackGapMs < 0 ? gap : ackGapMs + (gap - ackGapMs) * 0.2;
-    }
-    return new AckGap(ackGapMs, inFlight > 0 ? now : 0);
+  /** An ack arrived at now for a frame sent at sentNanos, on a link whose round trip is linkMs (-1: not known yet). */
+  void acked(long now, long sentNanos, double linkMs) {
+    long arrived = sentNanos + (linkMs > 0 ? (long) (linkMs * 1e6) : 0);
+    busy[busyCount++ % SAMPLES] = Math.max(0, now - Math.max(lastAckNanos, arrived)) / 1e6;
+    lastAckNanos = now;
+  }
+
+  /** The mean of the recent busy times in ms, or -1 before there are 4. */
+  double busyMs() {
+    int n = Math.min(busyCount, SAMPLES);
+    if (n < 4) return -1;
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += busy[i];
+    return sum / n;
   }
 }

@@ -68,6 +68,10 @@ public final class SelfTest {
     long pts = 0;
     long lastOut = Long.MIN_VALUE;
     boolean ordered = true;
+    // pts here rise in decode order. VideoToolbox gives each input's picture back with its pts, so they must leave in
+    // that order. libavcodec puts pictures in presentation order and labels each with the pts of the input that
+    // carried it, so those labels leave shuffled: there every pts must leave once (the player check is apksim://video).
+    java.util.Set<Long> seen = new java.util.HashSet<>();
     for (int[] u : units) {
       int in = codec.dequeueInputBuffer(10_000);
       if (in < 0) continue;
@@ -78,7 +82,7 @@ public final class SelfTest {
       pts += 66_666;
       int out = codec.dequeueOutputBuffer(info, 10_000);
       if (out >= 0) {
-        ordered &= info.presentationTimeUs >= lastOut;
+        ordered &= VideoToolbox.REORDERS ? seen.add(info.presentationTimeUs) : info.presentationTimeUs >= lastOut;
         lastOut = info.presentationTimeUs;
         codec.releaseOutputBuffer(out, true);
         if (VideoSurfaces.picture(texture) != null) rendered++;
@@ -94,7 +98,7 @@ public final class SelfTest {
       boolean end = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
       if (info.size > 0) {
         rendered++;
-        ordered &= info.presentationTimeUs >= lastOut;
+        ordered &= VideoToolbox.REORDERS ? seen.add(info.presentationTimeUs) : info.presentationTimeUs >= lastOut;
         lastOut = info.presentationTimeUs;
       }
       codec.releaseOutputBuffer(last, info.size > 0);
@@ -250,6 +254,7 @@ public final class SelfTest {
 
   /** The live-video path's colour conversion: a solid red I420 picture must be red in a Bitmap. */
   public static String colour() {
+    if (!dev.apksim.HostOs.MAC) return "colour: no I420 converter on this host";
     int w = 16;
     ByteBuffer y = ByteBuffer.allocateDirect(w * w), u = ByteBuffer.allocateDirect(w * w / 4), v = ByteBuffer.allocateDirect(w * w / 4);
     for (int i = 0; i < w * w; i++) y.put(i, (byte) 63);

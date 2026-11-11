@@ -311,13 +311,16 @@ inside itself:
   behind drops everything to the next keyframe, which serve asks the instance for at once (the instance does the same
   for serve, past 30 waiting). A keyframe is several times a delta, so a tab that decodes a little slower than the
   app draws would repeat that cycle and the video would freeze and jump (issue 232): after a second drop within 2 s serve sends the
-  instance `pace MS` (about 1.15 times the tab's measured gap between acks, or its ack round trip with `--in-flight 1`, at most 250 ms), and the encoder makes at
+  instance `pace MS` (about 1.15 times what a frame costs the path to the tab, at most 250 ms: the larger of the tab's
+  busy time, the mean over its last 16 acks of the time since the later of the previous ack and the frame's arrival
+  (its send time plus the quickest ping round trip, so neither the app's idle time nor a slow link's delay counts), and
+  the link's, an ack round trip per window of frames; before 4 acks with `--in-flight 1`, the ack round trip)), and the encoder makes at
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
   After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
   puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
   keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. An instance with
   several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.
-  The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs` and `ackGapMs`. The window and byte
+  The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs`, `busyMs` and `tabFrameMs`. The window and byte
   budget apply to both codecs.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.

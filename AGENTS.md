@@ -946,7 +946,7 @@ falls behind drops to the next keyframe, which serve asks for; when that repeats
 draws, serve sends the instance `pace MS` and `FrameStream` encodes at most one new frame per MS, the newest, so the
 stream stays a delta chain at the tab's rate instead of freezing on keyframes: `serve.Pacer`, issue 232, checked on a
 simulated clock by `scripts/check-pacer.sh` (CI) and end to end by `serve-check.py`'s slow tab (Mac only: the Linux
-image's CPU shader is too slow to outrun a tab); `s` stats `keyDrops`, `paceMs`, `ackGapMs`), and passes on only input and device commands
+image's CPU shader is too slow to outrun a tab); `s` stats `keyDrops`, `paceMs`, `busyMs`, `tabFrameMs`), and passes on only input and device commands
 (`Session.check`): never `shot`, `record`, `pick` or anything else that reads or writes files. Loopback by default;
 another `--bind` needs `--token`; WebSocket upgrades and POSTs from another Origin are refused, and on loopback a
 non-loopback `Host` header (DNS rebinding). Instances are never given `--adb` or `--control-bind`. A session ends when

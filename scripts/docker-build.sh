@@ -24,6 +24,9 @@ cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" "$CTX/"
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/instrument.py" "$ROOT/scripts/affected.py" "$ROOT/scripts/snapshot.py" \
   "$ROOT/scripts/drive.py" "$CTX/"
 cp "$ROOT/work/apksim.jar" "$CTX/apksim.jar"
+# The clips the build stage's decoder check (native/linux/avdecoder_check.c) decodes; they are not shipped.
+mkdir -p "$CTX/media"
+cp "$ROOT"/testapks/media-fixture/clip.h264 "$ROOT"/testapks/media-fixture/clip.h265 "$CTX/media/"
 # arm64: android-all's libandroid_runtime for linux/aarch64 comes from another build of it (build.gradle.kts).
 mkdir -p "$CTX/linux-arm64"
 if [[ " $* " == *linux/arm64* ]]; then

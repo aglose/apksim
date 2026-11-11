@@ -6,8 +6,9 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * H.264 and HEVC decoding and picture conversion on VideoToolbox (native/videotoolbox.m). Kept free of any library an APK
- * brings, so that every app can load it: libwebrtc's adapter is {@link VtH264Decoder}, MediaCodec's is
+ * H.264 and HEVC decoding and picture conversion on VideoToolbox (native/videotoolbox.m), and on Linux on libavcodec
+ * (native/linux/avdecoder_linux.c, the same library name) for MediaCodec only. Kept free of any library an APK brings,
+ * so that every app can load it: libwebrtc's adapter is {@link VtH264Decoder}, MediaCodec's is
  * {@link ShadowSimMediaCodec}.
  */
 public final class VideoToolbox {
@@ -17,13 +18,25 @@ public final class VideoToolbox {
   static final AtomicLong decoded = new AtomicLong();
   static final AtomicLong failed = new AtomicLong();
 
+  /**
+   * Whether the native decoder reorders: libavcodec hands pictures back in presentation order, later than the input
+   * that carried them ({@link #nativeSend}, {@link #nativeReceive}), where VideoToolbox gives one per input in decode
+   * order and {@link ShadowSimMediaCodec} reorders them.
+   */
+  static final boolean REORDERS = !dev.apksim.HostOs.MAC;
+
+  /** Whether MediaCodec has H.264 and HEVC decoders here. */
   static boolean available() {
     return AVAILABLE;
   }
 
+  /** Whether libwebrtc's H.264 decoder ({@link VtH264Decoder}) can run here: VideoToolbox only. */
+  static boolean webrtcAvailable() {
+    return dev.apksim.HostOs.MAC && AVAILABLE;
+  }
+
   private static boolean load() {
     try {
-      if (!dev.apksim.HostOs.MAC) return false;
       System.load(dev.apksim.HostOs.runtimeLib("libvtdecoder").toString());
       return true;
     } catch (Throwable t) {
@@ -66,6 +79,18 @@ public final class VideoToolbox {
 
   /** Decodes one access unit (Annex B; parameter sets update the session) from a direct buffer. Returns 1 with [size] set when a picture came out, 0 when none, -1 on error. */
   static native int nativeDecode(long handle, ByteBuffer data, int offset, int length, int[] size);
+
+  /**
+   * Linux only. Sends one access unit (Annex B) or parameter sets from a direct buffer; [length] 0 (the buffer may be
+   * null) starts draining at end of stream. A pts of Long.MIN_VALUE means none (parameter sets). Negative: error.
+   */
+  static native int nativeSend(long handle, ByteBuffer data, int offset, int length, long ptsUs);
+
+  /** Linux only. The next finished picture in presentation order (release it with {@link #nativeReleasePicture}), its pts in pts[0]; 0 when none. */
+  static native long nativeReceive(long handle, long[] pts);
+
+  /** Linux only. A seek: drops everything inside the decoder. */
+  static native void nativeReset(long handle);
 
   static native void nativeCopyI420(long handle, ByteBuffer y, int strideY, ByteBuffer u, int strideU, ByteBuffer v, int strideV);
 
