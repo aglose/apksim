@@ -111,7 +111,7 @@ push and are on each pull request's page. "In review" means the pull request is 
 | 5 Pre-warmed test processes | test processes | r1 | #257 | in review |
 | 6 Flake hunter | test processes | r2 | #261 (draft, on #257) | in review |
 | 7 Coverage | coverage | r2 | #255 (draft) | in review |
-| 8 Conformance sweep | conformance | r1-r3 | #265, #266 (on #265), #267 (on #266) | first batch in review (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
+| 8 Conformance sweep | conformance | r1-r3 | #265, #266 (on #265), #267 (draft, on #266: held for the owner's review) | first batch in review (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
 | 9 PR preview, compare | serve | r1 | #252 | in review |
 | 10 Report button, inspector | serve | r2 | #259 (draft, on #252) | in review |
 | 11 Crawler | crawler | r1 | #260 | in review |
