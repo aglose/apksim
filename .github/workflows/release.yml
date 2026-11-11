@@ -33,6 +33,7 @@ on:
       - scripts/instrument.py
       - scripts/snapshot.py
       - scripts/crawl.py
+      - scripts/journey.py
       - scripts/affected.py
       - .github/actions/linux-build/**
   workflow_dispatch:

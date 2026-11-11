@@ -95,8 +95,10 @@ count. `points/NN-recorded.jpg` and `points/NN-replayed.jpg` are the two frames 
 [apksim] replay: diverged at point 6 of 6 (end, +9106 ms); 7 events, 1 commands; report .../report.json
 ```
 
-What makes a replay drift: anything on screen that is real time (a measured duration, a clock with seconds), thread
-timing (a worker's result before or after a frame), state that `onSaveInstanceState` does not keep (a checkpoint keeps
+What makes a replay drift: anything on screen that is real time (a measured duration, a clock with seconds), flings
+(how far a list flies after a flick varies from run to run even live: one `swipe 400 1400 400 400` on the test app's
+home list ended at Item 67, 65 and 58 in three launches, and a replay that sent the same events within 2 ms of the
+recording's ended elsewhere again), thread timing (a worker's result before or after a frame), state that `onSaveInstanceState` does not keep (a checkpoint keeps
 what process death keeps), and a server whose answers the recording does not have. The test app's network screen shows
 how long each fetch took, so `scripts/replay-check.py` records it with `--feature dev.apksim.testapp.no_timings`, which
 leaves that out (the recording keeps `--feature` flags, so the replay gets it too).
@@ -176,6 +178,81 @@ the page must hold the four frames. With `--changed APK`, a build of the test ap
 | [app, app, source-changed build] | first bad 3; 3 replays, 23 s | first bad 3; 3 replays, 107 s |
 
 Each replay of this 4.5 s recording took 6.5-14 s cold on the Mac and 15-45 s in the image, a container each.
+
+## Recording to journey: a test that targets nodes
+
+`apksim replay --journey BUNDLE` replays as usual and also writes `journey.json` beside its report: the recording as
+steps that find their element the way a test would, by text, content description or resource id, with the texts each
+step should bring on screen. `scripts/journey.py journey.json` runs it over `--control` and writes JUnit XML.
+
+```
+apksim replay --journey --headless --out out session.apkrec
+scripts/journey.py out/journey.json --xml results.xml                     # from the recording's checkpoint
+scripts/journey.py out/journey.json --apk app-new.apk -- --device tablet  # another build, another device
+scripts/journey.py out/journey.json --port 7400                           # an instance already running
+```
+
+From the test app's recording (`scripts/journey-check.py`):
+
+```
+{"n":1,"do":"tap","target":{"text":"Trips"},"at":[305,1686],"expect":["Italian vacation","Tokyo weekend","Alps ski trip","Trip note"]}
+{"n":2,"do":"tap","target":{"text":"Italian vacation"},"at":[172,256],"expect":["Roman vacation"]}
+{"n":3,"do":"tap","target":{"text":"Home"},"at":[96,1686],"expect":["FAB clicks: 0","Item 1","Item 2"]}
+{"n":4,"do":"tap","target":{"id":"fab"},"at":[733,1533],"expect":["FAB clicks: 1"]}
+{"n":5,"do":"tap","target":{"id":"fab"},"at":[733,1533],"expect":["FAB clicks: 2"]}
+```
+
+**Why during a replay.** Reading the accessibility tree changes a Compose screen: the node provider adds a view to the
+`AndroidComposeView` and builds its caches (the failure bundles' issue 73). The recorder must not do that to the app
+the user is using, so taps are resolved when the recording is replayed, just before each tap is dispatched, on the
+screen the replay shows at that moment. The replay still compares its frames; in the check it matched at every point
+with the tree read before each tap.
+
+**Targets.** The node under the tap: the deepest that `nodes` lists with a label there, by its text, else its content
+description, else its resource id (a View's id, or a Compose `testTag` with `testTagsAsResourceId`; only on clickable or
+editable nodes, as `nodes` lists them, which now prints `id="..."`; a View's id is given as a service that asks for
+ids gets it). When several nodes share the label, `index` says
+which (in `nodes` order). A tap with no labelled node under it keeps its coordinates (`at`). A finger that moved past
+the touch slop is a `swipe` with its end points and duration (coordinates: a scroll is a distance, not an element), and
+`fling` when it was moving faster than the framework's minimum fling velocity (50 dp/s) in its last 50-100 ms before
+lifting; it keeps its path with timings, which journey.py plays back as `touch down|move|up` at the recorded times
+(older journeys: an untimed `swipe` for a fling, a timed drag otherwise). A fling step gets no expectations: where a
+fling ends varies from run to run (above), so what it scrolls into view is not something a test can expect;
+held 500 ms or more, a `longpress` on its node. Typed characters become one `type` step, keys `key` steps, Back
+`back`, wheel steps `wheel`, commands (`open URL`, `rotate`...) `command` steps. Two-finger gestures and window resizes
+are left out and listed in the journey's `notes`.
+
+**Expectations.** At each step's start the texts on screen are read (only what is on screen: `nodes` now marks a node
+that is in the tree but not visible, a list item scrolled away, `offscreen`, and neither the generator nor journey.py's
+matching counts it); a step expects the texts that appeared on
+screen for the first time in the journey (up to 6), or, when none did (Back to an earlier screen), the first 3 that
+appeared since it started. Times, dates and durations are left out (`12:30`, `327 ms`), as are sizes (`411×891`) and
+texts over 80 characters. A screen that comes back after Back brings its whole furniture back, a window size class among it
+("compact 411×891"), which would tie a journey to one device; first appearances do not.
+
+**The runner** (`scripts/journey.py`, also in the Linux image beside `instrument.py`): without `--port` it starts the
+app from the recording's checkpoint (`apksim replay --input none --compare none --control auto`: the checkpoint's data,
+device and stack, no input; `--input none` is new) or, with `--start launch --apk APK`, a fresh launch (`--no-autofill`, as a replay has) in data slots of its own (`--data-slots journey`, so it never
+empties a normal launch's `default` slot). Options after
+`--` go to that launch. Each step: a tap or long press at the centre of its node, waited for up to `--timeout` (10 s),
+the other steps as the control commands of their names (typed text as `type64 BASE64`, new, which keeps every space;
+a swipe under 250 ms as an untimed `swipe`, so a fling still flings); then `settle`, then each expected text waited
+for. `nodes` escapes `\`, `"` and line breaks in its values (`\\`, `\"`, `\n`), which journey.py decodes, so a
+label with quotes or a semicolon matches whole. A rotary step keeps the `rotary` command's sign. JUnit XML
+(`--xml`): one test case per step, the failing step's message (`expected 'Roman vacation' on screen after 10 s; it
+shows ['Roman holiday', ...]`), the rest skipped. Exit 0 passed, 1 failed, 2 could not start. `--by-coordinates` taps
+the recorded points instead, to compare.
+
+A generated UiAutomator test (Kotlin for the app's `androidTest`) is not done: the journey and its runner cover running
+it in CI, and the step format maps one to one onto `By.text`/`By.desc`/`By.res` when someone wants it.
+
+Checked with `scripts/journey-check.py APP.apk [OUT] [--image IMAGE]`: the journey above generated from a recording of
+the Trips rename, the Home tab and two FAB taps; it passes from the checkpoint (5 steps, about 4 s of steps); it passes
+on a tablet (`-- --device tablet`: a navigation rail instead of the bottom bar), where the same journey by the
+recorded coordinates fails at its first step; and as a changed build (`rename_v2`) it fails at step 2 expecting "Roman
+vacation" with steps 3-5 skipped. The replay that writes the journey took 20 s on the Mac and 28 s in the
+Linux image; each journey run, the app's start from the checkpoint included, 20-21 s on the Mac and 18-21 s in the
+image (both cold, the Mac shared with other sessions' builds), of which the five steps take about 4 s.
 
 ## Not done
 

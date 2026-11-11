@@ -84,7 +84,17 @@ final class Nodes {
       walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, depth, visit);
       return;
     }
-    visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, v.createAccessibilityNodeInfo()), depth);
+    AccessibilityNodeInfo info = v.createAccessibilityNodeInfo();
+    // A View reports its id only to a service that asked for ids (FLAG_REPORT_VIEW_IDS): given here, as UiAutomator
+    // would get it, so `nodes` and journeys can find an unlabelled button by its id.
+    if (info.getViewIdResourceName() == null && v.getId() != View.NO_ID && v.getId() > 0) {
+      try {
+        info.setViewIdResourceName(v.getResources().getResourceName(v.getId()));
+      } catch (RuntimeException e) {
+        // a generated id with no resource name
+      }
+    }
+    visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, info), depth);
     if (v instanceof android.view.ViewGroup g) {
       for (int i = 0; i < g.getChildCount(); i++) walkView(g.getChildAt(i), depth + 1, visit);
     }
@@ -133,6 +143,15 @@ final class Nodes {
     return found[0] ? hit : null;
   }
 
+  /**
+   * A value as `nodes` prints it: a backslash, quote or line break escaped (\\, \", \n), so a label with quotes or a
+   * semicolon reads back whole and the reply stays one line. Most labels have none and print unchanged.
+   */
+  static String quote(String v) {
+    if (v.indexOf('\\') < 0 && v.indexOf('"') < 0 && v.indexOf('\n') < 0 && v.indexOf('\r') < 0) return v;
+    return v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
+  }
+
   /** A text dump for the `nodes` control command: one line per node with something to say or do. */
   static String dump(List<View> roots) {
     StringBuilder b = new StringBuilder();
@@ -148,9 +167,12 @@ final class Nodes {
       b.append('[').append(r.left).append(',').append(r.top).append(',').append(r.right).append(',').append(r.bottom).append("] ");
       if (i.isEditable()) b.append(i.isPassword() ? "password-field " : "field ");
       if (i.isClickable()) b.append("clickable ");
-      if (!n.text().isEmpty()) b.append("text=\"").append(i.isPassword() ? "•••" : n.text()).append("\" ");
-      if (!n.hint().isEmpty()) b.append("hint=\"").append(n.hint()).append("\" ");
-      if (!n.description().isEmpty()) b.append("desc=\"").append(n.description()).append("\" ");
+      if (!i.isVisibleToUser()) b.append("offscreen ");  // in the tree, not on screen (a list item scrolled away)
+      if (!n.text().isEmpty()) b.append("text=\"").append(i.isPassword() ? "•••" : quote(n.text())).append("\" ");
+      if (!n.hint().isEmpty()) b.append("hint=\"").append(quote(n.hint())).append("\" ");
+      if (!n.description().isEmpty()) b.append("desc=\"").append(quote(n.description())).append("\" ");
+      CharSequence id = i.getViewIdResourceName();  // a View's id, or Compose's testTag with testTagsAsResourceId
+      if (id != null && id.length() > 0) b.append("id=\"").append(quote(id.toString())).append("\" ");
       b.append("; ");
     }
     return b.toString();

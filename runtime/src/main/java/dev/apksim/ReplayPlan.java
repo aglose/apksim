@@ -68,7 +68,7 @@ public final class ReplayPlan {
   }
 
   static final String USAGE = "usage: apksim replay [--apk APK] [--live-network] [--out DIR] [--compare all|end|none]"
-      + " [--threshold N] [APKSIM OPTIONS...] BUNDLE.apkrec";
+      + " [--threshold N] [--journey] [--input all|none] [APKSIM OPTIONS...] BUNDLE.apkrec";
 
   static List<String> plan(String[] args, Path state) throws Exception {
     String apkArg = null;
@@ -76,11 +76,18 @@ public final class ReplayPlan {
     String compare = "all";
     String threshold = null;
     boolean live = false;
+    boolean journey = false;
+    String input = "all";
     List<String> pass = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--apk" -> apkArg = need(args, ++i);
         case "--live-network" -> live = true;
+        case "--journey" -> journey = true;
+        case "--input" -> {
+          input = need(args, ++i);
+          if (!input.matches("all|none")) throw new Refused("--input takes all or none");
+        }
         case "--out" -> outArg = need(args, ++i);
         case "--compare" -> {
           compare = need(args, ++i);
@@ -161,6 +168,8 @@ public final class ReplayPlan {
       p.setProperty("out", out.toString());
       p.setProperty("compare", compare);
       if (threshold != null) p.setProperty("threshold", threshold);
+      if (journey) p.setProperty("journey", "true");
+      p.setProperty("input", input);
       p.setProperty("network", har ? "har" : live ? "live" : "live (the recording has no net channel)");
       p.setProperty("data", data != null ? "restored" : "none in the bundle");
       try (OutputStream o = Files.newOutputStream(dir.resolve("plan.properties"))) {

@@ -87,7 +87,7 @@ LABEL org.opencontainers.image.source=https://github.com/aglose/apksim \
       org.opencontainers.image.licenses=Apache-2.0
 # GLES for test runs that render offscreen (dev.apksim.gl): Mesa's software EGL and GLES, on EGL's surfaceless platform
 # (no display server), where pbuffers work. Python for scripts/instrument.py (a whole suite in one container),
-# snapshot.py (screenshot tests, docs/snapshots.md) and drive.py. OpenH264 for `apksim serve`'s H.264 stream.
+# snapshot.py (screenshot tests, docs/snapshots.md), drive.py and journey.py (docs/replay.md). OpenH264 for `apksim serve`'s H.264 stream.
 RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 libopenh264-7 && \
     rm -rf /var/lib/apt/lists/*
 ENV EGL_PLATFORM=surfaceless
@@ -96,7 +96,7 @@ ENV APKSIM_HOME=/opt/apksim/work
 COPY --from=build /opt/apksim /opt/apksim
 COPY apksim /opt/apksim/apksim
 COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /opt/apksim/
-COPY train.sh instrument.py affected.py snapshot.py crawl.py drive.py /opt/apksim/scripts/
+COPY train.sh instrument.py affected.py snapshot.py crawl.py drive.py journey.py /opt/apksim/scripts/
 COPY apksim.jar /opt/apksim/work/apksim.jar
 # The JVM's ahead-of-time cache holds the framework for any APK; it must be built by this JVM, in this folder.
 ARG TRAIN=1
