@@ -31,6 +31,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -70,6 +73,10 @@ class FaultsActivity : ComponentActivity() {
       // The same faults in plain Views, one screen on.
       Button(onClick = { startActivity(android.content.Intent(this@FaultsActivity, FaultsViewsActivity::class.java)) }) {
         Text("Views version")
+      }
+      // A parent with a label of its own over a clipped child: the child is cut off, the parent's label is not.
+      Column(Modifier.padding(top = 8.dp).semantics { text = AnnotatedString("Panel label") }) {
+        Text("Departure gate", maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(150.dp))
       }
       // Fits at any size: it wraps.
       Text("This one wraps and always fits, whatever the font size is", Modifier.padding(top = 8.dp))

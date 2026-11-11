@@ -189,6 +189,8 @@ def main():
         detail = " | ".join(f["detail"] for f in doc5["findings"] if f["kind"] == "sweep")
         check("saved: " not in detail and "wraps and always" not in detail and "saved taps" not in detail,
               "no finding on the controls that do it right (saved state, wrapping text)", detail[:300])
+        check("Departure gate" in detail and "Panel label" not in detail,
+              "a parent with a label of its own is not cut off because a child is", detail[-300:])
         check("Boarding gate B12" in detail and "Your table is ready" in detail and "Checked baggage" in detail,
               "clipped text is found in Compose (ellipsis, fixed height) and in Views")
         check(p5.returncode == 1, "the run fails on findings", str(p5.returncode))

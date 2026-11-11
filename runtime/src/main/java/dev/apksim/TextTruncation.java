@@ -111,7 +111,13 @@ final class TextTruncation {
       for (Object r : results) cut |= cutOff(r);
     }
     List<?> kids = (List<?>) node.getClass().getMethod("getChildren").invoke(node);
-    for (Object k : kids) cut |= walk(k, invoke, out);
+    // A node that merges its descendants (a Button) carries their text; one that does not has its own text and its
+    // children's are theirs.
+    boolean merges = Boolean.TRUE.equals(config.getClass().getMethod("isMergingSemanticsOfDescendants").invoke(config));
+    for (Object k : kids) {
+      boolean child = walk(k, invoke, out);
+      if (merges) cut |= child;
+    }
     out.put((Integer) node.getClass().getMethod("getId").invoke(node), cut);
     return cut;
   }
