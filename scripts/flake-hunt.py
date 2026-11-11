@@ -138,7 +138,8 @@ class Hunt:
         if key not in self.trials:
             order = list(before) + [victim]
             got, _, _ = self.run("ddmin", tests=order, order=order)
-            self.trials[key] = status_of(got, victim)
+            # (strict: a run that failed before the victim ran is no reproduction, so it does not count as its failure)
+            self.trials[key] = status_of(got, victim, strict=True)
         return self.trials[key]
 
     def victim_fails(self, victim, before):
@@ -146,13 +147,14 @@ class Hunt:
         return self.victim_status(victim, before) == "failed"
 
 
-def status_of(got, t):
-    """[t]'s status in a run's results: its own, else its class's class-level failure (@BeforeClass: Class#null)."""
+def status_of(got, t, strict=False):
+    """[t]'s status in a run's results: its own, else its class's class-level failure (@BeforeClass: Class#null), else
+    (not [strict]) failed when the run failed as a whole, else missing."""
     if t in got:
         return got[t]
     if got.get((t[0], "null")) == "failed" or got.get((t[0], None)) == "failed":
         return "failed"
-    return "failed" if any(k[0].startswith("(") for k in got) else "missing"
+    return "failed" if not strict and any(k[0].startswith("(") for k in got) else "missing"
 
 
 RUN_FAILURES = []  # runs that failed as a whole (a "(run)" entry, no report): the hunt fails with them
