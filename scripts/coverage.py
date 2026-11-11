@@ -184,7 +184,12 @@ class Mapping:
             if groups:
                 group = next((g for g in groups.values() if fits(g[-1])), next(iter(groups.values())))
                 # Overloads can share the range too: the physical method returns what the residual descriptor says.
-                e = ([x for x in group if self.obf_type(x[7]) == want] or group)[-1]
+                cand = [x for x in group if self.obf_type(x[7]) == want] or group
+                # ...and so can their return types: then the parameters tell the overloads apart. A caller that lost
+                # a parameter to R8 still wins when no entry's parameters match.
+                if not fits(cand[-1]):
+                    cand = [x for x in cand if fits(x)] or cand
+                e = cand[-1]
                 if "." not in e[4]:
                     if e[5] is None:
                         return e[4], line, e[8]
