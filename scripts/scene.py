@@ -12,13 +12,14 @@ port it prints is {fixture} in the launch options, so one compiled-in backend ad
 
 Steps run in order. A step is an object mapping roles to a command or a list of commands; roles in one step run at
 the same time and the step ends when all have. "all" sends the commands to every role, "name" labels the step.
-Commands are the control commands (tap, swipe, type, open URL, push ..., settle, shot ..., ...: an `error` answer fails
-the step) plus:
+Commands are the control commands (tap, swipe, type, open URL, push ..., settle, shot ..., ...: an answer that says it
+failed fails the step: `error ...`, `unknown command`, `usage:`, tap-text's `not found:`, open's `no activity ...`) plus:
   wait MS               sleep
-  until MS TEXT         `nodes all` until TEXT is on screen (an answer received within MS), else fail
-  gone MS TEXT          `nodes all` until TEXT is not on screen
+  until MS TEXT         `nodes` until TEXT is on screen (an answer received within MS), else fail; `nodes` lists
+                        the windows accessibility reports, so not text a dialog covers, as tap-text sees them
+  gone MS TEXT          `nodes` until TEXT is not on screen
   expect TEXT           the last answer must contain TEXT
-  capture NAME REGEX    the first group of REGEX in the last answer (else in `nodes all`) becomes {NAME}
+  capture NAME REGEX    the first group of REGEX in the last answer (else in `nodes`) becomes {NAME}
   to ROLE CMD           CMD goes to ROLE's instance (e.g. `to watch open apksim://x?code={code}`, `to bob push k=v`)
   quit                  ends the role's instance, which must exit with status 0
 {NAME} is replaced in commands by captured values, --var values, {fixture}, {out}, {role} (this role's name) and
@@ -28,7 +29,7 @@ scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role
 On a failure every running role's screen is saved as DIR/failed-ROLE.png. Writes DIR/result.json (steps, times,
 failure) and prints a line per step. Exits 1 on a failure, 2 on a bad scene file.
 """
-import json, os, re, shutil, subprocess, sys, threading, time
+import json, os, queue, re, shutil, subprocess, sys, threading, time
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS)
@@ -47,6 +48,15 @@ def apksim_launcher():
 
 class Failure(Exception):
     pass
+
+
+# Answers that mean a command did not do what it was asked: `error ...` (most commands), and the few that answer in
+# their own words (tap-text's target missing, open with no activity for the URL, bad arguments).
+FAILED_ANSWER = re.compile(r"^(error|unknown command|usage:|not found:|no activity( in |$)|no window$)")
+
+
+def failed(answer):
+    return bool(FAILED_ANSWER.match(answer))
 
 
 class Role:
@@ -119,20 +129,32 @@ class Scene:
         self.fixture = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, stdin=subprocess.DEVNULL, text=True,
                                         cwd=self.out)
         pattern = re.compile(fx.get("ready", r"ready (\d+)"))
-        deadline = time.time() + float(fx.get("timeout", 30))
-        while time.time() < deadline:
-            line = self.fixture.stdout.readline()
-            if not line:
+        timeout = float(fx.get("timeout", 30))
+        # Its output is read on a thread of its own (all of it, so a chatty fixture never blocks on a full pipe), and
+        # the wait for the ready line is bounded by the timeout even if the fixture prints nothing at all.
+        lines = queue.Queue()
+
+        def reader():
+            for line in self.fixture.stdout:
+                log.write(line)
+                log.flush()
+                lines.put(line)
+            lines.put(None)
+        threading.Thread(target=reader, daemon=True).start()
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - time.time()))
+            except queue.Empty:
                 break
-            log.write(line)
+            if line is None:
+                break
             m = pattern.search(line)
             if m:
                 self.vars["fixture"] = m.group(1) if m.groups() else ""
-                # Keep reading its output, or a chatty fixture blocks on a full pipe.
-                threading.Thread(target=lambda: [log.write(l) for l in self.fixture.stdout], daemon=True).start()
                 print(f"fixture ready{' on port ' + self.vars['fixture'] if self.vars['fixture'] else ''}")
                 return
-        raise Failure(f"the fixture never printed {pattern.pattern!r} (see {log.name})")
+        raise Failure(f"the fixture did not print {pattern.pattern!r} within {timeout:g} s (see {log.name})")
 
     def launch(self):
         env = dict(os.environ)
@@ -167,7 +189,8 @@ class Scene:
     # ---- commands ----
 
     def nodes(self, role):
-        return role.send("nodes all")
+        # `nodes`: the windows accessibility reports, so not what a dialog covers, as tap-text and a user see them.
+        return role.send("nodes")
 
     def run_command(self, role, raw):
         cmd = self.expand(raw, role)
@@ -192,7 +215,10 @@ class Scene:
                 raise Failure(f"{rest!r} not in the last answer {role.last[:400]!r}")
         elif word == "capture":
             name, _, pattern = rest.partition(" ")
-            rx = re.compile(pattern)
+            try:
+                rx = re.compile(pattern)
+            except re.error as e:
+                raise Failure(f"capture {name}: bad regular expression {pattern!r}: {e}")
             m = rx.search(role.last) or rx.search(self.nodes(role))
             if not m:
                 raise Failure(f"capture {name}: {pattern!r} matched nothing")
@@ -204,17 +230,18 @@ class Scene:
             if other is None:
                 raise Failure(f"to {target}: no such role")
             reply = other.send(inner)
-            if reply.startswith("error") or reply.startswith("unknown command"):
+            if failed(reply):
                 raise Failure(f"to {target} {inner!r}: {reply}")
             role.last = reply
         elif word == "quit":
-            why = role.inst.stop()
+            with role.lock:  # not while another role's `to` reads this connection
+                why = role.inst.stop()
             if why:
                 raise Failure(why)
         else:
             with role.lock:
                 role.last = role.inst.send(cmd)
-            if role.last.startswith("error") or role.last.startswith("unknown command"):
+            if failed(role.last):
                 raise Failure(role.last)
 
     def run_step(self, n, step):
@@ -273,7 +300,8 @@ class Scene:
                         end(inst.proc)
                     return
                 if inst.proc.poll() is None:
-                    why = inst.stop()
+                    with role.lock:
+                        why = inst.stop()
                 else:
                     why = None if inst.proc.returncode == 0 else f"exited with status {inst.proc.returncode}"
                 if why:

@@ -39,7 +39,8 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
   keeps them off an ordinary launch's data (`scene-0`, `scene-1`, ...: two roles of one APK get one slot each) and
   `--fresh` starts each from nothing. Launches are cold (`APKSIM_STANDBY=0`) unless `--warm`. APK paths are relative to
   the scene file; `--apk APK` (every role) or `--apk ROLE=APK` replaces them, as CI does with the APK it built.
-- **The fixture** (optional) starts first; the port it prints (the `ready` pattern's first group) is `{fixture}`.
+- **The fixture** (optional) starts first; the port it prints (the `ready` pattern's first group) is `{fixture}`; it
+  must print that within `timeout` seconds (default 30).
   Pointing a compiled-in backend address at it in every role (`--network-host`, docs/network.md) makes the instances
   two users of one server. `--network-trust` lets the app's TLS accept the fixture's throwaway certificate; apksim
   applies it on the recording path, so a scene records each role's traffic (`{out}/{role}.har`), which is also the
@@ -47,15 +48,16 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
 - **Steps** run in order. A step maps roles to a command or a list; the roles in one step run at the same time and
   the next step starts when all are done. `all` sends to every role, `name` labels it.
 - **Commands** are the control commands (`tap`, `tap-text`, `swipe`, `type`, `open URL`, `push k=v`, `settle`,
-  `shot`, `ble ...`, `network ...`, ...; an answer starting `error` or `unknown command` fails the step), plus:
+  `shot`, `ble ...`, `network ...`, ...; an answer that says it failed fails the step: `error ...`, `unknown command`,
+  `usage:`, tap-text's `not found:`, open's `no activity ...`), plus:
 
 | Command | |
 |---|---|
 | `wait MS` | sleep |
-| `until MS TEXT` | repeat `nodes all` until TEXT is on screen in an answer received within MS |
+| `until MS TEXT` | repeat `nodes` until TEXT is on screen in an answer received within MS (`nodes`: the windows accessibility reports, so not text a dialog covers, as `tap-text` sees them) |
 | `gone MS TEXT` | until TEXT is not on screen |
 | `expect TEXT` | the last answer contains TEXT |
-| `capture NAME REGEX` | REGEX's first group, in the last answer or else in `nodes all`, becomes `{NAME}` |
+| `capture NAME REGEX` | REGEX's first group, in the last answer or else in `nodes`, becomes `{NAME}`; a bad REGEX fails the step |
 | `to ROLE CMD` | sends CMD to another role's instance from this step: `to watch open apksim://x?code={code}`, `to bob push otp={otp}` |
 | `quit` | ends this role; its process must exit 0 |
 
