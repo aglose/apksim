@@ -113,8 +113,8 @@ count and differed by 54 pixels.
 
 Launch to result, cold (`APKSIM_STANDBY=0`) on a Mac busy with eight other sessions' builds: 18-20 s, of which the
 first frame took 9.5 s and the journal plays at its recorded pace (9.1 s); the crash bundle's 6.7 s. In the Linux
-image (amd64 under Rosetta, a container each): 45-51 s. A replay may also go to a warm standby (the launch it plans
-is one a standby takes), not measured here.
+image (amd64 under Rosetta, a container each): 45-51 s. Warm (the planned launch is one a standby takes, so
+`apksim replay` goes to one when it is ready): 12 s, the first frame at 2.2 s.
 
 ## Check
 
