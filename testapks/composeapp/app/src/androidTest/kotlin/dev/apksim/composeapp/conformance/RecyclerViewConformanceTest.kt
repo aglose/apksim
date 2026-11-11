@@ -290,23 +290,20 @@ class RecyclerViewConformanceTest {
     onView(withId(INNER_ID)).perform(swipeLeft())
     val deadline = System.currentTimeMillis() + 5_000
     var innerFirst = 0
+    var innerIdle = false
     var outerOffset = -1
     while (System.currentTimeMillis() < deadline) {
       idle()
       scenario.onFragment { f ->
         innerFirst = (f.inner.layoutManager as LinearLayoutManager).findFirstVisibleItemPosition()
+        innerIdle = f.inner.scrollState == RecyclerView.SCROLL_STATE_IDLE
         outerOffset = f.outer.computeVerticalScrollOffset()
       }
-      if (innerFirst > 0 && f(scenario)) break
+      if (innerFirst > 0 && innerIdle) break
       Thread.sleep(20)
     }
     assertTrue("inner first $innerFirst", innerFirst > 0)
+    assertTrue("the inner list never settled", innerIdle)
     assertEquals(0, outerOffset)
-  }
-
-  private fun f(scenario: androidx.fragment.app.testing.FragmentScenario<NestedFragment>): Boolean {
-    var idle = false
-    scenario.onFragment { idle = it.inner.scrollState == RecyclerView.SCROLL_STATE_IDLE }
-    return idle
   }
 }

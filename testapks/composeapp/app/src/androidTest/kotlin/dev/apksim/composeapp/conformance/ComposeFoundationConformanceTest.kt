@@ -92,7 +92,7 @@ class ComposeFoundationConformanceTest {
     }
   }
 
-  /** Keyed items keep their rememberSaveable state when the list is reordered. */
+  /** Keyed items keep their rememberSaveable state when the list is reordered: it moves with the item, not its place. */
   @Test
   fun keyedItemsKeepStateWhenReordered() {
     val keys = mutableStateListOf(0, 1, 2)
@@ -104,10 +104,13 @@ class ComposeFoundationConformanceTest {
         }
       }
     }
-    compose.onNodeWithText("item 1 taps 0").performClick()
+    compose.onNodeWithText("item 0 taps 0").performClick()  // index 0, last once reversed
     compose.runOnIdle { keys.reverse() }
-    compose.onNodeWithText("item 1 taps 1").assertExists()
-    compose.onNodeWithText("item 0 taps 0").assertExists()
+    compose.onNodeWithText("item 0 taps 1").assertExists()
+    compose.onNodeWithText("item 2 taps 0").assertExists()  // now at index 0
+    compose.onNodeWithText("item 1 taps 0").assertExists()
+    val top = { text: String -> compose.onNodeWithText(text).fetchSemanticsNode().boundsInRoot.top }
+    assertTrue(top("item 2 taps 0") < top("item 1 taps 0") && top("item 1 taps 0") < top("item 0 taps 1"))
   }
 
   /** A swipe left on a pager settles on the next page. */
