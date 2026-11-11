@@ -161,14 +161,14 @@ class Instance(snapshot.Worker):
         self.stage = os.path.join(ctx["stage"], str(i))
         os.makedirs(self.stage, exist_ok=True)
         self.generation = 0
-        self.applied = dict(DEFAULT_COMBO)
+        self.applied = {a: None for a in AXES}  # unknown: a launch option may have set any of them
         self.crashes = ctx["crashes"]
 
     def launch(self):
         self.generation += 1
-        self.log = os.path.join(self.ctx["out"], "logs", f"instance-{self.i}.{self.generation}.log")
+        self.log = os.path.join(self.ctx["out"], "logs", f"{self.ctx['name']}-instance-{self.i}.{self.generation}.log")
         self.proc = self.file = self.sock = None
-        self.applied = dict(DEFAULT_COMBO)
+        self.applied = {a: None for a in AXES}  # unknown: a launch option may have set any of them
         self.start()
 
     def ensure(self):
@@ -210,6 +210,8 @@ class Instance(snapshot.Worker):
 
     def expect_ok(self, cmd):
         reply = self.say(cmd)
+        if reply.startswith("error: app crashed"):  # the command ran app code that threw: the process is ending
+            raise Gone(self.ended(cmd))
         if reply.startswith(snapshot.FAILED_REPLIES):
             raise ReplayFailed(f"{cmd!r}: {reply}")
         return reply
@@ -299,7 +301,7 @@ def candidates(recs, skip_re, tap_unlabeled, scrolls=0):
         editable = "e" in r.flags
         if not ("c" in r.flags or "k" in r.flags or editable):
             continue
-        inside = []
+        inside, inside_skip = [], []
         stack = [i]
         while stack:
             j = stack.pop()
@@ -307,6 +309,7 @@ def candidates(recs, skip_re, tap_unlabeled, scrolls=0):
                 stack.append(k)
                 if recs[k].label:
                     inside.append(recs[k].label)
+                inside_skip += [recs[k].text, recs[k].desc]  # both, whichever the label prefers
         own = r.label
         label = own or (inside[0] if len(inside) == 1 else " ".join(inside))
         x, y = r.centre()
@@ -315,7 +318,7 @@ def candidates(recs, skip_re, tap_unlabeled, scrolls=0):
             cmd = f"tap-text {own}"
         elif len(inside) == 1 and not scrolls and labels.get(inside[0].strip().lower(), 0) == 1 and len(inside[0]) <= 40:
             cmd = f"tap-text {inside[0]}"
-        text_for_skip = " ".join([r.text, r.desc] + inside)
+        text_for_skip = " ".join([r.text, r.desc] + inside_skip)
         why = None
         if editable:
             kind = "field"
@@ -351,6 +354,11 @@ class Explorer:
     def __init__(self, name, apk, args, out, extra_options, shots="screens"):
         self.name, self.apk, self.args, self.out, self.shots = name, apk, args, out, shots
         self.options = list(args.apksim) + list(extra_options)
+        # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
+        # launch's `default` slot (--keep-data takes the slot as it is, and an option of the caller's own wins).
+        self.options += ["--no-autofill"]
+        if not args.keep_data and "--data-slots" not in self.options:
+            self.options += ["--data-slots", "crawl"]
         self.screens = {}      # id -> screen
         self.order = []        # ids in discovery order
         self.edges = []        # {from, action, to, ...}
@@ -366,7 +374,7 @@ class Explorer:
             fail(f"the temporary folder {self.stage!r} has whitespace in its path: set TMPDIR")
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
-                    "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms}
+                    "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name}
         self.instances = []
 
     # --- instances
@@ -438,6 +446,7 @@ class Explorer:
             if obs["id"] not in self.screens:
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
         depth = 0
+        cut = False  # the time ran out inside a level: some screens or controls were left
         while level and not self.budget.out_of_time():
             log(f"[{self.name}] depth {depth}: {len(level)} screen(s) to explore, {len(self.screens)} known")
             if self.budget.max_depth is not None and depth >= self.budget.max_depth:
@@ -448,6 +457,8 @@ class Explorer:
             nxt = []
             # Merged in screen order, then action order: the same graph whatever the instances' timing.
             for screen, res in zip(level, results):
+                if res is None or res.get("truncated"):
+                    cut = True
                 if res is None:
                     continue
                 screen["actions"] = res["actions"]
@@ -473,8 +484,9 @@ class Explorer:
                     self.findings.append(f)
             level = nxt
             depth += 1
-        if level and self.budget.out_of_time():
-            self.incomplete.append(f"--max-seconds {self.args.max_seconds}: {len(level)} screen(s) not explored")
+        if (level or cut) and self.budget.out_of_time():
+            self.incomplete.append(f"--max-seconds {self.args.max_seconds}: {len(level)} screen(s) not explored"
+                                   + (", and some controls of the last level not tried" if cut else ""))
         self.t_explore = time.time() - t0
 
     def observe_root(self, inst, start):
@@ -482,8 +494,10 @@ class Explorer:
             try:
                 inst.reach({"start": start, "steps": []})
                 return inst.observe()
-            except (ReplayFailed, Gone) as e:
+            except ReplayFailed as e:
                 self.finding("replay", f"start {start}: {e}", {"start": start, "steps": []})
+            except Gone as e:
+                self.findings.append(self.crash_finding(e.crash, {"start": start, "steps": []}))
         return None
 
     def add_screen(self, obs, path, parent, depth):
@@ -500,6 +514,7 @@ class Explorer:
             return None
         args = self.args
         findings, edges = [], []
+        truncated = False
         here = None
         for attempt in range(2):
             try:
@@ -521,8 +536,11 @@ class Explorer:
                 for step in prep:
                     inst.expect_ok(step)
                 inst.settle()
-            except (ReplayFailed, Gone):
+            except ReplayFailed:
                 prep = []
+            except Gone as e:
+                findings.append(self.crash_finding(e.crash, self.full_path(screen, prep)))
+                return {"actions": [], "edges": [], "findings": findings, "flaky": "ended while filling fields"}
         recs = here["recs"] if not prep else parse_tree(inst.say("nodes tree"))
         acts = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled) if a["kind"] == "control"]
         # Controls below the fold: scroll and read again, until nothing new shows.
@@ -536,8 +554,11 @@ class Explorer:
             try:
                 inst.expect_ok(sc)
                 inst.settle()
-            except (ReplayFailed, Gone):
+            except ReplayFailed:
                 break
+            except Gone as e:
+                findings.append(self.crash_finding(e.crash, self.full_path(screen, prep + scrolls + [sc])))
+                return {"actions": [], "edges": [], "findings": findings, "flaky": "ended while scrolling"}
             scrolls.append(sc)
             recs = parse_tree(inst.say("nodes tree"))
             aliases.add(structure(here["activity"], recs)[0])
@@ -557,6 +578,7 @@ class Explorer:
                               "steps": [], "note": a["skipped"]})
                 continue
             if self.budget.out_of_time():
+                truncated = True
                 break
             steps = prep + a["prefix"] + [a["cmd"]]
             try:
@@ -586,7 +608,7 @@ class Explorer:
             if e["to"]["id"] in aliases:
                 e["to"] = {"id": screen["id"]}
         return {"actions": [{k: a[k] for k in ("label", "cmd", "kind", "box", "skipped", "scrolls")} for a in acts],
-                "edges": edges, "findings": findings}
+                "edges": edges, "findings": findings, "truncated": truncated}
 
     def crash_finding(self, crash, path):
         kind = "crash" if crash["kind"] == "crash" else crash["kind"]
@@ -610,28 +632,27 @@ class Explorer:
 
     def capture_task(self, inst, task):
         screen, combos = task
-        try:
-            try:
-                inst.reach_screen(screen)
-            except ReplayFailed:
-                inst.reach_screen(screen)
-        except (ReplayFailed, Gone) as e:
-            self.finding("replay", f"capture of {screen['id']}: {e}", screen["path"])
-            return
         base_dir = os.path.join(self.out, self.shots, screen["id"])
         os.makedirs(base_dir, exist_ok=True)
         for combo in combos:
             name = snapshot.combo_name(combo)
             staged = os.path.join(inst.stage, "capture.png")
             try:
+                # Replayed for every combination: the one before may have closed a dialog or moved a scroll position.
+                try:
+                    inst.reach_screen(screen)
+                except ReplayFailed:
+                    inst.reach_screen(screen)
                 inst.configure(combo)
                 screen["settled"] = inst.settle() if "settled" not in screen else inst.settle() and screen["settled"]
                 inst.expect_ok(f"shot {staged}")
                 shutil.move(staged, os.path.join(base_dir, name + ".png"))
                 screen["captures"][name] = f"{self.shots}/{screen['id']}/{name}.png"
-            except (ReplayFailed, Gone) as e:
+            except Gone as e:
+                with self.lock:
+                    self.findings.append(self.crash_finding(e.crash, screen["path"]))
+            except ReplayFailed as e:
                 self.finding("capture", f"{screen['id']} {name}: {e}", screen["path"])
-                return
 
     def doc(self):
         return {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
@@ -693,6 +714,7 @@ def pair_builds(new, base, args):
 
 def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):
     """The control channel's `diff` of two PNGs: (differing pixels, total, map file or None, size changed)."""
+    inst.ensure()  # a Gone earlier may have ended this instance
     sa = os.path.join(inst.stage, "a.png")
     sb = os.path.join(inst.stage, "b.png")
     sm = os.path.join(inst.stage, "diff.png")
@@ -878,9 +900,6 @@ def parse(argv):
     p.add_argument("-j", "--jobs", type=int, default=3)
     p.add_argument("--diff-delta", type=int, default=8)
     p.add_argument("--diff-pixels", type=float, default=0, help="share (or count, from 1) of differing pixels allowed")
-    p.add_argument("--sweep", help="resilience sweep (see docs/crawl.md)")
-    p.add_argument("--allow", help="file of accepted findings")
-    p.add_argument("--junit", help="JUnit XML of the findings")
     args = p.parse_args(argv)
     args.apksim = list(tail)
     for s in args.setting:
@@ -889,6 +908,8 @@ def parse(argv):
         args.apksim += ["--sdcard-file", s]
     if args.keep_data:
         args.jobs = 1
+        if args.base or args.base_option:
+            fail("--keep-data cannot be used with --base: two walks cannot start from one prepared data slot")
     if args.jobs < 1:
         fail("-j takes 1 or more")
     return args

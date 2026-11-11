@@ -44,6 +44,10 @@ def crawl(apk, out, *extra, expect=(0, 1)):
     print(f"     crawl {' '.join(extra)[:110]}: {secs:.0f} s, exit {p.returncode}", flush=True)
     if p.returncode not in expect:
         print(p.stdout[-3000:])
+    if not os.path.exists(os.path.join(out, "crawl.json")):
+        print(p.stdout[-3000:])
+        print(f"crawl-check: crawl.py (exit {p.returncode}) wrote no crawl.json in {out}", file=sys.stderr)
+        sys.exit(1)
     with open(os.path.join(out, "crawl.json")) as f:
         return json.load(f), secs, p
 
@@ -130,6 +134,25 @@ def main():
     shot = doc4["screens"][0] if doc4["screens"] else {}
     check(bool(shot) and "prepared-by-crawl" in json.dumps(doc4["screens"]),
           "a prepared start (--setting) is in effect on the screen it reaches")
+
+    # 5: what review of the first version found
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import crawl as crawl_mod
+    recs = crawl_mod.parse_tree("0\tandroid.view.View\t\tcv\t0,0,200,100\t\t\t\x1e1\tandroid.widget.TextView\t\tv\t0,0,100,100\t\xd7\tDelete item\t\x1e")
+    acts = crawl_mod.candidates(recs, crawl_mod.re.compile(crawl_mod.DEFAULT_SKIP, crawl_mod.re.I), False)
+    check(len(acts) == 1 and acts[0]["skipped"], "the skip list reads a descendant's description when it also has text", str(acts))
+    a5 = crawl_mod.parse(["x.apk", "--out", os.path.join(args.out, "unit")])
+    ex = crawl_mod.Explorer("new", "x.apk", a5, os.path.join(args.out, "unit"), [])
+    check("--no-autofill" in ex.options and "crawl" in ex.options, "launches have no autofill and a data-slot namespace of their own", str(ex.options))
+    p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "unit"), "--keep-data", "--base", args.apk],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    check(p.returncode == 2 and "--keep-data" in p.stdout, "--keep-data with --base is refused", p.stdout[-200:])
+    doc7, _, _ = crawl(args.apk, os.path.join(args.out, "budget"), "--start", "apksim://composeapp/home", "--max-seconds", "4",
+                       "--no-captures", "-j", "1")
+    check(bool(doc7["incomplete"]), "a deadline that falls inside a level says the walk is incomplete", str(doc7["incomplete"]))
+    logs = os.listdir(os.path.join(c_dir, "logs"))
+    check(any(n.startswith("new-instance-") for n in logs) and any(n.startswith("base-instance-") for n in logs),
+          "the two builds of a comparison keep separate logs", str(logs[:6]))
 
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s")
