@@ -34,7 +34,9 @@ tests a change reaches (`--record-deps`, `--affected-by`).
 **Prefer one process per suite to one per test.** `--isolate` (a process per test, as the Orchestrator with
 `clearPackageData`) pays a JVM start, a cold JIT and an app start for every test. apksim already gives every test a
 fresh Application and data folder; only statics carry over. The app's 10 end-to-end tests: 16 s isolated, 4 at a
-time, against 8 s in one process on the Mac; ~560 CPU-seconds against ~30 in the Linux image.
+time, against 8 s in one process on the Mac; ~560 CPU-seconds against ~30 in the Linux image. `--isolate` now boots
+processes ahead of their tests (`--prewarm`, twice `-j` by default): the start-up leaves the test's path, not the
+machine's CPU ([test-pool.md](test-pool.md)).
 
 **A fleet of instances.** `scripts/fleet.py N APK -- CMD...` starts N headless instances, waits for each, sends every
 one the same control commands at once (`tap`, `type`, `nodes`, ...; `until MS TEXT` waits for text on screen,

@@ -13,7 +13,7 @@ group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send in
 init-error-* list a class's initializationError, which --isolate and list-based shards leave out (--keep-class-errors).
 The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
-import gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
+import fcntl, gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -50,6 +50,26 @@ def fake():
         else:
             i += 1
     sc, state = os.environ["CHECK_SCENARIO"], os.environ["CHECK_DIR"]
+    if "--pooled" in args:  # a process of --prewarm's pool: boots, then reads its test's -e pairs on stdin
+        with open(os.path.join(state, "pooled"), "a+") as f:  # (locked: each process its own ordinal)
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(f"{os.getpid()}\n")
+            f.flush()
+            f.seek(0)
+            n = len(f.read().split())
+            fcntl.flock(f, fcntl.LOCK_UN)
+        if sc == "pool-dies-waiting" and n == 2:
+            print("dies while waiting for its test", file=sys.stderr)
+            sys.exit(134)
+        if sc == "pool-hangs-waiting" and n == 2:
+            hang(state, "p.Pool", "boot")
+        data = sys.stdin.buffer.read()
+        if not data:  # not needed: gone without a word, as TestPool does
+            with open(os.path.join(state, "pool-unused"), "a") as f:
+                f.write(f"{os.getpid()}\n")
+            return
+        parts = data.decode("utf-8").split("\0")
+        e.update(zip(parts[0:-1:2], parts[1::2]))
     # The longest argument in UTF-8 bytes (Linux's limit, 131,072, counts bytes), each -e as the launcher passes it to
     # the JVM: one -Dapksim.instrument.KEY=VALUE.
     longest = max([len(f"-Dapksim.instrument.{k}={v}".encode("utf-8")) for k, v in e.items()]
@@ -137,7 +157,7 @@ def fake():
             sys.stdout.flush()
             time.sleep(0.6)
         if {"during-test": calls == 1 and n == 1, "rerun-startup": n == 1, "big": calls == 1 and n == 1,
-                "non-ascii": calls == 1 and n == 1,
+                "non-ascii": calls == 1 and n == 1, "pool-dies-in-test": (c, m) == ("p.C000", "m1"),
                 # Shards run at once, so not by call count: the first time this test runs (in shard 0 of 3, first).
                 "sharded-crash": (c, m) == ("p.C001", "m1") and ran_before(state, f"{c}#{m}"),
                 "listing-fails": n == 1, "parameterized": calls == 1 and n == 0, "before-class": (c, m) == ("p.C002", "m1")}.get(sc, False):
@@ -233,7 +253,9 @@ def fake_docker():
         if args[i] == "--cidfile":
             cidfile = args[i + 1]
         i += 2 if args[i] in ("--cidfile", "-v") else 1
+    # (stdin reaches the container only with -i, as docker's: a pooled process needs it)
     child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--fake"] + args[i + 1:],
+                             stdin=None if "-i" in args[:i] else subprocess.DEVNULL,
                              start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def relay(src, dst):
@@ -321,6 +343,18 @@ SCENARIOS = {
     "reap-early-hang": (0, 10, 9, []),
     "hang-isolate": (1, 10, 9, ["p.C000#m1"]),  # a listing, then a process a test
     "hang-docker": (1, 3, 9, ["p.C000#m1"]),
+    # --isolate's pool (--prewarm, on by default with --isolate; isolate-phases and the other --isolate scenarios use it
+    # too): the second pooled process to start (which test gets it is a race: "*", any one test) dies before it is handed its test
+    # (the test fails as one whose process died at start-up; the dead one never records a call), hangs before reading it
+    # (--test-timeout ends it), or dies in the test; pool-off runs isolate-phases cold; pool-docker through `docker run`
+    # (which must get -i); interrupt-pool stops a run while pooled processes wait.
+    "pool-dies-waiting": (1, 9, 9, ["*"]),
+    "pool-hangs-waiting": (1, 9, 9, ["*"]),
+    "pool-dies-in-test": (1, 10, 9, ["p.C000#m1"]),
+    "pool-off": (0, 10, 9, []),
+    "pool-docker": (0, 10, 9, []),
+    "pool-deep": (0, 10, 9, []),
+    "interrupt-pool": (130, tuple(range(2, 11)), 0, []),
     # The client dies of the SIGQUIT, before the kill, its container still running: it must be removed all the same.
     "hang-docker-client-exits": (1, 3, 9, ["p.C000#m1"]),
     # The client is killed (not by instrument.py) while its container hangs: the container must not outlive the run.
@@ -387,6 +421,12 @@ LONG_MESSAGE = ("java.lang.VerifyError: Bad type on operand stack\nException Det
 
 def extra_args(sc, d):
     """Scenario arguments that need files: timings XML, a deps file."""
+    if sc in ("pool-dies-waiting", "pool-hangs-waiting"):
+        return ["--isolate", "-j", "1", "--test-timeout", "2"]
+    if sc in ("pool-dies-in-test", "pool-docker", "interrupt-pool"):
+        return ["--isolate", "-j", "2"] + (["--test-timeout", "0"] if sc == "interrupt-pool" else [])
+    if sc in ("pool-off", "pool-deep"):
+        return ["--isolate", "-j", "3", "--prewarm", "off" if sc == "pool-off" else "5"]
     if sc == "isolate-phases":
         return ["--isolate", "-j", "3"]
     if sc.startswith("isolate-ignored"):
@@ -434,7 +474,7 @@ def main():
             if sc == "interrupt-docker-cleanup":
                 env["INSTRUMENT_CHECK_CLEANUP_DELAY"] = "2"
             launcher = f"{sys.executable} {os.path.abspath(sys.argv[0])} --fake"
-            if "docker" in sc or sc.startswith("cidfile"):
+            if "docker" in sc or sc.startswith("cidfile"):  # (pool-docker too)
                 os.makedirs(os.path.join(d, "bin"))
                 docker = os.path.join(d, "bin", "docker")
                 with open(docker, "w") as f:
@@ -444,9 +484,10 @@ def main():
                 if sc.startswith("cidfile"):
                     launcher = f"{docker} run --cidfile {d}/user.cid --rm -v {d}:/work apksim:check"
             start = time.time()
+            xargs = extra_args(sc, d)
             p = subprocess.Popen([sys.executable, os.path.join(HERE, "instrument.py"), "--apksim", launcher,
                                   "app.apk", "test.apk", "--xml", xml, "-e", "other", "kept"]
-                                 + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + extra_args(sc, d),
+                                 + (["--shards", str(SHARDS[sc])] if sc in SHARDS else []) + xargs,
                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if sc.startswith("interrupt"):
                 ready = INTERRUPT_WHEN.get(sc, lambda d: os.path.exists(os.path.join(d, "pids")))
@@ -482,6 +523,8 @@ def main():
                      for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
+            if failed == ["*"] and len(got_failed) == 1 and not got_failed[0].startswith("("):
+                failed = got_failed  # (one test, whichever)
             hung = ([t for t in ("p.C000#m1", "(run)#incomplete") if t in failed]
                     if sc.startswith(("hang", "cidfile-hang")) else [])
             # (A client that ends at the SIGQUIT passes on no thread dump.)
@@ -505,6 +548,10 @@ def main():
             missing = [w for t in hung for w in (wanted if t == "p.C000#m1" else wanted[:1]) if w not in texts.get(t, "")]
             pids_file = os.path.join(d, "pids")
             pids = [int(n) for n in open(pids_file).read().split()] if os.path.exists(pids_file) else []
+            pooled = [int(n) for n in read(os.path.join(d, "pooled")).split()]
+            unused = read(os.path.join(d, "pool-unused")).split()
+            isolated = "--isolate" in xargs and "off" not in xargs
+            pids += [n for n in pooled if n not in pids]  # (every pooled process must be gone too, used or not)
             alive = [n for n in pids if still_alive(n)]
             for n in alive:  # (a failure: end them, here only)
                 try:
@@ -553,7 +600,7 @@ def main():
                 ("no process that hung", sc.startswith(("hang", "interrupt", "docker", "cidfile-hang")) and not pids),
                 ("no container ID in the user's --cidfile", sc.startswith("cidfile")
                  and not read(os.path.join(d, "user.cid")).strip().isdigit()),
-                ("not ended by docker rm -f", ("docker" in sc or sc == "cidfile-hang") and not os.path.exists(os.path.join(d, "docker-kills"))),
+                ("not ended by docker rm -f", ("docker" in sc and sc != "pool-docker" or sc == "cidfile-hang") and not os.path.exists(os.path.join(d, "docker-kills"))),
                 ("no process.txt saying it timed out", sc == "hang" and not any(
                     "timed out after 2 s" in open(f).read() for f in process_txt if os.path.exists(f))),
                 ("p.Empty's warning " + ("printed though kept" if sc.endswith("-keep") else "missing"),
@@ -571,6 +618,16 @@ def main():
                  and len(read(os.path.join(d, "ignored-ran")).split()) != 4),
                 ("no teardown that hung", sc == "reap-early-hang" and len(pids) < 18),
                 (f"took {took:.0f} s", took > (30 if sc != "reap-early-hang" else 20)),
+                ("a pooled process with --prewarm off", sc == "pool-off" and bool(pooled)),
+                (f"{len(pooled) - len(unused)} pooled processes given a test, expected one a test",
+                 isolated and not sc.startswith(("interrupt", "pool-dies-waiting", "pool-hangs-waiting", "init-error-incomplete"))
+                 and len(pooled) - len(unused) != max(0, len(calls) // 2 - 1)),
+                ("no pooled process", isolated and sc != "init-error-incomplete-isolate" and not pooled),
+                (f"{len(unused)} pooled processes closed unused, expected 6", sc == "init-error-only-isolate" and len(unused) != 6),
+                ("the failure text lacks the dying process's stderr", sc == "pool-dies-waiting"
+                 and not any("dies while waiting for its test" in t for t in texts.values())),
+                ("the failure text lacks the timeout", sc == "pool-hangs-waiting"
+                 and not any("timed out after 2 s" in t for t in texts.values())),
             ] if bad]
             print(f"{'ok  ' if not problems else 'FAIL'} {sc}: " + ("; ".join(problems) or r.stdout.strip()))
             if problems:

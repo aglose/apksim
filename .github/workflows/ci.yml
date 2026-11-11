@@ -271,6 +271,12 @@ jobs:
           assert sorted(sharded) == sorted(whole), f"results differ: {set(sharded) ^ set(whole)}"
           print(f"{len(sharded)} tests in 3 shards, as in one process")
           EOF
+      # Pre-warmed test processes (--isolate's pool, docs/test-pool.md): the same tests with the pool on and off.
+      - name: Pre-warmed test processes
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          python3 scripts/pool-check.py app.apk test.apk --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" \
+            --local tests
       # Failure bundles (--bundles): the test app's FailureBundle*Test classes fail on purpose, and each failure must
       # leave its screen, tree, log, threads and repro.sh (scripts/bundle-check.py says what it checks).
       - name: Failure bundles
