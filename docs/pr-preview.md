@@ -107,7 +107,7 @@ the browser:
 | `network.json` | the exchanges the inspector listed, when it is on |
 
 With `--issue-url 'https://github.com/OWNER/REPO/issues/new?title={title}&body={body}'` the page then opens that address in
-a new tab of the reviewer's own browser, with `{title}` the note's first line and `{body}` the note and the settings in a few
+a new tab of the reviewer's own browser (opened at the click and pointed at the address once the report is made; a blocked tab leaves a link), with `{title}` the note's first line and `{body}` the note and the settings in a few
 lines, URL-encoded (at most 4,000 characters), and says to attach the zip there. The template is checked at the server's start: https,
 no credentials, a `{title}` or `{body}`. The server only announces it in the session's `i` message (`rec`, `issueUrl`); the page does
 the rest, in the reviewer's session, so there is no token or account of the server's in any request to a tracker. The recording
@@ -123,7 +123,7 @@ that opens a panel:
   answered. A connection the engine could not make is a row too (`DNS`/`CONNECT`, status 0). Click one for its headers and
   bodies (at most 64 KB of each, binary shown as a size). Headers are redacted exactly as a recording's are (`Authorization`,
   `Cookie`, ... and `--network-redact`); bodies and URLs are as sent.
-- **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status with a content type and body
+- **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status (200-599) with a content type and body
   (64 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,
   and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
   While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
@@ -132,7 +132,7 @@ that opens a panel:
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
 STATUS LATENCY_MS TYPE BODY64`, `inspect rule remove ID|clear|list` and `inspect detail ID`, which the server checks (a
-pattern is 1-300 URL characters, a status 0 or 100-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
+pattern is 1-300 URL characters, a status 0 or 200-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
 answers are `n r rule|detail ...`. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
 

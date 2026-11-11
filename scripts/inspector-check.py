@@ -138,7 +138,7 @@ def main():
         check(base64.b64decode(d["respBody"]) == GREETING and base64.b64decode(d["reqBody"]).startswith(b'{"name"'),
               "the bodies are there: the request's and the rule's answer")
 
-        for bad in ("inspect rule add POST /x 999 0 - -", "inspect rule add POST /a b 200 0 - -", "inspect rule add POST /x 200 0 - !!!notb64",
+        for bad in ("inspect rule add POST /x 999 0 - -", "inspect rule add POST /x 103 0 - -", "inspect rule add POST /a b 200 0 - -", "inspect rule add POST /x 200 0 - !!!notb64",
                     "inspect rule add ../x 200 0 - -", "inspect detail ../../etc/passwd", "inspect shot /tmp/x.png", "inspect rule add GET /x 0 0 - -"):
             k = len(t.texts)
             t.ws.send(bad)
@@ -210,7 +210,7 @@ def page_layer(url, token, app, chrome):
         time.sleep(2)
         check(cdp.ev(s, "document.getElementById('reportCard').classList.contains('on') && document.getElementById('inspectCard').classList.contains('on')"),
               "[page] the Report and Network cards are shown")
-        cdp.ev(s, "window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; }; 1")
+        cdp.ev(s, "window.__opened = []; window.open = () => { const t = { close() {} }; Object.defineProperty(t, 'location', { set(v) { window.__opened.push(v); } }); return t; }; 1")
         cdp.ev(s, "document.getElementById('inspToggle').click(); 1")
         # A rule typed into the panel, then Fetch: the panel lists the exchange.
         cdp.ev(s, """(() => { document.getElementById('rulePattern').value = '/v1/greeting'; document.getElementById('ruleStatus').value = '200';

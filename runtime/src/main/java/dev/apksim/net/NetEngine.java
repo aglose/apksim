@@ -286,16 +286,7 @@ final class NetEngine {
         port = Integer.parseInt(p[2]);
         if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
         if (p.length > 4 && !p[4].equals("-")) address = p[4];
-        String err = connectUpstream();
-        if (err != null && Inspector.on) {
-          Inspector.failure(host, port, err);
-          // A server that is not there (a backend not deployed yet) may still be answered by an inspector rule: the
-          // connection goes on without it, and a request no rule takes then fails as the connect would have.
-          if (Inspector.hasAnswerRules()) {
-            deferred = err;
-            err = null;
-          }
-        }
+        String err = inspected(connectUpstream());
         cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
         if (err != null) return;
@@ -309,7 +300,7 @@ final class NetEngine {
           String h = Net.readLine(cin);
           if (h == null || h.isEmpty()) break;
         }
-        String err = connectUpstream();
+        String err = inspected(connectUpstream());
         cout.write((err != null ? "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n"
             : "HTTP/1.1 200 Connection established\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
@@ -325,7 +316,7 @@ final class NetEngine {
         proxied = true;
         Conditions.sleep(Net.conditions.rtt());
         if (Net.mode != Net.Mode.REPLAY || Net.conditions.offline()) {
-          String err = connectUpstream();
+          String err = inspected(connectUpstream());
           if (err != null) {
             cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
                 .getBytes(StandardCharsets.ISO_8859_1));
@@ -344,6 +335,19 @@ final class NetEngine {
       }
 
       session(pending, proxied);
+    }
+
+    /**
+     * The inspector's view of a failed upstream connect (`err`, or null for none): shown as a row, and, while a rule answers
+     * requests itself, put off (null back): a server that is not there (a backend not deployed yet) may still be answered by a
+     * rule, and a request no rule takes then fails as the connect would have.
+     */
+    String inspected(String err) {
+      if (err == null || !Inspector.on) return err;
+      Inspector.failure(host, port, err);
+      if (!Inspector.hasAnswerRules()) return err;
+      deferred = err;
+      return null;
     }
 
     /** From a new connection (or a tunnel just opened through the app's proxy): TLS if asked, then the exchanges. */
@@ -687,7 +691,7 @@ final class NetEngine {
           ruleId = rule.id;
           addedMs = rule.latencyMs;
           Conditions.sleep(rule.latencyMs);
-          keep = rule.status > 0 ? answerRule(req, rule) : record(req);
+          keep = rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
         } else {
           keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
         }
@@ -991,7 +995,7 @@ final class NetEngine {
         cout.flush();
       }
       streamRequestBody(req, OutputStream.nullOutputStream());
-      boolean none = rule.status == 204 || rule.status == 304 || rule.status < 200;
+      boolean none = rule.status == 204 || rule.status == 304;
       StringBuilder h = new StringBuilder("HTTP/1.1 ").append(rule.status).append(' ').append(Net.statusText(rule.status)).append("\r\n");
       if (!none) h.append("Content-Type: ").append(rule.type).append("\r\nContent-Length: ").append(rule.body.length).append("\r\n");
       h.append("X-Apksim-Rule: ").append(rule.id).append("\r\n\r\n");

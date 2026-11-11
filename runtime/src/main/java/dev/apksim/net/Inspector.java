@@ -15,7 +15,6 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
@@ -40,10 +39,14 @@ public final class Inspector {
   /** Rules at most; each costs a pattern match per request. */
   static final int MAX_RULES = 32;
 
-  private static final List<Consumer<String>> listeners = new CopyOnWriteArrayList<>();
+  private static final List<Viewer> viewers = new CopyOnWriteArrayList<>();
   private static final AtomicLong ids = new AtomicLong();
   private static final ArrayDeque<String> events = new ArrayDeque<>();
-  private static final Map<Long, Recording.Entry> details = new LinkedHashMap<>();
+  /** What `detail` answers from: bounded copies (headers, and at most BODY_MAX of each body), never the capture's own entry. */
+  private record Detail(String method, String url, int status, List<String[]> reqHeaders, List<String[]> respHeaders,
+      byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut) {}
+
+  private static final Map<Long, Detail> details = new LinkedHashMap<>();
   private static final List<Rule> rules = new CopyOnWriteArrayList<>();
   private static final AtomicInteger ruleIds = new AtomicInteger();
 
@@ -122,15 +125,49 @@ public final class Inspector {
     String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(e.url) + ",\"status\":" + e.status
         + ",\"ms\":" + (e.timeMs + addedMs) + ",\"reqBytes\":" + reqBytes + ",\"respBytes\":" + respBytes
         + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";
+    Detail d = new Detail(e.method, e.url, e.status, List.copyOf(e.reqHeaders), List.copyOf(e.respHeaders), cut(e.reqBody), e.reqTruncated || big(e.reqBody),
+        cut(e.respBody), e.truncated || big(e.respBody));
+    // History and each viewer's queue change together, under one lock, so a viewer that joins gets every event once and in
+    // order; nothing is written to a socket here (a viewer that stops reading is dropped, never waited for).
     synchronized (events) {
       events.addLast(line);
       while (events.size() > KEEP) events.removeFirst();
       synchronized (details) {
-        details.put(id, e);
+        details.put(id, d);
         if (details.size() > KEEP) details.remove(details.keySet().iterator().next());
       }
+      for (Viewer v : viewers) v.offer(line);
     }
-    for (Consumer<String> l : listeners) l.accept(line);
+  }
+
+  private static boolean big(byte[] b) {
+    return b != null && b.length > BODY_MAX;
+  }
+
+  private static byte[] cut(byte[] b) {
+    return b == null ? new byte[0] : b.length > BODY_MAX ? java.util.Arrays.copyOf(b, BODY_MAX) : b;
+  }
+
+  /** One `netwatch` connection: a bounded queue and a thread of its own that writes it; a full queue ends the viewer. */
+  private static final class Viewer {
+    final java.util.concurrent.BlockingQueue<String> queue = new java.util.concurrent.ArrayBlockingQueue<>(KEEP * 2);
+    final Socket socket;
+    volatile boolean dead;
+
+    Viewer(Socket socket) {
+      this.socket = socket;
+    }
+
+    void offer(String line) {
+      if (dead) return;
+      if (!queue.offer(line)) {
+        dead = true;  // it is not reading: closed, so the writer's blocked write ends
+        try {
+          socket.close();
+        } catch (IOException ignored) {
+        }
+      }
+    }
   }
 
   private static long parse(String s) {
@@ -143,21 +180,33 @@ public final class Inspector {
 
   /** `netwatch`: this connection becomes the event stream (the remembered events first) until the viewer closes it. */
   static void watch(Socket s, PrintWriter out) throws IOException {
-    Consumer<String> l = line -> {
-      synchronized (out) {
-        out.println(line);
-      }
-    };
+    Viewer v = new Viewer(s);
     synchronized (events) {
-      for (String line : events) l.accept(line);
-      listeners.add(l);
+      for (String line : events) v.queue.offer(line);
+      viewers.add(v);
     }
-    try (BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
-      while (in.readLine() != null) {
-        // nothing is expected
+    Thread reader = Thread.ofVirtual().name("apksim-netwatch-reader").start(() -> {
+      try (BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+        while (in.readLine() != null) {
+          // nothing is expected
+        }
+      } catch (IOException ignored) {
       }
+      v.dead = true;
+    });
+    try {
+      while (!v.dead) {
+        String line = v.queue.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS);
+        if (line == null) continue;
+        out.println(line);
+        if (out.checkError()) break;
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     } finally {
-      listeners.remove(l);
+      v.dead = true;
+      viewers.remove(v);
+      reader.interrupt();
     }
   }
 
@@ -185,7 +234,7 @@ public final class Inspector {
         if (rules.size() >= MAX_RULES) return "error: at most " + MAX_RULES + " rules";
         try {
           int status = Integer.parseInt(a[5]), latency = Integer.parseInt(a[6]);
-          if (status != 0 && (status < 100 || status > 599)) return "error: a status is 100-599, or 0 to keep the server's answer";
+          if (status != 0 && (status < 200 || status > 599)) return "error: a status is 200-599, or 0 to keep the server's answer";
           if (latency < 0 || latency > 60_000) return "error: latency is 0-60000 ms";
           if (status == 0 && latency == 0) return "error: a rule needs a status or a latency";
           if (a[4].length() > 300 || a[4].isEmpty()) return "error: the pattern is 1-300 characters";
@@ -213,7 +262,7 @@ public final class Inspector {
   static String detail(String[] a) {
     if (!on) return "error: the network inspector is off";
     if (a.length != 3 || !a[2].matches("[0-9]{1,18}")) return "error: network detail ID";
-    Recording.Entry e;
+    Detail e;
     synchronized (details) {
       e = details.get(Long.parseLong(a[2]));
     }
@@ -221,15 +270,14 @@ public final class Inspector {
     StringBuilder b = new StringBuilder("{\"id\":").append(a[2]).append(",\"method\":").append(q(e.method)).append(",\"url\":").append(q(e.url))
         .append(",\"status\":").append(e.status).append(",\"reqHeaders\":").append(headers(e.reqHeaders))
         .append(",\"respHeaders\":").append(headers(e.respHeaders));
-    body(b, "req", e.reqBody, e.reqTruncated);
-    body(b, "resp", e.respBody, e.truncated);
+    body(b, "req", e.reqBody, e.reqCut);
+    body(b, "resp", e.respBody, e.respCut);
     return b.append('}').toString();
   }
 
-  private static void body(StringBuilder b, String side, byte[] body, boolean truncated) {
-    byte[] shown = body == null ? new byte[0] : body.length > BODY_MAX ? java.util.Arrays.copyOf(body, BODY_MAX) : body;
+  private static void body(StringBuilder b, String side, byte[] shown, boolean cut) {
     b.append(",\"").append(side).append("Body\":\"").append(Base64.getEncoder().encodeToString(shown)).append('"');
-    b.append(",\"").append(side).append("Cut\":").append(truncated || body != null && body.length > BODY_MAX);
+    b.append(",\"").append(side).append("Cut\":").append(cut);
   }
 
   private static String headers(List<String[]> hs) {

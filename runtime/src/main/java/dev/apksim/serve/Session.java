@@ -395,7 +395,7 @@ final class Session {
     else if (t.strip().matches("inspect rule (clear|list)") || t.strip().matches("inspect rule remove [0-9]{1,9}")) cmd = "network " + t.strip().substring(8);
     else if (t.strip().matches("inspect detail [0-9]{1,18}")) cmd = "network " + t.strip().substring(8);
     else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
-        && w[5].matches("0|[1-5][0-9]{2}") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|[A-Za-z0-9.+/;=_-]{1,100}")
+        && w[5].matches("0|[2-5][0-9]{2}") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|[A-Za-z0-9.+/;=_-]{1,100}")
         && w[8].matches("-|[A-Za-z0-9+/]{1,90000}={0,2}")) {
       cmd = "network " + t.strip().substring(8);
       verb = "rule";

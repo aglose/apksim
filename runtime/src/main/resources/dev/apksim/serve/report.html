@@ -138,6 +138,10 @@ function settings() {
 $r("reportBtn").onclick = async () => {
   const btn = $r("reportBtn");
   btn.disabled = true;
+  // The issue page is opened now, while the click's permission to open a tab lasts (the screenshot and the recording take
+  // longer), and pointed at the filled-in address once the report is made; a blocked tab leaves a visible link instead.
+  const issueTab = info && info.issueUrl ? window.open("", "_blank") : null;
+  if (issueTab) try { issueTab.opener = null; } catch (e) { /* cross-origin already */ }
   try {
     say("saving the recording…");
     const files = [], enc = new TextEncoder(), note = $r("reportNote").value;
@@ -160,9 +164,17 @@ $r("reportBtn").onclick = async () => {
       const body = (note ? note + "\n\n" : "") + "App: " + info.app + "\nDevice: " + $r("device").value + ", " + state.appearance + (state.locale ? ", " + state.locale : "")
         + "\nScreen: " + frameW + "x" + frameH + "\nReport: " + name + " (attach it here)\n";
       const href = info.issueUrl.replace("{title}", encodeURIComponent(first)).replace("{body}", encodeURIComponent(body.slice(0, 4000)));
-      if (/^https:\/\//.test(href)) window.open(href, "_blank", "noopener");
+      if (/^https:\/\//.test(href)) {
+        if (issueTab) issueTab.location = href;
+        else {
+          const link = document.createElement("a");
+          link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open the issue page";
+          $r("reportHint").append(" · ", link);
+        }
+      } else if (issueTab) issueTab.close();
     }
   } catch (e) {
+    if (issueTab) try { issueTab.close(); } catch (e2) { /* gone */ }
     say("could not make the report: " + e);
   } finally {
     btn.disabled = false;
@@ -258,7 +270,7 @@ $r("inspAdd").onsubmit = e => {
     latency = $r("ruleLatency").value.trim() || "0", type = $r("ruleType").value.trim() || "-", body = $r("ruleBody").value;
   $r("inspHint").textContent = "";
   if (!/^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,300}$/.test(pattern)) { $r("inspHint").textContent = "a URL pattern: part of the address, * for anything, no spaces"; return; }
-  if (!/^(0|[1-5][0-9]{2})$/.test(status) || !/^[0-9]{1,5}$/.test(latency)) { $r("inspHint").textContent = "status 100-599 (or empty), latency in ms"; return; }
+  if (!/^(0|[2-5][0-9]{2})$/.test(status) || !/^[0-9]{1,5}$/.test(latency)) { $r("inspHint").textContent = "status 200-599 (or empty), latency in ms"; return; }
   if (status === "0" && latency === "0") { $r("inspHint").textContent = "give a status, a latency, or both"; return; }
   if (!/^(-|[A-Za-z0-9.+\/;=_-]{1,100})$/.test(type)) { $r("inspHint").textContent = "content type such as application/json"; return; }
   if (new TextEncoder().encode(body).length > 65536) { $r("inspHint").textContent = "a body is at most 64 KB"; return; }
