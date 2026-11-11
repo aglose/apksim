@@ -83,8 +83,8 @@ count. `points/NN-recorded.jpg` and `points/NN-replayed.jpg` are the two frames 
 `points/NN-diff.png` (red over the threshold, amber under it, grey where equal). Stderr says it in one line:
 
 ```
-[apksim] replay: diverged at point 6 (end, +6633 ms): 382 pixels differ (threshold 21); frames in .../points
-[apksim] replay: diverged at point 6 of 6 (end, +6633 ms); 8 events, 1 commands; report .../report.json
+[apksim] replay: diverged at point 6 (end, +9106 ms): 382 pixels differ (threshold 21); frames in .../points
+[apksim] replay: diverged at point 6 of 6 (end, +9106 ms); 7 events, 1 commands; report .../report.json
 ```
 
 What makes a replay drift: anything on screen that is real time (a measured duration, a clock with seconds), thread
@@ -96,21 +96,25 @@ leaves that out (the recording keeps `--feature` flags, so the replay gets it to
 ## Measured (2026-11-10, the test app, Mac, with eight other sessions building and running)
 
 `scripts/replay-check.py`'s recording: the Trips tab, a checkpoint, `open apksim://network` and an OkHttp fetch from
-the fixture server, Back, the Trips rename. 8 input lines (6 events, an `open`, Back), 13 frames, a 1-entry HAR.
+the fixture server, Back, the Trips rename. 8 input lines (taps, an `open`, Back), 13-17 frames, a 1-entry HAR; the
+journal runs 9.1 s from the checkpoint to the save. The Mac and the Linux image (amd64 under Rosetta) gave the same
+pixel counts.
 
 | Run | Result | Points (pixels over 64) |
 |---|---|---|
 | Same build, fixture server stopped, `--control` | matched; the app on Trips with "Roman vacation" | 0, 0, 0, 0, 0, 0 |
 | Same build, no `--control` | exit 0 | 0, 0, 0, 0, 0, 0 |
 | Changed build (`--feature dev.apksim.testapp.rename_v2`: renames to "Roman holiday") | exit 3, first divergence `end` | 0, 0, 0, 0, 0, 382 |
-| The crash bundle of `open apksim://crash?kind=post` | exit 10, "crashed after open apksim://crash?kind=post at +677 ms" | 0 |
+| The crash bundle of `open apksim://crash?kind=post` | exit 10, "crashed after open apksim://crash?kind=post at +710 ms" | 0 |
 
 For scale: one digit of the home screen's "FAB clicks: 1" changing to 2 is 46 pixels; the rename above 382. Before
 candidates were chosen by the frames' own times (the movie's 200 ms slots), a frame kept 190 ms late showed a stale
 count and differed by 54 pixels.
 
-Launch to result: 21-35 s on a Mac busy with other sessions' builds (without the startup cache, which `train.sh` then
-rebuilt), most of it the cold start; the journal itself plays in its recorded 6.6 s. Linux image: see the PR.
+Launch to result, cold (`APKSIM_STANDBY=0`) on a Mac busy with eight other sessions' builds: 18-20 s, of which the
+first frame took 9.5 s and the journal plays at its recorded pace (9.1 s); the crash bundle's 6.7 s. In the Linux
+image (amd64 under Rosetta, a container each): 45-51 s. A replay may also go to a warm standby (the launch it plans
+is one a standby takes), not measured here.
 
 ## Check
 
