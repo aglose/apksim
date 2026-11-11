@@ -2,6 +2,8 @@ package dev.apksim.composeapp.conformance
 
 import android.app.Activity
 import android.app.Application
+import android.content.ComponentCallbacks2
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.test.core.app.ActivityScenario
@@ -41,6 +43,16 @@ class AppCallbacksConformanceTest {
   object Leaving : Resumes()
   object Arriving : Resumes() {
     @Volatile var handedOver = false
+  }
+
+  /** A process singleton's ComponentCallbacks2, registered once on the Application it keeps. */
+  object Memory : ComponentCallbacks2 {
+    var app: Application? = null
+    @Volatile var trims = 0
+    @Volatile var configurations = 0
+    override fun onTrimMemory(level: Int) { trims++ }
+    override fun onConfigurationChanged(newConfig: Configuration) { configurations++ }
+    @Deprecated("ComponentCallbacks") override fun onLowMemory() {}
   }
 
   object Singleton : Application.ActivityLifecycleCallbacks {
@@ -117,5 +129,45 @@ class AppCallbacksConformanceTest {
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       ApplicationProvider.getApplicationContext<Application>().unregisterActivityLifecycleCallbacks(Arriving)
     }
+  }
+
+  @Test
+  fun e_aSingletonRegistersComponentCallbacksOnce() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      if (Memory.app == null) {
+        Memory.app = ApplicationProvider.getApplicationContext()
+        Memory.app!!.registerComponentCallbacks(Memory)
+      }
+    }
+  }
+
+  /**
+   * A later test's Application delivers trim-memory and configuration calls to the singleton's ComponentCallbacks2 and
+   * to the per-Application one its own onCreate registered, not to the ones earlier Applications registered; the
+   * singleton unregisters through the Application it kept.
+   */
+  @Test
+  fun f_aLaterTestsApplicationCallsThemUntilTheSingletonUnregisters() {
+    assumeTrue(Memory.app != null)
+    val perApplication = HarnessTestApplication.perApplication
+    val current = perApplication.last()
+    perApplication.forEach { it.trims = 0 }
+    Memory.trims = 0
+    Memory.configurations = 0
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val app = ApplicationProvider.getApplicationContext<Application>()
+      app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+      app.onConfigurationChanged(Configuration(app.resources.configuration))
+    }
+    assertEquals("the singleton's trim-memory call", 1, Memory.trims)
+    assertEquals("the singleton's configuration call", 1, Memory.configurations)
+    assertEquals("this Application's own callback", 1, current.trims)
+    assertEquals("earlier Applications' callbacks are gone", 0, perApplication.dropLast(1).sumOf { it.trims })
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      Memory.app!!.unregisterComponentCallbacks(Memory)  // through the Application it kept
+      ApplicationProvider.getApplicationContext<Application>().onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+    }
+    assertEquals("unregistered, it hears nothing more", 1, Memory.trims)
+    Memory.app = null
   }
 }

@@ -34,7 +34,17 @@ class HarnessTestApplication : ComposeApp() {
   override fun onCreate() {
     super.onCreate()
     created = true
+    // A per-Application ComponentCallbacks, new with each Application (AppCallbacksConformanceTest).
+    perApplication += PerApplicationMemory().also { registerComponentCallbacks(it) }
     onNextCreate?.also { onNextCreate = null }?.invoke(this)
+  }
+
+  /** Counts trim-memory and configuration calls. */
+  class PerApplicationMemory : android.content.ComponentCallbacks2 {
+    @Volatile var trims = 0
+    override fun onTrimMemory(level: Int) { trims++ }
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+    @Deprecated("ComponentCallbacks") override fun onLowMemory() {}
   }
 
   companion object {
@@ -42,5 +52,8 @@ class HarnessTestApplication : ComposeApp() {
 
     /** Run once at the next test's Application.onCreate (a test run's new Application per test; AppCallbacksConformanceTest). */
     @Volatile var onNextCreate: ((HarnessTestApplication) -> Unit)? = null
+
+    /** Every PerApplicationMemory, oldest first: one per Application this process made. */
+    val perApplication = java.util.concurrent.CopyOnWriteArrayList<PerApplicationMemory>()
   }
 }
