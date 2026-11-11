@@ -285,6 +285,20 @@ def drive_chrome(a, rec, bundle, out):
         check("<img src=x" in ev(s3, "document.getElementById('app').textContent") or "<img src=x" in ev(s3, "document.getElementById('nbody').textContent"),
               "the text is shown literally")
 
+        # --- timestamps that would make the timeline loop for ever ---
+        for label, to in (("1e30", "1e30"), ("Infinity", "1e309")):
+            bomb = os.path.join(out, "bomb.apkrec")
+            with zipfile.ZipFile(rec) as zi, zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as zo:
+                for n in zi.namelist():
+                    d = zi.read(n)
+                    if n == "manifest.json":
+                        d = re.sub(rb'("to"\s*:\s*)\d+', rb"\g<1>" + to.encode(), re.sub(rb'("from"\s*:\s*)\d+', rb"\g<1>1", d), count=1)
+                    zo.writestr(n, d)
+            s5 = tab("file://" + PAGE)
+            wait(s5, "!!window.__trace")
+            pick(s5, bomb)
+            check(wait(s5, "document.getElementById('err').textContent.length > 0", 20), f"a window ending at {label} is refused with a message, not looped over")
+
         # --- a large recording ---
         big = os.path.join(out, "big.apkrec")
         synth(rec, big, big=True)

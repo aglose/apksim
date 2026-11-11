@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-+TFVhFWZm0FNn0/2ApUfYzL/kdqXjIYfAMLU1hWC7Sk='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-dLVjnFSPqmn+oN1ncQKtAWq+nhfG/uhQFmJnQXXrLe0='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -294,7 +294,8 @@ async function loadRecording(zip, t0) {
   var man = JSON.parse(await zip.text('manifest.json')); S.man = man;
   if (!/^apksim-flight-recording\//.test(man.format || '')) throw new Error('unknown format ' + man.format);
   var w = man.window || {}, to = w.to || Date.parse(man.created) || Date.now();
-  var from = (w.from != null && w.from > 0) ? w.from : to;
+  if (!isFinite(to) || to < 0 || to > 1e14) throw new Error('the recording has no usable end time');
+  var from = (w.from != null && w.from > 0 && isFinite(w.from)) ? w.from : to;
   S.winFrom = from; S.t0 = (w.keptFrom > 0 && w.keptFrom < from) ? w.keptFrom : from; S.t1 = to;
   var cp = man.checkpoint; if (cp) S.cps.push({ t: cp.wall, id: cp.id, why: cp.why, acts: cp.activities, dev: cp.device, notes: cp.notes });
   buildChrome();
@@ -327,8 +328,9 @@ async function loadRecording(zip, t0) {
   buildRecordingPanes(zip);
   // if nothing but time lies outside the window (an old bundle), widen to the data
   var all = S.input.concat(S.log, S.net, S.db), mn = S.t0, mx = to;
-  all.forEach(function (x) { if (x.ts != null) { mn = Math.min(mn, x.ts); mx = Math.max(mx, x.ts); } else if (x.t != null) { mn = Math.min(mn, x.t); mx = Math.max(mx, x.t); } });
+  all.forEach(function (x) { var tt = x.ts != null ? x.ts : x.t; if (typeof tt !== 'number' || !isFinite(tt) || Math.abs(tt - to) > 400 * 864e5) return; if (x.ts != null) { mn = Math.min(mn, x.ts); mx = Math.max(mx, x.ts); } else if (x.t != null) { mn = Math.min(mn, x.t); mx = Math.max(mx, x.t); } });
   S.t0 = Math.min(S.t0, mn); S.t1 = Math.max(S.t1, mx);
+  if (!(S.t1 - S.t0 >= 0) || S.t1 - S.t0 > 400 * 864e5) throw new Error('the recording\'s timestamps are not usable (a span of ' + Math.round((S.t1 - S.t0) / 864e5) + ' days)');
   if (S.frames) S.t1 = Math.max(S.t1, S.frameT0 + S.frames.frames.length * S.frames.stepMs - S.frames.stepMs);
 }
 
@@ -524,8 +526,8 @@ function drawTimeline() {
   var H = cv.height / 78;
   if (S.kind !== 'recording') return;
   g.fillStyle = col('--dim'); g.font = (10 * dpr) + 'px sans-serif';
-  var span = S.t1 - S.t0, tick = [1, 2, 5, 10, 15, 30, 60, 120].find(function (s) { return span / (s * 1000) <= 12; }) || 300;
-  for (var s = 0; s * 1000 <= span; s += tick) { var x = xOf(S.t0 + s * 1000); g.fillRect(x, 0, 1, 5 * H); g.fillText(s + 's', x + 2, 12 * H); }
+  var span = S.t1 - S.t0, tick = [1, 2, 5, 10, 15, 30, 60, 120].find(function (s) { return span / (s * 1000) <= 12; }) || Math.ceil(span / 12000);
+  for (var s = 0, n = 0; s * 1000 <= span && n < 40; s += tick, n++) { var x = xOf(S.t0 + s * 1000); g.fillRect(x, 0, 1, 5 * H); g.fillText(s + 's', x + 2, 12 * H); }
   var rows = { in: 16, net: 30, log: 44, db: 58 };
   g.fillStyle = col('--in'); S.input.forEach(function (o) { g.fillRect(xOf(o.t), rows.in * H, Math.max(1, dpr), 10 * H); });
   g.fillStyle = col('--net'); S.net.forEach(function (o) { g.fillRect(xOf(o.t), rows.net * H, Math.max(2, xOf(o.t + o.dur) - xOf(o.t)), 10 * H); });
