@@ -149,6 +149,8 @@ def main():
     check(len(acts) == 1 and acts[0]["skipped"], "the skip list reads a descendant's description when it also has text", str(acts))
     a5 = crawl_mod.parse(["x.apk", "--out", os.path.join(args.out, "unit")])
     ex = crawl_mod.Explorer("new", "x.apk", a5, os.path.join(args.out, "unit"), [])
+    check("--serial" in ex.options and any(o.startswith("secure:android_id=") for o in ex.options),
+          "every instance has the same serial and ANDROID_ID", str(ex.options))
     check("--no-autofill" in ex.options and "crawl" in ex.options, "launches have no autofill and a data-slot namespace of their own", str(ex.options))
     p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "unit"), "--keep-data", "--base", args.apk],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -357,6 +357,12 @@ class Explorer:
         # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
         # launch's `default` slot (--keep-data takes the slot as it is, and an option of the caller's own wins).
         self.options += ["--no-autofill"]
+        # One device identity for every instance (the serial and ANDROID_ID come from the slot's name otherwise, and a
+        # screen that shows one would differ between instances, and between builds walked on other slots).
+        if "--serial" not in self.options:
+            self.options += ["--serial", "CRAWL0000000000"]
+        if not any(o.startswith("secure:android_id=") for o in self.options):
+            self.options += ["--setting", "secure:android_id=00c0ffee00c0ffee"]
         if not args.keep_data and "--data-slots" not in self.options:
             self.options += ["--data-slots", "crawl"]
         self.screens = {}      # id -> screen
