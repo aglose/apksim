@@ -183,7 +183,8 @@ class Mapping:
                 groups.setdefault((e[2], e[3]), []).append(e)
             if groups:
                 group = next((g for g in groups.values() if fits(g[-1])), next(iter(groups.values())))
-                e = group[-1]
+                # Overloads can share the range too: the physical method returns what the residual descriptor says.
+                e = ([x for x in group if self.obf_type(x[7]) == want] or group)[-1]
                 if "." not in e[4]:
                     if e[5] is None:
                         return e[4], line, e[8]
@@ -226,7 +227,7 @@ def build(classes, mapping=None, include_tests=False, include=(), exclude=()):
             if any(fnmatch.fnmatch(dotted, g) for g in exclude):
                 continue
             pkg = shown.rsplit("/", 1)[0] if "/" in shown else ""
-            source = dex_source or (mapping.source.get(shown) if mapping else None)  # R8 replaced the DEX's name
+            source = (mapping.source.get(shown) if mapping else None) or dex_source  # the owner's own file name
             own = (pkg + "/" if pkg else "") + source if source else None
             merged = out_classes.setdefault(shown, {"name": shown, "package": pkg, "source": source, "file": own,
                                                     "methods": [], "lines": {}})
