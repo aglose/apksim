@@ -1371,7 +1371,7 @@ def parse(argv):
     p.add_argument("--sweep", help=f"resilience sweep after the walk: {','.join(PERTURBATIONS)} or all (fontscale=1.5, rtl=he-IL take a value)")
     p.add_argument("--allow", help="file of accepted sweep findings: lines of 'RULE SCREEN [DETAIL TEXT]', * for any")
     p.add_argument("--junit", help="JUnit XML of the sweep (default OUT/junit.xml): a failing case per finding")
-    p.add_argument("--sweep-actions", type=int, default=3, help="states per screen the state perturbations try: the screen as reached, plus up to N-1 more after tapping a control that stays on the screen (default 3: as reached and two taps)")
+    p.add_argument("--sweep-actions", type=int, default=3, help="how many controls that stay on the screen the state perturbations tap, one at a time, besides the screen as reached (default 3: as reached and up to three taps; 0: as reached only)")
     p.add_argument("--sweep-pixels", type=float, default=0.002, help="share of pixels that may differ between a screen before and after a perturbation")
     p.add_argument("--spinner-seconds", type=float, default=6, help="how long a progress indicator may stay up offline")
     args = p.parse_args(argv)
