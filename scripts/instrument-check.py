@@ -13,7 +13,7 @@ group, as a real one is, and so ends only by `docker rm -f`; interrupt-* send in
 init-error-* list a class's initializationError, which --isolate and list-based shards leave out (--keep-class-errors).
 The real thing is ProcessDeathTest with `-e hangOnPurpose true` and a --test-timeout (CI's linux-smoke job).
 """
-import gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
+import fcntl, gzip, json, math, os, re, signal, subprocess, sys, tempfile, threading, time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -51,9 +51,13 @@ def fake():
             i += 1
     sc, state = os.environ["CHECK_SCENARIO"], os.environ["CHECK_DIR"]
     if "--pooled" in args:  # a process of --prewarm's pool: boots, then reads its test's -e pairs on stdin
-        with open(os.path.join(state, "pooled"), "a") as f:
+        with open(os.path.join(state, "pooled"), "a+") as f:  # (locked: each process its own ordinal)
+            fcntl.flock(f, fcntl.LOCK_EX)
             f.write(f"{os.getpid()}\n")
-        n = len(read(os.path.join(state, "pooled")).split())
+            f.flush()
+            f.seek(0)
+            n = len(f.read().split())
+            fcntl.flock(f, fcntl.LOCK_UN)
         if sc == "pool-dies-waiting" and n == 2:
             print("dies while waiting for its test", file=sys.stderr)
             sys.exit(134)

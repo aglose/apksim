@@ -48,8 +48,8 @@ public class RunnerApplication {
     }
   }
 
-  /** Whether the probe (or a pooled process's warm-up) has run in this process: it runs once. */
-  private static boolean ran;
+  /** Whether the probe has run in this process (it runs once), and whether a pooled process's warm-up has. */
+  private static boolean ran, warmed;
 
   /** Before the test classes' runners are made: finds what the runner's newApplication asks for. */
   static void probe(String instrumentation) {
@@ -84,13 +84,13 @@ public class RunnerApplication {
   }
 
   /**
-   * A pooled test process's warm-up when the probe did not run (plain AndroidJUnitRunner, or the probe switched off):
-   * the same test with no runner to create, so that the sandbox, the native runtime and a first (plain) Application
-   * are set up before the process is handed its test, as the probe sets them up for a suite with its own runner.
+   * A pooled test process's warm-up, before it is handed its test: the probe's test with no runner to create, so that
+   * the sandbox, the native runtime and a first (plain) Application are set up. The runner's own probe runs after the
+   * hand-over, when the test's arguments are set, as in a cold process: a runner's newApplication may read them.
    */
   static void warm() {
-    if (ran) return;
-    ran = true;
+    if (ran || warmed) return;
+    warmed = true;
     probing = true;
     try {
       Result r = new JUnitCore().run(Request.aClass(RunnerApplication.class));

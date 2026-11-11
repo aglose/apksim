@@ -9,7 +9,7 @@ import java.util.List;
  * A pre-warmed test process ({@code --pooled}, which instrument.py --isolate adds to the processes of its pool:
  * docs/test-pool.md). It is started with the run's whole command line except the arguments that name the test, boots
  * everything that does not depend on which test it gets (the JVM, the APKs' indexes and the classes they loaded last
- * time, the runner probe's sandbox, native runtime and plain Application), then reads the test's {@code -e} arguments
+ * time, the sandbox, native runtime and a plain Application through the runner probe's test without a runner), then reads the test's {@code -e} arguments
  * from stdin, to its end, and goes on as a process started with them would. No app code runs before that: the probe's
  * Application is a plain one, as in every cold process of a suite with its own runner. One test, then the process
  * exits, as before: only the boot moved ahead.
@@ -29,9 +29,9 @@ final class TestPool {
   static void await(String instrumentation, AppClasses tests) throws IOException {
     long t0 = System.nanoTime();
     tests.loadAhead();  // the test APK's classes the last test process loaded (defined only: no static initializers)
-    // The sandbox, native runtime and Robolectric's first environment: through the runner probe, which a suite with its
-    // own runner runs first in every process anyway, else through the same probe with no runner (a plain Application).
-    RunnerApplication.probe(instrumentation);
+    // The sandbox, native runtime and Robolectric's first environment, through the runner probe's test with no runner
+    // (a plain Application). The probe itself (a suite's own runner's newApplication) runs after the hand-over, as in a
+    // cold process, since the runner may read the test's arguments.
     RunnerApplication.warm();
     long ready = System.nanoTime();
     System.err.printf("[apksim] pool: ready, %d ms after the JVM started (%d ms of it warming up)%n",

@@ -24,11 +24,13 @@ scripts/instrument.py app.apk app-androidTest.apk --isolate -j 3 --prewarm off  
   stdin and exit 0.
 - **apksim** (`--pooled`, `TestPool`): a pooled test process runs `Main` as any test process does up to
   `Instrument.run`'s properties, then defines the test APK's classes its last process loaded (`loadAhead`, as for the
-  app's: no static initializers), and runs the runner probe (`RunnerApplication`): a suite with its own runner runs it
-  in every process anyway; for plain AndroidJUnitRunner the same probe runs without a runner. That sets up the sandbox,
-  the native runtime and a first, plain Application, so no app code runs before the hand-over. It prints `[apksim] pool:
-  ready, N ms after the JVM started`, reads stdin to its end, sets each pair as `apksim.instrument.KEY` (what the
-  launcher's `-e` sets) and goes on as a cold process. An empty stdin ends it quietly.
+  app's: no static initializers), and runs the runner probe's test (`RunnerApplication`) with no runner to create. That
+  sets up the sandbox, the native runtime and a first, plain Application, so no app code runs before the hand-over. It
+  prints `[apksim] pool: ready, N ms after the JVM started`, reads stdin to its end, sets each pair as
+  `apksim.instrument.KEY` (what the launcher's `-e` sets) and goes on as a cold process, the probe of a suite's own
+  runner included: that runs after the hand-over, as a runner's `newApplication` may read the test's arguments (12 ms for the test
+  app's runner, on the sandbox the warm-up set up). An
+  empty stdin ends the process quietly.
 - Everything after the hand-over is the code a cold process runs, so the process is the same kind of process to
   instrument.py: its output is read as before, `--test-timeout` counts from the hand-over (a pooled process stuck in
   its boot is killed as a hung one and its test fails "timed out"), one that died before it was handed its test fails

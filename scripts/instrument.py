@@ -24,7 +24,7 @@ A test @Ignore'd on its method or class is reported ignored without a process (t
 gives each a process, as the Orchestrator does (apksim sets up no runner listeners in a process whose every test is
 ignored, so the app's own listeners do not hear of them either way).
 --prewarm on|off|N (with --isolate; default on): a pool of test processes started ahead, twice -j of them (N with a number),
-each booting what no test decides (the JVM, the APKs' classes, the sandbox and native runtime through the runner probe)
+each booting what no test decides (the JVM, the APKs' classes, the sandbox, native runtime and a plain Application)
 and then waiting for its test, which it reads on stdin (apksim's --pooled; `docker run` gets -i for it). A process taken
 for a test is replaced at once, so the next one boots while that test runs. Each still runs one test and exits, with
 the run's whole command line (-e arguments, --jvm options, bundles, recordings) as a cold one; start-up is then counted
@@ -258,7 +258,9 @@ def spawn(app, test, extra_args, apksim_opts, pooled=False):
                 ready.set()
         ready.set()
 
-    reader = threading.Thread(target=read_err, daemon=bool(REAP_EARLY))
+    # (A daemon when pooled, too: a pooled process still waiting must not keep this script alive past a usage error; it
+    # sees its stdin close when the script ends, and exits. apksim() joins the reader of one it handed a test.)
+    reader = threading.Thread(target=read_err, daemon=bool(REAP_EARLY) or pooled)
     reader.start()
 
     def after_exit(timed_out):
@@ -1175,6 +1177,8 @@ def main():
         p.error("--shards with --isolate splits the tests over machines, and each runs its own: give --shard I")
     if a.shard is not None and not 0 <= a.shard < a.shards:
         p.error("--shard I runs shard I of --shards N: 0 <= I < N")
+    if a.shards > 1 and any(k in ("numShards", "shardIndex") for k, _ in a.e):  # (before any process starts)
+        p.error("--shards sets which tests each shard runs itself (-e numShards and shardIndex)")
     if a.record_deps and a.affected_by:
         p.error("--record-deps records the whole suite; run it without --affected-by")
     if (a.changed or a.diff) and not a.affected_by:
