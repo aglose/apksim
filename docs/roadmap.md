@@ -99,22 +99,23 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-11. This table says where each item's work is, not what CI says: check results change with every
-push and are on each pull request's page. "In review" means the pull request is open and not merged.
+As of 2026-11-11. This table says where each item's work is and nothing that changes by the hour: check results,
+whether a pull request is a draft and which branch it is based on are on its own page. "In review" means open and not
+merged; "held" means left out of releases until the owner has reviewed it.
 
 | Item | Lane | Label | Pull request | State |
 |---|---|---|---|---|
-| 1 Replay | replay | r1 | #254 | in review |
-| 2 Recording to test | replay | r2 | #262 (draft, on #258) | in review |
+| 1 Replay | replay | r1 | #254 | merged |
+| 2 Recording to test | replay | r2 | #262 | in review |
 | 3 Trace viewer | viewer | r1 | #251 | in review |
-| 4 Bisect | replay | r2 | #258 (draft, on #254) | in review |
+| 4 Bisect | replay | r2 | #258 | in review |
 | 5 Pre-warmed test processes | test processes | r1 | #257 | in review |
-| 6 Flake hunter | test processes | r2 | #261 (draft, on #257) | in review |
-| 7 Coverage | coverage | r2 | #255 (draft) | in review |
-| 8 Conformance sweep | conformance | r1-r3 | #265, #266 (on #265), #267 (draft, on #266: held for the owner's review) | first batch in review (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
+| 6 Flake hunter | test processes | r2 | #261 | in review |
+| 7 Coverage | coverage | r2 | #255 | in review |
+| 8 Conformance sweep | conformance | r1-r3 | #265, #266, #267 | first batch: #265 and #266 in review, #267 held (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
 | 9 PR preview, compare | serve | r1 | #252 | in review |
-| 10 Report button, inspector | serve | r2 | #259 (draft, on #252) | in review |
+| 10 Report button, inspector | serve | r2 | #259 | in review |
 | 11 Crawler | crawler | r1 | #260 | in review |
-| 12 Resilience sweep | crawler | r2 | #263 (draft, on #260) | in review |
-| 13 MCP server | mcp | r3 | #250 (draft) | in review |
-| 14 BLE, linked instances | ble | r3 | #253 (draft), #256 (draft, on #253) | in review |
+| 12 Resilience sweep | crawler | r2 | #263 | in review |
+| 13 MCP server | mcp | r3 | #250 | in review |
+| 14 BLE, linked instances | ble | r3 | #253, #256 | in review |
