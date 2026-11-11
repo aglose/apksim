@@ -25,7 +25,8 @@ reported as timing-dependent or nondeterministic, with the perturbations it show
 --out DIR (default flake-hunt): flake-hunt.xml (JUnit: an entry per test and perturbation, failed when any run failed,
 "passed K of N" in the message; an entry per test that is flaky), index.html (the table, the culprits, the
 commands), runs/ (each run's JUnit XML and log). Exits 1 when a test is flaky or failing, or a run failed as a whole
-(a "(run)" entry: a listener, a process that ended without accounting for its tests), else 0.
+(a "(run)" entry: a listener, a process that ended without accounting for its tests) or a class failed at class
+level (@BeforeClass/@AfterClass), else 0.
 """
 import argparse, html, json, os, random, shlex, signal, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -116,6 +117,9 @@ class Hunt:
                     RUN_FAILURES.append(f"{label}: {t[0]}#{t[1]} (see {base}.log)")
                     continue
                 ran.append(t)
+                if t[1] in (None, "null") and c.find("failure") is not None:
+                    # (@BeforeClass/@AfterClass: after its tests passed, too, which must not leave the hunt "stable")
+                    RUN_FAILURES.append(f"{label}: {t[0]} failed at class level (see {base}.log)")
                 f = c.find("failure")
                 results[t] = "failed" if f is not None else "skipped" if c.find("skipped") is not None else "passed"
                 if f is not None:
