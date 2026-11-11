@@ -107,8 +107,9 @@ macOS-only).
 |---|---|---|
 | Window | Cocoa window | Headless only (`shot`, control channel) |
 | AGSL shaders | Metal | CPU (correct, slower) |
-| H.264 (WebRTC) | VideoToolbox | None yet |
-| MediaCodec video (H.264, HEVC) | VideoToolbox | None yet: no video decoders are listed, so a player (Media3) plays the audio and leaves the picture empty. One `[apksim] MediaCodec video/avc, video/hevc: no decoder on this host` line is logged at startup. A libavcodec or OpenH264 decoder behind `VideoToolbox`'s interface is the plan (issue 229) |
+| H.264 (WebRTC) | VideoToolbox | None yet (libwebrtc's own software codecs only) |
+| MediaCodec video (H.264, HEVC) | VideoToolbox | libavcodec, software, one thread per codec (see "Video" below) |
+| MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | None yet: a player plays a clip's picture without its sound |
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
@@ -123,6 +124,32 @@ Mac points the read at `TPIDRRO_EL0`), and TLSDESC accesses resolve against that
 `pthread_attr_t` are larger than bionic's on arm64 (48 and 64 bytes against 40 and 56), so the shim keeps a glibc
 object beside each, as the Mac shim does. Both Linux shims map `setjmp`/`sigsetjmp` to glibc's `_setjmp`: glibc's
 `setjmp` also saves the signal mask, past the end of bionic's smaller `jmp_buf`.
+
+## Video
+
+Apps' recorded video (MediaCodec: Media3/ExoPlayer, MediaPlayer-style players) decodes in the image: `apksim.avc.decoder`
+(H.264) and `apksim.hevc.decoder` (HEVC) are listed as on the Mac, and pictures draw into the player's TextureView or
+SurfaceView. The decoder is FFmpeg's libavcodec (7.1.5, LGPL 2.1+, see THIRD-PARTY-NOTICES.md), built in the image's
+build stage from the release tarball (checksum pinned in `docker/Dockerfile`) with only the H.264 and HEVC decoders and
+parsers and libswscale, and linked statically into `libvtdecoder.so` with its symbols private, so an APK that brings
+its own FFmpeg does not meet it. OpenH264, which the image has for `apksim serve`'s stream, was not used: no HEVC, no
+interlaced or 10-bit, and a 1 MB limit on a compressed frame. Ubuntu's libavcodec package brings 34 dependencies.
+
+Software decoding, one thread per codec. Measured on an Apple Silicon Mac (Colima, 4 CPUs), the test app's
+`apksim://video` (a 1080p60 H.264 clip looping in a TextureView) over 20 s, twice each:
+
+| Image | Pictures drawn | Dropped | Decode per picture | Slowest decode | CPU, whole process |
+|---|---|---|---|---|---|
+| arm64 (native) | 60.1-60.2 a second | 0 | 1.7-1.8 ms | 5 ms | ~0.5 core |
+| amd64 (Rosetta) | 60.1 a second | 0 | 2.8 ms | 16 ms | ~0.85 core |
+
+Not measured: a Linux host, 4K. The image is about 3 to 4 MB bigger for it (`libvtdecoder.so`: 2.8 MB arm64, 3.6 MB amd64).
+`scripts/video-check.py` (run by `ci-smoke.sh` in both CI jobs) checks `selftest` on two small clips, that
+`apksim://video` draws pictures without decode errors, and that ExoPlayer plays the Settings tab's HEVC clip to its end.
+
+Limits: a stream whose decoder holds back more than five pictures loses the ones past that at its very end (the Mac
+has the same limit); no sound (no AAC or MP3 decoder, no audio output); libwebrtc's H.264 is not hooked up, so WebRTC
+video uses whatever software codecs the APK's libwebrtc has; no VP9 or AV1. `--video blank|off` work as on the Mac.
 
 ## Measured (M4 Pro, Colima 4 vCPU)
 
