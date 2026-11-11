@@ -7,6 +7,8 @@ certificate for api.apksim.test, which `apksim --network record` reaches with
   scripts/network-fixture.py DIR --cert-only   only writes them (with openssl, which the Linux image lacks)
 
 POST /v1/greeting {"name": N} -> {"greeting": "Hello, N!", ...} (gzip when asked); GET /v1/plain -> a plain greeting;
+POST /v1/board {"from": F, "text": T} adds a message to a board every client shares, GET /v1/board -> {"messages":
+[{"from", "text"}...]} (the test app's apksim://board, two instances of one backend in scripts/scene.py's scenes);
 anything else 404. Every request must carry an Authorization header (401 without), so a recording has one to redact.
 """
 import gzip
@@ -16,6 +18,7 @@ import os
 import ssl
 import subprocess
 import sys
+import threading
 
 DIR = sys.argv[1]
 CERT_ONLY = sys.argv[2:3] == ["--cert-only"]
@@ -28,6 +31,10 @@ if not os.path.exists(CERT):
                     "-addext", "subjectAltName=DNS:api.apksim.test"], check=True, capture_output=True)
 if CERT_ONLY:
     sys.exit(0)
+
+
+BOARD = []
+BOARD_LOCK = threading.Lock()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -58,6 +65,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path == "/v1/greeting":
             self.send(200, {"greeting": f"Hello, {data.get('name', 'you')}!", "served": "fixture"}, compress=True)
+        elif self.path == "/v1/board":
+            with BOARD_LOCK:
+                BOARD.append({"from": str(data.get("from", "?")), "text": str(data.get("text", ""))})
+                count = len(BOARD)
+            self.send(200, {"count": count})
         else:
             self.send(404, {"error": "not found", "path": self.path})
 
@@ -66,6 +78,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path == "/v1/plain":
             self.send(200, {"greeting": "Plain hello", "served": "fixture"})
+        elif self.path == "/v1/board":
+            with BOARD_LOCK:
+                self.send(200, {"messages": list(BOARD)})
         else:
             self.send(404, {"error": "not found", "path": self.path})
 

@@ -275,6 +275,8 @@ BISECTCHECK_PORT=7496 python3 "$ROOT/scripts/bisect-rec-check.py" "$APK" "$OUT/b
 JOURNEYCHECK_PORT=7497 python3 "$ROOT/scripts/journey-check.py" "$APK" "$OUT/journey" --image "$IMAGE"  # docs/replay.md
 # Coverage of test runs (docs/coverage.md), when the androidTest APK was built beside the APK.
 TESTAPK="$(dirname "$APK")/../androidTest/debug/app-debug-androidTest.apk"; [[ -f "$TESTAPK" ]] && { mkdir -p "$OUT/cov" && cp "$APK" "$OUT/cov/app.apk" && cp "$TESTAPK" "$OUT/cov/test.apk" && python3 "$ROOT/scripts/coverage-check.py" app.apk test.apk out --apksim "docker run --rm --platform $PLATFORM -v $OUT/cov:/work $IMAGE" --local "$OUT/cov"; }
+# Scenes of linked instances sharing one backend, a phone with a watch, and a failing step caught (docs/scenes.md).
+"$ROOT/scripts/scene-check.sh" "$IMAGE" "$APK" "$OUT/scenes"
 
 # Screenshot tests in the image (scripts/snapshot.py, docs/snapshots.md), on a small matrix: record goldens, run again
 # against them (the image must give the same pixels), then a spec whose home screen shows something else (one FAB tap)

@@ -1,0 +1,24 @@
+{
+  "name": "board",
+  "description": "Two users of one backend: what alice posts, bob sees, and the other way round (docs/scenes.md).",
+  "fixture": {"command": ["python3", "{scripts}/network-fixture.py", "{out}/fixture"], "ready": "ready (\\d+)"},
+  "options": ["--network-host", "api.apksim.test=127.0.0.1:{fixture}", "--network-trust", "{out}/fixture/cert.pem",
+              "--network", "record", "{out}/{role}.har"],
+  "roles": {
+    "alice": {"apk": "../app/build/outputs/apk/debug/app-debug.apk", "device": "phone"},
+    "bob": {"apk": "../app/build/outputs/apk/debug/app-debug.apk", "device": "phone", "options": ["--appearance", "dark"]}
+  },
+  "steps": [
+    {"name": "both on the home screen", "all": "until 60000 FAB clicks"},
+    {"name": "both open the board", "alice": "open apksim://board?user=alice", "bob": "open apksim://board?user=bob"},
+    {"name": "an empty board", "all": "until 15000 board: empty"},
+    {"name": "alice posts", "alice": ["open apksim://board?user=alice&post=hello%20from%20alice", "until 10000 posted: hello from alice (1 on the board)"]},
+    {"name": "bob sees it", "bob": "until 10000 board: alice: hello from alice"},
+    {"name": "bob answers with a tap", "bob": ["tap-text Post ping", "until 10000 posted: ping 1"]},
+    {"name": "alice sees both", "alice": ["until 10000 board: alice: hello from alice | bob: ping 1", "settle 5000 300 0"]},
+    {"name": "bob tells alice how many he counted", "bob": ["capture count posted: ping 1 \\((\\d+) on the board\\)",
+      "to alice open apksim://board?user=alice&post=bob%20counted%20{count}"]},
+    {"name": "everyone sees the last word", "all": "until 10000 bob: ping 1 | alice: bob counted 2"},
+    {"all": "shot board-{role}.png"}
+  ]
+}
