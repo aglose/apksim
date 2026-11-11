@@ -8,7 +8,7 @@ Protocol: revision 2026-07-28 (per-request _meta, server/discover, no handshake)
 2025-11-25 and 2025-06-18 (initialize), told apart by the first request, as the specification's compatibility rules say.
 Nothing but JSON-RPC goes to stdout.
 """
-import argparse, atexit, base64, collections, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, zlib
+import argparse, atexit, stat, base64, collections, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 STATE = os.environ.get("APKSIM_HOME") or (
@@ -291,33 +291,60 @@ class Instance:
                 pass
 
 
-def put(src, dst):
-    """Copies src to dst without following a symlink at dst (or a pre-made temporary): written to a new file, then
-    renamed over the name, which replaces a link instead of writing through it."""
-    tmp = "%s.tmp-%d" % (dst, os.getpid())
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    try:
-        with os.fdopen(fd, "wb") as w, open(src, "rb") as r:
-            shutil.copyfileobj(r, w)
-        os.replace(tmp, dst)
-    except BaseException:
+class Dir:
+    """A folder held open by descriptor. The app may write the folders it shares with the server and swap a name for a
+    symlink at any time, so every access is relative to the descriptor opened at start with O_NOFOLLOW, never to a path
+    that is resolved again: a file is opened with O_NOFOLLOW and must be a regular file, and a write goes to a new
+    name that is renamed over the target, which replaces a link instead of writing through it."""
+
+    def __init__(self, path):
+        os.makedirs(path, exist_ok=True)
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+    def read(self, name):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise Fail("%s is not a regular file" % name)
+            return f.read()
+
+    def write(self, name, data):
+        tmp = "%s.tmp-%d" % (name, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=self.fd)
         try:
-            os.unlink(tmp)
+            with os.fdopen(fd, "wb") as w:
+                w.write(data)
+            os.replace(tmp, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        except BaseException:
+            self.unlink(tmp)
+            raise
+
+    def unlink(self, name):
+        try:
+            os.unlink(name, dir_fd=self.fd)
         except OSError:
             pass
-        raise
+
+    def size(self, name):
+        try:
+            st = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        except OSError:
+            return 0
+        return st.st_size if stat.S_ISREG(st.st_mode) else 0
 
 
 class Server:
     def __init__(self, args):
         self.apps = [os.path.realpath(os.path.expanduser(a)) for a in args.apps]
         self.out = os.path.realpath(os.path.expanduser(args.out or os.path.join(STATE, "mcp-out")))
-        os.makedirs(self.out, exist_ok=True)
+        self.outdir = Dir(self.out)
         # The app is sandboxed and may write under the state folder only: an output folder elsewhere is filled by copies
         # from a scratch folder there.
         inside = (self.out == STATE or self.out.startswith(STATE + os.sep)) and not re.search(r"\s", self.out)
         self.scratch = self.out if inside else os.path.join(STATE, "mcp-tmp", str(os.getpid()))
-        os.makedirs(self.scratch, exist_ok=True)
+        self.scratchdir = self.outdir if self.scratch == self.out else Dir(self.scratch)
+        self.shotdir = None  # where the flight recorder saves by default, opened when first needed
         self.max, self.window = args.max, args.window
         self.apksim = args.apksim or os.path.join(ROOT, "apksim")
         self.inst = {}
@@ -572,28 +599,36 @@ class Server:
         self.settle(i)
         if re.search(r"\s", self.scratch):
             raise Fail("screenshot needs a state folder path without spaces")
-        raw = os.path.join(self.scratch, "shot-%s-%d.png" % (i.id, int(time.time() * 1000)))
+        name = "shot-%s-%d.png" % (i.id, int(time.time() * 1000))
+        raw = os.path.join(self.scratch, name)
         r = i.cmd("shot " + raw)
-        if not r.startswith("ok") or not os.path.exists(raw):
+        sd = self.scratchdir
+        if not r.startswith("ok") or not sd.size(name):
             raise Fail("shot: " + r)
+        png = sd.read(name)  # the bytes of a regular file, never a link the app swapped in
+        data, mime = png, "image/png"
         maxdim = int(a.get("max_size", 640))
-        data, mime = open(raw, "rb").read(), "image/png"
         if maxdim > 0:
             sips = shutil.which("sips")
             if sips:
-                small = raw[:-4] + "-s.jpg"
-                if subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "60", "-Z", str(maxdim), raw, "--out", small],
-                                  capture_output=True).returncode == 0 and os.path.exists(small):
-                    data, mime = open(small, "rb").read(), "image/jpeg"
-                    os.remove(small)
+                tin, tout = name[:-4] + "-in.png", name[:-4] + "-s.jpg"
+                sd.write(tin, png)
+                if subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "60", "-Z", str(maxdim),
+                                   os.path.join(self.scratch, tin), "--out", os.path.join(self.scratch, tout)],
+                                  capture_output=True).returncode == 0 and sd.size(tout):
+                    data, mime = sd.read(tout), "image/jpeg"
+                sd.unlink(tin)
+                sd.unlink(tout)
             else:
-                data = png_scale(data, maxdim)
+                data = png_scale(png, maxdim)
         if a.get("save"):
-            if self.scratch != self.out:
-                put(raw, os.path.join(self.out, os.path.basename(raw)))
-            saved = "saved " + os.path.join(self.out, os.path.basename(raw))
+            if self.scratchdir is not self.outdir:
+                self.outdir.write(name, png)
+            else:
+                pass  # the app wrote it in the output folder itself
+            saved = "saved " + os.path.join(self.out, name)
         else:
-            os.remove(raw)
+            sd.unlink(name)
             saved = ""
         return [{"type": "image", "data": base64.b64encode(data).decode(), "mimeType": mime},
                 {"type": "text", "text": saved or "%d bytes" % len(data)}]
@@ -629,20 +664,28 @@ class Server:
             if not m:
                 raise Fail(r)
             src = m.group(1)
+            if self.shotdir is None or os.path.dirname(src) != self.shotdir.path:
+                try:
+                    self.shotdir = Dir(os.path.dirname(src))
+                except OSError as e:
+                    raise Fail("recording folder: %s" % e)
+            sname = os.path.basename(src)
             for _ in range(100):
                 st = i.cmd("rec")
-                if "last save: " + src + ":" in st and " KB in " in st and os.path.getsize(src) > 0:
+                if "last save: " + src + ":" in st and " KB in " in st and self.shotdir.size(sname) > 0:
                     break
                 time.sleep(0.1)
             else:
                 raise Fail("save did not finish: " + st)
-            name = name or os.path.basename(src)
+            name = name or sname
             if not name.endswith(".apkrec"):
                 name += ".apkrec"
             dst = os.path.join(self.out, name)
-            put(src, dst)
-            os.remove(src)
-            return "saved %s (%d KB)" % (dst, os.path.getsize(dst) // 1024)
+            if os.path.realpath(os.path.dirname(src)) == os.path.realpath(self.out) and name == sname:
+                return "saved %s (%d KB)" % (dst, self.outdir.size(name) // 1024)  # it is already there
+            self.outdir.write(name, self.shotdir.read(sname))
+            self.shotdir.unlink(sname)
+            return "saved %s (%d KB)" % (dst, self.outdir.size(name) // 1024)
         raise Fail("action: start, stop, save, status")
 
     def shutdown(self):
