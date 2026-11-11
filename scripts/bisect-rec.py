@@ -183,6 +183,20 @@ class Bisect:
                 shutil.copy(b["apk"], os.path.join(self.out, "in", name))
                 return
 
+    def stop(self, p, container, run):
+        """Ends a replay: its process group, its container (a killed docker client leaves it running), and, in the
+        image, the permissions its root container would have fixed on the way out, so the host can empty --out."""
+        try:
+            os.killpg(p.pid, 9)
+        except OSError:
+            p.kill()
+        code = p.wait()
+        if container:
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+            subprocess.run(["docker", "run", "--rm", "--platform", self.platform, "-v", f"{self.out}:/work", "--entrypoint",
+                            "chmod", self.image, "-R", "a+rwX", "/work/" + run, "/work/in"], capture_output=True)
+        return code
+
     def mapped(self, x):
         """An option as the image sees it: a file it names staged into OUT/in, whole or after its '='."""
         f = file_part(x)
@@ -229,16 +243,14 @@ class Bisect:
             try:
                 code = p.wait(timeout=self.timeout)
             except subprocess.TimeoutExpired:
-                # A build that hangs must not stall the bisect: its process group goes (and its container, which a
-                # killed docker client would leave running), and it counts as skipped.
+                # A build that hangs must not stall the bisect: it is stopped, and counts as skipped.
                 timed_out = True
-                try:
-                    os.killpg(p.pid, 9)
-                except OSError:
-                    p.kill()
-                if self.image:
-                    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
-                code = p.wait()
+                code = self.stop(p, container if self.image else None, b["run"])
+            except BaseException:
+                # Ctrl-C or any other interruption: the replay runs in a session of its own and would go on, so it is
+                # stopped first.
+                self.stop(p, container if self.image else None, b["run"])
+                raise
         b["seconds"] = round(time.time() - t0, 1)
         b["exit"] = code
         text = open(os.path.join(rundir, "replay.log"), errors="replace").read()
