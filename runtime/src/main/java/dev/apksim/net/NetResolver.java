@@ -37,7 +37,19 @@ public final class NetResolver extends InetAddressResolverProvider {
           }
           return Stream.of(placeholder(h));
         }
-        return builtin.lookupByName(host, policy);
+        try {
+          Stream<InetAddress> found = builtin.lookupByName(host, policy);
+          unresolved.remove(h);
+          return found;
+        } catch (UnknownHostException e) {
+          if (!Inspector.on) throw e;
+          unresolved.add(h);
+          // The network inspector (docs/pr-preview.md): the failed lookup is a row, and while a rule answers requests the host
+          // gets a placeholder like a replayed one, so a rule can stand in for a server that is not there (yet).
+          Inspector.failure(host, 0, "DNS lookup failed: " + e.getMessage());
+          if (!Inspector.hasAnswerRules()) throw e;
+          return Stream.of(placeholder(h));
+        }
       }
 
       @Override
@@ -82,6 +94,19 @@ public final class NetResolver extends InetAddressResolverProvider {
         throw new IllegalStateException(e);
       }
     });
+  }
+
+  /** Hosts whose last lookup failed and got a placeholder (the inspector), not a replay's or a mapped host's. */
+  private static final java.util.Set<String> unresolved = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  /** Whether the destination is a placeholder given to a host whose lookup failed: there is no server to connect to. */
+  static boolean lookupFailed(String host, String address) {
+    if (unresolved.isEmpty() || host == null) return false;
+    String h = host.toLowerCase(Locale.ROOT);
+    if (Net.hostMap.containsKey(h)) return false;
+    if (address == null) return unresolved.contains(h);
+    String stands = hostByAddress.get(address);
+    return stands != null && unresolved.contains(stands);
   }
 
   /** The host a placeholder address stands for, or null. */

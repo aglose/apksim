@@ -1,0 +1,306 @@
+<!-- The report button and the network inspector (docs/pr-preview.md), put into serve.html at its two apksim:report markers by
+     Serve: what comes before the script marker below goes in the page's side panel, what follows is a script run after the
+     page's own. Shown only when the server allows them (the session's `i` message: rec, inspect). -->
+<style>
+#reportCard, #inspectCard { display: none; }
+#reportCard.on, #inspectCard.on { display: flex; }
+#reportNote { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  min-height: 56px; resize: vertical; width: 100%; }
+#insp { position: fixed; left: 0; right: 0; bottom: 0; height: 42vh; z-index: 20; background: var(--panel); border-top: 1px solid var(--line);
+  box-shadow: 0 -6px 24px rgba(0,0,0,.2); display: none; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; padding: 10px 14px; }
+#insp.open { display: grid; }
+#insp .col { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+#insp h2 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+#inspRows { overflow: auto; flex: 1; border: 1px solid var(--line); border-radius: 6px; font: 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+#inspRows .row1 { display: grid; grid-template-columns: 64px 44px 1fr 56px 64px; gap: 8px; padding: 2px 8px; cursor: pointer; align-items: baseline; }
+#inspRows .row1:hover, #inspRows .row1.sel { background: var(--bg); }
+#inspRows .url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#inspRows .bad { color: var(--warn); }
+#inspRows .ruled { color: var(--accent); }
+#inspSide { overflow: auto; flex: 1; font: 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+#inspRules .rl { display: flex; gap: 6px; align-items: center; font: 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+#inspRules .rl span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#insp form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+#insp form textarea { grid-column: span 4; }
+#insp form .c2 { grid-column: span 2; }
+#insp input[type=text], #insp textarea { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+#insp textarea { min-height: 40px; resize: vertical; }
+@media (max-width: 760px) { #insp { grid-template-columns: 1fr; height: 60vh; overflow: auto; } }
+body.embed #reportCard, body.embed #inspectCard, body.embed #insp { display: none !important; }
+</style>
+<div class="card" id="reportCard">
+  <h2>Report a problem</h2>
+  <textarea id="reportNote" placeholder="What went wrong? (kept in the report)" aria-label="Note for the report"></textarea>
+  <label class="hint"><input id="reportRec" type="checkbox" checked> Include the recording</label>
+  <div class="hint">The recording is the last five minutes of input and log, and a copy of the app's data (its databases, preferences and
+    files, which may hold sign-in state) from a checkpoint. Share the zip only where that may go; untick to leave it out.</div>
+  <div class="row"><button id="reportBtn" title="Saves the last minutes of this session (input and log), a screenshot, the device's settings and your note into one download">Download report</button></div>
+  <div class="hint" id="reportHint"></div>
+</div>
+<div class="card" id="inspectCard">
+  <h2>Network</h2>
+  <div class="row"><button id="inspToggle">Show requests</button></div>
+  <div class="hint" id="inspCount">–</div>
+</div>
+<div id="insp" role="region" aria-label="Network inspector">
+  <div class="col">
+    <h2>Requests <span class="hint">click one for its headers and bodies; * after a time is latency a rule added</span><span style="flex:1"></span><button id="inspClose">Close</button></h2>
+    <div id="inspRows"></div>
+  </div>
+  <div class="col">
+    <h2>Rules</h2>
+    <div id="inspRules"></div>
+    <form id="inspAdd" autocomplete="off">
+      <select id="ruleMethod" aria-label="Method"><option value="*">any</option><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select>
+      <input id="rulePattern" type="text" placeholder="URL contains, * for anything" aria-label="URL pattern" style="grid-column: span 3">
+      <input id="ruleStatus" type="text" placeholder="Status" aria-label="Status to answer with" style="grid-column: span 2">
+      <input id="ruleLatency" type="text" placeholder="+ ms" aria-label="Latency to add, ms" style="grid-column: span 2">
+      <input id="ruleType" type="text" placeholder="Content type (application/json)" aria-label="Content type" style="grid-column: span 4">
+      <textarea id="ruleBody" placeholder="Response body (when a status is given)" aria-label="Response body"></textarea>
+      <button class="primary c2" type="submit">Add rule</button><button class="c2" type="button" id="inspClear">Remove all rules</button>
+    </form>
+    <div class="hint" id="inspHint"></div>
+    <h2>Selected request</h2>
+    <div id="inspSide">–</div>
+  </div>
+</div>
+<!--script-->
+(() => {
+"use strict";
+const $r = id => document.getElementById(id);
+let info = null, sid = "", saved = null;
+const exchanges = [];  // { id, t, method, url, status, ms, reqBytes, respBytes, type, rule, addedMs }
+let selected = 0;
+
+// ---------------------------------------------------------------- messages from the server
+const baseOnText = onText;
+onText = t => {
+  if (t[0] === "i") {
+    try { sessionInfo(JSON.parse(t.slice(2))); } catch (e) { /* the page's own handler reports it */ }
+  } else if (t[0] === "n" && t[1] === " ") { netText(t.slice(2)); return; }
+  else if (t.startsWith("r rec: saved ")) { const w = saved; saved = null; if (w) w(t.slice(13).trim()); }
+  // Only an error answers the save: the answer to the `rec on` at the session's start (or any other rec line) may come late.
+  else if (t.startsWith("r rec: error") && saved) { const w = saved; saved = null; w(null, t.slice(7)); }
+  baseOnText(t);
+};
+function sessionInfo(i) {
+  info = i; sid = i.id; exchanges.length = 0; selected = 0; saved = null;
+  $r("reportCard").classList.toggle("on", i.rec === true && params.get("report") !== "0");
+  $r("inspectCard").classList.toggle("on", i.inspect === true);
+  if (!i.inspect) $r("insp").classList.remove("open");
+  // What a report holds of the last minutes: the recorder's input and log channels, on from the session's start.
+  if (i.rec === true && params.get("report") !== "0") send("rec on input logcat");
+  drawRows(); drawRules([]);
+  if (i.inspect) send("inspect rule list");
+}
+
+// ---------------------------------------------------------------- the report
+const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+// A ZIP with every file stored (no compression: a recording is zip already, a PNG too).
+function zip(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  let offset = 0;
+  const u16 = n => [n & 255, (n >> 8) & 255], u32 = n => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255];
+  const d = new Date(), dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+    dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const [name, data] of files) {
+    const n = enc.encode(name), crc = crc32(data);
+    const head = new Uint8Array([0x50, 0x4b, 3, 4, 20, 0, 0, 8, 0, 0, ...u16(dosTime), ...u16(dosDate), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(n.length), 0, 0]);
+    parts.push(head, n, data);
+    central.push(new Uint8Array([0x50, 0x4b, 1, 2, 20, 0, 20, 0, 0, 8, 0, 0, ...u16(dosTime), ...u16(dosDate), ...u32(crc), ...u32(data.length), ...u32(data.length),
+      ...u16(n.length), ...new Array(12).fill(0), ...u32(offset)]), n);  // extra, comment, disk, internal and external attributes: 12 bytes of 0
+    offset += head.length + n.length + data.length;
+  }
+  let size = 0;
+  for (const c of central) size += c.length;
+  parts.push(...central, new Uint8Array([0x50, 0x4b, 5, 6, 0, 0, 0, 0, ...u16(files.length), ...u16(files.length), ...u32(size), ...u32(offset), 0, 0]));
+  return new Blob(parts, { type: "application/zip" });
+}
+window.apksimZip = zip;  // for the check
+function say(text) { $r("reportHint").textContent = text; }
+async function recording(mine) {
+  const live = () => { if (ws !== mine.ws) throw new Error("the session ended or was replaced while the report was made"); };
+  live();
+  const id = await new Promise(done => {
+    const t = setTimeout(() => { saved = null; done(null); }, 60000);
+    saved = (rid, err) => { clearTimeout(t); done(rid); if (err) say("recording: " + err); };
+    send("rec save 300");
+  });
+  live();
+  if (!id) return null;
+  for (let i = 0; i < 20; i++) {  // 404 until the instance has written it
+    const r = await fetch(base + withToken("api/sessions/" + mine.sid + "/recordings/" + id));
+    if (r.ok) { const b = new Uint8Array(await r.arrayBuffer()); live(); return b; }
+    await new Promise(r => setTimeout(r, 500));
+    live();
+  }
+  return null;
+}
+function settings() {
+  const q = new URLSearchParams(location.search); q.delete("token");
+  return { app: info ? info.app : "", session: sid, device: $r("device").value, appearance: state.appearance, locale: state.locale || null,
+    fontscale: state.fontscale || null, open: state.open || null, screen: { width: frameW, height: frameH }, stream: mode, time: new Date().toISOString(),
+    page: location.origin + base + (q.toString() ? "?" + q : "") };
+}
+$r("reportBtn").onclick = async () => {
+  const btn = $r("reportBtn");
+  btn.disabled = true;
+  // Everything the report holds is taken from this session now, and the work stops if the session is replaced meanwhile
+  // (Stop and Start, a move): a report never mixes two sessions' screenshot, settings, recording and requests.
+  const mine = { ws, sid, info, exchanges: exchanges.slice(), settings: settings(), note: $r("reportNote").value,
+    png: new Promise(done => canvas.toBlob(done, "image/png")) };
+  // The issue page is opened now, while the click's permission to open a tab lasts, and pointed at the filled-in address once
+  // the report is made; the link shown then is a fresh click for a browser that blocked it.
+  const issueTab = mine.info && mine.info.issueUrl ? window.open("", "_blank") : null;
+  if (issueTab) try { issueTab.opener = null; } catch (e) { /* cross-origin already */ }
+  try {
+    say($r("reportRec").checked ? "saving the recording…" : "making the report…");
+    const files = [], enc = new TextEncoder(), note = mine.note;
+    files.push(["note.txt", enc.encode(note + "\n")]);
+    files.push(["settings.json", enc.encode(JSON.stringify(mine.settings, null, 2) + "\n")]);
+    const png = await mine.png;
+    if (png) files.push(["screenshot.png", new Uint8Array(await png.arrayBuffer())]);
+    const rec = $r("reportRec").checked ? await recording(mine) : null;
+    if (rec) files.push(["recording.apkrec", rec]);
+    if (mine.exchanges.length) files.push(["network.json", enc.encode(JSON.stringify(mine.exchanges, null, 1) + "\n")]);
+    const blob = zip(files), name = "apksim-report-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".zip";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    say("downloaded " + name + (rec ? "" : $r("reportRec").checked ? " (without a recording: none could be saved)" : " (without the recording, as asked)"));
+    // The reviewer's own browser opens the tracker's new-issue page; the zip is attached there by hand. Nothing is posted from here.
+    if (mine.info && mine.info.issueUrl) {
+      const first = note.split("\n")[0].trim().slice(0, 100) || "Problem in " + mine.info.app;
+      const s = mine.settings;
+      const body = (note ? note + "\n\n" : "") + "App: " + mine.info.app + "\nDevice: " + s.device + ", " + s.appearance + (s.locale ? ", " + s.locale : "")
+        + "\nScreen: " + s.screen.width + "x" + s.screen.height + "\nReport: " + name + " (attach it here)\n";
+      // Every {title} and {body} of the template (split and join: no pattern characters in the replacement are special).
+      const href = mine.info.issueUrl.split("{title}").join(encodeURIComponent(first)).split("{body}").join(encodeURIComponent(body.slice(0, 4000)));
+      if (/^https:\/\//.test(href)) {
+        if (issueTab) issueTab.location = href;
+        const link = document.createElement("a");
+        link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open the issue page";
+        $r("reportHint").append(" · ", link);
+      } else if (issueTab) issueTab.close();
+    }
+  } catch (e) {
+    if (issueTab) try { issueTab.close(); } catch (e2) { /* gone */ }
+    say("could not make the report: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ---------------------------------------------------------------- the network inspector
+function netText(t) {
+  const kind = t[0];
+  if (kind === "e") {
+    try { push(JSON.parse(t.slice(2))); } catch (e) { /* a line that is not ours */ }
+  } else if (kind === "r") {
+    const sp = t.indexOf(" ", 2), what = t.slice(2, sp), body = t.slice(sp + 1);
+    if (body.startsWith("error")) { $r("inspHint").textContent = body; return; }
+    try {
+      const v = JSON.parse(body);
+      if (what === "detail") showDetail(v);
+      else if (Array.isArray(v)) drawRules(v);
+      else send("inspect rule list");  // a rule was added: the list as it is now
+    } catch (e) { if (body === "ok") send("inspect rule list"); }
+  } else if (kind === "x") {
+    $r("inspCount").textContent = "the inspector is not running in this app";
+  }
+}
+function push(e) {
+  exchanges.push(e);
+  if (exchanges.length > 300) exchanges.shift();
+  drawRows();
+}
+const fmtBytes = n => n < 0 ? "unknown size" : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : n + " B";
+let rowsTimer = 0;
+function drawRows() {
+  $r("inspCount").textContent = exchanges.length ? exchanges.length + " request" + (exchanges.length === 1 ? "" : "s") : "none yet";
+  if (rowsTimer) return;
+  rowsTimer = setTimeout(() => {
+    rowsTimer = 0;
+    const box = $r("inspRows");
+    if (!box.offsetParent && !$r("insp").classList.contains("open")) return;
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    box.replaceChildren(...exchanges.map(e => {
+      const row = document.createElement("div");
+      row.className = "row1" + (e.id === selected ? " sel" : "");
+      const cells = [new Date(e.t).toLocaleTimeString([], { hour12: false }), e.method, e.url, e.status + "", e.ms + " ms" + (e.addedMs ? "*" : "")];
+      cells.forEach((c, i) => {
+        const s = document.createElement("span");
+        s.textContent = c;
+        if (i === 2) { s.className = "url"; s.title = c; }
+        if (i === 3 && (e.status >= 400 || e.status === 0)) s.className = "bad";
+        if (e.rule) s.classList.add("ruled");
+        row.appendChild(s);
+      });
+      row.title = "request " + fmtBytes(e.reqBytes) + ", response " + fmtBytes(e.respBytes) + (e.type ? ", " + e.type : "") + (e.rule ? ", answered by rule " + e.rule : "");
+      const pick = () => { selected = e.id; $r("inspSide").textContent = "loading…"; send("inspect detail " + e.id); drawRows(); };
+      row.onclick = pick;
+      // Reachable by keyboard and announced as a button.
+      row.tabIndex = 0; row.setAttribute("role", "button"); row.setAttribute("aria-label", e.method + " " + e.url + ", status " + e.status + ", " + e.ms + " ms");
+      row.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } };
+      return row;
+    }));
+    if (stick) box.scrollTop = box.scrollHeight;
+  }, 100);
+}
+function bodyText(b64, cut) {
+  if (!b64) return "(none)";
+  const bin = atob(b64), bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch (e) { return "(" + fmtBytes(bytes.length) + " of binary data)"; }
+  return text + (cut ? "\n… (cut at 64 KB)" : "");
+}
+function showDetail(d) {
+  const hs = h => h.map(x => x[0] + ": " + x[1]).join("\n");
+  $r("inspSide").textContent = d.method + " " + d.url + "\n→ " + d.status + "\n\nRequest headers (secrets redacted as recordings do)\n" + hs(d.reqHeaders)
+    + "\n\nRequest body\n" + bodyText(d.reqBody, d.reqCut) + "\n\nResponse headers\n" + hs(d.respHeaders) + "\n\nResponse body\n" + bodyText(d.respBody, d.respCut);
+}
+function drawRules(list) {
+  if (!list) return;
+  const box = $r("inspRules");
+  box.replaceChildren(...list.map(r => {
+    const row = document.createElement("div"); row.className = "rl";
+    const s = document.createElement("span");
+    s.textContent = r.method + " " + r.pattern + " → " + (r.status ? r.status + (r.bytes ? " (" + fmtBytes(r.bytes) + ")" : "") : "real answer") + (r.latencyMs ? " +" + r.latencyMs + " ms" : "") + " · " + r.hits + " hit" + (r.hits === 1 ? "" : "s");
+    s.title = s.textContent;
+    const b = document.createElement("button"); b.textContent = "Remove";
+    b.onclick = () => send("inspect rule remove " + r.id);
+    row.append(s, b); return row;
+  }));
+}
+function b64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(s);
+}
+$r("inspAdd").onsubmit = e => {
+  e.preventDefault();
+  const method = $r("ruleMethod").value, pattern = $r("rulePattern").value.trim(), status = $r("ruleStatus").value.trim() || "0",
+    latency = $r("ruleLatency").value.trim() || "0", type = $r("ruleType").value.trim() || "-", body = $r("ruleBody").value;
+  $r("inspHint").textContent = "";
+  if (!/^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,300}$/.test(pattern)) { $r("inspHint").textContent = "a URL pattern: part of the address, * for anything, no spaces"; return; }
+  if (!/^(0|[2-5][0-9]{2})$/.test(status) || !/^[0-9]{1,5}$/.test(latency)) { $r("inspHint").textContent = "status 200-599 (or empty), latency in ms"; return; }
+  if (status === "0" && latency === "0") { $r("inspHint").textContent = "give a status, a latency, or both"; return; }
+  if (!/^(-|[A-Za-z0-9.+\/;=_-]{1,100})$/.test(type)) { $r("inspHint").textContent = "content type such as application/json"; return; }
+  if (new TextEncoder().encode(body).length > 65536) { $r("inspHint").textContent = "a body is at most 64 KB"; return; }
+  send("inspect rule add " + method + " " + pattern + " " + status + " " + latency + " " + type + " " + (body ? b64(body) : "-"));
+  $r("rulePattern").value = "";
+};
+$r("inspClear").onclick = () => send("inspect rule clear");
+$r("inspClose").onclick = () => { $r("insp").classList.remove("open"); $r("inspToggle").textContent = "Show requests"; };
+$r("inspToggle").onclick = () => {
+  const open = $r("insp").classList.toggle("open");
+  $r("inspToggle").textContent = open ? "Hide requests" : "Show requests";
+  if (open) { drawRows(); send("inspect rule list"); }
+};
+// For scripts (scripts/inspector-check.py): what the panel holds and the page's own report.
+window.apksimInspector = () => ({ exchanges: exchanges.slice(), open: $r("insp").classList.contains("open"), rules: $r("inspRules").children.length, info });
+window.apksimReportInfo = () => info;
+})();

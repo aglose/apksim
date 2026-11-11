@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -75,6 +75,13 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /**
+   * `--inspect-network`: instances run with the network inspector (`--network-inspect`) and a tab sees the app's HTTP(S)
+   * exchanges and may set rules that answer or slow a URL (docs/pr-preview.md). Off by default: it shows the app's traffic.
+   */
+  boolean inspectNetwork;
+  /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
+  String issueUrl;
   /** Issue 221: `--keep-max N` kept sessions in all (0: none kept, the default), and the store (null on the agent). */
   int keepMax;
   KeptStore kept;
@@ -213,6 +220,11 @@ public final class Serve {
           s.allowRec = true;
           continue;  // no value: the next argument is an option of its own
         }
+        case "--inspect-network" -> {
+          s.inspectNetwork = true;
+          continue;  // no value
+        }
+        case "--issue-url" -> s.issueUrl = checkIssueUrl(need(a, v));
         case "--keep-max" -> s.keepMax = Math.max(0, Math.min(100_000, Integer.parseInt(need(a, v))));
         case "--in-flight" -> s.inFlightMax = Math.max(1, Math.min(32, Integer.parseInt(need(a, v))));
         case "--quality" -> s.quality = Integer.parseInt(need(a, v));
@@ -441,7 +453,7 @@ public final class Serve {
     catalog = new Catalog(apps, state, home, maxUploadMb << 20);
     try (InputStream in = Serve.class.getResourceAsStream("serve.html")) {
       if (in == null) throw new IOException("serve.html is missing from apksim.jar");
-      page = in.readAllBytes();
+      page = withReport(new String(in.readAllBytes(), StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8);
     }
     try (InputStream in = Serve.class.getResourceAsStream("compare.html")) {
       if (in == null) throw new IOException("compare.html is missing from apksim.jar");
@@ -861,6 +873,42 @@ public final class Serve {
       case "GET /ws" -> websocket(r, s, in, out);
       default -> Http.text(out, 404, "not found");
     }
+  }
+
+  /**
+   * The report button and the network inspector (report.html: their cards and their script) put into the page at its
+   * `apksim:report` markers. A page without the markers is served as it is.
+   */
+  private static String withReport(String html) throws IOException {
+    try (InputStream in = Serve.class.getResourceAsStream("report.html")) {
+      if (in == null) throw new IOException("report.html is missing from apksim.jar");
+      String frag = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+      int cut = frag.indexOf("<!--script-->");
+      if (cut < 0) throw new IOException("report.html has no <!--script--> marker between its cards and its script");
+      String cards = frag.substring(0, cut), script = "<script>" + frag.substring(cut + "<!--script-->".length()) + "</script>";
+      return html.replace("<!--apksim:report-->", cards).replace("<!--apksim:report-script-->", script);
+    }
+  }
+
+  /**
+   * An `--issue-url` template: an https address with `{title}` and/or `{body}` where the page puts the report's title and
+   * text (URL-encoded), e.g. `https://github.com/OWNER/REPO/issues/new?title={title}&body={body}`. No credentials in it,
+   * no other braces.
+   */
+  static String checkIssueUrl(String t) {
+    try {
+      java.net.URI u = java.net.URI.create(t.replace("{title}", "T").replace("{body}", "B"));
+      boolean ok = "https".equalsIgnoreCase(u.getScheme()) && u.getHost() != null && u.getRawUserInfo() == null
+          && (t.contains("{title}") || t.contains("{body}")) && !t.replace("{title}", "").replace("{body}", "").matches("(?s).*[{}].*")
+          && t.length() <= 500;
+      if (ok) return t;
+    } catch (IllegalArgumentException e) {
+      // refused below
+    }
+    System.err.println("[serve] --issue-url takes an https address with {title} and/or {body}, such as "
+        + "https://github.com/OWNER/REPO/issues/new?title={title}&body={body}");
+    System.exit(2);
+    return null;
   }
 
   private void upload(Http.Request r, OutputStream out) throws IOException {
@@ -1418,7 +1466,9 @@ public final class Serve {
     if (beam) agent.settled(catalog.buildHash(app.path()));
     System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
-        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "") + "}");
+        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
+        // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
+        + (beam ? "" : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + "}");
     session.run();
   }
 

@@ -262,6 +262,9 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
+    if (serve.inspectNetwork && !serve.beam) cmd.add("--network-inspect");
+    // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
+    if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
     if (serve.moveSharedData) cmd.add("--move-shared-data");
     // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
@@ -349,6 +352,65 @@ final class Session {
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
+    if (serve.inspectNetwork && !serve.beam) watchNetwork(p);
+  }
+
+  // ---------------------------------------------------------------- the network inspector (docs/pr-preview.md)
+
+  private Socket netwatch;
+
+  /** The inspector's event stream from the instance, to the tab as `n e {json}`: its own control connection. */
+  private void watchNetwork(int port) throws IOException {
+    Socket s = netwatch = connect(port);
+    s.getOutputStream().write("netwatch\n".getBytes(StandardCharsets.US_ASCII));
+    Thread.ofVirtual().name("serve-netwatch-" + id).start(() -> {
+      try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+        String first = r.readLine();
+        if (first == null || !first.equals("ok netwatch")) {
+          ws.sendText("n x " + Http.q(String.valueOf(first)));
+          closeQuietly(s);
+          return;
+        }
+        for (String line; (line = r.readLine()) != null; ) {
+          // The instance cuts a long URL itself (Inspector.URL_SHOWN): an event is a few KB, at most about 20 KB escaped.
+          if (line.length() < 40_000 && line.startsWith("{")) ws.sendText("n e " + line);
+        }
+      } catch (IOException e) {
+        // the instance went away
+      }
+    });
+  }
+
+  private static final String URL_CHARS = "[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]";
+
+  /**
+   * `inspect rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 | remove ID | clear | list` and `inspect detail ID` from
+   * the tab, when the server runs with `--inspect-network`: checked here, passed on as the instance's `network rule ...` and
+   * `network detail ID`, answered as `n r VERB {json}`. Nothing names a file; a body is base64 text, a pattern a few URL characters.
+   */
+  private void inspectCommand(String t) {
+    if (!serve.inspectNetwork || serve.beam) {
+      ws.sendText("r refused: inspect (the server does not run the network inspector: --inspect-network)");
+      return;
+    }
+    String[] w = t.strip().split(" ");
+    String cmd = null, verb = w.length > 1 ? w[1] : "";
+    if (t.length() > 100_000) cmd = null;
+    else if (t.strip().matches("inspect rule (clear|list)") || t.strip().matches("inspect rule remove [0-9]{1,9}")) cmd = "network " + t.strip().substring(8);
+    else if (t.strip().matches("inspect detail [0-9]{1,18}")) cmd = "network " + t.strip().substring(8);
+    else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
+        && w[5].matches("0|[2-5][0-9]{2}") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|[A-Za-z0-9.+/;=_-]{1,100}")
+        && w[8].matches("-|[A-Za-z0-9+/]{1,90000}={0,2}")) {
+      cmd = "network " + t.strip().substring(8);
+      verb = "rule";
+    }
+    if (cmd == null) {
+      ws.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
+      return;
+    }
+    lastInput = System.currentTimeMillis();
+    String kind = verb.equals("detail") ? "detail" : "rule";
+    send(cmd, r -> ws.sendText("n r " + kind + " " + r));
   }
 
   /** The instance ended by itself: why, from its log (the whole of it is read first) and the JVM's crash report. */
@@ -919,6 +981,10 @@ final class Session {
       keep = text.equals("keep on");
       logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
       ws.sendText("k " + (keep ? "on" : "off"));
+      return;
+    }
+    if (text.startsWith("inspect ")) {
+      inspectCommand(text);
       return;
     }
     if (text.startsWith("rec ")) {
@@ -1531,6 +1597,7 @@ final class Session {
     }
     closeQuietly(control);
     closeQuietly(stream);
+    closeQuietly(netwatch);
     keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.

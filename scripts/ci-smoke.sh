@@ -328,6 +328,8 @@ python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$
   --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
 # Compare mode and PR previews (docs/pr-preview.md): two mirrored sessions, a build added with a time to live, pr-preview.py.
 python3 "$ROOT/scripts/compare-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --apk "$OUT/app.apk" | tee "$OUT/compare-check.log"
+# This server runs without --allow-rec and --inspect-network: the tab's rec and inspect commands are refused (the rest of that check needs both).
+python3 "$ROOT/scripts/inspector-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" | tee "$OUT/inspector-check.log"
 # A slow link's window: acks and pongs held 200 ms against a second serve with a cap of 4 (the check looks at the
 # stats' window right after its drag: it must be above 2 and within the cap).
 SERVE2_NAME=apksim-serve-slow-$$ SERVE2_PORT=7403

@@ -87,6 +87,55 @@ add, no `/api/status`, no logs, no recordings, no kept data. It would expire wit
 and input. It would put a bearer secret in a pull request's comment (anyone who can read the pull request could use it), so it is only
 right for a private repository whose readers are the reviewers. Until that choice is made, previews rely on the proxy.
 
+## Report button and network inspector
+
+Two more things for the person trying a build in a tab, both off unless the server allows them, and neither
+posts anything with credentials of the server's own.
+
+### Report a problem (`--allow-rec`, `--issue-url TEMPLATE`)
+
+With `--allow-rec` the page starts the flight recorder's `input` and `logcat` channels when a session begins and shows a
+**Report a problem** card (`?report=0` in the page's address leaves both out). A note and **Download report** make one zip in
+the browser:
+
+| file | what |
+|---|---|
+| `note.txt` | what the reviewer typed |
+| `settings.json` | app, session id, device, appearance, locale, text size, last deep link, screen size, stream, time, the page's address (no token) |
+| `screenshot.png` | the screen as drawn |
+| `recording.apkrec` | `rec save 300`: the last five minutes of input and log and a checkpoint, which is **a copy of the app's data** (databases, preferences, files: sign-in state too) (docs/flight-recorder.md), served by `GET /api/sessions/ID/recordings/RID` as before. The card says so and has a box to leave it out |
+| `network.json` | the exchanges the inspector listed, when it is on |
+
+With `--issue-url 'https://github.com/OWNER/REPO/issues/new?title={title}&body={body}'` the page then opens that address in
+a new tab of the reviewer's own browser (opened at the click and pointed at the address once the report is made; a blocked tab leaves a link), with `{title}` the note's first line and `{body}` the note and the settings in a few
+lines, URL-encoded (at most 4,000 characters), and says to attach the zip there. The template is checked at the server's start: https,
+no credentials, a `{title}` or `{body}`. The server only announces it in the session's `i` message (`rec`, `issueUrl`); the page does
+the rest, in the reviewer's session, so there is no token or account of the server's in any request to a tracker. The recording
+holds the app's logs and a copy of its data: treat the zip like the token.
+
+### Network inspector (`--inspect-network`)
+
+Off by default, because it shows the app's traffic. With it, instances run with `--network-inspect`, which keeps the engine's
+in-memory capture on (record mode with no file, as `rec on net`: docs/network.md) and reports; the page shows a **Network** card
+that opens a panel:
+
+- **Requests**, as they happen: time, method, status, URL, milliseconds (`*`: a rule added some), a hint with sizes and the rule that
+  answered. A connection the engine could not make is a row too (`DNS`/`CONNECT`, status 0). Click one for its headers and
+  bodies (at most 64 KB of each, binary shown as a size; a row shows 1,500 characters of a long URL, the detail all of it; rows are buttons a keyboard reaches; replayed answers are rows too). Headers are redacted exactly as a recording's are (`Authorization`,
+  `Cookie`, ... and `--network-redact`); bodies and URLs are as sent.
+- **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status (200-599) with a content type and body
+  (64 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,
+  and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
+  While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
+  Rules are per session, 32 at most, applied in the order added.
+
+Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
+each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
+STATUS LATENCY_MS TYPE BODY64`, `inspect rule remove ID|clear|list` and `inspect detail ID`, which the server checks (a
+pattern is 1-300 URL characters, a status 0 or 200-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
+answers are `n r rule|detail ...`. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
+messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
+
 ## Sample workflow
 
 `.github/actions/preview` wraps the script. A pull request job that builds the debug APKs of the head and the base and posts the
@@ -145,6 +194,16 @@ protocol) it checks the page's own count, for JPEG and for H.264:
 
 The count costs ~17-26 ms on a phone-sized screen, at most every 100 ms and only when a frame arrived.
 
+`scripts/inspector-check.py URL` checks the report and the inspector against a server started with `--allow-rec --inspect-network
+--issue-url ...` (and, against one without, that the tab's commands are refused). On the test app's network screen (its server does
+not exist): Fetch gives a `DNS` row with status 0; a rule that answers `POST /v1/greeting` with 200, a JSON body and 600 ms makes the
+same tap an exchange the rule answered (27 bytes, 600 ms, all of it the rule's latency, nothing sent), whose detail has the request's
+`Authorization` as `REDACTED` and the bodies; a rule count of hits; status 999, a space in a pattern, bad base64, a path and a
+command naming a file are refused; `rec save` gives a recording the server serves (3.8 KB for a minute of the test app's input and
+log). With `--chrome` the page: the cards show, a rule typed into the panel is listed and answers the app's request, and the report
+button downloads one zip whose every CRC tests sound, with the note, a PNG, the recording (itself a zip), the settings and the
+network list, and opens the filled-in issue address with the note as its title.
+
 Not done: more than two apps, a slider or onion-skin view, perceptual (not pixel) differences, resynchronising screens that
-drifted apart, the viewer credential above, and a compare mode for sessions on a visitor's Mac (`apksim beam`): both run on the
+drifted apart, the viewer credential above, rules that match a request's headers or body, rewriting a response of a real server (a rule replaces it whole), WebSocket and non-HTTP traffic in the inspector (as in recordings), and a compare mode for sessions on a visitor's Mac (`apksim beam`): both run on the
 server.

@@ -235,6 +235,8 @@ final class NetEngine {
     OutputStream uout;
     long connectMs = -1;
     int exchanges;
+    /** The connect error of an upstream that is not there while an inspector rule may still answer (see run()), else null. */
+    String deferred;
 
     Conn(Socket client) {
       this.client = client;
@@ -284,7 +286,7 @@ final class NetEngine {
         port = Integer.parseInt(p[2]);
         if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
         if (p.length > 4 && !p[4].equals("-")) address = p[4];
-        String err = connectUpstream();
+        String err = inspected(connectUpstream());
         cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
         if (err != null) return;
@@ -298,7 +300,7 @@ final class NetEngine {
           String h = Net.readLine(cin);
           if (h == null || h.isEmpty()) break;
         }
-        String err = connectUpstream();
+        String err = inspected(connectUpstream());
         cout.write((err != null ? "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n"
             : "HTTP/1.1 200 Connection established\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
@@ -314,7 +316,7 @@ final class NetEngine {
         proxied = true;
         Conditions.sleep(Net.conditions.rtt());
         if (Net.mode != Net.Mode.REPLAY || Net.conditions.offline()) {
-          String err = connectUpstream();
+          String err = inspected(connectUpstream());
           if (err != null) {
             cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
                 .getBytes(StandardCharsets.ISO_8859_1));
@@ -333,6 +335,19 @@ final class NetEngine {
       }
 
       session(pending, proxied);
+    }
+
+    /**
+     * The inspector's view of a failed upstream connect (`err`, or null for none): shown as a row, and, while a rule answers
+     * requests itself, put off (null back): a server that is not there (a backend not deployed yet) may still be answered by a
+     * rule, and a request no rule takes then fails as the connect would have.
+     */
+    String inspected(String err) {
+      if (err == null || !Inspector.on) return err;
+      Inspector.failure(host, port, err);
+      if (!Inspector.hasAnswerRules()) return err;
+      deferred = err;
+      return null;
     }
 
     /** From a new connection (or a tunnel just opened through the app's proxy): TLS if asked, then the exchanges. */
@@ -499,6 +514,11 @@ final class NetEngine {
     String connectUpstream() {
       if (Net.conditions.offline()) return "ERR ConnectException connect failed: ENETUNREACH (Network is unreachable)\r\n";
       if (Net.mode == Net.Mode.REPLAY) return null;
+      // The placeholder a failed lookup was given (the inspector, while a rule answers): nothing is there to connect to, and
+      // a connect to 198.18/15 would wait out the whole timeout. The failure is the lookup's, at once.
+      if (NetResolver.lookupFailed(host, address)) {
+        return Net.errorReply(new java.net.UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname"));
+      }
       long t0 = System.nanoTime();
       try {
         if (closed) throw new java.net.SocketException("connection closed");
@@ -518,7 +538,7 @@ final class NetEngine {
     String handshake() {
       Conditions c = Net.conditions;
       Conditions.sleep(c.rtt());
-      if (Net.mode == Net.Mode.REPLAY) {
+      if (Net.mode == Net.Mode.REPLAY || deferred != null) {
         // No server: what one would have negotiated within what the app enabled, or the refusal it would have met.
         // TLS 1.3 and 1.2 only, as the JDK enables by default (servers refuse older ones too).
         String protocol = first(appProtocols, "TLSv1.3", "TLSv1.2");
@@ -667,7 +687,26 @@ final class NetEngine {
           Net.log("network: reset " + req.method + " " + req.url + " (" + c.name() + ")");
           return;
         }
-        boolean keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        ruleId = 0;
+        addedMs = 0;
+        boolean keep;
+        Inspector.Rule rule = Inspector.on ? Inspector.match(req.method, req.url) : null;
+        if (deferred != null && (rule == null || rule.status <= 0)) {
+          // The server is not there (inspected()) and no rule answers this request: the connect's failure, as a proxy says it.
+          cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + deferred.trim() + "\r\n\r\n")
+              .getBytes(StandardCharsets.ISO_8859_1));
+          cout.flush();
+          return;
+        }
+        if (rule != null) {
+          // The inspector's rule (docs/pr-preview.md): latency first, then its answer, or the server's own.
+          ruleId = rule.id;
+          addedMs = rule.latencyMs;
+          Conditions.sleep(rule.latencyMs);
+          keep = rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        } else {
+          keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        }
         exchanges++;
         if (!keep || "close".equalsIgnoreCase(req.header("Connection"))) return;
         line = readLineBytes(cin);
@@ -955,14 +994,85 @@ final class NetEngine {
       return keep;
     }
 
+    /** The inspector rule that slowed or answered the exchange being handled (0: none), and the latency it added. */
+    int ruleId;
+    long addedMs;
+
+    /** An inspector rule's answer: the request is read and dropped, the rule's status and body go back; nothing reaches the server. */
+    boolean answerRule(Request req, Inspector.Rule rule) throws IOException {
+      long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
+      if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
+        cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+      }
+      streamRequestBody(req, OutputStream.nullOutputStream());
+      boolean none = rule.status == 204 || rule.status == 304;
+      StringBuilder h = new StringBuilder("HTTP/1.1 ").append(rule.status).append(' ').append(Net.statusText(rule.status)).append("\r\n");
+      if (!none) h.append("Content-Type: ").append(rule.type).append("\r\nContent-Length: ").append(rule.body.length).append("\r\n");
+      h.append("X-Apksim-Rule: ").append(rule.id).append("\r\n\r\n");
+      // The app may have the answer before it is recorded: saving on the way out (a crash, an exit) waits for it, as for record().
+      inFlight.incrementAndGet();
+      try {
+        return sendRule(req, rule, h.toString(), none, t0, startWall);
+      } finally {
+        if (inFlight.decrementAndGet() == 0) synchronized (inFlight) { inFlight.notifyAll(); }
+      }
+    }
+
+    private boolean sendRule(Request req, Inspector.Rule rule, String head, boolean none, long t0, long startWall) throws IOException {
+      Conditions.sleep(Net.conditions.rtt());
+      cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
+      if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(rule.body, 0, rule.body.length);
+      cout.flush();
+      Recording.Entry e = new Recording.Entry();
+      e.wallMs = startWall;
+      e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+      e.method = req.method;
+      e.url = req.url;
+      e.httpVersion = req.version;
+      e.reqHeaders = redacted(req.headers);
+      e.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
+      e.reqSha = req.bodySha;
+      e.reqTruncated = req.bodyTruncated;
+      e.status = rule.status;
+      e.statusText = Net.statusText(rule.status);
+      e.respHeaders = new ArrayList<>(List.of(new String[] {"Content-Type", rule.type}, new String[] {"X-Apksim-Rule", String.valueOf(rule.id)}));
+      e.respBody = rule.body;
+      e.timeMs = (System.nanoTime() - t0) / 1_000_000;
+      add(e);
+      return !"close".equalsIgnoreCase(req.header("Connection"));
+    }
+
     void add(Recording.Entry e) {
+      Inspector.exchange(e, ruleId, addedMs);
+      // Replaying, the recording is the fixture the app is answered from: a rule's answer is shown, never added to it.
+      if (Net.mode == Net.Mode.REPLAY) return;
       Net.recording.add(e);
       recorded.incrementAndGet();
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network record: " + e.status + " " + e.method + " " + e.url);
       changed();
     }
 
+    /** The inspector's row for a replayed answer: a snapshot of this request and answer, never the fixture's entry itself. */
+    void inspectReplay(Request req, long startWall, int status, List<String[]> respHeaders, byte[] body) {
+      if (!Inspector.on) return;
+      Recording.Entry s = new Recording.Entry();
+      s.wallMs = startWall;
+      s.method = req.method;
+      s.url = req.url;
+      s.reqHeaders = redacted(req.headers);
+      s.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
+      s.reqTruncated = req.bodyTruncated;
+      s.status = status;
+      s.respHeaders = new ArrayList<>(respHeaders);
+      s.respBody = body;
+      s.timeMs = System.currentTimeMillis() - startWall;
+      Inspector.exchange(s, ruleId, addedMs);
+    }
+
     boolean replay(Request req) throws IOException {
+      long startWall = System.currentTimeMillis();
       if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
         // Recorded answered before its body (the server refused it at once): answered the same way, no body read.
         Recording.Entry early = Net.recording.findExpectAnswered(req.method, req.url, req.headers);
@@ -970,6 +1080,7 @@ final class NetEngine {
           Conditions.sleep(Net.conditions.rtt());
           replayed.incrementAndGet();
           writeRecorded(req, early);
+          inspectReplay(req, startWall, early.status, redacted(early.respHeaders), early.respBody);
           return false;
         }
         cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
@@ -998,10 +1109,12 @@ final class NetEngine {
         cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
         if (!req.method.equals("HEAD")) cout.write(body);
         cout.flush();
+        inspectReplay(req, startWall, 599, List.of(new String[] {"Content-Type", "text/plain; charset=utf-8"}, new String[] {"X-Apksim-Replay", "unmatched"}), body);
         return true;
       }
       replayed.incrementAndGet();
       writeRecorded(req, e);
+      inspectReplay(req, startWall, e.status, redacted(e.respHeaders), e.respBody);
       return true;
     }
 
