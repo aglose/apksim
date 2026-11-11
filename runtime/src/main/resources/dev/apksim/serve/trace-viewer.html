@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DDv422A4d8PyrnSTvQmmQC0eTbwj+KCAE4FvMR64Oug='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-q0iHvmiFr/YiEu+tdJ3adQFgfcd9iT2otxrx/Q1aR4E='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -144,7 +144,7 @@ function parseAvi(u8) {
   }
   if (id(0) !== 'RIFF') throw new Error('screen.avi is not RIFF');
   walk(12, u8.length);
-  return { frames: frames, stepMs: usPer / 1000, bytes: u8 };
+  return { frames: frames, stepMs: Math.floor(usPer / 1000), bytes: u8 };
 }
 
 // ---------- virtual list: fixed row height, only the visible rows exist ----------
@@ -206,7 +206,7 @@ function fmtT(ms) { var s = ms / 1000; return (s < 0 ? '-' : '') + Math.abs(s).t
 
 // ---------- state ----------
 var S = null, urls = [], tabsDone = {};
-var LEVELS = 'VDIWEF', TOUCH = { down: 1, move: 1, up: 1, cancel: 1 };
+var LEVELS = 'VDIWEF', TOUCH = { down: 1, move: 1, up: 1, cancel: 1 }, TOUCH2 = { 'touch2-centre': 1, 'touch2-down': 1, 'touch2-move': 1, 'touch2-up': 1 };
 
 var allLists = [], fileGen = 0, shotUrl = null, netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
 function reset() {
@@ -397,7 +397,7 @@ function buildRecordingPanes(zip) {
 function describeInput(o) {
   var ev = o.ev || '';
   if (o.redacted) return ev + (o.pasted ? ' (pasted, left out)' : ' (left out)');
-  if (TOUCH[ev]) return ev + ' ' + o.x + ',' + o.y;
+  if (TOUCH[ev] || TOUCH2[ev]) return ev + ' ' + o.x + ',' + o.y; // two-finger: the centre, then one finger (the other mirrors it)
   if (ev === 'char') { try { return 'char ' + JSON.stringify(String.fromCodePoint(o.v)) + ' (' + o.v + ')'; } catch (e) { return 'char ' + o.v; } }
   if (ev === 'key') return 'key code ' + o.v + (o.x ? ' modifiers ' + o.x : '');
   if (ev === 'wheel' || ev === 'rotary') return ev + ' ' + o.v + (o.x != null ? ' at ' + o.x + ',' + o.y : '');
@@ -447,6 +447,7 @@ function showNet(o) {
   else if (netTab === 'rbody') body.textContent = rq.postData ? (rq.postData.mimeType || '') + '\n\n' + (rq.postData.text || '(no text)') : '(no request body)';
   else {
     var mime = c.mimeType || '', txt = c.text;
+    if (c._apksimTruncated) { body.textContent = '(body omitted: it was over the capture limit; ' + (c.size || 0) + ' bytes)'; return; }
     if (txt == null) { body.textContent = '(no body recorded; ' + (c.size || 0) + ' bytes)'; return; }
     var bytes = null;
     if (c.encoding === 'base64') { try { var bin = atob(txt); bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); } catch (x) {} }
@@ -567,10 +568,14 @@ function syncLists(follow) {
   if (lists.cp) lists.cp.cur(lastAtOrBefore(S.cps, 't', t), follow);
   if (lists.log) lists.log.cur(lastAtOrBefore(lists.log.items, 'ts', t), follow);
 }
+function changesGeometry(c) { // not queries (`device`, `config`), visibility (`window front`) or the host window's zoom
+  var n = c[0];
+  return n === 'rotate' || ((n === 'device' || n === 'size') && c.length > 1) || (n === 'window' && /^\d+x\d+/.test(c[1] || ''));
+}
 function geomTime() { // the last input that changed the display's geometry: touches before it are not placed
   if (S.geomT == null) {
     S.geomT = -Infinity;
-    S.input.forEach(function (o) { if (o.ev === 'resize' || (o.cmd && /^(rotate|device|size|window|zoom|config)$/.test(o.cmd[0]))) S.geomT = o.t; });
+    S.input.forEach(function (o) { if (o.ev === 'resize' || (o.cmd && changesGeometry(o.cmd))) S.geomT = o.t; });
   }
   return S.geomT;
 }
@@ -589,10 +594,17 @@ function setTime(t, quiet) {
     if (W && H) {
       var lo = S.t - 600;
       for (var k = lastAtOrBefore(S.input, 't', S.t); k >= 0 && S.input[k].t >= lo; k--) {
-        var o = S.input[k]; if (o.x == null || o.redacted || !TOUCH[o.ev] || o.t < geomTime()) continue;
-        var m = el('div', 'mk' + (o.t >= slot0 && o.t < slot1 ? ' now' : ''));
-        m.style.left = (o.x / W * 100) + '%'; m.style.top = (o.y / H * 100) + '%'; m.style.opacity = String(Math.max(0.25, 1 - (S.t - o.t) / 700));
-        marks.appendChild(m);
+        var o = S.input[k]; if (o.x == null || o.redacted || !(TOUCH[o.ev] || (TOUCH2[o.ev] && o.ev !== 'touch2-centre')) || o.t < geomTime()) continue;
+        var pts = [[o.x, o.y]];
+        if (TOUCH2[o.ev]) { // the second finger mirrors the first through the gesture's centre
+          for (var c = k; c >= 0 && S.input[c].ev !== 'touch2-centre'; c--);
+          if (c >= 0) pts.push([2 * S.input[c].x - o.x, 2 * S.input[c].y - o.y]);
+        }
+        pts.forEach(function (pt) {
+          var m = el('div', 'mk' + (o.t >= slot0 && o.t < slot1 ? ' now' : ''));
+          m.style.left = (pt[0] / W * 100) + '%'; m.style.top = (pt[1] / H * 100) + '%'; m.style.opacity = String(Math.max(0.25, 1 - (S.t - o.t) / 700));
+          marks.appendChild(m);
+        });
       }
     }
   }
