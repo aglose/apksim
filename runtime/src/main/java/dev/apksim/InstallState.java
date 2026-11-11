@@ -20,8 +20,8 @@ final class InstallState {
     seedAndroidId(app);
     grantInstallPermissions(app);
     hostNetworks(app);
+    standInBrowser(app);  // before the providers: AndroidX Startup initializers may look for a browser
     installProviders(app);
-    standInBrowser(app);
   }
 
   /**
