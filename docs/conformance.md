@@ -59,7 +59,7 @@ or only with an `-e` switch.
 | NavigationConformanceTest (NavHostFragment: navigate and back, popUpTo, deep links, recreate, results, navigateUp) | 6 | 6 | 0 | |
 | NavigationComposeConformanceTest (rememberSaveable across back, predictive back) | 2 | 2 | 0 | |
 | RotationConformanceTest (no second pause on a rotation while stopped) | 1 | 1 | 1 | the pause fix |
-| LatchConformanceTest (a CountDownLatch awaited for main-thread work: posts, delayed posts, no timeout, a timeout, a worker, an interrupt, FullyDrawnReporter) | 7 | 7 | 5 | the latch wait |
+| LatchConformanceTest (a CountDownLatch awaited for main-thread work: posts, delayed posts, no timeout, a timeout, a worker, an interrupt, FullyDrawnReporter, a worker and a timeout during an endless frame loop) | 9 | 9 | 5, and the frame loop's 2 in the default clock mode | the latch wait |
 | AppCallbacksConformanceTest (a singleton's activity and component callbacks heard in later tests and unregistered through the Application it kept, a per-Application one replaced, changes made while the next Application starts, a failed setup between tests) | 14 | the ones a device can run | 2 | AppCallbacks |
 
 ### Causes found
@@ -96,7 +96,14 @@ or only with an `-e` switch.
    which, in a test run on the main thread outside a dispatch, runs the queue while waiting on the latch in 2 ms steps
    and moves the clock by the real time waited (so a delayed post comes due about when it would on a device), and is the
    latch's own wait everywhere else. Five of `LatchConformanceTest`'s seven failed before, in both clock modes;
-   `ActivityConformanceTest`'s FullyDrawnReporter test awaits its listener again instead of polling.
+   `ActivityConformanceTest`'s FullyDrawnReporter test awaits its listener again instead of polling. These waits, and
+   `Thread.sleep`'s and `parkNanos`'s, ran the queue with `ShadowLooper.idle()`, which an endless frame loop (a
+   Choreographer callback that asks for the next frame, as a Compose Popup does) never lets return in the default
+   clock mode: the unpaused Choreographer moves the clock a frame and runs it at once. A latch wait or a sleep under one
+   never ended (`LatchConformanceTest`'s frame loop tests and `MainThreadSleepTest.aSleepEndsDuringAnEndlessFrameLoop`
+   hung until `--test-timeout`). They now run due tasks one at a time and check the latch, an interrupt and the deadline
+   between them, as UiAutomator's frame wait does; with `--realtime-clock` frames come at real vsyncs and `idle()` is
+   kept.
 
 Also found while running the suite: `UncaughtExceptionTest` left its coroutine exception in kotlinx-coroutines-test's
 collector, which failed whichever Compose rule test ran next ("uncaught exceptions before the test started"); it now
@@ -112,6 +119,10 @@ takes it itself.
   would not send (a device defers the relaunch until the activity is visible again).
 - **Back on a task's root activity** ends stopped here at once; on the emulator the stop comes after the task's
   transition, and in one run of three the activity was destroyed. Timing-dependent on the device, so not in the suite.
+- **A ValueAnimator set to repeat for ever repeats once**: Robolectric's `ShadowValueAnimator.setRepeatCount` turns
+  `INFINITE` into 1, so the animator ends after its second cycle (found writing the frame-loop latch tests: a 100 ms
+  one ended at 273 ms). Its shadows are on in running instances too, so an app's endless View spinner should stop
+  there as well. Not checked on the emulator or in a running instance yet.
 
 ### Run against AndroidX's own tests
 

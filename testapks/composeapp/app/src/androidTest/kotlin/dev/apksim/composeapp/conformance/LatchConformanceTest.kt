@@ -95,4 +95,47 @@ class LatchConformanceTest {
       scenario.onActivity { a -> assertTrue(a.fullyDrawnReporter.isFullyDrawnReported) }
     }
   }
+  /** A frame loop on the main thread (a Compose Popup's, an endless animation's) does not keep a worker's countDown from ending the wait. */
+  @Test
+  fun aWorkerEndsTheWaitDuringAnEndlessFrameLoop() {
+    val loop = FrameLoop().apply { start() }
+    try {
+      val done = CountDownLatch(1)
+      Thread { Thread.sleep(50); done.countDown() }.start()
+      val start = System.nanoTime()
+      assertTrue("opened", done.await(5, TimeUnit.SECONDS))
+      val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+      assertTrue("took $tookMs ms", tookMs < 3_000)
+      assertTrue("frames ${loop.frames}", loop.frames > 0)
+    } finally {
+      loop.stop()
+    }
+  }
+
+  /** Nor a timed wait from timing out on time. */
+  @Test
+  fun aWaitTimesOutDuringAnEndlessFrameLoop() {
+    val loop = FrameLoop().apply { start() }
+    try {
+      val start = System.nanoTime()
+      assertFalse(CountDownLatch(1).await(300, TimeUnit.MILLISECONDS))
+      val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+      assertTrue("took $tookMs ms", tookMs in 250..3_000)
+      assertTrue("frames ${loop.frames}", loop.frames > 0)
+    } finally {
+      loop.stop()
+    }
+  }
+
+  /** Asks for every next frame, as an endless animation does. */
+  private class FrameLoop : android.view.Choreographer.FrameCallback {
+    var frames = 0
+    private var running = false
+    fun start() { running = true; android.view.Choreographer.getInstance().postFrameCallback(this) }
+    fun stop() { running = false; android.view.Choreographer.getInstance().removeFrameCallback(this) }
+    override fun doFrame(frameTimeNanos: Long) {
+      frames++
+      if (running) android.view.Choreographer.getInstance().postFrameCallback(this)
+    }
+  }
 }

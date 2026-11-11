@@ -216,8 +216,9 @@ public final class TestActivities {
     long start = System.nanoTime();
     while (true) {
       if (Thread.interrupted()) throw new InterruptedException();
-      main.idle();
+      runDue(main, () -> latch.getCount() == 0, deadline(start, nanos));
       if (latch.getCount() == 0) return true;
+      if (Thread.interrupted()) throw new InterruptedException();
       long left = nanos == Long.MAX_VALUE ? Long.MAX_VALUE : nanos - (System.nanoTime() - start);
       if (left <= 0) return false;
       long stepStart = System.nanoTime();
@@ -235,21 +236,49 @@ public final class TestActivities {
 
   private static void parkStep(long nanos) {
     org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
-    main.idle();
+    long step = Math.min(nanos, 2_000_000L);
+    runDue(main, () -> false, System.nanoTime() + step);
     long start = System.nanoTime();
-    java.util.concurrent.locks.LockSupport.parkNanos(Math.min(nanos, 2_000_000L));
+    java.util.concurrent.locks.LockSupport.parkNanos(step);
     advanceClock(System.nanoTime() - start);
   }
 
-  /** Moves the main clock on by real time a main-thread wait took (parkStep, await), carrying what is under 1 ms. */
+  /**
+   * Moves the main clock on by real time a main-thread wait took (parkStep, await), carrying what is under 1 ms. Only
+   * the clock: what comes due runs at the caller's next runDue, which is bounded (idleFor would drain the queue).
+   */
   private static void advanceClock(long elapsed) {
-    org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
     // With --realtime-clock the clock already follows real time (the next idle's clock read catches it up).
     if (elapsed <= 0 || RealTimeClock.requested()) return;
     long total = parkCarryNanos + elapsed;
     long ms = total / 1_000_000L;
     parkCarryNanos = total - ms * 1_000_000L;
-    if (ms > 0) main.idleFor(java.time.Duration.ofMillis(ms));
+    if (ms > 0) org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(ms));
+  }
+
+  /** start + nanos as runDue's end; Long.MAX_VALUE (none) for a wait too long to add without overflowing. */
+  private static long deadline(long start, long nanos) {
+    return nanos >= Long.MAX_VALUE / 4 ? Long.MAX_VALUE : start + nanos;
+  }
+
+  /**
+   * Runs the main queue's due tasks, one at a time, until it is idle, {@code stop} holds, the thread is interrupted or
+   * System.nanoTime() reaches {@code end}: the main-thread waits above (await, parkNanos, sleep). Not main.idle(): an
+   * endless frame loop (a Compose Popup polling its anchor, an animation that never ends) never lets it return with
+   * Robolectric's unpaused Choreographer, which moves the clock a frame and runs it at once, so the wait never checked
+   * its latch or deadline again (as for awaitFrame). With --realtime-clock frames come at real vsyncs and idle()
+   * returns between them; it also handles a traversal's sync barrier there (RealTimeClock), so it is kept.
+   */
+  private static void runDue(org.robolectric.shadows.ShadowLooper main, java.util.function.BooleanSupplier stop,
+      long end) {
+    if (RealTimeClock.requested()) {
+      main.idle();
+      return;
+    }
+    while (!main.isIdle() && !stop.getAsBoolean() && !Thread.currentThread().isInterrupted()
+        && (end == Long.MAX_VALUE || System.nanoTime() - end < 0)) {
+      main.runOneTask();
+    }
   }
 
   /** The test APK's own context in a test run (SimRunner.useTestApkContext); null elsewhere. */
@@ -271,7 +300,7 @@ public final class TestActivities {
     long start = System.nanoTime();
     while (true) {
       if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
-      main.idle();
+      runDue(main, () -> false, deadline(start, nanos));
       long left = nanos - (System.nanoTime() - start);  // no deadline sum to overflow for a long sleep
       if (Thread.interrupted()) throw new InterruptedException("sleep interrupted");
       if (left <= 0) return;

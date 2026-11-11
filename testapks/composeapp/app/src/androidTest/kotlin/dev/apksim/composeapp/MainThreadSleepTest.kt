@@ -25,4 +25,24 @@ class MainThreadSleepTest {
     while (!ran.get() && System.nanoTime() < deadline) Thread.sleep(10)
     assertTrue("the main thread's work did not run while the test slept", ran.get())
   }
+
+  /** A sleep ends on time while the main thread has a frame loop (a Compose Popup's, an endless animation's). */
+  @Test
+  fun aSleepEndsDuringAnEndlessFrameLoop() {
+    var frames = 0
+    val choreographer = android.view.Choreographer.getInstance()
+    val loop = object : android.view.Choreographer.FrameCallback {
+      override fun doFrame(frameTimeNanos: Long) { frames++; choreographer.postFrameCallback(this) }
+    }
+    choreographer.postFrameCallback(loop)
+    try {
+      val start = System.nanoTime()
+      Thread.sleep(200)
+      val tookMs = (System.nanoTime() - start) / 1_000_000
+      assertTrue("took $tookMs ms", tookMs in 200..3_000)
+      assertTrue("frames $frames", frames > 0)
+    } finally {
+      choreographer.removeFrameCallback(loop)
+    }
+  }
 }
