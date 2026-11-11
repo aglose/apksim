@@ -38,6 +38,7 @@ Usage: apksim [options] APP.apk
        apksim beam [--port N] [--max N]    run browser sessions' apps on this Mac; beam saved|run ID: kept ones (docs/beam.md)
        apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
        apksim skin add|list|show|preview|remove|export   device skins (docs/skins.md)
+       apksim replay [--apk APK] [--live-network] [OPTIONS] BUNDLE.apkrec   a flight recording replayed (docs/replay.md)
        apksim --version | --train | --stop-standbys
 
 Common options (each is listed with its values in the README, "Devices and launch options"):
@@ -67,6 +68,8 @@ EOF
   # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
   # (The path it was run as, before links are followed: `apksim beam install` writes that into launchd's job, so a
   # Homebrew upgrade, which moves the install folder, leaves bin/apksim and the job working.)
+  # A flight recording replayed from its checkpoint (docs/replay.md): a plain JVM unpacks it and plans the launch below.
+  replay) SERVE=1; REPLAY=1; shift ;;
   beam) SERVE=1; shift; set -- --beam "$@"
     APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
     export APKSIM_LAUNCHER_PATH ;;
@@ -231,6 +234,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --no-autofill) EXTRA+=("-Dapksim.noAutofill=true"); shift ;;
     # App data in slots NAME-0, NAME-1... instead of default, instance-N (apksim serve: never the owner's own data).
     --data-slots) EXTRA+=("-Dapksim.dataSlots=$2"); shift 2 ;;
+    # Set by `apksim replay` (ReplayPlan): the unpacked bundle, and where its report goes.
+    --replay-dir) EXTRA+=("-Dapksim.replay=$2"); shift 2 ;;
+    --replay-out) mkdir -p "$2" && REPLAY_OUT="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.replay.out=$REPLAY_OUT"); shift 2 ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
     --instrument) EXTRA+=("-Dapksim.instrument=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); TEST_RUN=1; shift 2 ;;
     -e) EXTRA+=("-Dapksim.instrument.$2=$3"); shift 3 ;;
@@ -266,6 +272,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --network-ignore-header) EXTRA+=("-Dapksim.networkIgnoreHeader=$2"); shift 2 ;;
     --network-unmatched) EXTRA+=("-Dapksim.networkUnmatched=$2"); shift 2 ;;
     --network-replay-timing) EXTRA+=("-Dapksim.networkReplayTiming=$2"); shift 2 ;;
+    --network-replay-mark) EXTRA+=("-Dapksim.networkReplayMark=$2"); shift 2 ;;
     --network-host) NET_HOSTS="${NET_HOSTS:+$NET_HOSTS,}$2"; shift 2 ;;
     --network-trust)
       [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
@@ -309,7 +316,8 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
-      -Dapksim.rec=*|-Dapksim.rec.*) ;;
+      -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;
+      -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || WARM_OK="" ;;  # a standby's sandbox writes only under STATE
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
@@ -319,7 +327,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
-      -Dapksim.networkReplayTiming=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*) ;;
+      -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*) ;;
       *) WARM_OK="" ;;
     esac
   done
@@ -342,6 +350,16 @@ else
 fi
 if [[ -n "${SKIN:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx512m -XX:TieredStopAtLevel=1 -Djava.awt.headless=true -cp "$ROOT/work/apksim.jar" dev.apksim.skin.Skins "$@"
+fi
+if [[ -n "${REPLAY:-}" ]]; then
+  mkdir -p "$STATE/tmp"
+  PLAN="$(mktemp "$STATE/tmp/replay-plan.XXXXXX")" || exit 2
+  "$JAVA" -XX:+UseSerialGC -Xmx512m -XX:TieredStopAtLevel=1 -Djava.awt.headless=true -Dapksim.state="$STATE" \
+    -cp "$ROOT/work/apksim.jar" dev.apksim.ReplayPlan "$@" > "$PLAN" || { S=$?; rm -f "$PLAN"; exit $S; }
+  ARGS=()
+  while IFS= read -r L || [[ -n "$L" ]]; do ARGS+=("$L"); done < "$PLAN"
+  rm -f "$PLAN"
+  exec "$ROOT/apksim" "${ARGS[@]}"
 fi
 if [[ -n "${SERVE:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
@@ -424,7 +442,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
 (allow file-write* (subpath \"$BUNDLES\"))}${RECORD_DIR:+
-(allow file-write* (subpath \"$RECORD_DIR\"))}${NET_RECORD_FILE:+
+(allow file-write* (subpath \"$RECORD_DIR\"))}${REPLAY_OUT:+
+(allow file-write* (subpath \"$REPLAY_OUT\"))}${NET_RECORD_FILE:+
 (allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${TEST_OUTPUTS:+
 (allow file-write* (subpath \"$TEST_OUTPUTS\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")

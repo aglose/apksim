@@ -202,7 +202,7 @@ public final class SlotPack {
    * Unpacks a pack into `slot` and `slot.device`, which must not exist yet (they are made here). Throws why it would
    * not; what it made is removed then.
    */
-  static void unpack(Path zip, Path slot) throws IOException {
+  public static void unpack(Path zip, Path slot) throws IOException {
     Path device = slot.resolveSibling(slot.getFileName() + ".device");
     if (Files.exists(slot, LinkOption.NOFOLLOW_LINKS) || Files.exists(device, LinkOption.NOFOLLOW_LINKS)) {
       throw new IOException("the slot exists already");

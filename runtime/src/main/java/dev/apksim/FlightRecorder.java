@@ -423,6 +423,12 @@ final class FlightRecorder {
   private static int pendingH;
   private static long pendingWall;
   private static volatile long lastFrameNanos;
+  /**
+   * When the newest presented frame was passed over for the rate limit (0: none since the last one kept). A screen that
+   * goes still right after such a frame presents no other, so its final state would never be kept: the recording then
+   * showed a screen from before a change (a fetch's result drawn 150 ms after the frame kept for its button's ripple).
+   */
+  private static volatile long skippedNanos;
   private static Thread encoder;
   /** Moves on at `rec clear`: a frame taken before it is not kept after it. Guarded by FRAME_LOCK. */
   private static int screenGen;
@@ -444,8 +450,13 @@ final class FlightRecorder {
   /** From the raster thread: the frame just presented. Copied at most screenFps times a second. */
   static void frame(ByteBuffer pixels, int w, int h) {
     long now = System.nanoTime();
-    if (now - lastFrameNanos < 1_000_000_000L / screenFps || pixels.remaining() != w * h * 4) return;
+    if (pixels.remaining() != w * h * 4) return;
+    if (now - lastFrameNanos < 1_000_000_000L / screenFps) {
+      skippedNanos = now;
+      return;
+    }
     lastFrameNanos = now;
+    skippedNanos = 0;
     synchronized (FRAME_LOCK) {
       if (pending == null || pending.length != pixels.remaining()) pending = new byte[pixels.remaining()];
       pixels.duplicate().get(pending);
@@ -559,6 +570,12 @@ final class FlightRecorder {
 
   /** Each turn of the Host loop (main thread). */
   void tick(boolean firstFrameDrawn) {
+    long skipped = skippedNanos;
+    if (screen && skipped != 0 && System.nanoTime() - skipped >= 1_000_000_000L / screenFps) {
+      // The screen has been still since a frame the rate limit passed over: drawn again, so its final state is kept.
+      skippedNanos = 0;
+      screenBaseline();
+    }
     long now = System.currentTimeMillis();
     moveCutoff(now);
     if (!input || !firstFrameDrawn || stack.isEmpty()) return;
@@ -1223,6 +1240,22 @@ final class FlightRecorder {
     device.put("height", dm.heightPixels);
     device.put("density", dm.density);
     device.put("fontScale", app.getResources().getConfiguration().fontScale);
+    // What `apksim replay` launches with (docs/replay.md): the device preset and its rotation, the zone, the animator scale.
+    Device d = Device.current();
+    device.put("name", d.name());
+    device.put("widthDp", d.widthDp());
+    device.put("heightDp", d.heightDp());
+    try {
+      device.put("rotation", app.getSystemService(android.view.WindowManager.class).getDefaultDisplay().getRotation());
+    } catch (RuntimeException e) {
+      // without it
+    }
+    device.put("timezone", java.util.TimeZone.getDefault().getID());
+    // The wall clock the app sees (SimClock: --clock, `clock`), which the checkpoint's own wall time (real) is not.
+    device.put("clock", SimClock.currentTimeMillis());
+    device.put("animScale", android.animation.ValueAnimator.getDurationScale());
+    String features = System.getProperty("apksim.features");  // --feature: part of the device the app saw
+    if (features != null && !features.isEmpty()) device.put("features", List.of(features.split(",")));
     try {
       device.put("qualifiers", org.robolectric.RuntimeEnvironment.getQualifiers());
     } catch (RuntimeException e) {
@@ -1253,7 +1286,10 @@ final class FlightRecorder {
       // not known
     }
     String apk = System.getProperty("apksim.apk");
-    if (apk != null) m.put("apk", Path.of(apk).getFileName().toString());
+    if (apk != null) {
+      m.put("apk", Path.of(apk).getFileName().toString());
+      m.put("apkPath", Path.of(apk).toAbsolutePath().toString());  // where `apksim replay` looks for it first
+    }
     Map<String, Object> window = new LinkedHashMap<>();
     window.put("from", from);
     window.put("to", to);
@@ -1312,6 +1348,10 @@ final class FlightRecorder {
         } catch (IOException e) {
           // without it
         }
+        // Who signed it: `apksim replay --apk` takes another build only from the same signer, as an update keeping the
+        // app's data must be (ApkSigners, as apksim beam's data from another build).
+        String signers = signers(Path.of(apk));
+        if (signers != null) manifest.put("apkSigners", signers);
       }
       StringBuilder in = new StringBuilder();
       for (Ring.Item<Map<String, Object>> e : events) in.append(JsonLine.write(e.value())).append('\n');
@@ -1408,6 +1448,27 @@ final class FlightRecorder {
     z.putNextEntry(new ZipEntry(name));
     z.write(b);
     z.closeEntry();
+  }
+
+  /** The last APK's signers, as one value: two fields could be read as a mismatched pair across threads. */
+  private record SignersOf(String apk, String signers) {}
+
+  private static volatile SignersOf signersCache;
+
+  /** The APK's verified signers (scheme and certificate digests), once per APK and process; null if unsigned. */
+  private static String signers(Path apk) {
+    String key = apk.toAbsolutePath().toString();
+    SignersOf cached = signersCache;
+    if (cached != null && key.equals(cached.apk())) return cached.signers();
+    String v;
+    try {
+      dev.apksim.serve.ApkSigners.Signers s = dev.apksim.serve.ApkSigners.of(apk);
+      v = s.scheme() + ":" + String.join(",", s.certs());
+    } catch (IOException | RuntimeException e) {
+      v = null;
+    }
+    signersCache = new SignersOf(key, v);
+    return v;
   }
 
   private static String sha256(Path p) throws IOException {

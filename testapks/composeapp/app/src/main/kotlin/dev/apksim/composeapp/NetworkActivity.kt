@@ -70,7 +70,9 @@ object GreetingClient {
     }
   }
 
-  fun describe(r: Result) = "${r.code} ${r.greeting}${r.replay?.let { " [$it]" } ?: ""} in ${r.ms} ms"
+  /** `--feature dev.apksim.testapp.no_timings` leaves the time out: it is real time, which a replay cannot repeat. */
+  fun describe(r: Result, timing: Boolean = true) =
+    "${r.code} ${r.greeting}${r.replay?.let { " [$it]" } ?: ""}" + if (timing) " in ${r.ms} ms" else ""
 
   /** The default network as ConnectivityManager reports it. */
   fun connectivity(cm: ConnectivityManager): String {
@@ -109,7 +111,7 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
           set("fetching")
           scope.launch {
             set(withContext(Dispatchers.IO) {
-              runCatching { GreetingClient.describe(f()) }.getOrElse { "${it.javaClass.simpleName}: ${it.message}" }
+              runCatching { GreetingClient.describe(f(), !packageManager.hasSystemFeature("dev.apksim.testapp.no_timings")) }.getOrElse { "${it.javaClass.simpleName}: ${it.message}" }
             })
           }
         }

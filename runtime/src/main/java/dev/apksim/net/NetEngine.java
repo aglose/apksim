@@ -1034,7 +1034,7 @@ final class NetEngine {
       // A HEAD answer keeps the length the server gave (its body was never there to measure).
       String recordedLength = e.header(e.respHeaders, "Content-Length");
       if (!none) h.append("Content-Length: ").append(req.method.equals("HEAD") && recordedLength != null ? recordedLength : String.valueOf(body.length)).append("\r\n");
-      h.append("X-Apksim-Replay: recorded\r\n\r\n");
+      h.append(Net.replayMark ? "X-Apksim-Replay: recorded\r\n\r\n" : "\r\n");
       cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
       if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(body, 0, body.length);
       cout.flush();

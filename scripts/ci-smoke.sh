@@ -265,6 +265,7 @@ NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAG
 # A data slot's /sdcard and Settings values across launches, a container each, the app data on a shared volume.
 SLOTCHECK_PORT=7480 "$ROOT/scripts/slot-check.sh" "$APK" "$OUT/slot" "$IMAGE"
 APKCACHECHECK_PORT=7490 "$ROOT/scripts/apk-cache-check.sh" "$APK" "$OUT/apk-cache" "$IMAGE"
+REPLAYCHECK_PORT=7495 python3 "$ROOT/scripts/replay-check.py" "$APK" "$OUT/replay" --image "$IMAGE"  # docs/replay.md
 
 # Screenshot tests in the image (scripts/snapshot.py, docs/snapshots.md), on a small matrix: record goldens, run again
 # against them (the image must give the same pixels), then a spec whose home screen shows something else (one FAB tap)

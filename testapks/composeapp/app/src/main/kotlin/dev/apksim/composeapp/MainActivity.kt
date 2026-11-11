@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.foundation.background
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
@@ -143,13 +144,16 @@ fun Root(db: Db, startTab: Int = 0) {
 @Composable
 fun Trips(db: Db) {
   var rows by remember { mutableStateOf(db.all()) }
+  // `--feature dev.apksim.testapp.rename_v2`: the rename behaves as a changed build would (scripts/replay-check.py).
+  val context = LocalContext.current
+  val roman = remember(context) { if (context.packageManager.hasSystemFeature("dev.apksim.testapp.rename_v2")) "Roman holiday" else "Roman vacation" }
   Column(Modifier.fillMaxSize()) {
   LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp)) {
     items(rows, key = { it.first }) { (id, title) ->
       ListItem(
         headlineContent = { Text(title) },
         modifier = Modifier.clickable {
-          db.rename(id, if (title.startsWith("Roman")) "Italian vacation" else "Roman vacation")
+          db.rename(id, if (title.startsWith("Roman")) "Italian vacation" else roman)
           rows = db.all()
         },
       )
