@@ -210,7 +210,7 @@ def drive_chrome(a, rec, bundle, out):
         url = view.stdout.readline().strip()
         check(url.startswith("http://127.0.0.1:") and "?src=/rec/" in url, "apksim rec view prints a loopback URL: " + url.split("?")[0])
         s = tab(url)
-        check(wait(s, "!!(window.__trace && window.__trace.summary() && window.__trace.summary().kind==='recording')"), "the recording loads through rec view")
+        check(wait(s, "document.body.classList.contains('loaded') && !!window.__trace.summary().loadMs"), "the recording loads through rec view")
         sm = ev(s, "window.__trace.summary()")
         print("     summary:", sm)
         ref = parse_recording(rec)

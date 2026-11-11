@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-lW9xN21wsKXUiS/SAPbl9Li5WHMSE/na3JyPqOBcSxo='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pviF2CevcORWmtF0ox97hvcKfCDf6dLn6VRWsV7Cr6s='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -167,7 +167,7 @@ function VList(parent, render, onPick) {
   }
   function pick(ev) { var i = ev.currentTarget._i; sel = i; draw(); if (onPick) onPick(items[i], i); }
   box.addEventListener('scroll', draw);
-  new ResizeObserver(draw).observe(box);
+  var ro = new ResizeObserver(draw); ro.observe(box); allLists.push(ro);
   return {
     box: box,
     set: function (a) { items = a; sz.style.height = (a.length * rowH) + 'px'; cur = -1; sel = -1; draw(); },
@@ -197,8 +197,9 @@ function fmtT(ms) { var s = ms / 1000; return (s < 0 ? '-' : '') + Math.abs(s).t
 var S = null, urls = [], tabsDone = {};
 var LEVELS = 'VDIWEF', TOUCH = { down: 1, move: 1, up: 1, cancel: 1 };
 
-var fileGen = 0, shotUrl = null, netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
+var allLists = [], fileGen = 0, shotUrl = null, netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
 function reset() {
+  disposeLists();
   if (S && S.imgCache) Object.keys(S.imgCache).forEach(function (k) { URL.revokeObjectURL(S.imgCache[k]); });
   if (detailUrl) { URL.revokeObjectURL(detailUrl); detailUrl = null; }
   if (shotUrl) { URL.revokeObjectURL(shotUrl); shotUrl = null; }
@@ -209,6 +210,7 @@ function reset() {
   $('tabs').textContent = ''; $('panes').textContent = ''; $('info').textContent = ''; $('err').textContent = '';
   $('marks').textContent = ''; $('frame').removeAttribute('src');
 }
+function disposeLists() { allLists.forEach(function (ro) { ro.disconnect(); }); allLists = []; }
 function addTab(id, label) {
   var b = el('button', '', label); b.dataset.id = id; $('tabs').appendChild(b);
   var p = el('div', 'pane'); p.id = 'p-' + id; $('panes').appendChild(p);
@@ -224,7 +226,8 @@ function showTab(id) {
 var lists = {};
 
 // ---------- loading ----------
-function load(file) { fileGen++; loadQ = loadQ.then(function () { return loadNow(file); }); return loadQ; }
+function queue(fn) { loadQ = loadQ.then(fn).catch(function (e) { fail('Could not read the file: ' + (e && e.message || e)); }); return loadQ; }
+function load(file) { fileGen++; return queue(function () { return loadNow(file); }); }
 async function loadNow(file) {
   reset(); $('name').textContent = file.name; document.body.classList.remove('loaded');
   var t0 = performance.now();
@@ -364,7 +367,7 @@ function buildRecordingPanes(zip) {
   var pd = addTab('db', 'SQLite (' + S.db.length + ')');
   lists.db = VList(pd, function (r, o) {
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    r.appendChild(document.createTextNode((o.op || '') + ' ' + (o.db || '') + ' ' + (o.us != null ? o.us + 'us ' : '') + (o.result != null ? '=' + o.result + ' ' : '') + (o.error ? 'ERROR ' + one(o.error) + ' ' : '') + one(o.sql || '')));
+    r.appendChild(document.createTextNode((o.op || '') + ' ' + (o.db || '') + ' ' + (o.us != null ? o.us + 'us ' : '') + (o.result != null ? '=' + one(o.result) + ' ' : '') + (o.error ? 'ERROR ' + one(o.error) + ' ' : '') + one(o.sql || '')));
   }, function (o) { setTime(o.t); });
   lists.db.set(S.db);
   // Checkpoints
@@ -461,7 +464,7 @@ async function loadBundle(zip, t0) {
   S.t0 = 0; S.t1 = 1;
   async function show(head) {
     var pre = head.replace(/failure\.txt$/, '');
-    $('tabs').textContent = ''; $('panes').textContent = ''; lists = {}; S.log = [];
+    disposeLists(); $('tabs').textContent = ''; $('panes').textContent = ''; lists = {}; S.log = [];
     if (shotUrl) { URL.revokeObjectURL(shotUrl); shotUrl = null; }
     var f = await zip.text(head);
     textPane('fail', 'Failure', f);
@@ -485,7 +488,7 @@ async function loadBundle(zip, t0) {
     kv('log lines', S.log.length);
     showTab('fail');
   }
-  if (sel) sel.addEventListener('change', function () { var v = sel.value, g = fileGen; loadQ = loadQ.then(function () { if (g === fileGen) return show(v); }); });
+  if (sel) sel.addEventListener('change', function () { var v = sel.value, g = fileGen; queue(function () { if (g === fileGen) return show(v); }); });
   await show(heads[0]);
 }
 function textLines(id, label, text) { // a big file as a searchable virtual list of its lines
@@ -533,6 +536,7 @@ window.addEventListener('resize', function () { if (S && S.kind === 'recording' 
 // ---------- selecting a moment ----------
 function frameIndex(t) {
   if (!S.frames) return -1;
+  if (t < S.frameT0) return -1; // before the first frame there is nothing to show
   var i = Math.floor((t - S.frameT0) / S.frames.stepMs);
   return Math.max(0, Math.min(S.frames.frames.length - 1, i));
 }
@@ -567,6 +571,7 @@ function setTime(t, quiet) {
   var marks = $('marks'); marks.textContent = '';
   if (S.frames) {
     var i = frameIndex(S.t), im = $('frame');
+    if (i < 0) { im._i = -1; im.removeAttribute('src'); return; }
     if (im._i !== i) { im._i = i; im.src = frameUrl(i); }
     var slot0 = S.frameT0 + i * S.frames.stepMs, slot1 = slot0 + S.frames.stepMs, d = S.man.device || (S.man.checkpoint && S.man.checkpoint.device) || {};
     var W = d.width, H = d.height;
