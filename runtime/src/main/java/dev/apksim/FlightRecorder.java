@@ -423,6 +423,12 @@ final class FlightRecorder {
   private static int pendingH;
   private static long pendingWall;
   private static volatile long lastFrameNanos;
+  /**
+   * When the newest presented frame was passed over for the rate limit (0: none since the last one kept). A screen that
+   * goes still right after such a frame presents no other, so its final state would never be kept: the recording then
+   * showed a screen from before a change (a fetch's result drawn 150 ms after the frame kept for its button's ripple).
+   */
+  private static volatile long skippedNanos;
   private static Thread encoder;
   /** Moves on at `rec clear`: a frame taken before it is not kept after it. Guarded by FRAME_LOCK. */
   private static int screenGen;
@@ -444,8 +450,13 @@ final class FlightRecorder {
   /** From the raster thread: the frame just presented. Copied at most screenFps times a second. */
   static void frame(ByteBuffer pixels, int w, int h) {
     long now = System.nanoTime();
-    if (now - lastFrameNanos < 1_000_000_000L / screenFps || pixels.remaining() != w * h * 4) return;
+    if (pixels.remaining() != w * h * 4) return;
+    if (now - lastFrameNanos < 1_000_000_000L / screenFps) {
+      skippedNanos = now;
+      return;
+    }
     lastFrameNanos = now;
+    skippedNanos = 0;
     synchronized (FRAME_LOCK) {
       if (pending == null || pending.length != pixels.remaining()) pending = new byte[pixels.remaining()];
       pixels.duplicate().get(pending);
@@ -559,6 +570,12 @@ final class FlightRecorder {
 
   /** Each turn of the Host loop (main thread). */
   void tick(boolean firstFrameDrawn) {
+    long skipped = skippedNanos;
+    if (screen && skipped != 0 && System.nanoTime() - skipped >= 1_000_000_000L / screenFps) {
+      // The screen has been still since a frame the rate limit passed over: drawn again, so its final state is kept.
+      skippedNanos = 0;
+      screenBaseline();
+    }
     long now = System.currentTimeMillis();
     moveCutoff(now);
     if (!input || !firstFrameDrawn || stack.isEmpty()) return;
