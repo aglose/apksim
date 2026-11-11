@@ -45,10 +45,14 @@ assert conformance.retry_selector([("class", "p.First,p.Later")], "p.Later") == 
 assert conformance.retry_selector([("package", "p")], "p.Later") == "p.Later"
 between = {("a.B", "ok"): ("passed", "")}
 conformance.note_run_crash(between, False, None)
-assert between[(conformance.RUN, "crash")][0] == "failed", "a crash with no test in flight keeps a run-level failure"
+assert between[(conformance.RUN, "incomplete")][0] == "failed", "a crash with no test in flight keeps a run-level failure"
 inflight = {("a.B", "cut"): ("failed", conformance.CRASHED)}
 conformance.note_run_crash(inflight, False, None)
-assert (conformance.RUN, "crash") not in inflight, "a crash a test carries needs no run-level entry"
+assert (conformance.RUN, "incomplete") not in inflight, "a crash a test carries needs no run-level entry"
+# Run-level entries of either side (instrument.py's per-process and listing ones, this script's) fold into one row.
+folded = conformance.fold_runs({("(run)", "incomplete (process 2)"): ("failed", "x"), ("(listing)", "incomplete"): ("failed", "y"),
+                                ("a.B", "ok"): ("passed", "")})
+assert set(folded) == {("a.B", "ok"), (conformance.RUN, "run")} and folded[(conformance.RUN, "run")][0] == "failed", folded
 assert conformance.cause("java.lang.AssertionError: expected:<3> but was:<1>\n\tat x") == \
     "java.lang.AssertionError: expected:<N> but was:<N>"
 assert conformance.cause("java.lang.RuntimeException: wrap\nCaused by: java.io.IOException: 'x' gone") == \

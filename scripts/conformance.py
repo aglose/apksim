@@ -146,7 +146,7 @@ def note_run_crash(results, finished, raw):
     """A run that ended early with no test in flight (a crash in @AfterClass, a listener, between tests) still fails:
     a run-level entry carries it, as instrument.py's "(run)" entry does here."""
     if not finished and not any(v == ("failed", CRASHED) for v in results.values()):
-        results[(RUN, "crash")] = ("failed", "the instrumentation process crashed outside any test")
+        results[(RUN, "incomplete")] = ("failed", "the instrumentation process crashed outside any test")
 
 
 def am_instrument(serial, comp, extra, raw):
@@ -154,9 +154,13 @@ def am_instrument(serial, comp, extra, raw):
     for k, v in extra:
         cmd += ["-e", k, v]
     # adb shell hands one command line to the device's shell: quote each word (spaces, `$` of nested classes).
-    text = adb(serial, "shell", " ".join(shlex.quote(w) for w in cmd + [comp]), check=False)
-    raw.write(text)
-    return parse_raw(text)
+    r = subprocess.run(["adb", "-s", serial, "shell", " ".join(shlex.quote(w) for w in cmd + [comp])],
+                       capture_output=True, text=True)
+    raw.write(r.stdout)
+    if r.returncode != 0 and "INSTRUMENTATION_" not in r.stdout:
+        # adb itself failed (the device went away): not a result of the tests, so no table from it.
+        raise SystemExit(f"adb shell am instrument on {serial} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+    return parse_raw(r.stdout)
 
 
 def run_emulator(a, out):
@@ -218,7 +222,7 @@ def run_emulator(a, out):
                     got, done = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] +
                                               [("class", retry_selector(a.e, c))], raw)
                     if not done and not any(got.get(k) == ("failed", CRASHED) for k in got):
-                        results[(RUN, f"crash re-running {c}")] = ("failed", "the process crashed outside any test")
+                        results[(RUN, f"incomplete (re-running {c})")] = ("failed", "the process crashed outside any test")
                     for m in ms:
                         results[(c, m)] = got.get((c, m), ("failed", "not run: the process crashed before it"))
     finally:
@@ -257,6 +261,18 @@ def write_xml(path, results):
                 f.write("<skipped/>")
             f.write("</testcase>\n")
         f.write("</testsuite>\n")
+
+
+def fold_runs(results):
+    """Every run-level entry (instrument.py's "(run)"/"(listing)" ones, labelled per process or shard, and this
+    script's) as one "(run)" entry, so a run that failed on both sides is one row that fails on both."""
+    runs = {k: v for k, v in results.items() if k[0] in (RUN, "(listing)")}
+    if not runs:
+        return results
+    out = {k: v for k, v in results.items() if k not in runs}
+    failed = [f"{c} {m}: {v[1]}" for (c, m), v in runs.items() if v[0] == "failed"]
+    out[(RUN, "run")] = ("failed", "\n".join(failed)) if failed else ("passed", "")
+    return out
 
 
 def read_xml(path):
@@ -316,8 +332,8 @@ def main():
     os.makedirs(out, exist_ok=True)
 
     emu_xml = a.emulator_xml or (run_emulator(a, out) if a.emulator else None)
-    here = read_xml(a.here_xml or run_here(a, out))
-    emu = read_xml(emu_xml) if emu_xml else {}
+    here = fold_runs(read_xml(a.here_xml or run_here(a, out)))
+    emu = fold_runs(read_xml(emu_xml)) if emu_xml else {}
 
     rows = collections.defaultdict(list)
     for key in sorted(set(here) | set(emu)):
