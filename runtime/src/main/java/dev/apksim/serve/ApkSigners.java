@@ -40,6 +40,8 @@ import java.util.jar.JarFile;
  * its signer's certificate), and every entry outside META-INF must be signed.
  */
 public final class ApkSigners {
+  // Public for `apksim replay` (dev.apksim.ReplayPlan), which applies the same signer rule: internal to apksim, not an
+  // API anyone else builds on.
   private static final int V2 = 0x7109871a, V3 = 0xf05368c0;
   /** The API level a v3 signer must cover (apksim runs every app as API 36). */
   static final int SDK = 36;

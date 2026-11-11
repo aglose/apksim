@@ -28,6 +28,11 @@ a = None
 procs = []
 
 
+def read(path):
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
 def check(ok, what):
     print(("  ok    " if ok else "  FAIL  ") + what)
     if not ok:
@@ -53,7 +58,7 @@ class Drive:
             except OSError:
                 pass
             time.sleep(0.2)
-        raise SystemExit("the app never answered on its control port" + (": " + open(log).read()[-3000:] if log else ""))
+        raise SystemExit("the app never answered on its control port" + (": " + read(log)[-3000:] if log else ""))
 
     def __call__(self, cmd):
         self.f.write(cmd + "\n")
@@ -93,13 +98,13 @@ def launch(name, args, log, port=None, pre="", detach=True):
         if port is None:
             return p, None
         for _ in range(1200):
-            m = re.search(r"\[apksim\] control port (\d+)", open(logp).read())
+            m = re.search(r"\[apksim\] control port (\d+)", read(logp))
             if m:
                 return p, int(m.group(1))
             if p.poll() is not None:
                 break
             time.sleep(0.1)
-        raise SystemExit(f"{name}: no control port: " + open(logp).read()[-3000:])
+        raise SystemExit(f"{name}: no control port: " + read(logp)[-3000:])
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     at = 1 if args[:1] == ["replay"] else 0
     if port is not None:
@@ -225,7 +230,7 @@ def replay_exit(name, bundle, extra, want, what):
     if a.image and code is not None:
         subprocess.run(["docker", "rm", "-f", f"replaycheck-{name}"], capture_output=True)
     took = time.time() - t0
-    log = open(os.path.join(a.out, f"{name}.log")).read()
+    log = read(os.path.join(a.out, f"{name}.log"))
     check(code == want, f"exit {code} (want {want}) in {took:.1f} s" + ("" if code == want else ": " + log[-1500:]))
     r = report(name)
     print(f"  ..    points {show(r)}")
@@ -263,7 +268,7 @@ def main():
             fixture = subprocess.Popen([sys.executable, fixture_py, os.path.join(a.out, "fixture")],
                                        stdout=open(os.path.join(a.out, "fixture.log"), "w"), stderr=subprocess.STDOUT)
             for _ in range(100):
-                m = re.search(r"^ready (\d+)", open(os.path.join(a.out, "fixture.log")).read(), re.M)
+                m = re.search(r"^ready (\d+)", read(os.path.join(a.out, "fixture.log")), re.M)
                 if m:
                     fport = m.group(1)
                     break
@@ -301,7 +306,7 @@ def main():
         except OSError:
             pass
         code = finish(p, 60)
-        crash = re.search(r"saved (\S+-crash\.apkrec)", open(os.path.join(a.out, "crash-rec.log")).read())
+        crash = re.search(r"saved (\S+-crash\.apkrec)", read(os.path.join(a.out, "crash-rec.log")))
         if check(code == 10 and crash is not None, f"the recording crashed (exit {code}) and saved {crash and crash.group(1)}"):
             src = crash.group(1)
             local = src if not a.image else None

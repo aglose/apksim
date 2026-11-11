@@ -90,6 +90,10 @@ final class ImageDiff {
    * `delta`, amber under it, the golden image's pale grey elsewhere. Also `apksim replay`'s frame comparison.
    */
   static Counts diff(int[] gp, int[] cp, int delta, int[] out) {
+    if (gp.length != cp.length || (out != null && out.length != gp.length)) {
+      throw new IllegalArgumentException("images of different sizes: " + gp.length + " and " + cp.length + " pixels"
+          + (out != null ? ", map " + out.length : ""));
+    }
     long over = 0;
     long any = 0;
     int max = 0;

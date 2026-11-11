@@ -146,7 +146,7 @@ fun Trips(db: Db) {
   var rows by remember { mutableStateOf(db.all()) }
   // `--feature dev.apksim.testapp.rename_v2`: the rename behaves as a changed build would (scripts/replay-check.py).
   val context = LocalContext.current
-  val roman = remember { if (context.packageManager.hasSystemFeature("dev.apksim.testapp.rename_v2")) "Roman holiday" else "Roman vacation" }
+  val roman = remember(context) { if (context.packageManager.hasSystemFeature("dev.apksim.testapp.rename_v2")) "Roman holiday" else "Roman vacation" }
   Column(Modifier.fillMaxSize()) {
   LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp)) {
     items(rows, key = { it.first }) { (id, title) ->

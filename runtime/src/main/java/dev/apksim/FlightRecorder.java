@@ -1450,13 +1450,16 @@ final class FlightRecorder {
     z.closeEntry();
   }
 
-  private static volatile String signersOf;
-  private static volatile String signersValue;
+  /** The last APK's signers, as one value: two fields could be read as a mismatched pair across threads. */
+  private record SignersOf(String apk, String signers) {}
+
+  private static volatile SignersOf signersCache;
 
   /** The APK's verified signers (scheme and certificate digests), once per APK and process; null if unsigned. */
   private static String signers(Path apk) {
     String key = apk.toAbsolutePath().toString();
-    if (key.equals(signersOf)) return signersValue;
+    SignersOf cached = signersCache;
+    if (cached != null && key.equals(cached.apk())) return cached.signers();
     String v;
     try {
       dev.apksim.serve.ApkSigners.Signers s = dev.apksim.serve.ApkSigners.of(apk);
@@ -1464,8 +1467,7 @@ final class FlightRecorder {
     } catch (IOException | RuntimeException e) {
       v = null;
     }
-    signersValue = v;
-    signersOf = key;
+    signersCache = new SignersOf(key, v);
     return v;
   }
 

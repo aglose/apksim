@@ -117,8 +117,10 @@ public final class ReplayPlan {
       Files.createDirectories(dir);
       for (ZipEntry e : java.util.Collections.list(z.entries())) {
         String name = e.getName();
-        if (e.isDirectory() || name.equals("checkpoint/data.zip") || name.contains("..") || name.startsWith("/")) continue;
-        Path to = dir.resolve(name);
+        if (e.isDirectory() || name.equals("checkpoint/data.zip")) continue;
+        // Only inside the folder: an entry whose normalized path leaves it (../, absolute, backslashes) is refused.
+        Path to = dir.resolve(name.replace('\\', '/')).normalize();
+        if (!to.startsWith(dir) || to.equals(dir)) throw new Refused("the bundle has an entry outside its folder: " + name);
         Files.createDirectories(to.getParent());
         try (InputStream in = z.getInputStream(e)) {
           Files.copy(in, to, StandardCopyOption.REPLACE_EXISTING);

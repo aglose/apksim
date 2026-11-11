@@ -124,46 +124,48 @@ final class Replay {
     Path input = dir.resolve("input.jsonl");
     if (Files.isRegularFile(input)) {
       int down = 0;
-      for (String line : Files.readAllLines(input, StandardCharsets.UTF_8)) {
-        if (line.isBlank()) continue;
-        Map<String, Object> m = ReplayPlan.map(json(line));
-        long at = (long) num(m.get("t"));
-        long wall = (long) num(m.get("w"));
-        if (at < cpUptime) continue;  // from before the checkpoint (none are saved, but an older bundle might)
-        if (m.get("cmd") instanceof List<?> c) {
-          String[] a = c.stream().map(String::valueOf).toArray(String[]::new);
-          if (a.length == 0) continue;
-          items.add(new Item(at, wall, null, a, true, String.join(" ", a)));
-          continue;
-        }
-        int type = (int) num(m.get("type"));
-        if (type == SimWindow.CLOSE) continue;  // closing the window ended the recording: not repeated
-        float x = (float) num(m.get("x"));
-        float y = (float) num(m.get("y"));
-        float v = (float) num(m.get("v"));
-        if (Boolean.TRUE.equals(m.get("redacted"))) {
-          // Left out of the recording (a password field, pasted text): a placeholder of the same kind.
-          if (type == SimWindow.KEY) {
-            x = 0;
-            v = android.view.KeyEvent.KEYCODE_X;
-          } else {
-            type = SimWindow.CHAR;
-            x = 0;
-            y = 0;
-            v = 'x';
+      try (java.io.BufferedReader lines = Files.newBufferedReader(input, StandardCharsets.UTF_8)) {
+        for (String line; (line = lines.readLine()) != null; ) {
+          if (line.isBlank()) continue;
+          Map<String, Object> m = ReplayPlan.map(json(line));
+          long at = (long) num(m.get("t"));
+          long wall = (long) num(m.get("w"));
+          if (at < cpUptime) continue;  // from before the checkpoint (none are saved, but an older bundle might)
+          if (m.get("cmd") instanceof List<?> c) {
+            String[] a = c.stream().map(String::valueOf).toArray(String[]::new);
+            if (a.length == 0) continue;
+            items.add(new Item(at, wall, null, a, true, String.join(" ", a)));
+            continue;
           }
+          int type = (int) num(m.get("type"));
+          if (type == SimWindow.CLOSE) continue;  // closing the window ended the recording: not repeated
+          float x = (float) num(m.get("x"));
+          float y = (float) num(m.get("y"));
+          float v = (float) num(m.get("v"));
+          if (Boolean.TRUE.equals(m.get("redacted"))) {
+            // Left out of the recording (a password field, pasted text): a placeholder of the same kind.
+            if (type == SimWindow.KEY) {
+              x = 0;
+              v = android.view.KeyEvent.KEYCODE_X;
+            } else {
+              type = SimWindow.CHAR;
+              x = 0;
+              y = 0;
+              v = 'x';
+            }
+          }
+          boolean point = switch (type) {
+            case SimWindow.DOWN, SimWindow.TOUCH2_CENTRE -> down == 0;
+            case SimWindow.KEY, SimWindow.BACK, SimWindow.RESIZE -> true;
+            case SimWindow.CHAR, SimWindow.WHEEL, SimWindow.ROTARY -> items.isEmpty() || items.get(items.size() - 1).event == null
+                || items.get(items.size() - 1).event.type() != type;  // the first of a run
+            default -> false;
+          };
+          if (type == SimWindow.DOWN || type == SimWindow.TOUCH2_DOWN) down++;
+          else if (type == SimWindow.UP || type == SimWindow.CANCEL || type == SimWindow.TOUCH2_UP) down = Math.max(0, down - 1);
+          String what = String.valueOf(m.get("ev")) + (type == SimWindow.CHAR || type == SimWindow.KEY ? "" : " " + Math.round(x) + "," + Math.round(y));
+          items.add(new Item(at, wall, new SimWindow.Event(type, x, y, v), null, point, what));
         }
-        boolean point = switch (type) {
-          case SimWindow.DOWN, SimWindow.TOUCH2_CENTRE -> down == 0;
-          case SimWindow.KEY, SimWindow.BACK, SimWindow.RESIZE -> true;
-          case SimWindow.CHAR, SimWindow.WHEEL, SimWindow.ROTARY -> items.isEmpty() || items.get(items.size() - 1).event == null
-              || items.get(items.size() - 1).event.type() != type;  // the first of a run
-          default -> false;
-        };
-        if (type == SimWindow.DOWN || type == SimWindow.TOUCH2_DOWN) down++;
-        else if (type == SimWindow.UP || type == SimWindow.CANCEL || type == SimWindow.TOUCH2_UP) down = Math.max(0, down - 1);
-        String what = String.valueOf(m.get("ev")) + (type == SimWindow.CHAR || type == SimWindow.KEY ? "" : " " + Math.round(x) + "," + Math.round(y));
-        items.add(new Item(at, wall, new SimWindow.Event(type, x, y, v), null, point, what));
       }
     }
     items.sort(java.util.Comparator.comparingLong(Item::t));
@@ -366,6 +368,10 @@ final class Replay {
     try {
       byte[] mineJpeg = encode(shot, movie.w, movie.h, Math.max(movie.w, movie.h));
       mine = BitmapFactory.decodeByteArray(mineJpeg, 0, mineJpeg.length);
+      if (mine == null) {
+        notes.add("point " + n + " (" + label + ") not compared: the screen's JPEG did not decode");
+        return;
+      }
       int[] mp = new int[movie.w * movie.h];
       mine.getPixels(mp, 0, movie.w, 0, 0, movie.w, movie.h);
       long best = Long.MAX_VALUE;
@@ -534,8 +540,19 @@ final class Replay {
      */
     List<byte[]> around(long at, long backMs) {
       List<byte[]> out = new ArrayList<>();
+      // walls only grow: the newest kept by `at` by binary search.
+      int lo = 0;
+      int hi = walls.size() - 1;
       int newest = -1;
-      for (int k = 0; k < walls.size(); k++) if (walls.get(k) <= at) newest = k;
+      while (lo <= hi) {
+        int mid = (lo + hi) >>> 1;
+        if (walls.get(mid) <= at) {
+          newest = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
       if (newest + 1 < walls.size() && walls.get(newest + 1) <= at + 250) out.add(frames.get(newest + 1));
       if (newest >= 0) out.add(frames.get(newest));
       for (int k = newest - 1; k >= 0 && walls.get(k) >= at - backMs; k--) out.add(frames.get(k));

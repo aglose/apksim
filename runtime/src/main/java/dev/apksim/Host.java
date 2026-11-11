@@ -156,6 +156,7 @@ public class Host {
         } catch (IllegalStateException | java.io.IOException e) {
           System.err.println("[apksim] replay: cannot start: " + e.getMessage());
           exit(2, "the replay could not start");
+          return;  // exit halts the process; nothing below may run if it ever returns
         }
       }
     } catch (Throwable crash) {

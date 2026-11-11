@@ -353,7 +353,7 @@ if [[ -n "${SKIN:-}" ]]; then
 fi
 if [[ -n "${REPLAY:-}" ]]; then
   mkdir -p "$STATE/tmp"
-  PLAN="$STATE/tmp/replay-plan.$$"
+  PLAN="$(mktemp "$STATE/tmp/replay-plan.XXXXXX")" || exit 2
   "$JAVA" -XX:+UseSerialGC -Xmx512m -XX:TieredStopAtLevel=1 -Djava.awt.headless=true -Dapksim.state="$STATE" \
     -cp "$ROOT/work/apksim.jar" dev.apksim.ReplayPlan "$@" > "$PLAN" || { S=$?; rm -f "$PLAN"; exit $S; }
   ARGS=()
