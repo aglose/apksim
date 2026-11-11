@@ -350,7 +350,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
-  launch-time budget: what it measures, why against a fixed anchor, moving the anchor).
+  launch-time budget: what it measures, why against a fixed anchor, moving the anchor), `conformance.md` (libraries'
+  documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left).
 - `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
   `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
   `startup-gate` on an Apple Silicon runner (`macos-15`, or a self-hosted Mac while the `STARTUP_GATE_RUNNER` repository variable is set; the Mac's job-started hook, `scripts/runner-job-started.sh`, refuses every other job and forks' pull requests: docs/startup-gate.md). A `changes` job skips the build, test and Mac jobs for a pull request that touches only Markdown, `.txt`,

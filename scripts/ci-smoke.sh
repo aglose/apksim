@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="$1" APK="$2" OUT="$(mkdir -p "$3" && cd "$3" && pwd)" UISERVER="${4:-}"
 PORT=7400 ADB_PORT=7401 NAME=apksim-smoke-$$
+# scripts/conformance.py reads `am instrument` output and tables two runs (docs/conformance.md); no device needed.
+python3 "$ROOT/scripts/conformance-check.py"
 # The image's own platform (linux/amd64 or linux/arm64), so Docker never pulls or emulates another.
 PLATFORM="linux/$(docker image inspect -f '{{.Architecture}}' "$IMAGE")"
 cp "$APK" "$OUT/app.apk"

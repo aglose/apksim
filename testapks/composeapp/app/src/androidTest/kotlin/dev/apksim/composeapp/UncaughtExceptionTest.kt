@@ -7,6 +7,7 @@ import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -31,6 +32,14 @@ class UncaughtExceptionTest {
     ActivityScenario.launch<CrashActivity>(intent).use {
       SystemClock.sleep(1000)  // past the coroutine's 300 ms delay
       InstrumentationRegistry.getInstrumentation().waitForIdleSync()  // it runs, and throws, here
+    }
+    // kotlinx-coroutines-test keeps an uncaught coroutine exception for the next runTest, which would fail whichever
+    // Compose rule test comes next ("There were uncaught exceptions before the test started"): take it here.
+    try {
+      runTest { }
+    } catch (expected: IllegalStateException) {
+      // kotlinx.coroutines.test's (internal) UncaughtExceptionsBeforeTest: anything else is a real failure
+      if (expected.javaClass.simpleName != "UncaughtExceptionsBeforeTest") throw expected
     }
   }
 }
