@@ -253,8 +253,19 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   real downloads run at once (a shared one counts once); another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
 - `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
   last three while it is downloading or has failed).
+- **Time to live** (previews, docs/pr-preview.md): `"ttl": SECONDS` in the `POST /api/apps` body, or `?ttl=SECONDS` on
+  `POST /api/upload`, 60 to 604800 (else `400`): the id expires then, used or not, instead of a day after its last use. New
+  sessions and `GET /api/apps/ID` no longer find it (`404`), the hourly sweep deletes it and its APK, and sessions already running
+  go on. `GET /api/apps/ID` has `"expiresInS"` while one is set.
 - A tab (or `/ws?app=ID`) may open the id while it is still downloading: the session waits for it and sends `p
   downloading N%` messages (at most one a second) before `p launching ...`.
+
+### Compare mode
+
+`/?compare=A,B` (two app ids; anything else is a `400`) serves a second page (`compare.html`) that starts a session for each app,
+sends every input and device command to both, and shows the two screens side by side with a third that marks the pixels that
+differ and their count (docs/pr-preview.md). The two are ordinary sessions: each takes a place under `--max`, the page closes
+both when either ends, and nothing in the server ties them together. JPEG and H.264 both work (the page decodes and compares).
 
 ### Embedding
 

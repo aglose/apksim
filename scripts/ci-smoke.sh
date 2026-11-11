@@ -316,6 +316,8 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
   --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
+# Compare mode and PR previews (docs/pr-preview.md): two mirrored sessions, a build added with a time to live, pr-preview.py.
+python3 "$ROOT/scripts/compare-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --apk "$OUT/app.apk" | tee "$OUT/compare-check.log"
 # A slow link's window: acks and pongs held 200 ms against a second serve with a cap of 4 (the check looks at the
 # stats' window right after its drag: it must be above 2 and within the cap).
 SERVE2_NAME=apksim-serve-slow-$$ SERVE2_PORT=7403

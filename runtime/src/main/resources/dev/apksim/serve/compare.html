@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apksim compare</title>
+<style>
+:root {
+  --bg: #f4f4f2; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #dcdcd8; --accent: #2f6fde;
+  --accent-ink: #ffffff; --bezel: #111214; --warn: #b3261e; --ok: #1e7b34;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161618; --panel: #202023; --ink: #ececee; --muted: #9a9aa0; --line: #34343a; --accent: #6b9cff;
+    --accent-ink: #0b0b0c; --bezel: #000000; --warn: #ff8a80; --ok: #7bd88f; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; background: var(--panel);
+  border-bottom: 1px solid var(--line); }
+header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .02em; }
+select, input[type=text], button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-height: 30px; }
+input[type=text] { width: 150px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.spacer { flex: 1; }
+main { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 16px; min-height: 0; }
+.pane { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.pane h2 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600;
+  display: flex; justify-content: space-between; gap: 8px; }
+.pane h2 span:last-child { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+.bezel { background: var(--bezel); padding: 8px; border-radius: 18px; box-shadow: 0 6px 30px rgba(0,0,0,.25); position: relative; line-height: 0; }
+canvas { display: block; border-radius: 10px; background: #000; touch-action: none; outline: none; cursor: default; }
+.bezel.typing { box-shadow: 0 0 0 2px var(--accent), 0 6px 30px rgba(0,0,0,.25); }
+.overlay { position: absolute; inset: 8px; border-radius: 10px; display: flex; flex-direction: column; gap: 10px; align-items: center;
+  justify-content: center; text-align: center; padding: 18px; background: rgba(0,0,0,.62); color: #fff; line-height: 1.4; font-size: 13px; }
+.overlay[hidden] { display: none; }
+.overlay button { background: #fff; color: #111; border: 0; }
+.ask { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.ask[hidden] { display: none; }
+#keys { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; pointer-events: none; }
+footer { padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap;
+  align-items: baseline; font-variant-numeric: tabular-nums; }
+#sum { font-weight: 600; }
+#sum.same { color: var(--ok); }
+#sum.differs { color: var(--warn); }
+#log { color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; flex: 1; min-width: 200px; white-space: pre-wrap; max-height: 64px; overflow-y: auto; }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  main { grid-template-columns: 1fr; }
+  .stage { height: 70vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>apksim compare</h1>
+  <select id="drive" aria-label="Which sessions take input" title="Which sessions take input and device commands">
+    <option value="both">Drive: both</option><option value="a">Drive: A only</option><option value="b">Drive: B only</option></select>
+  <button id="back" title="Back (Esc)">◁ Back</button>
+  <button id="home" title="Home">○ Home</button>
+  <button id="rotl" title="Rotate left">⟲</button>
+  <button id="rotr" title="Rotate right">⟳</button>
+  <label><input id="dark" type="checkbox"> Dark</label>
+  <select id="device" aria-label="Device"></select>
+  <select id="fontscale" aria-label="Text size"><option value="0.85">Text 85%</option><option value="1" selected>Text 100%</option>
+    <option value="1.3">Text 130%</option><option value="1.5">Text 150%</option></select>
+  <input id="locale" type="text" placeholder="Locale, e.g. fr-FR" aria-label="Locale">
+  <input id="url" type="text" placeholder="Deep link" aria-label="Deep link"><button id="go">Open</button>
+  <span class="spacer"></span>
+  <select id="tol" aria-label="Difference threshold" title="A pixel counts as different when a colour channel differs by more than this (the stream is lossy)">
+    <option value="0">Pixel exact</option><option value="8">Differ by &gt; 8</option><option value="16" selected>Differ by &gt; 16</option><option value="32">Differ by &gt; 32</option></select>
+  <select id="behind" aria-label="Behind the difference"><option value="a">Diff over A</option><option value="b">Diff over B</option><option value="none">Diff only</option></select>
+  <button id="stop">Stop</button>
+</header>
+<main>
+  <section class="pane"><h2><span>A <span id="nameA"></span></span><span id="statA"></span></h2>
+    <div class="stage"><div class="bezel" id="bezelA"><canvas id="cvA" width="822" height="1782"></canvas>
+      <div class="overlay" id="ovA">Starting…</div></div></div>
+    <div class="ask" id="askA" hidden><span></span><button class="allow">Allow</button><button class="deny">Don't allow</button></div></section>
+  <section class="pane"><h2><span>B <span id="nameB"></span></span><span id="statB"></span></h2>
+    <div class="stage"><div class="bezel" id="bezelB"><canvas id="cvB" width="822" height="1782"></canvas>
+      <div class="overlay" id="ovB">Starting…</div></div></div>
+    <div class="ask" id="askB" hidden><span></span><button class="allow">Allow</button><button class="deny">Don't allow</button></div></section>
+  <section class="pane"><h2><span>Difference</span><span id="statD"></span></h2>
+    <div class="stage"><div class="bezel" id="bezelD"><canvas id="cvD" width="822" height="1782"></canvas>
+      <div class="overlay" id="ovD">Waiting for both screens…</div></div></div></section>
+  <textarea id="keys" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Keyboard input to both apps"></textarea>
+</main>
+<footer><span id="sum">–</span><span id="log"></span></footer>
+<script>
+"use strict";
+// Compare mode (docs/pr-preview.md): two ordinary sessions of this server, one tab. Input and device commands go to both,
+// the frames of each are decoded here (JPEG or H.264, as the main page does) and the pixels that differ are counted here,
+// so no session knows of the other and each counts against --max. Screens that drift apart are shown, not repaired.
+const redirecting = !location.pathname.endsWith("/");
+if (redirecting) location.replace(location.pathname + "/" + location.search + location.hash);
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const base = location.pathname.replace(/[^/]*$/, "");
+const ids = (params.get("compare") || "").split(",");
+// Framed with embed=1 (docs/serve.md "Embedding"), the token comes in the address and goes on each request as ?token=: a
+// cross-site frame gets no cookie. It is taken out of the address and kept in memory.
+const token = params.get("token");
+if (token && !redirecting) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
+const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
+const labels = (params.get("labels") || "").split(",");
+const state = { appearance: params.get("appearance") === "dark" ? "dark" : "light", device: params.get("device") || "",
+  locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
+  orientation: params.get("orientation") || "" };
+const KEYS = { Backspace: "DEL", Delete: "FORWARD_DEL", Enter: "ENTER", Tab: "TAB", ArrowLeft: "DPAD_LEFT", ArrowRight: "DPAD_RIGHT",
+  ArrowUp: "DPAD_UP", ArrowDown: "DPAD_DOWN", Home: "MOVE_HOME", End: "MOVE_END", PageUp: "PAGE_UP", PageDown: "PAGE_DOWN" };
+let h264Ok = false, ended = false, gen = 0;
+const codecReady = (async () => {
+  if (params.get("codec") === "jpeg" || typeof VideoDecoder !== "function") return;
+  try { h264Ok = (await VideoDecoder.isConfigSupported({ codec: "avc1.640033", optimizeForLatency: true })).supported === true; }
+  catch (e) { /* JPEG then */ }
+})();
+function log(line) {
+  const el = $("log");
+  el.textContent += (el.textContent ? "\n" : "") + line;
+  el.scrollTop = el.scrollHeight;
+}
+function avcCodec(data) {
+  for (let i = 0; i + 6 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1 && (data[i + 3] & 0x1f) === 7) {
+      return "avc1." + [data[i + 4], data[i + 5], data[i + 6]].map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+  }
+  return "avc1.640033";
+}
+
+// ---------------------------------------------------------------- one side: a session's socket, decoder and canvas
+class Side {
+  constructor(key, appId, label) {
+    this.key = key; this.app = appId; this.label = label;
+    this.canvas = $("cv" + key.toUpperCase()); this.ctx = this.canvas.getContext("2d", { willReadFrequently: true });
+    this.overlay = $("ov" + key.toUpperCase());
+    this.ask = $("ask" + key.toUpperCase());
+    this.reset();
+  }
+  reset() {
+    this.sock = null; this.w = 0; this.h = 0; this.frames = 0; this.mode = "jpeg"; this.name = this.label || "";
+    this.decoder = null; this.decoderCodec = ""; this.decoderW = 0; this.decoderH = 0; this.needKey = true; this.keyAsked = false;
+    this.decoding = []; this.chain = Promise.resolve(); this.sessionId = ""; this.up = false; this.gen = 0; this.ts = 0;
+    this.pending = [];  // commands sent before the socket opened
+  }
+  say(text, button, action) {
+    this.overlay.hidden = !text;
+    this.overlay.replaceChildren(document.createTextNode(text || ""));
+    if (button) { const b = document.createElement("button"); b.textContent = button; b.onclick = action; this.overlay.appendChild(b); }
+  }
+  open() {
+    this.closeDecoder();
+    const q = new URLSearchParams({ app: this.app, appearance: state.appearance });
+    if (state.device) q.set("device", state.device);
+    for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
+    if (h264Ok) q.set("codec", "h264");
+    this.reset();
+    this.gen = gen;
+    this.say("Starting…");
+    const sock = this.sock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q));
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => { if (document.visibilityState === "hidden") this.send("maxfps 1"); };
+    sock.onmessage = e => { if (sock === this.sock) typeof e.data === "string" ? this.text(e.data) : this.frame(e.data); };
+    sock.onclose = () => { if (sock === this.sock && !ended) end("the session of " + this.tag() + " closed", this); };
+  }
+  tag() { return this.key.toUpperCase() + (this.name ? " (" + this.name + ")" : ""); }
+  send(cmd) { if (this.sock && this.sock.readyState === 1 && !ended) this.sock.send(cmd); }
+  close() { const s = this.sock; this.sock = null; this.closeDecoder(); if (s) try { s.close(); } catch (e) { /* closed */ } }
+  text(t) {
+    const kind = t[0], body = t.slice(2);
+    if (kind === "p") { if (!this.w) this.say(body.charAt(0).toUpperCase() + body.slice(1) + "…"); }
+    else if (kind === "i") {
+      const i = JSON.parse(body); this.sessionId = i.id; this.up = true;
+      if (!this.label) this.name = i.app;
+      $("name" + this.key.toUpperCase()).textContent = this.name;
+      log(this.key.toUpperCase() + ": session " + i.id + ", " + i.app + " on " + i.device);
+      if (i.device) devices(i.device);
+    }
+    else if (kind === "c") this.mode = body === "h264" ? "h264" : "jpeg";
+    else if (kind === "q") { this.ask.hidden = false; this.ask.firstChild.textContent = this.key.toUpperCase() + " asks for: " + body; }
+    else if (kind === "r") log(this.key.toUpperCase() + ": " + body);
+    else if (kind === "x") {
+      const why = body.charAt(0).toUpperCase() + body.slice(1) + ".";
+      if (/^all \d+ sessions are in use/.test(body)) {
+        // Our own sessions just closed (Stop and Start, the JPEG fallback) hold their places until their instances have
+        // exited: tried again, a little later each time, as the main page does. Otherwise the server really is full.
+        if (Date.now() - lastOwnClose < 30000 && busyTries < 6 && !ended) {
+          busyTries++;
+          const mine = gen;
+          for (const s of sides) s.close();
+          log("waiting for the previous sessions to end (" + busyTries + ")");
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => { retryTimer = 0; if (gen === mine && !ended) startBoth(true); }, 500 * 2 ** (busyTries - 1));
+          return;
+        }
+        end("A comparison needs two sessions and the server has no second one free (" + body + ")", this);
+      }
+      else end(why, this);
+    }
+  }
+  frame(buf) {
+    const dv = new DataView(buf);
+    const w = dv.getInt32(0), h = dv.getInt32(4);
+    if (this.mode === "h264") return this.video(dv, buf, w, h);
+    const jpeg = new Blob([new Uint8Array(buf, 20)], { type: "image/jpeg" });
+    const sock = this.sock;
+    this.chain = this.chain.then(() => createImageBitmap(jpeg)).then(bmp => {
+      if (sock !== this.sock || ended) { bmp.close(); return; }
+      this.show(bmp, w, h);
+    }).catch(() => { if (sock === this.sock) this.send("ack"); });
+  }
+  show(image, w, h) {
+    if (w !== this.w || h !== this.h) { this.w = this.canvas.width = w; this.h = this.canvas.height = h; fit(); }
+    this.ctx.drawImage(image, 0, 0, w, h);
+    image.close();
+    this.send("ack");
+    this.frames++;
+    busyTries = 0;
+    if (!this.overlay.hidden && !this.overlay.querySelector("button")) this.say(null);
+    dirty = true;
+  }
+  closeDecoder() {
+    if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+    // Frames queued in the decoder will never come out: each is acknowledged, or the server counts it in flight for good.
+    for (let i = 0; i < this.decoding.length; i++) this.send("ack");
+    this.decoder = null; this.decoding = []; this.needKey = true; this.keyAsked = false;
+  }
+  lost(why) { log(this.key.toUpperCase() + ": video: " + why); this.closeDecoder(); this.send("key"); this.keyAsked = true; }
+  video(dv, buf, w, h) {
+    const key = dv.getUint8(20) === 1, data = new Uint8Array(buf, 21);
+    if (key) {
+      const codec = avcCodec(data);
+      if (!this.decoder || this.decoder.state !== "configured" || codec !== this.decoderCodec || w !== this.decoderW || h !== this.decoderH) {
+        this.closeDecoder();
+        const d = this.decoder = new VideoDecoder({
+          output: frame => {
+            const m = this.decoding.shift();
+            if (d !== this.decoder || !m || ended) { frame.close(); if (m) this.send("ack"); return; }
+            this.show(frame, m.w, m.h);
+          },
+          error: e => {
+            if (d !== this.decoder) return;
+            if (e.name === "NotSupportedError") { log("video: this browser cannot decode the stream: starting again with JPEG"); h264Ok = false; startBoth(); }
+            else this.lost(e.message);
+          },
+        });
+        try { d.configure({ codec, codedWidth: w, codedHeight: h, optimizeForLatency: true }); }
+        catch (e) { this.send("ack"); h264Ok = false; startBoth(); return; }
+        this.decoderCodec = codec; this.decoderW = w; this.decoderH = h;
+      }
+      this.needKey = this.keyAsked = false;
+    }
+    if (this.needKey || !this.decoder || this.decoder.state !== "configured") {
+      this.send("ack");
+      if (!this.keyAsked) { this.send("key"); this.keyAsked = true; }
+      return;
+    }
+    this.decoding.push({ w, h });
+    try { this.decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: this.ts += 1000, data })); }
+    catch (e) { this.lost(e.message); }
+  }
+}
+const A = new Side("a", ids[0], labels[0] || ""), B = new Side("b", ids[1], labels[1] || "");
+const sides = [A, B];
+for (const s of sides) {
+  s.ask.querySelector(".allow").onclick = () => { s.send("permission allow"); s.ask.hidden = true; };
+  s.ask.querySelector(".deny").onclick = () => { s.send("permission deny"); s.ask.hidden = true; };
+}
+
+// ---------------------------------------------------------------- both together
+let busyTries = 0, retryTimer = 0, lastOwnClose = 0;
+async function startBoth(retry) {
+  await codecReady;
+  if (!retry) busyTries = 0;
+  clearTimeout(retryTimer); retryTimer = 0;
+  gen++; ended = false;
+  if (A.sock || B.sock) lastOwnClose = Date.now();
+  for (const s of sides) s.close();
+  $("ovD").hidden = false; $("ovD").textContent = "Waiting for both screens…";
+  for (const s of sides) s.open();
+  $("stop").textContent = "Stop";
+}
+// One ends, both end: a comparison with a side missing says nothing. `why` is shown on the side that ended it.
+function end(why, from) {
+  if (ended) return;
+  ended = true;
+  clearTimeout(retryTimer); retryTimer = 0;
+  lastOwnClose = Date.now();
+  log(why);
+  for (const s of sides) {
+    s.close();
+    s.say(s === from ? why : "Stopped: the other session ended.", "Start again", startBoth);
+  }
+  $("stop").textContent = "Start";
+  const sum = $("sum"); sum.className = ""; sum.textContent = "Comparison ended";
+}
+$("stop").onclick = () => { if (ended) startBoth(); else end("Stopped.", A); };
+addEventListener("pagehide", () => { for (const s of sides) s.close(); });
+document.addEventListener("visibilitychange", () => {
+  for (const s of sides) s.send(document.visibilityState === "hidden" ? "maxfps 1" : "maxfps 120");
+});
+
+// ---------------------------------------------------------------- the difference
+let dirty = false, diff = { count: 0, total: 0, pct: 0, box: null, sameSize: true, at: 0, computed: false }, lastCost = 0;
+const mask = document.createElement("canvas"), cvD = $("cvD"), ctxD = cvD.getContext("2d");
+const RED = 0xff5028ff;  // opaque (R 255, G 40, B 80), as the little-endian word of RGBA
+function compute() {
+  dirty = false;
+  const t0 = performance.now();
+  if (!A.w || !B.w) { diff = { count: 0, total: 0, pct: 0, box: null, sameSize: true, at: Date.now(), computed: false }; summary(); return; }
+  if (A.w !== B.w || A.h !== B.h) {
+    diff = { count: -1, total: 0, pct: 0, box: null, sameSize: false, at: Date.now(), computed: true };
+    $("ovD").hidden = false;
+    $("ovD").textContent = "The screens are different sizes (A " + A.w + "×" + A.h + ", B " + B.w + "×" + B.h + "): no pixel comparison.";
+    summary(); return;
+  }
+  const w = A.w, h = A.h, tol = +$("tol").value;
+  const pa = new Uint32Array(A.ctx.getImageData(0, 0, w, h).data.buffer), pb = new Uint32Array(B.ctx.getImageData(0, 0, w, h).data.buffer);
+  const m = new ImageData(w, h), pm = new Uint32Array(m.data.buffer);
+  let count = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++, i++) {
+      const a = pa[i], b = pb[i];
+      if (a === b) continue;
+      const dr = Math.abs((a & 255) - (b & 255)), dg = Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)), db = Math.abs(((a >> 16) & 255) - ((b >> 16) & 255));
+      if (dr <= tol && dg <= tol && db <= tol) continue;
+      pm[i] = RED; count++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      y1 = y;
+    }
+  }
+  mask.width = w; mask.height = h;
+  mask.getContext("2d").putImageData(m, 0, 0);
+  if (cvD.width !== w || cvD.height !== h) { cvD.width = w; cvD.height = h; fit(); }
+  const behind = $("behind").value;
+  ctxD.globalAlpha = 1; ctxD.fillStyle = "#101012"; ctxD.fillRect(0, 0, w, h);
+  if (behind !== "none") { ctxD.globalAlpha = 0.3; ctxD.drawImage(behind === "a" ? A.canvas : B.canvas, 0, 0); ctxD.globalAlpha = 1; }
+  ctxD.drawImage(mask, 0, 0);
+  if (count) { ctxD.strokeStyle = "#ffd60a"; ctxD.lineWidth = Math.max(2, w / 300); ctxD.strokeRect(x0 - 3, y0 - 3, x1 - x0 + 7, y1 - y0 + 7); }
+  $("ovD").hidden = true;
+  diff = { count, total: w * h, pct: count * 100 / (w * h), box: count ? [x0, y0, x1, y1] : null, sameSize: true, at: Date.now(), computed: true };
+  lastCost = performance.now() - t0;
+  summary();
+}
+function summary() {
+  const s = $("sum");
+  $("statA").textContent = A.w ? A.w + "×" + A.h + " · " + A.mode.toUpperCase() : "";
+  $("statB").textContent = B.w ? B.w + "×" + B.h + " · " + B.mode.toUpperCase() : "";
+  if (!diff.computed) { s.className = ""; s.textContent = "Waiting for both screens…"; $("statD").textContent = ""; return; }
+  if (!diff.sameSize) { s.className = "differs"; s.textContent = "Different screen sizes"; $("statD").textContent = ""; return; }
+  s.className = diff.count ? "differs" : "same";
+  s.textContent = diff.count ? diff.count.toLocaleString() + " of " + diff.total.toLocaleString() + " pixels differ (" + diff.pct.toFixed(diff.pct < 1 ? 2 : 1) + "%)"
+    : "No pixel differs";
+  $("statD").textContent = diff.box ? "box " + diff.box.join(", ") : "";
+}
+setInterval(() => { if (dirty) compute(); }, 100);
+for (const id of ["tol", "behind"]) $(id).onchange = compute;
+// For scripts and the check (scripts/compare-check.py): what each side shows and the current difference. `recompute`
+// compares the screens as they are now, not as of the last interval.
+window.apksimCompare = recompute => {
+  if (recompute) compute();
+  const side = s => ({ app: s.app, name: s.name, frames: s.frames, width: s.w, height: s.h, codec: s.mode, session: s.sessionId, up: s.up });
+  return { a: side(A), b: side(B), diff, tolerance: +$("tol").value, ended, lastCostMs: lastCost };
+};
+
+// ---------------------------------------------------------------- layout
+function fit() {
+  for (const [c, s] of [[A.canvas, A], [B.canvas, B], [cvD, A]]) {
+    const stage = c.closest(".stage"), w = s.w || c.width, h = s.h || c.height;
+    const k = Math.max(0.05, Math.min((stage.clientWidth - 28) / w, (stage.clientHeight - 28) / h, 1 / Math.max(1, devicePixelRatio)));
+    c.style.width = Math.floor(w * k) + "px";
+    c.style.height = Math.floor(h * k) + "px";
+  }
+}
+addEventListener("resize", fit);
+
+// ---------------------------------------------------------------- input, to every driven session
+function driven() { const d = $("drive").value; return d === "both" ? sides : [d === "a" ? A : B]; }
+function sendAll(cmd) { for (const s of driven()) s.send(cmd); }
+// A pointer position as a fraction of the canvas it is over, which each session turns into its own pixels.
+function frac(e, c) {
+  const r = c.getBoundingClientRect();
+  return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))];
+}
+function xy(f, s) { return Math.min(s.w - 1, f[0] * s.w).toFixed(1) + " " + Math.min(s.h - 1, f[1] * s.h).toFixed(1); }
+// A gesture goes to every driven session or to none: before a driven side has a screen (no frame yet) it is dropped, so the
+// two never get different halves of a gesture.
+function ready() { return driven().every(s => s.w); }
+function touch(kind, f) { for (const s of driven()) s.send("touch " + kind + " " + xy(f, s)); }
+let down = false, move = null, wheel = 0, wheelAt = null, scheduled = false;
+function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(flush); } }
+function flush() {
+  scheduled = false;
+  if (move && down) { touch("move", move); move = null; }
+  if (wheelAt && Math.abs(wheel) >= 1) {
+    const amount = Math.max(-50, Math.min(50, -wheel / 100)).toFixed(2);
+    if (ready()) for (const s of driven()) s.send("wheel " + xy(wheelAt, s) + " " + amount);
+    wheel = 0;
+  }
+}
+const keys = $("keys"), SENTINEL = "​";
+for (const c of [A.canvas, B.canvas, cvD]) {
+  c.addEventListener("pointerdown", e => {
+    if (!e.isPrimary || e.button > 0 || ended) return;
+    e.preventDefault();
+    keys.focus({ preventScroll: true });
+    if (!ready()) return;
+    c.setPointerCapture(e.pointerId);
+    down = true; move = null;
+    touch("down", frac(e, c));
+  });
+  c.addEventListener("pointermove", e => { if (down && e.isPrimary) { move = frac(e, c); schedule(); } });
+  c.addEventListener("pointerup", e => {
+    if (!down || !e.isPrimary) return;
+    if (move) { touch("move", move); move = null; }
+    touch("up", frac(e, c));
+    down = false;
+  });
+  c.addEventListener("pointercancel", e => { if (down) { touch("cancel", frac(e, c)); down = false; } });
+  c.addEventListener("wheel", e => {
+    e.preventDefault();
+    wheel += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+    wheelAt = frac(e, c);
+    schedule();
+  }, { passive: false });
+  c.addEventListener("contextmenu", e => e.preventDefault());
+}
+function resetKeys() { keys.value = SENTINEL; keys.setSelectionRange(1, 1); }
+resetKeys();
+keys.addEventListener("focus", () => { for (const id of ["A", "B", "D"]) $("bezel" + id).classList.add("typing"); resetKeys(); });
+keys.addEventListener("blur", () => { for (const id of ["A", "B", "D"]) $("bezel" + id).classList.remove("typing"); });
+keys.addEventListener("keydown", e => {
+  if (e.isComposing) return;
+  const mods = [];
+  if (e.ctrlKey || e.metaKey) mods.push("ctrl");
+  if (e.shiftKey) mods.push("shift");
+  if (e.altKey) mods.push("alt");
+  if (e.key === "Escape" && e.shiftKey) { e.preventDefault(); keys.blur(); $("stop").focus(); return; }
+  if (e.key === "Escape") { sendAll("back"); e.preventDefault(); return; }
+  if (KEYS[e.key]) { sendAll("key " + KEYS[e.key] + " 1" + (mods.length ? " " + mods.join(" ") : "")); e.preventDefault(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.length === 1 && e.key.toLowerCase() !== "v" && /^[a-z0-9]$/i.test(e.key)) {
+    sendAll("key " + e.key.toUpperCase() + " 1 " + mods.join(" "));
+    e.preventDefault();
+  }
+});
+function sendText(text) {
+  for (const p of text.replace(/[\r\n]+/g, " ").split(/( )/)) {
+    if (p === " ") { sendAll("key SPACE"); continue; }
+    const chars = Array.from(p);
+    for (let i = 0; i < chars.length; i += 1000) sendAll("type " + chars.slice(i, i + 1000).join(""));
+  }
+}
+function takeText(e) {
+  if (e && e.isComposing) return;
+  const text = keys.value.split(SENTINEL).join("");
+  if (text) sendText(text);
+  resetKeys();
+}
+keys.addEventListener("beforeinput", e => {
+  const key = { deleteContentBackward: "DEL", deleteWordBackward: "DEL", deleteContentForward: "FORWARD_DEL",
+    insertLineBreak: "ENTER", insertParagraph: "ENTER" }[e.inputType];
+  if (!key || e.isComposing) return;
+  e.preventDefault();
+  sendAll("key " + key);
+});
+keys.addEventListener("input", takeText);
+keys.addEventListener("compositionend", () => setTimeout(takeText, 0));
+
+// ---------------------------------------------------------------- device controls, to every driven session
+$("back").onclick = () => sendAll("back");
+$("home").onclick = () => sendAll("home");
+$("rotl").onclick = () => sendAll("rotate left");
+$("rotr").onclick = () => sendAll("rotate right");
+$("dark").checked = state.appearance === "dark";
+$("dark").onchange = () => { state.appearance = $("dark").checked ? "dark" : "light"; sendAll("appearance " + state.appearance); };
+$("device").onchange = () => { state.device = $("device").value; sendAll("device " + state.device); };
+$("fontscale").value = state.fontscale || "1";
+$("fontscale").onchange = () => { state.fontscale = $("fontscale").value === "1" ? "" : $("fontscale").value; sendAll("fontscale " + $("fontscale").value); };
+$("locale").value = state.locale;
+$("locale").onchange = () => {
+  const v = $("locale").value.trim();
+  if (v && !/^[a-z]{2,3}(-[A-Z]{2})?$/.test(v)) { log("locale: use a form such as fr or fr-FR"); return; }
+  state.locale = v;
+  sendAll("locale " + (v || "en-US"));
+};
+$("go").onclick = () => { const u = $("url").value.trim(); if (u) { state.open = u; sendAll("open " + u); } };
+$("url").onkeydown = e => { if (e.key === "Enter") $("go").click(); };
+function devices(current) {
+  const sel = $("device");
+  if (current && ![...sel.options].some(o => o.value === current)) sel.add(new Option(current, current));
+  if (!state.device && current) sel.value = current;
+}
+(async () => {
+  const names = ["phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large"];
+  try { for (const d of await (await fetch(base + withToken("api/devices"))).json()) names.push(d.name); } catch (e) { /* the built-in ones */ }
+  for (const n of names) $("device").add(new Option(n, n));
+  $("device").value = state.device || "phone";
+})();
+
+// ---------------------------------------------------------------- start
+if (ids.length !== 2 || !ids[0] || !ids[1]) { log("open /?compare=APP_A,APP_B"); for (const s of sides) s.say("Needs two app ids: /?compare=A,B"); }
+else { fit(); startBoth(); }
+</script>
+</body>
+</html>

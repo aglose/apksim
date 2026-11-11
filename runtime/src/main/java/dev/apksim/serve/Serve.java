@@ -103,6 +103,8 @@ public final class Serve {
   /** Connections open at once (open sessions' WebSockets among them). */
   private final java.util.concurrent.Semaphore connections = new java.util.concurrent.Semaphore(128);
   private byte[] page;
+  /** `/?compare=A,B`: two sessions side by side with their pixel difference (docs/pr-preview.md). */
+  private byte[] comparePage;
   private final long startedAt = System.currentTimeMillis();
   /**
    * `apksim beam` (docs/beam.md): the agent that runs a browser session's app on this Mac. Loopback only, no page of
@@ -441,6 +443,10 @@ public final class Serve {
       if (in == null) throw new IOException("serve.html is missing from apksim.jar");
       page = in.readAllBytes();
     }
+    try (InputStream in = Serve.class.getResourceAsStream("compare.html")) {
+      if (in == null) throw new IOException("compare.html is missing from apksim.jar");
+      comparePage = in.readAllBytes();
+    }
     Files.createDirectories(logs);
     Crash.sweepRecordings(logs, 7);
     Crash.sweep(logs, 7);  // core files and crash reports an earlier run left, and old logs
@@ -495,7 +501,12 @@ public final class Serve {
     timer.scheduleWithFixedDelay(() -> {
       if (beam) sweepBeam();
       else {
-        catalog.sweep(24 * 3_600_000L);
+        catalog.sweep(24 * 3_600_000L, name -> warmer.holdsFile(name) || sessions.values().stream()
+            .anyMatch(x -> {
+              // Session.app has no path while a URL add downloads: the file the session launched is launchApk.
+              java.nio.file.Path f = x.launchApk != null ? x.launchApk : x.app.path();
+              return f != null && name.equals(f.getFileName().toString());
+            }));
         kept.sweep();  // the owner only (KeptStore.sweep)
         dropUnusedSeeds();
       }
@@ -814,13 +825,19 @@ public final class Serve {
     }
     switch (r.method() + " " + r.path()) {
       case "GET /" -> {
+        String compare = r.param("compare");
+        if (compare != null && !compare.matches("[A-Za-z0-9]{1,40},[A-Za-z0-9]{1,40}")) {
+          Http.text(out, 400, "compare: two app ids, /?compare=BASE,NEW");
+          return;
+        }
+        byte[] body = compare != null ? comparePage : page;
         // --allow-beam: the page also asks this Mac's agent (/beam/hello, /beam/start); its WebSocket is under ws: already.
         String agentSrc = allowBeam ? " http://127.0.0.1:" + beamPort : "";
         String csp = "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'self' ws: wss:"
             + agentSrc + "; base-uri 'none'; form-action 'none'; frame-ancestors ";
         // Framed only by the origins named (--allow-origin), and then without X-Frame-Options, which cannot name them.
-        if (allowedOrigins.isEmpty()) Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'none'", "X-Frame-Options: DENY");
-        else Http.respond(out, 200, "text/html; charset=utf-8", page, csp + "'self' " + String.join(" ", allowedOrigins));
+        if (allowedOrigins.isEmpty()) Http.respond(out, 200, "text/html; charset=utf-8", body, csp + "'none'", "X-Frame-Options: DENY");
+        else Http.respond(out, 200, "text/html; charset=utf-8", body, csp + "'self' " + String.join(" ", allowedOrigins));
       }
       case "GET /api/apps" -> {
         StringBuilder b = new StringBuilder("[");
@@ -864,7 +881,9 @@ public final class Serve {
       } catch (IllegalArgumentException e) {
         name = null;
       }
+      long ttl = ttlParam(r.param("ttl"));
       Catalog.App a = catalog.upload(r.content(), length, name, List.of());
+      if (ttl > 0) catalog.expireAt(a.id(), ttl);
       System.err.printf("[serve] upload %s (%d MB)%n", a.name(), Files.size(a.path()) >> 20);
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + "}");
     } catch (IOException e) {
@@ -872,8 +891,25 @@ public final class Serve {
     }
   }
 
+  /** A `ttl` (seconds) from a query or a JSON number: 0 for none; anything but a whole number in range is a 400. */
+  private static long ttlParam(Object v) throws IOException {
+    if (v == null) return 0;
+    long n;
+    try {
+      n = v instanceof Number x ? x.longValue() : Long.parseLong(v.toString().strip());
+      if (v instanceof Number x && x.doubleValue() != n) throw new NumberFormatException();
+    } catch (NumberFormatException e) {
+      throw new IOException("\"ttl\" is a whole number of seconds");
+    }
+    if (n < Catalog.TTL_MIN_S || n > Catalog.TTL_MAX_S) {
+      throw new IOException("\"ttl\" is " + Catalog.TTL_MIN_S + " to " + Catalog.TTL_MAX_S + " seconds");
+    }
+    return n;
+  }
+
   /**
-   * `POST /api/apps` `{"url": "https://...", "name": "...", "headers": {...}, "options": ["--activity", ".Main", ...]}`:
+   * `POST /api/apps` `{"url": "https://...", "name": "...", "headers": {...}, "options": ["--activity", ".Main", ...]}`
+   * (`"ttl": SECONDS` too: the id expires then, used or not):
    * serve downloads the APK itself and answers its id at once (docs/serve.md).
    */
   private void addApp(Http.Request r, OutputStream out) throws IOException {
@@ -912,7 +948,9 @@ public final class Serve {
       } else if (body.get("options") != null) {
         throw new IOException("\"options\" must be an array, e.g. [\"--activity\", \".MainActivity\"]");
       }
+      long ttl = ttlParam(body.get("ttl"));
       Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given));
+      if (ttl > 0) catalog.expireAt(a.id(), ttl);
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"downloading\"}");
     } catch (Catalog.Busy e) {
       Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
@@ -1007,6 +1045,7 @@ public final class Serve {
   /** `GET /api/apps/ID`: an uploaded or added app's state (downloading, ready, failed), for a service that added it. */
   private void appState(String id, OutputStream out) throws IOException {
     Catalog.Download d = catalog.download(id);
+    if (d != null && catalog.expiresAt(id) > 0 && catalog.expiresAt(id) < System.currentTimeMillis()) d = null;  // past its ttl
     if (d != null) {
       StringBuilder b = new StringBuilder("{\"id\":").append(Http.q(id)).append(",\"name\":").append(Http.q(d.app.name()));
       if (Session.appDevice(d.app) != null) b.append(",\"device\":").append(Http.q(Session.appDevice(d.app)));
@@ -1022,7 +1061,7 @@ public final class Serve {
         b.append(",\"state\":\"failed\",\"error\":").append(Http.q(why));
       } else b.append(",\"state\":\"ready\"");
       Http.json(out, 200, b.append(",\"received\":").append(d.received()).append(",\"total\":").append(d.total())
-          .append(",\"cache\":\"none\"}").toString());
+          .append(expiry(id)).append(",\"cache\":\"none\"}").toString());
       return;
     }
     Catalog.App a = catalog.find(id);
@@ -1033,7 +1072,13 @@ public final class Serve {
     String detail = warmer.detail(a);
     Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name())
         + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "") + ",\"state\":\"ready\",\"cache\":"
-        + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + "}");
+        + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + expiry(a.id()) + "}");
+  }
+
+  /** `,"expiresInS":N` for an app given a `ttl`, else nothing. */
+  private String expiry(String id) {
+    long at = catalog.expiresAt(id);
+    return at > 0 ? ",\"expiresInS\":" + Math.max(0, (at - System.currentTimeMillis()) / 1000) : "";
   }
 
   /** Why a session could not start now (the launcher, the state folder, disk space), or null when it could. */

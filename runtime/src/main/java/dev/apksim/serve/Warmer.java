@@ -74,6 +74,14 @@ final class Warmer {
     return false;
   }
 
+  /** Whether a queued or running warm-up uses the stored APK file with this name (Catalog's sweep keeps it). */
+  synchronized boolean holdsFile(String name) {
+    for (Job j : jobs.values()) {
+      if ((j.state == State.QUEUED || j.state == State.WARMING) && j.apk != null && name.equals(j.apk.getFileName().toString())) return true;
+    }
+    return false;
+  }
+
   /** Queues an app whose APK is a file now (an upload, a finished download); anything else is ignored. */
   void enqueue(Catalog.App app) {
     if (app.path() == null) return;
