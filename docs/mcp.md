@@ -104,7 +104,7 @@ Measured on the test app (2026-11-10, Mac, headless):
 | `tap` on the FAB | 70 | ~18 |
 | rename a trip (tap a row) | 74 | ~19 |
 | `nodes` of the Trips tab, with bounds | 395 | ~100 |
-| `screenshot` at 640 px (JPEG via `sips`) | 23,196 base64 | an image |
+| `screenshot` at 640 px (PNG, scaled in memory) | 20,992 base64 | an image |
 
 A typical action answer is 18% of the Trips screen's full dump, and the gap grows with the screen: the dump scales with
 what is on screen, the answer with what changed.
