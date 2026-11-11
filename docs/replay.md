@@ -158,14 +158,17 @@ than by code. `--image IMAGE` replays in the Linux image. The output (`--out`, d
 `runs/NN-<build>/` with each replay's report, frames and log; `bisect.json`; and `index.html`, every build with its
 result and where it diverged, and at the first bad build's first divergence the recorded frame, the last good and first
 bad builds' frames and the difference map side by side, embedded so the page can be sent alone. Exit 0 when a first bad
-build was found, 1 when not (the oldest already bad, the newest good, nothing replayable).
+build was found, 1 when not (the oldest already bad, the newest good, nothing replayable). The divergence's last good
+frame is that build's capture of the same event (label and recorded offset, or its own `end`), as a capture missing in either replay
+shifts the point numbers; with none, the page shows no last good frame.
 
 Checked with `scripts/bisect-rec-check.py APP.apk [OUT] [--image IMAGE] [--changed APK]`: the Trips rename recorded,
 then six builds: the app twice, an unsigned APK (skipped: "signed by another key than the recorded build"), the app,
 and the app with `--feature dev.apksim.testapp.rename_v2` twice. The first midpoint lands on the unsigned build, so the
 search goes around it; it must name build 5 first bad and build 4 last good, having replayed at most 5 of the 6, and
 the page must hold the four frames. With `--changed APK`, a build of the test app with one word of source changed
-("Roman vacation" to "Roman getaway", the same debug key), it bisects [app, app, changed] to the changed build.
+("Roman vacation" to "Roman getaway", the same debug key), it bisects [app, app, changed] to the changed build. Last,
+[app, app, app]: no build diverges, and `lastGood` is the newest build replayed (3), not the oldest.
 
 | (2026-11-10, the test app) | Mac | Linux image (amd64, Rosetta) |
 |---|---|---|

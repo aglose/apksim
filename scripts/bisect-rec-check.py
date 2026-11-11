@@ -15,7 +15,8 @@ The skipped build sits where the search's first midpoint lands, so the search mu
 bisect.json, that the oldest and newest builds were replayed, that at most five were replayed in full, and that
 index.html shows the recorded frame, the last good and first bad builds' frames and the difference map. With
 --changed APK (a build of the test app with a source change, the same debug key), also bisects [app, app, changed]:
-the changed build must be the first bad one. --image replays in the Linux image.
+the changed build must be the first bad one. Then [app, app, app]: no build diverges, and the last good one is the
+newest replayed (3), not the oldest. --image replays in the Linux image.
 """
 import argparse, json, os, re, shutil, socket, subprocess, sys, time, zipfile
 
@@ -177,6 +178,10 @@ def main():
     imgs = re.findall(r'<img src="data:image/[a-z]+;base64,[A-Za-z0-9+/=]{100,}" data-src="([^"]+)"', page)
     check(len(imgs) == 4 and all(os.path.exists(os.path.join(out, i)) for i in imgs),
           f"index.html shows the recorded, last good, first bad frames and the difference map: {imgs}")
+    print("== bisect where no build diverges")
+    code, data, took = bisect(a, bundle, os.path.join(a.out, "bisect-good"), builds=[a.app, a.app, a.app])
+    check(data.get("lastGood") == 3 and data.get("firstBad") is None,
+          f"the last good build is the newest replayed, 3 ({took:.0f} s): got {data.get('lastGood')}, {data.get('verdict')}")
     if a.changed:
         print("== bisect against a changed build")
         shutil.copy(a.changed, os.path.join(a.out, "changed.apk"))

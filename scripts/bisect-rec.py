@@ -149,6 +149,11 @@ class Bisect:
             if any(r == d or r.startswith(d + os.sep) for d in replaced):
                 die(f"bisect-rec.py: {f} is inside {self.out}'s runs/ or in/ (or is its report), which a bisect replaces;"
                     " move it or give another --out")
+        # The recorded build for an older bundle (stage_recorded_build), looked for before anything is deleted, among the
+        # builds and where replay itself would look; one inside what a bisect replaces is not used.
+        recorded = self.recorded_build_candidates()
+        recorded = [f for f in recorded if not any(os.path.realpath(f) == d or os.path.realpath(f).startswith(d + os.sep)
+                                                    for d in replaced)]
         for sub in ("runs", "in"):
             shutil.rmtree(os.path.join(self.out, sub), ignore_errors=True)
         for f in ("bisect.json", "index.html"):
@@ -160,27 +165,40 @@ class Bisect:
                                   capture_output=True, text=True).stdout.strip()
             self.platform = "linux/" + arch
             os.makedirs(os.path.join(self.out, "in"))
-            self.stage_recorded_build()
+            self.stage_recorded_build(recorded)
 
-    def stage_recorded_build(self):
-        """--image: an older bundle names no signer, and `apksim replay --apk` then finds the recorded build by its
-        file name beside the bundle to check another build's signer. When it is among the builds, a copy of it goes
-        there (OUT/in/NAME, beside the staged bundle)."""
+    def recorded_build_candidates(self):
+        """An older bundle names no signer: `apksim replay --apk` then checks another build's signer against the
+        recorded build, found at the path it was recorded from, else by its file name beside the bundle or in the
+        working folder. Those, and the builds, are where it may be (only when the bundle needs it)."""
         try:
             with zipfile.ZipFile(self.bundle) as z:
                 m = json.loads(z.read("manifest.json"))
         except (OSError, KeyError, ValueError, zipfile.BadZipFile):
-            return
+            return []
         name, sha = m.get("apk"), m.get("apkSha256")
         if not name or not sha or "/" in name or m.get("apkSigners"):
-            return
-        for b in self.builds:
+            return []
+        self.recorded_name, self.recorded_sha = name, sha
+        places = [b["apk"] for b in self.builds]
+        if m.get("apkPath"):
+            places.append(str(m["apkPath"]))
+        places += [os.path.join(os.path.dirname(self.bundle), name), os.path.abspath(name)]
+        return [f for f in dict.fromkeys(places) if os.path.isfile(f)]
+
+    def stage_recorded_build(self, candidates):
+        """--image: the container sees only OUT, so the recorded build of an older bundle (by its SHA-256, from
+        recorded_build_candidates) is copied beside the staged bundle (OUT/in/NAME), where replay looks for it."""
+        for path in candidates:
             h = hashlib.sha256()
-            with open(b["apk"], "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(chunk)
-            if h.hexdigest() == sha:
-                shutil.copy(b["apk"], os.path.join(self.out, "in", name))
+            try:
+                with open(path, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+            except OSError:
+                continue
+            if h.hexdigest() == self.recorded_sha:
+                shutil.copy(path, os.path.join(self.out, "in", self.recorded_name))
                 return
 
     def stop(self, p, container, run):
@@ -306,6 +324,8 @@ class Bisect:
             hi = None  # no good build before it: nothing to call the first bad one
         elif hi is None or self.builds[hi]["result"] == "good":
             verdict = "no build diverges"
+            if hi is not None:
+                lo = hi  # the newest build known to replay, not the oldest
         else:
             while hi - lo > 1:
                 mid = (lo + hi) // 2
@@ -383,8 +403,14 @@ class Bisect:
                 nn = f"{p['n']:02d}"
                 imgs = [("recorded", f"{bad['run']}/points/{nn}-recorded.jpg")]
                 good = self.builds[self.lo] if self.lo is not None and self.builds[self.lo].get("result") == "good" else None
-                if good and os.path.exists(os.path.join(self.out, good["run"], "points", nn + "-replayed.jpg")):
-                    imgs.append(("last good: " + good["label"], f"{good['run']}/points/{nn}-replayed.jpg"))
+                # Points are numbered by what each replay captured, so the good one is the point at the same event
+                # (label and recorded offset; the final `end`, whose offset is when that replay went quiet, by its
+                # label), under its own number; none there, no good frame.
+                gp = next((x for x in ((good or {}).get("report") or {}).get("points", [])
+                           if x["label"] == p["label"] and (p["label"] == "end" or x.get("offsetMs") == p.get("offsetMs"))), None)
+                gn = f"{gp['n']:02d}" if gp else None
+                if gn and os.path.exists(os.path.join(self.out, good["run"], "points", gn + "-replayed.jpg")):
+                    imgs.append(("last good: " + good["label"], f"{good['run']}/points/{gn}-replayed.jpg"))
                 imgs.append(("bad: " + bad["label"] if getattr(self, "unresolved", None) else "first bad: " + bad["label"],
                              f"{bad['run']}/points/{nn}-replayed.jpg"))
                 if os.path.exists(os.path.join(self.out, bad["run"], "points", nn + "-diff.png")):
