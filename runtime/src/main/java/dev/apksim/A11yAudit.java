@@ -17,6 +17,8 @@ final class A11yAudit {
 
   static String run(List<View> roots, float density) {
     List<Seen> all = new ArrayList<>();
+    TextTruncation.Cache cut = new TextTruncation.Cache();
+    List<String> truncated = new ArrayList<>();
     Nodes.walk(roots, n -> {
       if (!n.info.isVisibleToUser()) return;
       Rect r = new Rect();
@@ -24,8 +26,11 @@ final class A11yAudit {
       boolean actionable = n.info.isClickable() || n.info.isLongClickable() || n.info.isCheckable();
       boolean named = !n.text().isEmpty() || !n.description().isEmpty() || n.info.getLabeledBy() != null;
       all.add(new Seen(r, actionable, named, n));
+      if (!n.text().isEmpty() && cut.cutOff(n)) {
+        truncated.add("[" + r.left + "," + r.top + "," + r.right + "," + r.bottom + "] text cut off: \"" + n.text() + "\"");
+      }
     });
-    List<String> issues = new ArrayList<>();
+    List<String> issues = new ArrayList<>(truncated);
     int min = Math.round(48 * density);
     for (Seen s : all) {
       Rect r = s.bounds();
