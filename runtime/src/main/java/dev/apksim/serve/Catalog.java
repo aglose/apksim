@@ -737,13 +737,22 @@ final class Catalog {
 
   /** Deletes uploads not used for this long, and stored APKs no upload refers to any more. */
   void sweep(long maxAgeMillis) {
+    sweep(maxAgeMillis, name -> false);
+  }
+
+  /**
+   * `held`: whether a starting or running session (or a warm-up) uses the stored APK with this file name: it is kept even
+   * with no id naming it (an expired preview's), as a running app may open its APK again (`System.loadLibrary` reads
+   * it by path); the next sweep after the session has ended deletes it.
+   */
+  void sweep(long maxAgeMillis, java.util.function.Predicate<String> held) {
     pruneFailures();
     synchronized (uploadsLock) {
-      sweepLocked(maxAgeMillis);
+      sweepLocked(maxAgeMillis, held);
     }
   }
 
-  private void sweepLocked(long maxAgeMillis) {
+  private void sweepLocked(long maxAgeMillis, java.util.function.Predicate<String> held) {
     long cutoff = System.currentTimeMillis() - maxAgeMillis;
     try (DirectoryStream<Path> d = Files.newDirectoryStream(uploads)) {
       List<Path> all = new ArrayList<>();
@@ -778,7 +787,7 @@ final class Catalog {
         if (!n.endsWith(".apk") && !n.endsWith(".part")) continue;  // ids: handled above (and maybe deleted)
         // An APK no id names (ids and APKs are published together, under the lock this holds); an upload's
         // partial file only once it is an hour old (it may still be arriving: uploads are received without the lock).
-        boolean staleApk = n.endsWith(".apk") && !used.contains(n);
+        boolean staleApk = n.endsWith(".apk") && !used.contains(n) && !held.test(n);
         boolean stalePart = n.endsWith(".part")
             && Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L;
         if (staleApk || stalePart) Files.deleteIfExists(p);

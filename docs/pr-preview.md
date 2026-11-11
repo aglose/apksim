@@ -66,7 +66,7 @@ with `--apk-url` only: an upload carries none.
 A build added for a preview expires. `POST /api/apps` takes `"ttl": SECONDS` and `POST /api/upload` a `?ttl=SECONDS` query
 (60 to 604800, else `400`). After that time `find` no longer knows the id (new sessions, `GET /api/apps/ID`: `404`) and the hourly
 sweep deletes it and its APK, whether it was used or not: an ordinary id lives a day past its last use. Sessions already running
-go on. `GET /api/apps/ID` has `expiresInS` while one is set. The deadline is a file beside the id's (`ID.expires`), so a
+go on, and the stored APK stays while one (or a warm-up) uses it: a running app may open its APK again by path (`scripts/check-ttl.sh`, CI). `GET /api/apps/ID` has `expiresInS` while one is set. The deadline is a file beside the id's (`ID.expires`), so a
 restart keeps it. `pr-preview.py --ttl` (default 3 days) sets it, and the comment says when the builds expire; a new push
 adds new builds and rewrites the same comment.
 

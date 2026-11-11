@@ -501,7 +501,8 @@ public final class Serve {
     timer.scheduleWithFixedDelay(() -> {
       if (beam) sweepBeam();
       else {
-        catalog.sweep(24 * 3_600_000L);
+        catalog.sweep(24 * 3_600_000L, name -> warmer.holdsFile(name) || sessions.values().stream()
+            .anyMatch(x -> x.app.path() != null && name.equals(x.app.path().getFileName().toString())));
         kept.sweep();  // the owner only (KeptStore.sweep)
         dropUnusedSeeds();
       }
