@@ -6,6 +6,7 @@ import android.text.TextUtils
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 
 /**
@@ -39,7 +40,7 @@ class FaultsViewsActivity : Activity() {
       layoutParams = ViewGroup.LayoutParams((170 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
     })
     root.addView(TextView(this).apply { text = "This one wraps and always fits, whatever the font size is" })
-    setContentView(root)
+    setContentView(ScrollView(this).apply { addView(root) })
   }
 
   override fun onSaveInstanceState(outState: Bundle) {

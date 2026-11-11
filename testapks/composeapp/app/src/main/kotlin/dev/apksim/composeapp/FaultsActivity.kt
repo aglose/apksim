@@ -66,7 +66,7 @@ class FaultsActivity : ComponentActivity() {
         Text("Boarding gate B12", maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
       // A fixed height that holds one line at 1.0 and cuts the second line at 2.0.
-      Text("Your table is ready, come in", Modifier.height(26.dp).padding(top = 4.dp), overflow = TextOverflow.Clip)
+      Text("Your table is ready, come in", Modifier.padding(top = 4.dp).height(26.dp), overflow = TextOverflow.Clip)
       // The same faults in plain Views, one screen on.
       Button(onClick = { startActivity(android.content.Intent(this@FaultsActivity, FaultsViewsActivity::class.java)) }) {
         Text("Views version")
@@ -89,7 +89,7 @@ class FaultsActivity : ComponentActivity() {
       // The fault: with no network nothing ever ends the wait (no error state, no timeout).
       val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
       if (cm.activeNetwork != null) {
-        delay(300)
+        delay(100)
         loaded = true
       }
     }
