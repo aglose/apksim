@@ -483,7 +483,7 @@ final class MethodTranslator implements Opcodes {
           line += adj % 15 - 4;
           address += adj / 15;
           int i = insnFrom(address);
-          if (i < count && line > 0 && line <= 0xffff) lines[i] = line;
+          if (i < count && line > 0 && (line <= 0xffff || cov != null)) lines[i] = line; // coverage keeps big PC-encoded positions
         }
       }
     }
@@ -1704,7 +1704,7 @@ final class MethodTranslator implements Opcodes {
         if (lr != null) lr.at(i, reachable ? s : null, i == blockStart[bl]);
         // After the parameter copies for insn 0: a breakpoint there must already see the parameters.
         if (reachable && lines != null && lines[i] != 0) {
-          mv.visitLineNumber(lines[i], labels[i]);
+          if (lines[i] <= 0xffff) mv.visitLineNumber(lines[i], labels[i]);
           if (cov != null && lines[i] != covLast) {
             covLast = lines[i];
             covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));
@@ -1914,7 +1914,7 @@ final class MethodTranslator implements Opcodes {
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         mv.visitLabel(labels[i]);
         if (reachable && lines != null && lines[i] != 0) {
-          mv.visitLineNumber(lines[i], labels[i]);
+          if (lines[i] <= 0xffff) mv.visitLineNumber(lines[i], labels[i]);
           if (cov != null) {
             if (covLines == null) covLines = new HashMap<>();
             covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));

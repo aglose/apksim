@@ -176,7 +176,7 @@ def main():
     check("com/example/shop/Cart" in names and cls not in names, "--mapping reports the original class name")
     ms = names.get("com/example/shop/Cart", {"methods": {}})["methods"]
     check(ms.get("restoreTotals(Landroid/content/Intent;)Landroid/os/IBinder;", 0) > 0 and ms.get("drop()V", 0) > 0, "...and the original method names")
-    check(coverage.Mapping(mapping).source.get("dev/apksim/composeapp/NullBindingService") == "Cart.kt",
+    check(coverage.Mapping(mapping).source.get("com/example/shop/Cart") == "Cart.kt",
           "...and the original source file name the mapping keeps")
     shop = [f for f in mdoc["files"] if f.startswith("com/example/shop/")]
     check(shop and mdoc["files"][shop[0]].get("100", 0) > 0 and "20" not in mdoc["files"][shop[0]],

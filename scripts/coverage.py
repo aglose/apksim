@@ -118,14 +118,14 @@ class Mapping:
         self.classes = {}   # obfuscated internal name -> original internal name
         self.rev = {}       # original internal name -> obfuscated
         self.methods = {}   # obfuscated class -> [(obf name, params [original types], start, end, orig name, o_start, o_end)]
-        self.source = {}    # obfuscated class -> its original source file name, where the mapping says
-        cur = None
+        self.source = {}    # original class -> its source file name, where the mapping says
+        cur = cur_orig = None  # R8 may give several original classes one obfuscated name: each block keeps its own
         with open(path, encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 if raw.lstrip().startswith("#"):
                     sf = re.search(r'"id"\s*:\s*"sourceFile"\s*,\s*"fileName"\s*:\s*"([^"]+)"', raw)
-                    if sf and cur:
-                        self.source.setdefault(cur, sf.group(1))
+                    if sf and cur_orig:
+                        self.source.setdefault(cur_orig, sf.group(1))
                     continue
                 if not raw.strip():
                     continue
@@ -133,9 +133,9 @@ class Mapping:
                     m = re.fullmatch(r"(\S+) -> (\S+):", raw.strip())
                     if m:
                         orig, obf = m.group(1).replace(".", "/"), m.group(2).replace(".", "/")
-                        self.classes[obf] = orig
+                        self.classes.setdefault(obf, orig)
                         self.rev[orig] = obf
-                        cur = obf
+                        cur, cur_orig = obf, orig
                     continue
                 s = raw.strip()
                 if cur is None or s.startswith("#") or "(" not in s:
@@ -146,7 +146,7 @@ class Mapping:
                 a, b, ret, name, params, os_, oe, obf_name = m.groups()
                 self.methods.setdefault(cur, []).append((
                     obf_name, [p for p in params.split(",") if p], int(a) if a else None, int(b) if b else None,
-                    name, int(os_) if os_ else None, int(oe) if oe else None, ret))
+                    name, int(os_) if os_ else None, int(oe) if oe else None, ret, cur_orig))
 
     def cls(self, name):
         return self.classes.get(name, name)
@@ -167,30 +167,31 @@ class Mapping:
         return (self.desc_type(prim) if prim else ref.replace("/", ".")) + "[]" * len(dims)
 
     def method(self, cls, name, desc, line):
-        """(original name, original line or the given one) of the obfuscated method; entries that came from inlining
-        another class's method (a dotted name) are not used."""
+        """(original name, original line or the given one, original class) of the obfuscated method, from the entry
+        that ran: inline frames share an obfuscated range, callees first and the physical method last, and hits belong
+        to the last. The range decides before the signature does (R8 may drop a caller's parameter); the signature
+        only chooses between overloads whose ranges differ."""
         entries = [e for e in self.methods.get(cls, []) if e[0] == name]
         if not entries:
-            return name, line
-        have = self.params_of(desc)
-        want = self.ret_of(desc)
-        by_params = [e for e in entries if [self.obf_type(p) for p in e[1]] == have] or entries
-        match = [e for e in by_params if self.obf_type(e[7]) == want] or by_params  # same name and parameters: the return type decides
+            return name, line, self.cls(cls)
+        have, want = self.params_of(desc), self.ret_of(desc)
+        fits = lambda e: [self.obf_type(p) for p in e[1]] == have and self.obf_type(e[7]) == want
         if line is not None:
-            hit = [e for e in match if e[2] is not None and e[2] <= line <= e[3]]
-            if hit:
-                # Inline frames share the obfuscated range: the callees come first and the physical method, the one
-                # that runs, last. Hits belong to it, at the line of its own call.
-                group = [e for e in hit if (e[2], e[3]) == (hit[0][2], hit[0][3])]
+            hit = [e for e in entries if e[2] is not None and e[2] <= line <= e[3]]
+            groups = {}
+            for e in hit:
+                groups.setdefault((e[2], e[3]), []).append(e)
+            if groups:
+                group = next((g for g in groups.values() if fits(g[-1])), next(iter(groups.values())))
                 e = group[-1]
                 if "." not in e[4]:
                     if e[5] is None:
-                        return e[4], line
+                        return e[4], line, e[8]
                     if e[6] is not None and e[6] - e[5] == e[3] - e[2]:
-                        return e[4], e[5] + line - e[2]
-                    return e[4], e[5]
-        plain = [e for e in match if "." not in e[4]] or match
-        return plain[0][4], line
+                        return e[4], e[5] + line - e[2], e[8]
+                    return e[4], e[5], e[8]
+        plain = [e for e in entries if "." not in e[4] and fits(e)] or [e for e in entries if "." not in e[4]] or entries
+        return plain[0][4], line, plain[0][8]
 
     def obf_type(self, t):
         base = t.rstrip("[]")
@@ -204,29 +205,34 @@ class Mapping:
 # ---------------------------------------------------------------- model
 
 def build(classes, mapping=None, include_tests=False, include=(), exclude=()):
-    """The merged model: {"classes": [...], "files": {path: {line: hits}}} with names mapped."""
+    """The merged model: {"classes": [...], "files": {path: {line: hits}}} with names mapped. With a mapping each method
+    is reported under the original class that owns it (R8 can give several one obfuscated name)."""
     out_classes, files = {}, {}
     for name in sorted(classes):
         c = classes[name]
         if c["kind"] == "test" and not include_tests:
             continue
-        shown = mapping.cls(name) if mapping else name
-        dotted = shown.replace("/", ".")
-        if include and not any(fnmatch.fnmatch(dotted, g) for g in include):
-            continue
-        if any(fnmatch.fnmatch(dotted, g) for g in exclude):
-            continue
-        pkg = shown.rsplit("/", 1)[0] if "/" in shown else ""
-        source = c["source"] if c["source"] and "." in c["source"] else None  # D8$$SyntheticClass is no file
-        if source is None and mapping:
-            source = mapping.source.get(name)  # R8 replaced the DEX's source file name; the mapping kept it
-        own = (pkg + "/" if pkg else "") + source if source else None
         dex_pkg = name.rsplit("/", 1)[0] if "/" in name else ""
-        dex_own = (dex_pkg + "/" if dex_pkg else "") + source if source else None  # the SMAP names the DEX's path
         sfiles, ranges = parse_smap(c["smap"])
-        methods, own_lines = [], {}
+        dex_source = c["source"] if c["source"] and "." in c["source"] else None  # D8$$SyntheticClass is no file
+        dex_own = (dex_pkg + "/" if dex_pkg else "") + dex_source if dex_source else None  # the SMAP names the DEX's path
         for (mname, desc), (hits, lines) in sorted(c["methods"].items()):
-            first, oname = None, mname
+            oname, shown = mname, name
+            if mapping:
+                oname, _, shown = mapping.method(name, mname, desc, min(lines) if lines else None)
+            dotted = shown.replace("/", ".")
+            if include and not any(fnmatch.fnmatch(dotted, g) for g in include):
+                continue
+            if any(fnmatch.fnmatch(dotted, g) for g in exclude):
+                continue
+            pkg = shown.rsplit("/", 1)[0] if "/" in shown else ""
+            source = dex_source or (mapping.source.get(shown) if mapping else None)  # R8 replaced the DEX's name
+            own = (pkg + "/" if pkg else "") + source if source else None
+            merged = out_classes.setdefault(shown, {"name": shown, "package": pkg, "source": source, "file": own,
+                                                    "methods": [], "lines": {}})
+            if own and own not in files:
+                files[own] = {}
+            first = None
             for ln, h in sorted(lines.items()):
                 target, tline = own, ln
                 if ranges:
@@ -234,30 +240,18 @@ def build(classes, mapping=None, include_tests=False, include=(), exclude=()):
                     if r:
                         fid, tline = r
                         target = sfiles.get(fid, own)
-                        if target == dex_own:
-                            target = own
-                        if target == own or (source and target.endswith("/" + source) and fid == 1):
+                        if target == dex_own or (source and target.endswith("/" + source) and fid == 1):
                             target = own
                 if target == own and mapping:
-                    oname2, tline2 = mapping.method(name, mname, desc, tline)
-                    tline = tline2 if tline2 is not None else tline
+                    tline = mapping.method(name, mname, desc, tline)[1] or tline
                 if target:
                     f = files.setdefault(target, {})
                     f[tline] = f.get(tline, 0) + h
                 if target == own:
-                    own_lines[tline] = own_lines.get(tline, 0) + h
+                    merged["lines"][tline] = merged["lines"].get(tline, 0) + h
                     first = tline if first is None else min(first, tline)
-            if mapping:
-                oname = mapping.method(name, mname, desc, min(lines) if lines else None)[0]  # by the DEX's own line
-                desc = mapping.desc(desc)
-            methods.append({"name": oname, "desc": desc, "line": first, "hits": hits})
-        if own and own not in files:
-            files[own] = {}
-        merged = out_classes.setdefault(shown, {"name": shown, "package": pkg, "source": source, "file": own,
-                                                "methods": [], "lines": {}})
-        merged["methods"] += methods
-        for ln, h in own_lines.items():
-            merged["lines"][ln] = merged["lines"].get(ln, 0) + h
+            merged["methods"].append({"name": oname, "desc": mapping.desc(desc) if mapping else desc,
+                                      "line": first, "hits": hits})
     return {"classes": [out_classes[k] for k in sorted(out_classes)], "files": files}
 
 

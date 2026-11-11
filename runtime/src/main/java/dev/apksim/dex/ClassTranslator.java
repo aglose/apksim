@@ -274,7 +274,7 @@ public final class ClassTranslator implements Opcodes {
     covPending = new ArrayList<>();
     String[] chunks = cov.chunks();
     for (int i = 0; i < chunks.length; i++) {
-      cw.visitField(ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC, Coverage.META_FIELD + i, "Ljava/lang/String;", null, chunks[i]).visitEnd();
+      cw.visitField((isIface ? ACC_PUBLIC : ACC_PRIVATE) | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC, Coverage.META_FIELD + i, "Ljava/lang/String;", null, chunks[i]).visitEnd();
     }
   }
 
