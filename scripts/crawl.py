@@ -220,11 +220,19 @@ class Instance(snapshot.Worker):
 
     # --- reading
     def observe(self):
-        act = self.say("activity")
-        if act == "none":
-            return {"id": "EXIT", "activity": "none", "nodes": 0, "recs": []}
-        recs = parse_tree(self.say("nodes tree"))
-        sid, n = structure(act, recs)
+        """The screen as it is: read until two reads in a row agree (a list still composing, a transition ending)."""
+        prev = None
+        for attempt in range(4):
+            act = self.say("activity")
+            if act == "none":
+                return {"id": "EXIT", "activity": "none", "nodes": 0, "recs": []}
+            recs = parse_tree(self.say("nodes tree"))
+            sid, n = structure(act, recs)
+            if sid == prev:
+                break
+            prev = sid
+            if attempt < 3:
+                time.sleep(0.05)
         return {"id": sid, "activity": act, "nodes": n, "recs": recs}
 
     # --- moving
