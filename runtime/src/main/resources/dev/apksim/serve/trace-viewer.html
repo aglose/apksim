@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-OOAVzmcItYGP4pDBi9Ikt2u9UMb6au3MEzhBO94Y8kk='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DDv422A4d8PyrnSTvQmmQC0eTbwj+KCAE4FvMR64Oug='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -107,6 +107,7 @@ async function openZip(file) {
     var en = ents[name]; if (!en) return null;
     var h = new DataView(await readSlice(file, en.off, en.off + 30));
     var start = en.off + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+    if (en.usize > MAX_ENTRY || en.csize > MAX_ENTRY) throw new Error(name + ' is over the ' + MAX_ENTRY / 1e6 + ' MB limit');
     var blob = file.slice(start, start + en.csize);
     if (en.method === 0) return new Uint8Array(await blob.arrayBuffer());
     if (en.method !== 8) throw new Error('unsupported compression in ' + name);
