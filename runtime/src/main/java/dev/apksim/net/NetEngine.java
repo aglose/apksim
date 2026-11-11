@@ -514,6 +514,11 @@ final class NetEngine {
     String connectUpstream() {
       if (Net.conditions.offline()) return "ERR ConnectException connect failed: ENETUNREACH (Network is unreachable)\r\n";
       if (Net.mode == Net.Mode.REPLAY) return null;
+      // The placeholder a failed lookup was given (the inspector, while a rule answers): nothing is there to connect to, and
+      // a connect to 198.18/15 would wait out the whole timeout. The failure is the lookup's, at once.
+      if (NetResolver.lookupFailed(host, address)) {
+        return Net.errorReply(new java.net.UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname"));
+      }
       long t0 = System.nanoTime();
       try {
         if (closed) throw new java.net.SocketException("connection closed");
@@ -1006,8 +1011,18 @@ final class NetEngine {
       StringBuilder h = new StringBuilder("HTTP/1.1 ").append(rule.status).append(' ').append(Net.statusText(rule.status)).append("\r\n");
       if (!none) h.append("Content-Type: ").append(rule.type).append("\r\nContent-Length: ").append(rule.body.length).append("\r\n");
       h.append("X-Apksim-Rule: ").append(rule.id).append("\r\n\r\n");
+      // The app may have the answer before it is recorded: saving on the way out (a crash, an exit) waits for it, as for record().
+      inFlight.incrementAndGet();
+      try {
+        return sendRule(req, rule, h.toString(), none, t0, startWall);
+      } finally {
+        if (inFlight.decrementAndGet() == 0) synchronized (inFlight) { inFlight.notifyAll(); }
+      }
+    }
+
+    private boolean sendRule(Request req, Inspector.Rule rule, String head, boolean none, long t0, long startWall) throws IOException {
       Conditions.sleep(Net.conditions.rtt());
-      cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
+      cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
       if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(rule.body, 0, rule.body.length);
       cout.flush();
       Recording.Entry e = new Recording.Entry();
