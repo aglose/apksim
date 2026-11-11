@@ -939,7 +939,12 @@ class Sweep:
             inst.case = steps
             inst.reach_screen(screen, steps)
             inst.cmds.append("permission deny")
-            inst.say("permission deny")
+            reply = inst.say("permission deny")
+            if reply.startswith("error: app crashed"):
+                raise Gone(inst.ended("permission deny"))
+            if reply.startswith("error"):  # the app's onRequestPermissionsResult threw: not a pass
+                self.note("permission-deny", screen, "callback-failed", f"denying the permission request failed: {reply}", steps,
+                          repro_cmds=list(inst.cmds))
             inst.settle()
             inst.observe()
             self.case("permission-deny", screen, " + ".join(steps) or "as reached")
