@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-0EtSrO4TO3UpgJ4HJDfX4zU9gN8SFZoOcIUIkiiLg0o='; style-src 'sha256-3ev3vtyoUnnCRPwUhNsX1emiKXlfqpjEBH5nlBsepo8='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<title>apksim trace viewer</title>
+<style>
+:root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#30363d;--panel:#161b22;--acc:#58a6ff;--in:#58a6ff;--net:#3fb950;--err:#ff7b72;--warn:#d29922;--db:#bc8cff;--cp:#ffa657;--cur:#3a3000}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;display:flex;flex-direction:column}
+.mono,pre,.row{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+header{display:flex;gap:12px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header h1{font-size:14px;margin:0}
+#notice{padding:4px 12px;font-size:12px;color:var(--warn);border-bottom:1px solid var(--line)}
+#drop{margin:40px auto;max-width:560px;text-align:center;border:2px dashed var(--line);border-radius:10px;padding:40px 20px;color:var(--dim)}
+body.over #drop{border-color:var(--acc)}
+button,select,input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:2px 6px}
+button{cursor:pointer}
+#app{display:none;flex:1;min-height:0;flex-direction:column}
+body.loaded #app{display:flex}body.loaded #drop{display:none}
+#top{display:flex;gap:8px;padding:8px 12px;min-height:0;flex:0 0 auto}
+#phone{position:relative;height:300px;background:#000;border:1px solid var(--line);flex:0 0 auto;min-width:80px}
+#phone img{height:100%;display:block}
+#marks{position:absolute;inset:0;pointer-events:none}
+.mk{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;border:2px solid #ff4d4f;background:rgba(255,77,79,.3)}
+.mk.now{border-color:#ffd666;background:rgba(255,214,102,.5)}
+#info{flex:1;min-width:200px;overflow:auto;max-height:300px}
+#info dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:2px 10px}
+#info dt{color:var(--dim)}#info dd{margin:0;word-break:break-all}
+#bar{padding:0 12px 6px}
+#tl{width:100%;height:78px;display:block;cursor:col-resize;border:1px solid var(--line);background:var(--panel);touch-action:none}
+#ctl{display:flex;gap:8px;align-items:center;margin-top:4px}
+#clock{min-width:150px}
+#legend span{margin-right:10px}
+#legend i{display:inline-block;width:9px;height:9px;margin-right:3px;border-radius:2px}
+#tabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+#tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:4px 10px}
+#tabs button.on{border-color:var(--acc);color:var(--acc)}
+#panes{flex:1;min-height:0;position:relative}
+.pane{position:absolute;inset:0;display:none;flex-direction:column;padding:6px 12px;min-height:0}
+.pane.on{display:flex}
+.tools{display:flex;gap:6px;margin-bottom:4px;align-items:center;flex-wrap:wrap}
+.vl{position:relative;flex:1;min-height:60px;overflow:auto;border:1px solid var(--line)}
+.vl>.sz{position:relative;width:100%}
+.row{position:absolute;left:0;right:0;height:18px;line-height:18px;white-space:pre;overflow:hidden;padding:0 6px;cursor:default}
+.row:hover{background:var(--panel)}.row.cur{background:var(--cur)}.row.sel{outline:1px solid var(--acc)}
+.row .t{color:var(--dim);display:inline-block;width:70px}
+.row .tag{color:var(--acc)}
+.L-E,.L-F{color:var(--err)}.L-W{color:var(--warn)}.L-D,.L-V{color:var(--dim)}
+.split{display:flex;flex-direction:column;flex:1;min-height:0;gap:6px}
+.split>.vl{flex:1 1 40%}
+#ndet{flex:1 1 60%;min-height:60px;display:flex;flex-direction:column;border:1px solid var(--line)}
+#ndet .body{flex:1;overflow:auto;margin:0;padding:6px;white-space:pre-wrap;word-break:break-all}
+#ndet img{max-width:100%}
+pre.txt{flex:1;overflow:auto;margin:0;padding:6px;border:1px solid var(--line);white-space:pre-wrap;word-break:break-all}
+#err{color:var(--err);padding:4px 12px}
+</style>
+</head>
+<body>
+<header><h1>apksim trace viewer</h1><span id="name" class="mono"></span>
+<label>Open a recording or failure bundle: <input type="file" id="file" accept=".apkrec,.zip"></label></header>
+<div id="notice">A recording can hold the app's network calls (URLs, headers, bodies), its logs, its screen and what was typed. Treat it like the device. This page reads the file in your browser and sends nothing anywhere.</div>
+<div id="err"></div>
+<div id="drop">Drop a <b>.apkrec</b> flight recording or a zipped <b>failure bundle</b> here, or use the file picker above.<br><span id="prog"></span></div>
+<div id="app">
+ <div id="top"><div id="phone"><img id="frame" alt="screen"><div id="marks"></div></div><div id="info"></div></div>
+ <div id="bar"><canvas id="tl"></canvas>
+  <div id="ctl"><button id="prev" title="previous frame (Left)">&#9664;</button><button id="next" title="next frame (Right)">&#9654;</button>
+   <span id="clock" class="mono"></span><span id="legend"></span></div></div>
+ <div id="tabs"></div>
+ <div id="panes"></div>
+</div>
+<script>
+(function () {
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function fail(msg) { $('err').textContent = msg; }
+
+// ---------- zip (central directory, lazy entries, deflate-raw through DecompressionStream) ----------
+function readSlice(file, a, b) { return file.slice(a, b).arrayBuffer(); }
+async function openZip(file) {
+  var tail = Math.min(file.size, 65557);
+  var buf = new DataView(await readSlice(file, file.size - tail, file.size));
+  var e = -1;
+  for (var i = buf.byteLength - 22; i >= 0; i--) if (buf.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('not a zip file');
+  var n = buf.getUint16(e + 10, true), csize = buf.getUint32(e + 12, true), coff = buf.getUint32(e + 16, true);
+  if (coff === 0xffffffff || n === 0xffff) throw new Error('zip64 archives are not supported');
+  var cd = new DataView(await readSlice(file, coff, coff + csize)), td = new TextDecoder(), p = 0, ents = {};
+  for (var k = 0; k < n; k++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) throw new Error('bad zip directory');
+    var flags = cd.getUint16(p + 8, true), method = cd.getUint16(p + 10, true);
+    var cs = cd.getUint32(p + 20, true), us = cd.getUint32(p + 24, true), nl = cd.getUint16(p + 28, true),
+        xl = cd.getUint16(p + 30, true), cl = cd.getUint16(p + 32, true), lo = cd.getUint32(p + 42, true);
+    var name = td.decode(new Uint8Array(cd.buffer, p + 46, nl));
+    if (!name.endsWith('/')) ents[name] = { name: name, method: method, csize: cs, usize: us, off: lo };
+    p += 46 + nl + xl + cl;
+  }
+  var zip = { file: file, entries: ents, names: Object.keys(ents) };
+  zip.bytes = async function (name) {
+    var en = ents[name]; if (!en) return null;
+    var h = new DataView(await readSlice(file, en.off, en.off + 30));
+    var start = en.off + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+    var blob = file.slice(start, start + en.csize);
+    if (en.method === 0) return new Uint8Array(await blob.arrayBuffer());
+    if (en.method !== 8) throw new Error('unsupported compression in ' + name);
+    var s = blob.stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  };
+  zip.text = async function (name) { var b = await zip.bytes(name); return b ? new TextDecoder().decode(b) : null; };
+  return zip;
+}
+
+// ---------- AVI (Motion-JPEG): index the '00dc' chunks, decode nothing ----------
+function parseAvi(u8) {
+  var dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), frames = [], usPer = 200000;
+  function id(p) { return String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]); }
+  function walk(p, end) {
+    while (p + 8 <= end) {
+      var cid = id(p), sz = dv.getUint32(p + 4, true);
+      if (cid === 'LIST') {
+        var ty = id(p + 8);
+        if (ty === 'movi' || ty === 'hdrl') walk(p + 12, Math.min(end, p + 8 + sz));
+      } else if (cid === 'avih') usPer = dv.getUint32(p + 8, true) || usPer;
+      else if (cid.slice(2) === 'dc' || cid.slice(2) === 'db') frames.push([p + 8, sz]);
+      p += 8 + sz + (sz & 1);
+    }
+  }
+  if (id(0) !== 'RIFF') throw new Error('screen.avi is not RIFF');
+  walk(12, u8.length);
+  return { frames: frames, stepMs: usPer / 1000, bytes: u8 };
+}
+
+// ---------- virtual list: fixed row height, only the visible rows exist ----------
+function VList(parent, render, onPick) {
+  var box = el('div', 'vl'), sz = el('div', 'sz'), pool = [], items = [], rowH = 18, cur = -1, sel = -1;
+  box.appendChild(sz); parent.appendChild(box);
+  function draw() {
+    var top = box.scrollTop, h = box.clientHeight || 300;
+    var a = Math.max(0, Math.floor(top / rowH) - 2), b = Math.min(items.length, Math.ceil((top + h) / rowH) + 2), need = b - a;
+    while (pool.length < need) { var r = el('div', 'row'); r.addEventListener('click', pick); sz.appendChild(r); pool.push(r); }
+    for (var i = 0; i < pool.length; i++) {
+      var r2 = pool[i];
+      if (i >= need) { r2.style.display = 'none'; continue; }
+      var idx = a + i; r2.style.display = ''; r2.style.top = (idx * rowH) + 'px';
+      r2._i = idx; r2.className = 'row' + (idx === cur ? ' cur' : '') + (idx === sel ? ' sel' : '');
+      while (r2.firstChild) r2.removeChild(r2.firstChild);
+      render(r2, items[idx], idx);
+    }
+  }
+  function pick(ev) { var i = ev.currentTarget._i; sel = i; draw(); if (onPick) onPick(items[i], i); }
+  box.addEventListener('scroll', draw);
+  new ResizeObserver(draw).observe(box);
+  return {
+    box: box,
+    set: function (a) { items = a; sz.style.height = (a.length * rowH) + 'px'; cur = -1; sel = -1; draw(); },
+    get items() { return items; },
+    cur: function (i, follow) {
+      if (i === cur) return; cur = i;
+      if (follow && i >= 0) { var y = i * rowH; if (y < box.scrollTop || y > box.scrollTop + box.clientHeight - rowH) box.scrollTop = Math.max(0, y - box.clientHeight / 2); }
+      draw();
+    },
+    redraw: draw
+  };
+}
+function lastAtOrBefore(arr, key, t) { // arr sorted by key; index of last item with key<=t, else -1
+  var lo = 0, hi = arr.length - 1, r = -1;
+  while (lo <= hi) { var m = (lo + hi) >> 1; if (arr[m][key] <= t) { r = m; lo = m + 1; } else hi = m - 1; }
+  return r;
+}
+function fmtT(ms) { var s = ms / 1000; return (s < 0 ? '-' : '') + Math.abs(s).toFixed(3) + 's'; }
+
+// ---------- state ----------
+var S = null, urls = [], tabsDone = {};
+var LEVELS = 'VDIWEF';
+
+function reset() {
+  S = { man: null, t0: 0, t1: 1, t: 0, input: [], log: [], net: [], db: [], cps: [], frames: null, frameT0: 0, imgCache: {}, kind: '' };
+  urls.forEach(function (u) { URL.revokeObjectURL(u); }); urls = [];
+  $('tabs').textContent = ''; $('panes').textContent = ''; $('info').textContent = ''; $('err').textContent = '';
+  $('marks').textContent = ''; $('frame').removeAttribute('src');
+}
+function addTab(id, label) {
+  var b = el('button', '', label); b.dataset.id = id; $('tabs').appendChild(b);
+  var p = el('div', 'pane'); p.id = 'p-' + id; $('panes').appendChild(p);
+  b.addEventListener('click', function () { showTab(id); });
+  return p;
+}
+function showTab(id) {
+  Array.prototype.forEach.call($('tabs').children, function (b) { b.classList.toggle('on', b.dataset.id === id); });
+  Array.prototype.forEach.call($('panes').children, function (p) { p.classList.toggle('on', p.id === 'p-' + id); });
+  var ev = new Event('resize'); window.dispatchEvent(ev);
+  Object.keys(lists).forEach(function (k) { lists[k].redraw(); });
+}
+var lists = {};
+
+// ---------- loading ----------
+async function load(file) {
+  reset(); $('name').textContent = file.name; document.body.classList.remove('loaded');
+  var t0 = performance.now();
+  try {
+    var zip = await openZip(file);
+    var man = zip.entries['manifest.json'];
+    if (man) await loadRecording(zip, t0);
+    else await loadBundle(zip, t0);
+    document.body.classList.add('loaded');
+    S.loadMs = Math.round(performance.now() - t0);
+    drawTimeline(); setTime(S.t0, true);
+  } catch (e) { fail('Could not read ' + file.name + ': ' + (e && e.message || e)); }
+}
+
+function parseLog(text) {
+  var out = [], re = /^(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)\.(\d{3}) +(\d+) +(\d+) ([VDIWEF]) (.*?)\s*: (.*)$/, lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i]; if (!l) continue;
+    var m = re.exec(l), prev = out[out.length - 1];
+    if (m) out.push({ lv: m[9], tag: m[10], text: l, mo: +m[1], d: +m[2], h: +m[3], mi: +m[4], s: +m[5], ms: +m[6], ts: null });
+    else if (prev) out.push({ lv: prev.lv, tag: prev.tag, text: l, ts: null, cont: prev });
+    else out.push({ lv: 'I', tag: '', text: l, ts: null });
+  }
+  return out;
+}
+function stampLog(log, from, to) { // logcat has no year or zone: take the ones that put the lines inside the window
+  var mid = (from + to) / 2, y0 = new Date(to).getUTCFullYear(), real = log.filter(function (l) { return !l.cont && l.mo; });
+  if (!real.length) return;
+  var med = real[real.length >> 1], best = null;
+  [y0 - 1, y0, y0 + 1].forEach(function (y) {
+    var base = Date.UTC(y, med.mo - 1, med.d, med.h, med.mi, med.s, med.ms), diff = mid - base, step = 900000;
+    var off = Math.max(-12 * 3600000, Math.min(14 * 3600000, Math.round(diff / step) * step)), res = Math.abs(diff - off);
+    if (!best || res < best.res) best = { res: res, y: y, off: off };
+  });
+  var last = 0;
+  log.forEach(function (l) {
+    if (l.cont) l.ts = l.cont.ts; else if (l.mo) l.ts = Date.UTC(best.y, l.mo - 1, l.d, l.h, l.mi, l.s, l.ms) + best.off;
+    if (l.ts == null) l.ts = last; last = l.ts;
+  });
+  log.sort(function (a, b) { return a.ts - b.ts; }); // stable: lines of one millisecond keep their order
+}
+
+async function loadRecording(zip, t0) {
+  S.kind = 'recording';
+  var man = JSON.parse(await zip.text('manifest.json')); S.man = man;
+  if (!/^apksim-flight-recording\//.test(man.format || '')) throw new Error('unknown format ' + man.format);
+  var w = man.window || {}, to = w.to || Date.parse(man.created) || Date.now();
+  var from = (w.from != null && w.from > 0) ? w.from : to;
+  S.t0 = from; S.t1 = to;
+  var cp = man.checkpoint; if (cp) S.cps.push({ t: cp.wall, id: cp.id, why: cp.why, acts: cp.activities, dev: cp.device, notes: cp.notes });
+  buildChrome();
+  var p;
+  // input
+  var inText = await zip.text('input.jsonl');
+  if (inText) inText.split('\n').forEach(function (l) { if (l) try { var o = JSON.parse(l); o.t = o.w != null ? o.w : null; if (o.t != null) S.input.push(o); } catch (e) {} });
+  S.input.sort(function (a, b) { return a.t - b.t; });
+  // logcat
+  var lg = await zip.text('logcat.txt'); if (lg) { S.log = parseLog(lg); stampLog(S.log, from, to); }
+  // network
+  var harText = await zip.text('network.har');
+  if (harText) {
+    var har = JSON.parse(harText);
+    (har.log && har.log.entries || []).forEach(function (e) {
+      var t = Date.parse(e.startedDateTime); if (isNaN(t)) return;
+      S.net.push({ t: t, dur: e.time > 0 ? e.time : 0, e: e });
+    });
+    S.net.sort(function (a, b) { return a.t - b.t; });
+  }
+  var dbt = await zip.text('db.jsonl');
+  if (dbt) dbt.split('\n').forEach(function (l) { if (l) try { var o = JSON.parse(l); o.t = o.w; S.db.push(o); } catch (e) {} });
+  S.db.sort(function (a, b) { return a.t - b.t; });
+  // screen
+  if (zip.entries['screen.avi']) {
+    var avi = parseAvi(await zip.bytes('screen.avi'));
+    var tt = await zip.text('screen-times.txt'), first = tt ? parseInt(tt.split('\n')[0], 10) : NaN;
+    S.frames = avi; S.frameT0 = Math.max(from, isNaN(first) ? from : first);
+  }
+  buildRecordingPanes(zip);
+  // if nothing but time lies outside the window (an old bundle), widen to the data
+  var all = S.input.concat(S.log, S.net, S.db), mn = from, mx = to;
+  all.forEach(function (x) { if (x.ts != null) { mn = Math.min(mn, x.ts); mx = Math.max(mx, x.ts); } else if (x.t != null) { mn = Math.min(mn, x.t); mx = Math.max(mx, x.t); } });
+  if (!(w.from > 0)) { S.t0 = mn; } S.t1 = Math.max(S.t1, mx);
+  if (S.frames) S.t1 = Math.max(S.t1, S.frameT0 + S.frames.frames.length * S.frames.stepMs - S.frames.stepMs);
+}
+
+function buildChrome() {
+  var legend = $('legend'); legend.textContent = '';
+  [['input', '--in'], ['network', '--net'], ['log warn/error', '--err'], ['sqlite', '--db'], ['checkpoint', '--cp']].forEach(function (x) {
+    var s = el('span'), i = el('i'); i.style.background = 'var(' + x[1] + ')'; s.appendChild(i); s.appendChild(document.createTextNode(x[0])); legend.appendChild(s);
+  });
+}
+
+function textPane(id, label, text) {
+  var p = addTab(id, label), pre = el('pre', 'txt'); pre.textContent = text == null ? '(not in this file)' : text; p.appendChild(pre); return pre;
+}
+
+function buildRecordingPanes(zip) {
+  var man = S.man;
+  // overview
+  var info = $('info'), dl = el('dl'); info.appendChild(dl);
+  function kv(k, v) { if (v == null || v === '') return; dl.appendChild(el('dt', '', k)); dl.appendChild(el('dd', '', String(v))); }
+  kv('package', man.package); kv('version', man.versionName); kv('saved', man.created);
+  kv('window', man.window && man.window.seconds != null ? man.window.seconds + ' s' : '');
+  var dv = man.device || {}; kv('device', dv.width ? dv.width + 'x' + dv.height + ' @' + dv.density : ''); kv('channels', JSON.stringify(man.channels));
+  kv('counts', JSON.stringify(man.counts)); kv('notes', (man.notes || []).join('; '));
+  if (man.crash) kv('crash', String(man.crash).split('\n')[0]);
+
+  // Input
+  var pi = addTab('input', 'Input (' + S.input.length + ')');
+  lists.input = VList(pi, function (r, o) {
+    r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
+    var txt = o.cmd ? 'cmd ' + o.cmd.join(' ') : (o.ev || '') + (o.x != null ? ' ' + o.x + ',' + o.y : '') + (o.redacted ? ' (left out)' : '') + (o.ch != null ? ' ' + JSON.stringify(o.ch) : '') + (o.key != null ? ' key ' + o.key : '');
+    r.appendChild(document.createTextNode(txt));
+  }, function (o) { setTime(o.t); });
+  lists.input.set(S.input);
+  // Network
+  var pn = addTab('net', 'Network (' + S.net.length + ')'), sp = el('div', 'split'); pn.appendChild(sp);
+  lists.net = VList(sp, function (r, o) {
+    var e = o.e, rq = e.request || {}, rs = e.response || {};
+    r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
+    r.appendChild(document.createTextNode((rq.method || '') + ' ' + (rs.status || '-') + ' ' + Math.round(o.dur) + 'ms  ' + (rq.url || '')));
+  }, function (o) { showNet(o); setTime(o.t); });
+  lists.net.set(S.net);
+  buildNetDetail(sp);
+  // Logcat
+  var pl = addTab('log', 'Logcat (' + S.log.length + ')');
+  buildLog(pl, S.log, true);
+  // DB
+  var pd = addTab('db', 'SQLite (' + S.db.length + ')');
+  lists.db = VList(pd, function (r, o) {
+    r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
+    r.appendChild(document.createTextNode((o.op || '') + ' ' + (o.db || '') + ' ' + (o.us != null ? o.us + 'us ' : '') + (o.result != null ? '=' + o.result + ' ' : '') + (o.error ? 'ERROR ' + o.error + ' ' : '') + (o.sql || '')));
+  }, function (o) { setTime(o.t); });
+  lists.db.set(S.db);
+  // Checkpoints
+  var pc = addTab('cp', 'Checkpoints (' + S.cps.length + ')');
+  lists.cp = VList(pc, function (r, o) {
+    r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
+    r.appendChild(document.createTextNode('checkpoint ' + o.id + ' (' + (o.why || '') + ') ' + JSON.stringify(o.acts || [])));
+  }, function (o) { setTime(o.t); showCp(o); });
+  lists.cp.set(S.cps);
+  var cpd = el('pre', 'txt'); cpd.id = 'cpd'; cpd.style.flex = '0 0 150px'; pc.appendChild(cpd);
+  if (S.cps.length) showCp(S.cps[0]); else cpd.textContent = 'No checkpoint in this recording.';
+  var man2 = textPane('man', 'Manifest', JSON.stringify(man, null, 2));
+  showTab('input');
+  if (S.frames) showTab('input');
+}
+function showCp(o) { $('cpd').textContent = JSON.stringify({ id: o.id, why: o.why, activities: o.acts, device: o.dev, notes: o.notes }, null, 2); }
+
+function buildLog(parent, log, timed) {
+  var tools = el('div', 'tools'), lvl = el('select'), tag = el('input'), q = el('input'), cnt = el('span', 'mono');
+  LEVELS.split('').forEach(function (c) { var o = el('option', '', c === 'V' ? 'all levels' : '>= ' + c); o.value = c; lvl.appendChild(o); });
+  tag.placeholder = 'tag filter'; q.placeholder = 'text filter';
+  [lvl, tag, q, cnt].forEach(function (x) { tools.appendChild(x); }); parent.appendChild(tools);
+  var list = VList(parent, function (r, l) {
+    r.classList.add('L-' + l.lv);
+    if (timed && l.ts != null) r.appendChild(el('span', 't', fmtT(l.ts - S.t0)));
+    r.appendChild(document.createTextNode(l.text));
+  }, function (l) { if (timed && l.ts != null) setTime(l.ts); });
+  var shown = log;
+  function apply() {
+    var min = LEVELS.indexOf(lvl.value), tg = tag.value.toLowerCase(), tx = q.value.toLowerCase();
+    shown = log.filter(function (l) { return LEVELS.indexOf(l.lv) >= min && (!tg || l.tag.toLowerCase().indexOf(tg) >= 0) && (!tx || l.text.toLowerCase().indexOf(tx) >= 0); });
+    list.set(shown); cnt.textContent = shown.length + ' of ' + log.length + ' lines'; list.shown = shown;
+    if (timed) syncLists(false);
+  }
+  [lvl, tag, q].forEach(function (x) { x.addEventListener('input', apply); });
+  list.shown = log; apply();
+  if (timed) lists.log = list;
+  return list;
+}
+
+// ---------- network detail ----------
+var netTab = 'req', netCur = null;
+function buildNetDetail(parent) {
+  var d = el('div'); d.id = 'ndet'; var bar = el('div', 'tools'); bar.style.padding = '4px';
+  [['req', 'Request'], ['res', 'Response headers'], ['body', 'Response body'], ['rbody', 'Request body']].forEach(function (x) {
+    var b = el('button', '', x[1]); b.addEventListener('click', function () { netTab = x[0]; showNet(netCur); }); bar.appendChild(b);
+  });
+  d.appendChild(bar); var body = el('pre', 'body'); body.id = 'nbody'; d.appendChild(body); parent.appendChild(d);
+}
+function hdrs(h) { return (h || []).map(function (x) { return x.name + ': ' + x.value; }).join('\n'); }
+function showNet(o) {
+  netCur = o; var body = $('nbody'); body.textContent = ''; if (!o) { body.textContent = 'Select an exchange.'; return; }
+  var e = o.e, rq = e.request || {}, rs = e.response || {}, c = rs.content || {};
+  if (netTab === 'req') body.textContent = (rq.method || '') + ' ' + (rq.url || '') + ' ' + (rq.httpVersion || '') + '\n\n' + hdrs(rq.headers);
+  else if (netTab === 'res') body.textContent = (rs.status || '') + ' ' + (rs.statusText || '') + ' ' + (rs.httpVersion || '') + '\n\n' + hdrs(rs.headers) + '\n\ntiming: ' + JSON.stringify(e.timings || {}) + '\ntotal ' + Math.round(o.dur) + ' ms';
+  else if (netTab === 'rbody') body.textContent = rq.postData ? (rq.postData.mimeType || '') + '\n\n' + (rq.postData.text || '(no text)') : '(no request body)';
+  else {
+    var mime = c.mimeType || '', txt = c.text;
+    if (txt == null) { body.textContent = '(no body recorded; ' + (c.size || 0) + ' bytes)'; return; }
+    var bytes = null;
+    if (c.encoding === 'base64') { try { var bin = atob(txt); bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); } catch (x) {} }
+    if (bytes && /^image\/(png|jpeg|gif|webp)\b/.test(mime)) {
+      var u = URL.createObjectURL(new Blob([bytes], { type: mime.split(';')[0] })); urls.push(u);
+      var im = el('img'); im.src = u; body.appendChild(im); return;
+    }
+    var s = bytes ? new TextDecoder().decode(bytes) : txt;
+    if (/json/.test(mime)) { try { s = JSON.stringify(JSON.parse(s), null, 2); } catch (x) {} }
+    if (s.length > 1000000) s = s.slice(0, 1000000) + '\n... (' + (s.length - 1000000) + ' more characters not shown)';
+    body.textContent = (mime ? mime + '\n\n' : '') + s;
+  }
+}
+
+// ---------- failure bundles ----------
+async function loadBundle(zip, t0) {
+  S.kind = 'bundle';
+  var heads = zip.names.filter(function (n) { return /(^|\/)failure\.txt$/.test(n); });
+  if (!heads.length) throw new Error('neither manifest.json (a flight recording) nor failure.txt (a failure bundle) is in this file');
+  buildChrome(); $('legend').textContent = '';
+  var sel = null;
+  if (heads.length > 1) {
+    var tools = el('div', 'tools'); sel = el('select'); heads.forEach(function (h) { var o = el('option', '', h.replace(/failure\.txt$/, '')); o.value = h; sel.appendChild(o); });
+    tools.appendChild(el('span', '', 'Bundle: ')); tools.appendChild(sel); $('info').appendChild(tools);
+  }
+  S.t0 = 0; S.t1 = 1;
+  async function show(head) {
+    var pre = head.replace(/failure\.txt$/, '');
+    $('tabs').textContent = ''; $('panes').textContent = ''; lists = {};
+    var f = await zip.text(head);
+    textPane('fail', 'Failure', f);
+    var png = zip.entries[pre + 'screen.png'];
+    if (png) {
+      var u = URL.createObjectURL(new Blob([await zip.bytes(pre + 'screen.png')], { type: 'image/png' })); urls.push(u);
+      $('frame').src = u; $('phone').style.display = '';
+      var p = addTab('screen', 'Screen'); var im = el('img'); im.src = u; im.style.maxWidth = '100%'; p.style.overflow = 'auto'; p.appendChild(im);
+    } else { $('phone').style.display = 'none'; }
+    var parts = [['windows', 'windows.txt'], ['nodes', 'nodes.txt'], ['threads', 'threads.txt'], ['looper', 'looper.txt'], ['repro', 'repro.sh'], ['process', 'process.txt']];
+    for (var i = 0; i < parts.length; i++) {
+      if (!zip.entries[pre + parts[i][1]]) continue;
+      var t = await zip.text(pre + parts[i][1]);
+      if (parts[i][0] === 'nodes' || parts[i][0] === 'threads' || parts[i][0] === 'windows') textLines(parts[i][0], parts[i][1], t); else textPane(parts[i][0], parts[i][1], t);
+    }
+    if (zip.entries[pre + 'logcat.txt']) { var pl = addTab('log', 'logcat.txt'); S.log = parseLog(await zip.text(pre + 'logcat.txt')); buildLog(pl, S.log, false); }
+    $('info').querySelector('dl') && $('info').removeChild($('info').querySelector('dl'));
+    var dl = el('dl'); $('info').appendChild(dl);
+    function kv(k, v) { dl.appendChild(el('dt', '', k)); dl.appendChild(el('dd', '', String(v))); }
+    kv('bundle', pre || '(top level)'); kv('failure', (f || '').split('\n').slice(0, 3).join(' | '));
+    kv('log lines', S.log.length);
+    showTab('fail');
+  }
+  if (sel) sel.addEventListener('change', function () { show(sel.value); });
+  await show(heads[0]);
+}
+function textLines(id, label, text) { // a big file as a searchable virtual list of its lines
+  var p = addTab(id, label), tools = el('div', 'tools'), q = el('input'), cnt = el('span', 'mono'); q.placeholder = 'filter lines';
+  tools.appendChild(q); tools.appendChild(cnt); p.appendChild(tools);
+  var all = (text || '').split('\n'), list = VList(p, function (r, l) { r.appendChild(document.createTextNode(l)); });
+  function ap() { var t = q.value.toLowerCase(), r = t ? all.filter(function (l) { return l.toLowerCase().indexOf(t) >= 0; }) : all; list.set(r); cnt.textContent = r.length + ' of ' + all.length + ' lines'; }
+  q.addEventListener('input', ap); ap(); lists[id] = list;
+}
+
+// ---------- timeline ----------
+var cv = $('tl');
+function xOf(t) { return (t - S.t0) / Math.max(1, S.t1 - S.t0) * cv.width; }
+function drawTimeline() {
+  var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = Math.max(300, Math.floor(r.width * dpr)); cv.height = Math.floor(78 * dpr);
+  var g = cv.getContext('2d'), cs = getComputedStyle(document.documentElement);
+  function col(n) { return cs.getPropertyValue(n).trim(); }
+  g.clearRect(0, 0, cv.width, cv.height); g.scale(1, 1);
+  var H = cv.height / 78;
+  if (S.kind !== 'recording') return;
+  g.fillStyle = col('--dim'); g.font = (10 * dpr) + 'px sans-serif';
+  var span = S.t1 - S.t0, tick = [1, 2, 5, 10, 15, 30, 60, 120].find(function (s) { return span / (s * 1000) <= 12; }) || 300;
+  for (var s = 0; s * 1000 <= span; s += tick) { var x = xOf(S.t0 + s * 1000); g.fillRect(x, 0, 1, 5 * H); g.fillText(s + 's', x + 2, 12 * H); }
+  var rows = { in: 16, net: 30, log: 44, db: 58 };
+  g.fillStyle = col('--in'); S.input.forEach(function (o) { g.fillRect(xOf(o.t), rows.in * H, Math.max(1, dpr), 10 * H); });
+  g.fillStyle = col('--net'); S.net.forEach(function (o) { g.fillRect(xOf(o.t), rows.net * H, Math.max(2, xOf(o.t + o.dur) - xOf(o.t)), 10 * H); });
+  S.log.forEach(function (l) { if (l.lv === 'E' || l.lv === 'F' || l.lv === 'W') { g.fillStyle = l.lv === 'W' ? col('--warn') : col('--err'); g.fillRect(xOf(l.ts), rows.log * H, Math.max(1, dpr), 10 * H); } });
+  g.fillStyle = col('--db'); S.db.forEach(function (o) { g.fillRect(xOf(o.t), rows.db * H, Math.max(1, dpr), 10 * H); });
+  g.fillStyle = col('--cp'); S.cps.forEach(function (c) { g.fillRect(xOf(c.t) - dpr, 0, 2 * dpr, cv.height); });
+  S.tlImg = g.getImageData(0, 0, cv.width, cv.height);
+}
+function drawCursor() {
+  if (S.kind !== 'recording' || !S.tlImg) return;
+  var g = cv.getContext('2d'); g.putImageData(S.tlImg, 0, 0);
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg'); g.fillRect(xOf(S.t) - 1, 0, 2, cv.height);
+}
+function tFromEvent(ev) { var r = cv.getBoundingClientRect(); return S.t0 + Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (S.t1 - S.t0); }
+var drag = false;
+cv.addEventListener('pointerdown', function (e) { if (S.kind !== 'recording') return; drag = true; cv.setPointerCapture(e.pointerId); setTime(tFromEvent(e)); });
+cv.addEventListener('pointermove', function (e) { if (drag) setTime(tFromEvent(e)); });
+cv.addEventListener('pointerup', function () { drag = false; });
+window.addEventListener('resize', function () { if (S && S.kind === 'recording' && document.body.classList.contains('loaded')) { drawTimeline(); drawCursor(); } });
+
+// ---------- selecting a moment ----------
+function frameIndex(t) {
+  if (!S.frames) return -1;
+  var i = Math.floor((t - S.frameT0) / S.frames.stepMs);
+  return Math.max(0, Math.min(S.frames.frames.length - 1, i));
+}
+function frameUrl(i) {
+  var c = S.imgCache[i]; if (c) return c;
+  var f = S.frames.frames[i], u = URL.createObjectURL(new Blob([S.frames.bytes.subarray(f[0], f[0] + f[1])], { type: 'image/jpeg' }));
+  S.imgCache[i] = u; S.imgOrder = S.imgOrder || []; S.imgOrder.push(i);
+  while (S.imgOrder.length > 40) { var old = S.imgOrder.shift(); URL.revokeObjectURL(S.imgCache[old]); delete S.imgCache[old]; }
+  return u;
+}
+function syncLists(follow) {
+  if (S.kind !== 'recording') return;
+  var t = S.t;
+  if (lists.input) lists.input.cur(lastAtOrBefore(S.input, 't', t), follow);
+  if (lists.net) lists.net.cur(lastAtOrBefore(S.net, 't', t), follow);
+  if (lists.db) lists.db.cur(lastAtOrBefore(S.db, 't', t), follow);
+  if (lists.cp) lists.cp.cur(lastAtOrBefore(S.cps, 't', t), follow);
+  if (lists.log) lists.log.cur(lastAtOrBefore(lists.log.items, 'ts', t), follow);
+}
+function setTime(t, quiet) {
+  if (S.kind !== 'recording') return;
+  S.t = Math.max(S.t0, Math.min(S.t1, t));
+  $('clock').textContent = fmtT(S.t - S.t0) + ' / ' + fmtT(S.t1 - S.t0);
+  drawCursor(); syncLists(true);
+  var marks = $('marks'); marks.textContent = '';
+  if (S.frames) {
+    var i = frameIndex(S.t), im = $('frame');
+    if (im._i !== i) { im._i = i; im.src = frameUrl(i); }
+    var slot0 = S.frameT0 + i * S.frames.stepMs, slot1 = slot0 + S.frames.stepMs, d = S.man.device || (S.man.checkpoint && S.man.checkpoint.device) || {};
+    var W = d.width, H = d.height;
+    if (W && H) {
+      var lo = S.t - 600;
+      for (var k = lastAtOrBefore(S.input, 't', S.t); k >= 0 && S.input[k].t >= lo; k--) {
+        var o = S.input[k]; if (o.x == null || o.redacted) continue;
+        var m = el('div', 'mk' + (o.t >= slot0 && o.t < slot1 ? ' now' : ''));
+        m.style.left = (o.x / W * 100) + '%'; m.style.top = (o.y / H * 100) + '%'; m.style.opacity = String(Math.max(0.25, 1 - (S.t - o.t) / 700));
+        marks.appendChild(m);
+      }
+    }
+  }
+}
+$('prev').addEventListener('click', function () { step(-1); });
+$('next').addEventListener('click', function () { step(1); });
+function step(n) { var ms = S.frames ? S.frames.stepMs : 200; setTime(S.t + n * ms); }
+document.addEventListener('keydown', function (e) {
+  if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+  if (e.key === 'ArrowLeft') { step(-1); e.preventDefault(); } else if (e.key === 'ArrowRight') { step(1); e.preventDefault(); }
+});
+
+// ---------- opening a file ----------
+$('file').addEventListener('change', function (e) { if (e.target.files[0]) load(e.target.files[0]); });
+['dragenter', 'dragover'].forEach(function (n) { document.addEventListener(n, function (e) { e.preventDefault(); document.body.classList.add('over'); }); });
+['dragleave', 'drop'].forEach(function (n) { document.addEventListener(n, function (e) { e.preventDefault(); document.body.classList.remove('over'); }); });
+document.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files[0]; if (f) load(f); });
+// `apksim rec view FILE` serves the file on a loopback address and names it here
+var q = new URLSearchParams(location.search).get('src');
+if (q && /^\/rec\/[A-Za-z0-9_-]+$/.test(q)) {
+  fetch(q).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+    .then(function (b) { b.name = decodeURIComponent(new URLSearchParams(location.search).get('name') || 'recording.apkrec'); load(new File([b], b.name)); })
+    .catch(function (e) { fail('Could not fetch the recording: ' + e.message); });
+}
+reset();
+window.__trace = { summary: function () {
+  return S ? { kind: S.kind, loadMs: S.loadMs, frames: S.frames ? S.frames.frames.length : 0, input: S.input.length, net: S.net.length,
+    log: S.log.length, db: S.db.length, checkpoints: S.cps.length, t0: S.t0, t1: S.t1, t: S.t } : null; },
+  setTime: setTime, load: load };
+})();
+</script>
+</body>
+</html>

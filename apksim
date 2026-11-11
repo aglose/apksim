@@ -51,6 +51,7 @@ Common options (each is listed with its values in the README, "Devices and launc
   --network record|replay FILE, --network-profile offline|3g|lossy
   --rec CHANNELS                flight recorder: input,logcat,net,db,screen or all (docs/flight-recorder.md)
   --rec-window S, --rec-checkpoint S   seconds it keeps (120), between checkpoints (30; 0: when asked)
+  rec view [FILE]               open a .apkrec or zipped failure bundle in the trace viewer (docs/trace-viewer.md)
   --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
   --skip-library NAME           the app's System.loadLibrary(NAME) throws UnsatisfiedLinkError (repeatable)
   --move-shared-data            macOS: load 4 KB-aligned libraries with data on a code page (experimental)
@@ -70,6 +71,9 @@ EOF
   # Homebrew upgrade, which moves the install folder, leaves bin/apksim and the job working.)
   # A flight recording replayed from its checkpoint (docs/replay.md): a plain JVM unpacks it and plans the launch below.
   replay) SERVE=1; REPLAY=1; shift ;;
+  # The flight recorder's trace viewer (docs/trace-viewer.md): `apksim rec view FILE` serves the page and the file on
+  # loopback and opens the browser. (Other `rec` words are control commands, not launcher ones.)
+  rec) if [[ "${2:-}" == view ]]; then SERVE=1; TRACEVIEW=1; shift 2; fi ;;
   beam) SERVE=1; shift; set -- --beam "$@"
     APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
     export APKSIM_LAUNCHER_PATH ;;
@@ -360,6 +364,9 @@ if [[ -n "${REPLAY:-}" ]]; then
   while IFS= read -r L || [[ -n "$L" ]]; do ARGS+=("$L"); done < "$PLAN"
   rm -f "$PLAN"
   exec "$ROOT/apksim" "${ARGS[@]}"
+fi
+if [[ -n "${TRACEVIEW:-}" ]]; then
+  exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -cp "$ROOT/work/apksim.jar" dev.apksim.serve.TraceView "$@"
 fi
 if [[ -n "${SERVE:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \

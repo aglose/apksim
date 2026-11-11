@@ -346,4 +346,5 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE3_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/kept-check.py" "http://127.0.0.1:$SERVE3_PORT" --token "$OUT/serve.token" --state /opt/apksim/work \
   --exec "docker exec $SERVE3_NAME" | tee "$OUT/kept-check.log"
+python3 "$ROOT/scripts/trace-viewer-check.py" --csp-only
 echo "smoke test passed"
