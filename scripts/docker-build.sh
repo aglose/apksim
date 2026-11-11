@@ -37,5 +37,10 @@ if [[ " $* " == *linux/arm64* ]]; then
   cp "$ROOT/work/linux-arm64/libandroid_runtime.so" "$CTX/linux-arm64/"
 fi
 cp "$ROOT/testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk" "$CTX/train.apk"
-"${BUILD[@]}" "$@" --load ${PLATFORM[@]+"${PLATFORM[@]}"} -t "$TAG" -f "$ROOT/docker/Dockerfile" "$CTX"
+# CI runners: the build's RUN steps use the host's network. In the build's own network apt-get could not resolve
+# Ubuntu's package servers ("Could not resolve 'archive.ubuntu.com'") while the runner itself could.
+NETWORK=()
+for a in "$@"; do [[ "$a" == --network* ]] && NETWORK=(skip); done
+[[ -n "${CI:-}" && ${#NETWORK[@]} -eq 0 ]] && NETWORK=(--network host) || NETWORK=()
+"${BUILD[@]}" "$@" ${NETWORK[@]+"${NETWORK[@]}"} --load ${PLATFORM[@]+"${PLATFORM[@]}"} -t "$TAG" -f "$ROOT/docker/Dockerfile" "$CTX"
 rm -rf "$CTX"
