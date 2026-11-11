@@ -256,9 +256,21 @@ final class Catalog {
       List<String> lines = Files.readAllLines(ref);
       if (lines.size() < 2 || !lines.get(0).matches("[0-9a-f]{64}\\.apk")) return null;
       Files.setLastModifiedTime(ref, FileTime.fromMillis(System.currentTimeMillis()));  // in use: keep it
+      // And its APK: a session that has just resolved this id is not yet in the session list the sweep asks (APK_GRACE_MILLIS).
+      try {
+        Files.setLastModifiedTime(uploads.resolve(lines.get(0)), FileTime.fromMillis(System.currentTimeMillis()));
+      } catch (IOException | RuntimeException e) {
+        // gone already: the launch says so
+      }
       return new App(id, lines.get(1), uploads.resolve(lines.get(0)), null, true, List.copyOf(lines.subList(2, lines.size())));
     }
   }
+
+  /**
+   * An APK no id names is deleted only once it has been untouched this long: an id is resolved (which touches its APK) a moment
+   * before its session is listed, and a download publishes its ids a moment after its APK is stored.
+   */
+  static final long APK_GRACE_MILLIS = 10 * 60_000L;
 
   /** Shortest and longest time to live an added app may be given (`ttl`): a preview build is for hours or days. */
   static final long TTL_MIN_S = 60, TTL_MAX_S = 7 * 86_400L;
@@ -788,7 +800,8 @@ final class Catalog {
         if (!n.endsWith(".apk") && !n.endsWith(".part")) continue;  // ids: handled above (and maybe deleted)
         // An APK no id names (ids and APKs are published together, under the lock this holds); an upload's
         // partial file only once it is an hour old (it may still be arriving: uploads are received without the lock).
-        boolean staleApk = n.endsWith(".apk") && !used.contains(n) && !held.test(n);
+        boolean staleApk = n.endsWith(".apk") && !used.contains(n) && !held.test(n)
+            && Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - APK_GRACE_MILLIS;
         boolean stalePart = n.endsWith(".part")
             && Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L;
         if (staleApk || stalePart) Files.deleteIfExists(p);

@@ -59,6 +59,12 @@ public final class CatalogTtlCheck {
     Files.writeString(state.resolve("serve/uploads/" + expiring.id() + ".expires"), Long.toString(System.currentTimeMillis() - 1000));
     String apkName = expiring.path().getFileName().toString();
     check(c.find(expiring.id()) == null, "past its deadline the id is unknown");
+    // Just resolved or published (the APK was touched a moment ago): not deleted yet, whatever the session list says.
+    c.find(expiring.id());
+    Files.writeString(state.resolve("serve/uploads/" + expiring.id() + ".expires"), Long.toString(System.currentTimeMillis() - 1000));
+    c.sweep(24 * 3_600_000L, name -> false);
+    check(Files.exists(expiring.path()), "an APK touched in the last minutes survives a sweep that no session holds");
+    Files.setLastModifiedTime(expiring.path(), java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 3_600_000L));
     c.sweep(24 * 3_600_000L, name -> name.equals(apkName));
     check(Files.exists(expiring.path()), "a sweep with a session on it keeps the stored APK");
     check(!Files.exists(state.resolve("serve/uploads/" + expiring.id() + ".ref")), "though the id is gone");
