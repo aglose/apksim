@@ -171,6 +171,7 @@ def main():
     check(any(n.startswith("new-instance-") for n in logs) and any(n.startswith("base-instance-") for n in logs),
           "the two builds of a comparison keep separate logs", str(logs[:6]))
 
+    import xml.etree.ElementTree as ET
     # 6: the resilience sweep, on the screens with deliberate faults
     secs_e = secs_f = 0
     if not args.no_sweep:
@@ -203,6 +204,15 @@ def main():
         check(p6.returncode == 0 and suite.get("failures") == "0" and int(suite.get("skipped")) == n_found
               and not doc6["sweep"]["stale"], "an allow-list accepts them: exit 0, the cases skipped, no stale entry",
               f"exit {p6.returncode}, failures {suite.get('failures')}, skipped {suite.get('skipped')}, stale {doc6['sweep']['stale']}")
+
+    if not args.no_sweep:
+        # 7: a sweep that the deadline cut short says so (it must not look like a pass)
+        doc9, _, p9 = crawl(args.apk, os.path.join(args.out, "sweep-deadline"), "--start", "apksim://faults", "--sweep", "recreate",
+                            "--max-seconds", "3", "--no-captures", "-j", "1")
+        inc = [f for f in doc9["findings"] if f.get("rule") == "sweep-incomplete"]
+        check(bool(inc) and p9.returncode == 1, "a sweep the deadline cut short reports sweep-incomplete and fails", f"exit {p9.returncode}, {inc}")
+        crash_fix = ET.parse(os.path.join(args.out, "sweep-deadline", "junit.xml")).getroot()
+        check(int(crash_fix.get("skipped")) >= 1, "its JUnit lists the cases that did not run as skipped")
 
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list)")

@@ -783,6 +783,7 @@ class Sweep:
         self.ex, self.plan, self.args, self.allow = ex, plan, args, allow
         self.dir = os.path.join(ex.out, "sweep")
         self.checked = []   # {"perturbation", "screen", "case"}
+        self.omitted = []   # cases the deadline kept from running
         self.found = []
         self.lock = threading.Lock()
 
@@ -805,12 +806,13 @@ class Sweep:
         return out
 
     def screen(self, inst, screen):
-        if self.ex.budget.out_of_time():
-            return
         for kind, param in self.plan:
             if self.ex.budget.out_of_time():
-                return
+                # The time is up: what is left is said, not dropped (a sweep that ran nothing must not look green).
+                self.omit(kind, screen)
+                continue
             fn = getattr(self, "sw_" + kind.replace("-", "_"))
+            inst.cmds = []
             try:
                 fn(inst, screen, param)
             except ReplayFailed as e:
@@ -818,7 +820,7 @@ class Sweep:
             except Gone as e:
                 c = e.crash
                 self.note(kind, screen, "crash" if c["kind"] == "crash" else "exit", c["detail"], getattr(inst, "case", []),
-                          log=c.get("log"))
+                          log=c.get("log"), repro_cmds=list(getattr(inst, "cmds", [])))
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
@@ -828,15 +830,20 @@ class Sweep:
                     except (snapshot.Closed, OSError, ValueError, AttributeError):
                         break
 
+    def omit(self, kind, screen):
+        with self.lock:
+            self.omitted.append({"perturbation": kind, "screen": screen["id"]})
+
     # --- records
     def case(self, kind, screen, label):
         with self.lock:
             self.checked.append({"perturbation": kind, "screen": screen["id"], "case": label})
 
-    def note(self, kind, screen, rule, detail, steps, **more):
+    def note(self, kind, screen, rule, detail, steps, pre=(), **more):
         path = {"start": screen["path"].get("start"), "steps": list(screen["path"]["steps"]) + list(steps)}
         f = {"kind": "sweep", "perturbation": kind, "rule": rule, "screen": screen["id"], "detail": detail, "path": path,
-             "repro": ["restart" + (f" {path['start']}" if path["start"] else "")] + path["steps"], "build": self.ex.name}
+             "repro": list(pre) + ["restart" + (f" {path['start']}" if path["start"] else "")] + path["steps"],
+             "build": self.ex.name}
         f.update(more)
         with self.lock:
             self.found.append(f)
@@ -877,6 +884,7 @@ class Sweep:
             tag = f"{kind}-{len(self.checked)}"
             before = self.read(inst, screen, tag + "-before")
             for c in forward + back:
+                inst.cmds.append(c)
                 inst.expect_ok(c)
                 inst.settle()
             after = self.read(inst, screen, tag + "-after")
@@ -911,6 +919,7 @@ class Sweep:
         inst.case = []
         self.case("offline", screen, "as reached")
         inst.say("network offline")
+        inst.cmds.append("network offline")
         inst.reach(screen["path"])  # the path with no network, from a fresh start
         if self.spinner(inst):
             inst.say("network online")
@@ -918,15 +927,19 @@ class Sweep:
             if not self.spinner(inst):  # a spinner that only offline leaves up
                 self.note("offline", screen, "endless-spinner",
                           f"still a progress indicator {self.args.spinner_seconds:g} s after the screen opened with no network "
-                          "(online it goes)", [], repro_cmds=["network offline", "restart"])
+                          "(online it goes)", [], pre=["network offline"])
 
     # --- permissions denied
     def sw_permission_deny(self, inst, screen, param):
-        inst.say("permission deny")
+        """`permission deny` answers the requests pending when it runs, so it follows each state: the controls
+        tapped there (a camera button) ask, and are told no. Requests a replay raises before that are not answered."""
         for steps in self.states_of(screen):
             inst.case = steps
             inst.reach_screen(screen, steps)
+            inst.cmds.append("permission deny")
+            inst.say("permission deny")
             inst.settle()
+            inst.observe()
             self.case("permission-deny", screen, " + ".join(steps) or "as reached")
 
     # --- large text
@@ -936,6 +949,7 @@ class Sweep:
         inst.reach_screen(screen)
         inst.settle()
         before = cut_of(inst.observe()["recs"])
+        inst.cmds.append(f"fontscale {fmt(scale)}")
         inst.configure(dict(DEFAULT_COMBO, fontscale=scale))
         inst.settle()
         after = inst.observe()
@@ -954,6 +968,7 @@ class Sweep:
         inst.reach_screen(screen)
         inst.settle()
         ltr = inst.observe()["recs"]
+        inst.cmds.append(f"locale {locale}")
         inst.configure(dict(DEFAULT_COMBO, locale=locale))
         inst.settle()
         rtl = inst.observe()
@@ -983,6 +998,7 @@ class Sweep:
     def sw_dark(self, inst, screen, param):
         inst.case = []
         inst.reach_screen(screen)
+        inst.cmds.append("appearance dark")
         inst.configure(dict(DEFAULT_COMBO, appearance="dark"))
         inst.settle()
         self.case("dark", screen, "dark appearance, a11y audit")
@@ -1000,6 +1016,10 @@ class Sweep:
 
     # --- the outcome
     def finish(self):
+        if self.omitted:
+            by = sorted({o["perturbation"] for o in self.omitted})
+            self.note("sweep", {"id": "*", "path": {"start": None, "steps": []}}, "sweep-incomplete",
+                      f"the time ran out: {len(self.omitted)} case(s) not run ({', '.join(by)}); raise --max-seconds", [])
         for f in self.found:
             r = allowed_by(f, self.allow)
             f["allowed"] = r is not None
@@ -1028,6 +1048,9 @@ def junit(path, sweep):
             continue
         done.add(key)
         cases.append(f'<testcase classname={quoteattr("crawl." + c["perturbation"])} name={quoteattr(c["screen"])}/>')
+    for o in sweep.omitted:
+        cases.append(f'<testcase classname={quoteattr("crawl." + o["perturbation"])} name={quoteattr(o["screen"])}>'
+                     f'<skipped message="not run: the time ran out"/></testcase>')
     for f in sweep.found:
         name = f'{f["screen"]}: {f["rule"]}: {f["detail"]}'[:300]
         body = "path to reproduce (drive.py commands):\n" + "\n".join(f["repro"] + f.get("repro_cmds", [])) + \
@@ -1041,7 +1064,7 @@ def junit(path, sweep):
             cases.append(f'<testcase classname={quoteattr("crawl." + f["perturbation"])} name={quoteattr(name)}>'
                          f'<failure message={quoteattr(f["detail"][:500])} type={quoteattr(f["rule"])}>{escape(body)}</failure></testcase>')
     xml = (f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="crawl-sweep" tests="{len(cases)}" failures="{failures}" '
-           f'skipped="{skipped}" time="{sweep.seconds:.1f}">\n' + "\n".join(cases) + "\n</testsuite>\n")
+           f'skipped="{skipped + len(sweep.omitted)}" time="{sweep.seconds:.1f}">\n' + "\n".join(cases) + "\n</testsuite>\n")
     with open(path, "w") as fh:
         fh.write(xml)
 

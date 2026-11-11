@@ -172,3 +172,8 @@ Measured (test app, low load): the faults screens, 32 cases, 30 s; `crawl-check.
 Known noise, not yet handled: states reached by tapping a dialog open (the dialogs screens, the scrolled Settings variants) report
 "state-lost" because a recreate closes the dialog or scrolls back; a screen whose control's label depends on earlier state ("Italian
 vacation") fails to set up (`replay` finding). Run the sweep on screens without those, or allow-list them.
+
+Sweep limits added in review: a sweep the deadline cut short reports a `sweep-incomplete` finding (and its JUnit lists the cases
+not run as skipped), so it cannot look like a pass. `permission-deny` sends `permission deny` after each state is reached, which
+answers the requests that state's controls raised; requests a replay raises earlier are not answered (launch with
+`-- --permissions deny` for that).
