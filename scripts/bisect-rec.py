@@ -26,7 +26,7 @@ search goes on. --image IMAGE replays in the Linux image (the bundle, builds and
 OUT/in, mounted as /work). Exit 0 when a first bad build was found, 1 when none was (the oldest already bad, the newest
 good, or only skipped builds between), 2 for bad arguments.
 """
-import base64, hashlib, html, json, os, re, shlex, shutil, subprocess, sys, time, zipfile
+import base64, hashlib, html, json, os, re, shlex, shutil, signal, subprocess, sys, time, zipfile
 
 ROOT = os.path.abspath(os.path.dirname(os.path.abspath(sys.argv[0])) + "/..")
 
@@ -424,6 +424,8 @@ figure img {{ width: 100%; border: 1px solid var(--line); }} figcaption {{ color
 
 
 def main():
+    # SIGTERM (a CI job cancelled) goes the way Ctrl-C does: the replay running is stopped before the bisect ends.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     bundle, builds, apksim_opts, opts = parse(sys.argv[1:])
     sys.exit(Bisect(bundle, builds, apksim_opts, opts).run())
 
