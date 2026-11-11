@@ -52,19 +52,18 @@ public final class TraceView {
       System.out.flush();
       if (open) openBrowser(url);
       long[] last = { System.currentTimeMillis() };
-      boolean[] served = { false };
+      java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean();
       ss.setSoTimeout(1000);
       final Path f = file;
       while (true) {
         long idle = System.currentTimeMillis() - last[0];
-        if (idle > (served[0] ? linger : 600) * 1000L) break;
+        if (idle > (delivered.get() ? linger : 600) * 1000L) break;
         Socket s;
         try { s = ss.accept(); } catch (SocketTimeoutException e) { continue; }
         last[0] = System.currentTimeMillis();
         Thread t = new Thread(() -> {
           try (s) {
-            handle(s, p, page, f, token);
-            if (f != null) served[0] = true;
+            if (handle(s, p, page, f, token)) delivered.set(true);
           } catch (IOException ignored) {
           }
         }, "apksim-traceview");
@@ -88,11 +87,12 @@ public final class TraceView {
     }
   }
 
-  private static void handle(Socket s, int port, byte[] page, Path file, String token) throws IOException {
+  /** Answers one request; true when it delivered the recording. */
+  private static boolean handle(Socket s, int port, byte[] page, Path file, String token) throws IOException {
     s.setSoTimeout(10000);
     BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.ISO_8859_1));
     String req = r.readLine();
-    if (req == null) return;
+    if (req == null) return false;
     String host = null, line;
     while ((line = r.readLine()) != null && !line.isEmpty()) {
       if (line.regionMatches(true, 0, "Host:", 0, 5)) host = line.substring(5).trim();
@@ -102,7 +102,7 @@ public final class TraceView {
     // DNS rebinding: only our own address is a Host we answer to
     if (parts.length < 2 || host == null || !(host.equals("127.0.0.1:" + port) || host.equals("localhost:" + port))) {
       send(out, 403, "text/plain", "forbidden\n".getBytes(StandardCharsets.UTF_8));
-      return;
+      return false;
     }
     String path = parts[1];
     int q = path.indexOf('?');
@@ -116,10 +116,13 @@ public final class TraceView {
       out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: " + size
           + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
       try (InputStream in = Files.newInputStream(file)) { in.transferTo(out); }
+      out.flush();
+      return true;
     } else {
       send(out, 404, "text/plain", "not found\n".getBytes(StandardCharsets.UTF_8));
     }
     out.flush();
+    return false;
   }
 
   private static void send(OutputStream out, int code, String type, byte[] body) throws IOException {

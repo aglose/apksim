@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-0EtSrO4TO3UpgJ4HJDfX4zU9gN8SFZoOcIUIkiiLg0o='; style-src 'sha256-3ev3vtyoUnnCRPwUhNsX1emiKXlfqpjEBH5nlBsepo8='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-3WopSW6vFX+crn47WG9bKgMc5+mJTpfXNznsuXn1qhU='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -45,7 +45,8 @@ body.loaded #app{display:flex}body.loaded #drop{display:none}
 .tools{display:flex;gap:6px;margin-bottom:4px;align-items:center;flex-wrap:wrap}
 .vl{position:relative;flex:1;min-height:60px;overflow:auto;border:1px solid var(--line)}
 .vl>.sz{position:relative;width:100%}
-.row{position:absolute;left:0;right:0;height:18px;line-height:18px;white-space:pre;overflow:hidden;padding:0 6px;cursor:default}
+.row{position:absolute;left:0;min-width:100%;width:max-content;height:18px;line-height:18px;white-space:pre;padding:0 6px;cursor:default}
+.row:focus-visible{outline:2px solid var(--acc)}
 .row:hover{background:var(--panel)}.row.cur{background:var(--cur)}.row.sel{outline:1px solid var(--acc)}
 .row .t{color:var(--dim);display:inline-block;width:70px}
 .row .tag{color:var(--acc)}
@@ -142,7 +143,8 @@ function VList(parent, render, onPick) {
   function draw() {
     var top = box.scrollTop, h = box.clientHeight || 300;
     var a = Math.max(0, Math.floor(top / rowH) - 2), b = Math.min(items.length, Math.ceil((top + h) / rowH) + 2), need = b - a;
-    while (pool.length < need) { var r = el('div', 'row'); r.addEventListener('click', pick); sz.appendChild(r); pool.push(r); }
+    while (pool.length < need) { var r = el('div', 'row'); r.addEventListener('click', pick);
+      if (onPick) { r.tabIndex = 0; r.setAttribute('role', 'button'); r.addEventListener('keydown', key); } sz.appendChild(r); pool.push(r); }
     for (var i = 0; i < pool.length; i++) {
       var r2 = pool[i];
       if (i >= need) { r2.style.display = 'none'; continue; }
@@ -151,6 +153,17 @@ function VList(parent, render, onPick) {
       while (r2.firstChild) r2.removeChild(r2.firstChild);
       render(r2, items[idx], idx);
     }
+  }
+  function key(ev) {
+    var i = ev.currentTarget._i, d = ev.key === 'ArrowDown' ? 1 : ev.key === 'ArrowUp' ? -1 : 0;
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(ev); return; }
+    if (!d) return;
+    ev.preventDefault();
+    var j = Math.max(0, Math.min(items.length - 1, i + d)), y = j * rowH;
+    sel = j; if (y < box.scrollTop) box.scrollTop = y; else if (y > box.scrollTop + box.clientHeight - rowH) box.scrollTop = y - box.clientHeight + rowH * 2;
+    draw();
+    for (var k = 0; k < pool.length; k++) if (pool[k]._i === j) pool[k].focus();
+    if (onPick) onPick(items[j], j);
   }
   function pick(ev) { var i = ev.currentTarget._i; sel = i; draw(); if (onPick) onPick(items[i], i); }
   box.addEventListener('scroll', draw);
@@ -176,9 +189,14 @@ function fmtT(ms) { var s = ms / 1000; return (s < 0 ? '-' : '') + Math.abs(s).t
 
 // ---------- state ----------
 var S = null, urls = [], tabsDone = {};
-var LEVELS = 'VDIWEF';
+var LEVELS = 'VDIWEF', TOUCH = { down: 1, move: 1, up: 1, cancel: 1 };
 
+var netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
 function reset() {
+  if (S && S.imgCache) Object.keys(S.imgCache).forEach(function (k) { URL.revokeObjectURL(S.imgCache[k]); });
+  if (detailUrl) { URL.revokeObjectURL(detailUrl); detailUrl = null; }
+  netCur = null; netTab = 'req'; lists = {};
+  $('frame')._i = undefined; $('phone').style.display = '';
   S = { man: null, t0: 0, t1: 1, t: 0, input: [], log: [], net: [], db: [], cps: [], frames: null, frameT0: 0, imgCache: {}, kind: '' };
   urls.forEach(function (u) { URL.revokeObjectURL(u); }); urls = [];
   $('tabs').textContent = ''; $('panes').textContent = ''; $('info').textContent = ''; $('err').textContent = '';
@@ -199,7 +217,8 @@ function showTab(id) {
 var lists = {};
 
 // ---------- loading ----------
-async function load(file) {
+function load(file) { loadQ = loadQ.then(function () { return loadNow(file); }); return loadQ; }
+async function loadNow(file) {
   reset(); $('name').textContent = file.name; document.body.classList.remove('loaded');
   var t0 = performance.now();
   try {
@@ -230,12 +249,20 @@ function stampLog(log, from, to) { // logcat has no year or zone: take the ones 
   var med = real[real.length >> 1], best = null;
   [y0 - 1, y0, y0 + 1].forEach(function (y) {
     var base = Date.UTC(y, med.mo - 1, med.d, med.h, med.mi, med.s, med.ms), diff = mid - base, step = 900000;
-    var off = Math.max(-12 * 3600000, Math.min(14 * 3600000, Math.round(diff / step) * step)), res = Math.abs(diff - off);
+    var off = Math.max(-14 * 3600000, Math.min(12 * 3600000, Math.round(diff / step) * step)), res = Math.abs(diff - off);
     if (!best || res < best.res) best = { res: res, y: y, off: off };
   });
   var last = 0;
   log.forEach(function (l) {
-    if (l.cont) l.ts = l.cont.ts; else if (l.mo) l.ts = Date.UTC(best.y, l.mo - 1, l.d, l.h, l.mi, l.s, l.ms) + best.off;
+    if (l.cont) l.ts = l.cont.ts;
+    else if (l.mo) { // each line's year is the one that puts it nearest the window (a window across New Year)
+      var pick = null;
+      [best.y - 1, best.y, best.y + 1].forEach(function (y) {
+        var v = Date.UTC(y, l.mo - 1, l.d, l.h, l.mi, l.s, l.ms) + best.off;
+        if (pick === null || Math.abs(v - mid) < Math.abs(pick - mid)) pick = v;
+      });
+      l.ts = pick;
+    }
     if (l.ts == null) l.ts = last; last = l.ts;
   });
   log.sort(function (a, b) { return a.ts - b.ts; }); // stable: lines of one millisecond keep their order
@@ -310,7 +337,7 @@ function buildRecordingPanes(zip) {
   var pi = addTab('input', 'Input (' + S.input.length + ')');
   lists.input = VList(pi, function (r, o) {
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    var txt = o.cmd ? 'cmd ' + o.cmd.join(' ') : (o.ev || '') + (o.x != null ? ' ' + o.x + ',' + o.y : '') + (o.redacted ? ' (left out)' : '') + (o.ch != null ? ' ' + JSON.stringify(o.ch) : '') + (o.key != null ? ' key ' + o.key : '');
+    var txt = o.cmd ? 'cmd ' + o.cmd.join(' ') : describeInput(o);
     r.appendChild(document.createTextNode(txt));
   }, function (o) { setTime(o.t); });
   lists.input.set(S.input);
@@ -346,6 +373,16 @@ function buildRecordingPanes(zip) {
   showTab('input');
   if (S.frames) showTab('input');
 }
+function describeInput(o) {
+  var ev = o.ev || '';
+  if (o.redacted) return ev + (o.pasted ? ' (pasted, left out)' : ' (left out)');
+  if (TOUCH[ev]) return ev + ' ' + o.x + ',' + o.y;
+  if (ev === 'char') { try { return 'char ' + JSON.stringify(String.fromCodePoint(o.v)) + ' (' + o.v + ')'; } catch (e) { return 'char ' + o.v; } }
+  if (ev === 'key') return 'key code ' + o.v + (o.x ? ' modifiers ' + o.x : '');
+  if (ev === 'wheel' || ev === 'rotary') return ev + ' ' + o.v + (o.x != null ? ' at ' + o.x + ',' + o.y : '');
+  if (ev === 'resize') return 'resize ' + o.x + 'x' + o.y;
+  return ev + (o.v ? ' ' + o.v : '');
+}
 function showCp(o) { $('cpd').textContent = JSON.stringify({ id: o.id, why: o.why, activities: o.acts, device: o.dev, notes: o.notes }, null, 2); }
 
 function buildLog(parent, log, timed) {
@@ -372,7 +409,6 @@ function buildLog(parent, log, timed) {
 }
 
 // ---------- network detail ----------
-var netTab = 'req', netCur = null;
 function buildNetDetail(parent) {
   var d = el('div'); d.id = 'ndet'; var bar = el('div', 'tools'); bar.style.padding = '4px';
   [['req', 'Request'], ['res', 'Response headers'], ['body', 'Response body'], ['rbody', 'Request body']].forEach(function (x) {
@@ -382,7 +418,8 @@ function buildNetDetail(parent) {
 }
 function hdrs(h) { return (h || []).map(function (x) { return x.name + ': ' + x.value; }).join('\n'); }
 function showNet(o) {
-  netCur = o; var body = $('nbody'); body.textContent = ''; if (!o) { body.textContent = 'Select an exchange.'; return; }
+  netCur = o; var body = $('nbody'); body.textContent = '';
+  if (detailUrl) { URL.revokeObjectURL(detailUrl); detailUrl = null; } if (!o) { body.textContent = 'Select an exchange.'; return; }
   var e = o.e, rq = e.request || {}, rs = e.response || {}, c = rs.content || {};
   if (netTab === 'req') body.textContent = (rq.method || '') + ' ' + (rq.url || '') + ' ' + (rq.httpVersion || '') + '\n\n' + hdrs(rq.headers);
   else if (netTab === 'res') body.textContent = (rs.status || '') + ' ' + (rs.statusText || '') + ' ' + (rs.httpVersion || '') + '\n\n' + hdrs(rs.headers) + '\n\ntiming: ' + JSON.stringify(e.timings || {}) + '\ntotal ' + Math.round(o.dur) + ' ms';
@@ -393,7 +430,7 @@ function showNet(o) {
     var bytes = null;
     if (c.encoding === 'base64') { try { var bin = atob(txt); bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); } catch (x) {} }
     if (bytes && /^image\/(png|jpeg|gif|webp)\b/.test(mime)) {
-      var u = URL.createObjectURL(new Blob([bytes], { type: mime.split(';')[0] })); urls.push(u);
+      var u = detailUrl = URL.createObjectURL(new Blob([bytes], { type: mime.split(';')[0] }));
       var im = el('img'); im.src = u; body.appendChild(im); return;
     }
     var s = bytes ? new TextDecoder().decode(bytes) : txt;
@@ -440,7 +477,8 @@ async function loadBundle(zip, t0) {
     kv('log lines', S.log.length);
     showTab('fail');
   }
-  if (sel) sel.addEventListener('change', function () { show(sel.value); });
+  var showQ = Promise.resolve();
+  if (sel) sel.addEventListener('change', function () { var v = sel.value; showQ = showQ.then(function () { return show(v); }); });
   await show(heads[0]);
 }
 function textLines(id, label, text) { // a big file as a searchable virtual list of its lines
@@ -521,7 +559,7 @@ function setTime(t, quiet) {
     if (W && H) {
       var lo = S.t - 600;
       for (var k = lastAtOrBefore(S.input, 't', S.t); k >= 0 && S.input[k].t >= lo; k--) {
-        var o = S.input[k]; if (o.x == null || o.redacted) continue;
+        var o = S.input[k]; if (o.x == null || o.redacted || !TOUCH[o.ev]) continue;
         var m = el('div', 'mk' + (o.t >= slot0 && o.t < slot1 ? ' now' : ''));
         m.style.left = (o.x / W * 100) + '%'; m.style.top = (o.y / H * 100) + '%'; m.style.opacity = String(Math.max(0.25, 1 - (S.t - o.t) / 700));
         marks.appendChild(m);
@@ -546,7 +584,7 @@ document.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dat
 var q = new URLSearchParams(location.search).get('src');
 if (q && /^\/rec\/[A-Za-z0-9_-]+$/.test(q)) {
   fetch(q).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
-    .then(function (b) { b.name = decodeURIComponent(new URLSearchParams(location.search).get('name') || 'recording.apkrec'); load(new File([b], b.name)); })
+    .then(function (b) { b.name = new URLSearchParams(location.search).get('name') || 'recording.apkrec'; load(new File([b], b.name)); })
     .catch(function (e) { fail('Could not fetch the recording: ' + e.message); });
 }
 reset();

@@ -82,6 +82,8 @@ def parse_recording(path):
     r["input"] = len(inp)
     log = [LOG.match(l) for l in z.read("logcat.txt").decode().splitlines() if l]
     r["log"] = sum(1 for m in log if m)
+    r["errors"] = sum(1 for m in log if m and m.group(9) in "EF")
+    r["warns"] = sum(1 for m in log if m and m.group(9) in "WEF")
     har = json.loads(z.read("network.har"))["log"]["entries"]
     r["net"] = [e["request"]["url"] for e in har]
     r["checkpoint"] = man.get("checkpoint")
@@ -242,7 +244,10 @@ def drive_chrome(a, rec, bundle, out):
         cnt0 = ev(s, "document.querySelector('#p-log .tools span').textContent")
         ev(s, "(()=>{const i=document.querySelector('#p-log .tools select');i.value='E';i.dispatchEvent(new Event('input'))})()")
         cnt1 = ev(s, "document.querySelector('#p-log .tools span').textContent")
-        check(cnt0 != cnt1 or " 0 of " in cnt1 or cnt1.split()[0] == cnt0.split()[0], f"level filter: {cnt0} -> {cnt1}")
+        check(cnt1.startswith(f"{ref['errors']} of {ref['log']} "), f"level filter E keeps the {ref['errors']} error lines: {cnt0} -> {cnt1}")
+        ev(s, "(()=>{const i=document.querySelector('#p-log .tools select');i.value='W';i.dispatchEvent(new Event('input'))})()")
+        cnt2 = ev(s, "document.querySelector('#p-log .tools span').textContent")
+        check(cnt2.startswith(f"{ref['warns']} of {ref['log']} "), f"level filter W keeps {ref['warns']}: {cnt2}")
         ev(s, "(()=>{const i=document.querySelector('#p-log .tools select');i.value='V';i.dispatchEvent(new Event('input'));"
               "const t=document.querySelectorAll('#p-log .tools input')[0];t.value='zzzz-no-such-tag';t.dispatchEvent(new Event('input'))})()")
         check(ev(s, "document.querySelector('#p-log .tools span').textContent").startswith("0 of"), "tag filter narrows to nothing for an unknown tag")
