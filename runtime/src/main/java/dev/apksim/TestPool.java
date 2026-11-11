@@ -28,6 +28,10 @@ final class TestPool {
   /** Boots what any test of the run needs, then waits for the test's arguments and sets them (apksim.instrument.KEY). */
   static void await(String instrumentation, AppClasses tests) throws IOException {
     long t0 = System.nanoTime();
+    // Until the hand-over, instrument.py reads only this process's stderr: anything printed to System.out meanwhile
+    // goes there, so a talkative warm-up cannot fill the unread stdout pipe and stall the process.
+    java.io.PrintStream out = System.out;
+    System.setOut(System.err);
     tests.loadAhead();  // the test APK's classes the last test process loaded (defined only: no static initializers)
     // The sandbox, native runtime and Robolectric's first environment, through the runner probe's test with no runner
     // (a plain Application). The probe itself (a suite's own runner's newApplication) runs after the hand-over, as in a
@@ -55,5 +59,6 @@ final class TestPool {
     }
     for (int i = 0; i + 1 < parts.size(); i += 2) System.setProperty("apksim.instrument." + parts.get(i), parts.get(i + 1));
     System.err.printf("[apksim] pool: test handed over after %d ms ready%n", (System.nanoTime() - ready) / 1_000_000);
+    System.setOut(out);
   }
 }
