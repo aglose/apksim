@@ -43,7 +43,8 @@ Gradle build was refused by this session's permission check (it builds and runs 
 fallback: focused tests of each library's documented behaviour in the test app's
 `src/androidTest/.../conformance/`, written device-style (the test body off the main thread on a device, UI work
 through `onActivity`/`onFragment`) and checked on the emulator before any change here. The test app gained
-fragment-ktx, fragment-testing, lifecycle-process, navigation-fragment and navigation-compose for them.
+fragment-ktx, fragment-testing, lifecycle-process, navigation-fragment and navigation-compose for them, and for batch 2
+recyclerview and espresso-contrib.
 
 ## Batch 1: activity, fragment, lifecycle, navigation
 
@@ -123,6 +124,30 @@ takes it itself.
   `INFINITE` into 1, so the animator ends after its second cycle (found writing the frame-loop latch tests: a 100 ms
   one ended at 273 ms). Its shadows are on in running instances too, so an app's endless View spinner should stop
   there as well. Not checked on the emulator or in a running instance yet.
+
+## Batch 2: Compose ui and foundation, material3, recyclerview
+
+46 tests, in the same package, with recyclerview 1.4.0 and espresso-contrib (RecyclerViewActions) added to the test app.
+All 46 pass on both sides, here in both clock modes, with no change to apksim (run with #272's runtime, since these
+suites are where a main-thread latch would show; none of the tests uses one).
+
+| Class | Tests | Passes on both |
+|---|---|---|
+| ComposeUiConformanceTest (positions and clipped bounds at the display's density, composition locals, focus and key events, long press against tap, derivedStateOf, AndroidView interop, system bar insets, BackHandler, the lifecycle owner, an animation on the paused clock, saved state restored, IME actions, window info) | 13 | 13 |
+| ComposeFoundationConformanceTest (scrollToIndex, a fling that settles, keyed items across a reorder, pager swipe and animateScrollToPage, BasicTextField input, press interactions, performScrollTo) | 8 | 8 |
+| Material3ConformanceTest (snackbar action and timeout, DropdownMenu pick and back, Slider drag and SetProgress, Switch and Checkbox, AlertDialog, ModalBottomSheet, TabRow, tooltip, pull to refresh, SwipeToDismissBox, ModalNavigationDrawer's scrim, a menu inside a Dialog) | 14 | 14 |
+| RecyclerViewConformanceTest (what is bound, RecyclerViewActions, fling, smoothScrollToPosition, ListAdapter's commit, the removal animation, ItemTouchHelper, saved position across recreate, GridLayoutManager spans, the accessibility scroll, a nested horizontal list) | 11 | 11 |
+
+### Difference found, left as designed
+
+- **An animation started before waitForIdleSync finishes inside it** in the default clock mode. RecyclerView 1.4 runs
+  the accessibility scroll-forward action as `smoothScrollBy`, and a test that checked the position right after
+  `waitForIdleSync` passed here and failed on the emulator, where the idle wait returns while the scroll runs
+  (traced: all 33 of the scroll's `ViewFlinger` frames ran under the test's one `waitForIdleSync`, through
+  `ShadowPausedLooper.idle` and Robolectric's unpaused Choreographer). This is the default clock skipping idle time
+  (AGENTS.md, "Instrumentation tests"), which Robolectric-style suites rely on; with `--realtime-clock` the same test
+  fails as on the emulator (2 of 2 runs), so suites written for a device have that switch. The test now waits for the
+  scroll to settle, as a device test must.
 
 ### Run against AndroidX's own tests
 
