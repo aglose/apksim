@@ -38,12 +38,18 @@ def crawl(apk, out, *extra, expect=(0, 1)):
                "/work/app.apk", "--out", "/work/" + os.path.relpath(out, work), *extra]
     else:
         cmd = [sys.executable, CRAWL, apk, "--out", out, *extra]
+    try:
+        os.remove(os.path.join(out, "crawl.json"))  # never read an earlier run's result
+    except OSError:
+        pass
     t0 = time.time()
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     secs = time.time() - t0
     print(f"     crawl {' '.join(extra)[:110]}: {secs:.0f} s, exit {p.returncode}", flush=True)
     if p.returncode not in expect:
         print(p.stdout[-3000:])
+        print(f"crawl-check: crawl.py exited {p.returncode}, expected one of {expect}", file=sys.stderr)
+        sys.exit(1)
     if not os.path.exists(os.path.join(out, "crawl.json")):
         print(p.stdout[-3000:])
         print(f"crawl-check: crawl.py (exit {p.returncode}) wrote no crawl.json in {out}", file=sys.stderr)
