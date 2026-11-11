@@ -111,7 +111,7 @@ before it merges.
 | 5 Pre-warmed test processes | test processes | r1 | #257 | open, checks pass |
 | 6 Flake hunter | test processes | r2 | #261 (draft, on #257) | open, checks pass |
 | 7 Coverage | coverage | r2 | #255 (draft) | open, checks pass |
-| 8 Conformance sweep | conformance | r1-r3 | none yet | first batch in progress |
+| 8 Conformance sweep | conformance | r1-r3 | #265, #266 (on #265), #267 (on #266) | first batch open (33 focused tests; AndroidX's own suites not built); batches 2 and 3 not started |
 | 9 PR preview, compare | serve | r1 | #252 | open, checks pass |
 | 10 Report button, inspector | serve | r2 | #259 (draft, on #252) | open, checks pass |
 | 11 Crawler | crawler | r1 | #260 | open, checks pass |
