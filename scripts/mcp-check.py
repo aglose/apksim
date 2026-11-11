@@ -95,6 +95,11 @@ t, res = c.tool("launch", apk=apk, options=["--jvm", "-Dx=y"])
 check(res.get("isError") and "not allowed" in t, "launch option off the allow-list refused")
 t, res = c.tool("nodes")
 check(res.get("isError"), "action with no instance is an error")
+t, res = c.tool("launch", apk=apk, options=["--camera", "fake=/etc/hosts"])
+check(res.get("isError"), "--camera with a file path refused")
+p.stdin.write('{"jsonrpc":"2.0","id":99,"method":"tools/list","params":[1]}\n')
+p.stdin.flush()
+check(json.loads(p.stdout.readline()).get("error", {}).get("code") == -32602, "params that are not an object: an error, server lives")
 
 t = c.ok("launch", apk=apk)
 print("launch answer:", len(t), "bytes")
@@ -102,6 +107,10 @@ check("MainActivity" in t and "FAB clicks: 0" in t, "launch answers with the scr
 fab = [l.split()[0] for l in t.splitlines() if l.endswith(" click") and '"' not in l]
 check(len(fab) == 1, "the FAB is the one unlabelled clickable")
 c.ok("record", action="start")
+c.ok("tap", text="Trips")
+t = c.ok("type", tap_text="Trip note", text="a  b ")
+check("a  b" in t or "typed 5 chars" in t, "type keeps its spaces: " + t.splitlines()[0])
+c.ok("tap", text="Home")
 
 t = c.ok("tap", ref=fab[0])
 print("tap answer:\n" + t)

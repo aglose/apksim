@@ -44,8 +44,8 @@ class Fail(Exception):
 
 # ---------------------------------------------------------------- node tree
 
-ENTRY = re.compile(r"\s*;\s*(?=\[\d+,\d+,\d+,\d+\] |\s*$)")
-HEAD = re.compile(r"\[(\d+),(\d+),(\d+),(\d+)\] ?((?:(?:password-field|field|clickable)(?: |$))*)(.*)", re.S)
+ENTRY = re.compile(r"\s*;\s*(?=\[-?\d+,-?\d+,-?\d+,-?\d+\] |\s*$)")
+HEAD = re.compile(r"\[(-?\d+),(-?\d+),(-?\d+),(-?\d+)\] ?((?:(?:password-field|field|clickable)(?: |$))*)(.*)", re.S)
 ATTR = re.compile(r'(text|hint|desc)="(.*?)"(?= (?:text|hint|desc)="|\s*$)', re.S)
 
 
@@ -101,6 +101,8 @@ class Tree:
 
     def update(self, new):
         old = self.nodes
+        for o in old:
+            o.pop("_from", None)  # keep only the previous tree, not a chain of every earlier one
         free = list(range(len(old)))
         for n in new:
             n["ref"] = None
@@ -221,6 +223,7 @@ class Instance:
         self.port = None
         self.sock = self.rf = None
         self.stderr = collections.deque(maxlen=4000)
+        self.slock = threading.Lock()
         self.tree = Tree()
         self.cv = threading.Condition()
         self.size = (822, 1782)
@@ -236,7 +239,8 @@ class Instance:
                 with self.cv:
                     self.port = int(m.group(1))
                     self.cv.notify_all()
-            self.stderr.append(ln)
+            with self.slock:
+                self.stderr.append(ln)
         with self.cv:
             self.cv.notify_all()
 
@@ -246,17 +250,21 @@ class Instance:
             while self.port is None and self.proc.poll() is None and time.time() < end:
                 self.cv.wait(0.5)
         if self.port is None:
-            tail = "\n".join(list(self.stderr)[-8:])
+            tail = "\n".join(self.tail(8))
             raise Fail("launch failed (exit %s):\n%s" % (self.proc.poll(), tail))
         self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=60)
         self.rf = self.sock.makefile("r")
+
+    def tail(self, n):
+        with self.slock:
+            return list(self.stderr)[-n:]
 
     def alive(self):
         return self.proc.poll() is None
 
     def cmd(self, text):
         if not self.alive():
-            raise Fail("instance %s has exited (%s): %s" % (self.id, self.proc.poll(), "; ".join(list(self.stderr)[-3:])))
+            raise Fail("instance %s has exited (%s): %s" % (self.id, self.proc.poll(), "; ".join(self.tail(3))))
         if "\n" in text or "\r" in text:
             raise Fail("line breaks are not allowed")
         try:
@@ -283,6 +291,23 @@ class Instance:
                 pass
 
 
+def put(src, dst):
+    """Copies src to dst without following a symlink at dst (or a pre-made temporary): written to a new file, then
+    renamed over the name, which replaces a link instead of writing through it."""
+    tmp = "%s.tmp-%d" % (dst, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        with os.fdopen(fd, "wb") as w, open(src, "rb") as r:
+            shutil.copyfileobj(r, w)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class Server:
     def __init__(self, args):
         self.apps = [os.path.realpath(os.path.expanduser(a)) for a in args.apps]
@@ -290,7 +315,7 @@ class Server:
         os.makedirs(self.out, exist_ok=True)
         # The app is sandboxed and may write under the state folder only: an output folder elsewhere is filled by copies
         # from a scratch folder there.
-        inside = self.out == STATE or self.out.startswith(STATE + os.sep)
+        inside = (self.out == STATE or self.out.startswith(STATE + os.sep)) and not re.search(r"\s", self.out)
         self.scratch = self.out if inside else os.path.join(STATE, "mcp-tmp", str(os.getpid()))
         os.makedirs(self.scratch, exist_ok=True)
         self.max, self.window = args.max, args.window
@@ -370,6 +395,8 @@ class Server:
                 if k + 1 >= len(opts):
                     raise Fail("%s needs a value" % o)
                 v = opts[k + 1]
+                if o == "--camera" and v not in ("off", "fake"):
+                    raise Fail("--camera: off or fake")
                 if any(ord(c) < 32 for c in v) or (o == "--sdcard-file" and not re.match(r"^/sdcard/[^=]*=(text:|[A-Za-z0-9+/=]+$)", v)):
                     raise Fail("bad value for " + o)
                 cmd += [o, v]
@@ -410,13 +437,22 @@ class Server:
         i.close()
         return "quit " + i.id
 
+    def resolve(self, i, ref):
+        """The node a reference named, found again in the screen as it is now (it may have moved or gone)."""
+        old = next((n for n in i.tree.nodes if n["ref"] == ref), None)
+        if not old:
+            raise Fail("%s is not on screen: call nodes" % ref)
+        fresh = self.nodes(i)
+        same = [n for n in fresh if (label(n) == label(old) and n["field"] == old["field"]) and (
+            label(old) or n["b"] == old["b"])]
+        if not same:
+            raise Fail("%s is no longer on screen: call nodes" % ref)
+        return min(same, key=lambda n: abs(n["b"][0] - old["b"][0]) + abs(n["b"][1] - old["b"][1]))
+
     def tap_point(self, i, a):
         before = self.prepare(i)
         if a.get("ref"):
-            n = next((n for n in i.tree.nodes if n["ref"] == a["ref"]), None)
-            if not n:
-                raise Fail("%s is not on screen: call nodes" % a["ref"])
-            x, y = center(n)
+            x, y = center(self.resolve(i, a["ref"]))
         elif a.get("text"):
             want = a["text"].lower()
             cands = [n for n in self.nodes(i) if label(n)]
@@ -450,7 +486,12 @@ class Server:
             _, x, y = self.tap_point(i, {"ref": a.get("ref"), "text": a.get("tap_text"), "instance": i.id})
             i.cmd("tap %d %d" % (x, y))
             self.settle(i)
-        r = i.cmd("type " + t)  # never logged here: only its length is echoed
+        r = "ok"
+        for part in re.split(r"( +)", t):  # the control channel collapses spaces: send them as key presses
+            if part.startswith(" "):
+                r = i.cmd("key SPACE %d" % len(part))
+            elif part:
+                r = i.cmd("type " + part)  # never logged here: only the length is echoed
         return self.answer(i, "typed %d chars %s" % (len(t), r), before)
 
     def t_key(self, a):
@@ -466,6 +507,9 @@ class Server:
     def t_swipe(self, a):
         i = self.get(a)
         before = self.prepare(i)
+        m = re.search(r"mBounds=Rect\(0, 0 - (\d+), (\d+)\)", i.cmd("config"))
+        if m:
+            i.size = (int(m.group(1)), int(m.group(2)))
         w, h = i.size
         d = a.get("direction")
         if d:
@@ -485,7 +529,7 @@ class Server:
         return self.answer(i, "swipe %d,%d>%d,%d %s" % (x1, y1, x2, y2, r), before)
 
     def _node(self, i, a):
-        r = next((n for n in i.tree.nodes if n["ref"] == a.get("ref")), None) if a.get("ref") else None
+        r = self.resolve(i, a["ref"]) if a.get("ref") else None
         if not r and a.get("text"):
             r = next((n for n in i.tree.nodes if a["text"].lower() in label(n).lower()), None)
         if not r:
@@ -526,6 +570,8 @@ class Server:
     def t_screenshot(self, a):
         i = self.get(a)
         self.settle(i)
+        if re.search(r"\s", self.scratch):
+            raise Fail("screenshot needs a state folder path without spaces")
         raw = os.path.join(self.scratch, "shot-%s-%d.png" % (i.id, int(time.time() * 1000)))
         r = i.cmd("shot " + raw)
         if not r.startswith("ok") or not os.path.exists(raw):
@@ -544,7 +590,7 @@ class Server:
                 data = png_scale(data, maxdim)
         if a.get("save"):
             if self.scratch != self.out:
-                shutil.copy(raw, os.path.join(self.out, os.path.basename(raw)))
+                put(raw, os.path.join(self.out, os.path.basename(raw)))
             saved = "saved " + os.path.join(self.out, os.path.basename(raw))
         else:
             os.remove(raw)
@@ -555,7 +601,9 @@ class Server:
     def t_logcat(self, a):
         i = self.get(a)
         pat = re.compile(re.escape(a["filter"]), re.I) if a.get("filter") else None
-        lines = [l for l in i.stderr if not l.startswith("[apksim]") and (not pat or pat.search(l))]
+        with i.slock:
+            snap = list(i.stderr)
+        lines = [l for l in snap if not l.startswith("[apksim]") and (not pat or pat.search(l))]
         n = max(1, min(int(a.get("lines", 30)), 300))
         return "\n".join(lines[-n:])[-12000:] or "(no app log lines)"
 
@@ -577,7 +625,7 @@ class Server:
             if name is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", name):
                 raise Fail("name: letters, digits, . _ -")
             r = i.cmd("rec save")
-            m = re.search(r"saving (\S+\.apkrec)", r)
+            m = re.search(r"saving (.+?\.apkrec)(?: \(|$)", r)
             if not m:
                 raise Fail(r)
             src = m.group(1)
@@ -592,7 +640,7 @@ class Server:
             if not name.endswith(".apkrec"):
                 name += ".apkrec"
             dst = os.path.join(self.out, name)
-            shutil.copyfile(src, dst)
+            put(src, dst)
             os.remove(src)
             return "saved %s (%d KB)" % (dst, os.path.getsize(dst) // 1024)
         raise Fail("action: start, stop, save, status")
@@ -692,6 +740,10 @@ def main():
         rid, method, p = m.get("id"), m.get("method"), m.get("params") or {}
         if "method" not in m or rid is None:
             continue  # a notification (initialized, cancelled) or a response: nothing to answer
+        if not isinstance(p, dict) or not isinstance(p.get("_meta") or {}, dict) or not isinstance(
+                p.get("arguments") or {}, dict):
+            err(rid, -32602, "params, _meta and arguments must be objects")
+            continue
         meta = p.get("_meta") or {}
         ver = meta.get("io.modelcontextprotocol/protocolVersion")
         if ver and ver != MODERN and method != "initialize":
