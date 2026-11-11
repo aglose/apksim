@@ -61,8 +61,9 @@ final class CoverageDump {
   private static String key(AppClasses app, AppClasses tests) throws java.security.NoSuchAlgorithmException {
     MessageDigest md = MessageDigest.getInstance("SHA-256");
     md.update((app.fingerprint() + "|" + tests.fingerprint() + "|" + Probes.packages() + "|" + ClassCache.runtimeHash()).getBytes(StandardCharsets.UTF_8));
+    byte[] sum = md.digest();
     StringBuilder b = new StringBuilder();
-    for (int i = 0; i < 8; i++) b.append(String.format("%02x", md.digest()[i]));
+    for (int i = 0; i < 8; i++) b.append(String.format("%02x", sum[i]));
     return b.toString();
   }
 

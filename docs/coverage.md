@@ -36,6 +36,9 @@ scripts/coverage.py cov --mapping mapping.txt --out report                      
   crashed process's tests writes files of its own. Counts are what the processes did (an isolated run counts startup
   code once per test), so compare *covered* methods and lines across ways of running a suite, not counts.
   `instrument.py` removes the earlier run's `cov-*.cov` first and merges at the end.
+- Counters are plain `int` increments shared by all threads: two threads hitting the same line at once can lose a
+  count, so counts of busy lines are approximate; a covered method or line never reads 0, which is what the reports
+  and the merge check rely on. Overflow at 2^31 hits per process is not handled.
 - A process that dies mid-run (a native crash, the Timeout watchdog) writes nothing: what it covered is lost, and its
   unfinished tests run again in a new process. Coverage is written for the whole run, not per test.
 

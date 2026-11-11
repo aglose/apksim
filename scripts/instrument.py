@@ -1165,7 +1165,8 @@ def main():
             p.error("--coverage and --record-deps both put probes in the classes: run them one at a time")
         cov_dir = a.coverage_local or a.coverage
         os.makedirs(cov_dir, exist_ok=True)
-        for old in glob.glob(os.path.join(cov_dir, "cov-*.cov")):  # an earlier run's counts are not this one's
+        for old in glob.glob(os.path.join(cov_dir, "cov-*.cov")) + glob.glob(os.path.join(cov_dir, "universe-*.cov")):
+            # an earlier run's counts are not this one's, and its build's list of methods may not be this build's
             os.remove(old)
         passthrough = passthrough + ["--coverage", a.coverage]
     if a.record:

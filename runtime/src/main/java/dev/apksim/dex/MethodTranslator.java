@@ -130,6 +130,7 @@ final class MethodTranslator implements Opcodes {
   private Coverage.Slots cov;
   private int covMethod;
   private boolean covIface;
+  private Map<Integer, Integer> covLines; // source line -> slot, for this method
 
   /** Coverage: this method has slot {@code method}; each line its debug info names gets a counter of its own. */
   void cover(Coverage.Slots slots, int method, boolean ownerIsInterface) {
@@ -1693,7 +1694,7 @@ final class MethodTranslator implements Opcodes {
     }
     copyParams();
     int[] s = new int[regs];
-    Map<Integer, Integer> covLines = cov != null ? new HashMap<>() : null;
+    covLines = cov != null ? new HashMap<>() : null;
     for (int bl = 0; bl < blockCount; bl++) {
       boolean reachable = blockState[bl] != null;
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
@@ -1720,6 +1721,10 @@ final class MethodTranslator implements Opcodes {
       mv.visitLabel(e.getValue());
       if (op[target] == 0x0d) {
         mv.visitVarInsn(ASTORE, slot(a[target]));
+        // The stub jumps past move-exception, which is where a catch's line is: count it here.
+        if (cov != null && lines != null && lines[target] != 0 && covLines != null) {
+          covHit(covLines.computeIfAbsent(lines[target], ln -> cov.line(covMethod, ln)));
+        }
       } else {
         mv.visitInsn(POP);
       }
@@ -1908,7 +1913,13 @@ final class MethodTranslator implements Opcodes {
       if (reachable) System.arraycopy(blockState[bl], 0, s, 0, regs);
       for (int i = blockStart[bl]; i < blockStart[bl + 1]; i++) {
         mv.visitLabel(labels[i]);
-        if (reachable && lines != null && lines[i] != 0) mv.visitLineNumber(lines[i], labels[i]);
+        if (reachable && lines != null && lines[i] != 0) {
+          mv.visitLineNumber(lines[i], labels[i]);
+          if (cov != null) {
+            if (covLines == null) covLines = new HashMap<>();
+            covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));
+          }
+        }
         if (reachable) emitInsn(i, s, labels);
       }
       // Falling out of a dead block is impossible, but the code after it must still be well formed.

@@ -368,7 +368,7 @@ public final class ClassTranslator implements Opcodes {
       switch (type) {
         case "Ldalvik/annotation/Signature;" -> signature = joinSignature(vals.get("value"));
         // Kotlin's SMAP: lets a debugger map inlined functions' lines back to their own files.
-        case "Ldalvik/annotation/SourceDebugExtension;" -> sourceDebug = DEBUG_INFO || cov != null ? smap((String) vals.get("value")) : null;
+        case "Ldalvik/annotation/SourceDebugExtension;" -> sourceDebug = DEBUG_INFO || (COVERAGE && Probes.probed(name)) ? smap((String) vals.get("value")) : null;
         case "Ldalvik/annotation/EnclosingClass;" -> outerClass = internal(((Type) vals.get("value")).getDescriptor());
         case "Ldalvik/annotation/EnclosingMethod;" -> {
           if (vals.get("value") instanceof DexFile.MethodRef m) {

@@ -81,9 +81,9 @@ def parse_smap(text):
         elif mode == "F":
             if ln.startswith("+ "):
                 _, n, name = ln.split(" ", 2)
-                path = lines[i] if i < len(lines) else name
+                owner = lines[i] if i < len(lines) else ""
                 i += 1
-                files[int(n)] = path
+                files[int(n)] = (owner.rsplit("/", 1)[0] + "/" if "/" in owner else "") + name  # package of the declaring class
             else:
                 parts = ln.split(" ", 1)
                 if len(parts) == 2 and parts[0].isdigit():
@@ -140,7 +140,7 @@ class Mapping:
                 a, b, ret, name, params, os_, oe, obf_name = m.groups()
                 self.methods.setdefault(cur, []).append((
                     obf_name, [p for p in params.split(",") if p], int(a) if a else None, int(b) if b else None,
-                    name, int(os_) if os_ else None, int(oe) if oe else None))
+                    name, int(os_) if os_ else None, int(oe) if oe else None, ret))
 
     def cls(self, name):
         return self.classes.get(name, name)
@@ -156,6 +156,10 @@ class Mapping:
             out.append((self.desc_type(prim) if prim else ref.replace("/", ".")) + "[]" * len(dims))
         return out
 
+    def ret_of(self, desc):
+        dims, prim, ref = re.fullmatch(r"(\[*)(?:([ZBCSIJFDV])|L([^;]+);)", desc[desc.index(")") + 1:]).groups()
+        return (self.desc_type(prim) if prim else ref.replace("/", ".")) + "[]" * len(dims)
+
     def method(self, cls, name, desc, line):
         """(original name, original line or the given one) of the obfuscated method; entries that came from inlining
         another class's method (a dotted name) are not used."""
@@ -163,7 +167,9 @@ class Mapping:
         if not entries:
             return name, line
         have = self.params_of(desc)
-        match = [e for e in entries if [self.obf_type(p) for p in e[1]] == have] or entries
+        want = self.ret_of(desc)
+        by_params = [e for e in entries if [self.obf_type(p) for p in e[1]] == have] or entries
+        match = [e for e in by_params if self.obf_type(e[7]) == want] or by_params  # same name and parameters: the return type decides
         if line is not None:
             for e in match:
                 if e[2] is not None and e[2] <= line <= e[3]:
@@ -261,7 +267,7 @@ def class_counters(c):
 
 
 def sum_counters(parts):
-    out = {}
+    out = {t: counter(0, 0) for t in ("INSTRUCTION", "LINE", "METHOD", "CLASS")}
     for p in parts:
         for t, v in p.items():
             o = out.setdefault(t, counter(0, 0))
@@ -347,16 +353,16 @@ def lcov(model, prefix):
     methods_by_file = {}
     for c in model["classes"]:
         if c["file"]:
-            methods_by_file.setdefault(c["file"], []).extend(c["methods"])
+            methods_by_file.setdefault(c["file"], []).extend(dict(m, cls=c["name"].replace("/", ".")) for m in c["methods"])
     out = []
     for path in sorted(model["files"]):
         lines = model["files"][path]
         out.append("TN:\nSF:" + prefix + path + "\n")
         ms = [m for m in methods_by_file.get(path, []) if m["line"]]
         for m in sorted(ms, key=lambda m: (m["line"], m["name"], m["desc"])):
-            out.append(f'FN:{m["line"]},{m["name"]}{m["desc"]}\n')
+            out.append(f'FN:{m["line"]},{m["cls"]}.{m["name"]}{m["desc"]}\n')
         for m in sorted(ms, key=lambda m: (m["line"], m["name"], m["desc"])):
-            out.append(f'FNDA:{m["hits"]},{m["name"]}{m["desc"]}\n')
+            out.append(f'FNDA:{m["hits"]},{m["cls"]}.{m["name"]}{m["desc"]}\n')
         out.append(f"FNF:{len(ms)}\nFNH:{sum(1 for m in ms if m['hits'] > 0)}\n")
         for ln in sorted(lines):
             out.append(f"DA:{ln},{lines[ln]}\n")
