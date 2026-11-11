@@ -22,6 +22,7 @@ apksim app-debug.apk
 - [Quick start](#quick-start)
 - [Devices and launch options](#devices-and-launch-options)
 - [The simulator window](#the-simulator-window)
+- [Skins](#skins)
 - [Automation](#automation)
 - [adb device](#adb-device)
 - [In a browser tab](#in-a-browser-tab)
@@ -237,6 +238,29 @@ The menus follow the iOS Simulator wherever Android has the same thing:
 
 Screenshots and recordings are saved to `work/screenshots` (`~/.apksim/screenshots` in a release). Gaps relative
 to the iOS Simulator are tracked in [docs/ios-simulator-parity.md](docs/ios-simulator-parity.md).
+
+## Skins
+
+A skin is a device frame image plus the device it frames, kept on your machine and added from the command line.
+Skins are local data: apksim ships none, and a private one never leaves your machine. (Drawing them in the window,
+in screenshots and in `serve` is separate work; this is the format, the store and the commands.)
+
+```bash
+apksim skin add pixel --frame frame.png --screen auto --device phone   # the screen is the frame's transparent hole
+apksim skin preview pixel                                               # pixel-preview.png: a test pattern in the screen
+apksim skin list
+apksim skin show pixel --json
+apksim skin export pixel --out pixel.zip
+apksim skin add --from pixel.zip                                        # or a folder, or an https:// URL
+apksim skin remove pixel
+```
+
+`--screen auto` takes the largest fully transparent region the frame closes in, and reads its corner radius from the
+hole's corners; `skin add` prints what it found and `skin preview` shows it. With no `--device` it prints sizes that
+fit the hole and stops: the device is never guessed. A skin whose screen does not match its device's pixel aspect
+within 1%, whose images are missing or whose hole is not found is refused with the reason. Skins live in
+`~/.apksim/skins/NAME/`; `APKSIM_SKINS` (colon-separated folders) adds shared sets searched after it. The format is in
+[docs/skins.md](docs/skins.md).
 
 ## Automation
 
