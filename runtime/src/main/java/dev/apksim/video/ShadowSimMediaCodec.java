@@ -471,20 +471,26 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private static final long NO_PTS = Long.MIN_VALUE;
     /** Linux: inputs sent and not DECODE_ONLY or CODEC_CONFIG, minus the pictures received for them. */
     private int inside;
-    /** Linux: pts of the DECODE_ONLY inputs sent whose pictures have not come out yet; those are released. */
-    private final Set<Long> decodeOnly = new HashSet<>();
+    /**
+     * Linux: each input sent whose picture has not come out yet, by the number it went to libavcodec with in place of
+     * its pts (which comes back with its picture): {pts, 1 if DECODE_ONLY}. Two inputs may share a pts (a seek's
+     * preroll), so the pts itself cannot say which input a picture came from.
+     */
+    private final java.util.Map<Long, long[]> sent = new java.util.HashMap<>();
+    private long nextInput;
     private final long[] receivedPts = new long[1];
 
     /** Linux: one input to the decoder, then every picture it has finished, into {@link #held}. */
     private void sendAndReceive(ByteBuffer in, long pts, int flags) {
       boolean config = (flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
       boolean only = (flags & DECODE_ONLY) != 0;
-      int r = send(in, config ? NO_PTS : pts);
+      long id = nextInput++;
+      int r = send(in, config ? NO_PTS : id);
       if (r < 0) {
         STATS.incrementAndGet(2);
       } else if (!config) {
-        if (only) decodeOnly.add(pts);
-        else inside++;
+        sent.put(id, new long[] {pts, only ? 1 : 0});
+        if (!only) inside++;
       }
       receiveAll();
     }
@@ -493,11 +499,13 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       long picture;
       while ((picture = VideoToolbox.nativeReceive(handle, receivedPts)) != 0) {
         STATS.incrementAndGet(1);
-        if (decodeOnly.remove(receivedPts[0])) {
-          VideoToolbox.nativeReleasePicture(picture);  // decoded for reference only, as the player asked
+        long[] input = sent.remove(receivedPts[0]);
+        if (input == null || input[1] != 0) {
+          // Decoded for reference only, as the player asked (or from no input of ours: nothing to show it for).
+          VideoToolbox.nativeReleasePicture(picture);
         } else {
           if (inside > 0) inside--;
-          held.add(new long[] {receivedPts[0], picture});
+          held.add(new long[] {input[0], picture});
         }
       }
     }
@@ -509,7 +517,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
         VideoToolbox.nativeSend(handle, null, 0, 0, NO_PTS);
         receiveAll();
         inside = 0;
-        decodeOnly.clear();
+        sent.clear();
       }
       List<long[]> all = new ArrayList<>();
       while (!held.isEmpty()) all.add(held.poll());
@@ -636,7 +644,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       if (VideoToolbox.REORDERS) {
         // A seek: what is inside the decoder goes, and so do the DECODE_ONLY inputs waiting for their pictures.
         if (handle != 0) VideoToolbox.nativeReset(handle);
-        decodeOnly.clear();
+        sent.clear();
         inside = 0;
       }
       synchronized (pictures) {
