@@ -1,0 +1,70 @@
+package dev.apksim.composeapp.conformance
+
+import android.app.Activity
+import android.app.Application
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.test.core.app.ActivityScenario
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.atomic.AtomicInteger
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
+import org.junit.FixMethodOrder
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
+
+/**
+ * A process-wide singleton's Application callbacks, across a suite's tests as on a device's one Application: it
+ * registers once and keeps the Application it registered on; later tests' activities still reach it, and it can
+ * unregister through that Application (docs/conformance.md).
+ */
+@RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+class AppCallbacksConformanceTest {
+  object Singleton : Application.ActivityLifecycleCallbacks {
+    var app: Application? = null
+    val resumes = AtomicInteger()
+    fun ensureRegistered() {
+      if (app != null) return
+      app = ApplicationProvider.getApplicationContext()
+      app!!.registerActivityLifecycleCallbacks(this)
+    }
+    override fun onActivityResumed(activity: Activity) { resumes.incrementAndGet() }
+    override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+    override fun onActivityStarted(activity: Activity) {}
+    override fun onActivityPaused(activity: Activity) {}
+    override fun onActivityStopped(activity: Activity) {}
+    override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) {}
+    override fun onActivityDestroyed(activity: Activity) {}
+  }
+
+  private fun launchAndCountResumes(): Int {
+    Singleton.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    return Singleton.resumes.get()
+  }
+
+  @Test
+  fun a_aSingletonRegistersOnce() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { Singleton.ensureRegistered() }
+    assertTrue(launchAndCountResumes() >= 1)
+  }
+
+  @Test
+  fun b_aLaterTestsActivitiesReachItUntilItUnregisters() {
+    // Each test in a process of its own (--isolate, the Orchestrator) has no singleton from before.
+    assumeTrue(Singleton.app != null)
+    assertTrue("the singleton hears a later test's activity", launchAndCountResumes() >= 1)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      Singleton.app!!.unregisterActivityLifecycleCallbacks(Singleton)  // through the Application it kept
+    }
+    assertEquals("unregistered, it hears nothing more", 0, launchAndCountResumes())
+    Singleton.app = null
+  }
+}

@@ -2,9 +2,11 @@ package dev.apksim;
 
 import android.app.Application;
 import android.content.ComponentCallbacks;
+import java.lang.ref.WeakReference;
 import java.security.CodeSource;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import org.robolectric.RuntimeEnvironment;
@@ -47,28 +49,49 @@ final class AppCallbacks {
     }
   }
 
-  /** After the next test's Application has been created and its providers and onCreate have run. */
+  /**
+   * After the next test's Application has been created and its providers and onCreate have run. Each API's classes are
+   * compared on their own (a class may implement both and be registered again for one only). Then every earlier test's
+   * Application is pointed at this one's callback list and ComponentCallbacksController: a singleton that kept the
+   * Application it registered on and unregisters (or registers) through it later reaches the registrations that are
+   * live, as on a device's one Application, instead of a list nothing dispatches from.
+   */
   static void carryOver(Application app) {
-    if (!ON || app == null || (activity.isEmpty() && component.isEmpty())) return;
+    if (!ON || app == null) return;
     List<Application.ActivityLifecycleCallbacks> nowActivity = ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks");
-    List<ComponentCallbacks> nowComponent = componentCallbacks(app);
-    Set<Class<?>> registered = new HashSet<>();
-    synchronized (nowActivity) {
-      for (Object c : nowActivity) registered.add(c.getClass());
-    }
-    if (nowComponent != null) {
-      synchronized (nowComponent) {
-        for (Object c : nowComponent) registered.add(c.getClass());
-      }
-    }
+    Set<Class<?>> activityClasses = classes(nowActivity);
+    Set<Class<?>> componentClasses = classes(componentCallbacks(app));
     for (Application.ActivityLifecycleCallbacks c : activity) {
-      if (!registered.contains(c.getClass())) app.registerActivityLifecycleCallbacks(c);
+      if (!activityClasses.contains(c.getClass())) app.registerActivityLifecycleCallbacks(c);
     }
     for (ComponentCallbacks c : component) {
-      if (!registered.contains(c.getClass())) app.registerComponentCallbacks(c);
+      if (!componentClasses.contains(c.getClass())) app.registerComponentCallbacks(c);
     }
     activity.clear();
     component.clear();
+    Object controller = ReflectionHelpers.getField(app, "mCallbacksController");
+    for (Iterator<WeakReference<Application>> it = earlier.iterator(); it.hasNext(); ) {
+      Application old = it.next().get();
+      if (old == null) {
+        it.remove();
+      } else if (old != app) {
+        ReflectionHelpers.setField(Application.class, old, "mActivityLifecycleCallbacks", nowActivity);
+        ReflectionHelpers.setField(Application.class, old, "mCallbacksController", controller);
+      }
+    }
+    earlier.add(new WeakReference<>(app));
+  }
+
+  /** Every earlier test's Application, which a singleton may still hold. */
+  private static final List<WeakReference<Application>> earlier = new ArrayList<>();
+
+  private static Set<Class<?>> classes(List<?> callbacks) {
+    Set<Class<?>> out = new HashSet<>();
+    if (callbacks == null) return out;
+    synchronized (callbacks) {
+      for (Object c : callbacks) out.add(c.getClass());
+    }
+    return out;
   }
 
   /** Application's ComponentCallbacks live in its ComponentCallbacksController (API 33+); null until one registers. */
