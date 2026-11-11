@@ -809,6 +809,7 @@ final class AdbShell {
   private static final class Parsed {
     Intent intent = new Intent();
     boolean wait;
+    boolean brief;  // --brief, resolve-activity's
     boolean other;  // anything beyond -a VIEW -d URL
 
     boolean onlyView() {
@@ -899,6 +900,7 @@ final class AdbShell {
           case "--activity-no-history" -> in.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
           case "--activity-reorder-to-front" -> in.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
           case "-W" -> p.wait = true;
+          case "--brief" -> p.brief = true;
           case "-S", "-D", "-N", "--receiver-foreground", "--receiver-registered-only", "--track-allocation", "--streaming" -> {
             // Restart, debugger and profiler options: nothing to do here.
           }
@@ -1117,33 +1119,21 @@ final class AdbShell {
         return reply(control(c.toArray(new String[0])), false);
       }
       case "resolve-activity" -> {
-        boolean brief = a.contains("--brief");
+        Parsed parsed = intent(a.subList(1, a.size()));
+        if (parsed == null) return 1;
+        boolean brief = parsed.brief;
         // The launcher activity a device resolves, not --activity's: a home-only app has none.
         String launcher = System.getProperty("apksim.launcher");
-        if (a.contains("-a") || a.contains("-d")) {
+        if (parsed.intent.getAction() != null || parsed.intent.getData() != null) {
           // An intent (-a ACTION, -d URI, -c CATEGORY): what the package manager resolves for it, the stand-in browser
           // included (issue 236). A browser's filter needs BROWSABLE, which `am start` adds for a web link.
-          Intent q = new Intent();
-          // A package restriction (-p PKG, or a trailing PKG after the flags) keeps its meaning: none but the app's own
-          // package can match, and the app's is searched alone.
-          String only = null;
-          for (int i = 1; i < a.size(); i++) {
-            String t = a.get(i);
-            if (t.equals("-p") && i + 1 < a.size()) only = a.get(i + 1);
-            else if (i == a.size() - 1 && !t.startsWith("-") && !a.get(i - 1).startsWith("-")) only = t;
-          }
+          Intent q = parsed.intent;
+          // A package restriction (-p PKG, or a trailing PKG) keeps its meaning: none but the app's own package can
+          // match, and the app's is searched alone.
+          String only = q.getPackage();
           if (only != null && !only.equals(pkg)) {
             print("No activity found\n");
             return 1;
-          }
-          if (only != null) q.setPackage(only);
-          for (int i = 1; i + 1 < a.size(); i++) {
-            switch (a.get(i)) {
-              case "-a" -> q.setAction(a.get(i + 1));
-              case "-d" -> q.setData(android.net.Uri.parse(a.get(i + 1)));
-              case "-c" -> q.addCategory(a.get(i + 1));
-              default -> { }
-            }
           }
           ResolveInfo ri = onMain(() -> app().getPackageManager().resolveActivity(q, 0));
           if (ri == null || ri.activityInfo == null) {
