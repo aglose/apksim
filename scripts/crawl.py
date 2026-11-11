@@ -359,9 +359,10 @@ class Explorer:
         self.options += ["--no-autofill"]
         # One device identity for every instance (the serial and ANDROID_ID come from the slot's name otherwise, and a
         # screen that shows one would differ between instances, and between builds walked on other slots).
-        if "--serial" not in self.options:
+        # Not with --keep-data: the slot's own identity is what its sign-in was made under (a seed would be written into it).
+        if not args.keep_data and "--serial" not in self.options:
             self.options += ["--serial", "CRAWL0000000000"]
-        if not any(o.startswith("secure:android_id=") for o in self.options):
+        if not args.keep_data and not any(o.startswith("secure:android_id=") for o in self.options):
             self.options += ["--setting", "secure:android_id=00c0ffee00c0ffee"]
         if not args.keep_data and "--data-slots" not in self.options:
             self.options += ["--data-slots", "crawl"]
