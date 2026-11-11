@@ -10,7 +10,7 @@ import java.util.Map;
  * Just enough JSON to read a request body: objects (Map), arrays (List), strings, numbers (Double), true/false/null.
  * Serve runs on a plain JVM with only apksim.jar, so no library.
  */
-final class Json {
+public final class Json {
   private static final int MAX_DEPTH = 16;
   private final String s;
   private int i;
@@ -19,7 +19,7 @@ final class Json {
     this.s = s;
   }
 
-  static Object parse(String s) throws IOException {
+  public static Object parse(String s) throws IOException {
     Json j = new Json(s);
     Object v = j.value(0);
     j.space();
