@@ -27,7 +27,7 @@ LAUNCH_FLAGS = {"--soft-keyboard"}
 DEVICE = {"appearance": r"dark|light|toggle", "locale": r"[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*",
           "fontscale": r"[0-9.]+|\+|-", "rotate": r"left|right|portrait|landscape",
           "network": r"online|offline|3g|lossy", "permission": r"(allow|deny|reset)|(grant|revoke) [A-Za-z0-9_.]+",
-          "timezone": r"[A-Za-z_/+-]+", "animscale": r"[0-9.]+|toggle", "bluetooth": r"on|off|toggle",
+          "timezone": r"[A-Za-z0-9_/+:-]+", "animscale": r"[0-9.]+|toggle", "bluetooth": r"on|off|toggle",
           "device": r"phone|foldable|tablet|desktop|tv|[0-9]+x[0-9]+(@[0-9]+)?", "lock": r"", "unlock": r"",
           "home": r"", "resume": r"", "recreate": r""}
 KEYS = re.compile(r"^[A-Za-z0-9_]{1,24}$")
@@ -59,6 +59,14 @@ HEAD = re.compile(r"\[(-?\d+),(-?\d+),(-?\d+),(-?\d+)\] ?((?:(?:password-field|f
 ATTR = re.compile(r'(text|hint|desc|id)="(.*?)"(?= (?:text|hint|desc|id)="|\s*$)', re.S)
 
 
+UNESC = re.compile(r"\\(.)")
+
+
+def unquote(v):
+    """Undo Nodes.quote: backslash, quote, \\n and \\r escapes."""
+    return UNESC.sub(lambda m: {"n": "\n", "r": "\r"}.get(m.group(1), m.group(1)), v)
+
+
 def parse_nodes(raw):
     """`nodes` output -> list of dicts. A clickable box with no text that holds exactly one text node is folded into it
     (a nav item or list row is one entry, tapped at the box's centre)."""
@@ -70,7 +78,7 @@ def parse_nodes(raw):
         flags = m.group(5).split()
         if "offscreen" in flags:  # in the tree but not on screen: not something to tap
             continue
-        attrs = dict(ATTR.findall(m.group(6).strip()))
+        attrs = {k: unquote(v) for k, v in ATTR.findall(m.group(6).strip())}
         out.append({"b": tuple(map(int, m.group(1, 2, 3, 4))), "field": "field" in flags or "password-field" in flags,
                     "click": "clickable" in flags, "text": attrs.get("text", ""), "hint": attrs.get("hint", ""),
                     "desc": attrs.get("desc", ""), "pw": "password-field" in flags})
@@ -93,9 +101,9 @@ def label(n):
 
 def line(n):
     kind = ("pw-field" if n["pw"] else "field") if n["field"] else ("click" if n["click"] else "")
-    s = n["ref"] + (' "' + label(n) + '"' if label(n) else "")
+    s = n["ref"] + (" " + json.dumps(label(n), ensure_ascii=False) if label(n) else "")
     if n["field"] and n["hint"] and n["text"]:
-        s += " hint=" + n["hint"]
+        s += " hint=" + json.dumps(n["hint"], ensure_ascii=False)
     return s + (" " + kind if kind else "")
 
 
@@ -668,23 +676,9 @@ class Server:
         data, mime = png, "image/png"
         maxdim = int(a.get("max_size", 640))
         if maxdim > 0:
-            sips = shutil.which("sips")
-            if sips:
-                # sips opens its files by path: give it a private folder (0700, random name) the app has no way to
-                # name, not the shared scratch folder.
-                priv = tempfile.mkdtemp(prefix="apksim-mcp-")
-                try:
-                    tin, tout = os.path.join(priv, "in.png"), os.path.join(priv, "out.jpg")
-                    with open(tin, "wb") as f:
-                        f.write(png)
-                    if subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "60", "-Z", str(maxdim), tin,
-                                       "--out", tout], capture_output=True).returncode == 0 and os.path.isfile(tout):
-                        with open(tout, "rb") as f:
-                            data, mime = f.read(), "image/jpeg"
-                finally:
-                    shutil.rmtree(priv, ignore_errors=True)
-            else:
-                data = png_scale(png, maxdim)
+            # in memory only: a converter that opens files by path would need a folder the app cannot reach, and the
+            # app shares the user and the temp folder with the server
+            data = png_scale(png, maxdim)
         if a.get("save"):
             if self.scratchdir is not self.outdir:
                 self.outdir.write(name, png)
