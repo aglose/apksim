@@ -895,6 +895,7 @@ class Sweep:
                 break
             label = (" + ".join(steps) or "as reached")
             inst.case = steps
+            inst.cmds = []  # this state's commands only, for a crash's reproduction
             inst.reach_screen(screen, steps)
             tag = f"{kind}-{len(self.checked)}"
             before = self.read(inst, screen, tag + "-before")
@@ -971,6 +972,7 @@ class Sweep:
                 self.omit("permission-deny", screen)
                 break
             inst.case = steps
+            inst.cmds = []
             inst.reach_screen(screen, steps)
             inst.cmds.append("permission deny")
             reply = inst.say("permission deny")
