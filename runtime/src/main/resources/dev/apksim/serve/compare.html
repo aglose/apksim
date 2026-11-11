@@ -392,7 +392,10 @@ function frac(e, c) {
   return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))];
 }
 function xy(f, s) { return Math.min(s.w - 1, f[0] * s.w).toFixed(1) + " " + Math.min(s.h - 1, f[1] * s.h).toFixed(1); }
-function touch(kind, f) { for (const s of driven()) if (s.w) s.send("touch " + kind + " " + xy(f, s)); }
+// A gesture goes to every driven session or to none: before a driven side has a screen (no frame yet) it is dropped, so the
+// two never get different halves of a gesture.
+function ready() { return driven().every(s => s.w); }
+function touch(kind, f) { for (const s of driven()) s.send("touch " + kind + " " + xy(f, s)); }
 let down = false, move = null, wheel = 0, wheelAt = null, scheduled = false;
 function schedule() { if (!scheduled) { scheduled = true; requestAnimationFrame(flush); } }
 function flush() {
@@ -400,7 +403,7 @@ function flush() {
   if (move && down) { touch("move", move); move = null; }
   if (wheelAt && Math.abs(wheel) >= 1) {
     const amount = Math.max(-50, Math.min(50, -wheel / 100)).toFixed(2);
-    for (const s of driven()) if (s.w) s.send("wheel " + xy(wheelAt, s) + " " + amount);
+    if (ready()) for (const s of driven()) s.send("wheel " + xy(wheelAt, s) + " " + amount);
     wheel = 0;
   }
 }
@@ -410,6 +413,7 @@ for (const c of [A.canvas, B.canvas, cvD]) {
     if (!e.isPrimary || e.button > 0 || ended) return;
     e.preventDefault();
     keys.focus({ preventScroll: true });
+    if (!ready()) return;
     c.setPointerCapture(e.pointerId);
     down = true; move = null;
     touch("down", frac(e, c));
