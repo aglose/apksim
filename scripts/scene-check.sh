@@ -30,7 +30,7 @@ json.dump(spec, open(sys.argv[2], "w"), indent=1)
 PY
 status=0
 scene wrong /work/wrong.json || status=$?
-grep -E '^(FAILED|scene) ' "$OUT/wrong.log" || true
+grep -E '^(FAILED:|scene) ' "$OUT/wrong.log" || true
 [[ "$status" == 1 ]] && grep -q "^FAILED: step 5: bob: 'until 3000 hello from carol'" "$OUT/wrong.log" \
   && test -s "$OUT/wrong/failed-bob.png" \
   || { cat "$OUT/wrong.log"; echo "a scene step that cannot pass did not fail as it should (exit $status)" >&2; exit 1; }
