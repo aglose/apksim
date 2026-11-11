@@ -67,8 +67,8 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
   `{port:ROLE}` (a role's control port, for a step that runs another tool against it).
 - **Isolation**: every role runs with `--no-autofill`, so it never signs in with the owner's saved sign-in details,
   whatever its APK.
-- **Captures**: `shot`/`wshot FILE` are written to a temporary folder outside `$HOME` first and moved into the output
-  folder, so an `--out` the Mac sandbox would not let an instance write (anywhere under `$HOME` but its state folder)
+- **Captures**: `shot [--display] FILE`/`wshot FILE` (FILE may contain spaces) are written to a temporary folder outside
+  `$HOME` under a space-free name first and moved into the output folder, so an `--out` the Mac sandbox would not let an instance write (anywhere under `$HOME` but its state folder)
   still gets them; a capture that fails fails its step, and a failure screenshot that cannot be saved is printed and
   listed in `result.json` (`capture_failures`).
 - **Output**: a line per step with its time; `result.json` (roles, ready times, ports, steps, failure, peak memory);

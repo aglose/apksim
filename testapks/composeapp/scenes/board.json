@@ -19,6 +19,6 @@
     {"name": "bob tells alice how many he counted", "bob": ["capture count posted: ping 1 \\((\\d+) on the board\\)",
       "to alice open apksim://board?user=alice&post=bob%20counted%20{count}"]},
     {"name": "everyone sees the last word", "all": "until 10000 bob: ping 1 | alice: bob counted 2"},
-    {"all": "shot board-{role}.png"}
+    {"all": ["shot board-{role}.png", "shot --display board {role} display.png"]}
   ]
 }

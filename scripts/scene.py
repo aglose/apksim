@@ -107,6 +107,10 @@ class Scene:
         # write only its state folder (and not elsewhere under $HOME, where --out may point); a temporary folder is
         # outside $HOME.
         self.stage = tempfile.mkdtemp(prefix="apksim-scene-")
+        if re.search(r"\s", self.stage):  # a TMPDIR with spaces: the control command could not name it
+            shutil.rmtree(self.stage, ignore_errors=True)
+            self.stage = tempfile.mkdtemp(prefix="apksim-scene-", dir="/tmp")
+        self.captures = 0
         self.capture_failures = []
         self.t0 = time.time()
 
@@ -297,12 +301,25 @@ class Scene:
         print(f"step {n:>2} {took:6.2f} s  {'FAILED ' if errors else 'ok     '}{label + ' - ' if label else ''}{summary[:160]}")
         return took, errors
 
-    def capture(self, role, word, target):
-        """`shot`/`wshot` to TARGET (relative to the output folder), staged where the instance may write. The answer."""
+    def capture(self, role, word, rest):
+        """`shot [--display] FILE` / `wshot FILE`, FILE relative to the output folder (spaces allowed), staged where the
+        instance may write. The answer."""
+        flags, target = [], rest.strip()
+        while target.startswith("--"):  # options before the file (shot --display): passed on, not part of the name
+            flag, _, target = target.partition(" ")
+            flags.append(flag)
+            target = target.strip()
+        if not target:
+            return f"error: {word} needs a file name"
         dest = target if os.path.isabs(target) else os.path.join(self.out, target)
-        staged = os.path.join(self.stage, f"{role.name}-{time.time_ns()}-{os.path.basename(target)}")
+        # The control command splits on spaces, so the staged path has none: a counter and the extension only.
+        ext = os.path.splitext(target)[1]
+        ext = ext if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", ext) else ".png"
+        with self.vars_lock:
+            self.captures += 1
+            staged = os.path.join(self.stage, f"capture-{self.captures}{ext}")
         with role.lock:
-            reply = role.inst.send(f"{word} {staged}")
+            reply = role.inst.send(" ".join([word, *flags, staged]))
         if not failed(reply):
             if not os.path.exists(staged):
                 return f"error: {word} answered {reply!r} but wrote nothing"
