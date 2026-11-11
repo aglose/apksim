@@ -29,6 +29,7 @@ apksim app-debug.apk
 - [Instrumented tests and CI](#instrumented-tests-and-ci)
 - [Screenshot tests](#screenshot-tests)
 - [Network: record, replay and conditions](#network-record-replay-and-conditions)
+- [Replay, trace viewer and crawler](#replay-trace-viewer-and-crawler)
 - [Linux and Docker](#linux-and-docker)
 - [Debugging](#debugging)
 - [Configuration reference](#configuration-reference)
@@ -45,10 +46,12 @@ apksim app-debug.apk
 | **Fast launches** | Warm launches put the app's first frame on screen in ~0.2-0.5 s, and the window in ~10 ms. A stock emulator takes 8-18 s from a snapshot or boot. |
 | **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
-| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. |
+| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. |
 | **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
-| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, and shards balanced by measured time. |
+| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, and `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`). |
+| **Replay a session** | A flight recording plays again from its checkpoint, with the network answered from the recording, and says where the screen first differed; the same recording bisects a list of builds to the first that changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles. |
+| **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen. |
 | **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
 | **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
@@ -352,6 +355,11 @@ sessions (`--keep-max N`) and the session named a key (`keep=KEY`): then the nex
 signed in where the last one left off. See
 [docs/serve.md](docs/serve.md).
 
+Two builds side by side: `/?compare=BASE_ID,NEW_ID` starts a session for each, sends every tap, drag, key and device
+control to both, and shows a third screen marking the pixels that differ. `scripts/pr-preview.py` and the
+`.github/actions/preview` Action put a pull request's build on a server and keep one comment on the pull request with
+its preview and compare links; added apps can expire (`ttl`). See [docs/pr-preview.md](docs/pr-preview.md).
+
 ## Instrumented tests and CI
 
 ```bash
@@ -402,7 +410,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.26.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.27.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -412,6 +420,12 @@ A GitHub Actions job using the released image:
       out/junit.xml
       out/bundles
 ```
+
+With `--isolate` (one process per test), `instrument.py` boots twice `-j` processes ahead of their tests and hands
+each test to one that is ready, so a test no longer waits for its process's JVM, sandbox and native runtime; each
+still runs in a process nothing else ran in. `--prewarm N` sets how many, `--prewarm off` starts each cold as before.
+On the test app's suite at `-j 3` a run took 29-47% less time than cold, for ~10-15% more CPU. See
+[docs/test-pool.md](docs/test-pool.md).
 
 ### Failure bundles
 
@@ -451,9 +465,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.26.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.27.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.26.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.27.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -497,16 +511,45 @@ Ktor's Android engine and Volley, including requests through the app's own proxy
 recording but not replayed. Not recorded: Cronet's native stack and Ktor CIO, which bring their own TLS and sockets
 (offline still applies to them), and NIO channels. Details and measurements: [docs/network.md](docs/network.md).
 
+## Replay, trace viewer and crawler
+
+```bash
+apksim replay --headless session.apkrec; echo $?          # 0 matched, 3 diverged, 10 crashed, 2 cannot replay
+apksim replay --apk app-new.apk session.apkrec            # the same session on another build (same signer)
+scripts/bisect-rec.py session.apkrec builds/              # the first build whose replay diverges, with an HTML report
+apksim replay --journey --headless --out out session.apkrec && scripts/journey.py out/journey.json --xml results.xml
+apksim rec view session.apkrec                            # the trace viewer, in the default browser
+scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can reach, mapped, and what changed
+```
+
+- **Replay:** a flight recording (`--rec`, Save Replay) starts again from its checkpoint, its input is fed at the
+  recorded offsets and its network answered from the recording, and the run says where the screen first differed
+  from the recorded frames, or that it never did; with `--control` the app stays up afterwards for a person to carry
+  on. See [docs/replay.md](docs/replay.md).
+- **Bisect:** `scripts/bisect-rec.py` replays one recording against builds in order and reports the first that
+  diverges or crashes, skipping builds it cannot replay, with the frames on each side and their difference.
+- **Recording to test:** `apksim replay --journey` also writes the recording as `journey.json`, steps that find their
+  element by text, content description or resource id rather than coordinates, each with the texts it should bring
+  on screen; `scripts/journey.py` runs it on any build or device and writes JUnit XML.
+- **Trace viewer:** one static page that opens a `.apkrec` or a zipped failure bundle by file picker or drag and drop,
+  read in the browser with nothing sent anywhere: frames, input, network, logcat and SQLite on one timeline. See
+  [docs/trace-viewer.md](docs/trace-viewer.md).
+- **Crawler:** `scripts/crawl.py` walks an APK's screens through the accessibility tree within a budget, with no test
+  code: a clickable map of screens and the actions between them, the shortest replayable path to each, each screen
+  captured across a device, appearance, locale and font-scale matrix, and any crash with the path that caused it. With
+  `--base` it walks a second build and says which screens are new, gone or changed. See [docs/crawl.md](docs/crawl.md).
+
 ## Linux and Docker
 
 Each release publishes a headless Linux image, `ghcr.io/aglose/apksim:VERSION`, for x86_64 and arm64 under the
 one tag (Docker pulls the host's), with `:latest` following the newest release. It's about 565 MB and holds:
 - the launcher and a trained startup cache;
 - Mesa, for offscreen GLES;
-- `instrument.py`, `snapshot.py` and `drive.py` on the `PATH`.
+- `instrument.py`, `snapshot.py`, `crawl.py`, `journey.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
-VideoToolbox: rendering and shaders run on the CPU. APKs need native libraries for the host's CPU there: x86_64, or
+VideoToolbox: rendering and shaders run on the CPU, and MediaCodec's H.264 decoder is libavcodec (the published image
+has no HEVC decoder; an image you build can add it). APKs need native libraries for the host's CPU there: x86_64, or
 arm64-v8a on arm64 (4 KB-aligned ones load). On an Apple Silicon Mac or an arm64 runner the arm64 image runs without
 emulation, so it is the faster choice there. There is no sandbox inside the container,
 so use `docker run --network none` to keep an app off the network. Building the image and
@@ -602,7 +645,8 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
 - **It isn't a device.**
   - **System services** are stand-ins: no Play Services, Health Connect or sensors; the camera (`--camera fake`) shows
     a test pattern or a still image, not the Mac's webcam.
-  - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere.
+  - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere. A stand-in
+    browser is installed so that SDKs that look for one before signing in (OAuth) find it.
   - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
 - **One API level:** everything runs as API 36, whatever the app targets.
 - **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS, which maps 16 KB pages and never makes one writable and executable at once, a 4 KB-aligned library (an NDK before r27) loads when what shares a page with its code is read-only data or RELRO (the GOT, vtables: read-only once relocated, as on a device), which is how lld lays out most. One whose writable `.data` or `.bss` shares a page with code (a small RELRO, such as libevent's in Flipper's debug build) fails with an `UnsatisfiedLinkError` naming its APK entry, which the app's `System.loadLibrary` can catch: rebuild it for 16 KB pages. `--move-shared-data` (experimental) loads such a library by moving that data to pages of its own and repointing what reaches it; it is off by default because some references to data carry no relocation (relative lookup tables, for one) and cannot all be found. `--skip-library NAME` makes a `System.loadLibrary(NAME)` throw without trying. libjnigraphics's `AndroidBitmap_*` calls work (getInfo, lock and unlock pixels, compress; no hardware bitmaps). Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
