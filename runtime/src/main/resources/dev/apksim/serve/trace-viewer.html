@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-dLVjnFSPqmn+oN1ncQKtAWq+nhfG/uhQFmJnQXXrLe0='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rGelxa1HmVhJVUp4wiBgBHBZTtjEy7kOHsvcCp+Gikw='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -458,7 +458,12 @@ function showNet(o) {
       var u = detailUrl = URL.createObjectURL(new Blob([bytes], { type: mime.split(';')[0] }));
       var im = el('img'); im.src = u; body.appendChild(im); return;
     }
-    var s = bytes ? new TextDecoder().decode(bytes) : txt;
+    var s = txt;
+    if (bytes) { // the declared charset, else UTF-8 (an unknown label falls back to it)
+      var cs = /charset=\s*"?([A-Za-z0-9_.:-]+)/i.exec(mime), dec;
+      try { dec = new TextDecoder(cs ? cs[1] : 'utf-8'); } catch (x) { dec = new TextDecoder('utf-8'); }
+      s = dec.decode(bytes);
+    }
     if (/json/.test(mime)) { try { s = JSON.stringify(JSON.parse(s), null, 2); } catch (x) {} }
     if (s.length > 1000000) s = s.slice(0, 1000000) + '\n... (' + (s.length - 1000000) + ' more characters not shown)';
     body.textContent = (mime ? mime + '\n\n' : '') + s;
