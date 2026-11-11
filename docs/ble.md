@@ -148,7 +148,8 @@ No thread is started and nothing is posted until the app scans or connects; with
 
 ## Checks and measurements
 
-- `BleTest` in the test app's suite (19 tests; 17 of them took 9.4 s on the Mac and 8.0 s in the Linux image under Rosetta,
+- `BleTest` in the test app's suite (the first 17 tests took 9.4 s on the Mac and 8.0 s in the Linux image under Rosetta;
+  the whole class, with its 30 s and 40 s waits, ~113 s under `--realtime-clock`, where the clock follows real time;
   `--instrument -e class dev.apksim.composeapp.BleTest`): the advertisement as `ScanRecord` reads it, results on the main thread, filters,
   a result per advertising interval on the simulated clock (3 to 5 in 3 s at 1 s), FIRST_MATCH and MATCH_LOST,
   batching, a `PendingIntent` scan, connect/discover/read/write on a binder thread, the write shown by `ble`,

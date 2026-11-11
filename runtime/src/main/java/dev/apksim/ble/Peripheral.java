@@ -85,10 +85,12 @@ final class Peripheral {
   /** A file, or a preset name with an optional address after a colon ("heart-rate", "battery:C0:FF:EE:00:00:09"). */
   static List<Peripheral> load(String spec) throws Exception {
     String s = spec.trim();
-    String preset = s.contains(":") && !s.contains("/") && !s.endsWith(".json") ? s.substring(0, s.indexOf(':')) : s;
+    Path file = Path.of(System.getProperty("user.dir")).resolve(s);
+    if (Files.isRegularFile(file)) return parse(Files.readString(file));  // a file first, whatever its name holds
+    String preset = s.contains(":") ? s.substring(0, s.indexOf(':')) : s;
     String addr = preset.equals(s) ? null : s.substring(s.indexOf(':') + 1);
     String json = presetJson(preset);
-    if (json == null) json = Files.readString(Path.of(System.getProperty("user.dir")).resolve(s));
+    if (json == null) throw new java.io.FileNotFoundException(s + " (neither a file nor a preset: " + PRESETS + ")");
     List<Peripheral> ps = parse(json);
     if (addr != null && ps.size() == 1) ps.get(0).address = normalizeAddress(addr);
     return ps;
@@ -192,6 +194,7 @@ final class Peripheral {
       }
     }
     p.assignHandles();
+    p.advertisingBytes();  // a structure too long for its length byte is refused here, as the file loads
     return p;
   }
 
@@ -314,6 +317,9 @@ final class Peripheral {
   }
 
   private static void ad(ByteArrayOutputStream b, int type, byte[] data) {
+    // An AD structure's length is one byte, covering the type too.
+    if (data.length > 254) throw new IllegalArgumentException(String.format(java.util.Locale.ROOT,
+        "advertising data of type 0x%02X is %d bytes; an AD structure holds at most 254", type, data.length));
     b.write(data.length + 1);
     b.write(type);
     b.writeBytes(data);

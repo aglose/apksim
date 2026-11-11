@@ -39,6 +39,7 @@ class BleActivity : Activity() {
   private val lines = LinkedHashMap<String, TextView>()
   private var gatt: BluetoothGatt? = null
   private var notifications = 0
+  private var peak = 0
   private var scanning = false
   private val legacy get() = intent.data?.getQueryParameter("legacy") == "1"
 
@@ -60,11 +61,12 @@ class BleActivity : Activity() {
     setContentView(root)
     show("ble", "starting")
     val missing = PERMISSIONS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-    if (missing.isEmpty()) scan() else requestPermissions(missing.toTypedArray(), 1)
+    if (missing.isEmpty()) scan() else requestPermissions(missing.toTypedArray(), PERMISSION_REQUEST)
   }
 
   override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-    if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) scan() else show("ble", "permission denied")
+    if (requestCode != PERMISSION_REQUEST) return super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) scan() else show("ble", "permission denied")
   }
 
   override fun onDestroy() {
@@ -135,9 +137,13 @@ class BleActivity : Activity() {
 
   private fun onHeartRate(value: ByteArray) {
     notifications++
+    // Flags, then the value: one byte, or two when flag bit 0 says UINT16. A shorter payload is shown, not parsed.
+    val wide = value.isNotEmpty() && value[0].toInt() and 1 != 0
+    if (value.size < (if (wide) 3 else 2)) return show("heart rate", "malformed (${value.size} bytes, $notifications notifications)")
     val flags = value[0].toInt()
     val bpm = if (flags and 1 != 0) (value[1].toInt() and 0xff) or ((value[2].toInt() and 0xff) shl 8) else value[1].toInt() and 0xff
-    show("heart rate", "$bpm bpm ($notifications notifications)")
+    peak = maxOf(peak, bpm)
+    show("heart rate", "$bpm bpm ($notifications notifications, peak $peak)")
   }
 
   private fun writeControlPoint() {
@@ -177,6 +183,7 @@ class BleActivity : Activity() {
   }
 
   companion object {
+    private const val PERMISSION_REQUEST = 1
     val PERMISSIONS = listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION)
     private fun uuid16(short: Int): UUID = UUID.fromString(String.format("%08X-0000-1000-8000-00805F9B34FB", short))
     val HEART_RATE_SERVICE: UUID = uuid16(0x180D)

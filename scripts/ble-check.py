@@ -49,7 +49,7 @@ def wait_for(sock, what, test, timeout=15.0):
 
 
 def notifications(seen):
-    m = re.match(r"(\d+) bpm \((\d+) notifications\)", seen.get("heart rate", ""))
+    m = re.match(r"(\d+) bpm \((\d+) notifications", seen.get("heart rate", ""))
     return (int(m.group(1)), int(m.group(2))) if m else (None, 0)
 
 
@@ -85,7 +85,8 @@ def check(sock, legacy):
     print("ble:", status)
     assert f"{ADDR} \"apksim HR\" rssi -71, 1 connection (mtu 247), notifying 2A37, written 2A39=01" in status, status
     send(sock, f"ble notify {ADDR} 2A37 00C8")
-    wait_for(sock, "200 bpm", lambda s: notifications(s)[0] == 200)
+    # The peak, not the latest value: the timeline's next step replaces 200 within a second, before a slow poll.
+    wait_for(sock, "200 bpm", lambda s: "peak 200)" in s.get("heart rate", ""))
     if legacy:
         print("remove:", send(sock, f"ble remove {ADDR}"))
         seen = wait_for(sock, "the link timing out", lambda s: s.get("state", "").startswith("disconnected"))

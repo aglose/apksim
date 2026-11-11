@@ -387,12 +387,26 @@ class BleTest {
 
   @Test
   fun c_bADirectConnectionToNothingFailsAfterThirtySeconds() {
-    val cb = Recorder()
+    // Measured on the uptime clock the timeout runs on, not by counting pass() steps: with --realtime-clock the clock
+    // follows real time, and each step's own work moves it on as well.
+    val at = java.util.concurrent.atomic.AtomicLong()
+    val cb = object : Recorder() {
+      override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+        at.compareAndSet(0L, SystemClock.uptimeMillis())
+        super.onConnectionStateChange(g, status, newState)
+      }
+    }
+    val start = SystemClock.uptimeMillis()
     connect("C0:FF:EE:00:00:99", cb)
-    pass(29_000)
-    assertFalse(cb.events.toString(), cb.has("state"))
-    pass(1_500)
-    waitFor("GATT_ERROR") { cb.has("state 133 0") }
+    var waited = 0
+    while (!cb.has("state") && waited < 40_000) {
+      pass(1_000)
+      waited += 1_000
+    }
+    waitFor("GATT_ERROR") { cb.has("state") }
+    assertEquals(listOf("state 133 0"), cb.events.filter { it.startsWith("state") })
+    val elapsed = at.get() - start
+    assertTrue("GATT_ERROR after 30 s of uptime, not $elapsed ms", elapsed in 30_000..32_000)
   }
 
   @Test
@@ -558,7 +572,7 @@ class BleTest {
   }
 
   @Test
-  fun z_eachTestStartsWithTheLaunchsPeripheralsOnly() {
+  fun z_eachTestStartsWithTheLaunchPeripheralsOnly() {
     assertTrue(shell("apksim ble"), shell("apksim ble").startsWith("no peripherals"))
   }
 
