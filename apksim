@@ -64,6 +64,8 @@ EOF
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
+  # An MCP server over stdio so AI agents can drive instances (docs/mcp.md): a stdlib Python script.
+  mcp) shift; exec python3 "$ROOT/scripts/mcp.py" --apksim "$ROOT/apksim" "$@" ;;
   # Device skins (docs/skins.md): the local store and its commands, on a plain JVM like serve.
   skin) SERVE=1; SKIN=1; shift ;;
   # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
