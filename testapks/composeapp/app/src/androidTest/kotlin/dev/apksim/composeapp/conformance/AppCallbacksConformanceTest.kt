@@ -42,6 +42,12 @@ class AppCallbacksConformanceTest {
 
   object Survivor : Resumes()
 
+  object Toggled : Resumes()
+  object Late : Resumes() {
+    val done = java.util.concurrent.CountDownLatch(1)
+    @Volatile var started = false
+  }
+
   object Leaving : Resumes()
   object Arriving : Resumes() {
     @Volatile var handedOver = false
@@ -203,5 +209,45 @@ class AppCallbacksConformanceTest {
       InstrumentationRegistry.getInstrumentation().waitForIdleSync()
     }
     assertTrue("the singleton hears an activity after a failed setup", Survivor.resumes.get() >= 1)
+  }
+
+  /**
+   * apksim only: a singleton's worker thread registering and unregistering through the Application it kept while the
+   * next Application starts and the callbacks are handed over. Whatever the interleaving, the next test has what the
+   * worker left: the toggled callback unregistered, the last one registered.
+   */
+  @Test
+  fun j_aWorkerChangesRegistrationsDuringTheHandover() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      val kept: Application = ApplicationProvider.getApplicationContext()
+      HarnessTestApplication.onNextCreate = {
+        Late.started = true
+        Thread({
+          repeat(2000) {
+            kept.registerActivityLifecycleCallbacks(Toggled)
+            kept.unregisterActivityLifecycleCallbacks(Toggled)
+          }
+          kept.registerActivityLifecycleCallbacks(Late)
+          Late.done.countDown()
+        }, "conformance-worker").start()
+      }
+    }
+  }
+
+  @Test
+  fun k_theNextTestHasWhatTheWorkerLeft() {
+    assumeTrue("a new Application started since the last test", Late.started)
+    HarnessTestApplication.onNextCreate = null
+    assertTrue(Late.done.await(10, java.util.concurrent.TimeUnit.SECONDS))
+    Toggled.resumes.set(0)
+    Late.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    assertEquals("unregistered last by the worker", 0, Toggled.resumes.get())
+    assertTrue("registered last by the worker", Late.resumes.get() >= 1)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      ApplicationProvider.getApplicationContext<Application>().unregisterActivityLifecycleCallbacks(Late)
+    }
   }
 }
