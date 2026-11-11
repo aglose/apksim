@@ -1251,6 +1251,8 @@ final class FlightRecorder {
       // without it
     }
     device.put("timezone", java.util.TimeZone.getDefault().getID());
+    // The wall clock the app sees (SimClock: --clock, `clock`), which the checkpoint's own wall time (real) is not.
+    device.put("clock", SimClock.currentTimeMillis());
     device.put("animScale", android.animation.ValueAnimator.getDurationScale());
     String features = System.getProperty("apksim.features");  // --feature: part of the device the app saw
     if (features != null && !features.isEmpty()) device.put("features", List.of(features.split(",")));

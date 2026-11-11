@@ -28,22 +28,27 @@ prints):
 1. Reads `manifest.json`. A bundle without a checkpoint is refused (exit 2): there is nothing to start from.
 2. Finds the APK: `--apk`, else the path the manifest recorded (`apkPath`, new), else a file of the recorded name
    beside the bundle or in the working folder. Without `--apk` it must be the recorded build (`apkSha256`). With
-   `--apk`, another build is taken only from the recorded build's signer (`apkSigners`, new in the manifest; for an
-   older bundle the signer of the recorded build if it is found), the rule Android applies to an update that keeps the
-   app's data and `apksim beam` applies to data from another build (`serve/ApkSigners`). Refused otherwise (exit 2).
+   `--apk`, another build is taken only from the recorded build's signer (`apkSigners`, new in the manifest, compared
+   by certificate whatever the signature scheme; for an older bundle the recorded build's own signer, so that build
+   must be found), the rule Android applies to an update that keeps the app's data and `apksim beam` applies to data
+   from another build (`serve/ApkSigners`). Refused otherwise (exit 2), as is a bundle that is not a readable zip or
+   whose values would put a line break into the launch.
 3. Unpacks `checkpoint/data.zip` (SlotPack's format) into a data slot of its own, `rp<12 hex>-0`, and its `.device`
    folder: SharedPreferences, databases, files, `/sdcard` and the Settings values, as the checkpoint cloned them. The
    rest of the bundle goes to `work/replay/rp<12 hex>/`. Both are swept by a later replay once 10 minutes old and no
    instance holds the slot.
 4. Launches with the checkpoint's device: `--device` (the preset it names, or its size), `--appearance` and `--locale`
    from Robolectric's qualifiers, `--font-scale`, `--timezone`, `--anim-scale`, the launch's `--feature` flags (new in
-   the checkpoint's device); `--network replay network.har --network-replay-timing recorded --network-replay-mark
-   off`; `--data-slots rp<hex>`; `--no-autofill`.
+   the checkpoint's device); `--clock` at the app's wall clock then (the simulated one, new in the checkpoint, so a
+   recording made with `--clock` keeps its date; the checkpoint's real time for older bundles), so the Application
+   and its providers already see that date; `--network replay network.har --network-replay-timing recorded
+   --network-replay-mark off`; `--data-slots rp<hex>`; `--no-autofill`.
 
 **In the app's process** (`Replay`):
 
-5. The checkpoint's rotation is applied, the wall clock is set to the checkpoint's (`SimClock`), and the activity
-   stack is rebuilt from `checkpoint/state.bin` in place of the start activity: bottom first, each activity built with
+5. The checkpoint's rotation is applied, the wall clock is set to the checkpoint's again (`SimClock`; not when the
+   replay was given its own `--clock`), every activity of the stack is looked up in the build (one it lacks is exit 2,
+   not a crash), and the stack is rebuilt from `checkpoint/state.bin` in place of the start activity: bottom first, each activity built with
    its unparcelled intent, then `create(state).start().restoreInstanceState(state).postCreate(state)`, the top one
    resumed, as `process-death` rebuilds a stack.
 6. Once that stack's first frame is drawn, `input.jsonl` is played at its recorded offsets on the app's clock
@@ -70,10 +75,13 @@ the `net` channel replays with the live network.
 
 The recorder keeps frames of the presented screen at most 5 a second, scaled to 960 pixels on the long side and
 JPEG-encoded at quality 70, with the time each was presented (`screen-times.txt`). A replay compares the same way: the
-latest frame is scaled to the movie's size with the same filtering and encoded at the same quality, so an identical
-screen gives an identical JPEG and a difference of 0. A pixel counts when one channel differs by more than 64. Because
-animations and the recorder's 200 ms sampling do not line up between the two runs, each point is compared with every
-frame the recording kept in the 1.5 s before it and the first one kept up to 250 ms after it, and the closest counts.
+latest frame is scaled with the same filtering and encoded at the same quality, then letterboxed into the movie's
+size when the screen's shape has changed since (a rotation), as the recorder fits such frames, so an identical screen
+gives an identical JPEG and a difference of 0. The journal's events are not delayed by the Host's idle sleep, which is
+off until the replay is done. A pixel counts when one channel differs by more than 64. Because
+animations and the recorder's 200 ms sampling do not line up between the two runs, each point is compared with
+the newest frame the recording kept by then, the others it kept in the 1.5 s before (none older), and the first one
+kept up to 250 ms after it, and the closest counts.
 The point diverges when more pixels than the threshold differ: by default 0.005% of the frame, at least 16 (21 for
 the phone's 442x960 frames); `--threshold N` gives a count, a value under 1 a fraction.
 

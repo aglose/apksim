@@ -48,9 +48,21 @@ public final class ReplayPlan {
 
   public static void main(String[] args) throws Exception {
     try {
-      for (String a : plan(args, Path.of(System.getProperty("apksim.state")))) System.out.println(a);
+      List<String> launch = plan(args, Path.of(System.getProperty("apksim.state")));
+      // The launcher reads one argument a line: a line break inside one (from a bundle's values, which someone else
+      // made) would add options of its own (--jvm, --no-sandbox). Nothing is printed unless every argument is clean.
+      for (String a : launch) {
+        if (a.indexOf('\n') >= 0 || a.indexOf('\r') >= 0 || a.indexOf('\0') >= 0) {
+          throw new Refused("an argument holds a line break: " + a.replace("\n", "\\n").replace("\r", "\\r"));
+        }
+      }
+      for (String a : launch) System.out.println(a);
     } catch (Refused e) {
       System.err.println("apksim replay: " + e.getMessage());
+      System.exit(2);
+    } catch (IOException | RuntimeException e) {
+      // A damaged bundle (not a zip, bad JSON): it cannot be replayed, said in one line.
+      System.err.println("apksim replay: cannot read the bundle: " + e.getMessage());
       System.exit(2);
     }
   }
@@ -134,7 +146,14 @@ public final class ReplayPlan {
       Files.createDirectories(out);
       boolean har = !live && Files.isRegularFile(dir.resolve("network.har"));
 
+      Map<String, Object> device = map(cp.get("device"));
+      // The app's wall clock at the checkpoint: the simulated one when recorded (SimClock), else the real one. At launch,
+      // so the Application and its providers see that date; Replay sets it again once the stack is rebuilt. A --clock
+      // given to the replay comes after and wins.
+      long clock = device != null && device.get("clock") instanceof Number n ? n.longValue() : Math.round(dnum(cp.get("wall")));
+
       Properties p = new Properties();
+      if (clock > 0) p.setProperty("clock", String.valueOf(clock));
       p.setProperty("bundle", bundle.toString());
       p.setProperty("apk", apk.toString());
       p.setProperty("out", out.toString());
@@ -155,7 +174,11 @@ public final class ReplayPlan {
       launch.add("--data-slots");
       launch.add(id);
       launch.add("--no-autofill");  // a replay never signs anyone in with the owner's saved sign-ins
-      launch.addAll(deviceOptions(map(cp.get("device"))));
+      launch.addAll(deviceOptions(device));
+      if (clock > 0) {
+        launch.add("--clock");
+        launch.add(String.valueOf(clock));
+      }
       if (har) {
         // The recorded answers, as slow as they came, without replay's marker header: as the app got them.
         launch.add("--network");
@@ -191,9 +214,10 @@ public final class ReplayPlan {
         recordedSigners = original != null ? signers(original) : null;
       }
       if (recordedSigners == null) {
-        System.err.println("apksim replay: the recording does not say who signed its build and the build is not here;"
-            + " the signer of " + apk.getFileName() + " is not checked");
-      } else if (!recordedSigners.equals(signers)) {
+        // The checkpoint's data is the app's own: it goes to another build only when its signer is known to match.
+        throw new Refused("the recording does not say who signed its build (an older bundle) and that build is not here,"
+            + " so " + apk.getFileName() + "'s signer cannot be checked; put the recorded build beside the bundle");
+      } else if (signers == null || !certs(recordedSigners).equals(certs(signers))) {
         throw new Refused(apk.getFileName() + " is signed by another key than the recorded build: its data would not"
             + " carry over on a device either (" + (signers == null ? "unsigned" : signers) + " against " + recordedSigners + ")");
       }
@@ -224,6 +248,11 @@ public final class ReplayPlan {
       System.err.println("apksim replay: " + other + " is another build than the recorded one (pass it as --apk to replay against it)");
     }
     return null;
+  }
+
+  /** The certificate digests of a "scheme:certs" signer string: a v2 and a v3 signature by one key are one signer. */
+  private static String certs(String signers) {
+    return signers.substring(signers.indexOf(':') + 1);
   }
 
   private static String signers(Path apk) {
@@ -257,8 +286,8 @@ public final class ReplayPlan {
     String name = d.get("name") != null ? String.valueOf(d.get("name")) : null;
     try {
       Device preset = Device.named(name != null ? name : "phone");
+      // Only when the name still gives that size (a `size` or a window resize keeps the name, not its size).
       if (preset.widthDp() == wDp && preset.heightDp() == hDp && preset.density() == density) spec = preset.name();
-      else if (name != null && name.matches("\\d+x\\d+(@[\\d.]+)?|\\d+x\\d+px@[\\d.]+dpi")) spec = name;
     } catch (IllegalArgumentException e) {
       // a size
     }
@@ -294,6 +323,7 @@ public final class ReplayPlan {
     }
     if (d.get("features") instanceof List<?> fs) {
       for (Object f : fs) {
+        if (!String.valueOf(f).matches("[A-Za-z0-9._-]+(=false)?")) continue;  // a feature name, nothing else
         o.add("--feature");
         o.add(String.valueOf(f));
       }
@@ -380,6 +410,10 @@ public final class ReplayPlan {
   @SuppressWarnings("unchecked")
   static Map<String, Object> map(Object o) {
     return o instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+  }
+
+  static double dnum(Object o) {
+    return o instanceof Number n ? n.doubleValue() : 0;
   }
 
   static float num(Object o, float dflt) {

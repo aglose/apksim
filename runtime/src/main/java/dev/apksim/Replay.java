@@ -169,6 +169,11 @@ final class Replay {
     items.sort(java.util.Comparator.comparingLong(Item::t));
   }
 
+  /** Whether the journal has been played and the result is known (main thread). */
+  boolean done() {
+    return result != null;
+  }
+
   /** The replay this launch asked for (-Dapksim.replay), or null. Main thread, before the first activity. */
   static Replay load() throws IOException {
     String d = System.getProperty("apksim.replay");
@@ -197,7 +202,10 @@ final class Replay {
       rotation = 1;  // an older bundle: landscape on a portrait device
     }
     for (int i = 0; i < rotation; i++) controls.run(new String[] {"rotate", "right"});
-    SimClock.set(String.valueOf(cpWall));
+    // The app's wall clock as the checkpoint had it. ReplayPlan launched with it (--clock, so the Application and its
+    // providers saw that date); set again now, after the start, unless the replay was given a --clock of its own.
+    String clock = plan.getProperty("clock");
+    if (clock != null && clock.equals(System.getProperty("apksim.clock"))) SimClock.set(clock);
     ClassLoader loader = app.getClassLoader();
     List<String> names = new ArrayList<>();
     List<Intent> intents = new ArrayList<>();
@@ -242,14 +250,19 @@ final class Replay {
       }
     }
     if (names.isEmpty()) throw new IllegalStateException("the checkpoint has no activity");
+    // Found (not initialized) before any app code runs: a build without the recording's activity cannot replay it
+    // (exit 2), which is not the app crashing (Crashes.app would make it one).
+    for (String name : names) {
+      try {
+        Class<?> c = Class.forName(name, false, Host.class.getClassLoader());
+        if (!Activity.class.isAssignableFrom(c)) throw new IllegalStateException(name + " is not an activity in this build");
+      } catch (ClassNotFoundException | LinkageError e) {
+        throw new IllegalStateException("this build has no activity " + name + " (the recording's)");
+      }
+    }
     Crashes.app(() -> {
       for (int i = 0; i < names.size(); i++) {
-        Class<? extends Activity> cls;
-        try {
-          cls = Class.forName(names.get(i), true, Host.class.getClassLoader()).asSubclass(Activity.class);
-        } catch (ClassNotFoundException e) {
-          throw new IllegalStateException("this build has no activity " + names.get(i) + " (the recording's)");
-        }
+        Class<? extends Activity> cls = Class.forName(names.get(i), true, Host.class.getClassLoader()).asSubclass(Activity.class);
         Bundle b = states.get(i);
         ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, intents.get(i));
         if (b != null) c.create(b).start().restoreInstanceState(b).postCreate(b);
@@ -351,7 +364,7 @@ final class Replay {
     int n = points.size() + 1;
     Bitmap mine = null;
     try {
-      byte[] mineJpeg = encode(shot, movie.w, movie.h);
+      byte[] mineJpeg = encode(shot, movie.w, movie.h, Math.max(movie.w, movie.h));
       mine = BitmapFactory.decodeByteArray(mineJpeg, 0, mineJpeg.length);
       int[] mp = new int[movie.w * movie.h];
       mine.getPixels(mp, 0, movie.w, 0, 0, movie.w, movie.h);
@@ -410,17 +423,45 @@ final class Replay {
     }
   }
 
-  /** A frame scaled to the movie's size with a filtering paint and JPEG-encoded at the recorder's quality. */
-  static byte[] encode(Bitmap src, int w, int h) {
-    Bitmap scaled = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+  /**
+   * A frame as the recorder keeps it and the movie shows it: scaled to fit `max` on its long side (even sizes) and
+   * JPEG-encoded at quality 70 (FlightRecorder.encodeLoop), then, when that is not the movie's size (a frame from
+   * before a rotation or resize), letterboxed into it and encoded again (FlightRecorder.fitted).
+   */
+  static byte[] encode(Bitmap src, int w, int h, int max) {
+    float s = Math.min(1f, max / (float) Math.max(src.getWidth(), src.getHeight()));
+    int sw = Math.max(2, Math.round(src.getWidth() * s) & ~1);
+    int sh = Math.max(2, Math.round(src.getHeight() * s) & ~1);
+    Bitmap scaled = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+    byte[] jpeg;
     try {
-      new Canvas(scaled).drawBitmap(src, null, new Rect(0, 0, w, h), new Paint(Paint.FILTER_BITMAP_FLAG));
-      ByteArrayOutputStream b = new ByteArrayOutputStream(1 << 16);
-      scaled.compress(Bitmap.CompressFormat.JPEG, 70, b);
-      return b.toByteArray();
+      new Canvas(scaled).drawBitmap(src, null, new Rect(0, 0, sw, sh), new Paint(Paint.FILTER_BITMAP_FLAG));
+      jpeg = jpeg(scaled);
     } finally {
       scaled.recycle();
     }
+    if (sw == w && sh == h) return jpeg;
+    Bitmap kept = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length);
+    Bitmap fit = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    try {
+      Canvas c = new Canvas(fit);
+      c.drawColor(android.graphics.Color.BLACK);
+      float f = Math.min(w / (float) sw, h / (float) sh);
+      int dw = Math.round(sw * f);
+      int dh = Math.round(sh * f);
+      c.drawBitmap(kept, null, new Rect((w - dw) / 2, (h - dh) / 2, (w - dw) / 2 + dw, (h - dh) / 2 + dh),
+          new Paint(Paint.FILTER_BITMAP_FLAG));
+      return jpeg(fit);
+    } finally {
+      kept.recycle();
+      fit.recycle();
+    }
+  }
+
+  private static byte[] jpeg(Bitmap b) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream(1 << 16);
+    b.compress(Bitmap.CompressFormat.JPEG, 70, out);
+    return out.toByteArray();
   }
 
   /**
@@ -487,18 +528,17 @@ final class Replay {
     }
 
     /**
-     * The frames the screen may have shown at wall time `at`: those kept from `backMs` before it, the newest kept by
-     * then, and the next one if kept within 250 ms after (the recorder keeps a presented frame up to 200 ms late).
+     * The frames the screen may have shown at wall time `at`: the newest kept by then, those kept in the `backMs`
+     * before it (not one older: a build that never left an old screen must not match it), and the next one if kept
+     * within 250 ms after (the recorder keeps a presented frame up to 200 ms late).
      */
     List<byte[]> around(long at, long backMs) {
       List<byte[]> out = new ArrayList<>();
       int newest = -1;
       for (int k = 0; k < walls.size(); k++) if (walls.get(k) <= at) newest = k;
       if (newest + 1 < walls.size() && walls.get(newest + 1) <= at + 250) out.add(frames.get(newest + 1));
-      for (int k = newest; k >= 0; k--) {
-        out.add(frames.get(k));
-        if (walls.get(k) < at - backMs) break;
-      }
+      if (newest >= 0) out.add(frames.get(newest));
+      for (int k = newest - 1; k >= 0 && walls.get(k) >= at - backMs; k--) out.add(frames.get(k));
       if (out.isEmpty() && !frames.isEmpty()) out.add(frames.get(0));
       return out;
     }

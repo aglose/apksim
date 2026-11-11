@@ -241,6 +241,9 @@ def main():
     ap.add_argument("--changed")
     a = ap.parse_args()
     a.out = os.path.abspath(a.out)
+    for f in [a.apk] + ([a.changed] if a.changed else []):
+        if os.path.abspath(f).startswith(a.out + os.sep):
+            sys.exit(f"replay-check: {f} is inside OUT ({a.out}), which is emptied first; pass another OUT")
     shutil.rmtree(a.out, ignore_errors=True)
     os.makedirs(os.path.join(a.out, "fixture"))
     shutil.copy(a.apk, os.path.join(a.out, "app.apk"))
