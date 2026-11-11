@@ -30,7 +30,7 @@ scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role
 On a failure every running role's screen is saved as DIR/failed-ROLE.png. Writes DIR/result.json (steps, times,
 failure) and prints a line per step. Exits 1 on a failure, 2 on a bad scene file.
 """
-import json, os, re, shutil, subprocess, sys, threading, time
+import json, os, re, shutil, subprocess, sys, tempfile, threading, time
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS)
@@ -103,6 +103,11 @@ class Scene:
             for role in self.roles.values() if name is None else [self.roles[name]]:
                 role.apk = os.path.abspath(apk)
         self.fixture = None
+        # Captures are written here first and then moved into the output folder: on the Mac an instance's sandbox may
+        # write only its state folder (and not elsewhere under $HOME, where --out may point); a temporary folder is
+        # outside $HOME.
+        self.stage = tempfile.mkdtemp(prefix="apksim-scene-")
+        self.capture_failures = []
         self.t0 = time.time()
 
     def expand(self, text, role=None):
@@ -163,7 +168,8 @@ class Scene:
         if not self.warm:
             env["APKSIM_STANDBY"] = "0"
         for role in self.roles.values():
-            args = [apksim_launcher(), "--headless", "--control", "auto", "--data-slots", "scene", "--fresh",
+            # --no-autofill: a role never signs in with the owner's saved sign-in details (Autofill), whatever its APK.
+            args = [apksim_launcher(), "--headless", "--control", "auto", "--data-slots", "scene", "--fresh", "--no-autofill",
                     "--device", role.device, *[self.expand(o, role) for o in self.spec.get("options", []) + role.options], *self.extra, role.apk]
             log_path = os.path.join(self.out, f"{role.name}.log")
             with open(log_path, "w") as log:
@@ -237,6 +243,10 @@ class Scene:
             if failed(reply):
                 raise Failure(f"to {target} {inner!r}: {reply}")
             role.last = reply
+        elif word in ("shot", "wshot") and rest:
+            role.last = self.capture(role, word, rest)
+            if failed(role.last):
+                raise Failure(role.last)
         elif word == "quit":
             with role.lock:  # not while another role's `to` reads this connection
                 why = role.inst.stop()
@@ -287,13 +297,30 @@ class Scene:
         print(f"step {n:>2} {took:6.2f} s  {'FAILED ' if errors else 'ok     '}{label + ' - ' if label else ''}{summary[:160]}")
         return took, errors
 
+    def capture(self, role, word, target):
+        """`shot`/`wshot` to TARGET (relative to the output folder), staged where the instance may write. The answer."""
+        dest = target if os.path.isabs(target) else os.path.join(self.out, target)
+        staged = os.path.join(self.stage, f"{role.name}-{time.time_ns()}-{os.path.basename(target)}")
+        with role.lock:
+            reply = role.inst.send(f"{word} {staged}")
+        if not failed(reply):
+            if not os.path.exists(staged):
+                return f"error: {word} answered {reply!r} but wrote nothing"
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+            shutil.move(staged, dest)
+        return reply
+
     def shots(self):
+        """Every running role's screen after a failure; a capture that fails is reported, not dropped."""
         for role in self.roles.values():
             if role.inst and role.inst.file and role.inst.proc.poll() is None and not role.inst.quit:
                 try:
-                    role.send(f"shot failed-{role.name}.png")
-                except (OSError, Closed):
-                    pass
+                    reply = self.capture(role, "shot", f"failed-{role.name}.png")
+                except (OSError, Closed) as e:
+                    reply = f"error: {e}"
+                if failed(reply):
+                    self.capture_failures.append(f"{role.name}: {reply}")
+                    print(f"could not save {role.name}'s screen: {reply}")
 
     def finish(self, keep):
         failures = {}
@@ -395,6 +422,9 @@ def main():
     for role in scene.roles.values():
         result["roles"][role.name] = {"device": role.device, "apk": role.apk, "ready_s": role.ready,
                                       "port": role.inst.port if role.inst else None}
+    if scene.capture_failures:
+        result["capture_failures"] = scene.capture_failures
+    shutil.rmtree(scene.stage, ignore_errors=True)
     result["seconds"] = round(total, 2)
     result["peak_rss_mb"] = round(peak[0])
     with open(os.path.join(scene.out, "result.json"), "w") as f:

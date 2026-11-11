@@ -65,6 +65,12 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
 - **Values**: `{NAME}` in any command or option: captured values, `--var NAME=VALUE`, `{fixture}`, `{out}` (the run's
   folder, every role's working directory, so `shot x.png` lands there), `{scripts}`, `{scene}`, `{role}`,
   `{port:ROLE}` (a role's control port, for a step that runs another tool against it).
+- **Isolation**: every role runs with `--no-autofill`, so it never signs in with the owner's saved sign-in details,
+  whatever its APK.
+- **Captures**: `shot`/`wshot FILE` are written to a temporary folder outside `$HOME` first and moved into the output
+  folder, so an `--out` the Mac sandbox would not let an instance write (anywhere under `$HOME` but its state folder)
+  still gets them; a capture that fails fails its step, and a failure screenshot that cannot be saved is printed and
+  listed in `result.json` (`capture_failures`).
 - **Output**: a line per step with its time; `result.json` (roles, ready times, ports, steps, failure, peak memory);
   each role's log `ROLE.log`; on a failure every running role's screen as `failed-ROLE.png`. Exit 1 on a failure, 2
   for a bad scene file. Roles still running at the end are quit and must exit 0 (`--keep` leaves them and the fixture running, its PID
