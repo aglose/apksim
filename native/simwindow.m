@@ -1388,6 +1388,10 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeDisplayImage(JNIEnv *env,
         fingerHidden[i] = fingerLayers[i].hidden;
         fingerLayers[i].hidden = YES;
       }
+      // A bitmap context's origin is bottom-left, while the window's layers are laid out top-down: flip it, or the shot
+      // comes out upside down (adb screencap, issue 237).
+      CGContextTranslateCTM(ctx, 0, h);
+      CGContextScaleCTM(ctx, 1, -1);
       CGContextScaleCTM(ctx, deviceScale, deviceScale);
       [frameLayer renderInContext:ctx];
       for (int i = 0; i < 2; i++) fingerLayers[i].hidden = fingerHidden[i];
