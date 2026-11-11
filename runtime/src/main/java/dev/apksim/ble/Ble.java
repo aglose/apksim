@@ -82,6 +82,17 @@ public final class Ble {
     return t;
   });
 
+  /**
+   * Another binder thread, for registerScanner's answer alone: BluetoothLeScanner waits for it (up to 2 s) on the
+   * calling thread, which may be apksim-ble-binder itself (a scan started from a GATT callback without a Handler), as a
+   * device's binder pool has more than one thread.
+   */
+  private static final ExecutorService registrar = Executors.newSingleThreadExecutor(r -> {
+    Thread t = new Thread(r, "apksim-ble-binder-2");
+    t.setDaemon(true);
+    return t;
+  });
+
   static final int GATT_SUCCESS = 0;
   static final int GATT_INVALID_HANDLE = 0x01;
   static final int GATT_READ_NOT_PERMITTED = 0x02;
@@ -101,6 +112,10 @@ public final class Ble {
     boolean pending;  // connecting: direct (with a timeout) or in the background (autoConnect)
     boolean direct;
     int mtu = 23;
+    int txPhy = BluetoothDevice.PHY_LE_1M;
+    int rxPhy = BluetoothDevice.PHY_LE_1M;
+    /** Bumped whenever the link comes or goes: a delayed answer for an older link is dropped (answer). */
+    int epoch;
     final Set<Integer> notify = new HashSet<>();
   }
 
@@ -112,6 +127,7 @@ public final class Ble {
     List<ScanFilter> filters;
     boolean started;
     boolean location;  // results may be delivered (location rules), decided at start as the stack does
+    boolean disavowed;  // BLUETOOTH_SCAN is neverForLocation (target 31+): location never matters
     final Set<String> found = new HashSet<>();
     final List<ScanResult> batch = new ArrayList<>();
 
@@ -162,6 +178,7 @@ public final class Ble {
         if (c.connected || (c.pending && c.direct)) {
           boolean wasConnected = c.connected;
           c.connected = false;
+          c.epoch++;
           c.pending = !c.direct;
           if (wasConnected || c.direct) answer(null, c, cb -> cb.onClientConnectionState(GATT_CONN_TERMINATE_LOCAL_HOST, c.id, false, c.address));
         }
@@ -188,8 +205,12 @@ public final class Ble {
 
   /** Runs [r] on the binder thread, unless a reset came first. Under LOCK. */
   private static void deliver(Runnable r) {
+    deliverOn(binder, r);
+  }
+
+  private static void deliverOn(ExecutorService thread, Runnable r) {
     int gen = generation;
-    binder.execute(() -> {
+    thread.execute(() -> {
       synchronized (LOCK) {
         if (gen != generation) return;
       }
@@ -213,7 +234,11 @@ public final class Ble {
     if (p == null || p.latencyMs == 0) {
       send.run();
     } else {
-      later(p.latencyMs, send);
+      int epoch = c.epoch;
+      // An answer from a link that has since ended (or a client unregistered) is never delivered.
+      later(p.latencyMs, () -> {
+        if (c.epoch == epoch && clients.get(c.id) == c) send.run();
+      });
     }
   }
 
@@ -312,20 +337,21 @@ public final class Ble {
       }
     }
     for (Scanner s : new ArrayList<>(scanners.values())) if (s.started) sightings(s, p);
-    for (Client c : clients.values()) if (c.pending && c.address.equals(p.address)) tryConnect(c);
+    for (Client c : clients.values()) if (c.pending && p.address.equals(c.address)) tryConnect(c);
   }
 
   /** [p] stopped advertising and dropped its links: connections end with [status], scans lose it. */
   private static void goneLocked(Peripheral p, int status) {
     for (Client c : clients.values()) {
-      if (!c.address.equals(p.address) || !c.connected) continue;
+      if (!p.address.equals(c.address) || !c.connected) continue;
       c.connected = false;
+      c.epoch++;
       c.pending = !c.direct;  // a background (autoConnect) connection waits for it to come back
       answer(null, c, cb -> cb.onClientConnectionState(status, c.id, false, c.address));
     }
     if (!bonded.contains(p.address)) linkCcc.remove(p.address);
     for (Scanner s : scanners.values()) {
-      if (s.found.remove(p.address) && (s.settings.getCallbackType() & ScanSettings.CALLBACK_TYPE_MATCH_LOST) != 0) {
+      if (s.found.remove(p.address) && deliverable(s) && (s.settings.getCallbackType() & ScanSettings.CALLBACK_TYPE_MATCH_LOST) != 0) {
         ScanResult r = result(p);
         if (s.intent != null) {
           sendIntent(s, ScanSettings.CALLBACK_TYPE_MATCH_LOST, List.of(r));
@@ -358,14 +384,14 @@ public final class Ble {
     if (v == null || v.length == 0 || (v[0] & 0x03) == 0) return;
     byte[] value = c.value.clone();
     for (Client cl : clients.values()) {
-      if (cl.connected && cl.address.equals(p.address) && cl.notify.contains(c.handle)) {
+      if (cl.connected && p.address.equals(cl.address) && cl.notify.contains(c.handle)) {
         answer(null, cl, cb -> cb.onNotify(p.address, c.handle, value));
       }
     }
   }
 
   private static boolean linked(String address) {
-    for (Client c : clients.values()) if (c.connected && c.address.equals(address)) return true;
+    for (Client c : clients.values()) if (c.connected && address.equals(c.address)) return true;
     return false;
   }
 
@@ -398,8 +424,17 @@ public final class Ble {
     later(p.intervalMs, () -> sightings(s, p));
   }
 
+  /**
+   * Whether results may reach the app now: the location permission as the scan started (the stack decides it then;
+   * revoking a runtime permission kills the app on a device, and granting one does not restart a scan), and location
+   * still on (checked at each delivery, as the stack's blockedByLocationOff is), unless the scan is neverForLocation.
+   */
+  private static boolean deliverable(Scanner s) {
+    return s.location && (s.disavowed || locationEnabled());
+  }
+
   private static void sight(Scanner s, Peripheral p) {
-    if (!s.location) return;
+    if (!deliverable(s)) return;
     if (s.opportunistic() && !radioScanning()) return;
     ScanResult r = result(p);
     if (!matches(s, r)) return;
@@ -425,6 +460,10 @@ public final class Ble {
 
   private static void flushBatch(Scanner s) {
     if (s.batch.isEmpty()) return;
+    if (!deliverable(s)) {
+      s.batch.clear();
+      return;
+    }
     List<ScanResult> list = new ArrayList<>(s.batch);
     s.batch.clear();
     if (s.intent != null) {
@@ -459,6 +498,7 @@ public final class Ble {
   private static void startScanner(Scanner s) {
     s.started = true;
     s.location = locationAllowsResults();
+    s.disavowed = target() >= 31 && neverForLocation();
     scanStarts.add(SystemClock.elapsedRealtime());
     for (Peripheral p : new ArrayList<>(peripherals.values())) sightings(s, p);
     if (s.settings.getReportDelayMillis() > 0) later(s.settings.getReportDelayMillis(), () -> batches(s));
@@ -485,8 +525,8 @@ public final class Ble {
           s.cb = callback;
           scanners.put(id, s);
         }
-        // From the binder thread: the caller waits for it (BleScanCallbackWrapper.startRegistration).
-        deliver(() -> {
+        // From another thread: the caller waits for it (BleScanCallbackWrapper.startRegistration).
+        deliverOn(registrar, () -> {
           try {
             callback.onScannerRegistered(tooOften ? ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY : GATT_SUCCESS, tooOften ? -1 : id);
           } catch (RemoteException e) {
@@ -566,7 +606,9 @@ public final class Ble {
     if (p == null || !p.connectable || !adapterOn) return;
     c.pending = false;
     c.connected = true;
+    c.epoch++;
     c.mtu = 23;
+    c.txPhy = c.rxPhy = BluetoothDevice.PHY_LE_1M;
     answer(p, c, cb -> cb.onClientConnectionState(GATT_SUCCESS, c.id, true, c.address));
   }
 
@@ -607,6 +649,7 @@ public final class Ble {
     public void unregisterClient(int clientIf, AttributionSource source) {
       synchronized (LOCK) {
         Client c = clients.remove(clientIf);
+        if (c != null) c.epoch++;
         // close() without disconnect(): the link goes with the last client on it, and nobody is told.
         if (c != null && c.connected && !linked(c.address) && !bonded.contains(c.address)) linkCcc.remove(c.address);
       }
@@ -643,6 +686,7 @@ public final class Ble {
         if (c == null || !(c.connected || c.pending)) return;
         c.connected = false;
         c.pending = false;
+        c.epoch++;
         if (!linked(address) && !bonded.contains(address)) linkCcc.remove(address);
         answer(peripherals.get(address), c, cb -> cb.onClientConnectionState(GATT_SUCCESS, clientIf, false, address));
       }
@@ -653,7 +697,15 @@ public final class Ble {
       enforceConnect("GattService clientSetPreferredPhy", source);
       synchronized (LOCK) {
         Client c = client(clientIf, address);
-        if (c != null) answer(peripherals.get(address), c, cb -> cb.onPhyUpdate(address, lowestPhy(txPhy), lowestPhy(rxPhy), GATT_SUCCESS));
+        if (c == null) return;
+        int tx = lowestPhy(txPhy), rx = lowestPhy(rxPhy);
+        for (Client o : clients.values()) {
+          if (o.connected && address.equals(o.address)) {  // one link
+            o.txPhy = tx;
+            o.rxPhy = rx;
+          }
+        }
+        answer(peripherals.get(address), c, cb -> cb.onPhyUpdate(address, tx, rx, GATT_SUCCESS));
       }
     }
 
@@ -668,7 +720,9 @@ public final class Ble {
       enforceConnect("GattService clientReadPhy", source);
       synchronized (LOCK) {
         Client c = client(clientIf, address);
-        if (c != null) answer(peripherals.get(address), c, cb -> cb.onPhyRead(address, BluetoothDevice.PHY_LE_1M, BluetoothDevice.PHY_LE_1M, GATT_SUCCESS));
+        if (c == null) return;
+        int tx = c.txPhy, rx = c.rxPhy;
+        answer(peripherals.get(address), c, cb -> cb.onPhyRead(address, tx, rx, GATT_SUCCESS));
       }
     }
 
@@ -860,7 +914,7 @@ public final class Ble {
         Peripheral p = peripherals.get(address);
         if (c == null || p == null) return;
         int agreed = Math.max(23, Math.min(Math.min(mtu, 517), p.mtu));
-        for (Client o : clients.values()) if (o.connected && o.address.equals(address)) o.mtu = agreed;  // one link
+        for (Client o : clients.values()) if (o.connected && address.equals(o.address)) o.mtu = agreed;  // one link
         answer(p, c, cb -> cb.onConfigureMTU(address, agreed, GATT_SUCCESS));
       }
     }
@@ -984,9 +1038,10 @@ public final class Ble {
             Peripheral p = need(a[2]);
             int n = 0;
             for (Client c : clients.values()) {
-              if (!c.connected || !c.address.equals(p.address)) continue;
+              if (!c.connected || !p.address.equals(c.address)) continue;
               n++;
               c.connected = false;
+              c.epoch++;
               c.pending = !c.direct;
               answer(null, c, cb -> cb.onClientConnectionState(GATT_CONN_TERMINATE_PEER_USER, c.id, false, c.address));
             }
@@ -994,7 +1049,7 @@ public final class Ble {
             // A background connection comes back once the peripheral advertises again.
             later(p.intervalMs, () -> {
               if (peripherals.get(p.address) != p) return;
-              for (Client c : clients.values()) if (c.pending && !c.direct && c.address.equals(p.address)) tryConnect(c);
+              for (Client c : clients.values()) if (c.pending && !c.direct && p.address.equals(c.address)) tryConnect(c);
             });
             return "ok (" + n + " disconnected)";
           }
@@ -1008,6 +1063,11 @@ public final class Ble {
     }
   }
 
+  /** A name from a scene file inside a one-line reply: no line breaks or bare quotes. */
+  private static String oneLine(String s) {
+    return s.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("\"", "\\\"");
+  }
+
   private static Peripheral need(String address) {
     Peripheral p = peripherals.get(Peripheral.normalizeAddress(address));
     if (p == null) throw new IllegalArgumentException("no peripheral " + address);
@@ -1018,11 +1078,11 @@ public final class Ble {
     List<String> lines = new ArrayList<>();
     for (Peripheral p : peripherals.values()) {
       StringBuilder sb = new StringBuilder(p.address);
-      if (p.name != null) sb.append(" \"").append(p.name).append('"');
+      if (p.name != null) sb.append(" \"").append(oneLine(p.name)).append('"');
       sb.append(" rssi ").append(p.rssi).append(p.connectable ? "" : " non-connectable");
       int links = 0, mtu = 23;
       for (Client c : clients.values()) {
-        if (c.connected && c.address.equals(p.address)) {
+        if (c.connected && p.address.equals(c.address)) {
           links++;
           mtu = c.mtu;
         }

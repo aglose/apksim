@@ -132,6 +132,8 @@ class BleTest {
       add("changed ${hex(value)}")
     override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) = add("mtu $mtu $status")
     override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) = add("rssi $rssi $status")
+    override fun onPhyUpdate(g: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) = add("phy update $txPhy $rxPhy $status")
+    override fun onPhyRead(g: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) = add("phy read $txPhy $rxPhy $status")
   }
 
   private fun connect(address: String, cb: BluetoothGattCallback, handler: Handler? = null, auto: Boolean = false): BluetoothGatt {
@@ -263,6 +265,38 @@ class BleTest {
     g.readRemoteRssi()
     waitFor("second rssi") { cb.count("rssi") == 2 }
     assertEquals(listOf("rssi -58 0", "rssi -80 0"), cb.events.filter { it.startsWith("rssi") })
+    g.readPhy()
+    waitFor("phy") { cb.has("phy read") }
+    g.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+    waitFor("phy update") { cb.has("phy update") }
+    g.readPhy()
+    waitFor("second phy read") { cb.count("phy read") == 2 }
+    assertEquals("the PHY read back is the one the update reported",
+      listOf("phy read 1 1 0", "phy update 2 2 0", "phy read 2 2 0"), cb.events.filter { it.startsWith("phy") })
+  }
+
+  @Test
+  fun b_dAScanStartedFromAGattCallbackWithoutAHandler() {
+    shell("apksim ble add heart-rate")
+    shell("apksim ble add battery")
+    val scan = Scan()
+    val started = java.util.concurrent.CountDownLatch(1)
+    val cb = object : Recorder() {
+      override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+        super.onServicesDiscovered(g, status)
+        // On the binder thread: BluetoothLeScanner waits there for the scanner's registration.
+        scanner.startScan(listOf(filter(0x180F)), ScanSettings.Builder().build(), scan)
+        started.countDown()
+      }
+    }
+    val g = connect("C0:FF:EE:00:18:0D", cb)
+    waitFor("connected") { cb.has("state 0 2") }
+    g.discoverServices()
+    waitFor("the scan started from the callback") { started.count == 0L }
+    waitFor("a result for that scan") { scan.results.isNotEmpty() || scan.failed != 0 }
+    scanner.stopScan(scan)
+    assertEquals("the registration answered in time, not SCAN_FAILED_APPLICATION_REGISTRATION_FAILED", 0, scan.failed)
+    assertEquals("C0:FF:EE:00:18:0F", scan.results[0].second.device.address)
   }
 
   @Test
@@ -329,6 +363,26 @@ class BleTest {
     val (_, cb2) = connected("C0:FF:EE:00:18:0F")
     shell("apksim ble remove C0:FF:EE:00:18:0F")
     waitFor("the link timing out") { cb2.has("state 8 0") }
+  }
+
+  @Test
+  fun c_aaAnswerDelayedByLatencyIsDroppedWhenTheLinkEndsFirst() {
+    val file = java.io.File(context.cacheDir, "slow-peripheral.json")
+    file.writeText("""[{"address": "C0:FF:EE:00:00:51", "name": "slow\nstrap \"two\"", "latencyMs": 1000,
+      "advertisement": {"serviceUuids": ["180D"]},
+      "services": [{"uuid": "180D", "characteristics": [{"uuid": "2A38", "properties": ["read"], "value": "01"}]}]}]""")
+    shell("apksim ble add ${file.absolutePath}")
+    val status = shell("apksim ble")
+    assertFalse("one line, whatever the name holds: $status", status.contains('\n'))
+    assertTrue(status, status.contains("\"slow\\nstrap \\\"two\\\"\""))
+    val cb = Recorder()
+    connect("C0:FF:EE:00:00:51", cb)
+    pass(300)
+    assertFalse("the connection's answer waits for the latency: ${cb.events}", cb.has("state"))
+    shell("apksim ble remove C0:FF:EE:00:00:51")
+    waitFor("the link timing out") { cb.has("state 8 0") }
+    pass(2_000)
+    assertEquals("no late 'connected' for a link that already ended", listOf("state 8 0"), cb.events.filter { it.startsWith("state") })
   }
 
   @Test

@@ -140,10 +140,12 @@ public final class Bluetooth {
         Intent intent = new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
             .putExtra(BluetoothAdapter.EXTRA_STATE, step)
             .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now);
+        // The BLE stack is up (or down: scans stop, connections drop) before STATE_ON (STATE_OFF) is broadcast, so a
+        // receiver that scans or connects at once finds it in the state the broadcast says.
+        if (step == target) pending.add(() -> dev.apksim.ble.Ble.adapterSwitched(want));
         pending.add(() -> app.sendBroadcast(intent));
         now = step;
       }
-      pending.add(() -> dev.apksim.ble.Ble.adapterSwitched(want));  // off: scans stop, connections drop
     }
     writeSetting(app, want);
   }
