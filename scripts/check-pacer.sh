@@ -1,7 +1,8 @@
 #!/bin/bash
 # Checks serve's H.264 pacing for a tab slower than the app (dev.apksim.serve.Pacer, issue 232) on a simulated clock:
 # when a pace is set and raised, easing, a failed trial's backoff, the one-frame window, the app's idle time and the
-# link's delay kept out of the tab's measured time (dev.apksim.serve.PacerCheck). Exits 1 if any check fails. Needs work/apksim.jar (scripts/build.sh).
+# link's delay kept out of the tab's busy time, and a link with delay as the limit (dev.apksim.serve.PacerCheck). Exits 1
+# if any check fails. Needs work/apksim.jar (scripts/build.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/jdk.sh"

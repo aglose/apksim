@@ -27,7 +27,7 @@ public class SimVideoDecoderFactory extends DefaultVideoDecoderFactory {
   @Override
   public VideoCodecInfo[] getSupportedCodecs() {
     List<VideoCodecInfo> codecs = new ArrayList<>();
-    if (VideoToolbox.available()) {
+    if (VideoToolbox.webrtcAvailable()) {
       // The two profiles Android's hardware decoders announce, first as they are there.
       codecs.add(h264("640c1f"));
       codecs.add(h264("42e01f"));
@@ -40,7 +40,7 @@ public class SimVideoDecoderFactory extends DefaultVideoDecoderFactory {
 
   @Override
   public VideoDecoder createDecoder(VideoCodecInfo info) {
-    if ("H264".equalsIgnoreCase(info.name) && VideoToolbox.available()) return new VtH264Decoder();
+    if ("H264".equalsIgnoreCase(info.name) && VideoToolbox.webrtcAvailable()) return new VtH264Decoder();
     return super.createDecoder(info);
   }
 

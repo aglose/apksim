@@ -3,8 +3,9 @@ package dev.apksim.serve;
 /**
  * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI): a slow tab gets a pace from its measured rate,
  * one drop alone gets none, a too-low pace is raised, easing after a quiet spell, a failed trial restoring the pace that
- * held with a doubling wait (capped), the one-frame window's round-trip fallback, and the app's idle time and the link's
- * delay kept out of the tab's measured time. Exits 1 if any check fails.
+ * held with a doubling wait (capped), the one-frame window's round-trip fallback, the app's idle time and the link's delay
+ * kept out of the tab's busy time, and a link with delay limiting a frame to its round trip per window. Exits 1 if any
+ * check fails.
  */
 public final class PacerCheck {
   private static int failures;
@@ -21,6 +22,7 @@ public final class PacerCheck {
     easedToNothing();
     oneFrameWindow();
     ackGapIgnoresIdle();
+    burstyAcks();
     ackGapIgnoresTheLink();
     if (failures > 0) {
       System.out.println(failures + " pacer check(s) failed");
@@ -90,47 +92,67 @@ public final class PacerCheck {
   private static void oneFrameWindow() {
     check(Pacer.tabFrameMs(-1, 1, 41) == 41, "a window of one: the tab's time is the ack round trip");
     check(Pacer.tabFrameMs(-1, 2, 41) == -1, "a wider window without a gap sample: not known");
-    check(Pacer.tabFrameMs(43, 1, 80) == 43, "a gap sample wins over the round trip");
+    check(Pacer.tabFrameMs(43, 1, 80) == 80, "a window of one carries a frame per round trip, longer than the tab's 43 ms");
+    check(Pacer.tabFrameMs(43, 4, 80) == 43, "a wider window: the tab's busy time when that is the limit");
     Pacer p = new Pacer();
     p.dropped(10 * S, Pacer.tabFrameMs(-1, 1, 41));
     check(p.dropped(10 * S + 300 * MS, Pacer.tabFrameMs(-1, 1, 41)) == 48, "so a window of one gets a pace (48)");
   }
 
   private static void ackGapIgnoresIdle() {
-    // A tab taking 40 ms a frame, no link delay, frames queued at it: acks 40 ms apart, each frame sent long before.
-    Pacer.AckGap g = new Pacer.AckGap(-1, 0);
+    // A tab taking 40 ms a frame, no link delay, frames queued at it: each ack 40 ms after the one before.
+    Pacer p = new Pacer();
     long t = 100 * S;
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, t - 40 * MS, 1);
-    for (int i = 1; i <= 10; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 40 * MS, t, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "a tab 40 ms a frame with frames queued: 40 ms (" + g.gapMs() + ")");
-    t += 400 * MS;
+    for (int i = 1; i <= 10; i++) p.acked(t + i * 40 * MS, t, -1);
+    check(Math.abs(p.busyMs() - 40) < 0.5, "a tab 40 ms a frame with frames queued: 40 ms busy (" + p.busyMs() + ")");
     // 10 s of still screen, then a frame to an idle tab: its own 40 ms, not the 10 s.
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S + 41 * MS, t + 10 * S, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "a still spell is not sampled (" + g.gapMs() + ")");
+    t += 10 * S;
+    p.acked(t + 40 * MS, t, -1);
+    check(Math.abs(p.busyMs() - 40) < 0.5, "a still spell is not sampled (" + p.busyMs() + ")");
+    check(new Pacer().busyMs() == -1, "no busy time before there are samples");
+  }
+
+  private static void burstyAcks() {
+    // A 200 ms link with 4 frames in flight and a tab that decodes at once: acks come 4 at a time, 1 ms apart, each
+    // frame sent as an ack frees the window and back a round trip later. The tab is idle; the link is the limit.
+    Pacer p = new Pacer();
+    long t = 100 * S;
+    for (int round = 1; round <= 6; round++) {
+      for (int k = 0; k < 4; k++) {
+        long now = t + round * 200 * MS + k * MS;
+        p.acked(now, now - 200 * MS, 200);
+      }
+    }
+    check(p.busyMs() < 1, "bursty acks on a 200 ms link, a tab that decodes at once: ~0 ms busy (" + p.busyMs() + ")");
+    double frame = Pacer.tabFrameMs(p.busyMs(), 4, 201);
+    check(frame > 45 && frame < 55, "so a frame costs the link's 50 ms, a round trip per 4 in flight (" + frame + ")");
+    p.dropped(t + 2 * S, frame);
+    check(p.dropped(t + 2 * S + 100 * MS, frame) <= 60, "and the pace stays near 50 ms, not at a round trip (" + p.paceMs + ")");
   }
 
   private static void ackGapIgnoresTheLink() {
-    // A 200 ms link, a tab that decodes at once, an app drawing every 140 ms: always a frame in flight, but the tab
-    // is idle, so its time is ~0 and a drop (the link's window full) gets no pace from the app's interval.
-    Pacer.AckGap g = new Pacer.AckGap(-1, 0);
-    long t = 100 * S;
-    for (int i = 0; i < 20; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 140 * MS + 201 * MS, t + i * 140 * MS, 200);
-    check(g.gapMs() < 2, "a 200 ms link, an idle tab, a frame every 140 ms: ~0 ms (" + g.gapMs() + ")");
+    // A 200 ms link, a tab that decodes at once, an app drawing every 140 ms: always a frame in flight, the tab idle.
+    // Timing gaps between acks took the app's 140 ms for the tab's and paced a 20 fps link at ~6 fps.
     Pacer p = new Pacer();
-    p.dropped(10 * S, Pacer.tabFrameMs(g.gapMs(), 4, 201));
-    check(p.dropped(10 * S + 300 * MS, Pacer.tabFrameMs(g.gapMs(), 4, 201)) <= 2, "so the link's drops are not paced to the app's interval");
-    // The same link and a tab taking 40 ms a frame with frames queued: 40 ms.
-    g = new Pacer.AckGap(-1, 0);
-    for (int i = 1; i <= 20; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 200 * MS + i * 40 * MS, t, 200);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "a 200 ms link and a tab 40 ms a frame: 40 ms (" + g.gapMs() + ")");
+    long t = 100 * S;
+    for (int i = 0; i < 20; i++) p.acked(t + i * 140 * MS + 201 * MS, t + i * 140 * MS, 200);
+    check(p.busyMs() < 2, "a 200 ms link, an idle tab, a frame every 140 ms: ~0 ms busy (" + p.busyMs() + ")");
+    check(Pacer.tabFrameMs(p.busyMs(), 4, 201) < 55, "so a frame costs the link's ~50 ms, not the app's 140");
+    // The same link and a tab taking 40 ms a frame with frames queued: 40 ms busy; with 4 in flight the link carries
+    // 4 frames per 240 ms round trip, 60 ms a frame, which is then the limit.
+    p = new Pacer();
+    for (int i = 1; i <= 20; i++) p.acked(t + 200 * MS + i * 40 * MS, t, 200);
+    check(Math.abs(p.busyMs() - 40) < 0.5, "a 200 ms link and a tab 40 ms a frame: 40 ms busy (" + p.busyMs() + ")");
+    check(Pacer.tabFrameMs(p.busyMs(), 4, 240) == 60, "and 60 ms a frame with 4 in flight (" + Pacer.tabFrameMs(p.busyMs(), 4, 240) + ")");
     // A window of one on that link: each frame sent at the last ack, back 200 ms plus the tab's 40 ms later.
-    g = new Pacer.AckGap(-1, 0);
+    p = new Pacer();
     long ack = t;
     for (int i = 0; i < 10; i++) {
       long sent = ack;
       ack = sent + 240 * MS;
-      g = Pacer.ackGap(g.gapMs(), i == 0 ? 0 : g.baselineNanos(), ack, sent, 200);
+      p.acked(ack, sent, 200);
     }
-    check(Math.abs(g.gapMs() - 40) < 0.5, "a window of one on a 200 ms link: the tab's 40 ms, not the round trip (" + g.gapMs() + ")");
+    check(Math.abs(p.busyMs() - 40) < 0.5, "a window of one on a 200 ms link: 40 ms busy (" + p.busyMs() + ")");
+    check(Pacer.tabFrameMs(p.busyMs(), 1, 240) == 240, "and a round trip a frame, one at a time");
   }
 }
