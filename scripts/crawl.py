@@ -825,9 +825,11 @@ class Sweep:
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
-                if kind == "offline":  # only this one changed the network; `network online` elsewhere would override a launch profile
+                if kind == "offline":  # only this one changed the network: back to what the launch asked for
+                    opts = self.ex.options
+                    profile = opts[opts.index("--network-profile") + 1] if "--network-profile" in opts else "online"
                     try:
-                        inst.send("network online")
+                        inst.send(f"network {profile}")
                     except (snapshot.Closed, OSError, ValueError, AttributeError):
                         pass
 
