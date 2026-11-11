@@ -884,6 +884,7 @@ public final class Serve {
       if (in == null) throw new IOException("report.html is missing from apksim.jar");
       String frag = new String(in.readAllBytes(), StandardCharsets.UTF_8);
       int cut = frag.indexOf("<!--script-->");
+      if (cut < 0) throw new IOException("report.html has no <!--script--> marker between its cards and its script");
       String cards = frag.substring(0, cut), script = "<script>" + frag.substring(cut + "<!--script-->".length()) + "</script>";
       return html.replace("<!--apksim:report-->", cards).replace("<!--apksim:report-script-->", script);
     }

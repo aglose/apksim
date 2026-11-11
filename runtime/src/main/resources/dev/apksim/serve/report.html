@@ -80,7 +80,7 @@ onText = t => {
   baseOnText(t);
 };
 function sessionInfo(i) {
-  info = i; sid = i.id; exchanges.length = 0; selected = 0;
+  info = i; sid = i.id; exchanges.length = 0; selected = 0; saved = null;
   $r("reportCard").classList.toggle("on", i.rec === true && params.get("report") !== "0");
   $r("inspectCard").classList.toggle("on", i.inspect === true);
   if (!i.inspect) $r("insp").classList.remove("open");
@@ -115,17 +115,21 @@ function zip(files) {
 }
 window.apksimZip = zip;  // for the check
 function say(text) { $r("reportHint").textContent = text; }
-async function recording() {
+async function recording(mine) {
+  const live = () => { if (ws !== mine.ws) throw new Error("the session ended or was replaced while the report was made"); };
+  live();
   const id = await new Promise(done => {
     const t = setTimeout(() => { saved = null; done(null); }, 60000);
     saved = (rid, err) => { clearTimeout(t); done(rid); if (err) say("recording: " + err); };
     send("rec save 300");
   });
+  live();
   if (!id) return null;
   for (let i = 0; i < 20; i++) {  // 404 until the instance has written it
-    const r = await fetch(base + withToken("api/sessions/" + sid + "/recordings/" + id));
-    if (r.ok) return new Uint8Array(await r.arrayBuffer());
+    const r = await fetch(base + withToken("api/sessions/" + mine.sid + "/recordings/" + id));
+    if (r.ok) { const b = new Uint8Array(await r.arrayBuffer()); live(); return b; }
     await new Promise(r => setTimeout(r, 500));
+    live();
   }
   return null;
 }
@@ -138,44 +142,48 @@ function settings() {
 $r("reportBtn").onclick = async () => {
   const btn = $r("reportBtn");
   btn.disabled = true;
-  // The issue page is opened now, while the click's permission to open a tab lasts (the screenshot and the recording take
-  // longer), and pointed at the filled-in address once the report is made; a blocked tab leaves a visible link instead.
-  const issueTab = info && info.issueUrl ? window.open("", "_blank") : null;
+  // Everything the report holds is taken from this session now, and the work stops if the session is replaced meanwhile
+  // (Stop and Start, a move): a report never mixes two sessions' screenshot, settings, recording and requests.
+  const mine = { ws, sid, info, exchanges: exchanges.slice(), settings: settings(), note: $r("reportNote").value,
+    png: new Promise(done => canvas.toBlob(done, "image/png")) };
+  // The issue page is opened now, while the click's permission to open a tab lasts, and pointed at the filled-in address once
+  // the report is made; the link shown then is a fresh click for a browser that blocked it.
+  const issueTab = mine.info && mine.info.issueUrl ? window.open("", "_blank") : null;
   if (issueTab) try { issueTab.opener = null; } catch (e) { /* cross-origin already */ }
   try {
     say("saving the recording…");
-    const files = [], enc = new TextEncoder(), note = $r("reportNote").value;
+    const files = [], enc = new TextEncoder(), note = mine.note;
     files.push(["note.txt", enc.encode(note + "\n")]);
-    files.push(["settings.json", enc.encode(JSON.stringify(settings(), null, 2) + "\n")]);
-    const png = await new Promise(done => canvas.toBlob(done, "image/png"));
+    files.push(["settings.json", enc.encode(JSON.stringify(mine.settings, null, 2) + "\n")]);
+    const png = await mine.png;
     if (png) files.push(["screenshot.png", new Uint8Array(await png.arrayBuffer())]);
-    const rec = await recording();
+    const rec = await recording(mine);
     if (rec) files.push(["recording.apkrec", rec]);
-    if (exchanges.length) files.push(["network.json", enc.encode(JSON.stringify(exchanges, null, 1) + "\n")]);
+    if (mine.exchanges.length) files.push(["network.json", enc.encode(JSON.stringify(mine.exchanges, null, 1) + "\n")]);
     const blob = zip(files), name = "apksim-report-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".zip";
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    say("downloaded " + name + (rec ? "" : " (without a recording: " + (info && info.rec ? "none could be saved" : "the server does not record") + ")"));
+    say("downloaded " + name + (rec ? "" : " (without a recording: " + (mine.info && mine.info.rec ? "none could be saved" : "the server does not record") + ")"));
     // The reviewer's own browser opens the tracker's new-issue page; the zip is attached there by hand. Nothing is posted from here.
-    if (info && info.issueUrl) {
-      const first = note.split("\n")[0].trim().slice(0, 100) || "Problem in " + info.app;
-      const body = (note ? note + "\n\n" : "") + "App: " + info.app + "\nDevice: " + $r("device").value + ", " + state.appearance + (state.locale ? ", " + state.locale : "")
-        + "\nScreen: " + frameW + "x" + frameH + "\nReport: " + name + " (attach it here)\n";
-      const href = info.issueUrl.replace("{title}", encodeURIComponent(first)).replace("{body}", encodeURIComponent(body.slice(0, 4000)));
+    if (mine.info && mine.info.issueUrl) {
+      const first = note.split("\n")[0].trim().slice(0, 100) || "Problem in " + mine.info.app;
+      const s = mine.settings;
+      const body = (note ? note + "\n\n" : "") + "App: " + mine.info.app + "\nDevice: " + s.device + ", " + s.appearance + (s.locale ? ", " + s.locale : "")
+        + "\nScreen: " + s.screen.width + "x" + s.screen.height + "\nReport: " + name + " (attach it here)\n";
+      // Every {title} and {body} of the template (split and join: no pattern characters in the replacement are special).
+      const href = mine.info.issueUrl.split("{title}").join(encodeURIComponent(first)).split("{body}").join(encodeURIComponent(body.slice(0, 4000)));
       if (/^https:\/\//.test(href)) {
         if (issueTab) issueTab.location = href;
-        else {
-          const link = document.createElement("a");
-          link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open the issue page";
-          $r("reportHint").append(" · ", link);
-        }
+        const link = document.createElement("a");
+        link.href = href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open the issue page";
+        $r("reportHint").append(" · ", link);
       } else if (issueTab) issueTab.close();
     }
   } catch (e) {
     if (issueTab) try { issueTab.close(); } catch (e2) { /* gone */ }
-    say("could not make the report: " + e);
+    say("could not make the report: " + e.message);
   } finally {
     btn.disabled = false;
   }
@@ -204,7 +212,7 @@ function push(e) {
   if (exchanges.length > 300) exchanges.shift();
   drawRows();
 }
-const fmtBytes = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : n + " B";
+const fmtBytes = n => n < 0 ? "unknown size" : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : n + " B";
 let rowsTimer = 0;
 function drawRows() {
   $r("inspCount").textContent = exchanges.length ? exchanges.length + " request" + (exchanges.length === 1 ? "" : "s") : "none yet";

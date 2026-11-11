@@ -252,6 +252,11 @@ def page_layer(url, token, app, chrome):
         check(not opened or "The%20greeting%20looks%20wrong" in opened[0], "[page] with the note as its title")
     finally:
         proc.terminate()
+        try:
+            proc.wait(10)
+        except Exception:
+            proc.kill()
+            proc.wait()
 
 
 if __name__ == "__main__":

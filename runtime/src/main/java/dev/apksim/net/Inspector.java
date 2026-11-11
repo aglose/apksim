@@ -15,7 +15,6 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Pattern;
 
 /**
  * The network inspector (`--network-inspect`, docs/pr-preview.md "Network inspector"): the app's HTTP(S) exchanges as
@@ -56,7 +55,7 @@ public final class Inspector {
     final String method, pattern, type;
     final int status, latencyMs;
     final byte[] body;
-    final Pattern re;
+    final String[] parts;
     final AtomicInteger hits = new AtomicInteger();
 
     Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body) {
@@ -67,14 +66,24 @@ public final class Inspector {
       this.latencyMs = latencyMs;
       this.type = type;
       this.body = body;
-      // `*` matches anything; a pattern with none matches anywhere in the URL.
-      StringBuilder re = new StringBuilder();
-      String[] parts = pattern.split("\\*", -1);
-      for (int i = 0; i < parts.length; i++) {
-        if (i > 0) re.append(".*");
-        re.append(Pattern.quote(parts[i]));
+      this.parts = pattern.split("\\*", -1);
+    }
+
+    /**
+     * `*` matches anything; a pattern with none matches anywhere in the URL. Parts between the stars are found in order, each
+     * at its first place (linear scans: no backtracking, whatever the pattern, since a tab chooses it).
+     */
+    boolean test(String url) {
+      if (parts.length == 1) return url.contains(pattern);
+      String first = parts[0], last = parts[parts.length - 1];
+      if (!url.startsWith(first) || url.length() < first.length() + last.length() || !url.endsWith(last)) return false;
+      int at = first.length(), end = url.length() - last.length();
+      for (int i = 1; i < parts.length - 1; i++) {
+        int found = parts[i].isEmpty() ? at : url.indexOf(parts[i], at);
+        if (found < 0 || found + parts[i].length() > end) return false;
+        at = found + parts[i].length();
       }
-      this.re = Pattern.compile(parts.length == 1 ? ".*" + re + ".*" : re.toString(), Pattern.DOTALL);
+      return true;
     }
 
     String json() {
@@ -102,7 +111,7 @@ public final class Inspector {
   /** The first rule that takes this request, or null. */
   static Rule match(String method, String url) {
     for (Rule r : rules) {
-      if ((r.method.equals("*") || r.method.equalsIgnoreCase(method)) && r.re.matcher(url).matches()) {
+      if ((r.method.equals("*") || r.method.equalsIgnoreCase(method)) && r.test(url)) {
         r.hits.incrementAndGet();
         return r;
       }
@@ -121,7 +130,8 @@ public final class Inspector {
     long reqBytes = e.reqBody == null ? 0 : e.reqBody.length;
     String cl = e.header(e.reqHeaders, "Content-Length");
     if (e.reqTruncated && cl != null) reqBytes = parse(cl);
-    long respBytes = e.truncated ? parse(e.header(e.respHeaders, "Content-Length")) : e.respBody.length;
+    // A body too big to keep has only its Content-Length to say how big; without one the size is unknown (-1).
+    long respBytes = e.truncated ? (e.header(e.respHeaders, "Content-Length") == null ? -1 : parse(e.header(e.respHeaders, "Content-Length"))) : e.respBody.length;
     String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(e.url) + ",\"status\":" + e.status
         + ",\"ms\":" + (e.timeMs + addedMs) + ",\"reqBytes\":" + reqBytes + ",\"respBytes\":" + respBytes
         + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";

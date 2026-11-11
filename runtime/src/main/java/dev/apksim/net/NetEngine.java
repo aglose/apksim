@@ -686,6 +686,13 @@ final class NetEngine {
         addedMs = 0;
         boolean keep;
         Inspector.Rule rule = Inspector.on ? Inspector.match(req.method, req.url) : null;
+        if (deferred != null && (rule == null || rule.status <= 0)) {
+          // The server is not there (inspected()) and no rule answers this request: the connect's failure, as a proxy says it.
+          cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + deferred.trim() + "\r\n\r\n")
+              .getBytes(StandardCharsets.ISO_8859_1));
+          cout.flush();
+          return;
+        }
         if (rule != null) {
           // The inspector's rule (docs/pr-preview.md): latency first, then its answer, or the server's own.
           ruleId = rule.id;

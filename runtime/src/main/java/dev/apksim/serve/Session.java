@@ -263,6 +263,8 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (serve.inspectNetwork && !serve.beam) cmd.add("--network-inspect");
+    // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
+    if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
     if (serve.moveSharedData) cmd.add("--move-shared-data");
     // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
@@ -366,6 +368,7 @@ final class Session {
         String first = r.readLine();
         if (first == null || !first.equals("ok netwatch")) {
           ws.sendText("n x " + Http.q(String.valueOf(first)));
+          closeQuietly(s);
           return;
         }
         for (String line; (line = r.readLine()) != null; ) {
