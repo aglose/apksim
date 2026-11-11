@@ -1,0 +1,62 @@
+# A pull request's build on an apksim serve, and one comment that links to it (docs/pr-preview.md): the build, the build next
+# to its base with the pixels that differ, and dark-mode and tablet variants. Wraps scripts/pr-preview.py. The server's token is
+# an input to keep in a secret; it goes only to the server and never into the comment or a link.
+name: apksim-preview
+description: Add a pull request's APK to an apksim serve and post one comment with links to try it and to compare it with the base
+inputs:
+  serve-url:
+    description: The apksim serve address the runner reaches (https://sim.example.com)
+    required: true
+  token:
+    description: The server's token (a secret). Never printed, never in the comment or its links.
+    required: false
+    default: ''
+  public-url:
+    description: The address the links use when reviewers reach the server another way (default serve-url)
+    required: false
+    default: ''
+  apk:
+    description: Path of the pull request's APK
+    required: true
+  base-apk:
+    description: Path of the base build's APK (adds the comparison links)
+    required: false
+    default: ''
+  name:
+    description: What the comment calls the build
+    required: false
+    default: ${{ github.event.pull_request.title }}
+  key:
+    description: One comment per key on a pull request (several apps or jobs)
+    required: false
+    default: default
+  ttl:
+    description: Seconds the builds stay on the server (60 to 604800)
+    required: false
+    default: '259200'
+  github-token:
+    description: Token that may comment on the pull request
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        APKSIM_SERVE_TOKEN: ${{ inputs.token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SERVE_URL: ${{ inputs.serve-url }}
+        PUBLIC_URL: ${{ inputs.public-url }}
+        APK: ${{ inputs.apk }}
+        BASE_APK: ${{ inputs.base-apk }}
+        PREVIEW_NAME: ${{ inputs.name }}
+        KEY: ${{ inputs.key }}
+        TTL: ${{ inputs.ttl }}
+        PR: ${{ github.event.pull_request.number }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        args=(--serve "$SERVE_URL" --apk "$APK" --name "$PREVIEW_NAME" --key "$KEY" --ttl "$TTL" --sha "$SHA")
+        [[ -n "$PUBLIC_URL" ]] && args+=(--public-url "$PUBLIC_URL")
+        [[ -n "$BASE_APK" ]] && args+=(--base-apk "$BASE_APK")
+        [[ -n "$PR" ]] && args+=(--repo "$GITHUB_REPOSITORY" --pr "$PR")
+        python3 "${{ github.action_path }}/../../../scripts/pr-preview.py" "${args[@]}"

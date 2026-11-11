@@ -624,6 +624,11 @@ after setStreamVolume, a settings observer, an A2DP profile proxy), one line eac
 (`ci-smoke.sh` checks none does but Bluetooth's, which connects only while Bluetooth is on; `SystemSourcesTest` in a
 test run).
 
+Compare mode and previews (docs/pr-preview.md): `/?compare=A,B` is `serve/compare.html`, two ordinary sessions in one tab
+with every input sent to both and the differing pixels counted in the page (`window.apksimCompare()`); `scripts/pr-preview.py`
+and `.github/actions/preview` put a pull request's build on a serve (with `ttl`, `Catalog.expireAt`) and keep one comment.
+`scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
+
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
 timings, each host's certificate chain; Authorization, Proxy-Authorization, Cookie and Set-Cookie redacted, more with

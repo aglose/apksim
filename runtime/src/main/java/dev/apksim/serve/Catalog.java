@@ -245,11 +245,49 @@ final class Catalog {
     if (!Files.isRegularFile(ref)) return null;
     synchronized (uploadsLock) {
       if (!Files.isRegularFile(ref)) return null;
+      if (expired(id)) {  // a preview build past its time to live (expireAt): gone for new sessions
+        Files.deleteIfExists(ref);
+        Files.deleteIfExists(uploads.resolve(id + ".expires"));
+        return null;
+      }
       List<String> lines = Files.readAllLines(ref);
       if (lines.size() < 2 || !lines.get(0).matches("[0-9a-f]{64}\\.apk")) return null;
       Files.setLastModifiedTime(ref, FileTime.fromMillis(System.currentTimeMillis()));  // in use: keep it
       return new App(id, lines.get(1), uploads.resolve(lines.get(0)), null, true, List.copyOf(lines.subList(2, lines.size())));
     }
+  }
+
+  /** Shortest and longest time to live an added app may be given (`ttl`): a preview build is for hours or days. */
+  static final long TTL_MIN_S = 60, TTL_MAX_S = 7 * 86_400L;
+
+  /**
+   * Gives an added app (an upload's or a URL add's id) a time to live: after `seconds` from now `find` no longer knows
+   * it and the sweep deletes it and, once nothing else names it, its APK, whether it was used meanwhile or not (an
+   * ordinary id lives a day past its last use). Sessions already running on it go on. The deadline is a file beside
+   * the id's, so it survives a restart.
+   */
+  void expireAt(String id, long seconds) throws IOException {
+    if (!id.matches("u[0-9a-f]{32}")) throw new IOException("not an added app");
+    if (seconds < TTL_MIN_S || seconds > TTL_MAX_S) {
+      throw new IOException("\"ttl\" is " + TTL_MIN_S + " to " + TTL_MAX_S + " seconds");
+    }
+    Path tmp = uploads.resolve(id + ".expires.tmp" + Long.toHexString(RANDOM.nextLong()));
+    Files.writeString(tmp, Long.toString(System.currentTimeMillis() + seconds * 1000));
+    Files.move(tmp, uploads.resolve(id + ".expires"), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  /** The id's deadline from {@link #expireAt} in epoch milliseconds, or 0 for none. */
+  long expiresAt(String id) {
+    try {
+      return Long.parseLong(Files.readString(uploads.resolve(id + ".expires")).strip());
+    } catch (IOException | NumberFormatException | java.nio.file.InvalidPathException e) {
+      return 0;
+    }
+  }
+
+  private boolean expired(String id) {
+    long at = expiresAt(id);
+    return at > 0 && at < System.currentTimeMillis();
   }
 
   /**
@@ -710,8 +748,22 @@ final class Catalog {
       java.util.Set<String> used = new java.util.HashSet<>();
       for (Path p : all) {
         String n = p.getFileName().toString();
+        if (n.endsWith(".expires")) {
+          // Past its deadline: the id and its deadline go (an add still downloading has neither ref nor a past deadline).
+          if (expired(n.substring(0, n.length() - ".expires".length()))) {
+            Files.deleteIfExists(uploads.resolve(n.replace(".expires", ".ref")));
+            Files.delete(p);
+          }
+        } else if (n.contains(".expires.tmp") && Files.getLastModifiedTime(p).toMillis() < System.currentTimeMillis() - 3_600_000L) {
+          Files.deleteIfExists(p);
+        }
+      }
+      all.removeIf(p -> !Files.exists(p));
+      for (Path p : all) {
+        String n = p.getFileName().toString();
         if (n.endsWith(".ref")) {
-          if (Files.getLastModifiedTime(p).toMillis() < cutoff) Files.delete(p);
+          // A ttl overrides the day after last use: until its deadline (the loop above) the id stays.
+          if (Files.getLastModifiedTime(p).toMillis() < cutoff && expiresAt(n.substring(0, n.length() - 4)) == 0) Files.delete(p);
           else used.add(Files.readAllLines(p).get(0));
         }
       }
