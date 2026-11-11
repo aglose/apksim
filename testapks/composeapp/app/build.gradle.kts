@@ -98,6 +98,13 @@ dependencies {
   androidTestImplementation(libs.androidx.test.espresso.core)
   androidTestImplementation(libs.androidx.test.uiautomator)
   androidTestImplementation(libs.mockito.android)
+  // Conformance tests (docs/conformance.md): fragments and navigation as the libraries document them.
+  implementation(libs.androidx.fragment.ktx)
+  implementation(libs.androidx.lifecycle.process)
+  implementation(libs.androidx.navigation.fragment.ktx)
+  implementation(libs.androidx.navigation.compose)
+  debugImplementation(libs.androidx.fragment.testing.manifest)
+  androidTestImplementation(libs.androidx.fragment.testing)
 
   // Navigation
   
