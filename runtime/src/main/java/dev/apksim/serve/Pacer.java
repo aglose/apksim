@@ -83,17 +83,30 @@ final class Pacer {
   }
 
   /**
-   * Ack-gap sampling: the smoothed gap given an ack at now that leaves inFlight frames still in flight, with the last
-   * baseline (0: none). Returns the new gap and baseline. The baseline resets when the flight drains, so the time to
-   * the next ack, which is the app's (a still screen) rather than the tab's, is never sampled.
+   * Gaps between acks while another frame was in flight, ms: a ring of the last {@link #GAPS}. Their plain mean is the
+   * tab's time per frame. Not a smoothed average: on a link with delay the acks come in bursts (a window's worth close
+   * together, then a round trip), and smoothing jumped at each long gap, pacing a 20 fps link at ~10 (issue 232).
    */
-  record AckGap(double gapMs, long baselineNanos) {}
+  private static final int GAPS = 16;
+  private final double[] gaps = new double[GAPS];
+  private int gapCount;
+  private long lastAckNanos;
 
-  static AckGap ackGap(double ackGapMs, long lastAckNanos, long now, int inFlight) {
-    if (inFlight > 0 && lastAckNanos != 0) {
-      double gap = (now - lastAckNanos) / 1e6;
-      ackGapMs = ackGapMs < 0 ? gap : ackGapMs + (gap - ackGapMs) * 0.2;
-    }
-    return new AckGap(ackGapMs, inFlight > 0 ? now : 0);
+  /**
+   * An ack arrived at now and inFlight frames are still in flight. The baseline goes when the flight drains, so the
+   * time to the next ack, which is the app's (a still screen) rather than the tab's, is never sampled.
+   */
+  void acked(long now, int inFlight) {
+    if (inFlight > 0 && lastAckNanos != 0) gaps[gapCount++ % GAPS] = (now - lastAckNanos) / 1e6;
+    lastAckNanos = inFlight > 0 ? now : 0;
+  }
+
+  /** The mean of the recent ack gaps in ms, or -1 before there are 4. */
+  double ackGapMs() {
+    int n = Math.min(gapCount, GAPS);
+    if (n < 4) return -1;
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += gaps[i];
+    return sum / n;
   }
 }

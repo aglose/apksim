@@ -3,7 +3,8 @@ package dev.apksim.serve;
 /**
  * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI): a slow tab gets a pace from its measured rate,
  * one drop alone gets none, a too-low pace is raised, easing after a quiet spell, a failed trial restoring the pace that
- * held with a doubling wait (capped), the one-frame window's round-trip fallback, and idle time kept out of the ack gap.
+ * held with a doubling wait (capped), the one-frame window's round-trip fallback, idle time kept out of the ack gap, and bursty acks (a link with delay)
+ * measured at the link's rate.
  * Exits 1 if any check fails.
  */
 public final class PacerCheck {
@@ -21,6 +22,7 @@ public final class PacerCheck {
     easedToNothing();
     oneFrameWindow();
     ackGapIgnoresIdle();
+    burstyAcks();
     if (failures > 0) {
       System.out.println(failures + " pacer check(s) failed");
       System.exit(1);
@@ -96,17 +98,32 @@ public final class PacerCheck {
   }
 
   private static void ackGapIgnoresIdle() {
-    Pacer.AckGap g = new Pacer.AckGap(-1, 0);
+    Pacer p = new Pacer();
     long t = 100 * S;
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, 1);
-    for (int i = 1; i <= 10; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 40 * MS, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "acks 40 ms apart with a frame in flight: a 40 ms gap (" + g.gapMs() + ")");
+    p.acked(t, 1);
+    for (int i = 1; i <= 10; i++) p.acked(t + i * 40 * MS, 1);
+    check(Math.abs(p.ackGapMs() - 40) < 0.5, "acks 40 ms apart with a frame in flight: a 40 ms gap (" + p.ackGapMs() + ")");
     t += 400 * MS;
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, 0);  // the flight drains: a still screen
-    check(g.baselineNanos() == 0, "the baseline goes when the flight drains");
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S, 1);  // 10 s later, motion again
-    check(Math.abs(g.gapMs() - 40) < 0.5, "the 10 s still spell is not sampled (" + g.gapMs() + ")");
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S + 40 * MS, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "sampling resumes from the next ack (" + g.gapMs() + ")");
+    p.acked(t, 0);  // the flight drains: a still screen
+    p.acked(t + 10 * S, 1);  // 10 s later, motion again
+    check(Math.abs(p.ackGapMs() - 40) < 0.5, "the 10 s still spell is not sampled (" + p.ackGapMs() + ")");
+    p.acked(t + 10 * S + 40 * MS, 1);
+    check(Math.abs(p.ackGapMs() - 40) < 0.5, "sampling resumes from the next ack (" + p.ackGapMs() + ")");
+    check(new Pacer().ackGapMs() == -1, "no gap before there are samples");
+  }
+
+  private static void burstyAcks() {
+    // A 200 ms link with 4 frames in flight: acks come 4 at a time, 1 ms apart, then the next 4 a round trip later.
+    Pacer p = new Pacer();
+    long t = 100 * S;
+    p.acked(t, 3);
+    for (int round = 0; round < 6; round++) {
+      long base = t + round * 200 * MS;
+      for (int k = round == 0 ? 1 : 0; k < 4; k++) p.acked(base + k * MS, 3);
+    }
+    double gap = p.ackGapMs();
+    check(gap > 45 && gap < 55, "bursty acks on a 200 ms link with 4 in flight: ~50 ms a frame, the link's rate (" + gap + ")");
+    p.dropped(t + 2 * S, gap);
+    check(p.dropped(t + 2 * S + 100 * MS, gap) <= 60, "so the pace stays near 50 ms, not at a round trip (" + p.paceMs + ")");
   }
 }
