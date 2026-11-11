@@ -42,6 +42,15 @@ class AppCallbacksConformanceTest {
 
   object Survivor : Resumes()
 
+  /** A singleton registered for both callback APIs. */
+  object Both : Resumes(), ComponentCallbacks2 {
+    var app: Application? = null
+    @Volatile var trims = 0
+    override fun onTrimMemory(level: Int) { trims++ }
+    override fun onConfigurationChanged(newConfig: Configuration) {}
+    @Deprecated("ComponentCallbacks") override fun onLowMemory() {}
+  }
+
   object Toggled : Resumes()
   object Late : Resumes() {
     val done = java.util.concurrent.CountDownLatch(1)
@@ -264,5 +273,43 @@ class AppCallbacksConformanceTest {
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       ApplicationProvider.getApplicationContext<Application>().unregisterActivityLifecycleCallbacks(Late)
     }
+  }
+
+  @Test
+  fun l_aSingletonRegistersForBothApis() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      if (Both.app == null) {
+        Both.app = ApplicationProvider.getApplicationContext()
+        Both.app!!.registerActivityLifecycleCallbacks(Both)
+        Both.app!!.registerComponentCallbacks(Both)
+      }
+    }
+  }
+
+  /** In a later test it gets both; unregistered from one API, it still gets the other. */
+  @Test
+  fun m_aLaterTestCallsItThroughBothApis() {
+    assumeTrue(Both.app != null)
+    Both.resumes.set(0)
+    Both.trims = 0
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) }
+    assertTrue("activity callbacks", Both.resumes.get() >= 1)
+    assertEquals("component callbacks", 1, Both.trims)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+      Both.app!!.unregisterComponentCallbacks(Both)
+      app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+    }
+    assertEquals("no more component callbacks", 1, Both.trims)
+    Both.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    assertTrue("activity callbacks go on", Both.resumes.get() >= 1)
+    InstrumentationRegistry.getInstrumentation().runOnMainSync { Both.app!!.unregisterActivityLifecycleCallbacks(Both) }
+    Both.app = null
   }
 }

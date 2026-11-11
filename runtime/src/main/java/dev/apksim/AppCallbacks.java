@@ -57,7 +57,9 @@ final class AppCallbacks {
   /** Who registered a callback: through which Application, during which startup (-1: outside one), from where. */
   private record Registration(Application owner, int startup, String site) {}
 
-  private static final Map<Object, Registration> registrations = Collections.synchronizedMap(new IdentityHashMap<>());
+  /** Per callback API: one object may be registered for both, from different places, and unregistered from one. */
+  private static final Map<Object, Registration> activityRegistrations = Collections.synchronizedMap(new IdentityHashMap<>());
+  private static final Map<Object, Registration> componentRegistrations = Collections.synchronizedMap(new IdentityHashMap<>());
 
   /** At the start of an Application's startup (callApplicationOnCreate, before its providers): it uses the process's lists. */
   static void adopt(Application app) {
@@ -107,40 +109,46 @@ final class AppCallbacks {
     starting = false;
     if (!ON || app == null || app != current || processActivity == null) return;
     int now = startup;
+    Predicate<Object> activityReplaced = replaced(activityRegistrations, app, now);
+    Predicate<Object> componentReplaced = replaced(componentRegistrations, app, now);
+    List<Object> gone = new ArrayList<>();
+    synchronized (processActivity) {
+      for (Object c : processActivity) if (activityReplaced.test(c)) gone.add(c);
+      processActivity.removeIf(c -> containsSame(gone, c));
+    }
+    for (Object c : gone) activityRegistrations.remove(c);
+    List<Object> goneHere = new ArrayList<>();
+    synchronized (lock(processController)) {
+      List<ComponentCallbacks> shared = ReflectionHelpers.getField(processController, "mComponentCallbacks");
+      if (shared != null) {
+        for (Object c : shared) if (componentReplaced.test(c)) goneHere.add(c);
+        shared.removeIf(c -> containsSame(goneHere, c));
+      }
+    }
+    for (Object c : goneHere) componentRegistrations.remove(c);
+  }
+
+  /** Whether a callback of one API is replaced: by a registration from the same call site in this startup. */
+  private static Predicate<Object> replaced(Map<Object, Registration> registrations, Application app, int now) {
     Set<String> sitesNow = new HashSet<>();
     synchronized (registrations) {
       for (Registration r : registrations.values()) {
         if (r.startup() == now && r.site() != null) sitesNow.add(r.site());
       }
     }
-    Predicate<Object> replaced = c -> {
+    return c -> {
       Registration r = registrations.get(c);
       if (r == null) return false;
       if (!fromApk(c.getClass())) return r.owner() != app;
       return r.startup() >= 0 && r.startup() < now && r.site() != null && sitesNow.contains(r.site());
     };
-    List<Object> gone = new ArrayList<>();
-    synchronized (processActivity) {
-      for (Object c : processActivity) if (replaced.test(c)) gone.add(c);
-      processActivity.removeIf(c -> containsSame(gone, c));
-    }
-    synchronized (lock(processController)) {
-      List<ComponentCallbacks> shared = ReflectionHelpers.getField(processController, "mComponentCallbacks");
-      if (shared != null) {
-        List<Object> goneHere = new ArrayList<>();
-        for (Object c : shared) if (replaced.test(c)) goneHere.add(c);
-        shared.removeIf(c -> containsSame(goneHere, c));
-        gone.addAll(goneHere);
-      }
-    }
-    for (Object c : gone) registrations.remove(c);
   }
 
-  static void registered(Application app, Object callback) {
+  static void registered(Map<Object, Registration> registrations, Application app, Object callback) {
     if (ON && callback != null) registrations.put(callback, new Registration(app, starting ? startup : -1, site()));
   }
 
-  static void unregistered(Object callback) {
+  static void unregistered(Map<Object, Registration> registrations, Object callback) {
     if (ON && callback != null) registrations.remove(callback);
   }
 
@@ -188,25 +196,25 @@ final class AppCallbacks {
     @Implementation
     protected void registerActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
       Reflector.reflector(ApplicationReflector.class, self).registerActivityLifecycleCallbacks(callback);
-      if (TestActivities.testRun()) registered(self, callback);
+      if (TestActivities.testRun()) registered(activityRegistrations, self, callback);
     }
 
     @Implementation
     protected void unregisterActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
       Reflector.reflector(ApplicationReflector.class, self).unregisterActivityLifecycleCallbacks(callback);
-      if (TestActivities.testRun()) unregistered(callback);
+      if (TestActivities.testRun()) unregistered(activityRegistrations, callback);
     }
 
     @Implementation
     protected void registerComponentCallbacks(ComponentCallbacks callback) {
       Reflector.reflector(ApplicationReflector.class, self).registerComponentCallbacks(callback);
-      if (TestActivities.testRun()) registered(self, callback);
+      if (TestActivities.testRun()) registered(componentRegistrations, self, callback);
     }
 
     @Implementation
     protected void unregisterComponentCallbacks(ComponentCallbacks callback) {
       Reflector.reflector(ApplicationReflector.class, self).unregisterComponentCallbacks(callback);
-      if (TestActivities.testRun()) unregistered(callback);
+      if (TestActivities.testRun()) unregistered(componentRegistrations, callback);
     }
   }
 
