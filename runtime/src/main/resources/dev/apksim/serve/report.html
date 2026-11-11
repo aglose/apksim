@@ -79,7 +79,8 @@ onText = t => {
     try { sessionInfo(JSON.parse(t.slice(2))); } catch (e) { /* the page's own handler reports it */ }
   } else if (t[0] === "n" && t[1] === " ") { netText(t.slice(2)); return; }
   else if (t.startsWith("r rec: saved ")) { const w = saved; saved = null; if (w) w(t.slice(13).trim()); }
-  else if (t.startsWith("r rec: ") && saved) { const w = saved; saved = null; w(null, t.slice(7)); }
+  // Only an error answers the save: the answer to the `rec on` at the session's start (or any other rec line) may come late.
+  else if (t.startsWith("r rec: error") && saved) { const w = saved; saved = null; w(null, t.slice(7)); }
   baseOnText(t);
 };
 function sessionInfo(i) {

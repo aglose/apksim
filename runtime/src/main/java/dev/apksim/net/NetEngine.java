@@ -1031,6 +1031,8 @@ final class NetEngine {
 
     void add(Recording.Entry e) {
       Inspector.exchange(e, ruleId, addedMs);
+      // Replaying, the recording is the fixture the app is answered from: a rule's answer is shown, never added to it.
+      if (Net.mode == Net.Mode.REPLAY) return;
       Net.recording.add(e);
       recorded.incrementAndGet();
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network record: " + e.status + " " + e.method + " " + e.url);
