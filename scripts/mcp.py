@@ -38,6 +38,16 @@ def log(*a):
     print("[apksim-mcp]", *a, file=sys.stderr, flush=True)
 
 
+# The moment the running tool call must have answered by (None outside one). Every wait for an instance is cut to it,
+# so no call blocks for ever: a hung app, a launch that never gets a frame, a dead control connection.
+DEADLINE = [None]
+LIMITS = {"call": 60, "launch": 150}
+
+
+def left():
+    return None if DEADLINE[0] is None else DEADLINE[0] - time.time()
+
+
 class Fail(Exception):
     """A tool error the agent can act on (isError result)."""
 
@@ -244,16 +254,32 @@ class Instance:
         with self.cv:
             self.cv.notify_all()
 
-    def connect(self, timeout=90):
-        end = time.time() + timeout
+    def connect(self):
         with self.cv:
-            while self.port is None and self.proc.poll() is None and time.time() < end:
+            while self.port is None and self.proc.poll() is None and (left() or 1) > 0:
                 self.cv.wait(0.5)
         if self.port is None:
             tail = "\n".join(self.tail(8))
-            raise Fail("launch failed (exit %s):\n%s" % (self.proc.poll(), tail))
-        self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=60)
+            raise Fail("launch failed (%s):\n%s" % ("exit %s" % self.proc.poll() if self.proc.poll() is not None
+                                                  else "no control port in time", tail))
+        self.reconnect()
+
+    def reconnect(self):
+        self.drop()
+        try:
+            self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        except OSError as e:
+            raise Fail("instance %s: cannot reach its control port: %s" % (self.id, e))
         self.rf = self.sock.makefile("r")
+
+    def drop(self):
+        """Forget the connection: a late answer on it would be read as the next command's."""
+        for c in (self.rf, self.sock):
+            try:
+                c and c.close()
+            except OSError:
+                pass
+        self.sock = self.rf = None
 
     def tail(self, n):
         with self.slock:
@@ -267,28 +293,42 @@ class Instance:
             raise Fail("instance %s has exited (%s): %s" % (self.id, self.proc.poll(), "; ".join(self.tail(3))))
         if "\n" in text or "\r" in text:
             raise Fail("line breaks are not allowed")
+        rem = left()
+        if rem is not None and rem <= 0:
+            raise Fail("timed out: instance %s did not finish in time (the app may be busy or hung): call nodes or quit" % self.id)
+        if self.sock is None:
+            self.reconnect()
         try:
+            self.sock.settimeout(60 if rem is None else max(0.2, min(60, rem)))
             self.sock.sendall((text + "\n").encode())
             r = self.rf.readline()
         except OSError as e:
-            raise Fail("control channel: %s" % e)
+            self.drop()
+            raise Fail("instance %s did not answer %r (%s): the app may be hung; try nodes, or quit and launch again"
+                       % (self.id, text.split()[0], "timed out" if isinstance(e, socket.timeout) else e))
         if not r:
             raise Fail("instance %s closed its control channel" % self.id)
         return r.rstrip("\n")
 
     def close(self):
+        saved, DEADLINE[0] = DEADLINE[0], time.time() + 5
         try:
             if self.alive():
                 self.cmd("quit")
         except Exception:
             pass
+        finally:
+            DEADLINE[0] = saved
         try:
             self.proc.wait(8)
         except Exception:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-            except Exception:
-                pass
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(self.proc.pid, sig)
+                    self.proc.wait(3)
+                    break
+                except Exception:
+                    pass
 
 
 class Dir:
@@ -573,6 +613,8 @@ class Server:
         u = a.get("url", "")
         if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://\S{0,500}$", u):
             raise Fail("url: scheme://... without spaces")
+        if re.match(r"(?i)(file|content|intent|android-app)://", u):
+            raise Fail("url: file, content and intent links are not opened (they name host files or other apps)")
         before = self.prepare(i)
         return self.answer(i, "open " + i.cmd("open " + u), before)
 
@@ -753,11 +795,14 @@ def main():
     ap.add_argument("--apps", action="append", default=[], help="folder APKs may be launched from (repeatable)")
     ap.add_argument("--out", help="output folder for recordings and saved screenshots (default STATE/mcp-out)")
     ap.add_argument("--max", type=int, default=2, help="instances at once")
+    ap.add_argument("--call-timeout", type=int, default=60, help="seconds a tool call may take before it answers with an error")
+    ap.add_argument("--launch-timeout", type=int, default=150, help="the same for launch")
     ap.add_argument("--window", action="store_true", help="let launch open a Mac window on request")
     ap.add_argument("--apksim", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if not args.apps:
         sys.exit("apksim mcp: give at least one --apps FOLDER (APKs are launched only from there)")
+    LIMITS.update(call=args.call_timeout, launch=args.launch_timeout)
     srv = Server(args)
     atexit.register(srv.shutdown)
     for s in (signal.SIGTERM, signal.SIGHUP):
@@ -788,6 +833,7 @@ def main():
         rid, method, p = m.get("id"), m.get("method"), m.get("params") or {}
         if "method" not in m or rid is None:
             continue  # a notification (initialized, cancelled) or a response: nothing to answer
+        DEADLINE[0] = None
         if not isinstance(p, dict) or not isinstance(p.get("_meta") or {}, dict) or not isinstance(
                 p.get("arguments") or {}, dict):
             err(rid, -32602, "params, _meta and arguments must be objects")
@@ -820,6 +866,7 @@ def main():
                 if not fn:
                     err(rid, -32602, "unknown tool " + str(name))
                     continue
+                DEADLINE[0] = time.time() + LIMITS["launch" if name == "launch" else "call"]
                 try:
                     r = fn(a)
                     content = r if isinstance(r, list) else [{"type": "text", "text": r}]

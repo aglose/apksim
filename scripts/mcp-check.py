@@ -7,7 +7,7 @@ test app, and measures an action's answer against a full nodes dump.
 Journey: tap the FAB and read the new count from the answer, rename a trip on Trips, dark appearance, save a recording,
 and the refusals (an APK outside the allowed folders, a launch option off the allow-list, a path in a record name).
 """
-import argparse, json, os, subprocess, sys, tempfile, zipfile
+import argparse, json, os, subprocess, sys, tempfile, time, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 ap = argparse.ArgumentParser()
@@ -142,10 +142,58 @@ check(os.path.exists(path) and zipfile.is_zipfile(path), "recording saved to the
 check(c.ok("activity").endswith("MainActivity"), "activity")
 check("[apksim]" not in c.ok("logcat", lines=5), "logcat tail has app lines only")
 check("not on screen" in c.tool("tap", ref="e999")[0], "stale ref reports itself")
+check(c.tool("open_url", url="file:///etc/hosts")[1].get("isError"), "file: links refused")
 c.ok("quit")
 p.stdin.close()
 p.wait(30)
 check(p.returncode == 0, "server exits cleanly")
+# --- no call blocks for ever: a stand-in launcher whose instance goes quiet (needs the timeouts to pass)
+import signal, textwrap
+FAKE = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import os, socket, sys, threading, time
+    mode = os.environ["FAKE_MODE"]
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8)
+    print("[apksim] control port %d" % srv.getsockname()[1], file=sys.stderr, flush=True)
+    def serve(c):
+        f = c.makefile("rw")
+        for line in f:
+            w = line.split()[0]
+            if mode == "silent" or (mode == "hangtap" and w == "tap"):
+                time.sleep(3600)
+            if w == "quit":
+                f.write("ok\\n"); f.flush(); os._exit(0)
+            f.write({"nodes": '[0,0,10,10] text="Hello" ; ', "activity": "x.Main", "config": "mBounds=Rect(0, 0 - 822, 1782)"}.get(w, "ok") + "\\n"); f.flush()
+    while True:
+        c, _ = srv.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
+""")
+fake = os.path.join(out, "fake-apksim")
+open(fake, "w").write(FAKE)
+os.chmod(fake, 0o755)
+
+
+def stuck(mode, call, launch=4):
+    os.environ["FAKE_MODE"] = mode
+    q = subprocess.Popen([sys.executable, os.path.join(ROOT, "scripts/mcp.py"), "--apps", os.path.dirname(apk), "--out", out,
+                          "--apksim", fake, "--call-timeout", str(call), "--launch-timeout", str(launch)],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    signal.alarm(60)  # without the bound these would wait for ever: the check fails
+    return q, Client(q, True)
+
+
+t0 = time.time()
+q, qc = stuck("silent", 3)
+t, res = qc.tool("launch", apk=apk)
+check(res.get("isError") and time.time() - t0 < 20, "launch whose instance never answers ends in an error (%.0f s)" % (time.time() - t0))
+q.stdin.close(); q.wait(30)
+t0 = time.time()
+q, qc = stuck("hangtap", 3)
+qc.ok("launch", apk=apk)
+t, res = qc.tool("tap", x=5, y=5)
+check(res.get("isError") and "did not answer" in t and time.time() - t0 < 20, "a tap the app never answers ends in an error")
+check("Hello" in qc.ok("nodes"), "the next call works on a new connection")
+q.stdin.close(); q.wait(30)
+signal.alarm(0)
 print("output folder:", sorted(os.listdir(out)))
 print("FAILED: %d" % len(fails) if fails else "all checks passed")
 sys.exit(1 if fails else 0)
