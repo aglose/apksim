@@ -13,7 +13,8 @@ port it prints is {fixture} in the launch options, so one compiled-in backend ad
 Steps run in order. A step is an object mapping roles to a command or a list of commands; roles in one step run at
 the same time and the step ends when all have. "all" sends the commands to every role, "name" labels the step.
 Commands are the control commands (tap, swipe, type, open URL, push ..., settle, shot ..., ...: an answer that says it
-failed fails the step: `error ...`, `unknown command`, `usage:`, tap-text's `not found:`, open's `no activity ...`) plus:
+failed fails the step: `error ...`, `unknown command`, `usage:`, tap-text's `not found:`, open's `no activity ...`,
+key's `unknown key:`, push's `bad JSON:` and `the app has no FCM receiver`) plus:
   wait MS               sleep
   until MS TEXT         `nodes` until TEXT is on screen (an answer received within MS), else fail; `nodes` lists
                         the windows accessibility reports, so not text a dialog covers, as tap-text sees them
@@ -24,12 +25,12 @@ failed fails the step: `error ...`, `unknown command`, `usage:`, tap-text's `not
   quit                  ends the role's instance, which must exit with status 0
 {NAME} is replaced in commands by captured values, --var values, {fixture}, {out}, {role} (this role's name) and
 {port:ROLE} (ROLE's control port). --apk APK replaces every role's APK, --apk ROLE=APK one role's (CI runs a
-scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role. Every role still running at the end is quit and must exit 0 (unless --keep).
+scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role. Every role still running at the end is quit and must exit 0; --keep leaves the roles and the fixture running.
 
 On a failure every running role's screen is saved as DIR/failed-ROLE.png. Writes DIR/result.json (steps, times,
 failure) and prints a line per step. Exits 1 on a failure, 2 on a bad scene file.
 """
-import json, os, queue, re, shutil, subprocess, sys, threading, time
+import json, os, re, shutil, subprocess, sys, threading, time
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS)
@@ -51,8 +52,10 @@ class Failure(Exception):
 
 
 # Answers that mean a command did not do what it was asked: `error ...` (most commands), and the few that answer in
-# their own words (tap-text's target missing, open with no activity for the URL, bad arguments).
-FAILED_ANSWER = re.compile(r"^(error|unknown command|usage:|not found:|no activity( in |$)|no window$)")
+# their own words (tap-text's target missing, open with no activity for the URL, key's unknown name, push's bad JSON
+# or missing FCM receiver, bad arguments).
+FAILED_ANSWER = re.compile(r"^(error|unknown command|unknown key:|usage:|not found:|no activity( in |$)|no window$"
+                           r"|bad JSON:|the app has no FCM receiver)")
 
 
 def failed(answer):
@@ -125,36 +128,28 @@ class Scene:
         if not fx:
             return
         cmd = [self.expand(c) for c in fx["command"]]
-        log = open(os.path.join(self.out, "fixture.log"), "w")
-        self.fixture = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, stdin=subprocess.DEVNULL, text=True,
-                                        cwd=self.out)
+        log_path = os.path.join(self.out, "fixture.log")
+        # Its output goes straight to fixture.log, which is watched for the ready line: nothing is held in memory, a
+        # chatty fixture never blocks on a pipe, and one left running with --keep outlives this runner.
+        with open(log_path, "w") as log:
+            self.fixture = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                            cwd=self.out, env=dict(os.environ, PYTHONUNBUFFERED="1"))
         pattern = re.compile(fx.get("ready", r"ready (\d+)"))
         timeout = float(fx.get("timeout", 30))
-        # Its output is read on a thread of its own (all of it, so a chatty fixture never blocks on a full pipe), and
-        # the wait for the ready line is bounded by the timeout even if the fixture prints nothing at all.
-        lines = queue.Queue()
-
-        def reader():
-            for line in self.fixture.stdout:
-                log.write(line)
-                log.flush()
-                lines.put(line)
-            lines.put(None)
-        threading.Thread(target=reader, daemon=True).start()
         deadline = time.time() + timeout
         while True:
-            try:
-                line = lines.get(timeout=max(0.0, deadline - time.time()))
-            except queue.Empty:
-                break
-            if line is None:
-                break
-            m = pattern.search(line)
+            with open(log_path, errors="replace") as f:
+                m = pattern.search(f.read())
             if m:
                 self.vars["fixture"] = m.group(1) if m.groups() else ""
                 print(f"fixture ready{' on port ' + self.vars['fixture'] if self.vars['fixture'] else ''}")
                 return
-        raise Failure(f"the fixture did not print {pattern.pattern!r} within {timeout:g} s (see {log.name})")
+            if self.fixture.poll() is not None:
+                raise Failure(f"the fixture exited with status {self.fixture.returncode} before printing {pattern.pattern!r}"
+                              f" (see {log_path})")
+            if time.time() > deadline:
+                raise Failure(f"the fixture did not print {pattern.pattern!r} within {timeout:g} s (see {log_path})")
+            time.sleep(0.05)
 
     def launch(self):
         env = dict(os.environ)
@@ -312,7 +307,10 @@ class Scene:
             for t in threads:
                 t.join()
         if self.fixture and self.fixture.poll() is None:
-            end(self.fixture, grace=3)
+            if keep:  # the kept roles still need their backend
+                print(f"fixture left running with the roles: PID {self.fixture.pid}")
+            else:
+                end(self.fixture, grace=3)
         return failures
 
 

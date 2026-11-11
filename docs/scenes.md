@@ -49,7 +49,8 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
   the next step starts when all are done. `all` sends to every role, `name` labels it.
 - **Commands** are the control commands (`tap`, `tap-text`, `swipe`, `type`, `open URL`, `push k=v`, `settle`,
   `shot`, `ble ...`, `network ...`, ...; an answer that says it failed fails the step: `error ...`, `unknown command`,
-  `usage:`, tap-text's `not found:`, open's `no activity ...`), plus:
+  `usage:`, tap-text's `not found:`, open's `no activity ...`, key's `unknown key:`, push's `bad JSON:` and `the app
+  has no FCM receiver`), plus:
 
 | Command | |
 |---|---|
@@ -66,7 +67,8 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
   `{port:ROLE}` (a role's control port, for a step that runs another tool against it).
 - **Output**: a line per step with its time; `result.json` (roles, ready times, ports, steps, failure, peak memory);
   each role's log `ROLE.log`; on a failure every running role's screen as `failed-ROLE.png`. Exit 1 on a failure, 2
-  for a bad scene file. Roles still running at the end are quit and must exit 0 (`--keep` leaves them running).
+  for a bad scene file. Roles still running at the end are quit and must exit 0 (`--keep` leaves them and the fixture running, its PID
+  printed). The fixture's output goes to `fixture.log`, watched for the ready line.
 
 `scene.py` imports `fleet.py`'s instance handling (`Instance`: the port from the log, `ping`, `quit` and the exit
 status), which is why `fleet.py` now runs `main()` only as a script.

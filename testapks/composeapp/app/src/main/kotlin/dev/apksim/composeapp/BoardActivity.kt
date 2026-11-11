@@ -30,7 +30,9 @@ class BoardActivity : Activity() {
   private lateinit var board: TextView
   private lateinit var status: TextView
   private var pings = 0
-  private var resumed = false
+  /** Bumped on every resume and pause: a poll from an earlier resumed spell neither shows nor schedules anything. */
+  private var lifecycle = 0
+  private var nextPoll: Runnable? = null
   private val user get() = intent.data?.getQueryParameter("user") ?: "anon"
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,12 +56,12 @@ class BoardActivity : Activity() {
 
   override fun onResume() {
     super.onResume()
-    resumed = true
-    poll()
+    poll(++lifecycle)
   }
 
   override fun onPause() {
-    resumed = false
+    lifecycle++
+    nextPoll?.let { main.removeCallbacks(it) }  // the next poll only: a post's answer still shows
     super.onPause()
   }
 
@@ -68,8 +70,8 @@ class BoardActivity : Activity() {
     super.onDestroy()
   }
 
-  private fun poll() {
-    if (!resumed || io.isShutdown) return
+  private fun poll(spell: Int) {
+    if (spell != lifecycle || io.isShutdown) return
     io.execute {
       val shown = try {
         val messages = JSONObject(call(Request.Builder().url("$BASE/v1/board"))).getJSONArray("messages")
@@ -82,10 +84,13 @@ class BoardActivity : Activity() {
         "error ${e.javaClass.simpleName}: ${e.message}"
       }
       main.post {
+        if (spell != lifecycle) return@post
         val text = "board: $shown"
         if (board.text.toString() != text) board.text = text  // a still board lets the screen settle
 
-        main.postDelayed({ poll() }, 500)
+        val next = Runnable { poll(spell) }
+        nextPoll = next
+        main.postDelayed(next, 500)
       }
     }
   }
