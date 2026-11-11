@@ -116,6 +116,8 @@ public final class Ble {
     int rxPhy = BluetoothDevice.PHY_LE_1M;
     /** Bumped whenever the link comes or goes: a delayed answer for an older link is dropped (answer). */
     int epoch;
+    /** Bumped by every clientConnect: a direct attempt's 30 s timeout ends only that attempt. */
+    int attempt;
     final Set<Integer> notify = new HashSet<>();
   }
 
@@ -333,7 +335,10 @@ public final class Ble {
     peripherals.put(p.address, p);
     for (Peripheral.Service s : p.services) {
       for (Peripheral.Characteristic c : s.characteristics) {
-        if (c.timeline != null) scheduleTimeline(p, c);
+        if (c.timeline != null) {
+          c.timelineStart = c.valueAt = SystemClock.uptimeMillis();
+          c.ticking = false;
+        }
       }
     }
     for (Scanner s : new ArrayList<>(scanners.values())) if (s.started) sightings(s, p);
@@ -362,17 +367,54 @@ public final class Ble {
     }
   }
 
-  private static void scheduleTimeline(Peripheral p, Peripheral.Characteristic c) {
-    later(c.timelineEveryMs, () -> {
-      if (peripherals.get(p.address) != p) return;
-      if (c.timelineIndex >= c.timeline.size()) {
-        if (!c.timelineLoop) return;
-        c.timelineIndex = 0;
+  /**
+   * A characteristic's value now. A timeline is a function of uptime since the peripheral arrived (step k at
+   * start + k * everyMs), computed when read, so a peripheral nobody listens to posts nothing and an idle screen can
+   * settle; an explicit value (a write, `ble set|notify`) holds until the next step after it.
+   */
+  static byte[] current(Peripheral.Characteristic c) {
+    if (c.timeline == null) return c.value;
+    long ticks = (SystemClock.uptimeMillis() - c.timelineStart) / c.timelineEveryMs;
+    if (ticks <= 0) return c.value;
+    int n = c.timeline.size();
+    long k = c.timelineLoop ? ticks - 1 : Math.min(ticks - 1, n - 1);
+    long stepAt = c.timelineStart + (k + 1) * c.timelineEveryMs;
+    return stepAt > c.valueAt ? c.timeline.get((int) (k % n)) : c.value;
+  }
+
+  static void setValue(Peripheral.Characteristic c, byte[] value) {
+    c.value = value.clone();
+    c.valueAt = SystemClock.uptimeMillis();
+  }
+
+  /** Whether some connected client gets [c]'s notifications: registered for them, and the link's CCC asking. */
+  private static boolean subscribed(Peripheral p, Peripheral.Characteristic c) {
+    Peripheral.Descriptor ccc = null;
+    for (Peripheral.Descriptor d : c.descriptors) if (d.uuid.equals(Peripheral.CCC)) ccc = d;
+    if (ccc == null) return false;
+    byte[] v = linkCcc.getOrDefault(p.address, Map.of()).get(ccc.handle);
+    if (v == null || v.length == 0 || (v[0] & 0x03) == 0) return false;
+    for (Client cl : clients.values()) if (cl.connected && p.address.equals(cl.address) && cl.notify.contains(c.handle)) return true;
+    return false;
+  }
+
+  /** Schedules the next timeline step of each of [p]'s characteristics someone is subscribed to, in phase. */
+  private static void timelines(Peripheral p) {
+    for (Peripheral.Service s : p.services) {
+      for (Peripheral.Characteristic c : s.characteristics) {
+        if (c.timeline == null || c.ticking || !subscribed(p, c)) continue;
+        long now = SystemClock.uptimeMillis();
+        long ticks = (now - c.timelineStart) / c.timelineEveryMs;
+        if (!c.timelineLoop && ticks >= c.timeline.size()) continue;  // the timeline has ended
+        c.ticking = true;
+        later(c.timelineStart + (ticks + 1) * c.timelineEveryMs - now, () -> {
+          c.ticking = false;
+          if (peripherals.get(p.address) != p || !subscribed(p, c)) return;
+          notifyLocked(p, c);
+          timelines(p);
+        });
       }
-      c.value = c.timeline.get(c.timelineIndex++).clone();
-      notifyLocked(p, c);
-      if (c.timelineLoop || c.timelineIndex < c.timeline.size()) scheduleTimeline(p, c);
-    });
+    }
   }
 
   /** The characteristic's value to every client that registered for it on a link whose CCC asks for it. */
@@ -382,7 +424,7 @@ public final class Ble {
     if (ccc == null) return;
     byte[] v = linkCcc.getOrDefault(p.address, Map.of()).get(ccc.handle);
     if (v == null || v.length == 0 || (v[0] & 0x03) == 0) return;
-    byte[] value = c.value.clone();
+    byte[] value = current(c).clone();
     for (Client cl : clients.values()) {
       if (cl.connected && p.address.equals(cl.address) && cl.notify.contains(c.handle)) {
         answer(null, cl, cb -> cb.onNotify(p.address, c.handle, value));
@@ -564,6 +606,7 @@ public final class Ble {
       enforceScan("ScanController startScanForIntent", source);
       synchronized (LOCK) {
         stopScanForIntent(intent, source);
+        if (scanningTooFrequently()) return;  // as a callback scan: nothing starts and nothing is sent
         Scanner s = new Scanner();
         s.id = nextId++;
         s.intent = intent;
@@ -613,6 +656,7 @@ public final class Ble {
     c.epoch++;
     c.mtu = 23;
     c.txPhy = c.rxPhy = BluetoothDevice.PHY_LE_1M;
+    timelines(p);  // a bonded link's CCC survives a reconnect
     answer(p, c, cb -> cb.onClientConnectionState(GATT_SUCCESS, c.id, true, c.address));
   }
 
@@ -669,11 +713,12 @@ public final class Ble {
         c.address = address;
         c.direct = isDirect;
         c.pending = true;
+        int attempt = ++c.attempt;
         tryConnect(c);
         if (c.pending && isDirect) {
           // A direct connection to nothing in range fails after ~30 s with GATT_ERROR (133).
           later(DIRECT_CONNECT_TIMEOUT_MS, () -> {
-            if (clients.get(clientIf) == c && c.pending) {
+            if (clients.get(clientIf) == c && c.attempt == attempt && c.direct && c.pending) {
               c.pending = false;
               answer(null, c, cb -> cb.onClientConnectionState(GATT_ERROR, clientIf, false, address));
             }
@@ -765,7 +810,7 @@ public final class Ble {
         } else if ((ch.properties & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
           answer(p, c, cb -> cb.onCharacteristicRead(address, GATT_READ_NOT_PERMITTED, handle, new byte[0]));
         } else {
-          byte[] v = ch.value.clone();
+          byte[] v = current(ch).clone();
           answer(p, c, cb -> cb.onCharacteristicRead(address, GATT_SUCCESS, handle, v));
         }
       }
@@ -783,7 +828,7 @@ public final class Ble {
         if (ch == null || ch.handle < startHandle || ch.handle > endHandle) {
           answer(p, c, cb -> cb.onCharacteristicRead(address, GATT_INVALID_HANDLE, 0, new byte[0]));
         } else {
-          byte[] v = ch.value.clone();
+          byte[] v = current(ch).clone();
           answer(p, c, cb -> cb.onCharacteristicRead(address, GATT_SUCCESS, ch.handle, v));
         }
       }
@@ -809,7 +854,7 @@ public final class Ble {
           status = GATT_INVALID_ATTRIBUTE_LENGTH;  // one packet: no long write without a response
         } else {
           status = GATT_SUCCESS;
-          ch.value = value.clone();
+          setValue(ch, value);
           ch.writes++;
           ch.lastWritten = value.clone();
         }
@@ -858,6 +903,7 @@ public final class Ble {
               status = GATT_INVALID_ATTRIBUTE_LENGTH;
             } else {
               linkCcc.computeIfAbsent(address, k -> new HashMap<>()).put(handle, value.clone());
+              timelines(p);
             }
           } else {
             d.value = value.clone();
@@ -881,6 +927,8 @@ public final class Ble {
         } else {
           c.notify.remove(handle);
         }
+        Peripheral p = c.address == null ? null : peripherals.get(c.address);
+        if (p != null) timelines(p);
       }
     }
 
@@ -962,8 +1010,10 @@ public final class Ble {
       boolean ok = p != null && p.bondable && p.connectable;
       Devices.bondState(device, BluetoothDevice.BOND_BONDING, BluetoothDevice.BOND_NONE);
       later(p != null ? Math.max(p.latencyMs, 100) : 100, () -> {
-        if (ok) bonded.add(address);
-        Devices.bondState(device, ok ? BluetoothDevice.BOND_BONDED : BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING);
+        // Pairing interrupted (the adapter off, the peripheral gone or replaced) ends unbonded.
+        boolean done = ok && adapterOn && peripherals.get(address) == p;
+        if (done) bonded.add(address);
+        Devices.bondState(device, done ? BluetoothDevice.BOND_BONDED : BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING);
       });
       return true;
     }
@@ -1033,7 +1083,7 @@ public final class Ble {
             Peripheral p = need(a[2]);
             Peripheral.Characteristic c = p.characteristic(Peripheral.uuid(a[3]));
             if (c == null) return "error: " + a[2] + " has no characteristic " + a[3];
-            c.value = Peripheral.hex(a[4]);
+            setValue(c, Peripheral.hex(a[4]));
             if (op.equals("notify")) notifyLocked(p, c);
             return "ok";
           }

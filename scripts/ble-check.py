@@ -5,7 +5,7 @@ Usage: ble-check.py PORT
 Drives a running instance of the test app (822x1782 phone) over its --control port. It adds the heart-rate preset
 (`ble add heart-rate`), grants the screen's permissions, opens apksim://ble and expects the screen to have scanned,
 connected, read the body sensor location ("sensor: chest"), set a 247-byte MTU and shown heart-rate notifications from
-the preset's timeline (one a second). Then: `ble rssi` and the RSSI button, the control-point button (`ble` must show
+the preset's timeline (one a second); first, the idle screen must still `settle` with the peripheral loaded. Then: `ble rssi` and the RSSI button, the control-point button (`ble` must show
 the write), `ble notify` (200 bpm), and `ble disconnect` ("status 19"). It does it again with the callbacks deprecated
 in API 33 (apksim://ble?legacy=1), the peripheral going out of range this time ("status 8"), and removes it.
 Exit 0 when it passes, 1 otherwise. Without apksim's BLE peripherals the screen never finds one.
@@ -57,6 +57,11 @@ def check(sock, legacy):
     name = "deprecated callbacks" if legacy else "API 33 callbacks"
     print(f"-- {name}")
     print("ble add:", send(sock, "ble add heart-rate"))
+    if not legacy:
+        # A peripheral's timeline posts nothing while nobody is subscribed: an idle screen still settles.
+        settled = send(sock, "settle 5000 300", timeout=20)
+        print("settle:", settled)
+        assert settled.startswith("settled"), f"the screen did not settle with a peripheral loaded: {settled}"
     send(sock, "open apksim://ble" + ("?legacy=1" if legacy else ""))
     seen = wait_for(sock, "two notifications", lambda s: notifications(s)[1] >= 2)
     print("screen:", seen)

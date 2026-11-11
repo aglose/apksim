@@ -54,7 +54,9 @@ final class Peripheral {
     int timelineEveryMs;
     List<byte[]> timeline;
     boolean timelineLoop = true;
-    int timelineIndex;
+    long timelineStart;  // uptime the timeline counts from (the peripheral's arrival)
+    long valueAt;  // uptime of the last explicit value (a write, `ble set|notify`): a later timeline step replaces it
+    boolean ticking;  // a timeline step is scheduled (only while a link is subscribed to it)
     int writes;
     byte[] lastWritten;
   }

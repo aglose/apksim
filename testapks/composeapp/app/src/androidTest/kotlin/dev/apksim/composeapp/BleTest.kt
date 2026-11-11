@@ -426,6 +426,54 @@ class BleTest {
   }
 
   @Test
+  fun d_bATimelineIsReadInPhaseWithoutASubscriptionAndAnExplicitValueHoldsUntilTheNextStep() {
+    val file = java.io.File(context.cacheDir, "timeline-peripheral.json")
+    file.writeText("""[{"address": "C0:FF:EE:00:00:61", "name": "counter",
+      "services": [{"uuid": "FFF0", "characteristics": [{"uuid": "FFF1", "properties": ["read"], "value": "00",
+        "timeline": {"everyMs": 1000, "values": ["01", "02", "03"], "loop": false}}]}]}]""")
+    shell("apksim ble add ${file.absolutePath}")
+    val (g, cb) = connected("C0:FF:EE:00:00:61")
+    val c = g.getService(uuid16(0xFFF0)).getCharacteristic(uuid16(0xFFF1))
+    fun read(): String {
+      val n = cb.count("read")
+      g.readCharacteristic(c)
+      waitFor("read ${n + 1}") { cb.count("read") == n + 1 }
+      return cb.events.last { it.startsWith("read") }.split(" ")[1]
+    }
+    val values = mutableListOf(read())
+    pass(1_000); values += read()
+    pass(1_000); values += read()
+    shell("apksim ble set C0:FF:EE:00:00:61 FFF1 09"); values += read()
+    pass(1_000); values += read()
+    pass(3_000); values += read()
+    assertEquals("the initial value, steps by the clock, ble set until the next step, the last step held",
+      listOf("00", "01", "02", "09", "03", "03"), values)
+  }
+
+  @Test
+  fun d_cPairingInterruptedEndsUnbonded() {
+    val file = java.io.File(context.cacheDir, "slow-bond.json")
+    file.writeText("""[{"address": "C0:FF:EE:00:00:71", "latencyMs": 1000}]""")
+    shell("apksim ble add ${file.absolutePath}")
+    val states = Collections.synchronizedList(mutableListOf<Int>())
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, intent: Intent) {
+        states += intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+      }
+    }
+    context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_EXPORTED)
+    val device = adapter.getRemoteDevice("C0:FF:EE:00:00:71")
+    assertTrue(device.createBond())
+    pass(200)
+    shell("apksim ble remove C0:FF:EE:00:00:71")
+    pass(1_200)
+    waitFor("the bond attempt ending") { states.size == 2 }
+    context.unregisterReceiver(receiver)
+    assertEquals(listOf(BluetoothDevice.BOND_BONDING, BluetoothDevice.BOND_NONE), states.toList())
+    assertFalse(adapter.bondedDevices.any { it.address == "C0:FF:EE:00:00:71" })
+  }
+
+  @Test
   fun e_aScanningWithoutBluetoothScanThrows() {
     shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_SCAN}")
     try {
