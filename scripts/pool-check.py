@@ -5,7 +5,7 @@ Usage: pool-check.py APP.apk TEST.apk [--apksim CMD] [--local DIR] [-j N]
 
 Runs the same tests with --isolate twice, the pool on and off, and checks: the same result for every test; with the
 pool on every test ran in a pooled process (JUnit property apksim.pooled) and with it off none did; a pooled process
-honoured the run's -e arguments and apksim options (TestHarnessTest#timezoneIsTheOneAsked with -e timezone and
+honoured the run's -e arguments and apksim options (WallClockTest#timezoneIsTheOneAsked with -e timezone and
 --timezone); a failing test's bundle came from its pooled process and its repro.sh names the test and not --pooled
 (FailureBundleTest#b_composeAssertionFails with -e failOnPurpose true). With --apksim (the Linux image), APP and TEST
 are paths that apksim sees and --local is the folder they are in here (bundles go there). Exits 1 on any problem.
@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = "dev.apksim.composeapp."
-TESTS = [PKG + "ThermalTest", PKG + "TestApkContextTest", PKG + "TestHarnessTest#timezoneIsTheOneAsked",
+TESTS = [PKG + "ThermalTest", PKG + "TestApkContextTest", PKG + "WallClockTest#timezoneIsTheOneAsked",
          PKG + "FailureBundleTest#a_passes", PKG + "FailureBundleTest#b_composeAssertionFails"]
 FAILS = {(PKG + "FailureBundleTest", "b_composeAssertionFails")}
 ZONE = "America/New_York"
@@ -58,6 +58,10 @@ def main():
     problems = []
     on_code, on, xml_dir = run(a, "on", out_local, out_seen)
     off_code, off, _ = run(a, "off", out_local, out_seen)
+    named = {tuple(t.split("#")) for t in TESTS if "#" in t}
+    missing = sorted(f"{c}#{m}" for c, m in named - set(on))
+    if missing:  # (a selector that matches nothing runs nothing, and would check nothing)
+        problems.append(f"no result for {', '.join(missing)}")
     if not on or set(on) != set(off):
         problems.append(f"different tests: on {sorted(on)}, off {sorted(off)}")
     for t in sorted(set(on) & set(off)):
