@@ -30,6 +30,11 @@ import base64, html, json, os, re, shutil, subprocess, sys, time
 ROOT = os.path.abspath(os.path.dirname(os.path.abspath(sys.argv[0])) + "/..")
 
 
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
 def natural(s):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
@@ -54,7 +59,7 @@ def parse(argv):
         else:
             rest.append(x)
     if not rest:
-        sys.exit("bisect-rec.py: no bundle; see --help")
+        die("bisect-rec.py: no bundle; see --help")
     bundle = os.path.abspath(rest[0])
     builds = []
     for b in rest[1:]:
@@ -70,15 +75,19 @@ def parse(argv):
             if not line:
                 continue
             parts = line.split()
-            builds.append({"apk": os.path.normpath(os.path.join(base, parts[0])), "opts": parts[1:]})
+            # A file named in the build's options (--network-trust cert.pem) is relative to the builds file too.
+            opts_ = [os.path.normpath(os.path.join(base, x)) if not x.startswith("-") and os.path.exists(os.path.join(base, x)) else x
+                     for x in parts[1:]]
+            builds.append({"apk": os.path.normpath(os.path.join(base, parts[0])), "opts": opts_, "shown": parts[1:]})
     if len(builds) < 2:
-        sys.exit("bisect-rec.py: give at least two builds, oldest first")
+        die("bisect-rec.py: give at least two builds, oldest first")
     for b in builds:
         if not os.path.isfile(b["apk"]):
-            sys.exit(f"bisect-rec.py: no build at {b['apk']}")
-        b["label"] = os.path.basename(b["apk"]) + ("" if not b["opts"] else " " + " ".join(b["opts"]))
+            die(f"bisect-rec.py: no build at {b['apk']}")
+        shown = b.get("shown", b["opts"])
+        b["label"] = os.path.basename(b["apk"]) + ("" if not shown else " " + " ".join(shown))
     if not os.path.isfile(bundle):
-        sys.exit(f"bisect-rec.py: no bundle at {bundle}")
+        die(f"bisect-rec.py: no bundle at {bundle}")
     return bundle, builds, apksim_opts, opts
 
 
@@ -88,7 +97,20 @@ class Bisect:
         stem = os.path.basename(bundle).rsplit(".apkrec", 1)[0]
         self.out = os.path.abspath(opts["out"] or os.path.join(ROOT, "work", "bisect-" + stem))
         self.image = opts["image"]
-        shutil.rmtree(self.out, ignore_errors=True)
+        self.staged = {}
+        # OUT is ours only if empty or an earlier bisect's: then only what a bisect writes there goes. Anything else in
+        # it (the builds themselves, say) is never deleted.
+        if os.path.isdir(self.out) and os.listdir(self.out) and not os.path.exists(os.path.join(self.out, "bisect.json")):
+            die(f"bisect-rec.py: {self.out} is not empty and not an earlier bisect's output; give another --out")
+        inputs = [bundle] + [b["apk"] for b in builds]
+        for sub in ("runs", "in"):
+            d = os.path.join(self.out, sub)
+            if any(os.path.abspath(f).startswith(d + os.sep) for f in inputs):
+                die(f"bisect-rec.py: an input is inside {d}, which a bisect replaces; move it or give another --out")
+            shutil.rmtree(d, ignore_errors=True)
+        for f in ("bisect.json", "index.html"):
+            if os.path.exists(os.path.join(self.out, f)):
+                os.remove(os.path.join(self.out, f))
         os.makedirs(os.path.join(self.out, "runs"))
         if self.image:
             arch = subprocess.run(["docker", "image", "inspect", "-f", "{{.Architecture}}", self.image],
@@ -97,12 +119,14 @@ class Bisect:
             os.makedirs(os.path.join(self.out, "in"))
 
     def inside(self, path):
-        """A file as the image sees it: copied into OUT/in (once), as /work/in/NAME."""
-        name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(path))
-        dst = os.path.join(self.out, "in", name)
-        if not os.path.exists(dst):
-            shutil.copy(path, dst)
-        return "/work/in/" + name
+        """A file as the image sees it: copied into OUT/in once per source path, under a name of its own (two builds
+        both called app.apk in different folders are two files), as /work/in/NAME."""
+        src = os.path.abspath(path)
+        if src not in self.staged:
+            name = f"{len(self.staged) + 1:02d}-" + re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(src))
+            shutil.copy(src, os.path.join(self.out, "in", name))
+            self.staged[src] = name
+        return "/work/in/" + self.staged[src]
 
     def replay(self, i):
         b = self.builds[i]
@@ -214,7 +238,7 @@ class Bisect:
             mark = " (last good)" if i == self.lo and r == "good" else " (first bad)" if i == self.hi and r == "bad" else ""
             pts = (b.get("report") or {}).get("points", [])
             first = next((p for p in pts if p["diverged"]), None)
-            detail = b.get("why", "")
+            detail = e(b.get("why", ""))
             if first:
                 detail += f": point {first['n']} ({e(first['label'])}), {first['pixels']} pixels"
             elif r == "bad" and b.get("report"):
