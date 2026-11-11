@@ -25,7 +25,8 @@ def run(a, mode, out_local, out_seen):
     xml = os.path.join(out_local, f"pool-{mode}.xml")
     cmd = [sys.executable, os.path.join(HERE, "instrument.py"), a.app, a.test, "--isolate", "-j", str(a.j),
            "--prewarm", mode, "--xml", xml, "-e", "class", ",".join(TESTS), "-e", "timezone", ZONE,
-           "-e", "failOnPurpose", "true", "--bundles", os.path.join(out_seen, f"bundles-{mode}")]
+           "-e", "failOnPurpose", "true", "--bundles", os.path.join(out_seen, f"bundles-{mode}"),
+           "--test-timeout", "300"]  # (a regression must not hold a CI runner for the default 900 s a test)
     if a.apksim:
         cmd += ["--apksim", a.apksim, "--bundles-local", os.path.join(out_local, f"bundles-{mode}")]
     cmd += ["--", "--timezone", ZONE]

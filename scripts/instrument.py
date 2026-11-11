@@ -284,7 +284,7 @@ def spawn(app, test, extra_args, apksim_opts, pooled=False):
         if cid_dir and not STOPPING:  # (a stop's kill may still read it; this script ends with it anyway)
             shutil.rmtree(cid_dir, ignore_errors=True)
 
-    return argparse.Namespace(p=p, kill=kill, err=err, reader=reader, ready=ready, after_exit=after_exit)
+    return argparse.Namespace(p=p, kill=kill, err=err, reader=reader, ready=ready, after_exit=after_exit, pooled=pooled)
 
 
 def hand_over(proc, args):
@@ -330,8 +330,9 @@ class Pool:
         """There are [n] tests to run: so many processes in all, counting those already started."""
         with self.lock:
             self.left = n - self.started
-        if self.left < 0:
-            self.close(-self.left)
+            excess, self.left = max(0, -self.left), max(0, self.left)
+        if excess:
+            self.close(excess)
 
     def take(self):
         """A process for the next test (booting or booted), or None when the pool has none left to give."""
@@ -496,7 +497,7 @@ def apksim(app, test, extra_args, apksim_opts, pool=None, handed=()):
     r.phases = {t: (m[0] - spawned, m[1] - m[0], exited - m[1]) for t, m in marks.items() if m[1] is not None}
     r.timed_out = timed_out[0] if timed_out else None
     r.threads = thread_dump_tests(dump) if dump else ""
-    r.pooled = bool(pool)
+    r.pooled = proc.pooled  # (not when the pool had none left and a cold process ran it)
     return r
 
 
