@@ -8,7 +8,8 @@ A library's androidTest APK instruments itself, so by default it is passed as bo
 targets an app). Here it runs through scripts/instrument.py (JUnit XML in DIR/here.xml); with --emulator the same APK
 is installed on that adb device (`-t`), run with `am instrument -w -r` (DIR/emulator.xml, DIR/emulator.txt for
 the raw output) and uninstalled again. It installs only test packages: a package the device already has is refused,
-so an emulator another session started keeps its apps. --util installs an androidTestUtil APK there for the run
+so an emulator another session started keeps its apps, and the instrumentation's target must be one of the packages
+it installed (a test APK that targets an app the device already has would run against that app's data). --util installs an androidTestUtil APK there for the run
 (the Test Services APK, androidx.test.services, which a device needs for Test Storage), and uninstalls it after. A process that crashes on the device ends `am instrument`;
 the tests it did not reach are run again, one class at a time, so one crash costs only its class's tail.
 Runtime permissions start denied on both sides (apksim's default, an install without -g); --grant-permissions grants
@@ -196,7 +197,11 @@ def run_emulator(a, out):
         insts = {k: v for k, v in instrumentations(serial).items() if k not in have}
         if pkgs[0] not in insts:
             raise SystemExit(f"{pkgs[0]} declares no instrumentation on {serial}")
-        comp = f"{pkgs[0]}/{insts[pkgs[0]][0]}"
+        runner, target = insts[pkgs[0]]
+        if target not in installed_at:
+            # Its tests would run in that app's process and change its data: only an app this run installed may be one.
+            raise SystemExit(f"{pkgs[0]} instruments {target}, which this run did not install: pass it with --app")
+        comp = f"{pkgs[0]}/{runner}"
         with open(os.path.join(out, "emulator.txt"), "w") as raw:
             results, finished = am_instrument(serial, comp, a.e, raw)
             note_run_crash(results, finished, raw)
