@@ -10,6 +10,10 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
 3. The same APK as its own base, launched with a changed Settings value only the slot screen shows, is compared:
    exactly that screen is reported changed, no screen new or gone.
 4. A prepared start (`--setting`, `--sdcard-file`) reaches the screen that shows it.
+5. `--sweep all` on `apksim://faults` (deliberate faults: state kept with `remember`, text that clips at font scale 2,
+   a spinner with no network, a layout that does not mirror, an unlabeled control, in Compose and in Views) reports each,
+   none of the controls beside them that do it right, one failing JUnit case per finding with its path, and exits 0
+   once `testapks/composeapp/crawl-allow-faults.txt` accepts them.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -68,6 +72,7 @@ def main():
     ap.add_argument("--apk", default=DEFAULT_APK)
     ap.add_argument("--out", default=os.path.join(ROOT, "work", "crawl-check"))
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--no-sweep", action="store_true", help="skip the resilience sweep checks")
     ap.add_argument("--docker")
     ap.add_argument("-j", type=int, default=3)
     args, rest = ap.parse_known_args()
@@ -166,8 +171,41 @@ def main():
     check(any(n.startswith("new-instance-") for n in logs) and any(n.startswith("base-instance-") for n in logs),
           "the two builds of a comparison keep separate logs", str(logs[:6]))
 
+    # 6: the resilience sweep, on the screens with deliberate faults
+    secs_e = secs_f = 0
+    if not args.no_sweep:
+        faults = ["--start", "apksim://faults", "--sweep", "all", "-j", str(args.j), "--no-captures", "--stable-ms", "200"]
+        e_dir, f_dir = os.path.join(args.out, "sweep"), os.path.join(args.out, "sweep-allowed")
+        doc5, secs_e, p5 = crawl(args.apk, e_dir, *faults)
+        found = {(f["perturbation"], f["rule"], f["screen"].split("-")[0]): f for f in doc5["findings"] if f["kind"] == "sweep"}
+        want = {("process-death", "state-lost", "FaultsActivity"), ("recreate", "state-lost", "FaultsActivity"),
+                ("rotate", "state-lost", "FaultsActivity"), ("process-death", "state-lost", "FaultsViewsActivity"),
+                ("recreate", "state-lost", "FaultsViewsActivity"), ("rotate", "state-lost", "FaultsViewsActivity"),
+                ("offline", "endless-spinner", "FaultsActivity"), ("rtl", "rtl-not-mirrored", "FaultsActivity"),
+                ("fontscale", "text-cut-off", "FaultsActivity"), ("fontscale", "text-cut-off", "FaultsViewsActivity"),
+                ("dark", "a11y-unlabeled", "FaultsActivity")}
+        check(want <= set(found), "the sweep finds each deliberate fault", f"missing {sorted(want - set(found))}")
+        detail = " | ".join(f["detail"] for f in doc5["findings"] if f["kind"] == "sweep")
+        check("saved: " not in detail and "wraps and always" not in detail and "saved taps" not in detail,
+              "no finding on the controls that do it right (saved state, wrapping text)", detail[:300])
+        check("Boarding gate B12" in detail and "Your table is ready" in detail and "Checked baggage" in detail,
+              "clipped text is found in Compose (ellipsis, fixed height) and in Views")
+        check(p5.returncode == 1, "the run fails on findings", str(p5.returncode))
+        import xml.etree.ElementTree as ET
+        suite = ET.parse(os.path.join(e_dir, "junit.xml")).getroot()
+        failing = [c for c in suite.iter("testcase") if c.find("failure") is not None]
+        n_found = sum(1 for f in doc5["findings"] if f["kind"] == "sweep")
+        check(len(failing) == n_found and n_found >= len(want) and all("restart" in c.find("failure").text for c in failing),
+              "JUnit has a failing case per finding, with the path to reproduce it", f"{len(failing)} failing for {n_found}")
+        allow = os.path.join(ROOT, "testapks/composeapp/crawl-allow-faults.txt")
+        doc6, secs_f, p6 = crawl(args.apk, f_dir, *faults, "--allow", allow, expect=(0,))
+        suite = ET.parse(os.path.join(f_dir, "junit.xml")).getroot()
+        check(p6.returncode == 0 and suite.get("failures") == "0" and int(suite.get("skipped")) == n_found
+              and not doc6["sweep"]["stale"], "an allow-list accepts them: exit 0, the cases skipped, no stale entry",
+              f"exit {p6.returncode}, failures {suite.get('failures')}, skipped {suite.get('skipped')}, stale {doc6['sweep']['stale']}")
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
-          f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s")
+          f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list)")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

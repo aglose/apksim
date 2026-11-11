@@ -14,7 +14,7 @@ import java.util.Map;
  * of `nodes tree` and the "text cut off" lines of `a11y` come from here (scripts/crawl.py's font-scale and locale
  * sweeps read it).
  *
- * Views: the TextView's layout (an ellipsized line, text left after the last line, a line wider or a layout taller than
+ * Views: the TextView's layout (an ellipsized line, text left after the last line, a line (without its trailing spaces) wider or a layout taller than
  * the room inside the view). Compose: the semantics tree's GetTextLayoutResult action, read by reflection (the runtime
  * has no Compose to compile against; a minified app's renamed classes just report nothing): the layout result's
  * hasVisualOverflow, which Compose sets when text is ellipsized or clipped by its constraints. A merged node (a
@@ -45,7 +45,7 @@ final class TextTruncation {
     int room = tv.getWidth() - tv.getTotalPaddingLeft() - tv.getTotalPaddingRight();
     for (int i = 0; i < lines; i++) {
       if (l.getEllipsisCount(i) > 0) return true;
-      if (room > 0 && l.getLineWidth(i) > room + 1) return true;
+      if (room > 0 && l.getLineMax(i) > room + 1) return true;
     }
     if (l.getLineEnd(lines - 1) < text.length()) return true;  // a maxLines limit dropped the rest
     int high = tv.getHeight() - tv.getTotalPaddingTop() - tv.getTotalPaddingBottom();

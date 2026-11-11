@@ -152,3 +152,23 @@ scrolled control.
 - Matrix captures are taken by changing the configuration on the screen reached under the default one, not by
   reaching the screen under the combination: a screen that loses state on a configuration change shows it there.
 
+
+## Resilience sweep (roadmap item 2)
+
+`crawl.py --sweep LIST` (`process-death, recreate, rotate, offline, permission-deny, fontscale[=2.0], rtl[=ar-EG], dark`, or `all`)
+runs each perturbation on every screen reached and judges it. State perturbations compare the screen before and after (structure,
+visible texts, then pixels within `--sweep-pixels`) as reached and after each of the first `--sweep-actions` controls that stay on
+it (a counter). Other rules: `crash`, `endless-spinner` (a ProgressBar still up `--spinner-seconds` after opening with no network,
+and not online), `text-cut-off` (the new `t` flag of `nodes tree` and a line in `a11y`: `TextTruncation`, Views by their layout,
+Compose by the semantics GetTextLayoutResult), `offscreen`, `rtl-not-mirrored` (side-by-side texts keep their order), `a11y-*` (dark).
+Findings go to the HTML report and `OUT/junit.xml` (a failing case per finding with the repro commands); `--allow FILE` accepts
+findings (`RULE SCREEN [TEXT]`, shell patterns; skipped cases, stale entries listed). Exit 1 on any unaccepted finding.
+`apksim://faults` (and `FaultsViewsActivity`) are the test app's deliberate faults; `crawl-check.py` step 5 checks each is found,
+the controls beside them that do it right are not, and the allow-list `testapks/composeapp/crawl-allow-faults.txt` turns the run green.
+
+Measured (test app, low load): the faults screens, 32 cases, 30 s; `crawl-check.py` in full 7 min 25 s (sweep step 66 s). Whole test app
+(15 screens, `all`): 219 cases in 209 s after a 93 s walk.
+
+Known noise, not yet handled: states reached by tapping a dialog open (the dialogs screens, the scrolled Settings variants) report
+"state-lost" because a recreate closes the dialog or scrolls back; a screen whose control's label depends on earlier state ("Italian
+vacation") fails to set up (`replay` finding). Run the sweep on screens without those, or allow-list them.

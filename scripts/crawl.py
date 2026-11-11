@@ -720,7 +720,8 @@ def parse_sweep(spec):
 
 
 def read_allow(path):
-    """Accepted findings: lines of 'RULE SCREEN [DETAIL TEXT]' ('*' for any rule or screen; # starts a comment)."""
+    """Accepted findings: lines of 'RULE SCREEN [DETAIL TEXT]' (RULE and SCREEN are shell patterns, `*` for any; the detail
+    is text the finding must contain; # starts a comment)."""
     rules = []
     if not path:
         return rules
@@ -740,8 +741,10 @@ def read_allow(path):
 
 
 def allowed_by(finding, rules):
+    import fnmatch
     for r in rules:
-        if r["rule"] in ("*", finding["rule"]) and r["screen"] in ("*", finding["screen"]) and r["detail"] in finding["detail"]:
+        if fnmatch.fnmatchcase(finding["rule"], r["rule"]) and fnmatch.fnmatchcase(finding["screen"], r["screen"]) \
+                and r["detail"] in finding["detail"]:
             r["used"] += 1
             return r
     return None
