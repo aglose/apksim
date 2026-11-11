@@ -74,6 +74,20 @@ nav item or list row is one line; more than 30 changes end with a pointer to `no
   may show the text in a field, which the next answer then reports.)
 - Instances use their own data slot (`--data-slots mcp`) and `--fresh`, never the owner's `default`.
 
+## Bounds and what is refused
+
+- Sandbox: every instance is an ordinary launch, so the launcher's `sandbox-exec` profile applies; the server has no way
+  to pass `--no-sandbox`, `--jvm`, `--adb` or `--control-bind`. The only host path a call names is the APK (a file under
+  `--apps` after symlinks are resolved). Screenshot and recording names are made by the server (a recording's optional
+  name is checked against `[A-Za-z0-9._-]`) and written through descriptors opened at start. `--camera` takes `off` or
+  `fake` only (no image path), `--sdcard-file` only inline contents, and `open_url` refuses `file:`, `content:` and
+  `intent:` links.
+- Time: a tool call answers within `--call-timeout` seconds (60; `launch` has `--launch-timeout`, 150), as an `isError`
+  result that says what to try. Each wait on an instance is cut to what is left of that bound; a control connection that
+  times out is dropped, so a late answer cannot be read as the next command's, and the next call opens a new one. A
+  launch that fails or times out stops its process. `scripts/mcp-check.py` runs the server against a stand-in launcher
+  whose instance never answers, and one that answers everything but taps.
+
 ## Check
 
 `scripts/mcp-check.py` (Mac; `APKSIM_STANDBY=0` while others share the machine) speaks both protocol eras to the server
