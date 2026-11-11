@@ -953,7 +953,11 @@ class Sweep:
         if up:
             inst.say("network online")
             inst.reach(screen["path"])
-            if self.spinner(inst) is False:  # a spinner that only offline leaves up
+            online = self.spinner(inst)
+            if online is None:  # the time ran out before the online comparison: the case is not done
+                self.omit("offline", screen)
+                return
+            if online is False:  # a spinner that only offline leaves up
                 self.note("offline", screen, "endless-spinner",
                           f"still a progress indicator {self.args.spinner_seconds:g} s after the screen opened with no network "
                           "(online it goes)", [], pre=["network offline"])
