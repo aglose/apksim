@@ -784,6 +784,7 @@ class Sweep:
         self.dir = os.path.join(ex.out, "sweep")
         self.checked = []   # {"perturbation", "screen", "case"}
         self.omitted = []   # cases the deadline kept from running
+        self.skipped = []   # cases left out on purpose
         self.found = []
         self.lock = threading.Lock()
 
@@ -883,6 +884,9 @@ class Sweep:
     # --- state kept across a configuration change, a rebuild or a rotation
     def roundtrip(self, inst, screen, kind, forward, back):
         for steps in self.states_of(screen):
+            if self.ex.budget.out_of_time():
+                self.omit(kind, screen)
+                break
             label = (" + ".join(steps) or "as reached")
             inst.case = steps
             inst.reach_screen(screen, steps)
@@ -918,19 +922,31 @@ class Sweep:
                 return False
             if time.time() > deadline:
                 return True
+            if self.ex.budget.out_of_time():
+                return None  # the time is up: not an answer
             time.sleep(0.5)
 
     def sw_offline(self, inst, screen, param):
+        opts = self.ex.options
+        if any(o in opts for o in ("--network", "--no-network", "--network-profile")):
+            with self.lock:  # the caller's network rules (replay, a profile, no network) must not be overridden
+                self.skipped.append({"perturbation": "offline", "screen": screen["id"],
+                                     "why": "the launch options restrict the network"})
+            return
         inst.case = []
         self.case("offline", screen, "as reached")
         inst.ensure()  # an earlier case may have ended the app
         inst.say("network offline")
         inst.cmds.append("network offline")
         inst.reach(screen["path"])  # the path with no network, from a fresh start
-        if self.spinner(inst):
+        up = self.spinner(inst)
+        if up is None:
+            self.omit("offline", screen)
+            return
+        if up:
             inst.say("network online")
             inst.reach(screen["path"])
-            if not self.spinner(inst):  # a spinner that only offline leaves up
+            if self.spinner(inst) is False:  # a spinner that only offline leaves up
                 self.note("offline", screen, "endless-spinner",
                           f"still a progress indicator {self.args.spinner_seconds:g} s after the screen opened with no network "
                           "(online it goes)", [], pre=["network offline"])
@@ -940,6 +956,9 @@ class Sweep:
         """`permission deny` answers the requests pending when it runs, so it follows each state: the controls
         tapped there (a camera button) ask, and are told no. Requests a replay raises before that are not answered."""
         for steps in self.states_of(screen):
+            if self.ex.budget.out_of_time():
+                self.omit("permission-deny", screen)
+                break
             inst.case = steps
             inst.reach_screen(screen, steps)
             inst.cmds.append("permission deny")
@@ -1059,6 +1078,9 @@ def junit(path, sweep):
             continue
         done.add(key)
         cases.append(f'<testcase classname={quoteattr("crawl." + c["perturbation"])} name={quoteattr(c["screen"])}/>')
+    for o in sweep.skipped:
+        cases.append(f'<testcase classname={quoteattr("crawl." + o["perturbation"])} name={quoteattr(o["screen"])}>'
+                     f'<skipped message={quoteattr("not run: " + o["why"])}/></testcase>')
     for o in sweep.omitted:
         cases.append(f'<testcase classname={quoteattr("crawl." + o["perturbation"])} name={quoteattr(o["screen"])}>'
                      f'<skipped message="not run: the time ran out"/></testcase>')
@@ -1075,7 +1097,7 @@ def junit(path, sweep):
             cases.append(f'<testcase classname={quoteattr("crawl." + f["perturbation"])} name={quoteattr(name)}>'
                          f'<failure message={quoteattr(f["detail"][:500])} type={quoteattr(f["rule"])}>{escape(body)}</failure></testcase>')
     xml = (f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="crawl-sweep" tests="{len(cases)}" failures="{failures}" '
-           f'skipped="{skipped + len(sweep.omitted)}" time="{sweep.seconds:.1f}">\n' + "\n".join(cases) + "\n</testsuite>\n")
+           f'skipped="{skipped + len(sweep.omitted) + len(sweep.skipped)}" time="{sweep.seconds:.1f}">\n' + "\n".join(cases) + "\n</testsuite>\n")
     with open(path, "w") as fh:
         fh.write(xml)
 
