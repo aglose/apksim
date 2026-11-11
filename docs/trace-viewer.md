@@ -48,7 +48,7 @@ A recording can hold the app's network calls, its logs, its screen and what was 
 blob URL; there is no `innerHTML`, `eval`, or handler built from data. A `<meta>` CSP allows only the page's own script and
 style by SHA-256 hash (`default-src 'none'`; images from `blob:`; `connect-src 'self'` for `rec view`). After editing
 the script or style run `scripts/trace-viewer-check.py --update-csp`; the check (and CI's smoke job, `--csp-only`)
-fails if the hashes are stale. Limits: zip64 is refused; the log's zone is a guess; the page reads the whole `.avi`
+fails if the hashes are stale. Limits: zip64 is refused; the log's zone is a guess; one entry may unpack to at most 512 MB (a zip bomb is refused with a message); the page reads the whole `.avi`
 and `network.har` into memory (a full 64 MB screen ring is the largest part).
 
 ## Check

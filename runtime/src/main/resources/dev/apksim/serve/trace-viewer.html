@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pviF2CevcORWmtF0ox97hvcKfCDf6dLn6VRWsV7Cr6s='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-OOAVzmcItYGP4pDBi9Ikt2u9UMb6au3MEzhBO94Y8kk='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -81,6 +81,7 @@ var $ = function (id) { return document.getElementById(id); };
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function fail(msg) { $('err').textContent = msg; }
 
+var MAX_ENTRY = 512e6; // the most one entry may unpack to (a zip bomb would otherwise fill memory)
 // ---------- zip (central directory, lazy entries, deflate-raw through DecompressionStream) ----------
 function readSlice(file, a, b) { return file.slice(a, b).arrayBuffer(); }
 async function openZip(file) {
@@ -109,8 +110,17 @@ async function openZip(file) {
     var blob = file.slice(start, start + en.csize);
     if (en.method === 0) return new Uint8Array(await blob.arrayBuffer());
     if (en.method !== 8) throw new Error('unsupported compression in ' + name);
-    var s = blob.stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    return new Uint8Array(await new Response(s).arrayBuffer());
+    if (en.usize > MAX_ENTRY) throw new Error(name + ' is ' + Math.round(en.usize / 1e6) + ' MB unpacked, over the ' + MAX_ENTRY / 1e6 + ' MB limit');
+    // the declared size can lie: count what comes out and stop at the limit
+    var rd = blob.stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader(), parts = [], n = 0;
+    for (;;) {
+      var r = await rd.read(); if (r.done) break;
+      n += r.value.length;
+      if (n > MAX_ENTRY) { rd.cancel(); throw new Error(name + ' unpacks past the ' + MAX_ENTRY / 1e6 + ' MB limit'); }
+      parts.push(r.value);
+    }
+    var out = new Uint8Array(n), o = 0; parts.forEach(function (c) { out.set(c, o); o += c.length; });
+    return out;
   };
   zip.text = async function (name) { var b = await zip.bytes(name); return b ? new TextDecoder().decode(b) : null; };
   return zip;
