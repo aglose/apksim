@@ -149,6 +149,18 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   /** Video codecs not yet released, for the `video` control command. */
   private static final Set<Decoder> LIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+  /** The video decoders MediaCodecList advertises, as an app sees them: " name(type)" each, for the `video` command. */
+  static String listedReport() {
+    StringBuilder b = new StringBuilder();
+    for (MediaCodecInfo info : new android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).getCodecInfos()) {
+      if (info.isEncoder()) continue;
+      for (String type : info.getSupportedTypes()) {
+        if (type.startsWith("video/")) b.append(' ').append(info.getName()).append('(').append(type).append(')');
+      }
+    }
+    return b.toString();
+  }
+
   /** Each live video codec's output: the view size it draws at, or the Surface name when no TextureView owns it. */
   static String liveReport() {
     StringBuilder b = new StringBuilder();

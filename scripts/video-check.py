@@ -8,7 +8,7 @@ Linux image has it only when built with VIDEO_DECODERS=h264,hevc), over --contro
    `decodeErrors` stays 0.
 3. With --hevc: the test app's Settings tab, "Play clip" (ExoPlayer, HEVC + AAC): its `clip:` line reads "ended at
    3.0 s" and "video video/hevc" (no AAC decoder on Linux: the audio is not checked). Without it: no HEVC decoder is
-   listed (`selftest DIR/clip.h265` finds none).
+   listed (the `video` command's `listed` part, MediaCodecList's video decoders, has video/avc and no HEVC).
 Exit 1 with the reason on the first failure."""
 import argparse, re, socket, sys, time
 
@@ -64,10 +64,16 @@ cmd("back")
 time.sleep(1)
 
 if not args.hevc:
-    out = cmd(f"selftest {args.clips}/clip.h265")
-    print(f"selftest clip.h265 (no HEVC decoder expected): {out[-120:]}")
-    if "units drawn" in out:
-        fail("an HEVC decoder is listed, but this image should have H.264 only (or pass --hevc): " + out)
+    # What MediaCodecList advertises, as an app sees it: the H.264 decoder and no video/hevc one.
+    m = re.search(r"\| listed(.*?) \|", b_out := cmd("video"))
+    if not m:
+        fail(f"no listed part in: {b_out}")
+    listed = m.group(1).split()
+    print("listed video decoders: " + (" ".join(listed) or "none"))
+    if not any(d.endswith("(video/avc)") for d in listed):
+        fail("no H.264 decoder is listed: " + b_out)
+    if any("hevc" in d.lower() for d in listed):
+        fail("an HEVC decoder is listed, but this image should have H.264 only (or pass --hevc): " + b_out)
     sys.exit(0)
 
 # The Settings tab (bottom bar, phone), scrolled down to the clip player's button.

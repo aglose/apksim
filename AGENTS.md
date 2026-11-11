@@ -790,7 +790,8 @@ every pts leaves once (it labels inputs in decode order). libwebrtc's H.264 stay
 (`VideoToolbox.webrtcAvailable()`), and Linux has no AAC/MP3 decoder or audio output. The build stage runs
 `native/linux/avdecoder_check.c` on `testapks/media-fixture/clip.h264` (B-frames, pts, size, colours, a reset; `.h265`
 too when HEVC is built, else it checks HEVC does not open).
-Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, and each live
+Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, the video decoders
+MediaCodecList lists (`listed`), and each live
 codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
 view to draw to), `webrtclog [info|verbose]`,
 `selftest [file]` (native scaler, colour order; with a `.h264`/`.h265` file MediaCodec onto a Surface, with an ADTS

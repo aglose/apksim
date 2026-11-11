@@ -103,8 +103,16 @@ static int decode(AvDec *d, const uint8_t *all, int (*units)[2], int n, const in
 }
 
 int main(int argc, char **argv) {
+  // --absent h264|h265: the build has no such decoder (0), or has one (1). Asked of libavcodec itself, so a decoding
+  // failure cannot pass for absence.
+  if (argc == 3 && strcmp(argv[1], "--absent") == 0) {
+    if (strcmp(argv[2], "h264") != 0 && strcmp(argv[2], "h265") != 0) return 2;
+    int present = avcodec_find_decoder(strcmp(argv[2], "h265") == 0 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264) != NULL;
+    printf("%s decoder: %s\n", argv[2], present ? "present" : "absent");
+    return present ? 1 : 0;
+  }
   if (argc != 5) {
-    fprintf(stderr, "usage: %s FILE h264|h265 WIDTH HEIGHT\n", argv[0]);
+    fprintf(stderr, "usage: %s FILE h264|h265 WIDTH HEIGHT | --absent h264|h265\n", argv[0]);
     return 2;
   }
   int hevc = strcmp(argv[2], "h265") == 0;

@@ -50,9 +50,10 @@ RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libvtdecoder.so && \
     /tmp/avdecoder_check /tmp/media/clip.h264 h264 640 360 && \
     case ",$VIDEO_DECODERS," in \
       *,hevc,*) /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 ;; \
-      *) ! /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 2>/dev/null ;; \
+      *) /tmp/avdecoder_check --absent h265 ;; \
     esac && \
-    # the check must be able to fail: a wrong size is a failure
+    # the checks must be able to fail: a wrong size is a failure, and H.264 is not absent
+    ! /tmp/avdecoder_check --absent h264 && \
     ! /tmp/avdecoder_check /tmp/media/clip.h264 h264 641 360 2>/dev/null && \
     ! ldd $L | grep -E 'libav|libsw' && \
     ! nm -D --defined-only $L | awk '{print $3}' | grep -vE '^(Java_dev_apksim_video_VideoToolbox_|_init$|_fini$|_edata$|_end$|__bss_start$)' && \

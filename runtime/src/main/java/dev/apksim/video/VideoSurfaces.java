@@ -40,6 +40,7 @@ public final class VideoSurfaces {
     }
     b.append(" | audiotrack opened=").append(ShadowSimAudioTrack.STATS.get(0)).append(" frames=").append(ShadowSimAudioTrack.STATS.get(1))
         .append(" underrunsOfClosed=").append(ShadowSimAudioTrack.STATS.get(2)).append(SimAudio.available() ? "" : " (no sound here)");
+    b.append(" | listed").append(ShadowSimMediaCodec.listedReport());
     b.append(" | codecs").append(ShadowSimMediaCodec.liveReport()).append(" | views");
     for (Entry e : ENTRIES.values()) {
       Bitmap p = e.picture;
