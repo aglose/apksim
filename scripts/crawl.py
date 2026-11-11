@@ -1038,6 +1038,9 @@ class Sweep:
         reply = inst.say("a11y")
         m = re.match(r"\d+ issue\(s\) in \d+ nodes: (.*)", reply)
         if not m:
+            if not reply.startswith("no issues in"):  # the audit did not run: not a pass
+                self.note("dark", screen, "audit-failed", f"the accessibility audit gave: {reply[:200]}", [],
+                          repro_cmds=["appearance dark", "a11y"])
             return
         shot = None
         for issue in m[1].split(" ; "):
