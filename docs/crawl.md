@@ -122,9 +122,15 @@ throughout (up to 60 earlier), so read these as upper bounds; `-j 3`. `scripts/c
 | `--base` (same APK, base launched with a Settings value only the slot screen shows), depth 1 | 5 screens, exactly the slot screen `changed` (46,494 pixels differ), the animating Shader tab not compared | 33 s |
 | a prepared start (`--setting`), depth 0 | the seed is on the screen it reached | 6 s |
 
+In the Linux image (`crawl-check.py --docker IMAGE --quick`, depth 2, the same load; what `scripts/ci-smoke.sh` runs): all
+checks pass; 14 screens and 58 transitions with captures in 145 s, the repeat walk 75 s, the comparison 84 s, the prepared
+start 27 s.
+
 The walk's cost is the replay: reaching a screen is a `restart`, a settle (0.1-0.7 s) and a read of the tree (0.12 s),
 done again for every control, ~1.3 s per transition on one instance and about three times that with other work on the
-machine. A screen that never settles (the Shader tab) costs ~4 s a settle. Before `--max-repeat` and the scroll aliases,
+machine. A screen that never settles (the Shader tab) costs ~4 s a settle. `settle` does not wait for a coroutine's `delay()` or a
+posted Runnable (it looks for work due that can draw, and a delayed load is neither), so a screen is read until two reads
+`--stable-ms` (200) apart agree: the first read of a screen that fills in 100 ms after it opens saw the empty one. Before `--max-repeat` and the scroll aliases,
 a walk of the same app followed a stack of non-modal dialogs and the scrolled Settings tab for 17 screens and 117
 transitions in 289 s. Captures: 15 screens x 4 combinations (phone and tablet, light and dark) took 190 s in the heavy
 load (a `device` switch recreates the activity and lays out a 2560x1600 display), 2 combinations 40 s.
