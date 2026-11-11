@@ -706,17 +706,24 @@ TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
 
 
 def parse_sweep(spec):
-    """'recreate,fontscale=1.5,rtl' (or 'all') -> [(name, parameter)]."""
-    plan = []
+    """'recreate,fontscale=1.5,rtl' (or 'all') -> [(name, parameter)]; a perturbation named twice keeps its last entry."""
+    chosen = {}
     for item in [x for x in (spec or "").split(",") if x]:
         if item == "all":
-            plan += [(n, None) for n in PERTURBATIONS if (n, None) not in plan]
+            for n in PERTURBATIONS:
+                chosen.setdefault(n, None)
             continue
         name, _, param = item.partition("=")
         if name not in PERTURBATIONS:
             fail(f"--sweep: unknown perturbation {name!r} (known: {', '.join(PERTURBATIONS)}, all)")
-        plan.append((name, param or None))
-    return plan
+        if name == "fontscale" and param:
+            try:
+                if float(param) <= 0:
+                    raise ValueError
+            except ValueError:
+                fail(f"--sweep fontscale expects a number above 0, not {param!r}")
+        chosen[name] = param or None
+    return list(chosen.items())
 
 
 def read_allow(path):
@@ -879,7 +886,7 @@ class Sweep:
             return "a switch or checkbox is not in the state it was", None
         if a["settled"] and b["settled"]:
             d = diff_images(inst, os.path.join(self.ex.out, a["shot"]), os.path.join(self.ex.out, b["shot"]), tag,
-                            os.path.join(self.dir, a["shot"].split("/")[1], "diff"), self.args.diff_delta, self.args.sweep_pixels,
+                            os.path.join(self.dir, a["screen"], "diff"), self.args.diff_delta, self.args.sweep_pixels,
                             self.ex.out)
             if d.get("error"):
                 return f"the image comparison failed: {d['error']}", None
@@ -1086,11 +1093,11 @@ def junit(path, sweep):
     """One test case per perturbation and screen checked, passing; one failing case per finding (skipped when allowed)."""
     from xml.sax.saxutils import escape, quoteattr
     cases, failures, skipped = [], 0, 0
-    bad = {(f["perturbation"], f["screen"]) for f in sweep.found if not f["allowed"]}
+    found_keys = {(f["perturbation"], f["screen"]) for f in sweep.found}
     done = set()
     for c in sorted(sweep.checked, key=lambda c: (c["perturbation"], c["screen"], c["case"])):
         key = (c["perturbation"], c["screen"])
-        if key in done or key in {(f["perturbation"], f["screen"]) for f in sweep.found}:
+        if key in done or key in found_keys:
             continue
         done.add(key)
         cases.append(f'<testcase classname={quoteattr("crawl." + c["perturbation"])} name={quoteattr(c["screen"])}/>')

@@ -201,6 +201,9 @@ def main():
         check(len(failing) == n_found and n_found >= len(want) and all("restart" in c.find("failure").text for c in failing),
               "JUnit has a failing case per finding, with the path to reproduce it", f"{len(failing)} failing for {n_found}")
         allow = os.path.join(ROOT, "testapks/composeapp/crawl-allow-faults.txt")
+        if DOCKER:  # the container sees only the mounted folder
+            subprocess.run(["cp", allow, os.path.join(args.out, "allow.txt")], check=True)
+            allow = "/work/allow.txt"
         doc6, secs_f, p6 = crawl(args.apk, f_dir, *faults, "--allow", allow, expect=(0,))
         suite = ET.parse(os.path.join(f_dir, "junit.xml")).getroot()
         check(p6.returncode == 0 and suite.get("failures") == "0" and int(suite.get("skipped")) == n_found
