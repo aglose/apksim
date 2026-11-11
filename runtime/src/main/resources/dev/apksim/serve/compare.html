@@ -183,7 +183,20 @@ class Side {
     else if (kind === "r") log(this.key.toUpperCase() + ": " + body);
     else if (kind === "x") {
       const why = body.charAt(0).toUpperCase() + body.slice(1) + ".";
-      if (/^all \d+ sessions are in use/.test(body)) end("A comparison needs two sessions and the server has no second one free (" + body + ")", this);
+      if (/^all \d+ sessions are in use/.test(body)) {
+        // Our own sessions just closed (Stop and Start, the JPEG fallback) hold their places until their instances have
+        // exited: tried again, a little later each time, as the main page does. Otherwise the server really is full.
+        if (Date.now() - lastOwnClose < 30000 && busyTries < 6 && !ended) {
+          busyTries++;
+          const mine = gen;
+          for (const s of sides) s.close();
+          log("waiting for the previous sessions to end (" + busyTries + ")");
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => { retryTimer = 0; if (gen === mine && !ended) startBoth(true); }, 500 * 2 ** (busyTries - 1));
+          return;
+        }
+        end("A comparison needs two sessions and the server has no second one free (" + body + ")", this);
+      }
       else end(why, this);
     }
   }
@@ -204,11 +217,14 @@ class Side {
     image.close();
     this.send("ack");
     this.frames++;
+    busyTries = 0;
     if (!this.overlay.hidden && !this.overlay.querySelector("button")) this.say(null);
     dirty = true;
   }
   closeDecoder() {
     if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+    // Frames queued in the decoder will never come out: each is acknowledged, or the server counts it in flight for good.
+    for (let i = 0; i < this.decoding.length; i++) this.send("ack");
     this.decoder = null; this.decoding = []; this.needKey = true; this.keyAsked = false;
   }
   lost(why) { log(this.key.toUpperCase() + ": video: " + why); this.closeDecoder(); this.send("key"); this.keyAsked = true; }
@@ -254,9 +270,13 @@ for (const s of sides) {
 }
 
 // ---------------------------------------------------------------- both together
-async function startBoth() {
+let busyTries = 0, retryTimer = 0, lastOwnClose = 0;
+async function startBoth(retry) {
   await codecReady;
+  if (!retry) busyTries = 0;
+  clearTimeout(retryTimer); retryTimer = 0;
   gen++; ended = false;
+  if (A.sock || B.sock) lastOwnClose = Date.now();
   for (const s of sides) s.close();
   $("ovD").hidden = false; $("ovD").textContent = "Waiting for both screens…";
   for (const s of sides) s.open();
@@ -266,6 +286,8 @@ async function startBoth() {
 function end(why, from) {
   if (ended) return;
   ended = true;
+  clearTimeout(retryTimer); retryTimer = 0;
+  lastOwnClose = Date.now();
   log(why);
   for (const s of sides) {
     s.close();

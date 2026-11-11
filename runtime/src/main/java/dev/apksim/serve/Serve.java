@@ -1040,6 +1040,7 @@ public final class Serve {
   /** `GET /api/apps/ID`: an uploaded or added app's state (downloading, ready, failed), for a service that added it. */
   private void appState(String id, OutputStream out) throws IOException {
     Catalog.Download d = catalog.download(id);
+    if (d != null && catalog.expiresAt(id) > 0 && catalog.expiresAt(id) < System.currentTimeMillis()) d = null;  // past its ttl
     if (d != null) {
       StringBuilder b = new StringBuilder("{\"id\":").append(Http.q(id)).append(",\"name\":").append(Http.q(d.app.name()));
       if (Session.appDevice(d.app) != null) b.append(",\"device\":").append(Http.q(Session.appDevice(d.app)));

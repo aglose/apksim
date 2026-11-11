@@ -41,7 +41,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    # A pull request from a fork has no secrets and a read-only token: nothing to add and nothing to post.
+    - if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      shell: bash
       env:
         APKSIM_SERVE_TOKEN: ${{ inputs.token }}
         GITHUB_TOKEN: ${{ inputs.github-token }}

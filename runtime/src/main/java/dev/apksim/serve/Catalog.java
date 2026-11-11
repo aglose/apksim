@@ -237,6 +237,9 @@ final class Catalog {
     if (a != null) return a;
     if (!id.matches("u[0-9a-f]{32}")) return null;
     Download d = downloading.get(id);
+    // Past its time to live (expireAt): unknown to new sessions even while it downloads, or after a failure. The deadline
+    // file stays while a download may still publish its ref (the sweep keeps it), and the ref is deleted below once it has.
+    if (d != null && expired(id)) return null;
     if (d != null) {
       if (!d.done.isDone()) return d.app;
       if (d.done.isCompletedExceptionally()) return d.app;  // file() answers why
@@ -750,7 +753,10 @@ final class Catalog {
         String n = p.getFileName().toString();
         if (n.endsWith(".expires")) {
           // Past its deadline: the id and its deadline go (an add still downloading has neither ref nor a past deadline).
-          if (expired(n.substring(0, n.length() - ".expires".length()))) {
+          String id = n.substring(0, n.length() - ".expires".length());
+          Download dl = downloading.get(id);
+          // Not while its download can still publish a ref: the ref would then have no deadline.
+          if (expired(id) && (dl == null || dl.done.isDone())) {
             Files.deleteIfExists(uploads.resolve(n.replace(".expires", ".ref")));
             Files.delete(p);
           }

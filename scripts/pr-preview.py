@@ -52,7 +52,8 @@ class Serve:
     def call(self, method, path, body=None, headers=None, timeout=600):
         req = urllib.request.Request(self.url + path, data=body, method=method)
         if self.token:
-            req.add_header("Authorization", "Bearer " + self.token)
+            # Not add_header: urllib sends that one on to another origin when it follows a redirect (a proxy's sign-in).
+            req.add_unredirected_header("Authorization", "Bearer " + self.token)
         for k, v in (headers or {}).items():
             req.add_header(k, v)
         try:
@@ -71,7 +72,7 @@ class Serve:
             req.add_header("Content-Length", str(size))
             req.add_header("X-Filename", urllib.parse.quote(os.path.basename(path)))
             if self.token:
-                req.add_header("Authorization", "Bearer " + self.token)
+                req.add_unredirected_header("Authorization", "Bearer " + self.token)
             try:
                 with urllib.request.urlopen(req, timeout=900) as r:
                     return json.loads(r.read().decode())
@@ -148,7 +149,7 @@ class GitHub:
     def call(self, method, path, body=None):
         req = urllib.request.Request(self.api + path, method=method,
                                      data=json.dumps(body).encode() if body is not None else None)
-        req.add_header("Authorization", "Bearer " + self.token)
+        req.add_unredirected_header("Authorization", "Bearer " + self.token)
         req.add_header("Accept", "application/vnd.github+json")
         req.add_header("X-GitHub-Api-Version", "2022-11-28")
         if body is not None:
