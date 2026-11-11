@@ -144,8 +144,20 @@ public class Host {
     controls.showTitle();
     Timing.detail("controls");
 
+    // apksim replay BUNDLE (docs/replay.md): the checkpoint's stack instead of the start activity.
+    Replay replay = Replay.load();
+    Replay.HostSide replaySide = replay == null ? null : replaySide();
     try {
-      start(System.getProperty("apksim.startActivity"), startIntent());
+      if (replay == null) {
+        start(System.getProperty("apksim.startActivity"), startIntent());
+      } else {
+        try {
+          replay.restore(app, stack, controls);
+        } catch (IllegalStateException | java.io.IOException e) {
+          System.err.println("[apksim] replay: cannot start: " + e.getMessage());
+          exit(2, "the replay could not start");
+        }
+      }
     } catch (Throwable crash) {
       Crashes.mainThreadDied(crash);  // returns only with -Dapksim.crashes=log, and no activity started to keep running
       throw crash;
@@ -178,8 +190,10 @@ public class Host {
         // Any other event 7 ms on, not 8: turns at vsyncs come 8.3 ms apart give or take a wakeup's jitter, and at 8 one
         // that came at 7.9 ms skipped its event (a fling's touch phase then missed vsyncs); idle turns are 2 ms polls,
         // which reach 8 ms either way.
-        if (start - lastInput >= (OFF_VSYNC_FRAMES ? 8_000_000L : drag != null ? 4_000_000L : 7_000_000L)) {
-          SimWindow.Event e = nextInput(start);
+        // A replayed event goes out at its recorded time, ahead of the spacing below (the recording kept its own).
+        SimWindow.Event replayed = replay != null ? replay.next(!firstFrame, replaySide) : null;
+        if (replayed != null || start - lastInput >= (OFF_VSYNC_FRAMES ? 8_000_000L : drag != null ? 4_000_000L : 7_000_000L)) {
+          SimWindow.Event e = replayed != null ? replayed : nextInput(start);
           if (e != null) {
             lastInput = start;
             if (e.type() == SimWindow.COMMAND) {
@@ -1375,6 +1389,42 @@ public class Host {
     hw.resize(w, h, actualSize);
   }
 
+  /** What a replay uses of the Host: commands, the latest frame, the frame count, the exit. */
+  private Replay.HostSide replaySide() {
+    return new Replay.HostSide() {
+      @Override
+      public String run(String[] command) throws Exception {
+        return runCommand(command);
+      }
+
+      @Override
+      public Bitmap screen() {
+        Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        boolean[] got = {false};
+        hw.withLatestFrame(pixels -> {
+          if (pixels.capacity() < w * h * 4) return;
+          pixels.rewind();
+          b.copyPixelsFromBuffer(pixels);
+          pixels.rewind();
+          got[0] = true;
+        });
+        if (got[0]) return b;
+        b.recycle();
+        return null;
+      }
+
+      @Override
+      public long frames() {
+        return frames;
+      }
+
+      @Override
+      public void exit(int code, String why) {
+        Host.exit(code, why);
+      }
+    };
+  }
+
   /**
    * {@code display}: as a device's screencap, with the drawn system UI (keyboard, bars) over the app, if there is a window.
    * The bitmap is made for the shot and freed after it: kept for the life of the instance it held a display's worth of
@@ -1508,6 +1558,9 @@ public class Host {
     switch (a[0]) {
       case "rec" -> {
         return recorder.command(a);
+      }
+      case "replay" -> {
+        return Replay.commandNow();
       }
       case "tap" -> {
         float x = Float.parseFloat(a[1]);

@@ -124,6 +124,11 @@ final class Crashes {
       // the crash is in the log either way
     }
     try {
+      Replay.crashed(lastCrash);  // apksim replay's report says where
+    } catch (Throwable ignored) {
+      // the crash is in the log either way
+    }
+    try {
       if (failCleanupForTest) throw new IllegalStateException("apksim.crashTest.failCleanup");
       ClassCache.flush();
     } catch (Throwable ignored) {

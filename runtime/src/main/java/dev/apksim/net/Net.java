@@ -58,6 +58,11 @@ public final class Net {
   static Set<String> redact = new HashSet<>(Set.of("authorization", "proxy-authorization", "cookie", "set-cookie"));
   static boolean failUnmatched = true;
   static boolean recordedTiming;
+  /**
+   * Whether a replayed answer carries `X-Apksim-Replay: recorded` (the default). `apksim replay` turns it off
+   * (`--network-replay-mark off`): the app gets the answers as it got them while recording (docs/replay.md).
+   */
+  static boolean replayMark = true;
   static Path trust;
   /** Sockets this redirected to the engine, which FakeTlsSocket may wrap. */
   private static final Set<Socket> redirected = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
@@ -114,6 +119,7 @@ public final class Net {
       }
       failUnmatched = !"respond".equals(System.getProperty("apksim.networkUnmatched", "fail"));
       recordedTiming = "recorded".equals(System.getProperty("apksim.networkReplayTiming", "none"));
+      replayMark = !"off".equals(System.getProperty("apksim.networkReplayMark", "on"));
       if (profile != null) launchConditions = Conditions.parse(profile);
       conditions = launchConditions;
       if (spec != null) {

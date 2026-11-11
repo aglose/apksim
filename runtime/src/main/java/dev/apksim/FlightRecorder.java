@@ -1223,6 +1223,20 @@ final class FlightRecorder {
     device.put("height", dm.heightPixels);
     device.put("density", dm.density);
     device.put("fontScale", app.getResources().getConfiguration().fontScale);
+    // What `apksim replay` launches with (docs/replay.md): the device preset and its rotation, the zone, the animator scale.
+    Device d = Device.current();
+    device.put("name", d.name());
+    device.put("widthDp", d.widthDp());
+    device.put("heightDp", d.heightDp());
+    try {
+      device.put("rotation", app.getSystemService(android.view.WindowManager.class).getDefaultDisplay().getRotation());
+    } catch (RuntimeException e) {
+      // without it
+    }
+    device.put("timezone", java.util.TimeZone.getDefault().getID());
+    device.put("animScale", android.animation.ValueAnimator.getDurationScale());
+    String features = System.getProperty("apksim.features");  // --feature: part of the device the app saw
+    if (features != null && !features.isEmpty()) device.put("features", List.of(features.split(",")));
     try {
       device.put("qualifiers", org.robolectric.RuntimeEnvironment.getQualifiers());
     } catch (RuntimeException e) {
@@ -1253,7 +1267,10 @@ final class FlightRecorder {
       // not known
     }
     String apk = System.getProperty("apksim.apk");
-    if (apk != null) m.put("apk", Path.of(apk).getFileName().toString());
+    if (apk != null) {
+      m.put("apk", Path.of(apk).getFileName().toString());
+      m.put("apkPath", Path.of(apk).toAbsolutePath().toString());  // where `apksim replay` looks for it first
+    }
     Map<String, Object> window = new LinkedHashMap<>();
     window.put("from", from);
     window.put("to", to);
@@ -1312,6 +1329,10 @@ final class FlightRecorder {
         } catch (IOException e) {
           // without it
         }
+        // Who signed it: `apksim replay --apk` takes another build only from the same signer, as an update keeping the
+        // app's data must be (ApkSigners, as apksim beam's data from another build).
+        String signers = signers(Path.of(apk));
+        if (signers != null) manifest.put("apkSigners", signers);
       }
       StringBuilder in = new StringBuilder();
       for (Ring.Item<Map<String, Object>> e : events) in.append(JsonLine.write(e.value())).append('\n');
@@ -1408,6 +1429,25 @@ final class FlightRecorder {
     z.putNextEntry(new ZipEntry(name));
     z.write(b);
     z.closeEntry();
+  }
+
+  private static volatile String signersOf;
+  private static volatile String signersValue;
+
+  /** The APK's verified signers (scheme and certificate digests), once per APK and process; null if unsigned. */
+  private static String signers(Path apk) {
+    String key = apk.toAbsolutePath().toString();
+    if (key.equals(signersOf)) return signersValue;
+    String v;
+    try {
+      dev.apksim.serve.ApkSigners.Signers s = dev.apksim.serve.ApkSigners.of(apk);
+      v = s.scheme() + ":" + String.join(",", s.certs());
+    } catch (IOException | RuntimeException e) {
+      v = null;
+    }
+    signersValue = v;
+    signersOf = key;
+    return v;
   }
 
   private static String sha256(Path p) throws IOException {

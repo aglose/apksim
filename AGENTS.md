@@ -213,6 +213,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     It replaces the app's data, /sdcard files and Settings values there, so it stops without `--yes` and backs the
     app's data up first (`--backup-dir`, `--no-backup`); `--dry-run` prints the plan and touches nothing. Only run
     against apksim's own adb device so far, not a phone or emulator.
+  - `ReplayPlan`, `Replay`: `apksim replay BUNDLE` (docs/replay.md): the checkpoint's slot, device and stack, `input.jsonl` fed to
+    the Host loop at its offsets, the HAR answering, frames compared; exit 0/3 (diverged)/10; `scripts/replay-check.py`.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.

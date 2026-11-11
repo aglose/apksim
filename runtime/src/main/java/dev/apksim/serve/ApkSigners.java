@@ -39,7 +39,7 @@ import java.util.jar.JarFile;
  * v1: the JDK's verified JAR reading (every entry's digest against the signed manifest, each signature block against
  * its signer's certificate), and every entry outside META-INF must be signed.
  */
-final class ApkSigners {
+public final class ApkSigners {
   private static final int V2 = 0x7109871a, V3 = 0xf05368c0;
   /** The API level a v3 signer must cover (apksim runs every app as API 36). */
   static final int SDK = 36;
@@ -50,10 +50,10 @@ final class ApkSigners {
   private ApkSigners() {}
 
   /** The signers' certificate digests (sorted, hex), and the scheme they came from ("v3", "v2", "v1"). */
-  record Signers(String scheme, List<String> certs) {}
+  public record Signers(String scheme, List<String> certs) {}
 
   /** The verified signers of this APK, or throws why there are none (unsigned, or a signature that does not verify). */
-  static Signers of(Path apk) throws IOException {
+  public static Signers of(Path apk) throws IOException {
     try (FileChannel ch = FileChannel.open(apk, StandardOpenOption.READ)) {
       Layout l = layout(ch);
       if (l.block != null) {

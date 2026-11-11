@@ -1,11 +1,12 @@
 # Flight recorder: the last N seconds, saved as a shareable bundle
 
 A tester finds a bug, saves what the device did over the last minute or two, and sends the file to an engineer. The
-engineer sees what happened (the screen as a movie, the input, logcat, network calls, database calls) and, once
-replay exists, starts the app from a checkpoint just before the bug and carries on using it from there.
+engineer sees what happened (the screen as a movie, the input, logcat, network calls, database calls) and replays it:
+starts the app from a checkpoint just before the bug and carries on using it from there.
 
 This page covers the recording side, which is built: channels you switch on and off while the app runs, checkpoints,
-and the saved bundle. Replay on a device over adb exists (`scripts/replay-adb.py`); replay in apksim is the next step ("Replay: the plan" below).
+and the saved bundle. Replay in apksim is `apksim replay BUNDLE` ([replay.md](replay.md)); on a device over adb,
+`scripts/replay-adb.py` (below).
 
 ## Turning it on
 
@@ -152,7 +153,7 @@ logs. Treat a bundle from a signed-in session like the device itself.
 
 ## Limits
 
-- Replay is not built yet (below).
+- Replay is [replay.md](replay.md)'s.
 - Text that reaches the app without passing through input dispatch (an accessibility `setText`, autofill) is not in
   the input journal; its effects are in the checkpoints that follow.
 - Pasted characters are kept only as placeholders, so a replay pastes something else.
@@ -191,26 +192,13 @@ Beam sessions record `input` by default now (`apksim beam config rec input|all|o
 start), so a session nobody planned to replay has something to `rec save`. An app's own launch options that name
 `--rec` win.
 
-## Replay: the plan
+## Replay in apksim
 
-`apksim --replay BUNDLE APK`: same APK (checked against `apkSha256`), then:
-
-1. Put the device back: the checkpoint's qualifiers, then `SlotPack.unpack` of `data.zip` into a fresh slot (`--fresh`
-   semantics, without the erase).
-2. Rebuild the stack from `state.bin`, as `process-death` does in-process (`DeviceControls.rebuildFromSavedState`):
-   each activity built with its intent, then `create(bundle).start().restoreInstanceState(bundle).postCreate(bundle)`,
-   the top one resumed.
-3. Network from `network.har` (`--network replay`, timing `recorded`), and the wall clock set to the checkpoint's
-   (`--clock`).
-4. Re-inject `input.jsonl` at the recorded uptime offsets from the checkpoint, through the same `pendingScript` queue
-   that `--control` input uses. Device commands run as commands. Redacted characters are typed as a placeholder.
-5. Hand over: at the end of the journal the network switches from replay to live (a new `--network-unmatched live`
-   policy: answer from the HAR where it matches, else go out), and the person replaying has the app.
-
-What makes a replay drift is thread timing (coroutines on IO dispatchers, races between workers), state held only in
-memory (a checkpoint keeps what `onSaveInstanceState` keeps, as process death does), and servers whose answers
-depend on time. Two things keep that in check: replaying a short tail (seconds, not minutes) and comparing frames
-against `screen.avi` to say where the replay diverged.
+Built: `apksim replay BUNDLE.apkrec` ([replay.md](replay.md)) restores the checkpoint's data and stack, plays
+`input.jsonl` at its offsets through the Host's input path with the network answered from `network.har`, and
+reports where the screen first differed from the recorded frames. For it, a checkpoint's device now also names the
+device preset, its rotation, the time zone, the animator scale and the launch's `--feature` flags, and the manifest
+the APK's path (`apkPath`) and signers (`apkSigners`).
 
 ## Checks
 
