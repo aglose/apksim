@@ -824,11 +824,11 @@ class Sweep:
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
-                for undo in ("network online",):  # no `permission reset`: it would take a --permissions grant away too
+                if kind == "offline":  # only this one changed the network; `network online` elsewhere would override a launch profile
                     try:
-                        inst.send(undo)
+                        inst.send("network online")
                     except (snapshot.Closed, OSError, ValueError, AttributeError):
-                        break
+                        pass
 
     def omit(self, kind, screen):
         with self.lock:
@@ -920,6 +920,7 @@ class Sweep:
     def sw_offline(self, inst, screen, param):
         inst.case = []
         self.case("offline", screen, "as reached")
+        inst.ensure()  # an earlier case may have ended the app
         inst.say("network offline")
         inst.cmds.append("network offline")
         inst.reach(screen["path"])  # the path with no network, from a fresh start
