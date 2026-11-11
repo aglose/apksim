@@ -824,7 +824,7 @@ class Sweep:
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
-                for undo in ("network online", "permission reset"):
+                for undo in ("network online",):  # no `permission reset`: it would take a --permissions grant away too
                     try:
                         inst.send(undo)
                     except (snapshot.Closed, OSError, ValueError, AttributeError):
@@ -871,6 +871,8 @@ class Sweep:
             d = diff_images(inst, os.path.join(self.ex.out, a["shot"]), os.path.join(self.ex.out, b["shot"]), tag,
                             os.path.join(self.dir, a["shot"].split("/")[1], "diff"), self.args.diff_delta, self.args.sweep_pixels,
                             self.ex.out)
+            if d.get("error"):
+                return f"the image comparison failed: {d['error']}", None
             if d.get("differs"):
                 return f"it looks different: {d['pixels']} pixels differ", d.get("map")
         return None, None
