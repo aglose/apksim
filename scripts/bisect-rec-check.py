@@ -65,16 +65,30 @@ def record(a):
         p = subprocess.Popen([os.path.join(ROOT, "apksim"), "--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",
                               "--control", "auto", a.app], stdout=open(log, "w"), stderr=subprocess.STDOUT,
                              env=dict(os.environ, APKSIM_STANDBY="0"))
-        port = None
-        for _ in range(1200):
-            m = re.search(r"\[apksim\] control port (\d+)", open(log).read())
-            if m:
-                port = int(m.group(1))
-                break
-            time.sleep(0.1)
-        if port is None:
-            raise SystemExit("no control port: " + open(log).read()[-2000:])
+        port = None  # read from its log below, inside the cleanup
         target = bundle
+    try:
+        return record_session(a, p, port, target, bundle)
+    finally:
+        # Whatever happened above, the recording's process or container does not outlive this check.
+        if p.poll() is None:
+            p.kill()
+        if a.image:
+            subprocess.run(["docker", "rm", "-f", "bisectcheck-rec"], capture_output=True)
+
+
+def record_session(a, p, port, target, bundle):
+    log = os.path.join(a.out, "record.log")
+    for _ in range(1200 if port is None else 0):
+        with open(log) as f:
+            m = re.search(r"\[apksim\] control port (\d+)", f.read())
+        if m:
+            port = int(m.group(1))
+            break
+        time.sleep(0.1)
+    if port is None:
+        with open(log) as f:
+            raise SystemExit("no control port: " + f.read()[-2000:])
     d = drive(port)
     d("settle 20000")
     d("tap 300 1690")
@@ -127,7 +141,7 @@ def main():
     a = ap.parse_args()
     a.out = os.path.abspath(a.out)
     for f in [a.app, a.bundle, a.changed]:
-        if f and os.path.abspath(f).startswith(a.out + os.sep):
+        if f and os.path.realpath(f).startswith(os.path.realpath(a.out) + os.sep):
             sys.exit(f"bisect-rec-check: {f} is inside OUT ({a.out}), which is emptied first; pass another OUT")
     shutil.rmtree(a.out, ignore_errors=True)
     os.makedirs(a.out)

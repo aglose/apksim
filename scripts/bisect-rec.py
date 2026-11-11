@@ -88,6 +88,12 @@ def parse(argv):
         b["label"] = os.path.basename(b["apk"]) + ("" if not shown else " " + " ".join(shown))
     if not os.path.isfile(bundle):
         die(f"bisect-rec.py: no bundle at {bundle}")
+    # A replay that keeps its app up for a person (--control) never ends, and a bisect waits for each to end.
+    for x in apksim_opts + [o for b in builds for o in b["opts"]]:
+        if x == "--control" or x.startswith("--control="):
+            die("bisect-rec.py: --control would keep each replay running; leave it out")
+    opts["inputs"] = [bundle] + [b["apk"] for b in builds] + ([opts["builds_file"]] if opts["builds_file"] else []) \
+        + [x for x in apksim_opts + [o for b in builds for o in b["opts"]] if not x.startswith("-") and os.path.isfile(x)]
     return bundle, builds, apksim_opts, opts
 
 
@@ -102,12 +108,18 @@ class Bisect:
         # it (the builds themselves, say) is never deleted.
         if os.path.isdir(self.out) and os.listdir(self.out) and not os.path.exists(os.path.join(self.out, "bisect.json")):
             die(f"bisect-rec.py: {self.out} is not empty and not an earlier bisect's output; give another --out")
-        inputs = [bundle] + [b["apk"] for b in builds]
+        # Every input (the bundle, the builds, a builds file, files named in options), through links, checked before
+        # anything is deleted: none may be in what a bisect replaces.
+        real_out = os.path.realpath(self.out)
+        replaced = [os.path.join(real_out, "runs"), os.path.join(real_out, "in"),
+                    os.path.join(real_out, "bisect.json"), os.path.join(real_out, "index.html")]
+        for f in opts.get("inputs", []):
+            r = os.path.realpath(f)
+            if any(r == d or r.startswith(d + os.sep) for d in replaced):
+                die(f"bisect-rec.py: {f} is inside {self.out}'s runs/ or in/ (or is its report), which a bisect replaces;"
+                    " move it or give another --out")
         for sub in ("runs", "in"):
-            d = os.path.join(self.out, sub)
-            if any(os.path.abspath(f).startswith(d + os.sep) for f in inputs):
-                die(f"bisect-rec.py: an input is inside {d}, which a bisect replaces; move it or give another --out")
-            shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(os.path.join(self.out, sub), ignore_errors=True)
         for f in ("bisect.json", "index.html"):
             if os.path.exists(os.path.join(self.out, f)):
                 os.remove(os.path.join(self.out, f))
@@ -151,8 +163,13 @@ class Bisect:
         text = open(os.path.join(rundir, "replay.log"), errors="replace").read()
         rep = os.path.join(rundir, "report.json")
         b["report"] = json.load(open(rep)) if os.path.exists(rep) else None
-        if code == 0:
+        rep_state = (b["report"] or {}).get("result")
+        if code == 0 and rep_state == "matched":
             b["result"] = "good"
+        elif code == 0:
+            # Ended before its result (the app exited by itself, the last activity finished): not evidence either way.
+            b["result"] = "skipped"
+            b["why"] = f"the replay ended before its result (report: {rep_state or 'none'})"
         elif code in (3, 10):
             b["result"] = "bad"
             b["why"] = "crashed" if code == 10 else "diverged"
@@ -182,6 +199,7 @@ class Bisect:
             verdict = "no build could replay the recording"
         elif self.builds[lo]["result"] == "bad":
             verdict = f"the oldest build that replays, {self.builds[lo]['label']}, already diverges"
+            hi = None  # no good build before it: nothing to call the first bad one
         elif hi is None or self.builds[hi]["result"] == "good":
             verdict = "no build diverges"
         else:
