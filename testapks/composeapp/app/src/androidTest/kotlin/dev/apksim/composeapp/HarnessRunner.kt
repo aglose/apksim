@@ -31,9 +31,34 @@ class HarnessRunner : AndroidJUnitRunner() {
 
 /** The test Application HarnessRunner asks for: the app's own, with a test's additions. */
 class HarnessTestApplication : ComposeApp() {
+  // Shapes AppCallbacksConformanceTest checks: a register method that forwards to super, a listener registered in
+  // attachBaseContext, and one object every onCreate registers (on a device each runs once, on one Application).
+  override fun registerActivityLifecycleCallbacks(callback: ActivityLifecycleCallbacks) =
+    super.registerActivityLifecycleCallbacks(callback)
+
+  override fun attachBaseContext(base: android.content.Context) {
+    super.attachBaseContext(base)
+    early += EarlyListener().also { registerActivityLifecycleCallbacks(it) }
+  }
+
+  /** Counts resumes. */
+  open class EarlyListener : ActivityLifecycleCallbacks {
+    val resumes = java.util.concurrent.atomic.AtomicInteger()
+    override fun onActivityResumed(activity: android.app.Activity) { resumes.incrementAndGet() }
+    override fun onActivityCreated(activity: android.app.Activity, state: Bundle?) {}
+    override fun onActivityStarted(activity: android.app.Activity) {}
+    override fun onActivityPaused(activity: android.app.Activity) {}
+    override fun onActivityStopped(activity: android.app.Activity) {}
+    override fun onActivitySaveInstanceState(activity: android.app.Activity, state: Bundle) {}
+    override fun onActivityDestroyed(activity: android.app.Activity) {}
+  }
+
+  object EveryCreate : EarlyListener()
+
   override fun onCreate() {
     super.onCreate()
     created = true
+    registerActivityLifecycleCallbacks(EveryCreate)
     // A per-Application ComponentCallbacks, new with each Application (AppCallbacksConformanceTest).
     perApplication += PerApplicationMemory().also { registerComponentCallbacks(it) }
     onNextCreate?.also { onNextCreate = null }?.invoke(this)
@@ -52,6 +77,9 @@ class HarnessTestApplication : ComposeApp() {
 
     /** Run once at the next test's Application.onCreate (a test run's new Application per test; AppCallbacksConformanceTest). */
     @Volatile var onNextCreate: ((HarnessTestApplication) -> Unit)? = null
+
+    /** Every EarlyListener attachBaseContext registered, oldest first. */
+    val early = java.util.concurrent.CopyOnWriteArrayList<EarlyListener>()
 
     /** Every PerApplicationMemory, oldest first: one per Application this process made. */
     val perApplication = java.util.concurrent.CopyOnWriteArrayList<PerApplicationMemory>()

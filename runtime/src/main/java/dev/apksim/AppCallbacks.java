@@ -4,13 +4,12 @@ import android.app.Application;
 import android.content.ComponentCallbacks;
 import java.security.CodeSource;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.RealObject;
@@ -57,13 +56,25 @@ final class AppCallbacks {
   /** Who registered a callback: through which Application, during which startup (-1: outside one), from where. */
   private record Registration(Application owner, int startup, String site) {}
 
-  /** Per callback API: one object may be registered for both, from different places, and unregistered from one. */
-  private static final Map<Object, Registration> activityRegistrations = Collections.synchronizedMap(new IdentityHashMap<>());
-  private static final Map<Object, Registration> componentRegistrations = Collections.synchronizedMap(new IdentityHashMap<>());
+  /**
+   * Per callback API, every occurrence of each registered object (one may be registered for both APIs, from different
+   * places, more than once, and unregistered from one). Guarded by LOCK, which a registration holds together with the
+   * framework's own change, and adopt and carryOver hold throughout: a registration is either wholly before or wholly
+   * after a handover.
+   */
+  static final Object LOCK = new Object();
+  private static final Map<Object, List<Registration>> activityRegistrations = new IdentityHashMap<>();
+  private static final Map<Object, List<Registration>> componentRegistrations = new IdentityHashMap<>();
 
   /** At the start of an Application's startup (callApplicationOnCreate, before its providers): it uses the process's lists. */
   static void adopt(Application app) {
     if (!ON || app == null) return;
+    synchronized (LOCK) {
+      adoptLocked(app);
+    }
+  }
+
+  private static void adoptLocked(Application app) {
     List<Application.ActivityLifecycleCallbacks> mine = ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks");
     Object myController = ReflectionHelpers.getField(app, "mCallbacksController");
     if (processActivity == null) {
@@ -98,6 +109,12 @@ final class AppCallbacks {
     current = app;
     startup++;
     starting = true;
+    // What its constructor or attachBaseContext registered (before this) belongs to its startup too.
+    for (Map<Object, List<Registration>> registrations : List.of(activityRegistrations, componentRegistrations)) {
+      for (List<Registration> occurrences : registrations.values()) {
+        occurrences.replaceAll(r -> r.owner() == app && r.startup() < 0 ? new Registration(app, startup, r.site()) : r);
+      }
+    }
   }
 
   /**
@@ -106,61 +123,84 @@ final class AppCallbacks {
    * Applications. A startup that failed never gets here: the next one that ends drops its replaced registrations too.
    */
   static void carryOver(Application app) {
-    starting = false;
-    if (!ON || app == null || app != current || processActivity == null) return;
-    int now = startup;
-    Predicate<Object> activityReplaced = replaced(activityRegistrations, app, now);
-    Predicate<Object> componentReplaced = replaced(componentRegistrations, app, now);
-    List<Object> gone = new ArrayList<>();
-    synchronized (processActivity) {
-      for (Object c : processActivity) if (activityReplaced.test(c)) gone.add(c);
-      processActivity.removeIf(c -> containsSame(gone, c));
-    }
-    for (Object c : gone) activityRegistrations.remove(c);
-    List<Object> goneHere = new ArrayList<>();
-    synchronized (lock(processController)) {
-      List<ComponentCallbacks> shared = ReflectionHelpers.getField(processController, "mComponentCallbacks");
-      if (shared != null) {
-        for (Object c : shared) if (componentReplaced.test(c)) goneHere.add(c);
-        shared.removeIf(c -> containsSame(goneHere, c));
+    synchronized (LOCK) {
+      starting = false;
+      if (!ON || app == null || app != current || processActivity == null) return;
+      synchronized (processActivity) {
+        dropReplaced(activityRegistrations, processActivity, app, startup);
+      }
+      synchronized (lock(processController)) {
+        List<ComponentCallbacks> shared = ReflectionHelpers.getField(processController, "mComponentCallbacks");
+        if (shared != null) dropReplaced(componentRegistrations, shared, app, startup);
       }
     }
-    for (Object c : goneHere) componentRegistrations.remove(c);
   }
 
-  /** Whether a callback of one API is replaced: by a registration from the same call site in this startup. */
-  private static Predicate<Object> replaced(Map<Object, Registration> registrations, Application app, int now) {
+  /**
+   * Removes, one occurrence at a time, what this startup replaced: an occurrence an earlier startup registered from a
+   * call site this startup registered from again (the same object registered again by each onCreate included), and
+   * framework callbacks registered through an earlier Application. Hold LOCK and the list's lock.
+   */
+  private static void dropReplaced(Map<Object, List<Registration>> registrations, List<?> shared, Application app, int now) {
     Set<String> sitesNow = new HashSet<>();
-    synchronized (registrations) {
-      for (Registration r : registrations.values()) {
-        if (r.startup() == now && r.site() != null) sitesNow.add(r.site());
+    for (List<Registration> occurrences : registrations.values()) {
+      for (Registration r : occurrences) if (r.startup() == now && r.site() != null) sitesNow.add(r.site());
+    }
+    for (Iterator<Map.Entry<Object, List<Registration>>> it = registrations.entrySet().iterator(); it.hasNext(); ) {
+      Map.Entry<Object, List<Registration>> e = it.next();
+      Object c = e.getKey();
+      boolean apk = fromApk(c.getClass());
+      for (Iterator<Registration> o = e.getValue().iterator(); o.hasNext(); ) {
+        Registration r = o.next();
+        boolean replaced = apk
+            ? r.startup() >= 0 && r.startup() < now && r.site() != null && sitesNow.contains(r.site())
+            : r.owner() != app;
+        if (replaced) {
+          removeOne(shared, c);
+          o.remove();
+        }
+      }
+      if (e.getValue().isEmpty()) it.remove();
+    }
+  }
+
+  private static void removeOne(List<?> list, Object c) {
+    for (int i = 0; i < list.size(); i++) {
+      if (list.get(i) == c) {
+        list.remove(i);
+        return;
       }
     }
-    return c -> {
-      Registration r = registrations.get(c);
-      if (r == null) return false;
-      if (!fromApk(c.getClass())) return r.owner() != app;
-      return r.startup() >= 0 && r.startup() < now && r.site() != null && sitesNow.contains(r.site());
-    };
   }
 
-  static void registered(Map<Object, Registration> registrations, Application app, Object callback) {
-    if (ON && callback != null) registrations.put(callback, new Registration(app, starting ? startup : -1, site()));
+  /** Hold LOCK, with the framework's change. */
+  private static void registered(Map<Object, List<Registration>> registrations, Application app, Object callback) {
+    if (!ON || callback == null) return;
+    int at = starting && app == current ? startup : -1;
+    registrations.computeIfAbsent(callback, k -> new ArrayList<>()).add(new Registration(app, at, site()));
   }
 
-  static void unregistered(Map<Object, Registration> registrations, Object callback) {
-    if (ON && callback != null) registrations.remove(callback);
+  /** Hold LOCK, with the framework's change: the framework removes the first occurrence, and so does this. */
+  private static void unregistered(Map<Object, List<Registration>> registrations, Object callback) {
+    if (!ON || callback == null) return;
+    List<Registration> occurrences = registrations.get(callback);
+    if (occurrences == null) return;
+    occurrences.remove(0);
+    if (occurrences.isEmpty()) registrations.remove(callback);
   }
 
   private static final StackWalker WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
 
-  /** The registering call site: the first frame of APK code, with its bytecode index; null when there is none. */
+  /**
+   * The registering path: every APK frame with its bytecode index, innermost first, so registrations through one
+   * helper or an overriding register method from different callers differ; null when no APK code is on the stack.
+   */
   private static String site() {
-    return WALKER.walk(frames -> frames
+    String path = WALKER.walk(frames -> frames
         .filter(f -> fromApk(f.getDeclaringClass()))
-        .findFirst()
         .map(f -> f.getClassName() + "." + f.getMethodName() + "@" + f.getByteCodeIndex())
-        .orElse(null));
+        .collect(java.util.stream.Collectors.joining(" < ")));
+    return path.isEmpty() ? null : path;
   }
 
   private static boolean containsSame(List<?> list, Object c) {
@@ -195,26 +235,50 @@ final class AppCallbacks {
 
     @Implementation
     protected void registerActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
-      Reflector.reflector(ApplicationReflector.class, self).registerActivityLifecycleCallbacks(callback);
-      if (TestActivities.testRun()) registered(activityRegistrations, self, callback);
+      if (!TestActivities.testRun()) {
+        Reflector.reflector(ApplicationReflector.class, self).registerActivityLifecycleCallbacks(callback);
+        return;
+      }
+      synchronized (LOCK) {
+        Reflector.reflector(ApplicationReflector.class, self).registerActivityLifecycleCallbacks(callback);
+        registered(activityRegistrations, self, callback);
+      }
     }
 
     @Implementation
     protected void unregisterActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
-      Reflector.reflector(ApplicationReflector.class, self).unregisterActivityLifecycleCallbacks(callback);
-      if (TestActivities.testRun()) unregistered(activityRegistrations, callback);
+      if (!TestActivities.testRun()) {
+        Reflector.reflector(ApplicationReflector.class, self).unregisterActivityLifecycleCallbacks(callback);
+        return;
+      }
+      synchronized (LOCK) {
+        Reflector.reflector(ApplicationReflector.class, self).unregisterActivityLifecycleCallbacks(callback);
+        unregistered(activityRegistrations, callback);
+      }
     }
 
     @Implementation
     protected void registerComponentCallbacks(ComponentCallbacks callback) {
-      Reflector.reflector(ApplicationReflector.class, self).registerComponentCallbacks(callback);
-      if (TestActivities.testRun()) registered(componentRegistrations, self, callback);
+      if (!TestActivities.testRun()) {
+        Reflector.reflector(ApplicationReflector.class, self).registerComponentCallbacks(callback);
+        return;
+      }
+      synchronized (LOCK) {
+        Reflector.reflector(ApplicationReflector.class, self).registerComponentCallbacks(callback);
+        registered(componentRegistrations, self, callback);
+      }
     }
 
     @Implementation
     protected void unregisterComponentCallbacks(ComponentCallbacks callback) {
-      Reflector.reflector(ApplicationReflector.class, self).unregisterComponentCallbacks(callback);
-      if (TestActivities.testRun()) unregistered(componentRegistrations, callback);
+      if (!TestActivities.testRun()) {
+        Reflector.reflector(ApplicationReflector.class, self).unregisterComponentCallbacks(callback);
+        return;
+      }
+      synchronized (LOCK) {
+        Reflector.reflector(ApplicationReflector.class, self).unregisterComponentCallbacks(callback);
+        unregistered(componentRegistrations, callback);
+      }
     }
   }
 

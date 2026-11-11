@@ -312,4 +312,22 @@ class AppCallbacksConformanceTest {
     InstrumentationRegistry.getInstrumentation().runOnMainSync { Both.app!!.unregisterActivityLifecycleCallbacks(Both) }
     Both.app = null
   }
+
+  /**
+   * The test Application registers one object in every onCreate and a new listener in every attachBaseContext, through
+   * a register method that forwards to super: an activity's resume reaches that object once and only the current
+   * Application's listener, as on a device's one Application.
+   */
+  @Test
+  fun n_listenersEveryApplicationRegistersAreNotDuplicated() {
+    val early = HarnessTestApplication.early
+    early.forEach { it.resumes.set(0) }
+    HarnessTestApplication.EveryCreate.resumes.set(0)
+    ActivityScenario.launch(ComponentActivity::class.java).use {
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    assertEquals("the object every onCreate registers, once", 1, HarnessTestApplication.EveryCreate.resumes.get())
+    assertEquals("this Application's attachBaseContext listener", 1, early.last().resumes.get())
+    assertEquals("earlier Applications' listeners", 0, early.dropLast(1).sumOf { it.resumes.get() })
+  }
 }
