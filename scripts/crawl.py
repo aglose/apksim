@@ -815,6 +815,7 @@ class Sweep:
                 continue
             fn = getattr(self, "sw_" + kind.replace("-", "_"))
             inst.cmds = []
+            inst.net_changed = False
             try:
                 fn(inst, screen, param)
             except ReplayFailed as e:
@@ -826,7 +827,7 @@ class Sweep:
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
-                if kind == "offline":  # only this one changed the network: back to what the launch asked for
+                if kind == "offline" and getattr(inst, "net_changed", False):  # only a case that went offline: back to the launch's profile
                     opts = self.ex.options
                     profile = opts[opts.index("--network-profile") + 1] if "--network-profile" in opts else "online"
                     try:
@@ -939,6 +940,7 @@ class Sweep:
         inst.case = []
         self.case("offline", screen, "as reached")
         inst.ensure()  # an earlier case may have ended the app
+        inst.net_changed = True
         inst.say("network offline")
         inst.cmds.append("network offline")
         inst.reach(screen["path"])  # the path with no network, from a fresh start
