@@ -3,11 +3,13 @@ package dev.apksim.composeapp
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -24,6 +26,8 @@ class BrowserDiscoveryTest {
     Intent(Intent.ACTION_VIEW, data).apply { if (browsable) addCategory(Intent.CATEGORY_BROWSABLE) }
 
   private fun check() {
+    // The stand-in browser is apksim's: a device has its own (Chrome offers a Custom Tabs service, several may match).
+    assumeTrue(Build.FINGERPRINT == "robolectric")
     val probes = listOf(
       Uri.parse("http://www.example.com"),
       Uri.parse("https://www.example.com"),
