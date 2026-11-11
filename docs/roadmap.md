@@ -17,7 +17,9 @@ are worked on at once, in nine lanes; each pull request carries a label saying w
 How the labels work with the release skill: `roadmap-r1` pull requests are opened ready for review; `roadmap-r2` and
 `roadmap-r3` ones are opened as **drafts**, and the release skill skips drafts. To cut the second release, mark the
 `roadmap-r2` drafts ready (`gh pr ready N`), then run the release; the same for the third. A pull request that stacks
-on another names its parent's branch as its base, and merges after it.
+on another names its parent's branch as its base, and merges after it: pull requests are squash-merged, so once the
+parent is on `main` the stacked branch is moved there with `git rebase --onto origin/main <parent's old tip>` and its
+base set to `main`.
 
 ## Items
 
@@ -97,19 +99,22 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-| Item | Lane | Label | State |
-|---|---|---|---|
-| 1 Replay | replay | r1 | started |
-| 2 Recording to test | replay | r2 | queued behind 4 |
-| 3 Trace viewer | viewer | r1 | started |
-| 4 Bisect | replay | r2 | queued behind 1 |
-| 5 Pre-warmed test processes | test processes | r1 | started |
-| 6 Flake hunter | test processes | r2 | queued behind 5 |
-| 7 Coverage | coverage | r2 | started |
-| 8 Conformance sweep | conformance | r1-r3 | started |
-| 9 PR preview, compare | serve | r1 | started |
-| 10 Report button, inspector | serve | r2 | queued behind 9 |
-| 11 Crawler | crawler | r1 | started |
-| 12 Resilience sweep | crawler | r2 | queued behind 11 |
-| 13 MCP server | mcp | r3 | started |
-| 14 BLE, linked instances | ble | r3 | started |
+As of 2026-11-11. "Checks pass" is CI's word, not a review: each pull request still has review threads to settle
+before it merges.
+
+| Item | Lane | Label | Pull request | State |
+|---|---|---|---|---|
+| 1 Replay | replay | r1 | #254 | open, checks pass |
+| 2 Recording to test | replay | r2 | #262 (draft, on #258) | open, checks pass |
+| 3 Trace viewer | viewer | r1 | #251 | open, checks pass |
+| 4 Bisect | replay | r2 | #258 (draft, on #254) | open, checks pass |
+| 5 Pre-warmed test processes | test processes | r1 | #257 | open, checks pass |
+| 6 Flake hunter | test processes | r2 | #261 (draft, on #257) | open, checks pass |
+| 7 Coverage | coverage | r2 | #255 (draft) | open, checks pass |
+| 8 Conformance sweep | conformance | r1-r3 | none yet | first batch in progress |
+| 9 PR preview, compare | serve | r1 | #252 | open, checks pass |
+| 10 Report button, inspector | serve | r2 | #259 (draft, on #252) | open, checks pass |
+| 11 Crawler | crawler | r1 | #260 | open, checks pass |
+| 12 Resilience sweep | crawler | r2 | #263 (draft, on #260) | open, `linux-smoke` fails (a file the check reads is missing) |
+| 13 MCP server | mcp | r3 | #250 (draft) | open, checks pass |
+| 14 BLE, linked instances | ble | r3 | #253 (draft), #256 (draft, on #253) | open, `linux-smoke` fails on x86_64 (one BLE test; a scene step) |
