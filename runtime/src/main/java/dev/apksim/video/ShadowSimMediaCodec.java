@@ -57,8 +57,13 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
           MediaCodecInfo.CodecProfileLevel.AVCProfileMain, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
           MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedHigh);
-      video(HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC, HEVC, MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52,
-          MediaCodecInfo.CodecProfileLevel.HEVCProfileMain, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10);
+      if (VideoToolbox.hevcAvailable()) {
+        video(HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC, HEVC, MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52,
+            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10);
+      } else {
+        // As a device without an HEVC decoder: a player picks an H.264 rendition, or plays the rest of an HEVC clip.
+        System.err.println("[apksim] MediaCodec video/hevc: no decoder in this image (H.264 only; docker/Dockerfile VIDEO_DECODERS)");
+      }
     }
     if (!VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
       // Players (Media3) then drop the video renderer and play the rest, logging nothing an app owner would see.
@@ -143,6 +148,18 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
   /** Video codecs not yet released, for the `video` control command. */
   private static final Set<Decoder> LIVE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  /** The video decoders MediaCodecList advertises, as an app sees them: " name(type)" each, for the `video` command. */
+  static String listedReport() {
+    StringBuilder b = new StringBuilder();
+    for (MediaCodecInfo info : new android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).getCodecInfos()) {
+      if (info.isEncoder()) continue;
+      for (String type : info.getSupportedTypes()) {
+        if (type.startsWith("video/")) b.append(' ').append(info.getName()).append('(').append(type).append(')');
+      }
+    }
+    return b.toString();
+  }
 
   /** Each live video codec's output: the view size it draws at, or the Surface name when no TextureView owns it. */
   static String liveReport() {

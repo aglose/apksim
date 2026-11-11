@@ -30,6 +30,24 @@ public final class VideoToolbox {
     return AVAILABLE;
   }
 
+  /**
+   * Whether there is an HEVC decoder too: always with VideoToolbox; on Linux only in an image built with it
+   * (docker/Dockerfile's VIDEO_DECODERS: the published image has H.264 alone), found by opening one.
+   */
+  static boolean hevcAvailable() {
+    return AVAILABLE && (dev.apksim.HostOs.MAC || Hevc.PRESENT);
+  }
+
+  private static final class Hevc {
+    static final boolean PRESENT = probe();
+
+    private static boolean probe() {
+      long h = nativeCreate(true);
+      if (h != 0) nativeRelease(h);
+      return h != 0;
+    }
+  }
+
   /** Whether libwebrtc's H.264 decoder ({@link VtH264Decoder}) can run here: VideoToolbox only. */
   static boolean webrtcAvailable() {
     return dev.apksim.HostOs.MAC && AVAILABLE;

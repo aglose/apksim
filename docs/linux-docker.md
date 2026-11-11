@@ -108,7 +108,7 @@ macOS-only).
 | Window | Cocoa window | Headless only (`shot`, control channel) |
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet (libwebrtc's own software codecs only) |
-| MediaCodec video (H.264, HEVC) | VideoToolbox | libavcodec, software, one thread per codec (see "Video" below) |
+| MediaCodec video | VideoToolbox: H.264, HEVC | libavcodec, software, one thread per codec: H.264; HEVC only in an image built with it (see "Video" below) |
 | MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | None yet: a player plays a clip's picture without its sound |
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
@@ -127,11 +127,15 @@ object beside each, as the Mac shim does. Both Linux shims map `setjmp`/`sigsetj
 
 ## Video
 
-Apps' recorded video (MediaCodec: Media3/ExoPlayer, MediaPlayer-style players) decodes in the image: `apksim.avc.decoder`
-(H.264) and `apksim.hevc.decoder` (HEVC) are listed as on the Mac, and pictures draw into the player's TextureView or
-SurfaceView. The decoder is FFmpeg's libavcodec (7.1.5, LGPL 2.1+, see THIRD-PARTY-NOTICES.md), built in the image's
-build stage from the release tarball (checksum pinned in `docker/Dockerfile`) with only the H.264 and HEVC decoders and
-parsers and libswscale, and linked statically into `libvtdecoder.so` with its symbols private, so an APK that brings
+Apps' recorded H.264 video (MediaCodec: Media3/ExoPlayer, MediaPlayer-style players) decodes in the image:
+`apksim.avc.decoder` is listed as on the Mac, and pictures draw into the player's TextureView or SurfaceView. The
+published image has no HEVC decoder (`apksim.hevc.decoder` is not listed, as on a device without one, and one
+`[apksim] MediaCodec video/hevc: no decoder in this image` line is logged): H.264 and HEVC are both patent-licensed
+formats, and HEVC's licensing is the less settled, so the image apksim distributes leaves it out. An image you build
+yourself gets it with `scripts/docker-build.sh TAG --build-arg VIDEO_DECODERS=h264,hevc`; MediaCodec lists whichever
+decoders the library has. The decoder is FFmpeg's libavcodec (7.1.5, LGPL 2.1+, see THIRD-PARTY-NOTICES.md), built in the image's
+build stage from the release tarball (checksum pinned in `docker/Dockerfile`) with only the decoders and parsers named
+in `VIDEO_DECODERS` and libswscale, and linked statically into `libvtdecoder.so` with its symbols private, so an APK that brings
 its own FFmpeg does not meet it. OpenH264, which the image has for `apksim serve`'s stream, was not used: no HEVC, no
 interlaced or 10-bit, and a 1 MB limit on a compressed frame. Ubuntu's libavcodec package brings 34 dependencies.
 
@@ -144,8 +148,10 @@ Software decoding, one thread per codec. Measured on an Apple Silicon Mac (Colim
 | amd64 (Rosetta) | 60.1 a second | 0 | 2.8 ms | 16 ms | ~0.85 core |
 
 Not measured: a Linux host, 4K. The image is about 3 to 4 MB bigger for it (`libvtdecoder.so`: 2.8 MB arm64, 3.6 MB amd64).
-`scripts/video-check.py` (run by `ci-smoke.sh` in both CI jobs) checks `selftest` on two small clips, that
-`apksim://video` draws pictures without decode errors, and that ExoPlayer plays the Settings tab's HEVC clip to its end.
+`scripts/video-check.py` (run by `ci-smoke.sh` in both CI jobs) checks `selftest` on a small H.264 clip, that
+`apksim://video` draws pictures without decode errors, and that no HEVC decoder is listed; with `--hevc`
+(`VIDEO_CHECK_ARGS=--hevc` for `ci-smoke.sh`, for an image built with HEVC) it checks the HEVC clip too and that
+ExoPlayer plays the Settings tab's HEVC clip to its end.
 
 Limits: a stream whose decoder holds back more than five pictures loses the ones past that at its very end (the Mac
 has the same limit); no sound (no AAC or MP3 decoder, no audio output); libwebrtc's H.264 is not hooked up, so WebRTC
