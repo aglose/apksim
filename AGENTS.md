@@ -1395,8 +1395,11 @@ server can ANR; `both.py` retakes shots until the two agree.
 The repo is public (https://github.com/aglose/apksim, Apache 2.0). `main` takes changes only through pull requests: a
 GitHub ruleset requires a PR whose `linux-smoke` check passes (`.github/workflows/ci.yml`: builds the runtime and the
 Linux image, then runs the test app headless), and blocks force-pushes and deleting `main`. No approving review is
-needed. Work on a branch, push it, `gh pr create`, wait for the check, then `gh pr merge --merge`: merge commits, so a
-branch cut from another PR's branch stays a clean descendant of `main`. Merged branches are deleted on GitHub.
+needed. Work on a branch, push it, `gh pr create`, wait for the check, then squash it: `gh pr merge --squash`, one
+commit per PR on `main` (`--rebase` when a PR's commits are worth keeping apart). Keep branches current by rebasing,
+never by merging `main` in: `git rebase origin/main` and `git push --force-with-lease` on your own branch. A branch cut
+from another PR's branch is rebased once that PR lands: `git rebase --onto origin/main OLD_PARENT_TIP` (the parent's
+squash is a new commit, so a plain rebase would replay the parent's commits). Merged branches are deleted on GitHub.
 `scripts/hooks/pre-push` (set by `scripts/setup.sh`: `git config core.hooksPath scripts/hooks`) refuses direct pushes
 to `main` before they leave the machine. CI does not cover the Mac-only parts (window, Metal, VideoToolbox, AOT
 timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
@@ -1411,8 +1414,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   `scripts/hooks/check-private` enforces it: `pre-commit` checks the staged changes, `pre-push` the branch name and
   every commit the remote lacks (diff, message, author/committer email), against the terms in `~/.config/apksim/denylist` (private, one regex per
   line). CI runs the same check with the `PRIVATE_DENYLIST` repository secret. Commits use the GitHub noreply
-  address (this checkout's local `git config user.email`), and so must merge commits: merge with
-  `gh pr merge --merge --author-email 7216340+aglose@users.noreply.github.com`.
+  address (this checkout's local `git config user.email`), and so must squashed commits, whose author GitHub takes
+  from the account, not the branch: merge with
+  `gh pr merge --squash --author-email 7216340+aglose@users.noreply.github.com` (or `--rebase`, which keeps the
+  branch's own authors).
 - **No AI attribution:** no `Co-Authored-By` trailer for Claude (or any other assistant) in commit messages, and no
   "Generated with" line in PR bodies; GitHub lists co-authors as contributors. `.claude/settings.json` turns Claude
   Code's own trailers off. Every pull request gets a Copilot review automatically (a repository ruleset).
