@@ -589,10 +589,31 @@ public final class TestActivities {
       if (decor.getVisibility() == View.VISIBLE) ShadowSimWindowManagerImpl.focusTop();
     }
 
+    /**
+     * Only a resumed activity is paused, as ActivityThread's performPauseActivityIfNeeded does (it returns when the
+     * record is already paused). Robolectric's configuration change (a rotation, setQualifiers) calls onPause on the
+     * activity whatever its state, so a stopped one was paused twice: every ActivityLifecycleCallbacks heard a second
+     * onActivityPaused, and AndroidX ProcessLifecycleOwner's resumed count went to -1 for the rest of the process,
+     * after which it never moved the process to CREATED again (traced: ActivityController's configurationChange,
+     * callActivityOnPause on a stopped MainActivity; docs/conformance.md). {@code -Dapksim.pauseOnlyResumed=false}
+     * restores it.
+     */
+    @Implementation
+    protected void callActivityOnPause(Activity activity) {
+      if (PAUSE_ONLY_RESUMED && !(Boolean) ReflectionHelpers.getField(activity, "mResumed")) return;
+      org.robolectric.util.reflector.Reflector.reflector(InstrumentationReflector.class, self).callActivityOnPause(activity);
+    }
+
+    private static final boolean PAUSE_ONLY_RESUMED =
+        Boolean.parseBoolean(System.getProperty("apksim.pauseOnlyResumed", "true"));
+
     @org.robolectric.util.reflector.ForType(Instrumentation.class)
     interface InstrumentationReflector {
       @org.robolectric.util.reflector.Direct
       void callActivityOnResume(Activity activity);
+
+      @org.robolectric.util.reflector.Direct
+      void callActivityOnPause(Activity activity);
     }
 
     /**
