@@ -55,8 +55,8 @@ class Fail(Exception):
 # ---------------------------------------------------------------- node tree
 
 ENTRY = re.compile(r"\s*;\s*(?=\[-?\d+,-?\d+,-?\d+,-?\d+\] |\s*$)")
-HEAD = re.compile(r"\[(-?\d+),(-?\d+),(-?\d+),(-?\d+)\] ?((?:(?:password-field|field|clickable)(?: |$))*)(.*)", re.S)
-ATTR = re.compile(r'(text|hint|desc)="(.*?)"(?= (?:text|hint|desc)="|\s*$)', re.S)
+HEAD = re.compile(r"\[(-?\d+),(-?\d+),(-?\d+),(-?\d+)\] ?((?:(?:password-field|field|clickable|offscreen)(?: |$))*)(.*)", re.S)
+ATTR = re.compile(r'(text|hint|desc|id)="(.*?)"(?= (?:text|hint|desc|id)="|\s*$)', re.S)
 
 
 def parse_nodes(raw):
@@ -68,6 +68,8 @@ def parse_nodes(raw):
         if not m:
             continue
         flags = m.group(5).split()
+        if "offscreen" in flags:  # in the tree but not on screen: not something to tap
+            continue
         attrs = dict(ATTR.findall(m.group(6).strip()))
         out.append({"b": tuple(map(int, m.group(1, 2, 3, 4))), "field": "field" in flags or "password-field" in flags,
                     "click": "clickable" in flags, "text": attrs.get("text", ""), "hint": attrs.get("hint", ""),
@@ -239,7 +241,8 @@ class Instance:
         self.size = (822, 1782)
         self.rec_files = []
         self.started = time.time()
-        threading.Thread(target=self._drain, daemon=True).start()
+        self.drainer = threading.Thread(target=self._drain, daemon=True)
+        self.drainer.start()
 
     def _drain(self):
         for ln in self.proc.stderr:
@@ -290,6 +293,7 @@ class Instance:
 
     def cmd(self, text):
         if not self.alive():
+            self.release()
             raise Fail("instance %s has exited (%s): %s" % (self.id, self.proc.poll(), "; ".join(self.tail(3))))
         if "\n" in text or "\r" in text:
             raise Fail("line breaks are not allowed")
@@ -329,6 +333,18 @@ class Instance:
                     break
                 except Exception:
                     pass
+        self.release()
+
+    def release(self):
+        """Close the control connection and the stderr pipe of a process that has ended."""
+        self.drop()
+        if self.proc.poll() is not None:
+            self.drainer.join(2)
+            if not self.drainer.is_alive():
+                try:
+                    self.proc.stderr.close()
+                except OSError:
+                    pass
 
 
 class Dir:
@@ -343,7 +359,7 @@ class Dir:
         self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
     def read(self, name):
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
         with os.fdopen(fd, "rb") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 raise Fail("%s is not a regular file" % name)
@@ -485,13 +501,14 @@ class Server:
             m = re.search(r"mBounds=Rect\(0, 0 - (\d+), (\d+)\)", i.cmd("config"))
             if m:
                 i.size = (int(m.group(1)), int(m.group(2)))
+            added, _, _ = i.tree.update(self.nodes(i))
+            shown = [line(n) for n in i.tree.nodes if label(n) or n["click"]]
+            act = self.activity(i)
         except Fail:
             i.close()
             raise
-        added, _, _ = i.tree.update(self.nodes(i))
-        shown = [line(n) for n in i.tree.nodes if label(n) or n["click"]]
         return "launched %s (%s, %.1fs)%s | %s\n%s" % (i.id, i.apk, time.time() - i.started,
-                                                     "" if r.startswith("settled") else " (not settled)", self.activity(i),
+                                                     "" if r.startswith("settled") else " (not settled)", act,
                                                      "\n".join(shown[:ANSWER_LINES]))
 
     def t_instances(self, a):
