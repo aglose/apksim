@@ -3,8 +3,8 @@ package dev.apksim.serve;
 /**
  * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI): a slow tab gets a pace from its measured rate,
  * one drop alone gets none, a too-low pace is raised, easing after a quiet spell, a failed trial restoring the pace that
- * held with a doubling wait (capped), the one-frame window's round-trip fallback, and idle time kept out of the ack gap.
- * Exits 1 if any check fails.
+ * held with a doubling wait (capped), the one-frame window's round-trip fallback, and the app's idle time and the link's
+ * delay kept out of the tab's measured time. Exits 1 if any check fails.
  */
 public final class PacerCheck {
   private static int failures;
@@ -21,6 +21,7 @@ public final class PacerCheck {
     easedToNothing();
     oneFrameWindow();
     ackGapIgnoresIdle();
+    ackGapIgnoresTheLink();
     if (failures > 0) {
       System.out.println(failures + " pacer check(s) failed");
       System.exit(1);
@@ -96,17 +97,40 @@ public final class PacerCheck {
   }
 
   private static void ackGapIgnoresIdle() {
+    // A tab taking 40 ms a frame, no link delay, frames queued at it: acks 40 ms apart, each frame sent long before.
     Pacer.AckGap g = new Pacer.AckGap(-1, 0);
     long t = 100 * S;
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, 1);
-    for (int i = 1; i <= 10; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 40 * MS, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "acks 40 ms apart with a frame in flight: a 40 ms gap (" + g.gapMs() + ")");
+    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, t - 40 * MS, 1);
+    for (int i = 1; i <= 10; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 40 * MS, t, 1);
+    check(Math.abs(g.gapMs() - 40) < 0.5, "a tab 40 ms a frame with frames queued: 40 ms (" + g.gapMs() + ")");
     t += 400 * MS;
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t, 0);  // the flight drains: a still screen
-    check(g.baselineNanos() == 0, "the baseline goes when the flight drains");
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S, 1);  // 10 s later, motion again
-    check(Math.abs(g.gapMs() - 40) < 0.5, "the 10 s still spell is not sampled (" + g.gapMs() + ")");
-    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S + 40 * MS, 1);
-    check(Math.abs(g.gapMs() - 40) < 0.5, "sampling resumes from the next ack (" + g.gapMs() + ")");
+    // 10 s of still screen, then a frame to an idle tab: its own 40 ms, not the 10 s.
+    g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 10 * S + 41 * MS, t + 10 * S, 1);
+    check(Math.abs(g.gapMs() - 40) < 0.5, "a still spell is not sampled (" + g.gapMs() + ")");
+  }
+
+  private static void ackGapIgnoresTheLink() {
+    // A 200 ms link, a tab that decodes at once, an app drawing every 140 ms: always a frame in flight, but the tab
+    // is idle, so its time is ~0 and a drop (the link's window full) gets no pace from the app's interval.
+    Pacer.AckGap g = new Pacer.AckGap(-1, 0);
+    long t = 100 * S;
+    for (int i = 0; i < 20; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + i * 140 * MS + 201 * MS, t + i * 140 * MS, 200);
+    check(g.gapMs() < 2, "a 200 ms link, an idle tab, a frame every 140 ms: ~0 ms (" + g.gapMs() + ")");
+    Pacer p = new Pacer();
+    p.dropped(10 * S, Pacer.tabFrameMs(g.gapMs(), 4, 201));
+    check(p.dropped(10 * S + 300 * MS, Pacer.tabFrameMs(g.gapMs(), 4, 201)) <= 2, "so the link's drops are not paced to the app's interval");
+    // The same link and a tab taking 40 ms a frame with frames queued: 40 ms.
+    g = new Pacer.AckGap(-1, 0);
+    for (int i = 1; i <= 20; i++) g = Pacer.ackGap(g.gapMs(), g.baselineNanos(), t + 200 * MS + i * 40 * MS, t, 200);
+    check(Math.abs(g.gapMs() - 40) < 0.5, "a 200 ms link and a tab 40 ms a frame: 40 ms (" + g.gapMs() + ")");
+    // A window of one on that link: each frame sent at the last ack, back 200 ms plus the tab's 40 ms later.
+    g = new Pacer.AckGap(-1, 0);
+    long ack = t;
+    for (int i = 0; i < 10; i++) {
+      long sent = ack;
+      ack = sent + 240 * MS;
+      g = Pacer.ackGap(g.gapMs(), i == 0 ? 0 : g.baselineNanos(), ack, sent, 200);
+    }
+    check(Math.abs(g.gapMs() - 40) < 0.5, "a window of one on a 200 ms link: the tab's 40 ms, not the round trip (" + g.gapMs() + ")");
   }
 }

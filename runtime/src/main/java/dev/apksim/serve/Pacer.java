@@ -74,8 +74,8 @@ final class Pacer {
   }
 
   /**
-   * The tab's time per frame, in ms, or -1 before it is known: the gap between acks while another frame was in flight
-   * (ackGapMs); with a window of one no frame ever is, and the quickest recent ack round trip is that time instead.
+   * The tab's time per frame, in ms, or -1 before it is known: its busy time per ack (ackGapMs); before the first sample,
+   * with a window of one, the quickest recent ack round trip.
    */
   static double tabFrameMs(double ackGapMs, int window, double ackRttMs) {
     if (ackGapMs > 0) return ackGapMs;
@@ -83,17 +83,20 @@ final class Pacer {
   }
 
   /**
-   * Ack-gap sampling: the smoothed gap given an ack at now that leaves inFlight frames still in flight, with the last
-   * baseline (0: none). Returns the new gap and baseline. The baseline resets when the flight drains, so the time to
-   * the next ack, which is the app's (a still screen) rather than the tab's, is never sampled.
+   * Busy-time sampling: the smoothed time the tab spent on the frame acked at now, sent at sentNanos, after the ack
+   * before it (lastAckNanos, 0: none), on a link whose round trip is linkMs (the quickest ping, which a tab answers
+   * without waiting for its decoder; -1 before the first). The frame's work began at the later of the previous ack and
+   * its own arrival back (sent + the link), so neither the app's idle time nor the link's delay counts: on a 200 ms link
+   * a frame is nearly always in flight, and timing every gap between acks took the app's own frame interval (a still
+   * screen's 140 ms) for the tab's, which paced a drag to a third of what the link carries. Returns the new value and
+   * the ack's time, the next sample's baseline.
    */
   record AckGap(double gapMs, long baselineNanos) {}
 
-  static AckGap ackGap(double ackGapMs, long lastAckNanos, long now, int inFlight) {
-    if (inFlight > 0 && lastAckNanos != 0) {
-      double gap = (now - lastAckNanos) / 1e6;
-      ackGapMs = ackGapMs < 0 ? gap : ackGapMs + (gap - ackGapMs) * 0.2;
-    }
-    return new AckGap(ackGapMs, inFlight > 0 ? now : 0);
+  static AckGap ackGap(double ackGapMs, long lastAckNanos, long now, long sentNanos, double linkMs) {
+    long arrived = sentNanos + (linkMs > 0 ? (long) (linkMs * 1e6) : 0);
+    double busy = Math.max(0, now - Math.max(lastAckNanos, arrived)) / 1e6;
+    ackGapMs = ackGapMs < 0 ? busy : ackGapMs + (busy - ackGapMs) * 0.2;
+    return new AckGap(ackGapMs, now);
   }
 }

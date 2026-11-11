@@ -798,7 +798,7 @@ final class Session {
       inFlightBytes -= f[1];
       long t = System.nanoTime();
       if (h264) {
-        Pacer.AckGap g = Pacer.ackGap(ackGapMs, lastAckNanos, t, inFlight);
+        Pacer.AckGap g = Pacer.ackGap(ackGapMs, lastAckNanos, t, f[0], pingRttMs());
         ackGapMs = g.gapMs();
         lastAckNanos = g.baselineNanos();
       }

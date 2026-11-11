@@ -682,6 +682,11 @@ def check_h264(url, token, app, a):
     s.pump(0.5)
     # (On a slow link, --ack-delay, a window at its cap leaves frames waiting past three: the stream then drops to
     # keyframes, as designed, so only the frames are counted.)
+    s.stats = {}
+    s.ws.send("stats")
+    s.pump(3, until=lambda: "window" in s.stats)
+    print(f"     H.264 drag: {len(drag)} frames in {drag_s:.2f} s; window {s.stats.get('window')}, pace {s.stats.get('paceMs')} ms,"
+          f" key drops {s.stats.get('keyDrops')}, ack gap {s.stats.get('ackGapMs')} ms, ack round trip {s.stats.get('ackRttMs')} ms")
     check(len(drag) > 10 and (ACK_DELAY_MS or not any(f[7] for f in drag)), f"delta frames while dragging ({len(drag)}, no keyframes)")
     drag_mb_s = sum(f[3] for f in drag) / drag_s / 1e6
     # A still screen still answers a keyframe request (a tab whose decoder failed asks for one).
