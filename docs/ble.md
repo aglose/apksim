@@ -145,8 +145,8 @@ No thread is started and nothing is posted until the app scans or connects; with
 
 ## Checks and measurements
 
-- `BleTest` in the test app's suite (17 tests, 9.4 s on an M-series Mac alone, `--instrument -e class
-  dev.apksim.composeapp.BleTest`): the advertisement as `ScanRecord` reads it, results on the main thread, filters,
+- `BleTest` in the test app's suite (17 tests: 9.4 s on the Mac, 8.0 s in the Linux image under Rosetta,
+  `--instrument -e class dev.apksim.composeapp.BleTest`): the advertisement as `ScanRecord` reads it, results on the main thread, filters,
   a result per advertising interval on the simulated clock (3 to 5 in 3 s at 1 s), FIRST_MATCH and MATCH_LOST,
   batching, a `PendingIntent` scan, connect/discover/read/write on a binder thread, the write shown by `ble`,
   `ERROR_GATT_WRITE_NOT_ALLOWED`, MTU 247, RSSI before and after `ble rssi`, no notification before the CCC write and
@@ -159,8 +159,8 @@ No thread is started and nothing is posted until the app scans or connects; with
   heart-rate app in miniature: scan with a 0x180D filter, connect, read the sensor location, subscribe, MTU 247) over
   `--control`, with both callback styles (`?legacy=1`). On the Mac: found, connected and subscribed within the 2 s of
   the first wait, notifications at 1.0 and 0.9 a second against the preset's 1 a second, `ble rssi` then the RSSI
-  button, the control-point write shown by `ble`, `ble notify` (200 bpm), status 19 and 8. Run against the same APK on
-  `main`'s build it fails: `unknown command: ble` and the screen stays at "scanning".
+  button, the control-point write shown by `ble`, `ble notify` (200 bpm), status 19 and 8; it passes the same way in the
+  Linux image (amd64, Rosetta). Run against the same APK on `main`'s build it fails: `unknown command: ble` and the screen stays at "scanning".
 
 ## Not done
 
