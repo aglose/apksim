@@ -23,7 +23,7 @@ A test @Ignore'd on its method or class is reported ignored without a process (t
 `-e apksimListIgnored true`); one that skips only at run time (an assumption) still gets its process. `--run-ignored`
 gives each a process, as the Orchestrator does (apksim sets up no runner listeners in a process whose every test is
 ignored, so the app's own listeners do not hear of them either way).
---prewarm on|off|N (with --isolate; default on): a pool of test processes started ahead, -j of them (N with a number),
+--prewarm on|off|N (with --isolate; default on): a pool of test processes started ahead, twice -j of them (N with a number),
 each booting what no test decides (the JVM, the APKs' classes, the sandbox and native runtime through the runner probe)
 and then waiting for its test, which it reads on stdin (apksim's --pooled; `docker run` gets -i for it). A process taken
 for a test is replaced at once, so the next one boots while that test runs. Each still runs one test and exits, with
@@ -32,8 +32,9 @@ from the hand-over. A pooled process that dies or hangs is handled as a cold one
 --reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
 ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
 nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
---exit-marks shows where a process's exit time went. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn to the
-test's start, `apksim.exit_seconds`: its end to the process exiting), show where its process's time went.
+--exit-marks shows where a process's exit time went. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn, or a
+pooled process's hand-over, to the test's start, `apksim.exit_seconds`: its end to the process exiting;
+`apksim.pooled` when a pre-warmed process ran it), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
 `-e numShards N -e shardIndex I` (a test's shard comes from its name's hash) and each recovering from a crash as one
 process does; their results make one report. A shard's tests share its process (statics carry over within it), so a
@@ -101,6 +102,7 @@ RECORDED = []  # --record-deps: each process's dependency lines, taken out of it
 
 MARKS = {}  # --exit-marks: (class, method) -> what apksim reported of its exit
 PHASES = {}  # --isolate: (class, method) -> (start-up, test, exit) seconds of its process, for the report
+POOLED = set()  # --isolate: (class, method) of the tests a pre-warmed process (--prewarm) ran
 EXIT_MARKS = False  # --exit-marks: apksim reports where its exit time goes (stderr, shown per test)
 REAP_EARLY = 0  # --reap-early SEC (--isolate): a process counts as done once it has reported its exit status; its teardown gets SEC s
 TEST_TIMEOUT = 900  # --test-timeout: seconds a process may go without a test starting or ending (0: no limit)
@@ -1075,7 +1077,8 @@ def isolated_args(a):
 
 def start_pool(a, passthrough):
     """--isolate's pool of pre-warmed processes (--prewarm on), or None."""
-    size = a.j if a.prewarm == "on" else 0 if a.prewarm == "off" else int(a.prewarm)
+    # Twice -j: a pool of -j often had its next process still booting when a short test ended (docs/test-pool.md).
+    size = 2 * a.j if a.prewarm == "on" else 0 if a.prewarm == "off" else int(a.prewarm)
     if not a.isolate or size < 1:
         return None
     return Pool(size, (a.app, a.test, isolated_args(a), passthrough))
@@ -1127,11 +1130,11 @@ def main():
                    help="--isolate --timings: the order tests start in (default interleave: alternately the longest and shortest)")
     p.add_argument("--test-timeout", type=float, default=TEST_TIMEOUT, metavar="SEC")
     p.add_argument("--prewarm", default="on", metavar="on|off|N",
-                   help="--isolate: keep test processes booted ahead (-j of them with on, the default, else N), each "
+                   help="--isolate: keep test processes booted ahead (2 x -j of them with on, the default, else N), each "
                         "booting what no test decides and then taking one test (docs/test-pool.md)")
     a = p.parse_args(argv)
     if a.prewarm not in ("on", "off") and not (a.prewarm.isdigit() and int(a.prewarm) >= 0):
-        p.error("--prewarm on|off|N: N processes kept booted ahead (on: -j of them)")
+        p.error("--prewarm on|off|N: N processes kept booted ahead (on: twice -j)")
     if a.test_timeout < 0:
         p.error("--test-timeout SEC: 0 for no limit, else the seconds a process may go without a test starting or ending")
     TEST_TIMEOUT = a.test_timeout
@@ -1296,6 +1299,8 @@ def main():
                 MARKS[t] = r.exit_marks
             if t in r.phases:  # (kept even when the process then died or hung at exit: that is when it matters)
                 PHASES[t] = r.phases[t]
+            if r.pooled:
+                POOLED.add(t)
             if not got or why:
                 return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r),
                         time.time() - start)
@@ -1341,8 +1346,10 @@ def main():
                 movie = recordings.get((c, m))
                 mrel = os.path.relpath(movie, xml_dir) if movie else None
                 ph = PHASES.get((c, m))
-                if rel or mrel or ph:
+                pooled = (c, m) in POOLED
+                if rel or mrel or ph or pooled:
                     f.write("<properties>"
+                            + ('<property name="apksim.pooled" value="true"/>' if pooled else "")
                             + (f'<property name="apksim.startup_seconds" value="{ph[0]:.3f}"/>'
                                f'<property name="apksim.exit_seconds" value="{ph[2]:.3f}"/>' if ph else "")
                             + (f'<property name="apksim.bundle" value={quoteattr(rel)}/>' if rel else "")

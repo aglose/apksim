@@ -619,7 +619,7 @@ def main():
                  isolated and not sc.startswith(("interrupt", "pool-dies-waiting", "pool-hangs-waiting", "init-error-incomplete"))
                  and len(pooled) - len(unused) != max(0, len(calls) // 2 - 1)),
                 ("no pooled process", isolated and sc != "init-error-incomplete-isolate" and not pooled),
-                (f"{len(unused)} pooled processes closed unused, expected 3", sc == "init-error-only-isolate" and len(unused) != 3),
+                (f"{len(unused)} pooled processes closed unused, expected 6", sc == "init-error-only-isolate" and len(unused) != 6),
                 ("the failure text lacks the dying process's stderr", sc == "pool-dies-waiting"
                  and not any("dies while waiting for its test" in t for t in texts.values())),
                 ("the failure text lacks the timeout", sc == "pool-hangs-waiting"
