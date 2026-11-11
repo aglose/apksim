@@ -46,8 +46,10 @@ scripts/coverage.py cov --mapping mapping.txt --out report                      
 
 - Names are the DEX's. With `--mapping mapping.txt` (R8/ProGuard) classes and methods get their original names, and
   lines go through the mapping where it has line ranges (`a:b:ret name(args):c:d -> obf`, linear when the ranges are
-  as long as each other). Entries R8 made by inlining another class's method are not used; overloads are told apart
-  by their parameter types. Not done: retracing inlined frames to the inlined method's own file.
+  as long as each other). Inline frames that share an obfuscated range resolve to the outermost method (the one that ran);
+  overloads are told apart by parameter and return types; the mapping's `sourceFile` records name files R8 renamed.
+  Not done: attributing inlined frames' lines to the inlined method's own file. Classes in the default package
+  (R8's repackaging) are covered along with the probed packages; others R8 moved are named with `-Dapksim.deps.packages`.
 - Kotlin inline functions: a line whose number the class's SMAP maps into another file counts for that file and line
   (`com/example/Util.kt`), as `affected.py` takes source files from the SMAP. Classes made by D8 (`D8$$SyntheticClass`) have
   no source file and appear in `jacoco.xml` only through their methods.

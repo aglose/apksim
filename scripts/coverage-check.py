@@ -166,7 +166,9 @@ def main():
         "com.example.shop.Cart -> dev.apksim.composeapp.NullBindingService:\n"
         "    14:14:void <clinit>():5:5 -> <clinit>\n"
         "    20:22:void restoreTotals():100:102 -> onBind\n"
-        "    void drop() -> onDestroy\n")
+        '    # {"id":"sourceFile","fileName":"Cart.kt"}\n'
+        "    31:32:void helper():7:8 -> onDestroy\n"       # an inline frame first, the method that runs last
+        "    31:32:void drop():40:41 -> onDestroy\n")
     mapped = os.path.join(a.here, "mapped")
     coverage.write_reports(d_nb, mapped, mapping=mapping, quiet=True)
     mdoc = load(mapped)
@@ -174,9 +176,13 @@ def main():
     check("com/example/shop/Cart" in names and cls not in names, "--mapping reports the original class name")
     ms = names.get("com/example/shop/Cart", {"methods": {}})["methods"]
     check(ms.get("restoreTotals(Landroid/content/Intent;)Landroid/os/IBinder;", 0) > 0 and ms.get("drop()V", 0) > 0, "...and the original method names")
+    check(coverage.Mapping(mapping).source.get("dev/apksim/composeapp/NullBindingService") == "Cart.kt",
+          "...and the original source file name the mapping keeps")
     shop = [f for f in mdoc["files"] if f.startswith("com/example/shop/")]
     check(shop and mdoc["files"][shop[0]].get("100", 0) > 0 and "20" not in mdoc["files"][shop[0]],
           "...and the original line numbers where the mapping has them (20 -> 100)")
+    check(shop and mdoc["files"][shop[0]].get("40", 0) > 0 and "7" not in mdoc["files"][shop[0]],
+          "...and the outermost of an inline frame group is the method that ran (drop, line 40, not helper)")
 
     print("jacoco.xml")
     doc = ET.parse(os.path.join(d1, "jacoco.xml")).getroot()

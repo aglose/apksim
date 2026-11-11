@@ -47,7 +47,7 @@ final class CoverageDump {
         for (String n : tests.internalNames()) names.add(n);
         java.util.Collections.sort(names);
         for (String n : names) {
-          if (!Probes.probedName(n)) continue;
+          if (!Coverage.selects(n)) continue;
           Meta m = meta(n, app, tests);
           if (m != null) m.emit(u, null, true);
         }

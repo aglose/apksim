@@ -118,10 +118,16 @@ class Mapping:
         self.classes = {}   # obfuscated internal name -> original internal name
         self.rev = {}       # original internal name -> obfuscated
         self.methods = {}   # obfuscated class -> [(obf name, params [original types], start, end, orig name, o_start, o_end)]
+        self.source = {}    # obfuscated class -> its original source file name, where the mapping says
         cur = None
         with open(path, encoding="utf-8", errors="replace") as fh:
             for raw in fh:
-                if raw.startswith("#") or not raw.strip():
+                if raw.lstrip().startswith("#"):
+                    sf = re.search(r'"id"\s*:\s*"sourceFile"\s*,\s*"fileName"\s*:\s*"([^"]+)"', raw)
+                    if sf and cur:
+                        self.source.setdefault(cur, sf.group(1))
+                    continue
+                if not raw.strip():
                     continue
                 if not raw.startswith((" ", "\t")):
                     m = re.fullmatch(r"(\S+) -> (\S+):", raw.strip())
@@ -163,7 +169,7 @@ class Mapping:
     def method(self, cls, name, desc, line):
         """(original name, original line or the given one) of the obfuscated method; entries that came from inlining
         another class's method (a dotted name) are not used."""
-        entries = [e for e in self.methods.get(cls, []) if e[0] == name and "." not in e[4]]
+        entries = [e for e in self.methods.get(cls, []) if e[0] == name]
         if not entries:
             return name, line
         have = self.params_of(desc)
@@ -171,14 +177,20 @@ class Mapping:
         by_params = [e for e in entries if [self.obf_type(p) for p in e[1]] == have] or entries
         match = [e for e in by_params if self.obf_type(e[7]) == want] or by_params  # same name and parameters: the return type decides
         if line is not None:
-            for e in match:
-                if e[2] is not None and e[2] <= line <= e[3]:
+            hit = [e for e in match if e[2] is not None and e[2] <= line <= e[3]]
+            if hit:
+                # Inline frames share the obfuscated range: the callees come first and the physical method, the one
+                # that runs, last. Hits belong to it, at the line of its own call.
+                group = [e for e in hit if (e[2], e[3]) == (hit[0][2], hit[0][3])]
+                e = group[-1]
+                if "." not in e[4]:
                     if e[5] is None:
                         return e[4], line
                     if e[6] is not None and e[6] - e[5] == e[3] - e[2]:
                         return e[4], e[5] + line - e[2]
                     return e[4], e[5]
-        return match[0][4], line
+        plain = [e for e in match if "." not in e[4]] or match
+        return plain[0][4], line
 
     def obf_type(self, t):
         base = t.rstrip("[]")
@@ -206,6 +218,8 @@ def build(classes, mapping=None, include_tests=False, include=(), exclude=()):
             continue
         pkg = shown.rsplit("/", 1)[0] if "/" in shown else ""
         source = c["source"] if c["source"] and "." in c["source"] else None  # D8$$SyntheticClass is no file
+        if source is None and mapping:
+            source = mapping.source.get(name)  # R8 replaced the DEX's source file name; the mapping kept it
         own = (pkg + "/" if pkg else "") + source if source else None
         dex_pkg = name.rsplit("/", 1)[0] if "/" in name else ""
         dex_own = (dex_pkg + "/" if dex_pkg else "") + source if source else None  # the SMAP names the DEX's path
@@ -234,7 +248,7 @@ def build(classes, mapping=None, include_tests=False, include=(), exclude=()):
                     own_lines[tline] = own_lines.get(tline, 0) + h
                     first = tline if first is None else min(first, tline)
             if mapping:
-                oname = mapping.method(name, mname, desc, first)[0]
+                oname = mapping.method(name, mname, desc, min(lines) if lines else None)[0]  # by the DEX's own line
                 desc = mapping.desc(desc)
             methods.append({"name": oname, "desc": desc, "line": first, "hits": hits})
         if own and own not in files:

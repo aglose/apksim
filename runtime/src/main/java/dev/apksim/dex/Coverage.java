@@ -26,6 +26,15 @@ public final class Coverage {
 
   private Coverage() {}
 
+  /**
+   * Which classes are covered: the probed packages ({@link Probes#probed}) and the default package, where R8's
+   * repackaging puts the app's renamed classes (`-repackageclasses ''`); others it moved (`a/b/C`) are named with
+   * -Dapksim.deps.packages. The same test decides probes, SMAP retention and the report's universe.
+   */
+  public static boolean selects(String internalName) {
+    return Probes.probed(internalName) || internalName.indexOf('/') < 0;
+  }
+
   /** Called once per class, by its first method to run: makes the counters, which the class keeps in its own field. */
   public static int[] init(Class<?> c, int slots) {
     return COUNTERS.computeIfAbsent(c.getName(), k -> new int[slots]);
