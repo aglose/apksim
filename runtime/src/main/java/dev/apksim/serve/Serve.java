@@ -502,7 +502,11 @@ public final class Serve {
       if (beam) sweepBeam();
       else {
         catalog.sweep(24 * 3_600_000L, name -> warmer.holdsFile(name) || sessions.values().stream()
-            .anyMatch(x -> x.app.path() != null && name.equals(x.app.path().getFileName().toString())));
+            .anyMatch(x -> {
+              // Session.app has no path while a URL add downloads: the file the session launched is launchApk.
+              java.nio.file.Path f = x.launchApk != null ? x.launchApk : x.app.path();
+              return f != null && name.equals(f.getFileName().toString());
+            }));
         kept.sweep();  // the owner only (KeptStore.sweep)
         dropUnusedSeeds();
       }

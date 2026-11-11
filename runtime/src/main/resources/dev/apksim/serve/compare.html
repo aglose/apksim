@@ -104,6 +104,11 @@ const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const base = location.pathname.replace(/[^/]*$/, "");
 const ids = (params.get("compare") || "").split(",");
+// Framed with embed=1 (docs/serve.md "Embedding"), the token comes in the address and goes on each request as ?token=: a
+// cross-site frame gets no cookie. It is taken out of the address and kept in memory.
+const token = params.get("token");
+if (token && !redirecting) { params.delete("token"); history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "")); }
+const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
 const labels = (params.get("labels") || "").split(",");
 const state = { appearance: params.get("appearance") === "dark" ? "dark" : "light", device: params.get("device") || "",
   locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
@@ -159,7 +164,7 @@ class Side {
     this.reset();
     this.gen = gen;
     this.say("Starting…");
-    const sock = this.sock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + "ws?" + q);
+    const sock = this.sock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q));
     sock.binaryType = "arraybuffer";
     sock.onopen = () => { if (document.visibilityState === "hidden") this.send("maxfps 1"); };
     sock.onmessage = e => { if (sock === this.sock) typeof e.data === "string" ? this.text(e.data) : this.frame(e.data); };
@@ -492,7 +497,7 @@ function devices(current) {
 }
 (async () => {
   const names = ["phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large"];
-  try { for (const d of await (await fetch(base + "api/devices")).json()) names.push(d.name); } catch (e) { /* the built-in ones */ }
+  try { for (const d of await (await fetch(base + withToken("api/devices"))).json()) names.push(d.name); } catch (e) { /* the built-in ones */ }
   for (const n of names) $("device").add(new Option(n, n));
   $("device").value = state.device || "phone";
 })();

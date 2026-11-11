@@ -179,7 +179,8 @@ class StubGitHub(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.log.append(("GET", self.path))
-        body = json.dumps([{"id": i, "body": b, "html_url": f"http://stub/c/{i}"} for i, b in self.comments.items()]).encode()
+        body = json.dumps([{"id": i, "body": b, "html_url": f"http://stub/c/{i}", "user": {"login": "github-actions[bot]"}}
+                           for i, b in self.comments.items()]).encode()
         self.reply(body)
 
     def do_POST(self):
@@ -220,7 +221,9 @@ def preview_layer(url, token, app, apk):
           and "apksim-preview:default" in r.stdout, "pr-preview.py --dry-run prints the comment with its comparison, dark and tablet links")
     if not apk:
         return
-    StubGitHub.comments, StubGitHub.log = {}, []
+    # A reviewer's comment quoting an earlier preview (the marker inside, not leading) comes first: it is never the one updated.
+    quote = "> an earlier preview, quoted: <!-- apksim-preview:default -->"
+    StubGitHub.comments, StubGitHub.log = {1: quote}, []
     gh = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StubGitHub)
     threading.Thread(target=gh.serve_forever, daemon=True).start()
     env = {"GITHUB_TOKEN": "gh-stub", "GITHUB_API_URL": f"http://127.0.0.1:{gh.server_port}"}
@@ -232,10 +235,10 @@ def preview_layer(url, token, app, apk):
         r1 = run_preview(args, env)
         check(r1.returncode == 0 and "posted" in r1.stdout, f"pr-preview.py adds the builds and posts the comment ({r1.stdout.strip()[:80]} {r1.stderr.strip()[:120]})")
         r2 = run_preview(args, env)
-        check(r2.returncode == 0 and "updated" in r2.stdout and len(StubGitHub.comments) == 1
+        check(r2.returncode == 0 and "updated" in r2.stdout and len(StubGitHub.comments) == 2 and StubGitHub.comments[1] == quote
               and [m for m, _ in StubGitHub.log if m in ("POST", "PATCH")] == ["POST", "PATCH"],
-              f"a second run updates that comment in place ({[m for m, _ in StubGitHub.log]})")
-        body = next(iter(StubGitHub.comments.values()), "")
+              f"a second run updates that comment in place, not a reviewer's quote of it ({[m for m, _ in StubGitHub.log]})")
+        body = StubGitHub.comments.get(2, "")
         check("https://sim.example.com/preview/?compare=" in body and (not token or token not in body), "its links use the public address and carry no token")
         ids = __import__("re").findall(r"\?app=(u[0-9a-f]{32})", body)
         check(bool(ids), "the comment links to the build by its id")
@@ -268,14 +271,16 @@ def page_layer(url, token, app, app2, chrome):
         page_run(cdp, url, token, app, None, "h264")
         if app2:
             page_run(cdp, url, token, app, app2, "jpeg")
+        if token:
+            page_run(cdp, url, token, app, None, "jpeg", embed=True)
     finally:
         proc.terminate()
 
 
-def page_run(cdp, url, token, app, app2, codec):
+def page_run(cdp, url, token, app, app2, codec, embed=False):
     t = cdp.call("Target.createTarget", {"url": "about:blank"})
     s = cdp.call("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True})["sessionId"]
-    tail = "&codec=jpeg" if codec == "jpeg" else ""
+    tail = ("&codec=jpeg" if codec == "jpeg" else "") + ("&embed=1" if embed else "")
     q = f"compare={app},{app2 or app}&labels=Base,New{tail}"
     cdp.call("Page.navigate", {"url": f"{url}/?{('token=' + token + '&') if token else ''}{q}"}, s)
 
@@ -311,9 +316,13 @@ def page_run(cdp, url, token, app, app2, codec):
         for typ in ("mousePressed", "mouseReleased"):
             cdp.call("Input.dispatchMouseEvent", {"type": typ, "x": x, "y": y, "button": "left", "clickCount": 1}, s)
 
-    label = f"[{codec}] "
+    label = f"[{codec}{' embedded' if embed else ''}] "
     ok = wait(lambda: min(counts()) >= 1, 120)
     check(ok, label + "the page shows both sessions' first frames")
+    if embed:  # served, not redirected: no cookie, the token goes on the sockets as ?token=
+        check(token not in cdp.ev(s, "location.href"), label + "the token is taken out of the address")
+        cdp.call("Target.closeTarget", {"targetId": t["targetId"]})
+        return
     check(info()["a"]["codec"] == codec, label + f"the stream is {codec} ({info()['a']['codec']})")
     settled()
     i = info()

@@ -766,6 +766,7 @@ final class Catalog {
           Download dl = downloading.get(id);
           // Not while its download can still publish a ref: the ref would then have no deadline.
           if (expired(id) && (dl == null || dl.done.isDone())) {
+            if (dl != null) downloading.remove(id, dl);  // a failed one is remembered for an hour: not past its deadline
             Files.deleteIfExists(uploads.resolve(n.replace(".expires", ".ref")));
             Files.delete(p);
           }
