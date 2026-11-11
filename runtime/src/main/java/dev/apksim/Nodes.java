@@ -7,6 +7,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -68,37 +69,43 @@ final class Nodes {
 
   /** Visits every node under [roots], depth first. */
   static void walk(List<View> roots, Consumer<Node> visit) {
-    for (View root : roots) walkView(root, visit);
+    walkDepth(roots, (n, depth) -> visit.accept(n));
   }
 
-  private static void walkView(View v, Consumer<Node> visit) {
+  /** Visits every node under [roots], depth first, with its depth (a window's root view is 0). */
+  static void walkDepth(List<View> roots, BiConsumer<Node, Integer> visit) {
+    for (View root : roots) walkView(root, 0, visit);
+  }
+
+  private static void walkView(View v, int depth, BiConsumer<Node, Integer> visit) {
     if (v.getVisibility() != View.VISIBLE) return;
     AccessibilityNodeProvider p = v.getAccessibilityNodeProvider();
     if (p != null) {
-      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, visit);
+      walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, depth, visit);
       return;
     }
-    visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, v.createAccessibilityNodeInfo()));
+    visit.accept(new Node(v, AccessibilityNodeProvider.HOST_VIEW_ID, v.createAccessibilityNodeInfo()), depth);
     if (v instanceof android.view.ViewGroup g) {
-      for (int i = 0; i < g.getChildCount(); i++) walkView(g.getChildAt(i), visit);
+      for (int i = 0; i < g.getChildCount(); i++) walkView(g.getChildAt(i), depth + 1, visit);
     }
   }
 
-  private static void walkVirtual(View host, AccessibilityNodeProvider p, int root, Consumer<Node> visit) {
+  private static void walkVirtual(View host, AccessibilityNodeProvider p, int root, int depth0, BiConsumer<Node, Integer> visit) {
     // Depth first, each virtual id once (issue 114): a provider may list a node under several parents or an ancestor
     // as a child. The visited set bounds the walk, so no depth cap (which could hide a node a shorter path reaches).
     java.util.Set<Integer> seen = new java.util.HashSet<>();
-    java.util.ArrayDeque<Integer> todo = new java.util.ArrayDeque<>();
-    todo.push(root);
+    java.util.ArrayDeque<int[]> todo = new java.util.ArrayDeque<>();
+    todo.push(new int[] {root, depth0});
     while (!todo.isEmpty()) {
-      int id = todo.pop();
+      int[] top = todo.pop();
+      int id = top[0];
       if (!seen.add(id)) continue;
       AccessibilityNodeInfo info = p.createAccessibilityNodeInfo(id);
       if (info == null) continue;
-      visit.accept(new Node(host, id, info));
+      visit.accept(new Node(host, id, info), top[1]);
       for (int i = info.getChildCount() - 1; i >= 0; i--) {
         long child = info.getChildId(i);  // Hidden API: the child's id within the provider.
-        todo.push(AccessibilityNodeInfo.getVirtualDescendantId(child));
+        todo.push(new int[] {AccessibilityNodeInfo.getVirtualDescendantId(child), top[1] + 1});
       }
     }
   }
@@ -147,5 +154,42 @@ final class Nodes {
       b.append("; ");
     }
     return b.toString();
+  }
+
+  /**
+   * `nodes tree`: every node, with its depth, class, view id name, state flags and bounds, whether or not it has
+   * anything to say (scripts/crawl.py hashes the structure and finds what to tap). Records are separated by \u001e,
+   * fields by a tab: depth, class, id, flags (c clickable, l long-clickable, e editable, k checkable, K checked,
+   * s scrollable, f focusable, p password, d disabled, v visible to the user), l,t,r,b, text, description, hint
+   * (tabs and line breaks in them become spaces).
+   */
+  static String tree(List<View> roots) {
+    StringBuilder b = new StringBuilder();
+    Rect r = new Rect();
+    walkDepth(roots, (n, depth) -> {
+      AccessibilityNodeInfo i = n.info;
+      i.getBoundsInScreen(r);
+      StringBuilder f = new StringBuilder();
+      if (i.isClickable()) f.append('c');
+      if (i.isLongClickable()) f.append('l');
+      if (i.isEditable()) f.append('e');
+      if (i.isCheckable()) f.append('k');
+      if (i.isChecked()) f.append('K');
+      if (i.isScrollable()) f.append('s');
+      if (i.isFocusable()) f.append('f');
+      if (i.isPassword()) f.append('p');
+      if (!i.isEnabled()) f.append('d');
+      if (i.isVisibleToUser()) f.append('v');
+      b.append(depth).append('\t').append(i.getClassName()).append('\t')
+          .append(i.getViewIdResourceName() == null ? "" : i.getViewIdResourceName()).append('\t').append(f).append('\t')
+          .append(r.left).append(',').append(r.top).append(',').append(r.right).append(',').append(r.bottom).append('\t')
+          .append(flat(i.isPassword() ? "" : n.text())).append('\t').append(flat(n.description())).append('\t')
+          .append(flat(n.hint())).append('\u001e');
+    });
+    return b.toString();
+  }
+
+  private static String flat(String s) {
+    return s.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ').replace('\u001e', ' ');
   }
 }

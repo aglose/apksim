@@ -73,6 +73,22 @@ def tolerance(t):
     return {"pixels": float(t.get("pixels", 0)), "delta": int(t.get("delta", 0))}
 
 
+def matches(c, rule):
+    return all(fmt(c[k]) in [fmt(float(x) if k == "fontscale" else x) for x in (v if isinstance(v, list) else [v])]
+               for k, v in rule.items())
+
+
+def expand_matrix(matrix, exclude=()):
+    """The combinations of a spec's matrix (axis -> values; missing axes take their default) minus the excluded ones.
+    scripts/crawl.py takes its matrix the same way."""
+    for k in matrix:
+        if k not in AXES:
+            fail(f"unknown matrix axis {k!r} (axes: {', '.join(AXES)})")
+    values = [[(float(v) if a == "fontscale" else str(v)) for v in matrix.get(a, [DEFAULTS[a]])] for a in AXES]
+    combos = [dict(zip(AXES, vs)) for vs in itertools.product(*values)]
+    return [c for c in combos if not any(matches(c, e) for e in exclude)]
+
+
 def load_spec(opts):
     path = os.path.abspath(opts["spec"])
     try:
@@ -87,18 +103,7 @@ def load_spec(opts):
         fail(f"no APK: {apk!r} (spec 'apk' or --apk)")
     if not goldens:
         fail("no golden folder (spec 'goldens' or --goldens)")
-    matrix = spec.get("matrix", {})
-    for k in matrix:
-        if k not in AXES:
-            fail(f"unknown matrix axis {k!r} (axes: {', '.join(AXES)})")
-    values = [[(float(v) if a == "fontscale" else str(v)) for v in matrix.get(a, [DEFAULTS[a]])] for a in AXES]
-    combos = [dict(zip(AXES, vs)) for vs in itertools.product(*values)]
-
-    def matches(c, rule):
-        return all(fmt(c[k]) in [fmt(float(x) if k == "fontscale" else x) for x in (v if isinstance(v, list) else [v])]
-                   for k, v in rule.items())
-
-    combos = [c for c in combos if not any(matches(c, e) for e in spec.get("exclude", []))]
+    combos = expand_matrix(spec.get("matrix", {}), spec.get("exclude", []))
     screens = spec.get("screens", [])
     names = [s.get("name") for s in screens]
     if not screens or any(not n or not re.fullmatch(r"[A-Za-z0-9._-]+", n) for n in names) or len(set(names)) != len(names):
@@ -154,7 +159,9 @@ class Worker:
         if not os.path.exists(launcher):
             launcher = shutil.which("apksim") or launcher
         spec = self.ctx["spec"]
-        cmd = [launcher, "--headless", "--snapshot", "--fresh", "--control", "auto",
+        # ctx "snapshot"/"fresh" False: scripts/crawl.py starts instances that draw as an ordinary run and keep their data slot.
+        cmd = [launcher, "--headless", *(["--snapshot"] if self.ctx.get("snapshot", True) else []),
+               *(["--fresh"] if self.ctx.get("fresh", True) else []), "--control", "auto",
                "--timezone", spec.get("timezone", "UTC")]
         if spec.get("clock"):
             cmd += ["--clock", spec["clock"]]
@@ -500,4 +507,5 @@ def main():
     sys.exit(1 if bad else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()
