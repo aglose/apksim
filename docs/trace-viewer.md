@@ -28,7 +28,7 @@ up on it.
   SQLite calls (purple) and checkpoints (orange).
 - **Screen**: the frame at that moment, decoded on demand from `screen.avi` (the page indexes its `00dc` chunks and
   makes a blob only for the frame shown; 40 are cached). Touches within the last 600 ms are drawn on it at their
-  position (device pixels from the manifest), the ones inside the frame's own 200 ms slot highlighted.
+  position (device pixels from the manifest), the ones inside the frame's own 200 ms slot highlighted. Touches from before the last rotation, resize or device change are not drawn: the frames of that time are fitted to the final size and the page does not know the old one.
 - **Input**: every event and device command, with its time from the window's start.
 - **Network**: the list, then on click the request, the response headers and body (JSON pretty-printed, images shown,
   text cut at 1 MB), and the request body.

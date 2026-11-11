@@ -78,7 +78,7 @@ def parse_recording(path):
     man = json.loads(z.read("manifest.json"))
     r = {"format": man["format"], "frames": avi_frames(z.read("screen.avi")) if "screen.avi" in z.namelist() else 0}
     inp = [json.loads(l) for l in z.read("input.jsonl").decode().splitlines() if l]
-    r["touch"] = next((e for e in inp if e.get("ev") == "down"), None)
+    r["touch"] = next((e for e in reversed(inp) if e.get("ev") == "down"), None)  # the last: touches before a rotation are not placed
     r["input"] = len(inp)
     log = [LOG.match(l) for l in z.read("logcat.txt").decode().splitlines() if l]
     r["log"] = sum(1 for m in log if m)

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-3WopSW6vFX+crn47WG9bKgMc5+mJTpfXNznsuXn1qhU='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-lW9xN21wsKXUiS/SAPbl9Li5WHMSE/na3JyPqOBcSxo='; style-src 'sha256-eE1Qqm4s5Qfi864htGDbfEOwtBGQngXutIhQ3djQ7ws='; img-src blob: data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>apksim trace viewer</title>
 <style>
 :root{--bg:#fff;--fg:#1b1f23;--dim:#6a737d;--line:#d8dee4;--panel:#f6f8fa;--acc:#0969da;--in:#0969da;--net:#1a7f37;--err:#cf222e;--warn:#9a6700;--db:#8250df;--cp:#bc4c00;--cur:#fff8c5}
@@ -174,7 +174,12 @@ function VList(parent, render, onPick) {
     get items() { return items; },
     cur: function (i, follow) {
       if (i === cur) return; cur = i;
-      if (follow && i >= 0) { var y = i * rowH; if (y < box.scrollTop || y > box.scrollTop + box.clientHeight - rowH) box.scrollTop = Math.max(0, y - box.clientHeight / 2); }
+      if (follow) this.follow();
+      draw();
+    },
+    follow: function () { // scroll the current row into view (a hidden pane cannot, so this runs again when it is shown)
+      if (cur < 0 || !box.clientHeight) return;
+      var y = cur * rowH; if (y < box.scrollTop || y > box.scrollTop + box.clientHeight - rowH) box.scrollTop = Math.max(0, y - box.clientHeight / 2);
       draw();
     },
     redraw: draw
@@ -185,16 +190,18 @@ function lastAtOrBefore(arr, key, t) { // arr sorted by key; index of last item 
   while (lo <= hi) { var m = (lo + hi) >> 1; if (arr[m][key] <= t) { r = m; lo = m + 1; } else hi = m - 1; }
   return r;
 }
+function one(x) { return String(x).replace(/\s*[\r\n]+\s*/g, ' \u23ce '); } // one row is one line
 function fmtT(ms) { var s = ms / 1000; return (s < 0 ? '-' : '') + Math.abs(s).toFixed(3) + 's'; }
 
 // ---------- state ----------
 var S = null, urls = [], tabsDone = {};
 var LEVELS = 'VDIWEF', TOUCH = { down: 1, move: 1, up: 1, cancel: 1 };
 
-var netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
+var fileGen = 0, shotUrl = null, netTab = 'req', netCur = null, detailUrl = null, loadQ = Promise.resolve();
 function reset() {
   if (S && S.imgCache) Object.keys(S.imgCache).forEach(function (k) { URL.revokeObjectURL(S.imgCache[k]); });
   if (detailUrl) { URL.revokeObjectURL(detailUrl); detailUrl = null; }
+  if (shotUrl) { URL.revokeObjectURL(shotUrl); shotUrl = null; }
   netCur = null; netTab = 'req'; lists = {};
   $('frame')._i = undefined; $('phone').style.display = '';
   S = { man: null, t0: 0, t1: 1, t: 0, input: [], log: [], net: [], db: [], cps: [], frames: null, frameT0: 0, imgCache: {}, kind: '' };
@@ -212,12 +219,12 @@ function showTab(id) {
   Array.prototype.forEach.call($('tabs').children, function (b) { b.classList.toggle('on', b.dataset.id === id); });
   Array.prototype.forEach.call($('panes').children, function (p) { p.classList.toggle('on', p.id === 'p-' + id); });
   var ev = new Event('resize'); window.dispatchEvent(ev);
-  Object.keys(lists).forEach(function (k) { lists[k].redraw(); });
+  Object.keys(lists).forEach(function (k) { lists[k].follow(); lists[k].redraw(); });
 }
 var lists = {};
 
 // ---------- loading ----------
-function load(file) { loadQ = loadQ.then(function () { return loadNow(file); }); return loadQ; }
+function load(file) { fileGen++; loadQ = loadQ.then(function () { return loadNow(file); }); return loadQ; }
 async function loadNow(file) {
   reset(); $('name').textContent = file.name; document.body.classList.remove('loaded');
   var t0 = performance.now();
@@ -274,7 +281,7 @@ async function loadRecording(zip, t0) {
   if (!/^apksim-flight-recording\//.test(man.format || '')) throw new Error('unknown format ' + man.format);
   var w = man.window || {}, to = w.to || Date.parse(man.created) || Date.now();
   var from = (w.from != null && w.from > 0) ? w.from : to;
-  S.t0 = from; S.t1 = to;
+  S.winFrom = from; S.t0 = (w.keptFrom > 0 && w.keptFrom < from) ? w.keptFrom : from; S.t1 = to;
   var cp = man.checkpoint; if (cp) S.cps.push({ t: cp.wall, id: cp.id, why: cp.why, acts: cp.activities, dev: cp.device, notes: cp.notes });
   buildChrome();
   var p;
@@ -301,13 +308,13 @@ async function loadRecording(zip, t0) {
   if (zip.entries['screen.avi']) {
     var avi = parseAvi(await zip.bytes('screen.avi'));
     var tt = await zip.text('screen-times.txt'), first = tt ? parseInt(tt.split('\n')[0], 10) : NaN;
-    S.frames = avi; S.frameT0 = Math.max(from, isNaN(first) ? from : first);
+    S.frames = avi; S.frameT0 = Math.max(S.winFrom, isNaN(first) ? S.winFrom : first);
   }
   buildRecordingPanes(zip);
   // if nothing but time lies outside the window (an old bundle), widen to the data
-  var all = S.input.concat(S.log, S.net, S.db), mn = from, mx = to;
+  var all = S.input.concat(S.log, S.net, S.db), mn = S.t0, mx = to;
   all.forEach(function (x) { if (x.ts != null) { mn = Math.min(mn, x.ts); mx = Math.max(mx, x.ts); } else if (x.t != null) { mn = Math.min(mn, x.t); mx = Math.max(mx, x.t); } });
-  if (!(w.from > 0)) { S.t0 = mn; } S.t1 = Math.max(S.t1, mx);
+  S.t0 = Math.min(S.t0, mn); S.t1 = Math.max(S.t1, mx);
   if (S.frames) S.t1 = Math.max(S.t1, S.frameT0 + S.frames.frames.length * S.frames.stepMs - S.frames.stepMs);
 }
 
@@ -337,7 +344,7 @@ function buildRecordingPanes(zip) {
   var pi = addTab('input', 'Input (' + S.input.length + ')');
   lists.input = VList(pi, function (r, o) {
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    var txt = o.cmd ? 'cmd ' + o.cmd.join(' ') : describeInput(o);
+    var txt = o.cmd ? 'cmd ' + one(o.cmd.join(' ')) : describeInput(o);
     r.appendChild(document.createTextNode(txt));
   }, function (o) { setTime(o.t); });
   lists.input.set(S.input);
@@ -346,7 +353,7 @@ function buildRecordingPanes(zip) {
   lists.net = VList(sp, function (r, o) {
     var e = o.e, rq = e.request || {}, rs = e.response || {};
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    r.appendChild(document.createTextNode((rq.method || '') + ' ' + (rs.status || '-') + ' ' + Math.round(o.dur) + 'ms  ' + (rq.url || '')));
+    r.appendChild(document.createTextNode((rq.method || '') + ' ' + (rs.status || '-') + ' ' + Math.round(o.dur) + 'ms  ' + one(rq.url || '')));
   }, function (o) { showNet(o); setTime(o.t); });
   lists.net.set(S.net);
   buildNetDetail(sp);
@@ -357,14 +364,14 @@ function buildRecordingPanes(zip) {
   var pd = addTab('db', 'SQLite (' + S.db.length + ')');
   lists.db = VList(pd, function (r, o) {
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    r.appendChild(document.createTextNode((o.op || '') + ' ' + (o.db || '') + ' ' + (o.us != null ? o.us + 'us ' : '') + (o.result != null ? '=' + o.result + ' ' : '') + (o.error ? 'ERROR ' + o.error + ' ' : '') + (o.sql || '')));
+    r.appendChild(document.createTextNode((o.op || '') + ' ' + (o.db || '') + ' ' + (o.us != null ? o.us + 'us ' : '') + (o.result != null ? '=' + o.result + ' ' : '') + (o.error ? 'ERROR ' + one(o.error) + ' ' : '') + one(o.sql || '')));
   }, function (o) { setTime(o.t); });
   lists.db.set(S.db);
   // Checkpoints
   var pc = addTab('cp', 'Checkpoints (' + S.cps.length + ')');
   lists.cp = VList(pc, function (r, o) {
     r.appendChild(el('span', 't', fmtT(o.t - S.t0)));
-    r.appendChild(document.createTextNode('checkpoint ' + o.id + ' (' + (o.why || '') + ') ' + JSON.stringify(o.acts || [])));
+    r.appendChild(document.createTextNode('checkpoint ' + o.id + ' (' + (o.why || '') + ') ' + one(JSON.stringify(o.acts || []))));
   }, function (o) { setTime(o.t); showCp(o); });
   lists.cp.set(S.cps);
   var cpd = el('pre', 'txt'); cpd.id = 'cpd'; cpd.style.flex = '0 0 150px'; pc.appendChild(cpd);
@@ -454,15 +461,16 @@ async function loadBundle(zip, t0) {
   S.t0 = 0; S.t1 = 1;
   async function show(head) {
     var pre = head.replace(/failure\.txt$/, '');
-    $('tabs').textContent = ''; $('panes').textContent = ''; lists = {};
+    $('tabs').textContent = ''; $('panes').textContent = ''; lists = {}; S.log = [];
+    if (shotUrl) { URL.revokeObjectURL(shotUrl); shotUrl = null; }
     var f = await zip.text(head);
     textPane('fail', 'Failure', f);
     var png = zip.entries[pre + 'screen.png'];
     if (png) {
-      var u = URL.createObjectURL(new Blob([await zip.bytes(pre + 'screen.png')], { type: 'image/png' })); urls.push(u);
+      var u = shotUrl = URL.createObjectURL(new Blob([await zip.bytes(pre + 'screen.png')], { type: 'image/png' }));
       $('frame').src = u; $('phone').style.display = '';
       var p = addTab('screen', 'Screen'); var im = el('img'); im.src = u; im.style.maxWidth = '100%'; p.style.overflow = 'auto'; p.appendChild(im);
-    } else { $('phone').style.display = 'none'; }
+    } else { $('phone').style.display = 'none'; $('frame').removeAttribute('src'); }
     var parts = [['windows', 'windows.txt'], ['nodes', 'nodes.txt'], ['threads', 'threads.txt'], ['looper', 'looper.txt'], ['repro', 'repro.sh'], ['process', 'process.txt']];
     for (var i = 0; i < parts.length; i++) {
       if (!zip.entries[pre + parts[i][1]]) continue;
@@ -477,8 +485,7 @@ async function loadBundle(zip, t0) {
     kv('log lines', S.log.length);
     showTab('fail');
   }
-  var showQ = Promise.resolve();
-  if (sel) sel.addEventListener('change', function () { var v = sel.value; showQ = showQ.then(function () { return show(v); }); });
+  if (sel) sel.addEventListener('change', function () { var v = sel.value, g = fileGen; loadQ = loadQ.then(function () { if (g === fileGen) return show(v); }); });
   await show(heads[0]);
 }
 function textLines(id, label, text) { // a big file as a searchable virtual list of its lines
@@ -545,6 +552,13 @@ function syncLists(follow) {
   if (lists.cp) lists.cp.cur(lastAtOrBefore(S.cps, 't', t), follow);
   if (lists.log) lists.log.cur(lastAtOrBefore(lists.log.items, 'ts', t), follow);
 }
+function geomTime() { // the last input that changed the display's geometry: touches before it are not placed
+  if (S.geomT == null) {
+    S.geomT = -Infinity;
+    S.input.forEach(function (o) { if (o.ev === 'resize' || (o.cmd && /^(rotate|device|size|window|zoom|config)$/.test(o.cmd[0]))) S.geomT = o.t; });
+  }
+  return S.geomT;
+}
 function setTime(t, quiet) {
   if (S.kind !== 'recording') return;
   S.t = Math.max(S.t0, Math.min(S.t1, t));
@@ -559,7 +573,7 @@ function setTime(t, quiet) {
     if (W && H) {
       var lo = S.t - 600;
       for (var k = lastAtOrBefore(S.input, 't', S.t); k >= 0 && S.input[k].t >= lo; k--) {
-        var o = S.input[k]; if (o.x == null || o.redacted || !TOUCH[o.ev]) continue;
+        var o = S.input[k]; if (o.x == null || o.redacted || !TOUCH[o.ev] || o.t < geomTime()) continue;
         var m = el('div', 'mk' + (o.t >= slot0 && o.t < slot1 ? ' now' : ''));
         m.style.left = (o.x / W * 100) + '%'; m.style.top = (o.y / H * 100) + '%'; m.style.opacity = String(Math.max(0.25, 1 - (S.t - o.t) / 700));
         marks.appendChild(m);
