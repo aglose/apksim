@@ -980,6 +980,9 @@ def main():
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         if base_apk:
+            # The new build's instances end first: they hold data slots, and a base instance would take the next
+            # ones (another device identity), and twice the JVMs would be alive.
+            new.close()
             base = Explorer("base", base_apk, args, out, shlex.split(args.base_option), shots="base-screens")
             base.pool(args.jobs)
             base.explore()
