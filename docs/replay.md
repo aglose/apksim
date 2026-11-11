@@ -151,6 +151,7 @@ package, an activity the recording's stack needs and the build lacks. The oldest
 bad; between them a binary search replays about log2(N) builds, and goes around a skipped one by trying its nearest
 neighbours. When only skipped builds separate a good one from a bad one, it says so and names them.
 
+`--timeout SEC` (default 600) ends a replay that runs longer, as for a build that hangs, and skips that build.
 `--builds FILE` takes a launch option with a build (`app.apk --feature X`), for builds that differ by a flag rather
 than by code. `--image IMAGE` replays in the Linux image. The output (`--out`, default `work/bisect-<bundle>`):
 `runs/NN-<build>/` with each replay's report, frames and log; `bisect.json`; and `index.html`, every build with its

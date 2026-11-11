@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Finds the first build whose replay of a flight recording diverges or crashes (docs/replay.md, "Bisect").
 
-Usage: bisect-rec.py BUNDLE.apkrec BUILD... [--out DIR] [--image IMAGE] [-- APKSIM OPTIONS]
+Usage: bisect-rec.py BUNDLE.apkrec BUILD... [--out DIR] [--image IMAGE] [--timeout SEC] [-- APKSIM OPTIONS]
        bisect-rec.py BUNDLE.apkrec DIR ...
        bisect-rec.py BUNDLE.apkrec --builds FILE ...
 
@@ -21,7 +21,8 @@ report and frames), bisect.json and index.html: every build with its result, and
 frames at the first bad one's first divergence side by side with the recorded frame and the difference map, embedded
 so the page can be sent on its own.
 
---image IMAGE replays in the Linux image (the bundle, builds and any file named in the apksim options are copied into
+--timeout SEC (default 600) ends a replay that runs longer (a build that hangs): it is skipped as "timed out", and the
+search goes on. --image IMAGE replays in the Linux image (the bundle, builds and any file named in the apksim options are copied into
 OUT/in, mounted as /work). Exit 0 when a first bad build was found, 1 when none was (the oldest already bad, the newest
 good, or only skipped builds between), 2 for bad arguments.
 """
@@ -52,7 +53,7 @@ def natural(s):
 
 
 def parse(argv):
-    opts = {"out": None, "image": None, "builds_file": None}
+    opts = {"out": None, "image": None, "builds_file": None, "timeout": 600.0}
     rest, apksim_opts = [], []
     if "--" in argv:
         i = argv.index("--")
@@ -64,6 +65,11 @@ def parse(argv):
             sys.exit(0)
         elif x == "--out":
             opts["out"] = next(it)
+        elif x == "--timeout":
+            try:
+                opts["timeout"] = float(next(it))
+            except (StopIteration, ValueError):
+                die("bisect-rec.py: --timeout takes seconds")
         elif x == "--image":
             opts["image"] = next(it)
         elif x == "--builds":
@@ -127,6 +133,7 @@ class Bisect:
         stem = os.path.basename(bundle).rsplit(".apkrec", 1)[0]
         self.out = os.path.abspath(opts["out"] or os.path.join(ROOT, "work", "bisect-" + stem))
         self.image = opts["image"]
+        self.timeout = opts["timeout"]
         self.staged = {}
         # OUT is ours only if empty or an earlier bisect's: then only what a bisect writes there goes. Anything else in
         # it (the builds themselves, say) is never deleted.
@@ -210,19 +217,38 @@ class Bisect:
             # can empty this --out next time (as instrument.py's bundles are).
             script = ("apksim " + " ".join(shlex.quote(x) for x in args) + "; s=$?; chmod -R a+rwX /work/" + shlex.quote(b["run"])
                       + " /work/in 2>/dev/null; exit $s")
-            cmd = ["docker", "run", "--rm", "--platform", self.platform, "-v", f"{self.out}:/work", "--entrypoint", "bash",
-                   self.image, "-c", script]
+            container = f"bisect-rec-{os.getpid()}-{i + 1:02d}"
+            cmd = ["docker", "run", "--rm", "--name", container, "--platform", self.platform, "-v", f"{self.out}:/work",
+                   "--entrypoint", "bash", self.image, "-c", script]
         else:
             cmd = [os.path.join(ROOT, "apksim"), "replay", "--headless", "--apk", b["apk"], "--out", rundir] + extra + [self.bundle]
+        timed_out = False
         with open(os.path.join(rundir, "replay.log"), "w") as log:
-            code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, APKSIM_STANDBY=os.environ.get("APKSIM_STANDBY", "0"))).returncode
+            p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                 env=dict(os.environ, APKSIM_STANDBY=os.environ.get("APKSIM_STANDBY", "0")))
+            try:
+                code = p.wait(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                # A build that hangs must not stall the bisect: its process group goes (and its container, which a
+                # killed docker client would leave running), and it counts as skipped.
+                timed_out = True
+                try:
+                    os.killpg(p.pid, 9)
+                except OSError:
+                    p.kill()
+                if self.image:
+                    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+                code = p.wait()
         b["seconds"] = round(time.time() - t0, 1)
         b["exit"] = code
         text = open(os.path.join(rundir, "replay.log"), errors="replace").read()
         rep = os.path.join(rundir, "report.json")
         b["report"] = json.load(open(rep)) if os.path.exists(rep) else None
         rep_state = (b["report"] or {}).get("result")
-        if code == 0 and rep_state == "matched":
+        if timed_out:
+            b["result"] = "skipped"
+            b["why"] = f"timed out after {self.timeout:g} s"
+        elif code == 0 and rep_state == "matched":
             b["result"] = "good"
         elif code == 0:
             # Ended before its result (the app exited by itself, the last activity finished): not evidence either way.
