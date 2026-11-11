@@ -240,7 +240,8 @@ a swipe under 250 ms as an untimed `swipe`, so a fling still flings); then `sett
 for. `nodes` escapes `\`, `"` and line breaks in its values (`\\`, `\"`, `\n`), which journey.py decodes, so a
 label with quotes or a semicolon matches whole. A rotary step keeps the `rotary` command's sign. JUnit XML
 (`--xml`): one test case per step, the failing step's message (`expected 'Roman vacation' on screen after 10 s; it
-shows ['Roman holiday', ...]`), the rest skipped. Exit 0 passed, 1 failed, 2 could not start. `--by-coordinates` taps
+shows ['Roman holiday', ...]`), the rest skipped. Exit 0 passed, 1 failed, 2 could not start, a replay still starting
+after `--start-timeout` (120 s) included: it runs no step then (`scripts/journey-start-check.py`, a stand-in apksim; CI). `--by-coordinates` taps
 the recorded points instead, to compare.
 
 A generated UiAutomator test (Kotlin for the app's `androidTest`) is not done: the journey and its runner cover running
