@@ -2,7 +2,7 @@
 """Runs a journey (docs/replay.md, "Recording to journey") against apksim over its control channel.
 
 Usage: journey.py JOURNEY.json [--port PORT] [--apk APK] [--bundle BUNDLE] [--start checkpoint|launch]
-                  [--xml FILE] [--timeout S] [--keep] [--by-coordinates] [-- APKSIM OPTIONS]
+                  [--xml FILE] [--timeout S] [--start-timeout S] [--keep] [--by-coordinates] [-- APKSIM OPTIONS]
 
 A journey is what `apksim replay --journey BUNDLE` writes: steps that find their element by text, content
 description or resource id (as `nodes` shows them), with the texts each step should bring on screen. For each step:
@@ -14,7 +14,8 @@ description or resource id (as `nodes` shows them), with the texts each step sho
 
 Without --port it starts the app itself: from the recording's checkpoint (`apksim replay --input none --compare none`,
 the journey's bundle or --bundle; --apk for another build) or, with --start launch, a fresh launch of --apk. APKSIM
-OPTIONS go to that launch (`--device tablet`, `--feature X`...). It quits the app at the end unless --keep.
+OPTIONS go to that launch (`--device tablet`, `--feature X`...). It quits the app at the end unless --keep. A replay
+still starting after --start-timeout seconds (default 120) is a start that failed: exit 2, no step run.
 
 --by-coordinates taps the recorded points instead of the nodes (what a plain replay does), to compare.
 
@@ -246,9 +247,12 @@ def start(a, journey):
         if a.start == "launch":
             c("settle 20000")
         else:
-            for _ in range(600):
-                if not re.match(r"replay: (starting|running)", c("replay")):
-                    break
+            # The replay puts the checkpoint back before it hands the app over. One that never gets that far cannot
+            # run the journey: that is a start that failed (exit 2), not a first step that did.
+            end = time.time() + a.start_timeout
+            while re.match(r"replay: (starting|running)", state := c("replay")):
+                if time.time() > end:
+                    die(f"journey: the replay did not get past starting in {a.start_timeout:g} s ({state}); its log: {log}")
                 time.sleep(0.2)
         return p, c
     except BaseException:
@@ -275,6 +279,7 @@ def main():
     ap.add_argument("--start", choices=["checkpoint", "launch"], default="checkpoint")
     ap.add_argument("--xml")
     ap.add_argument("--timeout", type=float, default=10)
+    ap.add_argument("--start-timeout", type=float, default=120)
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--by-coordinates", action="store_true")
     a = ap.parse_args(args)

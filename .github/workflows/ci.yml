@@ -99,6 +99,9 @@ jobs:
       - name: instrument.py check (test processes that die, against a stand-in apksim)
         if: needs.changes.outputs.code != 'false'
         run: python3 scripts/instrument-check.py
+      - name: journey.py start check (a replay that never gets past starting, against a stand-in apksim)
+        if: needs.changes.outputs.code != 'false'
+        run: python3 scripts/journey-start-check.py
       - name: Build the image
         if: needs.changes.outputs.code != 'false'
         run: scripts/docker-build.sh apksim:ci
