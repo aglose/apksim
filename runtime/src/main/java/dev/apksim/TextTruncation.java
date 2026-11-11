@@ -49,7 +49,7 @@ final class TextTruncation {
     }
     if (l.getLineEnd(lines - 1) < text.length()) return true;  // a maxLines limit dropped the rest
     int high = tv.getHeight() - tv.getTotalPaddingTop() - tv.getTotalPaddingBottom();
-    return high > 0 && !tv.canScrollVertically(1) && l.getHeight() > high + 1 && tv.getMovementMethod() == null;
+    return high > 0 && l.getHeight() > high + 1 && tv.getMovementMethod() == null;  // a scrolling TextView is not cut off
   }
 
   /** Semantics node id -> whether the text in it (and what it merges) is cut off; empty when this is not Compose. */
@@ -87,6 +87,7 @@ final class TextTruncation {
     for (int i = 0; i < lines; i++) {
       if (Boolean.TRUE.equals(c.getMethod("isLineEllipsized", int.class).invoke(r, i))) return true;
       if (((Number) c.getMethod("getLineRight", int.class).invoke(r, i)).floatValue() > width + 1) return true;
+      if (((Number) c.getMethod("getLineLeft", int.class).invoke(r, i)).floatValue() < -1) return true;  // right-to-left text runs out on the left
     }
     return false;
   }

@@ -860,7 +860,8 @@ class Sweep:
         staged = os.path.join(inst.stage, "sweep.png")
         inst.expect_ok(f"shot {staged}")
         shutil.move(staged, path)
-        return {"id": obs["id"], "recs": obs["recs"], "texts": texts_of(obs["recs"]), "settled": settled,
+        return {"id": obs["id"], "screen": screen["id"], "recs": obs["recs"], "texts": texts_of(obs["recs"]), "settled": settled,
+                "checks": ["K" in r.flags for r in obs["recs"] if "k" in r.flags and "v" in r.flags],
                 "shot": os.path.relpath(path, self.ex.out)}
 
     def differ(self, inst, a, b, tag):
@@ -871,6 +872,8 @@ class Sweep:
             lost = [t for t in a["texts"] if t not in b["texts"]]
             gained = [t for t in b["texts"] if t not in a["texts"]]
             return "text changed: " + "; ".join([f"'{t}' gone" for t in lost[:4]] + [f"'{t}' appeared" for t in gained[:4]]), None
+        if a["checks"] != b["checks"]:  # before the image comparison, which a screen that never settles skips
+            return "a switch or checkbox is not in the state it was", None
         if a["settled"] and b["settled"]:
             d = diff_images(inst, os.path.join(self.ex.out, a["shot"]), os.path.join(self.ex.out, b["shot"]), tag,
                             os.path.join(self.dir, a["shot"].split("/")[1], "diff"), self.args.diff_delta, self.args.sweep_pixels,
