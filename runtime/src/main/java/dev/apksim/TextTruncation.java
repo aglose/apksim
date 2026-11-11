@@ -43,9 +43,11 @@ final class TextTruncation {
     if (l == null || text == null || text.length() == 0 || tv.getVisibility() != View.VISIBLE) return false;
     int lines = l.getLineCount();
     int room = tv.getWidth() - tv.getTotalPaddingLeft() - tv.getTotalPaddingRight();
+    // Text that scrolls sideways on purpose (a marquee, a single-line field) is not cut off by its width.
+    boolean sideways = tv.getEllipsize() == android.text.TextUtils.TruncateAt.MARQUEE || tv instanceof android.widget.EditText;
     for (int i = 0; i < lines; i++) {
       if (l.getEllipsisCount(i) > 0) return true;
-      if (room > 0 && l.getLineMax(i) > room + 1) return true;
+      if (room > 0 && !sideways && l.getLineMax(i) > room + 1) return true;
     }
     if (l.getLineEnd(lines - 1) < text.length()) return true;  // a maxLines limit dropped the rest
     int high = tv.getHeight() - tv.getTotalPaddingTop() - tv.getTotalPaddingBottom();

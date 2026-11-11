@@ -822,8 +822,10 @@ class Sweep:
                 self.note(kind, screen, "replay", f"could not set up the case: {e}", [])
             except Gone as e:
                 c = e.crash
+                cmds = list(getattr(inst, "cmds", []))
+                before = [x for x in cmds if x == "network offline"]  # set before the screen is opened, as the case does
                 self.note(kind, screen, "crash" if c["kind"] == "crash" else "exit", c["detail"], getattr(inst, "case", []),
-                          log=c.get("log"), repro_cmds=list(getattr(inst, "cmds", [])))
+                          log=c.get("log"), pre=before, repro_cmds=[x for x in cmds if x not in before])
             except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
                 self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
             finally:
