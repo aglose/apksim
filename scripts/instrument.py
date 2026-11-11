@@ -5,6 +5,7 @@ Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored] [--prewarm on|o
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
                      [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
+                     [--coverage DIR [--coverage-local PATH] [--mapping FILE] [--source-prefix P]]
                      [-- APKSIM_OPTION...]
 
 Without --isolate every test runs in one process (Robolectric resets the framework and app data between tests, but
@@ -87,9 +88,10 @@ shard I's tests, balanced by the same rule (by count without timings), each in i
 long tests start early but not together (stacked at the start, a machine's heaviest tests can slow each other past a
 test's own timeout); `longest-first`; `suite` keeps the suite's order.
 """
-import argparse, collections, concurrent.futures, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
+import argparse, collections, concurrent.futures, glob, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
 import affected
+import coverage
 from xml.sax.saxutils import escape, quoteattr
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
@@ -1116,6 +1118,11 @@ def main():
     p.add_argument("--record-size", metavar="WxH")
     p.add_argument("--record-fps", type=int, metavar="N")
     p.add_argument("--record-deps", metavar="FILE")
+    p.add_argument("--coverage", metavar="DIR", help="hit counts per method and line (docs/coverage.md): DIR gets one file "
+                   "per process and, after the run, jacoco.xml, lcov.info and index.html")
+    p.add_argument("--coverage-local", metavar="PATH", help="with --apksim: DIR as seen here")
+    p.add_argument("--mapping", metavar="FILE", help="--coverage: an R8 mapping.txt, to report original names")
+    p.add_argument("--source-prefix", default="", help="--coverage: put before the paths in lcov.info")
     p.add_argument("--affected-by", metavar="FILE")
     p.add_argument("--changed", nargs="+", action="extend", default=[], metavar="PATH")
     p.add_argument("--diff", metavar="REV")
@@ -1153,6 +1160,14 @@ def main():
         passthrough = passthrough + ["--bundles", a.bundles]
         clear_bundles(a.bundles_local or a.bundles)
         os.makedirs(a.bundles_local or a.bundles, exist_ok=True)
+    if a.coverage:
+        if a.record_deps:
+            p.error("--coverage and --record-deps both put probes in the classes: run them one at a time")
+        cov_dir = a.coverage_local or a.coverage
+        os.makedirs(cov_dir, exist_ok=True)
+        for old in glob.glob(os.path.join(cov_dir, "cov-*.cov")):  # an earlier run's counts are not this one's
+            os.remove(old)
+        passthrough = passthrough + ["--coverage", a.coverage]
     if a.record:
         if not a.record_dir:
             p.error("--record needs --record-dir DIR")
@@ -1377,6 +1392,11 @@ def main():
             f.write("</testsuite>\n")
     if a.record_deps:
         affected.write_deps(a.record_deps, RECORDED, [a.app, a.test])
+    if a.coverage:
+        try:
+            coverage.write_reports(a.coverage_local or a.coverage, mapping=a.mapping, source_prefix=a.source_prefix)
+        except SystemExit as e:  # no process wrote a file (nothing ran): the run's own result decides the exit
+            print(e, file=sys.stderr)
     if selected is not None and not selected:
         print("no test is affected by the change", file=sys.stderr)
         sys.exit(0)

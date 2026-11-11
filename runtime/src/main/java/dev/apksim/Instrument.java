@@ -149,6 +149,9 @@ final class Instrument {
     System.setProperty("apksim.runner", instr[0]);
     core.addListener(TestRunnerSetup.LISTENERS);
     Result r = core.run(request);
+    if (dev.apksim.dex.Coverage.ON && System.getProperty("apksim.coverage.dir") != null) {
+      CoverageDump.write(Path.of(System.getProperty("apksim.coverage.dir")), app, tests);
+    }
     raw.finish(r, r.getRunTime());
     if (!TestRunnerSetup.LISTENERS.failures.isEmpty()) {
       System.err.println("[apksim] " + TestRunnerSetup.LISTENERS.failures.size() + " runner or listener failure(s): the run fails");

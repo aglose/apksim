@@ -80,6 +80,11 @@ public final class Probes {
     return false;
   }
 
+  /** {@link #probed} for coverage's report, which reaches it from another package. */
+  public static boolean probedName(String internalName) {
+    return probed(internalName);
+  }
+
   /** Read on first use: the app package is known only once the APK's manifest is read. */
   private static final class Packages {
     static final String[] LIST = list();

@@ -95,6 +95,7 @@ final class ClassCache {
     if (Boolean.getBoolean("apksim.debugInfo")) runtime += "-debug";
     else if (!dev.apksim.dex.ClassTranslator.PEEPHOLE) runtime += "-raw";
     runtime += dev.apksim.dex.Probes.cacheKey();  // test-impact recording: probed classes
+    runtime += dev.apksim.dex.Coverage.cacheKey();  // coverage: classes with counters
     Path root = BeamSandbox.ON ? BeamSandbox.classCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot"), "classes");
     Path seed = BeamSandbox.ON ? BeamSandbox.classCacheSeed() : null;
     ClassCache cache = new ClassCache(root.resolve(runtime), seed == null ? null : seed.resolve(runtime), keys, hintName);

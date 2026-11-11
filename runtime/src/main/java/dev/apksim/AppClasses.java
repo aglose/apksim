@@ -216,6 +216,36 @@ final class AppClasses {
     return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0 ? ClassCache.INTERFACE : ClassCache.CLASS;
   }
 
+  /** Every class of this APK, by internal name (coverage reports the ones nothing ran too). */
+  List<String> internalNames() {
+    List<String> out = new ArrayList<>();
+    for (DexFile d : dexes) {
+      for (int i = 0; i < d.classDefsSize; i++) {
+        String t = d.className(i);
+        out.add(t.substring(1, t.length() - 1));
+      }
+    }
+    return out;
+  }
+
+  /** What identifies the classes' content, cheaply: each DEX file's own checksum and size. */
+  String fingerprint() {
+    StringBuilder b = new StringBuilder();
+    for (DexFile d : dexes) b.append(Integer.toHexString(d.i32(8))).append('.').append(d.classDefsSize).append(';');
+    return b.toString();
+  }
+
+  /** A class's bytes without marking it loaded (the load hints would then define it at the next start). */
+  synchronized byte[] peek(String internalName) {
+    int[] at = find(internalName);
+    if (at == null) return null;
+    if (cache != null) {
+      byte[] hit = cache.get(at[0], internalName, this::answer);
+      if (hit != null) return hit;
+    }
+    return translate(dexes.get(at[0]), at, internalName);
+  }
+
   synchronized byte[] translate(String internalName) {
     int[] at = find(internalName);
     if (at == null) return null;

@@ -26,6 +26,8 @@ public final class ClassTranslator implements Opcodes {
   public static final boolean PEEPHOLE = !DEBUG_INFO && Boolean.parseBoolean(System.getProperty("apksim.peephole", "true"));
   /** Test-impact recording (-Dapksim.deps): probes at method starts, see {@link Probes}. Off, classes are unchanged. */
   static final boolean RECORDING = Probes.ON;
+  /** Coverage (-Dapksim.coverage): counters per method and line, see {@link Coverage}. Off, classes are unchanged. */
+  static final boolean COVERAGE = Coverage.ON;
   private static final int VIS_RUNTIME = 1;
   private static final int VIS_SYSTEM = 2;
 
@@ -36,6 +38,8 @@ public final class ClassTranslator implements Opcodes {
   private Set<String> split = Set.of();
   private String name;
   private boolean probe;
+  private Coverage.Slots cov; // Non-null while translating a class that is covered.
+  private List<Object[]> covPending = new ArrayList<>(); // {MethodNode, method slot}: finished once the slot count is known
   private boolean isIface;
 
   private final Map<Integer, Integer> fieldAnnots = new HashMap<>();
@@ -76,6 +80,8 @@ public final class ClassTranslator implements Opcodes {
     memberClasses = null;
     signature = null;
     sourceDebug = null;
+    cov = null;
+    covPending = new ArrayList<>();
     outerClass = null;
     outerMethod = null;
     innerName = null;
@@ -111,6 +117,10 @@ public final class ClassTranslator implements Opcodes {
     cw.visit(V1_8, classAccess, name, signature, sup, interfaces);
     probe = RECORDING && Probes.probed(name);
     isIface = (access & ACC_INTERFACE) != 0;
+    if (COVERAGE && Probes.probed(name)) {
+      cov = new Coverage.Slots();
+      if (!isIface) cw.visitField(ACC_PRIVATE | ACC_STATIC | ACC_SYNTHETIC, Coverage.COUNTERS_FIELD, "[I", null, null).visitEnd();
+    }
     if (probe && !isIface) cw.visitField(ACC_PRIVATE | ACC_STATIC | ACC_SYNTHETIC, PROBE_FIELD, "I", null, null).visitEnd();
 
     int src = dex.i32(def + 16);
@@ -145,6 +155,7 @@ public final class ClassTranslator implements Opcodes {
       readMethods(cur, dm);
       readMethods(cur, vm);
     }
+    if (cov != null) finishCoverage();
     cw.visitEnd();
     return cw.toByteArray();
   }
@@ -226,6 +237,49 @@ public final class ClassTranslator implements Opcodes {
     node.maxStack = Math.max(node.maxStack, 2);
   }
 
+  /**
+   * Coverage: each method counts itself on entry (the first to run makes the class's counters), once the number of slots
+   * is known; the table of slots goes into the class as constants.
+   */
+  private void finishCoverage() {
+    int n = cov.count;
+    for (Object[] p : covPending) {
+      var node = (org.objectweb.asm.tree.MethodNode) p[0];
+      org.objectweb.asm.tree.InsnList l = new org.objectweb.asm.tree.InsnList();
+      if (isIface) {
+        l.add(new org.objectweb.asm.tree.LdcInsnNode(Type.getObjectType(name)));
+        l.add(new org.objectweb.asm.tree.LdcInsnNode(n));
+        l.add(new org.objectweb.asm.tree.MethodInsnNode(INVOKESTATIC, COVERAGE_CLASS, "arr", "(Ljava/lang/Class;I)[I", false));
+      } else {
+        org.objectweb.asm.tree.LabelNode have = new org.objectweb.asm.tree.LabelNode();
+        l.add(new org.objectweb.asm.tree.FieldInsnNode(GETSTATIC, name, Coverage.COUNTERS_FIELD, "[I"));
+        l.add(new org.objectweb.asm.tree.JumpInsnNode(IFNONNULL, have));
+        l.add(new org.objectweb.asm.tree.LdcInsnNode(Type.getObjectType(name)));
+        l.add(new org.objectweb.asm.tree.LdcInsnNode(n));
+        l.add(new org.objectweb.asm.tree.MethodInsnNode(INVOKESTATIC, COVERAGE_CLASS, "init", "(Ljava/lang/Class;I)[I", false));
+        l.add(new org.objectweb.asm.tree.FieldInsnNode(PUTSTATIC, name, Coverage.COUNTERS_FIELD, "[I"));
+        l.add(have);
+        l.add(new org.objectweb.asm.tree.FieldInsnNode(GETSTATIC, name, Coverage.COUNTERS_FIELD, "[I"));
+      }
+      l.add(new org.objectweb.asm.tree.LdcInsnNode((Integer) p[1]));
+      l.add(new org.objectweb.asm.tree.InsnNode(DUP2));
+      l.add(new org.objectweb.asm.tree.InsnNode(IALOAD));
+      l.add(new org.objectweb.asm.tree.InsnNode(ICONST_1));
+      l.add(new org.objectweb.asm.tree.InsnNode(IADD));
+      l.add(new org.objectweb.asm.tree.InsnNode(IASTORE));
+      node.instructions.insert(l);
+      node.maxStack = Math.max(node.maxStack, 5);
+      node.accept(cw);
+    }
+    covPending = new ArrayList<>();
+    String[] chunks = cov.chunks();
+    for (int i = 0; i < chunks.length; i++) {
+      cw.visitField(ACC_PUBLIC | ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC, Coverage.META_FIELD + i, "Ljava/lang/String;", null, chunks[i]).visitEnd();
+    }
+  }
+
+  private static final String COVERAGE_CLASS = "dev/apksim/dex/Coverage";
+
   private void readMethods(DexFile.Cursor cur, int n) {
     int idx = 0;
     for (int i = 0; i < n; i++) {
@@ -236,13 +290,14 @@ public final class ClassTranslator implements Opcodes {
       DexFile.MethodRef m = dex.method(idx);
       String sig = null;
       String[] exceptions = null;
+      int covSlot = -1;
       Integer annots = methodAnnots.get(idx);
       if (annots != null) {
         sig = signatureFrom(annots);
         exceptions = throwsFrom(annots);
       }
       // Buffered, so Peephole can shrink the code before it is written (not with debug info, which names the slots).
-      org.objectweb.asm.tree.MethodNode node = PEEPHOLE || probe
+      org.objectweb.asm.tree.MethodNode node = PEEPHOLE || probe || cov != null
           ? new org.objectweb.asm.tree.MethodNode(org.objectweb.asm.Opcodes.ASM9, access, m.name(), m.descriptor(), sig, exceptions)
           : null;
       MethodVisitor mv = node != null ? node : cw.visitMethod(access, m.name(), m.descriptor(), sig, exceptions);
@@ -260,7 +315,12 @@ public final class ClassTranslator implements Opcodes {
       if (code != 0) {
         try {
           boolean big = split.contains(m.name() + m.descriptor());
-          new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret()).translate();
+          MethodTranslator mt = new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret());
+          if (cov != null) {
+            covSlot = cov.method(m.name(), m.descriptor());
+            mt.cover(cov, covSlot, isIface);
+          }
+          mt.translate();
         } catch (RuntimeException e) {
           throw new IllegalStateException("translating " + name + "." + m.name() + m.descriptor(), e);
         }
@@ -270,7 +330,8 @@ public final class ClassTranslator implements Opcodes {
       if (node != null) {
         if (PEEPHOLE) Peephole.optimize(node);
         if (probe && code != 0) addProbe(node);
-        node.accept(cw);
+        if (cov != null && code != 0) covPending.add(new Object[] {node, covSlot});
+        else node.accept(cw);
       }
     }
   }
@@ -307,7 +368,7 @@ public final class ClassTranslator implements Opcodes {
       switch (type) {
         case "Ldalvik/annotation/Signature;" -> signature = joinSignature(vals.get("value"));
         // Kotlin's SMAP: lets a debugger map inlined functions' lines back to their own files.
-        case "Ldalvik/annotation/SourceDebugExtension;" -> sourceDebug = DEBUG_INFO ? smap((String) vals.get("value")) : null;
+        case "Ldalvik/annotation/SourceDebugExtension;" -> sourceDebug = DEBUG_INFO || cov != null ? smap((String) vals.get("value")) : null;
         case "Ldalvik/annotation/EnclosingClass;" -> outerClass = internal(((Type) vals.get("value")).getDescriptor());
         case "Ldalvik/annotation/EnclosingMethod;" -> {
           if (vals.get("value") instanceof DexFile.MethodRef m) {

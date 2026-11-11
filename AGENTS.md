@@ -222,6 +222,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
+  - `--coverage DIR` (`dex/Coverage`, `CoverageDump`, `scripts/coverage.py`): hits per method and line of `--instrument` runs, JaCoCo XML, LCOV and HTML; docs/coverage.md.
   - `Instrument`, `TestActivities`, `ShadowSimUiAutomation`: `--instrument` test runs, the system server's part of
     them, and UiAutomator (see "Instrumentation tests"). `Bundles`: failure bundles in test runs (`--bundles DIR`).
     `AccessibleWindows`: which windows accessibility reports (UiAutomation, `uiautomator dump`, `nodes`, bundles'

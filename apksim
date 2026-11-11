@@ -253,6 +253,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
                      EXTRA+=("-Dapksim.preciseWaits=$V"); shift 2 ;;
     # Failure bundles (test runs): what each failing test left, in DIR/<class>/<method>-<hash>/ (docs/plan.md phase 5).
     --bundles) mkdir -p "$2" && BUNDLES="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.bundles=$BUNDLES"); shift 2 ;;
+    # Coverage (test runs): hit counts per method and line, one file per process in DIR (docs/coverage.md).
+    --coverage) mkdir -p "$2" && COVERAGE_DIR="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.coverage=true" "-Dapksim.coverage.dir=$COVERAGE_DIR"); shift 2 ;;
     --bundles-on) EXTRA+=("-Dapksim.bundles.on=$2"); shift 2 ;;
     --bundles-max) EXTRA+=("-Dapksim.bundles.max=$2"); shift 2 ;;
     --bundles-redact) EXTRA+=("-Dapksim.bundles.redact.${REDACT_N:-0}=$2"); REDACT_N=$((${REDACT_N:-0} + 1)); shift 2 ;;
@@ -450,7 +452,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\"))
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
-(allow file-write* (subpath \"$BUNDLES\"))}${RECORD_DIR:+
+(allow file-write* (subpath \"$BUNDLES\"))}${COVERAGE_DIR:+
+(allow file-write* (subpath \"$COVERAGE_DIR\"))}${RECORD_DIR:+
 (allow file-write* (subpath \"$RECORD_DIR\"))}${REPLAY_OUT:+
 (allow file-write* (subpath \"$REPLAY_OUT\"))}${NET_RECORD_FILE:+
 (allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${TEST_OUTPUTS:+
