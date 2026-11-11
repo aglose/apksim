@@ -100,6 +100,7 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     permissions:
+      contents: read          # listing explicit permissions drops the default: checkout of a private repository needs this
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
