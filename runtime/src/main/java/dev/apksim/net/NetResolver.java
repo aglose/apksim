@@ -37,7 +37,16 @@ public final class NetResolver extends InetAddressResolverProvider {
           }
           return Stream.of(placeholder(h));
         }
-        return builtin.lookupByName(host, policy);
+        try {
+          return builtin.lookupByName(host, policy);
+        } catch (UnknownHostException e) {
+          if (!Inspector.on) throw e;
+          // The network inspector (docs/pr-preview.md): the failed lookup is a row, and while a rule answers requests the host
+          // gets a placeholder like a replayed one, so a rule can stand in for a server that is not there (yet).
+          Inspector.failure(host, 0, "DNS lookup failed: " + e.getMessage());
+          if (!Inspector.hasAnswerRules()) throw e;
+          return Stream.of(placeholder(h));
+        }
       }
 
       @Override

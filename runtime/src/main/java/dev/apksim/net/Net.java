@@ -93,6 +93,15 @@ public final class Net {
 
   /** Reads the launcher's -Dapksim.network* properties. Called once, before any app code runs. */
   public static synchronized void configure() {
+    configureOptions();
+    // `--network-inspect` (serve --inspect-network): the engine captures in memory and the inspector reports (docs/pr-preview.md).
+    if (Boolean.getBoolean("apksim.networkInspect")) {
+      Inspector.on = true;
+      log("network inspector: " + capture(true, true));
+    }
+  }
+
+  private static void configureOptions() {
     String spec = System.getProperty("apksim.network");
     String profile = System.getProperty("apksim.networkProfile");
     String hosts = System.getProperty("apksim.networkHost");
@@ -218,6 +227,16 @@ public final class Net {
     return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
   }
 
+  /** Whether the network inspector is on (`--network-inspect`). */
+  public static boolean inspecting() {
+    return Inspector.on;
+  }
+
+  /** `netwatch`: the inspector's events to `out` until the viewer closes `s`. */
+  public static void watch(Socket s, java.io.PrintWriter out) throws IOException {
+    Inspector.watch(s, out);
+  }
+
   /** Waits up to `ms` for exchanges whose answer the app may already have but the engine has not recorded yet. */
   public static void drain(long ms) {
     NetEngine e = engine;
@@ -318,7 +337,7 @@ public final class Net {
    * failures looked up while offline stay failures for 10 s after coming back (networkaddress.cache.negative.ttl), and
    * names looked up before going offline go on resolving.
    */
-  private static void flushDnsCache() {
+  static void flushDnsCache() {
     for (String name : new String[] {"cache", "expirySet"}) {
       try {
         java.lang.reflect.Field f = InetAddress.class.getDeclaredField(name);
@@ -378,6 +397,12 @@ public final class Net {
         String r = unmatched.isEmpty() ? "no unmatched requests" : String.join("\n", unmatched);
         if (a.length > 2 && a[2].equals("clear")) unmatched.clear();
         return r;
+      }
+      case "rule" -> {
+        return Inspector.rule(a);
+      }
+      case "detail" -> {
+        return Inspector.detail(a);
       }
       case "save" -> {
         if (mode != Mode.RECORD || recording.path == null) return "error: not recording to a file";

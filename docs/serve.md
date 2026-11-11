@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--max-push MB] [--allow-rec] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -45,6 +45,9 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   of them in all.
 - `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
+- `--issue-url TEMPLATE` (with `--allow-rec`) and `--inspect-network`: the page's report button opens a prefilled new-issue page, and a
+  tab sees the app's HTTP(S) exchanges and may answer or slow a URL (docs/pr-preview.md "Report button and network inspector").
+  Off by default: the second shows the app's traffic.
 - `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
   in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).
   Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on

@@ -65,6 +65,12 @@ final class Control {
               h264, args.length > 3 ? Integer.parseInt(args[3]) : 4000);
           return;
         }
+        if (args[0].equals("netwatch")) {
+          // netwatch: this connection becomes the network inspector's event stream (dev.apksim.net.Inspector).
+          out.println(dev.apksim.net.Net.inspecting() ? "ok netwatch" : "error: the network inspector is off (--network-inspect)");
+          if (dev.apksim.net.Net.inspecting()) dev.apksim.net.Net.watch(s, out);
+          return;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(p.await());

@@ -235,6 +235,8 @@ final class NetEngine {
     OutputStream uout;
     long connectMs = -1;
     int exchanges;
+    /** The connect error of an upstream that is not there while an inspector rule may still answer (see run()), else null. */
+    String deferred;
 
     Conn(Socket client) {
       this.client = client;
@@ -285,6 +287,15 @@ final class NetEngine {
         if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
         if (p.length > 4 && !p[4].equals("-")) address = p[4];
         String err = connectUpstream();
+        if (err != null && Inspector.on) {
+          Inspector.failure(host, port, err);
+          // A server that is not there (a backend not deployed yet) may still be answered by an inspector rule: the
+          // connection goes on without it, and a request no rule takes then fails as the connect would have.
+          if (Inspector.hasAnswerRules()) {
+            deferred = err;
+            err = null;
+          }
+        }
         cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
         if (err != null) return;
@@ -518,7 +529,7 @@ final class NetEngine {
     String handshake() {
       Conditions c = Net.conditions;
       Conditions.sleep(c.rtt());
-      if (Net.mode == Net.Mode.REPLAY) {
+      if (Net.mode == Net.Mode.REPLAY || deferred != null) {
         // No server: what one would have negotiated within what the app enabled, or the refusal it would have met.
         // TLS 1.3 and 1.2 only, as the JDK enables by default (servers refuse older ones too).
         String protocol = first(appProtocols, "TLSv1.3", "TLSv1.2");
@@ -667,7 +678,19 @@ final class NetEngine {
           Net.log("network: reset " + req.method + " " + req.url + " (" + c.name() + ")");
           return;
         }
-        boolean keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        ruleId = 0;
+        addedMs = 0;
+        boolean keep;
+        Inspector.Rule rule = Inspector.on ? Inspector.match(req.method, req.url) : null;
+        if (rule != null) {
+          // The inspector's rule (docs/pr-preview.md): latency first, then its answer, or the server's own.
+          ruleId = rule.id;
+          addedMs = rule.latencyMs;
+          Conditions.sleep(rule.latencyMs);
+          keep = rule.status > 0 ? answerRule(req, rule) : record(req);
+        } else {
+          keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+        }
         exchanges++;
         if (!keep || "close".equalsIgnoreCase(req.header("Connection"))) return;
         line = readLineBytes(cin);
@@ -955,7 +978,48 @@ final class NetEngine {
       return keep;
     }
 
+    /** The inspector rule that slowed or answered the exchange being handled (0: none), and the latency it added. */
+    int ruleId;
+    long addedMs;
+
+    /** An inspector rule's answer: the request is read and dropped, the rule's status and body go back; nothing reaches the server. */
+    boolean answerRule(Request req, Inspector.Rule rule) throws IOException {
+      long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
+      if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
+        cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+      }
+      streamRequestBody(req, OutputStream.nullOutputStream());
+      boolean none = rule.status == 204 || rule.status == 304 || rule.status < 200;
+      StringBuilder h = new StringBuilder("HTTP/1.1 ").append(rule.status).append(' ').append(Net.statusText(rule.status)).append("\r\n");
+      if (!none) h.append("Content-Type: ").append(rule.type).append("\r\nContent-Length: ").append(rule.body.length).append("\r\n");
+      h.append("X-Apksim-Rule: ").append(rule.id).append("\r\n\r\n");
+      Conditions.sleep(Net.conditions.rtt());
+      cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
+      if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(rule.body, 0, rule.body.length);
+      cout.flush();
+      Recording.Entry e = new Recording.Entry();
+      e.wallMs = startWall;
+      e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+      e.method = req.method;
+      e.url = req.url;
+      e.httpVersion = req.version;
+      e.reqHeaders = redacted(req.headers);
+      e.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
+      e.reqSha = req.bodySha;
+      e.reqTruncated = req.bodyTruncated;
+      e.status = rule.status;
+      e.statusText = Net.statusText(rule.status);
+      e.respHeaders = new ArrayList<>(List.of(new String[] {"Content-Type", rule.type}, new String[] {"X-Apksim-Rule", String.valueOf(rule.id)}));
+      e.respBody = rule.body;
+      e.timeMs = (System.nanoTime() - t0) / 1_000_000;
+      add(e);
+      return !"close".equalsIgnoreCase(req.header("Connection"));
+    }
+
     void add(Recording.Entry e) {
+      Inspector.exchange(e, ruleId, addedMs);
       Net.recording.add(e);
       recorded.incrementAndGet();
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network record: " + e.status + " " + e.method + " " + e.url);

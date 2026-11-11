@@ -640,6 +640,9 @@ Compare mode and previews (docs/pr-preview.md): `/?compare=A,B` is `serve/compar
 with every input sent to both and the differing pixels counted in the page (`window.apksimCompare()`); `scripts/pr-preview.py`
 and `.github/actions/preview` put a pull request's build on a serve (with `ttl`, `Catalog.expireAt`) and keep one comment.
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
+Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network`): the page's cards and script are
+`serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
+capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`); `scripts/inspector-check.py`.
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,

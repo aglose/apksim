@@ -272,6 +272,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
       fi
       EXTRA+=("-Dapksim.network=$2:$NET_FILE"); shift 3 ;;
     --network-profile) EXTRA+=("-Dapksim.networkProfile=$2"); shift 2 ;;
+    # The network inspector (serve --inspect-network, docs/pr-preview.md): exchanges kept in memory and reported to a viewer.
+    --network-inspect) EXTRA+=("-Dapksim.networkInspect=true"); shift ;;
     --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
     --network-match) EXTRA+=("-Dapksim.networkMatch=$2"); shift 2 ;;
     --network-ignore-query) EXTRA+=("-Dapksim.networkIgnoreQuery=$2"); shift 2 ;;
@@ -333,7 +335,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
-      -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*) ;;
+      -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*|-Dapksim.networkInspect=*) ;;
       *) WARM_OK="" ;;
     esac
   done
