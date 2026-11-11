@@ -19,12 +19,13 @@ scripts/flake-hunt.py app.apk test.apk -n 10 --perturb shuffle,isolate -e class 
 
 ## Perturbations
 
-Every run goes through `instrument.py`, so a process that crashes or hangs is handled there (`--test-timeout`, a new
+A listing (`-e log true`, nothing runs) finds the tests first; a class-level failure (`@BeforeClass`, `Class#null`)
+counts against each of its tests. Every run goes through `instrument.py`, so a process that crashes or hangs is handled there (`--test-timeout`, a new
 process for the tests left). `-n N` runs of each (default 5):
 
 | | how | brings out |
 |---|---|---|
-| `suite` | one process, the suite's order (the first run also lists the tests) | the baseline |
+| `suite` | one process, the suite's order | the baseline |
 | `shuffle` | one process; classes, and methods within each class, shuffled (`-e apksimOrder`). The first run is the suite's order reversed, so with `suite` every pair of tests has run both ways round | order dependence |
 | `isolate` | a process per test (`--isolate -j J`, through the pre-warmed pool: docs/test-pool.md) | a test that fails only after others; a test that fails alone too is not order-dependent |
 | `oversubscribe` | one process, suite order, with 2 busy processes per CPU beside it (`--hogs N`) | waits on real time that assume an idle machine |
@@ -37,7 +38,7 @@ only makes orders of that shape, so a run's order is exactly the list it passed.
 ## Verdicts
 
 For each test that failed in a `shuffle` run and passes alone (every `isolate` run), the hunter runs the tests that
-came before it in that run again, with it, in the same order, in one process. If it fails again (and does not alone),
+came before it in that run again, with it, in the same order, in one process. If it fails again, and passes when run alone (a skip or no result alone is not enough),
 delta debugging (Zeller's ddmin) reduces those tests to a 1-minimal set that still makes it fail: removing any one of
 them makes it pass. Each step is one process. The verdict is then `order-dependent`, with that set as the culprits and
 a command (instrument.py with `-e class` and `-e apksimOrder`) that reproduces it. Otherwise a test that failed only

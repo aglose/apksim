@@ -6,7 +6,8 @@ Usage: flake-hunt.py APP.apk TEST.apk [-n N] [--perturb LIST] [--out DIR] [-j J]
                      [-- APKSIM_OPTION...]
 
 Which tests: what `-e class/notClass/package` (or --affected-by with --changed/--diff, as instrument.py takes them)
-names; a first run in the suite's order (the "suite" perturbation's first) lists them. Every run goes through
+names; a listing (-e log true: nothing runs) finds them, and each run names them. A class-level failure (@BeforeClass,
+Class#null) counts against each of its tests. Every run goes through
 instrument.py, so a process that crashes or hangs is handled as there (--test-timeout, reruns in a new process).
 Perturbations (--perturb, comma-separated; default all):
   suite          one process, the suite's order: the baseline
@@ -51,7 +52,7 @@ class Hunt:
         os.makedirs(self.runs_dir, exist_ok=True)
         self.trials = {}  # ddmin: tuple of tests -> whether the victim failed
 
-    def command(self, tests=None, order=None, isolate=False, realtime=False, select=None, xml=None):
+    def command(self, tests=None, order=None, isolate=False, realtime=False, select=None, xml=None, extra=()):
         """instrument.py's command line for one run: [tests] named with -e class (else [select], the user's
         selection), [order] as -e apksimOrder."""
         cmd = [sys.executable, INSTRUMENT, self.a.app, self.a.test]
@@ -68,6 +69,8 @@ class Hunt:
             cmd += ["-e", "class", names(tests)]
         if order:
             cmd += ["-e", "apksimOrder", names(order)]
+        for k, v in extra:
+            cmd += ["-e", k, v]
         if select:
             cmd += select
         if isolate:
@@ -124,14 +127,28 @@ class Hunt:
         self.ran, self.returncode = ran, p.returncode
         return results, messages, base + ".log"
 
-    def victim_fails(self, victim, before):
-        """Delta debugging's test: does [victim] fail when [before] run ahead of it, in that order, in one process?"""
+    def victim_status(self, victim, before):
+        """[victim]'s status when [before] run ahead of it, in that order, in one process ("passed", "failed",
+        "skipped" or "missing"); a class-level failure of its class counts as its own."""
         key = (victim, tuple(before))
         if key not in self.trials:
             order = list(before) + [victim]
             got, _, _ = self.run("ddmin", tests=order, order=order)
-            self.trials[key] = got.get(victim) == "failed"
+            self.trials[key] = status_of(got, victim)
         return self.trials[key]
+
+    def victim_fails(self, victim, before):
+        """Delta debugging's test: does [victim] fail when [before] run ahead of it?"""
+        return self.victim_status(victim, before) == "failed"
+
+
+def status_of(got, t):
+    """[t]'s status in a run's results: its own, else its class's class-level failure (@BeforeClass: Class#null)."""
+    if t in got:
+        return got[t]
+    if got.get((t[0], "null")) == "failed" or got.get((t[0], None)) == "failed":
+        return "failed"
+    return "failed" if any(k[0].startswith("(") for k in got) else "missing"
 
 
 RUN_FAILURES = []  # runs that failed as a whole (a "(run)" entry, no report): the hunt fails with them
@@ -244,7 +261,7 @@ def main():
         signal.signal(sig, stopped)
     perturbs = [x.strip() for x in a.perturb.split(",") if x.strip()]
     bad = [x for x in perturbs if x not in PERTURBATIONS]
-    if bad or a.n < 1:
+    if bad or not perturbs or a.n < 1:
         p.error(f"--perturb takes {', '.join(PERTURBATIONS)}; -n at least 1")
     select = []
     if a.affected_by:
@@ -256,11 +273,10 @@ def main():
     t0 = time.time()
     rng = random.Random(a.seed)
 
-    # The tests: a first run in the suite's order lists them (and counts as one of "suite"'s runs).
-    print("listing the tests (a run in the suite's order):", file=sys.stderr)
-    first, first_msgs, _ = hunt.run("suite", select=select)
-    first_ran = [t for t in hunt.ran if t in first]
-    tests = [t for t in first if not t[0].startswith("(")]
+    # The tests, from a listing (-e log true: nothing runs, so a failing @BeforeClass cannot hide its class's methods).
+    print("listing the tests:", file=sys.stderr)
+    listed, _, _ = hunt.run("list", select=select, extra=[("log", "true")])
+    tests = [t for t in listed if not t[0].startswith("(") and t[1] not in (None, "null")]
     if not tests and hunt.returncode == 0 and not RUN_FAILURES:
         # (instrument.py's report of no tests: --affected-by found none the change reaches)
         print("no tests selected: nothing to hunt in", file=sys.stderr)
@@ -270,7 +286,8 @@ def main():
             f.write("{}\n")
         sys.exit(0)
     if not tests:
-        sys.exit("no tests to hunt in: the first run reported none (see " + hunt.runs_dir + ")")
+        sys.exit("no tests to hunt in: the listing reported none (see " + hunt.runs_dir + ")")
+    hunt.n = 0  # (the listing is not one of the runs counted)
     print(f"{len(tests)} tests, {a.n} runs each of: {', '.join(perturbs)}", file=sys.stderr)
     # results[perturbation][test] = list of statuses; failures: (perturbation, test, order of that run or None, message)
     results = {x: {t: [] for t in tests} for x in perturbs}
@@ -278,20 +295,17 @@ def main():
 
     def note(x, got, msgs, order=None):
         for t in tests:
-            s = got.get(t, "failed" if any(k[0].startswith("(") for k in got) else "missing")
+            s = status_of(got, t)
             results[x][t].append(s)
             if s == "failed":
-                failures.append((x, t, order, msgs.get(t, "")))
+                failures.append((x, t, order, msgs.get(t, msgs.get((t[0], "null"), ""))))
 
     for x in perturbs:
         print(f"{x}:", file=sys.stderr)
         for i in range(a.n):
             if x == "suite":
-                if i == 0:
-                    got, msgs, ran = first, first_msgs, first_ran
-                else:
-                    got, msgs, _ = hunt.run(x, tests=tests)
-                    ran = [t for t in hunt.ran if t in got]
+                got, msgs, _ = hunt.run(x, tests=tests)
+                ran = [t for t in hunt.ran if t in got]
                 note(x, got, msgs, ran or None)  # (a suite-order dependency is reduced as a shuffled one is)
             elif x == "shuffle":
                 order = shuffled(tests, rng, reverse=(i == 0))
@@ -321,8 +335,9 @@ def main():
         if not before or not hunt.victim_fails(t, before):
             print("  not reproduced with the same tests before it: not an order dependence", file=sys.stderr)
             continue
-        if hunt.victim_fails(t, []):
-            print("  fails alone too: not an order dependence", file=sys.stderr)
+        alone = hunt.victim_status(t, [])
+        if alone != "passed":  # (an order dependence needs a pass seen alone, not a skip or no result)
+            print(f"  {alone} alone: not an order dependence", file=sys.stderr)
             continue
         minimal = ddmin(before, lambda s: hunt.victim_fails(t, s))
         run = minimal + [t]
