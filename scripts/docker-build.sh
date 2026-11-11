@@ -22,7 +22,7 @@ ln "$ROOT"/work/lib/*.jar "$CTX/lib/" 2>/dev/null || cp "$ROOT"/work/lib/*.jar "
 cp "$ROOT/apksim" "$CTX/apksim"
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" "$CTX/"
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/instrument.py" "$ROOT/scripts/affected.py" "$ROOT/scripts/snapshot.py" \
-  "$ROOT/scripts/crawl.py" "$ROOT/scripts/drive.py" "$CTX/"
+  "$ROOT/scripts/crawl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/journey.py" "$CTX/"
 cp "$ROOT/work/apksim.jar" "$CTX/apksim.jar"
 # The clips the build stage's decoder check (native/linux/avdecoder_check.c) decodes; they are not shipped.
 mkdir -p "$CTX/media"

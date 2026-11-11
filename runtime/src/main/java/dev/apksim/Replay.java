@@ -78,6 +78,8 @@ final class Replay {
   private final String compareMode;
   private final double threshold;
   private final boolean control = System.getProperty("apksim.control") != null;
+  /** `--journey`: the replay also writes a journey that targets nodes (Journey), or null. */
+  private Journey journey;
 
   /** One line of input.jsonl: an event to dispatch or a command to run, and whether a gesture starts with it. */
   record Item(long t, long w, SimWindow.Event event, String[] command, boolean point, String what) {}
@@ -122,7 +124,8 @@ final class Replay {
     double th = t == null ? 0.00005 : Double.parseDouble(t);
     threshold = th < 1 ? Math.max(16, th * total) : th;
     Path input = dir.resolve("input.jsonl");
-    if (Files.isRegularFile(input)) {
+    // --input none: the checkpoint only (scripts/journey.py drives from there).
+    if (Files.isRegularFile(input) && !"none".equals(plan.getProperty("input"))) {
       int down = 0;
       try (java.io.BufferedReader lines = Files.newBufferedReader(input, StandardCharsets.UTF_8)) {
         for (String line; (line = lines.readLine()) != null; ) {
@@ -208,6 +211,9 @@ final class Replay {
     // providers saw that date); set again now, after the start, unless the replay was given a --clock of its own.
     String clock = plan.getProperty("clock");
     if (clock != null && clock.equals(System.getProperty("apksim.clock"))) SimClock.set(clock);
+    if ("true".equals(plan.getProperty("journey"))) {
+      journey = new Journey(out.resolve("journey.json"), app.getResources().getDisplayMetrics().density, manifest, plan.getProperty("bundle"));
+    }
     ClassLoader loader = app.getClassLoader();
     List<String> names = new ArrayList<>();
     List<Intent> intents = new ArrayList<>();
@@ -296,12 +302,15 @@ final class Replay {
       Item it = items.get(next);
       if (now - base < it.t - cpUptime) return null;
       if (it.point && pointers == 0 && compareMode.equals("all")) compare(host, "before " + it.what, it.w - 20, it.t - cpUptime);
+      if (it.point && pointers == 0 && journey != null) journey.point();
       next++;
       if (it.command != null) {
+        if (journey != null && !it.command[0].equals("paste")) journey.command(it.command);
         runCommand(it, host);
         continue;
       }
       SimWindow.Event e = it.event;
+      if (journey != null) journey.event(e, it.t - cpUptime);
       if (e.type() == SimWindow.DOWN || e.type() == SimWindow.TOUCH2_DOWN) pointers++;
       else if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL || e.type() == SimWindow.TOUCH2_UP) pointers = Math.max(0, pointers - 1);
       dispatched++;
@@ -309,7 +318,9 @@ final class Replay {
     }
     // The journal is done: wait for the recording's end (the save), then for the screen to be still (300 ms without a
     // frame, at most 3 s), and compare the last frame.
-    long end = endUptime >= 0 ? endUptime - cpUptime : 0;
+    // Up to the recording's end, also for a journal with no input (a checkpoint, then a delayed task or an answer that
+    // changed the screen); only --input none (journey.py's start) skips it.
+    long end = endUptime >= 0 && !"none".equals(plan.getProperty("input")) ? endUptime - cpUptime : 0;
     if (now - base < end) return null;
     long real = System.nanoTime();
     if (endSince == 0) {
@@ -581,6 +592,13 @@ final class Replay {
       }
     } catch (Exception e) {
       // not replaying the network
+    }
+    if (journey != null) {
+      try {
+        System.err.println("[apksim] replay: journey " + journey.finish());
+      } catch (IOException | RuntimeException e) {
+        notes.add("journey not written: " + e);
+      }
     }
     result = firstDivergence != null ? "diverged" : "matched";
     writeReport(result);
