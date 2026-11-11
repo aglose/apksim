@@ -224,10 +224,14 @@ class Bisect:
 
     def inside(self, path):
         """A file as the image sees it: copied into OUT/in once per source path, under a name of its own (two builds
-        both called app.apk in different folders are two files), as /work/in/NAME."""
+        both called app.apk in different folders are two files), as /work/in/NAME. A name already in OUT/in (the
+        recorded build stage_recorded_build put there under its own name, say 01-app.apk) is never written over."""
         src = os.path.abspath(path)
         if src not in self.staged:
-            name = f"{len(self.staged) + 1:02d}-" + re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(src))
+            base, n = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(src)), len(self.staged) + 1
+            while os.path.exists(os.path.join(self.out, "in", f"{n:02d}-{base}")):
+                n += 1
+            name = f"{n:02d}-{base}"
             shutil.copy(src, os.path.join(self.out, "in", name))
             self.staged[src] = name
         return "/work/in/" + self.staged[src]
