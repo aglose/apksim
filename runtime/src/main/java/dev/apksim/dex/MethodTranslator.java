@@ -2670,8 +2670,9 @@ final class MethodTranslator implements Opcodes {
     if (opcode == INVOKEVIRTUAL && "java/util/concurrent/CountDownLatch".equals(ownerName) && "await".equals(m.name())
         && ("()V".equals(m.descriptor()) || "(JLjava/util/concurrent/TimeUnit;)Z".equals(m.descriptor()))) {
       // A test waiting for main-thread work: on the main thread in a test run, the main queue runs meanwhile.
-      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "await",
-          "(Ljava/util/concurrent/CountDownLatch;" + m.descriptor().substring(1), false);
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "await", "()V".equals(m.descriptor())
+          ? "(Ljava/util/concurrent/CountDownLatch;)V"
+          : "(Ljava/util/concurrent/CountDownLatch;JLjava/util/concurrent/TimeUnit;)Z", false);
       return;
     }
     if (opcode == INVOKESTATIC && "java/util/concurrent/locks/LockSupport".equals(ownerName) && "parkNanos".equals(m.name())

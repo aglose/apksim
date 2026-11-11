@@ -425,17 +425,17 @@ class SystemSourcesTest {
   fun aCallbackWithoutAHandlerArrivesWhileTheMainThreadWaits() {
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val latch = CountDownLatch(1)
-    var onMain: Boolean? = null
+    val onMain = java.util.concurrent.atomic.AtomicReference<Boolean>()  // the first onAvailable's thread
     val cb = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(n: Network) {
-        onMain = android.os.Looper.myLooper() == android.os.Looper.getMainLooper()
+        onMain.compareAndSet(null, android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
         latch.countDown()
       }
     }
     cm.registerDefaultNetworkCallback(cb)
     try {
       assertTrue("onAvailable while the main thread waits", latch.await(5, TimeUnit.SECONDS))
-      assertEquals("onAvailable on the main thread", false, onMain)
+      assertEquals("onAvailable on the main thread", false, onMain.get())
     } finally {
       cm.unregisterNetworkCallback(cb)
     }
