@@ -468,7 +468,8 @@ class Explorer:
                 screen["flaky"] = res.get("flaky")
                 for e in res["edges"]:
                     to = e["to"]
-                    edge = {"from": screen["id"], "action": e["label"], "cmd": e["cmd"], "kind": e["kind"], "to": to["id"]}
+                    edge = {"from": screen["id"], "action": e["label"], "cmd": e["cmd"], "kind": e["kind"], "to": to["id"],
+                            "steps": list(e.get("steps") or [])}  # fills and scrolls before the tap, and the tap
                     if e.get("note"):
                         edge["note"] = e["note"]
                     if to["id"] not in PSEUDO and to["id"] not in self.screens:
