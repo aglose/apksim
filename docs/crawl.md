@@ -160,7 +160,7 @@ runs each perturbation on every screen reached and judges it. State perturbation
 visible texts, then pixels within `--sweep-pixels`) as reached and after each of the first `--sweep-actions` controls that stay on
 it (a counter). Other rules: `crash`, `endless-spinner` (a ProgressBar still up `--spinner-seconds` after opening with no network,
 and not online), `text-cut-off` (the new `t` flag of `nodes tree` and a line in `a11y`: `TextTruncation`, Views by their layout,
-Compose by the semantics GetTextLayoutResult), `offscreen`, `rtl-not-mirrored` (side-by-side texts keep their order), `a11y-*` (dark).
+Compose by the semantics GetTextLayoutResult; the same rule also comes from the dark case's accessibility audit), `offscreen`, `rtl-not-mirrored` (side-by-side texts keep their order), `a11y-*` (dark).
 Findings go to the HTML report and `OUT/junit.xml` (a failing case per finding with the repro commands); `--allow FILE` accepts
 findings (`RULE SCREEN [TEXT]`, shell patterns; skipped cases, stale entries listed). Exit 1 on any unaccepted finding.
 `apksim://faults` (and `FaultsViewsActivity`) are the test app's deliberate faults; `crawl-check.py` step 5 checks each is found,

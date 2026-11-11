@@ -22,7 +22,7 @@ class FaultsViewsActivity : Activity() {
     super.onCreate(savedInstanceState)
     savedTaps = savedInstanceState?.getInt("savedTaps") ?: 0
     val density = resources.displayMetrics.density
-    val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
+    val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding((16 * density).toInt(), (32 * density).toInt(), (16 * density).toInt(), (16 * density).toInt()) }
     val tapsView = TextView(this).apply { text = "taps: $taps" }
     val savedView = TextView(this).apply { text = "saved taps: $savedTaps" }
     root.addView(TextView(this).apply { text = "Faults in Views"; textSize = 22f })

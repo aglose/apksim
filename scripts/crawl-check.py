@@ -19,6 +19,7 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
 """
 import argparse, json, os, subprocess, sys, time
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRAWL = os.path.join(ROOT, "scripts", "crawl.py")
@@ -171,7 +172,6 @@ def main():
     check(any(n.startswith("new-instance-") for n in logs) and any(n.startswith("base-instance-") for n in logs),
           "the two builds of a comparison keep separate logs", str(logs[:6]))
 
-    import xml.etree.ElementTree as ET
     # 6: the resilience sweep, on the screens with deliberate faults
     secs_e = secs_f = 0
     if not args.no_sweep:
@@ -194,7 +194,6 @@ def main():
         check("Boarding gate B12" in detail and "Your table is ready" in detail and "Checked baggage" in detail,
               "clipped text is found in Compose (ellipsis, fixed height) and in Views")
         check(p5.returncode == 1, "the run fails on findings", str(p5.returncode))
-        import xml.etree.ElementTree as ET
         suite = ET.parse(os.path.join(e_dir, "junit.xml")).getroot()
         failing = [c for c in suite.iter("testcase") if c.find("failure") is not None]
         n_found = sum(1 for f in doc5["findings"] if f["kind"] == "sweep")

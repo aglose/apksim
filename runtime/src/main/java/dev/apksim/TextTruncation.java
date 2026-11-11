@@ -82,6 +82,7 @@ final class TextTruncation {
     for (Method m : c.getMethods()) {
       if (m.getName().startsWith("getSize") && m.getReturnType() == long.class && m.getParameterCount() == 0) size = (Long) m.invoke(r);
     }
+    if (size == 0) return false;  // no size to compare with: cannot tell
     int width = (int) (size >>> 32), height = (int) size;
     if (Boolean.TRUE.equals(mp.getClass().getMethod("getDidExceedMaxLines").invoke(mp))) return true;
     if (height < ((Number) mp.getClass().getMethod("getHeight").invoke(mp)).floatValue() - 1) return true;
