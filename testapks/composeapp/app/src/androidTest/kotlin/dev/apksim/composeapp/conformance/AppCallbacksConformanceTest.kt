@@ -49,8 +49,14 @@ class AppCallbacksConformanceTest {
   }
 
   object Leaving : Resumes()
+  object LeavingThroughTheNewOne : Resumes()
   object Arriving : Resumes() {
     @Volatile var handedOver = false
+  }
+
+  /** A process singleton of the same class as HarnessTestApplication's per-Application listener. */
+  object SameClass {
+    var instance: HarnessTestApplication.PerApplicationMemory? = null
   }
 
   /** A process singleton's ComponentCallbacks2, registered once on the Application it keeps. */
@@ -115,8 +121,10 @@ class AppCallbacksConformanceTest {
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       val kept: Application = ApplicationProvider.getApplicationContext()
       kept.registerActivityLifecycleCallbacks(Leaving)
-      HarnessTestApplication.onNextCreate = {
+      kept.registerActivityLifecycleCallbacks(LeavingThroughTheNewOne)
+      HarnessTestApplication.onNextCreate = { next ->
         kept.unregisterActivityLifecycleCallbacks(Leaving)
+        next.unregisterActivityLifecycleCallbacks(LeavingThroughTheNewOne)  // as on a device's one Application
         kept.registerActivityLifecycleCallbacks(Arriving)
         Arriving.handedOver = true
       }
@@ -128,11 +136,13 @@ class AppCallbacksConformanceTest {
     assumeTrue("a new Application started since the last test", Arriving.handedOver)
     HarnessTestApplication.onNextCreate = null
     Leaving.resumes.set(0)
+    LeavingThroughTheNewOne.resumes.set(0)
     Arriving.resumes.set(0)
     ActivityScenario.launch(ComponentActivity::class.java).use {
       InstrumentationRegistry.getInstrumentation().waitForIdleSync()
     }
     assertEquals("unregistered while the next Application started", 0, Leaving.resumes.get())
+    assertEquals("unregistered through the next Application as it started", 0, LeavingThroughTheNewOne.resumes.get())
     assertTrue("registered while the next Application started", Arriving.resumes.get() >= 1)
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       ApplicationProvider.getApplicationContext<Application>().unregisterActivityLifecycleCallbacks(Arriving)
@@ -145,6 +155,7 @@ class AppCallbacksConformanceTest {
       if (Memory.app == null) {
         Memory.app = ApplicationProvider.getApplicationContext()
         Memory.app!!.registerComponentCallbacks(Memory)
+        SameClass.instance = HarnessTestApplication.PerApplicationMemory().also { Memory.app!!.registerComponentCallbacks(it) }
       }
     }
   }
@@ -159,7 +170,9 @@ class AppCallbacksConformanceTest {
     assumeTrue(Memory.app != null)
     val perApplication = HarnessTestApplication.perApplication
     val current = perApplication.last()
+    val sameClass = SameClass.instance!!
     perApplication.forEach { it.trims = 0 }
+    sameClass.trims = 0
     Memory.trims = 0
     Memory.configurations = 0
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
@@ -170,9 +183,11 @@ class AppCallbacksConformanceTest {
     assertEquals("the singleton's trim-memory call", 1, Memory.trims)
     assertEquals("the singleton's configuration call", 1, Memory.configurations)
     assertEquals("this Application's own callback", 1, current.trims)
+    assertEquals("a singleton of the per-Application callback's class", 1, sameClass.trims)
     assertEquals("earlier Applications' callbacks are gone", 0, perApplication.dropLast(1).sumOf { it.trims })
     InstrumentationRegistry.getInstrumentation().runOnMainSync {
       Memory.app!!.unregisterComponentCallbacks(Memory)  // through the Application it kept
+      Memory.app!!.unregisterComponentCallbacks(sameClass)
       ApplicationProvider.getApplicationContext<Application>().onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
     }
     assertEquals("unregistered, it hears nothing more", 1, Memory.trims)

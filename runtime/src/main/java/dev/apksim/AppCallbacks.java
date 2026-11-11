@@ -4,126 +4,155 @@ import android.app.Application;
 import android.content.ComponentCallbacks;
 import java.security.CodeSource;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import org.robolectric.RuntimeEnvironment;
+import java.util.function.Predicate;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.annotation.RealObject;
+import org.robolectric.shadows.ShadowApplication;
 import org.robolectric.util.ReflectionHelpers;
+import org.robolectric.util.reflector.Direct;
+import org.robolectric.util.reflector.ForType;
+import org.robolectric.util.reflector.Reflector;
 
 /**
- * Callbacks a process-wide singleton registered on the Application, kept across a test run's tests (docs/conformance.md).
+ * Application callbacks across a test run's tests, as on a device's one Application (docs/conformance.md).
  *
  * On a device a suite's tests share one process and one Application. Here each test gets a fresh Application while
  * app statics live on, so a library that registers its ActivityLifecycleCallbacks once a process (AndroidX
  * ProcessLifecycleOwner, through AndroidX Startup's initializer, whose singleton runs it only once) left them on the
- * first test's Application, and from the second test on heard of no activity at all: ProcessLifecycleOwner stayed in
- * whatever state the first test left it (traced: ProcessLifecycleOwner's activityStarted/activityStopped never ran in a
- * later test). So the callbacks the previous test's Application had are registered on the next one, but only those
- * whose class came from the APK (not Robolectric's, AndroidX Test's or apksim's) and that the new Application has no
- * callback of the same class for: an app that registers its callbacks in every Application.onCreate registers new ones
- * (the old ones belong to the old Application and are dropped), a singleton registers none. ComponentCallbacks
- * (registerComponentCallbacks: configuration and memory) the same way. Test runs only: a running instance has one
- * Application. {@code -Dapksim.keepAppCallbacks=false} turns it off.
+ * first test's Application, and from the second test on heard of no activity at all (traced: ProcessLifecycleOwner's
+ * activityStarted/activityStopped never ran in a later test).
+ *
+ * So the process has one ActivityLifecycleCallbacks list and one ComponentCallbacksController, the first Application's,
+ * and every later Application uses them from the start of its startup ({@link #adopt}, before its providers and
+ * onCreate): whatever a singleton registers or unregisters, through any Application it kept or the new one, from any
+ * thread, lands in the live registrations. What does not carry over is what a device would never have: the callbacks
+ * an earlier Application's startup registered from a call site the new Application's startup registered from again
+ * (an app's onCreate registering its own listener each time), and framework ones registered through an earlier
+ * Application. Those go at the end of the new startup ({@link #carryOver}). Registrations are told apart by owner,
+ * startup and call site (the first APK frame and its bytecode index), not by class, so a singleton and a
+ * per-Application listener of the same class are each kept or replaced as they should be. Test runs only: a running
+ * instance has one Application. {@code -Dapksim.keepAppCallbacks=false} turns it off.
  */
 final class AppCallbacks {
   private AppCallbacks() {}
 
   private static final boolean ON = Boolean.parseBoolean(System.getProperty("apksim.keepAppCallbacks", "true"));
-  /**
-   * The Applications whose registrations the next carryOver takes: the ending test's, and any whose setup failed
-   * since the last carryOver (a singleton may have registered on one before it failed), oldest first.
-   */
-  private static final List<Application> pending = new ArrayList<>();
 
-  /**
-   * Before Robolectric's reset: which Application the ending test had. Its registrations are read only at carryOver
-   * (and, once it shares the process's lists, are those lists), so what a singleton registers or unregisters through it
-   * meanwhile (during the next Application's onCreate, say) counts. A test whose setup failed never reached carryOver: its Application joins the pending ones rather than
-   * replacing them, so the next test that starts still gets the callbacks of the last one that did.
-   */
-  static void beforeReset() {
-    if (!ON) return;
-    try {
-      Application app = RuntimeEnvironment.getApplication();
-      if (app != null && !pending.contains(app)) pending.add(app);
-    } catch (RuntimeException e) {
-      // no Application yet (the runner's probe)
-    }
-  }
-
-  /**
-   * The process's one callback list and ComponentCallbacksController, shared by every Application from the first that
-   * started: as on a device, there is one place callbacks live, whichever Application a singleton kept.
-   */
+  /** The process's one callback list and controller (the first Application's). */
   private static List<Application.ActivityLifecycleCallbacks> processActivity;
   private static Object processController;
 
-  /**
-   * After the next test's Application has been created and its providers and onCreate have run. The process's shared
-   * list is rebuilt from what it holds (and what any Application whose setup failed holds): the callbacks whose class
-   * came from the APK and that the new Application has registered none of (a singleton's), then the new Application's
-   * own; the new Application, and the failed ones, then use the shared list and controller. All of it happens under
-   * those lists' locks, the locks Application's register and unregister take, so a singleton's worker registering or
-   * unregistering through an Application it kept, at any moment, ends up in the list that is dispatched from. Each
-   * callback API is compared on its own (a class may implement both and be registered again for one only).
-   */
-  static void carryOver(Application app) {
+  /** The Application whose startup is running or ran last, its startup's number, and whether it is still running. */
+  private static Application current;
+  private static int startup;
+  private static volatile boolean starting;
+
+  /** Who registered a callback: through which Application, during which startup (-1: outside one), from where. */
+  private record Registration(Application owner, int startup, String site) {}
+
+  private static final Map<Object, Registration> registrations = Collections.synchronizedMap(new IdentityHashMap<>());
+
+  /** At the start of an Application's startup (callApplicationOnCreate, before its providers): it uses the process's lists. */
+  static void adopt(Application app) {
     if (!ON || app == null) return;
     List<Application.ActivityLifecycleCallbacks> mine = ReflectionHelpers.getField(app, "mActivityLifecycleCallbacks");
     Object myController = ReflectionHelpers.getField(app, "mCallbacksController");
-    List<Application> failed = new ArrayList<>();
-    for (Application old : pending) {
-      if (old != app && ReflectionHelpers.getField(old, "mActivityLifecycleCallbacks") != processActivity) failed.add(old);
-    }
-    pending.clear();
-    if (processActivity == null) {  // the first Application that starts: its lists become the process's
+    if (processActivity == null) {
       processActivity = mine;
       processController = myController;
-    }
-    // Callbacks from Applications whose setup failed (a singleton may have registered on one) join the shared ones.
-    for (Application old : failed) {
-      List<Application.ActivityLifecycleCallbacks> theirs = ReflectionHelpers.getField(old, "mActivityLifecycleCallbacks");
-      synchronized (processActivity) {
-        synchronized (theirs) {
-          for (Application.ActivityLifecycleCallbacks c : theirs) {
-            if (fromApk(c.getClass()) && !containsSame(processActivity, c)) processActivity.add(0, c);
+    } else {
+      if (mine != processActivity) {
+        synchronized (processActivity) {
+          synchronized (mine) {  // what was registered on it before its startup (attachBaseContext) joins the rest
+            for (Application.ActivityLifecycleCallbacks c : mine) {
+              if (!containsSame(processActivity, c)) processActivity.add(c);
+            }
+            ReflectionHelpers.setField(Application.class, app, "mActivityLifecycleCallbacks", processActivity);
           }
-          ReflectionHelpers.setField(Application.class, old, "mActivityLifecycleCallbacks", processActivity);
         }
       }
-      Object theirController = ReflectionHelpers.getField(old, "mCallbacksController");
-      synchronized (lock(processController)) {
-        synchronized (lock(theirController)) {
-          List<ComponentCallbacks> shared = callbacksOf(processController);
-          for (ComponentCallbacks c : orEmpty(callbacksOf(theirController))) {
-            if (fromApk(c.getClass()) && !containsSame(shared, c)) shared.add(0, c);
+      if (myController != processController) {
+        synchronized (lock(processController)) {
+          synchronized (lock(myController)) {
+            List<ComponentCallbacks> theirs = ReflectionHelpers.getField(myController, "mComponentCallbacks");
+            if (theirs != null) {
+              List<ComponentCallbacks> shared = callbacksOf(processController);
+              for (ComponentCallbacks c : theirs) {
+                if (!containsSame(shared, c)) shared.add(c);
+              }
+            }
+            ReflectionHelpers.setField(Application.class, app, "mCallbacksController", processController);
           }
-          ReflectionHelpers.setField(Application.class, old, "mCallbacksController", processController);
         }
       }
     }
-    if (mine != processActivity) {
-      synchronized (processActivity) {
-        synchronized (mine) {
-          Set<Class<?>> again = classes(mine);
-          processActivity.removeIf(c -> !fromApk(c.getClass()) || again.contains(c.getClass()));
-          processActivity.addAll(mine);
-          ReflectionHelpers.setField(Application.class, app, "mActivityLifecycleCallbacks", processActivity);
-        }
+    current = app;
+    startup++;
+    starting = true;
+  }
+
+  /**
+   * At the end of an Application's startup (its providers and onCreate ran): what an earlier startup registered from a
+   * call site this one registered from again is replaced, so it goes; so do framework callbacks of earlier
+   * Applications. A startup that failed never gets here: the next one that ends drops its replaced registrations too.
+   */
+  static void carryOver(Application app) {
+    starting = false;
+    if (!ON || app == null || app != current || processActivity == null) return;
+    int now = startup;
+    Set<String> sitesNow = new HashSet<>();
+    synchronized (registrations) {
+      for (Registration r : registrations.values()) {
+        if (r.startup() == now && r.site() != null) sitesNow.add(r.site());
       }
     }
-    if (myController != processController) {
-      synchronized (lock(processController)) {
-        synchronized (lock(myController)) {
-          List<ComponentCallbacks> theirs = orEmpty(callbacksOf(myController));
-          Set<Class<?>> again = classes(theirs);
-          List<ComponentCallbacks> shared = callbacksOf(processController);
-          shared.removeIf(c -> !fromApk(c.getClass()) || again.contains(c.getClass()));
-          shared.addAll(theirs);
-          ReflectionHelpers.setField(Application.class, app, "mCallbacksController", processController);
-        }
+    Predicate<Object> replaced = c -> {
+      Registration r = registrations.get(c);
+      if (r == null) return false;
+      if (!fromApk(c.getClass())) return r.owner() != app;
+      return r.startup() >= 0 && r.startup() < now && r.site() != null && sitesNow.contains(r.site());
+    };
+    List<Object> gone = new ArrayList<>();
+    synchronized (processActivity) {
+      for (Object c : processActivity) if (replaced.test(c)) gone.add(c);
+      processActivity.removeIf(c -> containsSame(gone, c));
+    }
+    synchronized (lock(processController)) {
+      List<ComponentCallbacks> shared = ReflectionHelpers.getField(processController, "mComponentCallbacks");
+      if (shared != null) {
+        List<Object> goneHere = new ArrayList<>();
+        for (Object c : shared) if (replaced.test(c)) goneHere.add(c);
+        shared.removeIf(c -> containsSame(goneHere, c));
+        gone.addAll(goneHere);
       }
     }
+    for (Object c : gone) registrations.remove(c);
+  }
+
+  static void registered(Application app, Object callback) {
+    if (ON && callback != null) registrations.put(callback, new Registration(app, starting ? startup : -1, site()));
+  }
+
+  static void unregistered(Object callback) {
+    if (ON && callback != null) registrations.remove(callback);
+  }
+
+  private static final StackWalker WALKER = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+
+  /** The registering call site: the first frame of APK code, with its bytecode index; null when there is none. */
+  private static String site() {
+    return WALKER.walk(frames -> frames
+        .filter(f -> fromApk(f.getDeclaringClass()))
+        .findFirst()
+        .map(f -> f.getClassName() + "." + f.getMethodName() + "@" + f.getByteCodeIndex())
+        .orElse(null));
   }
 
   private static boolean containsSame(List<?> list, Object c) {
@@ -145,22 +174,54 @@ final class AppCallbacks {
     return list;
   }
 
-  private static <T> List<T> orEmpty(List<T> list) {
-    return list == null ? new ArrayList<>() : list;
-  }
-
-  private static Set<Class<?>> classes(List<?> callbacks) {
-    Set<Class<?>> out = new HashSet<>();
-    if (callbacks == null) return out;
-    synchronized (callbacks) {
-      for (Object c : callbacks) out.add(c.getClass());
-    }
-    return out;
-  }
-
   /** A class translated from the app's or the test APK's DEX: served from AppClasses' {@code apksim:} URL. */
   static boolean fromApk(Class<?> c) {
     CodeSource source = c.getProtectionDomain().getCodeSource();
     return source != null && source.getLocation() != null && "apksim".equals(source.getLocation().getProtocol());
+  }
+
+  /** Records who registers Application callbacks (test runs only; otherwise the framework's calls, unchanged). */
+  @Implements(Application.class)
+  public static class ShadowSimApplication extends ShadowApplication {
+    @RealObject private Application self;
+
+    @Implementation
+    protected void registerActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
+      Reflector.reflector(ApplicationReflector.class, self).registerActivityLifecycleCallbacks(callback);
+      if (TestActivities.testRun()) registered(self, callback);
+    }
+
+    @Implementation
+    protected void unregisterActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback) {
+      Reflector.reflector(ApplicationReflector.class, self).unregisterActivityLifecycleCallbacks(callback);
+      if (TestActivities.testRun()) unregistered(callback);
+    }
+
+    @Implementation
+    protected void registerComponentCallbacks(ComponentCallbacks callback) {
+      Reflector.reflector(ApplicationReflector.class, self).registerComponentCallbacks(callback);
+      if (TestActivities.testRun()) registered(self, callback);
+    }
+
+    @Implementation
+    protected void unregisterComponentCallbacks(ComponentCallbacks callback) {
+      Reflector.reflector(ApplicationReflector.class, self).unregisterComponentCallbacks(callback);
+      if (TestActivities.testRun()) unregistered(callback);
+    }
+  }
+
+  @ForType(Application.class)
+  interface ApplicationReflector {
+    @Direct
+    void registerActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback);
+
+    @Direct
+    void unregisterActivityLifecycleCallbacks(Application.ActivityLifecycleCallbacks callback);
+
+    @Direct
+    void registerComponentCallbacks(ComponentCallbacks callback);
+
+    @Direct
+    void unregisterComponentCallbacks(ComponentCallbacks callback);
   }
 }
