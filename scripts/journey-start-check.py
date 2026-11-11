@@ -7,6 +7,7 @@ is this script (`--fake`), which plays `apksim replay ... --control auto`: it pr
 
   stuck   `replay` answers "replay: starting" for ever: journey.py exits 2 after --start-timeout, says why, runs no step,
           writes no results and ends the app (before, it polled for two minutes, then ran the steps against it anyway)
+  silent  `replay` is never answered: the same, by --start-timeout (not the control channel's 90 s read timeout)
   starts  `replay` answers "starting" twice, then its result: journey.py runs the step and passes (exit 0)
 """
 import json, os, shutil, signal, socket, subprocess, sys, tempfile, time
@@ -40,6 +41,8 @@ def fake():
             note(cmd)
             if cmd == "ping":
                 answer = "pong"
+            elif cmd == "replay" and os.environ["CHECK_SCENARIO"] == "silent":
+                continue
             elif cmd == "replay":
                 asked += 1
                 started = os.environ["CHECK_SCENARIO"] == "starts" and asked > 2
@@ -95,6 +98,12 @@ def main():
     check("back" not in cmds and not any(c.startswith("settle") for c in cmds), f"runs no step: {sorted(set(cmds))}")
     check(not os.path.exists(xml), "writes no results")
     check("SIGTERM" in cmds, "ends the app")
+
+    print("== a replay that stops answering")
+    code, err, cmds, xml, took = scenario("silent", root, journey)
+    check(code == 2 and took < 20, f"exit 2 by --start-timeout ({code}, {took:.1f} s)")
+    check("did not answer while starting" in err, "says why: " + (err.strip().splitlines() or [""])[-1][:160])
+    check("back" not in cmds and not os.path.exists(xml) and "SIGTERM" in cmds, f"runs no step and ends the app: {cmds}")
 
     print("== a replay that starts")
     code, err, cmds, xml, took = scenario("starts", root, journey)

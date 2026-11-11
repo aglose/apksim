@@ -249,11 +249,20 @@ def start(a, journey):
         else:
             # The replay puts the checkpoint back before it hands the app over. One that never gets that far cannot
             # run the journey: that is a start that failed (exit 2), not a first step that did.
+            # Each `replay` asked waits only for the time left, so an app that stops answering ends the start too.
             end = time.time() + a.start_timeout
-            while re.match(r"replay: (starting|running)", state := c("replay")):
+            while True:
+                c.s.settimeout(max(0.1, end - time.time()))
+                try:
+                    state = c("replay")
+                except OSError as e:
+                    die(f"journey: the replay did not answer while starting ({e or 'timed out'}); its log: {log}")
+                if not re.match(r"replay: (starting|running)", state):
+                    break
                 if time.time() > end:
                     die(f"journey: the replay did not get past starting in {a.start_timeout:g} s ({state}); its log: {log}")
                 time.sleep(0.2)
+            c.s.settimeout(90)
         return p, c
     except BaseException:
         # Not started: the app's JVM does not outlive the runner (it would keep its data slot), unless --keep.
