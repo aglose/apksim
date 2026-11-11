@@ -133,6 +133,50 @@ divergence at the end and none before it, the difference map written), with `--c
 given, and a crash bundle (exit 10, the report naming the command). `--image` runs every launch in the Linux image
 (CI: `scripts/ci-smoke.sh`).
 
+## Bisect: which build first diverges
+
+`scripts/bisect-rec.py BUNDLE BUILD...` replays one recording against builds in order, oldest first, and finds the
+first that diverges or crashes:
+
+```
+scripts/bisect-rec.py session.apkrec builds/                       # a folder: its .apk files in natural name order
+scripts/bisect-rec.py session.apkrec app-101.apk app-102.apk app-103.apk -- --network-trust cert.pem
+scripts/bisect-rec.py session.apkrec --builds builds.txt --image apksim:ci   # one `APK [apksim options]` a line
+```
+
+Each build is `apksim replay --headless --apk BUILD` (with the options after `--`): exit 0 is good, 3 (diverged) and 10
+(crashed) bad, and 2 (it cannot be replayed against that build) or anything else skipped, as `git bisect skip` does:
+another signer than the recorded build's (the same rule as `--apk`, and as beam's data from another build), another
+package, an activity the recording's stack needs and the build lacks. The oldest build must replay good and the newest
+bad; between them a binary search replays about log2(N) builds, and goes around a skipped one by trying its nearest
+neighbours. When only skipped builds separate a good one from a bad one, it says so and names them, exits 1, and `bisect.json`
+lists them as `candidates` with no `firstBad`.
+
+`--timeout SEC` (default 600) ends a replay that runs longer, as for a build that hangs, and skips that build.
+`--builds FILE` takes a launch option with a build (`app.apk --feature X`), for builds that differ by a flag rather
+than by code. `--image IMAGE` replays in the Linux image. The output (`--out`, default `work/bisect-<bundle>`):
+`runs/NN-<build>/` with each replay's report, frames and log; `bisect.json`; and `index.html`, every build with its
+result and where it diverged, and at the first bad build's first divergence the recorded frame, the last good and first
+bad builds' frames and the difference map side by side, embedded so the page can be sent alone. Exit 0 when a first bad
+build was found, 1 when not (the oldest already bad, the newest good, nothing replayable). The divergence's last good
+frame is that build's capture of the same event (label and recorded offset, or its own `end`), as a capture missing in either replay
+shifts the point numbers; with none, the page shows no last good frame.
+
+Checked with `scripts/bisect-rec-check.py APP.apk [OUT] [--image IMAGE] [--changed APK]`: the Trips rename recorded,
+then six builds: the app twice, an unsigned APK (skipped: "signed by another key than the recorded build"), the app,
+and the app with `--feature dev.apksim.testapp.rename_v2` twice. The first midpoint lands on the unsigned build, so the
+search goes around it; it must name build 5 first bad and build 4 last good, having replayed at most 5 of the 6, and
+the page must hold the four frames. With `--changed APK`, a build of the test app with one word of source changed
+("Roman vacation" to "Roman getaway", the same debug key), it bisects [app, app, changed] to the changed build. Last,
+[app, app, app]: no build diverges, and `lastGood` is the newest build replayed (3), not the oldest.
+
+| (2026-11-10, the test app) | Mac | Linux image (amd64, Rosetta) |
+|---|---|---|
+| Six builds, launch-option change, one skipped | first bad 5, last good 4; 5 replays, 46 s | first bad 5, last good 4; 5 replays, 92 s |
+| [app, app, source-changed build] | first bad 3; 3 replays, 23 s | first bad 3; 3 replays, 107 s |
+
+Each replay of this 4.5 s recording took 6.5-14 s cold on the Mac and 15-45 s in the image, a container each.
+
 ## Not done
 
 - Input the recording does not have: sensors, camera frames, location fixes (the `location` command is replayed),
