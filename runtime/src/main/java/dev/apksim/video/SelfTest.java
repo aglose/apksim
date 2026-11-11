@@ -250,6 +250,7 @@ public final class SelfTest {
 
   /** The live-video path's colour conversion: a solid red I420 picture must be red in a Bitmap. */
   public static String colour() {
+    if (!dev.apksim.HostOs.MAC) return "colour: no I420 converter on this host";
     int w = 16;
     ByteBuffer y = ByteBuffer.allocateDirect(w * w), u = ByteBuffer.allocateDirect(w * w / 4), v = ByteBuffer.allocateDirect(w * w / 4);
     for (int i = 0; i < w * w; i++) y.put(i, (byte) 63);

@@ -62,7 +62,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     }
     if (!VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
       // Players (Media3) then drop the video renderer and play the rest, logging nothing an app owner would see.
-      System.err.println("[apksim] MediaCodec video/avc, video/hevc: no decoder on this host (no VideoToolbox, as on the Linux image);"
+      System.err.println("[apksim] MediaCodec video/avc, video/hevc: no decoder on this host (no VideoToolbox or libvtdecoder);"
           + " an app's video will not draw, its audio still plays");
     }
     if (SimAudio.available()) {
@@ -379,6 +379,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       this.surface = surface;
       close();
       blank = dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK;
+      // A native decoder that reorders leaves nothing to hold back; blank has none and orders as the Mac does.
+      if (VideoToolbox.REORDERS) depth = blank ? 2 : 0;
       if (blank) {
         System.err.println("[apksim] MediaCodec " + name + ": video blank, nothing is decoded or drawn");
         // A picture an earlier codec (with video on) left on this surface comes off: the view stays empty.
@@ -391,7 +393,9 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       // than in the stream.
       for (String key : new String[] {"csd-0", "csd-1"}) {
         ByteBuffer csd = format.getByteBuffer(key);
-        if (csd != null) decode(csd.duplicate());
+        if (csd == null) continue;
+        if (VideoToolbox.REORDERS) send(csd.duplicate(), NO_PTS);
+        else decode(csd.duplicate());
       }
     }
 
@@ -417,6 +421,14 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           if (pts < lastOut) depth = Math.min(depth + 1, MAX_DEPTH);
           held.add(new long[] {pts, 0});
         }
+      } else if (VideoToolbox.REORDERS && handle != 0 && in != null && in.remaining() > 0) {
+        STATS.incrementAndGet(0);
+        long t0 = System.nanoTime();
+        sendAndReceive(in, pts, flags);
+        long took = System.nanoTime() - t0;
+        STATS.addAndGet(9, took / 1_000_000);
+        if (took > 20_000_000) STATS.incrementAndGet(10);
+        STATS.accumulateAndGet(12, took / 1_000_000, Math::max);
       } else if (handle != 0 && in != null && in.remaining() > 0) {
         STATS.incrementAndGet(0);
         long t0 = System.nanoTime();
@@ -450,12 +462,55 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       return new long[] {first[0]};
     }
 
+    /** Pictures waiting here, and (libavcodec only) those still inside the decoder, which will come out later. */
     int held() {
-      return held.size();
+      return held.size() + inside;
+    }
+
+    /** The pts a parameter set is sent with: none. */
+    private static final long NO_PTS = Long.MIN_VALUE;
+    /** Linux: inputs sent and not DECODE_ONLY or CODEC_CONFIG, minus the pictures received for them. */
+    private int inside;
+    /** Linux: pts of the DECODE_ONLY inputs sent whose pictures have not come out yet; those are released. */
+    private final Set<Long> decodeOnly = new HashSet<>();
+    private final long[] receivedPts = new long[1];
+
+    /** Linux: one input to the decoder, then every picture it has finished, into {@link #held}. */
+    private void sendAndReceive(ByteBuffer in, long pts, int flags) {
+      boolean config = (flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+      boolean only = (flags & DECODE_ONLY) != 0;
+      int r = send(in, config ? NO_PTS : pts);
+      if (r < 0) {
+        STATS.incrementAndGet(2);
+      } else if (!config) {
+        if (only) decodeOnly.add(pts);
+        else inside++;
+      }
+      receiveAll();
+    }
+
+    private void receiveAll() {
+      long picture;
+      while ((picture = VideoToolbox.nativeReceive(handle, receivedPts)) != 0) {
+        STATS.incrementAndGet(1);
+        if (decodeOnly.remove(receivedPts[0])) {
+          VideoToolbox.nativeReleasePicture(picture);  // decoded for reference only, as the player asked
+        } else {
+          if (inside > 0) inside--;
+          held.add(new long[] {receivedPts[0], picture});
+        }
+      }
     }
 
     /** Everything held, as {pts, picture} earliest first, each now owned by the output buffer it is given to. */
     List<long[]> drain() {
+      if (VideoToolbox.REORDERS && handle != 0) {
+        // Everything the decoder still has comes out now, in presentation order.
+        VideoToolbox.nativeSend(handle, null, 0, 0, NO_PTS);
+        receiveAll();
+        inside = 0;
+        decodeOnly.clear();
+      }
       List<long[]> all = new ArrayList<>();
       while (!held.isEmpty()) all.add(held.poll());
       synchronized (pictures) {
@@ -484,11 +539,24 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     }
 
     private int decode(ByteBuffer data) {
+      int n = stage(data);
+      return VideoToolbox.nativeDecode(handle, input, 0, n, size);
+    }
+
+    /** Linux: [data] to libavcodec with [pts]. Negative: error. */
+    private int send(ByteBuffer data, long pts) {
+      int n = stage(data);
+      if (n == 0) return 0;
+      return VideoToolbox.nativeSend(handle, input, 0, n, pts);
+    }
+
+    /** Copies [data] into the direct buffer the natives read; returns its length. */
+    private int stage(ByteBuffer data) {
       int n = data.remaining();
       if (input == null || input.capacity() < n) input = ByteBuffer.allocateDirect(Math.max(n, 1 << 20));
       input.clear();
       input.put(data).flip();
-      return VideoToolbox.nativeDecode(handle, input, 0, n, size);
+      return n;
     }
 
     /** An output buffer goes back to the codec: draw its picture if asked, then let it go either way. */
@@ -565,6 +633,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       held.clear();
       nextPicture = 0;
       lastOut = Long.MIN_VALUE;
+      if (VideoToolbox.REORDERS) {
+        // A seek: what is inside the decoder goes, and so do the DECODE_ONLY inputs waiting for their pictures.
+        if (handle != 0) VideoToolbox.nativeReset(handle);
+        decodeOnly.clear();
+        inside = 0;
+      }
       synchronized (pictures) {
         for (long p : pictures) VideoToolbox.nativeReleasePicture(p);
         pictures.clear();
