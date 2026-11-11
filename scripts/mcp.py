@@ -8,7 +8,7 @@ Protocol: revision 2026-07-28 (per-request _meta, server/discover, no handshake)
 2025-11-25 and 2025-06-18 (initialize), told apart by the first request, as the specification's compatibility rules say.
 Nothing but JSON-RPC goes to stdout.
 """
-import argparse, atexit, stat, base64, collections, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, zlib
+import argparse, atexit, stat, tempfile, base64, collections, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 STATE = os.environ.get("APKSIM_HOME") or (
@@ -611,14 +611,19 @@ class Server:
         if maxdim > 0:
             sips = shutil.which("sips")
             if sips:
-                tin, tout = name[:-4] + "-in.png", name[:-4] + "-s.jpg"
-                sd.write(tin, png)
-                if subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "60", "-Z", str(maxdim),
-                                   os.path.join(self.scratch, tin), "--out", os.path.join(self.scratch, tout)],
-                                  capture_output=True).returncode == 0 and sd.size(tout):
-                    data, mime = sd.read(tout), "image/jpeg"
-                sd.unlink(tin)
-                sd.unlink(tout)
+                # sips opens its files by path: give it a private folder (0700, random name) the app has no way to
+                # name, not the shared scratch folder.
+                priv = tempfile.mkdtemp(prefix="apksim-mcp-")
+                try:
+                    tin, tout = os.path.join(priv, "in.png"), os.path.join(priv, "out.jpg")
+                    with open(tin, "wb") as f:
+                        f.write(png)
+                    if subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "60", "-Z", str(maxdim), tin,
+                                       "--out", tout], capture_output=True).returncode == 0 and os.path.isfile(tout):
+                        with open(tout, "rb") as f:
+                            data, mime = f.read(), "image/jpeg"
+                finally:
+                    shutil.rmtree(priv, ignore_errors=True)
             else:
                 data = png_scale(png, maxdim)
         if a.get("save"):
