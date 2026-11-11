@@ -68,6 +68,7 @@ final class InstallState {
       android.content.pm.PackageInfo pi = new android.content.pm.PackageInfo();
       pi.packageName = BROWSER;
       pi.versionName = "130.0.0.0";
+      pi.signatures = new android.content.pm.Signature[0];  // AppAuth iterates them (GET_SIGNATURES)
       pi.applicationInfo = new android.content.pm.ApplicationInfo();
       pi.applicationInfo.packageName = BROWSER;
       pi.applicationInfo.name = "Chrome";
@@ -90,16 +91,20 @@ final class InstallState {
       f.addDataScheme("https");
       spm.addActivityIfNotPresent(cn);
       // Robolectric cannot attach intent filters to an activity added this way, so the probes browser-detecting code
-      // sends are answered by intent: AppAuth's BrowserSelector (VIEW + BROWSABLE on http://www.example.com), Auth0's
+      // sends are answered by intent: AppAuth's BrowserSelector (VIEW + BROWSABLE on `http:` and example.com), Auth0's
       // (the same without the category), https for either.
-      for (String url : new String[] {"http://www.example.com", "https://www.example.com", "http://example.com", "https://example.com"}) {
+      android.net.Uri[] urls = {android.net.Uri.parse("http://www.example.com"), android.net.Uri.parse("https://www.example.com"),
+          android.net.Uri.parse("http://example.com"), android.net.Uri.parse("https://example.com"),
+          android.net.Uri.fromParts("http", "", null), android.net.Uri.fromParts("https", "", null)};  // AppAuth's "http:"
+      for (android.net.Uri url : urls) {
         for (boolean browsable : new boolean[] {false, true}) {
-          android.content.Intent probe = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+          android.content.Intent probe = new android.content.Intent(android.content.Intent.ACTION_VIEW, url);
           if (browsable) probe.addCategory(android.content.Intent.CATEGORY_BROWSABLE);
           android.content.pm.ResolveInfo ri = new android.content.pm.ResolveInfo();
           ri.activityInfo = ai;
           ri.priority = 0;
           ri.isDefault = true;
+          ri.filter = f;  // AppAuth asks for GET_RESOLVED_FILTER and skips a result without one
           ri.match = 0x108000;
           spm.addResolveInfoForIntentNoDefaults(probe, ri);
         }

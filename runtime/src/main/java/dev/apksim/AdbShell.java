@@ -1124,6 +1124,19 @@ final class AdbShell {
           // An intent (-a ACTION, -d URI, -c CATEGORY): what the package manager resolves for it, the stand-in browser
           // included (issue 236). A browser's filter needs BROWSABLE, which `am start` adds for a web link.
           Intent q = new Intent();
+          // A package restriction (-p PKG, or a trailing PKG after the flags) keeps its meaning: none but the app's own
+          // package can match, and the app's is searched alone.
+          String only = null;
+          for (int i = 1; i < a.size(); i++) {
+            String t = a.get(i);
+            if (t.equals("-p") && i + 1 < a.size()) only = a.get(i + 1);
+            else if (i == a.size() - 1 && !t.startsWith("-") && !a.get(i - 1).startsWith("-")) only = t;
+          }
+          if (only != null && !only.equals(pkg)) {
+            print("No activity found\n");
+            return 1;
+          }
+          if (only != null) q.setPackage(only);
           for (int i = 1; i + 1 < a.size(); i++) {
             switch (a.get(i)) {
               case "-a" -> q.setAction(a.get(i + 1));
