@@ -232,7 +232,9 @@ class Instance(snapshot.Worker):
                 break
             prev = sid
             if attempt < 3:
-                time.sleep(0.05)
+                # `settle` does not wait for a coroutine's delay() or a posted Runnable: a screen that fills in a
+                # moment after it is still is read again until two reads --stable-ms apart agree.
+                time.sleep(self.ctx.get("stable_ms", 200) / 1000)
         return {"id": sid, "activity": act, "nodes": n, "recs": recs}
 
     # --- moving
@@ -364,7 +366,7 @@ class Explorer:
             fail(f"the temporary folder {self.stage!r} has whitespace in its path: set TMPDIR")
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
-                    "record": lambda r: None, "crashes": self.findings}
+                    "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms}
         self.instances = []
 
     # --- instances
@@ -860,6 +862,7 @@ def parse(argv):
     p.add_argument("--max-screens", type=int)
     p.add_argument("--max-seconds", type=float)
     p.add_argument("--max-depth", type=int)
+    p.add_argument("--stable-ms", type=int, default=200, help="a screen is read until two reads this far apart agree (loads that settle does not wait for)")
     p.add_argument("--max-actions", type=int, default=40, help="controls tried on one screen")
     p.add_argument("--max-repeat", type=int, default=4, help="a screen reached by this many identical steps in a row is not followed")
     p.add_argument("--max-scrolls", type=int, default=4, help="scroll-downs looking for more controls on one screen")

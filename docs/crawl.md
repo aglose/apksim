@@ -24,7 +24,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   inlined while the page stays under 12 MB, else linked (then keep the folder with the report).
 - Budget: `--max-screens N` (stop adding screens), `--max-seconds S` (wall time, checked between actions: what is left
   is listed under `incomplete`), `--max-depth N` (screens more than N actions from a start are found but not explored;
-  `--max-depth 0` only observes the starts), `--max-actions N` (controls tried on one screen, default 40),
+  `--max-depth 0` only observes the starts), `--max-actions N` (controls tried on one screen, default 40), `--stable-ms N` (see "Measured", default 200),
   `--max-scrolls N` (scroll-downs looking for more controls, default 4), `--max-repeat N` (a screen reached by N
   identical steps in a row is not followed, default 4: a counter, a stack of dialogs).
 - Starting points: the launcher activity, or each `--start URL` (a deep link, as `restart URL`: `apksim://stack`, an
