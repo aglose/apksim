@@ -57,8 +57,13 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline,
           MediaCodecInfo.CodecProfileLevel.AVCProfileMain, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
           MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedHigh);
-      video(HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC, HEVC, MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52,
-          MediaCodecInfo.CodecProfileLevel.HEVCProfileMain, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10);
+      if (VideoToolbox.hevcAvailable()) {
+        video(HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC, HEVC, MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52,
+            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10);
+      } else {
+        // As a device without an HEVC decoder: a player picks an H.264 rendition, or plays the rest of an HEVC clip.
+        System.err.println("[apksim] MediaCodec video/hevc: no decoder in this image (H.264 only; docker/Dockerfile VIDEO_DECODERS)");
+      }
     }
     if (!VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
       // Players (Media3) then drop the video renderer and play the rest, logging nothing an app owner would see.

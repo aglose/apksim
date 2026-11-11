@@ -315,7 +315,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   and rebuilding it),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `video-check.py` (recorded
-  video over `--control`: selftest on the fixture clips, `apksim://video`, the Settings clip; CI runs it in both Linux
+  video over `--control`: selftest on the H.264 fixture clip, `apksim://video`, no HEVC decoder listed; `--hevc` for an
+  image built with it: the HEVC clip and the Settings clip; CI runs it in both Linux
   images from `ci-smoke.sh`), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
@@ -773,8 +774,10 @@ written as played at once, which would let ExoPlayer's audio clock race. `--jvm 
 and plays silence; `--audio off` turns sound and the audio decoders off (`--audio mute`, `--jvm -Dapksim.mute=true` and
 `-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
-On Linux (issue 229) the same two video decoders are libavcodec (FFmpeg 7.1.5, only the H.264 and HEVC decoders and
-swscale, built in the Dockerfile's build stage and linked statically into `libvtdecoder.so` with private symbols:
+On Linux (issue 229) the video decoder is libavcodec (FFmpeg 7.1.5, only the decoders in the Dockerfile's
+`VIDEO_DECODERS` and swscale: H.264 alone by default, so the published image lists no HEVC decoder and logs one line
+saying so; `--build-arg VIDEO_DECODERS=h264,hevc` adds it, and `VideoToolbox.hevcAvailable()` finds it by opening one;
+built in the Dockerfile's build stage and linked statically into `libvtdecoder.so` with private symbols:
 `native/linux/avdecoder_linux.c`, the same JNI class). libavcodec returns pictures in presentation order, later than
 the input that carried them, where VideoToolbox returns one per input and Java reorders; so behind
 `VideoToolbox.REORDERS` (`!HostOs.MAC`) `Decoder` sends each input (`nativeSend`, with a sequence number in place of
@@ -785,7 +788,8 @@ decoding thread (frame threads would add pictures of delay the 4 reserved buffer
 with no drops in both images (docs/linux-docker.md "Video" has the numbers). `selftest`'s order check there is that
 every pts leaves once (it labels inputs in decode order). libwebrtc's H.264 stays Mac-only
 (`VideoToolbox.webrtcAvailable()`), and Linux has no AAC/MP3 decoder or audio output. The build stage runs
-`native/linux/avdecoder_check.c` on `testapks/media-fixture/clip.h264|.h265` (B-frames, pts, size, colours, a reset).
+`native/linux/avdecoder_check.c` on `testapks/media-fixture/clip.h264` (B-frames, pts, size, colours, a reset; `.h265`
+too when HEVC is built, else it checks HEVC does not open).
 Control commands: `video` (decoded/drawn counts, surfaces, MediaCodec counters with decode/draw ms, and each live
 codec's output: a view size, or `untracked` when the player moved it to its own placeholder surface, i.e. it has no
 view to draw to), `webrtclog [info|verbose]`,
@@ -1550,7 +1554,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (self-test
   "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
   the CPU.
-- MediaCodec has H.264, HEVC, AAC and MP3 (on Linux the two video ones only: no audio decoders or output there, and no
+- MediaCodec has H.264, HEVC, AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
   H.264 for libwebrtc); VP9/AV1 video and Opus/Vorbis audio are not listed (the owner's app needs
   none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). On the owner's app, fps with them on the CPU → on

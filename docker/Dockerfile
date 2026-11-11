@@ -3,10 +3,13 @@
 # and is much faster. Build with scripts/docker-build.sh [TAG] [--platform linux/arm64], which stages the context.
 FROM eclipse-temurin:24-jdk AS build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev unzip zip libopenh264-dev && rm -rf /var/lib/apt/lists/*
-# H.264 and HEVC decoding for MediaCodec (native/linux/avdecoder_linux.c): FFmpeg's libavcodec with only those two
-# decoders and libswscale, built from the pinned release's source and linked statically into libvtdecoder.so below
+# H.264 decoding for MediaCodec (native/linux/avdecoder_linux.c): FFmpeg's libavcodec with only the decoders named in
+# VIDEO_DECODERS and libswscale, built from the pinned release's source and linked statically into libvtdecoder.so below
 # (LGPL 2.1+, see THIRD-PARTY-NOTICES.md). Before COPY native so a change to apksim's own code does not rebuild it.
 # nasm is for x86_64's assembly (arm64's is assembled by gcc); pthreads is the C library's.
+# h264 by default: the published image ships no HEVC decoder (its patent licensing is the less settled of the two).
+# `--build-arg VIDEO_DECODERS=h264,hevc` adds it to an image you build yourself; MediaCodec lists what is there.
+ARG VIDEO_DECODERS=h264
 ARG FFMPEG_VERSION=7.1.5
 ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils make $([ "$(uname -m)" = x86_64 ] && echo nasm) && \
@@ -18,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     ./configure --prefix=/opt/ffmpeg --disable-everything --disable-programs --disable-doc --disable-network \
       --disable-autodetect --disable-debug --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample \
       --enable-pic --enable-static --disable-shared --enable-pthreads \
-      --enable-decoder=h264,hevc --enable-parser=h264,hevc --enable-swscale && \
+      --enable-decoder="$VIDEO_DECODERS" --enable-parser="$VIDEO_DECODERS" --enable-swscale && \
     make -j"$(nproc)" && make install && \
     cd / && rm -rf /tmp/ffmpeg
 WORKDIR /src
@@ -33,7 +36,8 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
       -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl
 # MediaCodec's video decoders: libvtdecoder.so (dev.apksim.video.VideoToolbox's natives on libavcodec). FFmpeg's archives
 # are linked in with their symbols private (an APK may bring its own FFmpeg), so only the JNI functions are exported.
-# The decoder is checked here on two clips (B-frames and reordering, pts, size, colours, a reset), which is not shipped.
+# The decoder is checked here on a clip per codec (B-frames and reordering, pts, size, colours, a reset), which is not
+# shipped; a codec left out of VIDEO_DECODERS must not open.
 COPY media /tmp/media
 RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libvtdecoder.so && \
     gcc -O2 -shared -fPIC -fvisibility=hidden -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" -I$FF/include \
@@ -44,7 +48,10 @@ RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libvtdecoder.so && \
     gcc -O2 -Wall -I$FF/include -o /tmp/avdecoder_check native/linux/avdecoder_check.c \
       $FF/lib/libavcodec.a $FF/lib/libswscale.a $FF/lib/libavutil.a -lm -lpthread && \
     /tmp/avdecoder_check /tmp/media/clip.h264 h264 640 360 && \
-    /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 && \
+    case ",$VIDEO_DECODERS," in \
+      *,hevc,*) /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 ;; \
+      *) ! /tmp/avdecoder_check /tmp/media/clip.h265 h265 640 360 2>/dev/null ;; \
+    esac && \
     # the check must be able to fail: a wrong size is a failure
     ! /tmp/avdecoder_check /tmp/media/clip.h264 h264 641 360 2>/dev/null && \
     ! ldd $L | grep -E 'libav|libsw' && \

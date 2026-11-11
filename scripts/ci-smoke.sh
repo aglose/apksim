@@ -157,11 +157,12 @@ EOF
 )" || { echo "$capped" >&2; exit 1; }
 drive 'maxfps 120' 'tap 130 1690' 'wait 1000' >/dev/null
 echo "Capped at $cap fps: $capped"
-# Recorded video on Linux (issue 229, libavcodec behind MediaCodec): selftest on both fixture clips, the 1080p60 H.264
-# clip of apksim://video drawing pictures without decode errors, and ExoPlayer playing the Settings tab's HEVC clip to its
-# end (scripts/video-check.py). Without libvtdecoder.so the image lists no video decoders and this fails.
+# Recorded video on Linux (issue 229, libavcodec behind MediaCodec): selftest on the H.264 fixture clip, the 1080p60
+# H.264 clip of apksim://video drawing pictures without decode errors, and no HEVC decoder listed (the image is built
+# with H.264 alone; for one built with VIDEO_DECODERS=h264,hevc set VIDEO_CHECK_ARGS=--hevc, which plays the Settings
+# tab's HEVC clip instead). scripts/video-check.py. Without libvtdecoder.so the image lists no video decoders and this fails.
 cp "$ROOT/testapks/media-fixture/clip.h264" "$ROOT/testapks/media-fixture/clip.h265" "$OUT/"
-python3 "$ROOT/scripts/video-check.py" "$PORT" --clips /work | tee "$OUT/video-check.log"
+python3 "$ROOT/scripts/video-check.py" "$PORT" --clips /work ${VIDEO_CHECK_ARGS:-} | tee "$OUT/video-check.log"
 drive 'tap 130 1690' 'wait 500' >/dev/null
 if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
