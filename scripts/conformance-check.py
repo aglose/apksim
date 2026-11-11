@@ -37,6 +37,12 @@ assert results[("a.B", "skip")][0] == "skipped", results
 assert results[("a.B", "cut")] == ("failed", conformance.CRASHED), "the test a crash cut short keeps a failure"
 assert not finished, "a crashed run must not count as finished"
 assert conformance.parse_raw("INSTRUMENTATION_CODE: -1\n")[1], "a complete run counts as finished"
+# A test's own output that mentions a crash is not the run's crash field.
+quoted = status("a.B", "says", -2, "java.lang.AssertionError: Process crashed. (a message)") + "\nINSTRUMENTATION_CODE: -1\n"
+assert conformance.parse_raw(quoted)[1], "a finished run whose test output says Process crashed is still finished"
+assert conformance.retry_selector([("class", "p.First#crashes,p.Later#safe")], "p.Later") == "p.Later#safe"
+assert conformance.retry_selector([("class", "p.First,p.Later")], "p.Later") == "p.Later"
+assert conformance.retry_selector([("package", "p")], "p.Later") == "p.Later"
 between = {("a.B", "ok"): ("passed", "")}
 conformance.note_run_crash(between, False, None)
 assert between[(conformance.RUN, "crash")][0] == "failed", "a crash with no test in flight keeps a run-level failure"

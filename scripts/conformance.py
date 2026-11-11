@@ -92,6 +92,7 @@ def parse_raw(text):
     the failure rather than being run again as if it never started."""
     results, cur = {}, {}
     key = None
+    code, crashed = None, False
     for line in text.splitlines():
         if line.startswith("INSTRUMENTATION_STATUS: "):
             k, _, v = line[len("INSTRUMENTATION_STATUS: "):].partition("=")
@@ -107,14 +108,28 @@ def parse_raw(text):
                 results[(c, m)] = (status, cur.get("stack", ""))
             cur, key = {}, None
         elif line.startswith("INSTRUMENTATION_RESULT: ") or line.startswith("INSTRUMENTATION_CODE: "):
+            # The run's own fields, not a test's output: am instrument reports a crash as the result's shortMsg.
             key = None
+            if line.startswith("INSTRUMENTATION_CODE: "):
+                code = line.split(":", 1)[1].strip()
+            elif line.startswith("INSTRUMENTATION_RESULT: shortMsg=") and "Process crashed" in line:
+                crashed = True
         elif key is not None:
             cur[key] += "\n" + line
-    finished = "INSTRUMENTATION_CODE: -1" in text and "Process crashed" not in text
-    return results, finished
+    return results, code == "-1" and not crashed
 
 
 RUN = "(run)"
+
+
+def retry_selector(extra, cls):
+    """What to run again for a class after a crash: the methods the run named for it (-e class C#m,...), else the
+    whole class (named whole, or no class filter)."""
+    named = [sel for k, v in extra if k == "class" for sel in v.split(",")]
+    if not named or cls in named:
+        return cls
+    methods = [sel for sel in named if sel.startswith(cls + "#")]
+    return ",".join(methods) or cls
 
 
 def note_run_crash(results, finished, raw):
@@ -181,8 +196,8 @@ def run_emulator(a, out):
                     if (c, m) not in results:
                         left.setdefault(c, []).append(m)
                 for c, ms in left.items():
-                    before = dict(results)
-                    got, done = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] + [("class", c)], raw)
+                    got, done = am_instrument(serial, comp, [kv for kv in a.e if kv[0] != "class"] +
+                                              [("class", retry_selector(a.e, c))], raw)
                     if not done and not any(got.get(k) == ("failed", CRASHED) for k in got):
                         results[(RUN, f"crash re-running {c}")] = ("failed", "the process crashed outside any test")
                     for m in ms:
