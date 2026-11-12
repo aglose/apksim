@@ -439,7 +439,7 @@ clock, and says which are order-dependent (with the fewest earlier tests that ma
 timing. See [docs/flake-hunt.md](docs/flake-hunt.md).
 
 The test app's suite also checks AndroidX libraries' documented behaviour (activity, fragment, lifecycle, navigation,
-Compose ui and foundation, material3, recyclerview) against an API 36 emulator with `scripts/conformance.py`; each
+Compose UI and foundation, material3, recyclerview) against an API 36 emulator with `scripts/conformance.py`; each
 difference found is traced and fixed with its own repro. See [docs/conformance.md](docs/conformance.md).
 
 ### Failure bundles
