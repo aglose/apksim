@@ -105,10 +105,11 @@ final class Skinning {
         clear();
         return true;
       }
-      // The skin's own device named again (`apksim serve` passes the session's device with the skin): its kind too.
-      Device k = deviceOf(s);
-      if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && d.density() == k.density() && !d.kind().equals(k.kind())) {
-        Device.setCurrent(k);
+      // The skin's own device spelled as the skin spells it (`apksim serve` passes the session's device with the skin):
+      // its kind too. Any other --device (a preset such as `tablet`, another spelling) keeps its own kind: it wins.
+      if (given.equals(s.device)) {
+        Device k = deviceOf(s);
+        if (!d.kind().equals(k.kind())) Device.setCurrent(k);
       }
     }
     skin = s;
