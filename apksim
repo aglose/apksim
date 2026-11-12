@@ -342,7 +342,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
-      -Dapksim.device=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
+      -Dapksim.device=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
