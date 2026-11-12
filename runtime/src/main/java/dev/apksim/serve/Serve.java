@@ -431,7 +431,7 @@ public final class Serve {
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork());
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
@@ -1621,7 +1621,9 @@ public final class Serve {
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
         + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
-        + (beam ? "" : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + "}");
+        + (beam ? ",\"rec\":" + (session.recChannels() != null) + (session.recChannels() != null ? ",\"recChannels\":" + Http.q(session.recChannels()) : "")
+            + ",\"inspect\":" + session.inspecting()
+            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + "}");
     session.run();
   }
 

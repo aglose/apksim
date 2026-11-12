@@ -182,9 +182,9 @@ keeping a session to use later is the visitor's choice.
   - `apksim beam forget ID`: erases its data; its build then gets the ordinary `keep-days` hold from now.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
-- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]`, kept in
+- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
-  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md)); the same as flags on `apksim beam` for a run in the foreground.
+  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with it on, sessions run the network inspector and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
   deletes at once). An agent that is not running deletes nothing: the LaunchAgent (phase 1) also runs `apksim beam
   sweep` once a day (`StartInterval`).
