@@ -1,8 +1,10 @@
 package dev.apksim.composeapp.conformance
 
+import android.app.Activity
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.os.Bundle
+import androidx.activity.ComponentActivity
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.testing.launchFragmentInContainer
 import androidx.room.ColumnInfo
@@ -18,12 +20,15 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -128,6 +133,24 @@ class RoomConformanceTest {
     assertTrue("no IllegalStateException: $thrown", thrown is IllegalStateException && thrown!!.message!!.contains("main thread"))
   }
 
+  /** A blocking query in Activity.runOnUiThread throws: the block runs on the main thread. */
+  @Test
+  fun aBlockingQueryInRunOnUiThreadThrows() {
+    val db = memoryDb()
+    ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+      var activity: Activity? = null
+      scenario.onActivity { activity = it }
+      var caught: Throwable? = null
+      val done = CountDownLatch(1)
+      activity!!.runOnUiThread {
+        caught = runCatching { db.notes().countBlocking() }.exceptionOrNull()
+        done.countDown()
+      }
+      assertTrue(done.await(5, TimeUnit.SECONDS))
+      assertTrue("no IllegalStateException: $caught", caught is IllegalStateException && caught!!.message!!.contains("main thread"))
+    }
+  }
+
   /** Suspend inserts and queries, from runBlocking in the test. */
   @Test
   fun suspendInsertsAndQueries() = runBlocking {
@@ -141,10 +164,14 @@ class RoomConformanceTest {
   @Test
   fun aFlowQueryEmitsAgainAfterAnInsert() = runBlocking {
     val db = memoryDb()
-    val second = async(Dispatchers.Default) { db.notes().all().first { it.isNotEmpty() } }
-    db.notes().all().first()  // the table has been read once
+    val seen = Collections.synchronizedList(mutableListOf<List<String>>())
+    val collector = launch(Dispatchers.Default) { db.notes().all().collect { rows -> seen += rows.map { it.text } } }
+    withTimeout(5_000) { while (seen.isEmpty()) delay(10) }  // this collector's first emission, before the insert
+    assertEquals(listOf(emptyList<String>()), seen.toList())
     db.notes().insert(Note(text = "x"))
-    assertEquals(listOf("x"), withTimeout(5_000) { second.await() }.map { it.text })
+    withTimeout(5_000) { while (seen.size < 2) delay(10) }
+    collector.cancel()
+    assertEquals(listOf("x"), seen.last())
   }
 
   /** An observer added to the invalidation tracker hears of a write to its table. */

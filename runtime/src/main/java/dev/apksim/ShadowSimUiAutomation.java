@@ -316,8 +316,8 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     List<AccessibilityEvent> scrolled = onMain(() -> {
       List<AccessibilityEvent> out = new ArrayList<>();
       for (java.util.Map.Entry<View, String> e : before.entrySet()) {
-        AccessibilityEvent now = scrollEvent(e.getKey());
-        if (e.getKey().isAttachedToWindow() && !scrollFields(now).equals(e.getValue())) out.add(now);
+        View v = e.getKey();
+        if (v.isAttachedToWindow() && !scrollState(v).equals(e.getValue())) out.add(scrollEvent(v));
       }
       return out;
     });
@@ -343,7 +343,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   private static void addScrollables(View v, java.util.Map<View, String> out) {
     if (v.getVisibility() != View.VISIBLE) return;
     if (v.canScrollVertically(1) || v.canScrollVertically(-1) || v.canScrollHorizontally(1) || v.canScrollHorizontally(-1)) {
-      out.put(v, scrollFields(scrollEvent(v)));
+      out.put(v, scrollState(v));
     }
     if (v instanceof android.view.ViewGroup g) {
       for (int i = 0; i < g.getChildCount(); i++) addScrollables(g.getChildAt(i), out);
@@ -358,8 +358,17 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return e;
   }
 
-  private static String scrollFields(AccessibilityEvent e) {
-    return e.getScrollX() + "," + e.getScrollY() + "," + e.getFromIndex() + "," + e.getToIndex() + "," + e.getItemCount();
+  /**
+   * What tells a scroll happened: the event's fields, and the first child's position, since a list (RecyclerView,
+   * ListView) moves its children, not its own scroll, and a scroll within one tall item changes no index. A device
+   * sends the event for any movement, so UiAutomator then hears "not at the end yet".
+   */
+  private static String scrollState(View v) {
+    AccessibilityEvent e = scrollEvent(v);
+    String child = v instanceof android.view.ViewGroup g && g.getChildCount() > 0
+        ? g.getChildAt(0).getLeft() + "," + g.getChildAt(0).getTop() + "," + g.getChildAt(0).hashCode() : "-";
+    return e.getScrollX() + "," + e.getScrollY() + "," + e.getFromIndex() + "," + e.getToIndex() + "," + e.getItemCount()
+        + "," + child;
   }
 
   @Implementation

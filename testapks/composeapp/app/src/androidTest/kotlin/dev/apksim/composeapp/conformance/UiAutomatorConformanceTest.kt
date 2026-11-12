@@ -98,13 +98,18 @@ class UiAutomatorConformanceTest {
   class Rows : Fragment() {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View =
       androidx.recyclerview.widget.RecyclerView(inflater.context).apply {
+        val tall = arguments?.getBoolean("tall") == true  // each item six screens tall
+        val itemHeight = if (tall) resources.displayMetrics.heightPixels * 6 else 120
         contentDescription = "recycler"
         fitsSystemWindows = true
         layoutManager = androidx.recyclerview.widget.LinearLayoutManager(context)
         adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
           override fun getItemCount() = 100
           override fun onCreateViewHolder(parent: ViewGroup, type: Int) =
-            object : androidx.recyclerview.widget.RecyclerView.ViewHolder(TextView(parent.context).apply { minHeight = 120 }) {}
+            object : androidx.recyclerview.widget.RecyclerView.ViewHolder(TextView(parent.context).apply {
+              minHeight = itemHeight
+              gravity = android.view.Gravity.TOP
+            }) {}
           override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
             (holder.itemView as TextView).text = "item $position"
           }
@@ -120,6 +125,23 @@ class UiAutomatorConformanceTest {
       val list = device.findObject(By.desc("recycler"))
       val row = list.scrollUntil(Direction.DOWN, Until.findObject(By.text("item 90")))
       if (row == null) fail("item 90 never came on screen: ${seen()}")
+    } finally {
+      rows.close()
+    }
+  }
+
+  /**
+   * scrollUntil through a RecyclerView whose items are six screens tall: most swipes stay within one item, so no
+   * index changes, and only the children's positions tell the list moved. (Item 1, six screens on: UiAutomator stops
+   * a RecyclerView's scrollUntil before item 2 on the emulator too.)
+   */
+  @Test
+  fun scrollUntilGoesThroughTallRecyclerViewItems() {
+    val rows = launchFragmentInContainer<Rows>(Bundle().apply { putBoolean("tall", true) }, android.R.style.Theme_Material_Light_NoActionBar)
+    try {
+      val list = device.findObject(By.desc("recycler"))
+      val row = list.scrollUntil(Direction.DOWN, Until.findObject(By.text("item 1")))
+      if (row == null) fail("item 1 never came on screen: ${seen()}")
     } finally {
       rows.close()
     }

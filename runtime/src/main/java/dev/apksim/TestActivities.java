@@ -346,7 +346,8 @@ public final class TestActivities {
   /**
    * The main thread running a test's own code (the test method, @Before, @After: under JUnit's
    * FrameworkMethod.runReflectiveCall), outside any dispatch, runOnMainSync, ActivityScenario.onActivity (which runs
-   * its block at once when called on the main thread, onFragment's too), or lifecycle call the framework makes
+   * its block at once when called on the main thread, onFragment's too), Activity.runOnUiThread (the same), or
+   * lifecycle call the framework makes
    * (Instrumentation.callApplicationOnCreate, callActivityOnCreate and the rest, a provider's attachInfo), which a
    * device runs on the main thread. So the app's startup, which runs before the test method, and an activity or
    * fragment a test launches from its body still count as the main thread. Off with -Dapksim.roomTestBody=false.
@@ -360,6 +361,7 @@ public final class TestActivities {
         String m = f.getMethodName();
         if (m.equals("runOnMainSync")
             || (c.equals("androidx.test.core.app.ActivityScenario") && m.equals("onActivity"))  // inline on main here
+            || (c.equals("android.app.Activity") && m.equals("runOnUiThread"))  // inline on the main thread too
             || (c.equals("android.app.Instrumentation") && m.startsWith("call"))
             || (c.equals("android.content.ContentProvider") && m.equals("attachInfo"))) {
           return false;

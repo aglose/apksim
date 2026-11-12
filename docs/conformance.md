@@ -163,17 +163,17 @@ suites are where a main-thread latch would show; none of the tests uses one).
 
 ## Batch 3: work, room, datastore, espresso, uiautomator
 
-48 tests, with WorkManager 2.12 and DataStore 1.3 in the app (as an app using them has them: WorkManager's startup
+50 tests, with WorkManager 2.12 and DataStore 1.3 in the app (as an app using them has them: WorkManager's startup
 initializer and job service are then the app's) and Room 2.8 (its database the tests' own, compiled by KSP) and
-espresso-intents in the tests. With the fixes below, all 48 pass on both sides, here in both clock modes.
+espresso-intents in the tests. With the fixes below, all 50 pass on both sides, here in both clock modes.
 
 | Class | Tests | Passes on both | Fails here only, before | Fixed by |
 |---|---|---|---|---|
 | WorkManagerConformanceTest (a one-time request's output, a chain's input, a failure failing its dependents, retry after backoff, unique work KEEP and REPLACE, cancelling a CoroutineWorker, an unmet constraint, an initial delay) | 9 | 9 | 0 | |
-| RoomConformanceTest (a blocking DAO call from the test body, on the main thread and in a lifecycle callback, suspend queries, a Flow re-emitting, an invalidation observer, a transaction rolled back, a file database reopened, a migration, a destructive fallback, a missing migration) | 11 | 11 | 4 | the test body's thread |
+| RoomConformanceTest (a blocking DAO call from the test body, on the main thread, in runOnUiThread and in a lifecycle callback, suspend queries, a Flow re-emitting, an invalidation observer, a transaction rolled back, a file database reopened, a migration, a destructive fallback, a missing migration) | 12 | 12 | 4 | the test body's thread |
 | DataStoreConformanceTest (an edit read back, data's emissions, a new store on the same file, two active stores, a failed edit, a corrupt file with and without a handler, one preferencesDataStore delegate store per process) | 8 | 8 | 0 | |
 | EspressoConformanceTest (typeText, an idling resource, onIdle and a delayed post, onData, a Spinner's popup, a dialog's root and pressBack, scrollTo, missing and ambiguous matches, espresso-intents stubs and a result, replaceText) | 10 | 10 | 0 | |
-| UiAutomatorConformanceTest (a click by text, setText, scrollUntil in a ScrollView and a RecyclerView, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 10 | 10 | 1 | scroll events |
+| UiAutomatorConformanceTest (a click by text, setText, scrollUntil in a ScrollView, a RecyclerView and one of tall items, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 11 | 11 | 1 | scroll events |
 
 ### Causes found
 
@@ -186,10 +186,11 @@ espresso-intents in the tests. With the fixes below, all 48 pass on both sides, 
    `ArchTaskExecutor.isMainThread()` there) to `TestActivities`, which answers "not the main thread" only for the test's
    own code (the test method, `@Before`, `@After`, under JUnit's `FrameworkMethod`) outside any message's dispatch,
    `runOnMainSync`, `ActivityScenario.onActivity` (which runs its block at once on the main thread here; `onFragment`
-   too) or lifecycle call (`Instrumentation.callApplicationOnCreate`, `callActivityOnCreate` and the rest, a provider's
+   too), `Activity.runOnUiThread` (the same) or lifecycle call (`Instrumentation.callApplicationOnCreate`, `callActivityOnCreate` and the rest, a provider's
    `attachInfo`). The app's startup, and an activity or fragment the body launches, still count as the main thread
    and Room refuses there, as on a device (`aBlockingQueryOnTheMainThreadThrows`,
-   `aBlockingQueryInALifecycleCallbackThrows`, which failed with the first version of the fix). Main-thread work an
+   `aBlockingQueryInRunOnUiThreadThrows`, `aBlockingQueryInALifecycleCallbackThrows`, which failed with the first
+   version of the fix). Main-thread work an
    Espresso action runs inline from the body is let through where a device would throw, and a minified app's Room
    keeps its own check.
    `-Dapksim.roomTestBody=false` turns it off.
@@ -201,6 +202,9 @@ espresso-intents in the tests. With the fixes below, all 48 pass on both sides, 
    the view's own `onInitializeAccessibilityEvent` (through its accessibility delegate when it has one, as
    RecyclerView does: from and to positions and the item count), before the window change it already reported. Compose's scrolling
    has no such state on its view, so it still gets no scroll event.
+   A view counts as scrolled when those fields or its first child's position changed: a list moves its children, and
+   a swipe within one tall item changes no index (a RecyclerView of items six screens tall stopped at item 0 here;
+   UiAutomator itself stops such a list's scrollUntil after item 1, on the emulator too).
 3. **With `--realtime-clock`, UiAutomator's idle wait returned before a new window's first layout**
    (`ShadowSimUiAutomation.settle`). It ran what was due and stopped as soon as nothing was, but a window just shown
    lays out at the next vsync, a few ms later, so a query right after a launch found an empty window (three of
