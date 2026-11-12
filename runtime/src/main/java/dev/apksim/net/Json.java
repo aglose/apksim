@@ -193,6 +193,13 @@ final class Json {
     }
   }
 
+  /** One string as a JSON string literal. */
+  static String quoted(String s) {
+    StringBuilder b = new StringBuilder(s.length() + 2);
+    quote(b, s);
+    return b.toString();
+  }
+
   private static void quote(StringBuilder b, String s) {
     b.append('"');
     for (int k = 0; k < s.length(); k++) {

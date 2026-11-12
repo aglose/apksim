@@ -242,7 +242,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
   - `net/`: the app's network recorded, replayed and shaped (`Net`, `NetEngine`, `FakeTlsSocket`, `NetResolver`,
-    `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").
+    `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network"). `TabRelay`: beam's
+    tab relay (protocol 3, docs/beam.md "Tab relay"): with `-Dapksim.beamRelay=true` (the agent's, for a page that asked)
+    an app socket to `page.apksim.invalid:80` gets an in-memory connection (`Socket.setConnectedImpl`: the beam sandbox
+    refuses loopback) and an HttpURLConnection one of its own; each request goes out on the control connection that
+    said `relay attach` and the tab's answer comes back as `relayed` (handled on Control's thread, not Host's).
+    `scripts/check-tab-relay.sh` (CI) and `beam-check.py --relay` check it.
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot

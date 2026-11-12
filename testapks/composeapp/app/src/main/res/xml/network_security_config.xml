@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain http to the beam tab relay's host only (docs/beam.md "Tab relay"), as an app using it on a device would allow. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">page.apksim.invalid</domain>
+    </domain-config>
+</network-security-config>

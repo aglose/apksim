@@ -360,6 +360,10 @@ control to both, and shows a third screen marking the pixels that differ. `scrip
 `.github/actions/preview` Action put a pull request's build on a server and keep one comment on the pull request with
 its preview and compare links; added apps can expire (`ttl`). See [docs/pr-preview.md](docs/pr-preview.md).
 
+On the visitor's own Mac (`serve --allow-beam` and `apksim beam`, [docs/beam.md](docs/beam.md)), a page can also ask
+for the tab relay, which carries the app's plain HTTP requests to `http://page.apksim.invalid` to the tab and back,
+so an app can load data from the page's own site behind its sign-in without any credentials on the Mac.
+
 ## Instrumented tests and CI
 
 ```bash

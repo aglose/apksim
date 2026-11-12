@@ -155,7 +155,7 @@ def main():
             cdp.ev(x, 'document.getElementById("stop").click(); 1')
 
         # 4. Versions: agents with no protocol in common with the page (docs/beam.md, "Versions").
-        for rng, says in (("3-4", "this site's apksim is older"), ("0-0", "update apksim (brew upgrade apksim)")):
+        for rng, says in (("4-5", "this site's apksim is older"), ("0-0", "update apksim (brew upgrade apksim)")):
             agent = procs[1]
             agent.terminate()
             agent.wait(20)

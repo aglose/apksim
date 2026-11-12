@@ -23,6 +23,12 @@ keytool are here, `dataFrom`: a saved session of the test APK signed with a key 
 (one asset more, same key) started on a copy of it, and refused when altered after signing, when signed by another
 key, or on the debug-signed saved session.
 
+With `--relay`, only protocol 3's tab relay (docs/beam.md "Tab relay"): `/beam/hello` says it; a start with `"relay":
+true` gets a session whose test app (its network screen) sends OkHttp and HttpURLConnection requests to
+http://page.apksim.invalid, which reach this tab as `y ID JSON` and are answered with `y ID JSON` (the app shows the
+answer); the tab's own 502, no answer (504), an answer over 512 KB (502), an answer for an id never sent (ignored); and a
+session started without it, where the name does not resolve and a tab's `y` is refused.
+
 Everything runs in a state folder of its own (`APKSIM_HOME`, removed at the end), so the Mac's own agent, trusted
 sites and builds are not touched; its instances therefore start without the class cache or startup cache.
 """
@@ -1012,6 +1018,121 @@ def dataFrom_checks(apksim, gp, apk_path, sid, slot_start, sd_file, sg):
     beam(apksim, "forget", s1)
 
 
+def relay_checks(apksim, gp, apk, sha, size):
+    """Protocol 3's tab relay, end to end: this script is the tab, the test app's network screen the app."""
+    import base64
+    g = agent(apksim, gp, "allow")
+    try:
+        st, _, body = req(gp, "GET", "/beam/hello", B)
+        hello = json.loads(body) if st == 200 else {}
+        check(hello.get("protocol") == 3 and hello.get("relay") is True, f"relay: hello says protocol 3 and the relay ({body[:120]!r})")
+        start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": ["--activity", "NetworkActivity"], "protocol": 3}
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start, relay="yes"))
+        check(st == 400 and b"relay" in body, f"relay: a start's relay takes true or false ({st} {body[:60]!r})")
+
+        grant, _ = begin(gp, B, dict(start, relay=True), apk)
+        s = open_session(gp, grant, B)
+        pid = s.stats.get("pid", 0)
+        check(len(s.frames) > 0 and session_info(s).get("relay") is True, f"relay: the session runs and says it relays ({session_info(s)})")
+        done = set()
+
+        def requests(seconds, n=1):
+            """The tab's `y ID JSON` requests not handled yet: [(id, request)], waiting up to `seconds` for n."""
+            got = []
+            end = time.time() + seconds
+            while time.time() < end and len(got) < n:
+                s.pump(0.2)
+                for t in s.texts:
+                    if t.startswith("y ") and t not in done:
+                        done.add(t)
+                        _, rid, j = t.split(" ", 2)
+                        got.append((rid, json.loads(j)))
+            return got
+
+        def answer(rid, status, body, headers=None):
+            s.ws.send(f"y {rid} " + json.dumps({"status": status, "headers": headers or {},
+                                                 "body": base64.b64encode(body).decode()}))
+
+        def shown(prefix, want, seconds=25):
+            """The app's line that starts with `prefix` once it contains `want` (else the last one seen)."""
+            line = ""
+            end = time.time() + seconds
+            while time.time() < end:
+                s.pump(0.3)
+                for part in control(pid, "nodes").split(";"):
+                    if f'text="{prefix}' in part:
+                        line = part.split('text="', 1)[1].rstrip('" ')
+                if want in line:
+                    break
+            return line
+
+        s.pump(2)
+        check(control(pid, "tap-text Relay").startswith("tapped"), "relay: Relay tapped (OkHttp)")
+        got = requests(20)
+        rid, r = got[0] if got else ("0", {})
+        body = base64.b64decode(r.get("body", "")).decode() if r else ""
+        check(r.get("method") == "POST" and r.get("path") == "/relay/echo?via=okhttp", f"relay: the tab gets OkHttp's request ({r.get('method')} {r.get('path')})")
+        hs = r.get("headers", {})
+        check(hs.get("x-relay-check") == "okhttp" and "host" not in hs and "connection" not in hs and body == '{"name":"apksim"}',
+              f"relay: with its headers (no Host or Connection) and body ({hs}, {body!r})")
+        answer(rid, 200, b'{"greeting":"Hello from the tab"}', {"Content-Type": "application/json", "X-Relay-Answer": "tab"})
+        line = shown("relay okhttp: ", "200")
+        check(line.startswith("relay okhttp: 200 Hello from the tab [tab]"), f"relay: the app gets the tab's answer ({line})")
+
+        control(pid, "tap-text Relay URL")
+        got = requests(20)
+        rid, r = got[0] if got else ("0", {})
+        check(r.get("method") == "GET" and r.get("path") == "/relay/echo?via=urlconnection" and r.get("headers", {}).get("x-relay-check") == "urlconnection",
+              f"relay: the tab gets HttpURLConnection's request ({r.get('method')} {r.get('path')})")
+        answer(rid, 200, b'{"greeting":"Hello again"}', {"X-Relay-Answer": "tab"})
+        line = shown("relay urlconnection: ", "200")
+        check(line.startswith("relay urlconnection: 200 Hello again [tab]"), f"relay: HttpURLConnection gets the answer ({line})")
+
+        # An answer for a request this tab was never sent: ignored, the session goes on.
+        s.ws.send("y 999999 " + json.dumps({"status": 200, "headers": {}, "body": ""}))
+        s.pump(1)
+        check(not any(t.startswith("x ") for t in s.texts), "relay: an answer for an id never sent is ignored")
+
+        control(pid, "tap-text Relay")
+        got = requests(20)
+        if got:
+            answer(got[0][0], 502, b"the page's fetch failed", {"Content-Type": "text/plain"})
+        line = shown("relay okhttp: ", "502")
+        check(line.startswith("relay okhttp: 502 the page's fetch failed"), f"relay: the tab's own 502 reaches the app ({line})")
+
+        control(pid, "tap-text Relay")
+        got = requests(20)
+        if got:
+            # 600 KB: under the WebSocket's 1 MB as base64, over the relay's 512 KB.
+            answer(got[0][0], 200, b"x" * (600 * 1024))
+        line = shown("relay okhttp: ", "502")
+        check(line.startswith("relay okhttp: 502") and "512 KB" in line, f"relay: an answer over 512 KB is a 502 ({line})")
+
+        # HttpURLConnection (the test app's 30 s read timeout): OkHttp's own 10 s default would give up first.
+        control(pid, "tap-text Relay URL")
+        got = requests(20)
+        t0 = time.time()
+        line = shown("relay urlconnection: ", "504", 30)
+        check(got and line.startswith("relay urlconnection: 504") and time.time() - t0 > 10, f"relay: no answer within 15 s is a 504 ({line})")
+        check(close_session(s), "relay: the session ends with its tab")
+
+        # A session started without the relay: the name resolves nowhere, and the tab's `y` is refused.
+        grant, _ = begin(gp, B, start, apk)
+        s = open_session(gp, grant, B)
+        pid = s.stats.get("pid", 0)
+        check(session_info(s).get("relay") is None, "relay: a session started without it does not say it")
+        s.pump(2)
+        control(pid, "tap-text Relay")
+        line = shown("relay okhttp: ", "Exception")
+        check("UnknownHostException" in line and not requests(1), f"relay: without it the name does not resolve ({line})")
+        s.ws.send("y 1 " + json.dumps({"status": 200}))
+        s.pump(2, until=lambda: any(t.startswith("r refused") for t in s.texts))
+        check(any(t.startswith("r refused: y 1") for t in s.texts), "relay: without it a tab's y is refused")
+        check(close_session(s), "relay: that session ends with its tab")
+    finally:
+        stop(g)
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -1089,6 +1210,7 @@ def main():
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
+    ap.add_argument("--relay", action="store_true", help="only the tab relay's checks (protocol 3)")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
     with open(a.apk, "rb") as f:
@@ -1098,6 +1220,23 @@ def main():
         if not any(b"SlotStateActivity" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
             sys.exit(f"{a.apk} has no SlotStateActivity: build the test app from this checkout "
                      "(testapks/composeapp: ./gradlew :app:assembleDebug)")
+    if a.relay:
+        with zipfile.ZipFile(a.apk) as z:
+            if not any(b"relayWithUrlConnection" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
+                sys.exit(f"{a.apk} has no tab relay fetches: build the test app from this checkout")
+        try:
+            relay_checks(apksim, gp, apk, sha, size)
+        finally:
+            subprocess.run([apksim, "--stop-standbys"], env=ENV, capture_output=True)
+            if sc.FAILED or sys.exc_info()[0] is not None:
+                print(f"state folder kept for a look (logs in beam/logs): {STATE}")
+            else:
+                shutil.rmtree(STATE, ignore_errors=True)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam relay check passed")
+        return
     # An agent refuses anything but loopback.
     r = subprocess.run([apksim, "beam", "--bind", "0.0.0.0"], capture_output=True, text=True, timeout=30, env=ENV)
     check(r.returncode == 2, "apksim beam refuses --bind (loopback only)")
@@ -1135,7 +1274,7 @@ def main():
         g = agent(apksim, gp, "deny")
         st, h, body = req(gp, "GET", "/beam/hello", A)
         hello = json.loads(body)
-        check(st == 200 and hello.get("protocol") == 2 and hello.get("trusted") is False, f"agent: hello ({body!r})")
+        check(st == 200 and hello.get("protocol") == 3 and hello.get("trusted") is False, f"agent: hello ({body!r})")
         check(h.get("access-control-allow-origin") == A, "agent: any page may read its hello")
         st, h, _ = req(gp, "OPTIONS", "/beam/start", A, headers={"Access-Control-Request-Method": "POST",
                                                                   "Access-Control-Request-Private-Network": "true"})

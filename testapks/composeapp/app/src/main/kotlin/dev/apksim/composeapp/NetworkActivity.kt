@@ -70,6 +70,37 @@ object GreetingClient {
     }
   }
 
+  /** The beam tab relay's host (docs/beam.md "Tab relay"): the page's tab answers what the app sends it. */
+  const val RELAY = "http://page.apksim.invalid"
+
+  /** POST /relay/echo?via=okhttp to the tab relay with a body, through OkHttp. */
+  fun relay(): Result {
+    val t0 = System.nanoTime()
+    val request = Request.Builder().url("$RELAY/relay/echo?via=okhttp")
+      .header("X-Relay-Check", "okhttp")
+      .post("""{"name":"apksim"}""".toRequestBody("application/json".toMediaType()))
+      .build()
+    client.newCall(request).execute().use { r ->
+      return Result(r.code, r.body.string(), r.header("X-Relay-Answer"), (System.nanoTime() - t0) / 1_000_000)
+    }
+  }
+
+  /** GET /relay/echo?via=urlconnection to the tab relay through the platform's HttpURLConnection. */
+  fun relayWithUrlConnection(): Result {
+    val t0 = System.nanoTime()
+    val c = URL("$RELAY/relay/echo?via=urlconnection").openConnection() as java.net.HttpURLConnection
+    c.setRequestProperty("X-Relay-Check", "urlconnection")
+    c.connectTimeout = 30_000
+    c.readTimeout = 30_000
+    try {
+      val code = c.responseCode
+      val body = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: ""
+      return Result(code, body, c.getHeaderField("X-Relay-Answer"), (System.nanoTime() - t0) / 1_000_000)
+    } finally {
+      c.disconnect()
+    }
+  }
+
   /** `--feature dev.apksim.testapp.no_timings` leaves the time out: it is real time, which a replay cannot repeat. */
   fun describe(r: Result, timing: Boolean = true) =
     "${r.code} ${r.greeting}${r.replay?.let { " [$it]" } ?: ""}" + if (timing) " in ${r.ms} ms" else ""
@@ -107,6 +138,8 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
         val scope = rememberCoroutineScope()
         var okhttp by androidx.compose.runtime.remember { mutableStateOf("idle") }
         var huc by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        var relayOkhttp by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        var relayHuc by androidx.compose.runtime.remember { mutableStateOf("idle") }
         fun run(set: (String) -> Unit, f: () -> GreetingClient.Result) {
           set("fetching")
           scope.launch {
@@ -122,8 +155,14 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
             Button({ run({ okhttp = it }) { GreetingClient.fetch("/v1/missing") } }, Modifier.padding(start = 8.dp)) { Text("Fetch other") }
             Button({ run({ huc = it }) { GreetingClient.fetchWithUrlConnection() } }, Modifier.padding(start = 8.dp)) { Text("URL") }
           }
+          Row(Modifier.padding(top = 8.dp)) {
+            Button({ run({ relayOkhttp = it }) { GreetingClient.relay() } }) { Text("Relay") }
+            Button({ run({ relayHuc = it }) { GreetingClient.relayWithUrlConnection() } }, Modifier.padding(start = 8.dp)) { Text("Relay URL") }
+          }
           Text("okhttp: $okhttp", Modifier.padding(top = 12.dp))
           Text("urlconnection: $huc", Modifier.padding(top = 8.dp))
+          Text("relay okhttp: $relayOkhttp", Modifier.padding(top = 8.dp))
+          Text("relay urlconnection: $relayHuc", Modifier.padding(top = 8.dp))
           Text("connectivity: $connectivity", Modifier.padding(top = 8.dp))
           Text("at app start: ${ComposeApp.networkAtStart}", Modifier.padding(top = 8.dp))
           Text("callbacks: $events", Modifier.padding(top = 8.dp))

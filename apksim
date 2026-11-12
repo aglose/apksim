@@ -332,7 +332,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
       # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
-      -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*) ;;
+      -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*|-Dapksim.beamRelay=*) ;;
       -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.vsync=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;

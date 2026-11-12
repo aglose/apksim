@@ -84,6 +84,20 @@ final class Session {
   volatile String site;
   volatile boolean keep;
   /**
+   * `apksim beam`, protocol 3: the page asked for the tab relay (docs/beam.md "Tab relay"). The instance runs with it
+   * (`-Dapksim.beamRelay=true`), and on a control connection of its own ({@link #relayConn}) sends the app's requests
+   * to http://page.apksim.invalid as `relay ID BASE64(JSON)`; they go to the tab as `y ID JSON`, and its `y ID JSON`
+   * answers go back as `relayed ID BASE64(JSON)`.
+   */
+  volatile boolean relay;
+  private volatile Socket relayConn;
+  private volatile PrintWriter relayOut;
+  /** The relay's requests the tab has not answered yet, with when each was sent: only these may be answered. */
+  private final Map<Long, Long> relayWaiting = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final Pattern RELAY_LINE = Pattern.compile("relay (\\d{1,18}) ([A-Za-z0-9+/=]+)");
+  /** As the instance's own limit (TabRelay): more than this unanswered and the agent answers 503 itself. */
+  private static final int RELAY_MAX_IN_FLIGHT = 16;
+  /**
    * Issue 181: the saved session this one reopened (its data copied into {@link #seedSlot}), else null; its copy goes
    * back over the saved slot when the session ends. Its `saved/<id>.lock` is held shared meanwhile, so `forget` and the
    * expiry sweep leave it.
@@ -270,6 +284,8 @@ final class Session {
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
     String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
     if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
+    // The tab relay is the agent's to turn on, for a page that asked at its start (never one of the page's options).
+    if (serve.beam && relay) cmd.addAll(List.of("--jvm", "-Dapksim.beamRelay=true"));
     // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
     // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
     List<String> own = app.launch();
@@ -330,6 +346,7 @@ final class Session {
       if (launched != null) instancePid = launched.pid();
     }
     Thread.ofVirtual().name("serve-replies-" + id).start(this::readReplies);
+    if (serve.beam && relay) startRelay(p);
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
     List<Map.Entry<String, Consumer<String>>> first = new ArrayList<>();
@@ -987,6 +1004,10 @@ final class Session {
       inspectCommand(text);
       return;
     }
+    if (relay && text.startsWith("y ")) {
+      relayReply(text);
+      return;
+    }
     if (text.startsWith("rec ")) {
       // Issue 187: the recorder from a tab, where the server allows it (--allow-rec; always on a visitor's own Mac).
       recCommand(text.strip());
@@ -1041,6 +1062,71 @@ final class Session {
   /** A device path a tab may name: a plain one (no white space or control characters, so it is one word on the control line). */
   static boolean plainDevicePath(String p) {
     return p != null && p.length() <= 300 && p.matches("[A-Za-z0-9._@+=,/-]+");
+  }
+
+  // ---------------------------------------------------------------- the tab relay (protocol 3)
+
+  /**
+   * A control connection for the relay alone: `relay attach`, then the instance's requests on it. Apart from the
+   * commands', whose replies come in order and may wait on the app's main thread (which may itself wait on an answer).
+   */
+  private void startRelay(int p) throws IOException {
+    Socket c = connect(p);
+    relayConn = c;
+    PrintWriter w = new PrintWriter(new java.io.OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8), true);
+    relayOut = w;
+    w.println("relay attach");
+    Thread.ofVirtual().name("serve-relay-" + id).start(() -> {
+      try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+        for (String line; (line = r.readLine()) != null; ) {
+          Matcher m = RELAY_LINE.matcher(line);
+          if (m.matches()) relayRequest(Long.parseLong(m.group(1)), m.group(2));
+          else logLine("[beam] relay: " + (line.length() > 200 ? line.substring(0, 200) + "..." : line));
+        }
+      } catch (IOException | RuntimeException e) {
+        // the instance went away
+      }
+    });
+  }
+
+  /** One of the app's requests, to the tab as `y ID JSON` (the JSON as the instance wrote it). */
+  private void relayRequest(long rid, String base64) {
+    String json;
+    try {
+      json = new String(java.util.Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException e) {
+      return;
+    }
+    if (relayWaiting.size() >= RELAY_MAX_IN_FLIGHT) {
+      relayAnswer(rid, "{\"status\":503,\"headers\":{\"content-type\":\"text/plain\"},\"body\":\""
+          + java.util.Base64.getEncoder().encodeToString("the tab relay has 16 requests in flight\n".getBytes(StandardCharsets.UTF_8)) + "\"}");
+      return;
+    }
+    relayWaiting.put(rid, System.currentTimeMillis());
+    ws.sendText("y " + rid + " " + json);
+  }
+
+  /** The tab's `y ID JSON`: an answer to a request it was sent and has not answered, else ignored. */
+  private void relayReply(String text) {
+    int sp = text.indexOf(' ', 2);
+    if (sp < 0) return;
+    long rid;
+    try {
+      rid = Long.parseLong(text.substring(2, sp));
+    } catch (NumberFormatException e) {
+      return;
+    }
+    if (relayWaiting.remove(rid) == null) return;
+    relayAnswer(rid, text.substring(sp + 1));
+  }
+
+  private void relayAnswer(long rid, String json) {
+    PrintWriter w = relayOut;
+    if (w == null) return;
+    String line = "relayed " + rid + " " + java.util.Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));
+    synchronized (w) {
+      w.println(line);
+    }
   }
 
   /** Waits for the instance's answer to one command (the control connection answers in order). */
@@ -1458,6 +1544,8 @@ final class Session {
 
   void tick() {
     if (ended) return;
+    // The instance answers 504 to a request the tab left for 15 s: its entry goes a little later.
+    if (!relayWaiting.isEmpty()) relayWaiting.values().removeIf(t -> t < System.currentTimeMillis() - 20_000);
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
     // must not keep the session alive.
     if (System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
@@ -1563,6 +1651,8 @@ final class Session {
         // its own server's sweep still knows the session
       }
     }
+    // The tab relay's connection first: what the app still waits on is answered 502 (the tab has gone) before it quits.
+    closeQuietly(relayConn);
     // Best effort, on its own thread: an app whose main thread hangs stops reading commands, and a write to its full
     // socket would block. Ending the process below does not wait for it, and closing the socket frees that write.
     Thread.ofVirtual().name("serve-quit-" + id).start(() -> {

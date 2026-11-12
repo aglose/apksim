@@ -110,6 +110,7 @@ public final class Net {
       if (r.startsWith("-")) redact.remove(r.substring(1));
       else redact.add(r);
     }
+    TabRelay.configure();  // the beam tab relay (-Dapksim.beamRelay), apart from the layer: its host never goes out
     String t = System.getProperty("apksim.networkTrust");  // and trusts this certificate when it starts the engine
     if (t != null) trust = Path.of(t);
     if (spec == null && profile == null && hosts == null) return;
@@ -432,6 +433,10 @@ public final class Net {
   }
 
   public static void connect(Socket s, SocketAddress a, int timeout) throws IOException {
+    if (a instanceof InetSocketAddress r && TabRelay.claims(r)) {
+      TabRelay.connect(s, r);
+      return;
+    }
     if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
       s.connect(a, timeout);
       return;
@@ -502,6 +507,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
+    if (TabRelay.isHost(host)) return relaySocket(f, InetSocketAddress.createUnresolved(host, port));
     if (!active) return startedMeanwhile(tracked(f.createSocket(host, port)));
     return createSocket(f, new InetSocketAddress(host, port), host);
   }
@@ -528,6 +534,13 @@ public final class Net {
     }
     connect(s, dest, 0);
     if (f instanceof SSLSocketFactory ssl && !(s instanceof SSLSocket)) return createSocket(ssl, s, host, port, true);
+    return s;
+  }
+
+  /** A factory's socket for the tab relay's host: a plain one, connected to the relay (TLS is refused there). */
+  private static Socket relaySocket(SocketFactory f, InetSocketAddress dest) throws IOException {
+    Socket s = f instanceof SSLSocketFactory ? f.createSocket() : new Socket();
+    connect(s, dest, 0);
     return s;
   }
 
@@ -570,6 +583,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
+    if (TabRelay.claims(new InetSocketAddress(address, port))) return relaySocket(f, new InetSocketAddress(address, port));
     if (!active) return startedMeanwhile(tracked(f.createSocket(address, port)));
     // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
     InetSocketAddress dest = new InetSocketAddress(address, port);
@@ -596,6 +610,7 @@ public final class Net {
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
     String host = u.getHost();
+    if (TabRelay.isHost(host) && (proto.equals("http") || proto.equals("https"))) return TabRelay.open(u);
     if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, 1))
         || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);

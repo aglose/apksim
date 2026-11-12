@@ -33,8 +33,12 @@ final class Beam {
    *
    * 2 (issue 173): a start with data the agent cannot download itself may answer `need: "data"`, and the page sends the
    * pack to `/beam/upload-data`. A protocol 1 page would read that answer as a session grant, so it still gets the 502.
+   *
+   * 3: the tab relay (docs/beam.md "Tab relay"). A start may say `"relay": true`, and that session's tab gets the app's
+   * requests to http://page.apksim.invalid as `y ID JSON` and answers them the same way. `/beam/hello` says `"relay":
+   * true`. A protocol 2 page never asks, so nothing changes for it.
    */
-  static final int PROTOCOL = 2;
+  static final int PROTOCOL = 3;
   static final int MIN_PROTOCOL = 1;
 
   /** {min, max} this build speaks (or the checks' override). */
@@ -77,10 +81,11 @@ final class Beam {
   /**
    * What a grant lets one request do, for one origin. `extra`: for a session grant, the slot the agent unpacked a moved
    * session's data into (phase 5); for an upload grant, the data's `ticket url` to fetch once the APK arrives. Null
-   * otherwise. `protocol`: the one the start that made it named (an upload's answer depends on it).
+   * otherwise. `protocol`: the one the start that made it named (an upload's answer depends on it). `relay`: the start
+   * asked for the tab relay (protocol 3), carried from an upload or data grant to the session grant it leads to.
    */
   record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires, String extra,
-               int protocol) {}
+               int protocol, boolean relay) {}
 
   private final Path trustFile;
   /** URL prefixes the agent may download a build from when a page names one (`source`, issue 177). */
@@ -413,12 +418,17 @@ final class Beam {
   }
 
   String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra, int protocol) {
+    return grant(kind, origin, app, sha256, name, launch, extra, protocol, false);
+  }
+
+  String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra, int protocol,
+      boolean relay) {
     expire();
     long now = System.currentTimeMillis();
     byte[] b = new byte[24];
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
-    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra, protocol));
+    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra, protocol, relay));
     if (kind == Kind.SESSION && extra != null) importing.remove(extra);  // the grant owns it now
     return token;
   }

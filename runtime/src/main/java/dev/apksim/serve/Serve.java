@@ -1149,7 +1149,7 @@ public final class Serve {
   }
 
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
-    websocket(r, s, in, out, null, null);
+    websocket(r, s, in, out, null, null, false);
   }
 
   /**
@@ -1300,7 +1300,8 @@ public final class Serve {
   }
 
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
-  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed) throws IOException {
+  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, boolean relay)
+      throws IOException {
     String key = r.header("sec-websocket-key");
     if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
       Http.text(out, 400, "expected a WebSocket upgrade");
@@ -1350,7 +1351,7 @@ public final class Serve {
     }
     boolean[] handed = {false};
     try {
-      upgraded(r, s, in, out, site, seed, key, keepKey, keepId, took, handed);
+      upgraded(r, s, in, out, site, seed, relay, key, keepKey, keepId, took, handed);
     } finally {
       if (took && !handed[0]) kept.release(keepId);
     }
@@ -1362,8 +1363,8 @@ public final class Serve {
   }
 
   /** The rest of a session's start, once its key (if any) is reserved; `handed[0]` set once a session holds it. */
-  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String key,
-      String keepKey, String keepId, boolean took, boolean[] handed) throws IOException {
+  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, boolean relay,
+      String key, String keepKey, String keepId, boolean took, boolean[] handed) throws IOException {
     out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
         + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
@@ -1452,6 +1453,7 @@ public final class Serve {
       }
       if (beam) {
         session.site = site;
+        session.relay = relay;
         session.keep = store.config.saveSessions();
         if (reopenSid != null) {
           // Issue 181: a reopened saved session, held (shared, as `run` holds it) until it ends.
@@ -1468,7 +1470,7 @@ public final class Serve {
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
         + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
-        + (beam ? "" : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + "}");
+        + (beam ? "" : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + (session.relay ? ",\"relay\":true" : "") + "}");
     session.run();
   }
 
@@ -1750,14 +1752,14 @@ public final class Serve {
    * later, `need: "data"` with a grant for the tab to send the pack (`dataUpload`) and why (`dataWhy`); to an older
    * page, which would read that as a session grant, the 502 it always got. `via`: how the build came, if it did.
    */
-  private void dataNeeded(OutputStream out, String o, int protocol, Catalog.App a, String sha, List<String> launch, String via,
-      IOException e) throws IOException {
+  private void dataNeeded(OutputStream out, String o, int protocol, boolean relay, Catalog.App a, String sha, List<String> launch,
+      String via, IOException e) throws IOException {
     if (protocol < 2) {
       Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
       return;
     }
     System.err.println("[beam] could not download " + a.name() + "'s moved data from " + o + ": " + e.getMessage() + " (the tab is asked)");
-    Http.json(out, 200, "{\"need\":\"data\",\"dataUpload\":" + Http.q(agent.grant(Beam.Kind.DATA, o, a.id(), sha, a.name(), launch, null, protocol))
+    Http.json(out, 200, "{\"need\":\"data\",\"dataUpload\":" + Http.q(agent.grant(Beam.Kind.DATA, o, a.id(), sha, a.name(), launch, null, protocol, relay))
         + (via == null ? "" : ",\"via\":" + Http.q(via)) + ",\"dataWhy\":" + Http.q(e.getMessage()) + "}");
   }
 
@@ -1853,7 +1855,7 @@ public final class Serve {
     }
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
-      Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
+      Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"relay\":true,\"trusted\":"
           + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + "}");
       return;
     }
@@ -1943,11 +1945,11 @@ public final class Serve {
           try {
             seed = beamSeed(o, g.extra(), a.path());
           } catch (IOException e) {
-            dataNeeded(out, o, g.protocol(), a, got, a.launch(), null, e);
+            dataNeeded(out, o, g.protocol(), g.relay(), a, got, a.launch(), null, e);
             return;
           }
         }
-        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed))
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed, g.protocol(), g.relay()))
             + (seed == null ? "" : ",\"data\":true") + (g.extra() != null && g.extra().startsWith("@") ? localAnswer(g.extra()) : "") + "}");
       }
       case "POST /beam/upload-data" -> {
@@ -1974,7 +1976,7 @@ public final class Serve {
           Http.text(out, 400, "the session's data was refused: " + e.getMessage());
           return;
         }
-        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), g.sha256(), a.name(), g.launch(), seed))
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), g.sha256(), a.name(), g.launch(), seed, g.protocol(), g.relay()))
             + ",\"data\":true}");
       }
       case "GET /ws" -> {
@@ -1988,15 +1990,15 @@ public final class Serve {
           Http.text(out, 403, "this session was not started by this page (start it again)");
           return;
         }
-        websocket(r, s, in, out, o, g.extra());
+        websocket(r, s, in, out, o, g.extra(), g.relay());
       }
       default -> Http.text(out, 404, "not found");
     }
   }
 
   /**
-   * `POST /beam/start {"sha256", "name", "size", "options", "ticket", "url", "source", "data"}`: the prompt (for a new
-   * origin), then a grant. A build the agent lacks comes from `source` when its owner allows that address (issue 177),
+   * `POST /beam/start {"sha256", "name", "size", "options", "ticket", "url", "source", "data", "relay"}`: the prompt (for
+   * a new origin), then a grant (`relay`, protocol 3: the session's tab relay, carried by every grant the start leads to). A build the agent lacks comes from `source` when its owner allows that address (issue 177),
    * else from the page's server with the ticket, else the tab sends it (`need: upload`, with `why`).
    */
   /** JSON bodies of addApp and beamStart: room for 256 KB of --sdcard-file contents as base64, and the rest. */
@@ -2012,6 +2014,7 @@ public final class Serve {
     String sha, name, ticket, from, data, source, local = null;
     long size;
     int protocol;
+    boolean relay;
     List<String> launch;
     try {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
@@ -2053,6 +2056,10 @@ public final class Serve {
         return;
       }
       protocol = proto == null ? 1 : Integer.parseInt(proto instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(proto));
+      // Protocol 3: the tab relay for this session (docs/beam.md "Tab relay"). Only true turns it on.
+      Object rl = body.get("relay");
+      if (rl != null && !(rl instanceof Boolean)) throw new IOException("\"relay\" takes true or false");
+      relay = Boolean.TRUE.equals(rl);
       name = body.get("name") instanceof String n ? n : rec != null && local.startsWith("@saved ") && rec.get("app") instanceof String an ? an : null;
       size = body.get("size") instanceof Number n ? n.longValue() : -1;
       List<String> given = new ArrayList<>();
@@ -2125,17 +2132,17 @@ public final class Serve {
         try {
           seed = beamSeed(o, data, a.path());
         } catch (IOException e) {
-          dataNeeded(out, o, protocol, a, sha, launch, via, e);
+          dataNeeded(out, o, protocol, relay, a, sha, launch, via, e);
           sweepBeam();  // after the answer, with its data grant holding the build
           return;
         }
       }
-      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed))
+      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed, protocol, relay))
           + ",\"via\":" + Http.q(via) + (seed == null ? "" : ",\"data\":true") + localAnswer(local) + "}");
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol))
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, relay))
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 

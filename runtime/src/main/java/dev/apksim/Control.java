@@ -48,6 +48,7 @@ final class Control {
   private Control() {}
 
   private static void serve(Socket socket) {
+    java.util.function.Consumer<String> relay = null;
     try (Socket s = socket;
         BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
         PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
@@ -71,12 +72,28 @@ final class Control {
           if (dev.apksim.net.Net.inspecting()) dev.apksim.net.Net.watch(s, out);
           return;
         }
+        // The beam tab relay (dev.apksim.net.TabRelay), on this thread rather than Host's: an app waiting on the main
+        // thread for an answer must not hold up the answer. `relay attach` makes this connection the one requests go
+        // to; `relayed ID BASE64` answers one and gets no reply (the agent keeps such lines on a connection of their own).
+        if (args[0].equals("relayed")) {
+          dev.apksim.net.TabRelay.answer(args);
+          continue;
+        }
+        if (args[0].equals("relay") && args.length == 2 && args[1].equals("attach")) {
+          java.util.function.Consumer<String> to = out::println;
+          String r = dev.apksim.net.TabRelay.attach(to);
+          if (r.startsWith("ok")) relay = to;
+          out.println(r);
+          continue;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(p.await());
       }
     } catch (IOException | InterruptedException | RuntimeException e) {
       // The client went away (or sent a bad stream request).
+    } finally {
+      if (relay != null) dev.apksim.net.TabRelay.detach(relay);
     }
   }
 

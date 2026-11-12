@@ -25,6 +25,8 @@ public final class NetResolver extends InetAddressResolverProvider {
     return new InetAddressResolver() {
       @Override
       public Stream<InetAddress> lookupByName(String host, LookupPolicy policy) throws UnknownHostException {
+        // The beam tab relay's host (TabRelay): a placeholder, which Net.connect sends to the relay, whatever the layer does.
+        if (TabRelay.isHost(host)) return Stream.of(placeholder(host.toLowerCase(Locale.ROOT).replaceFirst("\\.$", "")));
         if (!Net.active || local(host)) return builtin.lookupByName(host, policy);
         if (Net.conditions.offline()) {
           throw new UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname");
@@ -107,6 +109,11 @@ public final class NetResolver extends InetAddressResolverProvider {
     if (address == null) return unresolved.contains(h);
     String stands = hostByAddress.get(address);
     return stands != null && unresolved.contains(stands);
+  }
+
+  /** The placeholder address for a host (made now if it has none). */
+  static InetAddress placeholderFor(String host) {
+    return placeholder(host.toLowerCase(Locale.ROOT));
   }
 
   /** The host a placeholder address stands for, or null. */
