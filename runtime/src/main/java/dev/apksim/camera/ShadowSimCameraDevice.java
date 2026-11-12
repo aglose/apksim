@@ -24,6 +24,14 @@ import org.robolectric.shadows.ShadowCameraDeviceImpl;
 public class ShadowSimCameraDevice extends ShadowCameraDeviceImpl {
   @RealObject private CameraDeviceImpl device;
 
+  /** The camera is free again for other clients once it closes. */
+  @Implementation
+  @Override
+  protected void close() {
+    super.close();
+    ShadowSimCameraManager.closed(device.getId());
+  }
+
   @Implementation
   @Override
   protected void createCaptureSession(List<Surface> outputs, CameraCaptureSession.StateCallback callback, Handler handler)
