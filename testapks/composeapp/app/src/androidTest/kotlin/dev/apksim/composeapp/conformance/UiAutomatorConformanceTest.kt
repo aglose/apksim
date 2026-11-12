@@ -9,6 +9,7 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -154,6 +155,24 @@ class UiAutomatorConformanceTest {
     val rows = device.findObject(By.desc("rows"))
     val row = rows.scrollUntil(Direction.DOWN, Until.findObject(By.text("row 70")))
     if (row == null) fail("row 70 never came on screen: ${seen()}")
+  }
+
+  /**
+   * A filter of UiAutomation.executeAndWaitForEvent that reads a scroll event's source gets the scrolled view's node,
+   * in the window the view is in.
+   */
+  @Test
+  fun aScrollEventsSourceIsTheScrolledView() {
+    launch()
+    val bounds = device.findObject(By.desc("rows")).visibleBounds
+    val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+    val event = automation.executeAndWaitForEvent({
+      device.swipe(bounds.centerX(), bounds.centerY() + bounds.height() / 3, bounds.centerX(), bounds.centerY() - bounds.height() / 3, 20)
+    }, { e -> e.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED && e.source?.contentDescription == "rows" }, 5_000)
+    val source = event.source
+    assertNotNull(source)
+    assertEquals(ScrollView::class.java.name, source!!.className)
+    assertEquals(automation.rootInActiveWindow.windowId, event.windowId)
   }
 
   /** Until.gone waits for a view removed a moment later. */

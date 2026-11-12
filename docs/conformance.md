@@ -163,9 +163,9 @@ suites are where a main-thread latch would show; none of the tests uses one).
 
 ## Batch 3: work, room, datastore, espresso, uiautomator
 
-50 tests, with WorkManager 2.12 and DataStore 1.3 in the app (as an app using them has them: WorkManager's startup
+51 tests, with WorkManager 2.12 and DataStore 1.3 in the app (as an app using them has them: WorkManager's startup
 initializer and job service are then the app's) and Room 2.8 (its database the tests' own, compiled by KSP) and
-espresso-intents in the tests. With the fixes below, all 50 pass on both sides, here in both clock modes.
+espresso-intents in the tests. With the fixes below, all 51 pass on both sides, here in both clock modes.
 
 | Class | Tests | Passes on both | Fails here only, before | Fixed by |
 |---|---|---|---|---|
@@ -173,7 +173,7 @@ espresso-intents in the tests. With the fixes below, all 50 pass on both sides, 
 | RoomConformanceTest (a blocking DAO call from the test body, on the main thread, in runOnUiThread and in a lifecycle callback, suspend queries, a Flow re-emitting, an invalidation observer, a transaction rolled back, a file database reopened, a migration, a destructive fallback, a missing migration) | 12 | 12 | 4 | the test body's thread |
 | DataStoreConformanceTest (an edit read back, data's emissions, a new store on the same file, two active stores, a failed edit, a corrupt file with and without a handler, one preferencesDataStore delegate store per process) | 8 | 8 | 0 | |
 | EspressoConformanceTest (typeText, an idling resource, onIdle and a delayed post, onData, a Spinner's popup, a dialog's root and pressBack, scrollTo, missing and ambiguous matches, espresso-intents stubs and a result, replaceText) | 10 | 10 | 0 | |
-| UiAutomatorConformanceTest (a click by text, setText, scrollUntil in a ScrollView, a RecyclerView and one of tall items, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 11 | 11 | 1 | scroll events |
+| UiAutomatorConformanceTest (a click by text, setText, scrollUntil in a ScrollView, a RecyclerView and one of tall items, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand, a scroll event's source) | 12 | 12 | 2 | scroll events |
 
 ### Causes found
 
@@ -205,6 +205,13 @@ espresso-intents in the tests. With the fixes below, all 50 pass on both sides, 
    A view counts as scrolled when those fields or its first child's position changed: a list moves its children, and
    a swipe within one tall item changes no index (a RecyclerView of items six screens tall stopped at item 0 here;
    UiAutomator itself stops such a list's scrollUntil after item 1, on the emulator too).
+   The event is delivered as a service receives it: sealed, its source the scrolled view (which the view's own
+   `onInitializeAccessibilityEvent` sets, with its window's id), on that window's in-process connection, and
+   `getSource()` that view's node. Before, `getSource()` was null: Robolectric's `ShadowAccessibilityRecord` answers it
+   only with a node given to it (`setSourceNode`), never through a connection. So a filter of
+   `UiAutomation.executeAndWaitForEvent` that read the source matched nothing and the wait timed out
+   (`aScrollEventsSourceIsTheScrolledView`, which passes on the emulator; UiAutomator's own scroll waits never read
+   the source).
 3. **With `--realtime-clock`, UiAutomator's idle wait returned before a new window's first layout**
    (`ShadowSimUiAutomation.settle`). It ran what was due and stopped as soon as nothing was, but a window just shown
    lays out at the next vsync, a few ms later, so a query right after a launch found an empty window (three of
