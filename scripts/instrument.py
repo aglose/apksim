@@ -881,8 +881,9 @@ def one_process(a, passthrough, label=""):
             sys.stderr.write(out if out.endswith("\n") else out + "\n")
             # Each test that started and never ended fails here, not in a rerun (which could pass): the one running
             # when the process ended, and any the run went on from.
+            # (by its own result: its class's @AfterClass failing after it reports Class#null, which is not its own)
             stuck = [t for t in unfinished(r.stdout)
-                     if not has_result(t) and (remaining is None or t in set(remaining))]
+                     if t not in done and (remaining is None or t in set(remaining))]
             for t in stuck:
                 if t != running:
                     record(*t, "failed", f"apksim reported no end for this test: it started, and the run went on to "

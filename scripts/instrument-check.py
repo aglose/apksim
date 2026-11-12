@@ -138,7 +138,8 @@ def fake():
         if sc == "before-class-skipped" and calls == 1 and (c, m) == ("p.C002", "m1"):
             continue  # no result at all, and the run still ends with INSTRUMENTATION_CODE
         if (sc == "before-class-unfinished-early" and calls == 1 and (c, m) == ("p.C002", "m1")
-                or sc in ("unfinished-early", "after-class-unfinished") and calls == 1 and (c, m) == ("p.C000", "m1")):
+                or sc in ("unfinished-early", "after-class-unfinished") and calls == 1 and (c, m) == ("p.C000", "m1")
+                or sc == "after-class-unfinished-same" and calls == 1 and (c, m) == ("p.C002", "m1")):
             block(c, m, n + 1, 1)  # started, never finished, and a later test does finish
             continue
         if sc == "before-class-unfinished" and (c, m) == ("p.C002", "m2"):
@@ -173,7 +174,7 @@ def fake():
             print("dies in a test", file=sys.stderr)
             sys.exit(134)
         block(c, m, n + 1, 0)
-        if sc == "after-class-unfinished" and calls == 1 and (c, m) == ("p.C002", "m2"):
+        if sc.startswith("after-class-unfinished") and calls == 1 and (c, m) == ("p.C002", "m2"):
             block(c, "null", n + 1, 1)  # C002's @AfterClass fails: one more result, which fills numtests
             block(c, "null", n + 1, -2, "java.lang.IllegalStateException: @AfterClass failed")
     print("INSTRUMENTATION_CODE: -1")
@@ -323,6 +324,8 @@ SCENARIOS = {
     # As unfinished-early, and C002's @AfterClass fails: its Class#null makes the results as many as numtests, and
     # C000#m1 still fails.
     "after-class-unfinished": (1, 2, 10, ["p.C000#m1", "p.C002#null"]),
+    # The same, the test that never ends (C002#m1) in the class whose @AfterClass fails: it still gets its own entry.
+    "after-class-unfinished-same": (1, 2, 10, ["p.C002#m1", "p.C002#null"]),
     # As before-class-only, and C002#m1 has no result at all: the listing finds it, and a new process runs it.
     "before-class-skipped": (1, 3, 8, ["(run)#incomplete", "p.C001#null"]),
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),
