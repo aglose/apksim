@@ -727,10 +727,10 @@ still CPU-bound: HWUI rasterises on one core, which takes 6-7 ms for a busy full
 
 apksim came together one goal at a time, each measured before the next was started:
 
-1. **Launch in seconds, then ten times faster.** The first version put Robolectric's `android-all` framework and its
-   native runtime on a plain JVM, opened the window before anything else, and loaded the framework from the JVM's
-   own class loader so that the JVM's AOT cache could hold it. Handing each launch to a pre-booted standby then took
-   the window from ~0.1 s to 12 ms and the small app's first frame from 1.49 s to ~0.22 s.
+1. **Launch in seconds, then several times faster.** The runtime puts Robolectric's `android-all` framework and its
+   native runtime on a plain JVM, opens the window before anything else, and loads the framework from the JVM's own
+   class loader so that the JVM's AOT cache can hold it. The next goal was ten times faster: handing each launch to
+   a pre-booted standby took the window from ~0.1 s to 12 ms and the small app's first frame from 1.49 s to ~0.22 s.
 2. **Run real APKs.** dex2jar miscompiled code and took 30 s, so the DEX translator was written from scratch. An ELF
    loader and a bionic shim followed for native libraries, until a large app's R8 release build and its 179 MB debug
    build both ran.
@@ -747,14 +747,13 @@ bionic shims, Metal and the codecs), 20,000 of Python (tools and checks) and a K
 tests reproduce the behaviours that once went wrong.
 
 Four habits did most of the work:
-- **Use Android's own code wherever it exists.** The framework and its Skia, HWUI and SQLite are Android's own. apksim writes only
-  what a device has around an app, and checks that against AOSP's sources.
+- **Use Android's own code wherever it exists.** The framework and its Skia, HWUI and SQLite are Android's own.
+  apksim writes only what a device has around an app, and checks that against AOSP's sources.
 - **Measure, then keep or drop.** `scripts/bench.py` and CI's `startup-gate` hold launch time, A/B runs are
   interleaved because timings swing with the machine's load, and ideas that measured no gain are written down so
   that they are not tried twice (partial redraw, linear textures, rendering into the window's IOSurface).
 - **Trace before changing behaviour.** When a test passes on the emulator and fails here, the mechanism is found
-  first, with breakpoints and return values over JDWP (`scripts/jdi/`). Two fixes made by guessing broke
-  hundreds of tests.
+  first, with breakpoints and return values over JDWP (`scripts/jdi/`). Two guesses broke hundreds of tests.
 - **Every bug becomes a fixture.** A miscompiled shape goes into `testapks/translator-fixture`, a loader case into
   `testapks/loader-fixture`, a framework difference into a test that also passes on an API 36 emulator
   ([docs/conformance.md](docs/conformance.md)); `scripts/both.py` compares screens with the emulator pixel for pixel.
@@ -763,11 +762,11 @@ Four habits did most of the work:
 
 - **Translating DEX to JVM bytecode.** Dalvik is a register machine whose registers carry no types: a zero can be an
   int, a float or null. The JVM's locals are typed, so the translator infers a type for every value (union-find over
-  values) and gives each register a local. Its two worst bugs were both in exception handlers: merging too many
-  registers into a handler typed ints and floats as references and dropped them, which showed up far away, as Compose
-  animations that snapped to their end. Methods over the JVM's 64 KB limit have to be split, and R8 and D8's debug
-  mode reuse registers differently, so the fixture is built with both. It now translates about 5,400 classes in
-  about 0.6 s.
+  values) and gives each register a local. Its two worst bugs were both in what an exception handler sees: counting a
+  return as an instruction that can throw, and merging a handler's live registers at every block of its range, typed
+  ints and floats as references and dropped them. That showed up far away, as Compose animations that snapped to
+  their end. Methods over the JVM's 64 KB limit have to be split, and R8 and D8's debug mode reuse registers
+  differently, so the fixture is built with both. It now translates about 5,400 classes in about 0.6 s.
 - **Loading Android's native libraries into a macOS process.** Same CPU, different everything else. The loader maps
   and relocates ELF files itself. bionic and libSystem disagree on struct layouts, constants and `errno`, and the two
   arm64 ABIs pass variadic arguments differently, so JNI's variadic calls go through a table chosen by the caller's

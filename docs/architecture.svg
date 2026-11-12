@@ -134,7 +134,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 <rect x="423" y="618" width="354" height="128" rx="8" class="b and"/>
 <text x="437" y="642" class="t">AOSP Android 16 framework (API 36)</text>
 <text x="437" y="662" class="p">The real classes, from <tspan class="m">android-all</tspan>:</text>
-<text x="437" y="680" class="p">Activity, View, Compose UI, text, resources,</text>
+<text x="437" y="680" class="p">Activity, View, Canvas, text, resources,</text>
 <text x="437" y="698" class="p">SQLite, MediaCodec, WindowManager. Calls</text>
 <text x="437" y="716" class="p">bind straight to the original or its stand-in,</text>
 <text x="437" y="734" class="p">with no dispatch in between.</text>
