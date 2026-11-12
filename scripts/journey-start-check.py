@@ -11,7 +11,8 @@ is this script (`--fake`), which plays `apksim replay ... --control auto`: it pr
   silent  `replay` is never answered: the same, by --start-timeout (not the control channel's 90 s read timeout)
   starts  `replay` answers "starting" twice, then its result: journey.py runs the step and passes (exit 0)
   steps   a long press is a finger down and up as long apart as recorded (not a timed `swipe`, which holds 120 ms more),
-          timed from when the app took the finger down (the stand-in takes it 200 ms late),
+          timed from when the Host dispatched the finger down, not when it queued it (the stand-in dispatches it
+          200 ms late, as a stalled main loop would),
           a double tap (`times`) its four touches at their recorded times with no settle between, and a `type` step's
           wait for its input counts the Host's 7 ms per character (the stand-in says "input queued" until then)
 """
@@ -38,7 +39,7 @@ def fake():
     srv.listen(4)
     print(f"[apksim] control port {srv.getsockname()[1]}", file=sys.stderr, flush=True)
     asked = 0
-    typed_until = 0
+    queued_until = 0  # input the stand-in Host has not dispatched yet: `settle` says "input queued" until then
     while True:
         conn, _ = srv.accept()
         f = conn.makefile("rw")
@@ -47,9 +48,9 @@ def fake():
             note(cmd)
             open(os.path.join(state, "timed.txt"), "a").write(f"{time.time():.3f} {cmd}\n")
             if cmd.startswith("type64 "):
-                typed_until = time.time() + 0.007 * len(base64.b64decode(cmd.split()[1]).decode())
-            if cmd == "touch down 100 200":  # a busy app: it takes the long press's finger down 200 ms late
-                time.sleep(0.2)
+                queued_until = time.time() + 0.007 * len(base64.b64decode(cmd.split()[1]).decode())
+            if cmd == "touch down 100 200":  # a stalled main loop: the long press's finger down is sent 200 ms late
+                queued_until = time.time() + 0.2
             if cmd == "ping":
                 answer = "pong"
             elif cmd == "replay" and os.environ["CHECK_SCENARIO"] == "silent":
@@ -58,8 +59,8 @@ def fake():
                 asked += 1
                 started = os.environ["CHECK_SCENARIO"] == "steps" or os.environ["CHECK_SCENARIO"] == "starts" and asked > 2
                 answer = ("replay: matched" if started else "replay: starting") + "; 0/0 events and commands; 0 points compared"
-            elif cmd.startswith("settle") and time.time() < typed_until:
-                time.sleep(0.05)
+            elif cmd.startswith("settle") and time.time() < queued_until:
+                time.sleep(0.01 if cmd == "settle 1 0" else 0.05)
                 answer = "error: not settled after 5000 ms: input queued"
             elif cmd.startswith("settle"):
                 answer = "settled"
@@ -140,10 +141,11 @@ def main():
     ]}, open(steps, "w"))
     code, err, cmds, xml, took = scenario("steps", root, steps, "--timeout", "0.5")
     check(code == 0, f"exit 0 ({code}, {took:.1f} s): {err.strip()[-200:]}")
-    t = [(at, c) for at, c in timed("steps", root) if c.startswith(("touch", "tap", "swipe", "type64", "settle"))]
+    # `settle 1 0` only asks whether a finger down has been dispatched; the step's settle is `settle 5000 200`.
+    t = [(at, c) for at, c in timed("steps", root) if c.startswith(("touch", "tap", "swipe", "type64", "settle")) and c != "settle 1 0"]
     press = [(at, c) for at, c in t if c.endswith(" 100 200")]
     check([c for _, c in press] == ["touch down 100 200", "touch up 100 200"] and 0.65 <= press[1][0] - press[0][0] - 0.2 < 0.85,
-          "a long press: down, then up 700 ms after the app took it (200 ms late): "
+          "a long press: down, then up 700 ms after it was dispatched (200 ms late): "
           + str([(round(at - t[0][0], 2), c) for at, c in press]))
     i = next((k for k, (_, c) in enumerate(t) if c.endswith(" 300 400")), None)
     tap = t[i:i + 4] if i is not None else []

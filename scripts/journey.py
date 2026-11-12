@@ -153,8 +153,13 @@ def touches(c, x, y, times):
         r = c(f"touch down {x} {y}")
         if r.startswith(("error", "unknown", "usage")):
             return r
-        # Timed from when the app took the finger down: a busy app answering late must not shorten the hold (a long
-        # press would become a tap), and the touches after it move with it.
+        # Timed from when the Host dispatched the finger down, not from its answer, which only means it was queued: a
+        # stalled main loop must not shorten the hold (a long press would become a tap). `settle` says "input queued"
+        # until the Host has sent it; the touches after it move with it.
+        end = time.time() + 30
+        while "input queued" in c("settle 1 0"):
+            if time.time() > end:
+                return f"error: the finger down at {x},{y} was still queued after 30 s"
         t0 = max(t0, time.time() - at / 1000)
         sleep_until(t0 + (at + down) / 1000)
         r = c(f"touch up {x} {y}")
