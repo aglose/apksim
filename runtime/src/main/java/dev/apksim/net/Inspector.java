@@ -33,8 +33,12 @@ public final class Inspector {
   static volatile boolean on;
   /** Exchanges remembered for late viewers and for `detail`. */
   static final int KEEP = 300;
-  /** Bodies shown are cut at this many bytes (the instance and the link carry no more). */
-  static final int BODY_MAX = 64 * 1024;
+  /** Captured bodies `detail` shows are cut at this many bytes (a detail line carries two, base64: about 0.7 MB, and the browser decodes it). */
+  static final int BODY_MAX = 256 * 1024;
+  /** A rule's body is at most this many bytes (the tab relay takes the same; serve checks the same limit). */
+  static final int RULE_BODY_MAX = 512 * 1024;
+  /** All the bodies `detail` keeps together; the oldest exchanges lose theirs first, whatever KEEP says. */
+  static final long DETAILS_BYTES = 32L << 20;
   /** The most of a URL an event carries (`detail` has all of it). */
   static final int URL_SHOWN = 1500;
   /** Rules at most; each costs a pattern match per request. */
@@ -45,7 +49,17 @@ public final class Inspector {
   private static final ArrayDeque<String> events = new ArrayDeque<>();
   /** What `detail` answers from: bounded copies (headers, and at most BODY_MAX of each body), never the capture's own entry. */
   private record Detail(String method, String url, int status, List<String[]> reqHeaders, List<String[]> respHeaders,
-      byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut) {}
+      byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut) {
+    long size() {
+      return reqBody.length + respBody.length + 1024;
+    }
+  }
+  static long detailBytesForCheck() {
+    synchronized (details) {
+      return detailBytes;
+    }
+  }
+  private static long detailBytes;  // guarded by details
 
   private static final Map<Long, Detail> details = new LinkedHashMap<>();
   private static final List<Rule> rules = new CopyOnWriteArrayList<>();
@@ -150,7 +164,12 @@ public final class Inspector {
       while (events.size() > KEEP) events.removeFirst();
       synchronized (details) {
         details.put(id, d);
-        if (details.size() > KEEP) details.remove(details.keySet().iterator().next());
+        detailBytes += d.size();
+        while (details.size() > KEEP || (detailBytes > DETAILS_BYTES && details.size() > 1)) {
+          var it = details.entrySet().iterator();
+          detailBytes -= it.next().getValue().size();
+          it.remove();
+        }
       }
       for (Viewer v : viewers) v.offer(line);
     }
@@ -264,7 +283,7 @@ public final class Inspector {
           String type = a[7].equals("-") ? "application/octet-stream" : a[7];
           if (!type.matches("[A-Za-z0-9.+/;=_-]{1,100}")) return "error: a content type is letters, digits and . + / ; = _ -";
           byte[] body = a[8].equals("-") ? new byte[0] : Base64.getDecoder().decode(a[8]);
-          if (body.length > BODY_MAX) return "error: a body is at most " + BODY_MAX + " bytes";
+          if (body.length > RULE_BODY_MAX) return "error: a body is at most " + RULE_BODY_MAX + " bytes";
           if (!(a[3].equals("*") || a[3].matches("[A-Za-z]{3,10}"))) return "error: the method is * or a name such as GET";
           Rule r = new Rule(ruleIds.incrementAndGet(), a[3].toUpperCase(Locale.ROOT), a[4], status, latency, type, body);
           rules.add(r);
@@ -289,7 +308,7 @@ public final class Inspector {
     synchronized (details) {
       e = details.get(Long.parseLong(a[2]));
     }
-    if (e == null) return "error: no exchange " + a[2] + " (the last " + KEEP + " are kept)";
+    if (e == null) return "error: no exchange " + a[2] + " (only recent exchanges are kept: at most " + KEEP + ", fewer when their bodies are large)";
     StringBuilder b = new StringBuilder("{\"id\":").append(a[2]).append(",\"method\":").append(q(e.method)).append(",\"url\":").append(q(e.url))
         .append(",\"status\":").append(e.status).append(",\"reqHeaders\":").append(headers(e.reqHeaders))
         .append(",\"respHeaders\":").append(headers(e.respHeaders));

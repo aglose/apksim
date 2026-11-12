@@ -110,7 +110,8 @@ class WS:
         data = raw if raw is not None else text.encode()
         mask = os.urandom(4)
         head = bytes([0x80 | op])
-        head += bytes([0x80 | len(data)]) if len(data) < 126 else bytes([0x80 | 126]) + struct.pack(">H", len(data))
+        head += (bytes([0x80 | len(data)]) if len(data) < 126 else bytes([0x80 | 126]) + struct.pack(">H", len(data))
+                 if len(data) < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", len(data)))
         self.s.sendall(head + mask + bytes(c ^ mask[i & 3] for i, c in enumerate(data)))
 
 

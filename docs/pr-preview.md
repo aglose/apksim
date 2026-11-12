@@ -121,10 +121,10 @@ that opens a panel:
 
 - **Requests**, as they happen: time, method, status, URL, milliseconds (`*`: a rule added some), a hint with sizes and the rule that
   answered. A connection the engine could not make is a row too (`DNS`/`CONNECT`, status 0). Click one for its headers and
-  bodies (at most 64 KB of each, binary shown as a size; a row shows 1,500 characters of a long URL, the detail all of it; rows are buttons a keyboard reaches; replayed answers are rows too). Headers are redacted exactly as a recording's are (`Authorization`,
+  bodies (at most 256 KB of each, binary shown as a size; a row shows 1,500 characters of a long URL, the detail all of it; rows are buttons a keyboard reaches; replayed answers are rows too). Headers are redacted exactly as a recording's are (`Authorization`,
   `Cookie`, ... and `--network-redact`); bodies and URLs are as sent.
 - **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status (200-599) with a content type and body
-  (64 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,
+  (512 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,
   and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
   While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
   Rules are per session, 32 at most, applied in the order added.
