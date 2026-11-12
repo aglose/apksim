@@ -1089,7 +1089,9 @@ SEC` takes that line as the process's end, frees its `-j` slot and finishes the 
 process group after SEC s (off by default; everything a test leaves, bundles, recordings, outputs, listeners, is
 written before it; only the class cache save, scratch removal and cache sweep come after). `--isolate` keeps `--prewarm`
 (2 x `-j`, or N) processes booted ahead (`TestPool`, launcher `--pooled`: boots the sandbox through a probe with no runner, then reads its test's
-`-e` pairs on stdin), one test each as before; `--prewarm off` starts each cold (docs/test-pool.md). `--record-deps FILE` records which of the app's and tests'
+`-e` pairs on stdin), one test each as before; `--prewarm off` starts each cold (docs/test-pool.md).
+`scripts/flake-hunt.py` reruns chosen tests under shuffled order (`-e apksimOrder`), isolation, CPU load and
+`--realtime-clock`, and reduces order-dependent failures to their culprits by ddmin (docs/flake-hunt.md). `--record-deps FILE` records which of the app's and tests'
 classes each test runs code of (`-Dapksim.deps=true`: the translator adds a probe to every method of the app's
 packages, `dex/Probes`, and Instrument's `DepsListener` reports each test's classes on stdout), and `--affected-by FILE
 --changed PATH...|--diff REV` runs only the tests that reached a class compiled from a changed `.kt`/`.java` file (by
