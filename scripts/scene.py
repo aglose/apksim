@@ -53,13 +53,32 @@ class Failure(Exception):
 
 # Answers that mean a command did not do what it was asked: `error ...` (most commands), and the few that answer in
 # their own words (tap-text's target missing, open with no activity for the URL, key's unknown name, push's bad JSON
-# or missing FCM receiver, bad arguments).
+# or missing FCM receiver, bad arguments, and an answer to a prompt or picker that is not there: permission,
+# biometrics, notifications open, pick, jobs run).
 FAILED_ANSWER = re.compile(r"^(error|unknown command|unknown key:|usage:|not found:|no activity( in |$)|no window$"
-                           r"|bad JSON:|the app has no FCM receiver)")
+                           r"|bad JSON:|the app has no FCM receiver"
+                           r"|no permission request is waiting|no biometric prompt is showing"
+                           r"|no notification$|no such notification|the notification has no action:"
+                           r"|its intent was cancelled|no picker is waiting|nothing readable picked|no pending job )")
 
 
 def failed(answer):
     return bool(FAILED_ANSWER.match(answer))
+
+
+# A `nodes` record starts with its bounds; `offscreen` among the flags before its first value marks a node in the tree
+# but not on screen (a list item scrolled away).
+NODE_RECORD = re.compile(r"; (?=\[-?\d+,-?\d+,-?\d+,-?\d+\] )")
+
+
+def on_screen(dump):
+    """The records of a `nodes` dump that are on screen, joined as `nodes` prints them."""
+    keep = []
+    for record in NODE_RECORD.split(dump):
+        flags = record.split('="', 1)[0]
+        if " offscreen " not in f" {flags} ":
+            keep.append(record)
+    return "; ".join(keep)
 
 
 class Role:
@@ -217,7 +236,7 @@ class Scene:
                 role.last = self.nodes(role)
                 if failed(role.last):
                     raise Failure(f"nodes: {role.last}")
-                present = text in role.last
+                present = text in on_screen(role.last)
                 if present == (word == "until") and time.time() <= deadline:
                     return
                 if time.time() > deadline:
@@ -425,7 +444,7 @@ def main():
                                     "errors": errors})
             if errors:
                 raise Failure(f"step {n}: " + "; ".join(f"{r}: {e}" for r, e in errors.items()))
-    except Failure as e:
+    except (Failure, OSError) as e:  # OSError: a fixture or launcher that cannot be started
         result["failure"] = str(e)
         scene.shots()
     except ValueError as e:

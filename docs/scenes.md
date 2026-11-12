@@ -50,12 +50,13 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
 - **Commands** are the control commands (`tap`, `tap-text`, `swipe`, `type`, `open URL`, `push k=v`, `settle`,
   `shot`, `ble ...`, `network ...`, ...; an answer that says it failed fails the step: `error ...`, `unknown command`,
   `usage:`, tap-text's `not found:`, open's `no activity ...`, key's `unknown key:`, push's `bad JSON:` and `the app
-  has no FCM receiver`), plus:
+  has no FCM receiver`, and the answers of `permission`, `biometrics`, `notifications open`, `pick` and `jobs run`
+  when there is no prompt, notification, picker or job to act on), plus:
 
 | Command | |
 |---|---|
 | `wait MS` | sleep |
-| `until MS TEXT` | repeat `nodes` until TEXT is on screen in an answer received within MS (`nodes`: the windows accessibility reports, so not text a dialog covers, as `tap-text` sees them) |
+| `until MS TEXT` | repeat `nodes` until TEXT is on screen in an answer received within MS (`nodes`: the windows accessibility reports, so not text a dialog covers, as `tap-text` sees them; a node `nodes` marks `offscreen`, scrolled away, does not count) |
 | `gone MS TEXT` | until TEXT is not on screen |
 | `expect TEXT` | the last answer contains TEXT |
 | `capture NAME REGEX` | REGEX's first group, in the last answer or else in `nodes`, becomes `{NAME}`; a bad REGEX fails the step |
@@ -73,7 +74,7 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
   listed in `result.json` (`capture_failures`).
 - **Output**: a line per step with its time; `result.json` (roles, ready times, ports, steps, failure, peak memory);
   each role's log `ROLE.log`; on a failure every running role's screen as `failed-ROLE.png`. Exit 1 on a failure, 2
-  for a bad scene file. Roles still running at the end are quit and must exit 0 (`--keep` leaves them and the fixture running, its PID
+  for a bad scene file; a fixture or launcher that cannot be started is a failure like any other, with its `result.json`. Roles still running at the end are quit and must exit 0 (`--keep` leaves them and the fixture running, its PID
   printed). The fixture's output goes to `fixture.log`, watched for the ready line.
 
 `scene.py` imports `fleet.py`'s instance handling (`Instance`: the port from the log, `ping`, `quit` and the exit
