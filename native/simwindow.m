@@ -1088,6 +1088,11 @@ static void layoutSkin(void) {
     frameLayer.cornerRadius = 0;
     frameLayer.masksToBounds = NO;
     frameLayer.mask = nil;
+    // The layers let go of the skin's images, which nativeSetSkin has released: nothing holds them while it is off.
+    skinFrameLayer.contents = nil;
+    skinMaskLayer.contents = nil;
+    skinHoleMaskLayer.contents = nil;
+    skinHoleLayer.mask = nil;
     return;
   }
   if (!skinView) {

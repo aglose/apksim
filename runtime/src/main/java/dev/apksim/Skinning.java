@@ -65,7 +65,10 @@ final class Skinning {
         if (s != null && given != null) {
           try {
             Device d = Device.named(given), k = deviceOf(s);
-            if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && !d.kind().equals(k.kind())) Device.setCurrent(k);
+            // The same display only (pixels and density): a replay's own device of another density stays as it is.
+            if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && d.density() == k.density() && !d.kind().equals(k.kind())) {
+              Device.setCurrent(k);
+            }
           } catch (IllegalArgumentException e) {
             // Main reports a bad --device
           }

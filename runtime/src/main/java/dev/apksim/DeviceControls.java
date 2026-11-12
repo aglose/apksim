@@ -941,7 +941,7 @@ final class DeviceControls {
   }
 
   /** Device > Skin: the stored skins, read again (a skin added while running shows after a `skin` command). */
-  static void fillSkinMenu() {
+  static synchronized void fillSkinMenu() {  // the launch's fill and a later one, in order: names and menu stay paired
     if (SimWindow.isHeadless()) return;
     List<String> names = Skinning.names();
     skinMenu = names;
