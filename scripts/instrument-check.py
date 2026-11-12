@@ -130,10 +130,15 @@ def fake():
     if sc == "hang-startup":
         hang(state, "p.Startup", "boot")
     for n, (c, m) in enumerate(tests):
-        if sc in ("before-class", "before-class-only") and c == "p.C001":
+        if sc.startswith("before-class") and c == "p.C001":
             if m == "m0":
                 block(c, "null", n + 1, 1)
                 block(c, "null", n + 1, -2, "java.lang.IllegalStateException: @BeforeClass failed")
+            continue
+        if sc == "before-class-skipped" and calls == 1 and (c, m) == ("p.C002", "m1"):
+            continue  # no result at all, and the run still ends with INSTRUMENTATION_CODE
+        if sc == "before-class-unfinished" and (c, m) == ("p.C002", "m2"):
+            block(c, m, n + 1, 1)  # started, never finished, and the run still ends with INSTRUMENTATION_CODE
             continue
         if sc == "between-tests" and calls == 1 and n == 2:
             print("dies between tests", file=sys.stderr)
@@ -298,8 +303,13 @@ SCENARIOS = {
     "at-exit": (1, 1, 10, ["(run)#incomplete"]),
     "rerun-startup": (1, 3, 9, ["p.C000#m1"] + [f"p.C00{c}#m{m}" for c in range(3) for m in range(3)][2:]),
     "before-class": (1, 3, 7, ["p.C001#null", "p.C002#m1"]),
-    # C001's @BeforeClass fails and the run ends: one Class#null for its 3 tests is no shortfall (no "(run)", no listing).
-    "before-class-only": (1, 1, 7, ["p.C001#null"]),
+    # C001's @BeforeClass fails and the run ends: one Class#null for its 3 tests is no shortfall (no "(run)"), which the
+    # suite's listing shows (numtests gives no count per class).
+    "before-class-only": (1, 2, 7, ["p.C001#null"]),
+    # As before-class-only, and C002#m2 starts but never ends: it fails, whatever C001's Class#null explains.
+    "before-class-unfinished": (1, 2, 7, ["p.C001#null", "p.C002#m2"]),
+    # As before-class-only, and C002#m1 has no result at all: the listing finds it, and a new process runs it.
+    "before-class-skipped": (1, 3, 8, ["(run)#incomplete", "p.C001#null"]),
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),
     "parameterized": (1, 3, 10, ["p.C000#m0"]),
     "big": (1, 3, 3000, ["com.example.averylongpackagenamefortheargumentlimit.feature.C000#m1"]),
