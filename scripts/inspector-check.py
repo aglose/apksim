@@ -138,6 +138,28 @@ def main():
         check(base64.b64decode(d["respBody"]) == GREETING and base64.b64decode(d["reqBody"]).startswith(b'{"name"'),
               "the bodies are there: the request's and the rule's answer")
 
+        # Issue 314: a rule body over 64 KB (up to 512 KB) through the tab's socket; the detail keeps 256 KB of it and says it was cut.
+        large = b'{"greeting":"large","pad":"' + b"x" * (400 * 1024) + b'"}'
+        t.ws.send("inspect rule clear")
+        t.ws.send(f"inspect rule add POST /v1/greeting 200 0 application/json {base64.b64encode(large).decode()}")
+        check(t.wait_text(lambda x: x.startswith("n r rule {") and f'"bytes":{len(large)}' in x, 15), f"a rule with a {len(large)}-byte body is added")
+        before = len(t.events())
+        t.tap(*FETCH)
+        check(t.pump(30, until=lambda: any(e.get("rule") and e["respBytes"] == len(large) for e in t.events()[before - 1:])),
+              "Fetch: the app is answered with all of it")
+        exl = [e for e in t.events()[before - 1:] if e.get("rule") and e["respBytes"] == len(large)]
+        if exl:
+            k = len(t.replies("detail"))
+            t.ws.send(f"inspect detail {exl[0]['id']}")
+            check(t.pump(15, until=lambda: len(t.replies("detail")) > k), "its detail comes back")
+            d = json.loads(t.replies("detail")[-1])
+            got = base64.b64decode(d["respBody"])
+            check(d["respCut"] is True and len(got) == 256 * 1024 and large.startswith(got), f"the detail has the first {len(got)} bytes and says it is cut")
+        k = len(t.texts)
+        t.ws.send("inspect rule add POST /x 200 0 - " + base64.b64encode(b"x" * (512 * 1024 + 1)).decode())
+        t.pump(3)
+        check(any(x.startswith("r refused") or x.startswith("n r rule error") for x in t.texts[k:]), "a body of 512 KB + 1 is refused")
+
         for bad in ("inspect rule add POST /x 999 0 - -", "inspect rule add POST /x 103 0 - -", "inspect rule add POST /a b 200 0 - -", "inspect rule add POST /x 200 0 - !!!notb64",
                     "inspect rule add ../x 200 0 - -", "inspect detail ../../etc/passwd", "inspect shot /tmp/x.png", "inspect rule add GET /x 0 0 - -"):
             k = len(t.texts)
