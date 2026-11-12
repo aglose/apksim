@@ -46,7 +46,13 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast");
+      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
+      "--device-kind");
+  /**
+   * This process is `apksim beam`'s agent: a --skin it does not have is dropped, not refused, since a site's start may
+   * name its server's skin (which the page draws) and the error would list the visitor's own skins to any page.
+   */
+  static volatile boolean agent;
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
@@ -195,9 +201,22 @@ final class Catalog {
           || v.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
         throw new IOException("launch option " + o + " needs a plain value");
       }
-      if (o.equals("--device") && !Session.DEVICES.contains(v) && deviceSize(v) == null) {
+      // Beyond --device-size's grammar: on the agent, any device a skin may name (a server skin's, sent with a Mac start);
+      // on a server, only its own skins' devices (an app's own --device is otherwise held to that grammar).
+      boolean skinDev = agent ? skinDevice(v) : Serve.skins().stream().anyMatch(k -> k.device.equals(v)) && skinDevice(v);
+      if (o.equals("--device") && !Session.DEVICES.contains(v) && deviceSize(v) == null && !skinDev) {
         throw new IOException("--device takes " + String.join(", ", Session.DEVICES) + " or WxH[@density] such as 1280x720@1.5"
             + " (160-4096 dp a side, density 0.75-4, at most 4096 pixels a side)");
+      }
+      if (o.equals("--skin") && Serve.skin(v) == null && agent) continue;  // dropped: see `agent`
+      if (o.equals("--skin") && Serve.skin(v) == null) {
+        // A stored skin's name only (issue 246), never a path: the launch reads it from this server's skin folders.
+        List<String> known = Serve.skins().stream().map(k -> k.name).toList();
+        throw new IOException("--skin " + v.replaceAll("[^a-z0-9-]", "?") + ": no such skin here (known: "
+            + (known.isEmpty() ? "none" : String.join(", ", known)) + ")");
+      }
+      if (o.equals("--device-kind") && !v.matches("phone|foldable|tablet|desktop|tv|watch")) {
+        throw new IOException("--device-kind takes phone, foldable, tablet, desktop, tv or watch");
       }
       if (o.equals("--camera") && !v.matches("off|fake")) {
         throw new IOException("--camera takes off or fake (no image file here)");
@@ -227,6 +246,19 @@ final class Catalog {
    * `--device` takes, or null when it is not one or is out of bounds (the limits of apksim's own parser, and at most
    * 4096 pixels a side, as a session's frames are held in memory).
    */
+  /**
+   * A device a skin may name (`411x914@2.625`, `1080x1920px@420dpi`), as the launcher resolves it, within --device-size's
+   * bounds: a server's app reaches a Mac start with its skin's --device (issue 246).
+   */
+  static boolean skinDevice(String s) {
+    try {
+      dev.apksim.DeviceSpec d = dev.apksim.DeviceSpec.resolve(s);
+      return d.widthDp() <= 4096 && d.heightDp() <= 4096 && d.widthPx() <= 4096 && d.heightPx() <= 4096;
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   static String deviceSize(String s) {
     java.util.regex.Matcher m = java.util.regex.Pattern.compile("([1-9]\\d{2,3})x([1-9]\\d{2,3})(?:@(\\d(?:\\.\\d{1,2})?))?").matcher(s);
     if (!m.matches()) return null;

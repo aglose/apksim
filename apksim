@@ -141,6 +141,11 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # A stored skin (docs/skins.md): its frame around the screen, its cutout and corners told to the app, and its
     # device unless --device names one.
     --skin) EXTRA+=("-Dapksim.skin=$2"); shift 2 ;;
+    # The device's kind where its size alone would give another (a custom-size watch or TV): what a skin's kind gives
+    # a launch that cannot read the skin store (a beamed instance), and what a replay recorded.
+    --device-kind)
+      [[ "$2" =~ ^(phone|foldable|tablet|desktop|tv|watch)$ ]] || { echo "--device-kind takes phone, foldable, tablet, desktop, tv or watch" >&2; exit 2; }
+      EXTRA+=("-Dapksim.deviceKind=$2"); shift 2 ;;
     # A device profile (scripts/device-profile.py): display, Build fields, features and settings of a real device,
     # expanded into --device, --build, --feature and --setting options (later options on the command line win).
     --device-profile)

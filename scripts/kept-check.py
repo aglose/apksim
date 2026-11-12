@@ -65,7 +65,7 @@ def start(key, extra=""):
     s.pump(120, until=lambda: any(t.startswith("s ") for t in s.texts) and len(s.frames) > 0)
     s.ws.send("stats")
     s.pump(3, until=lambda: s.stats.get("id"))
-    d = [json.loads(t[2:]) for t in s.texts if t.startswith("d ")]
+    d = [x for x in (json.loads(t[2:]) for t in s.texts if t.startswith("d ")) if "kept" in x]  # not the skin one
     return s, (d[0] if d else {})
 
 

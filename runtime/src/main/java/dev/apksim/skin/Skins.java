@@ -82,7 +82,17 @@ public final class Skins {
     List<Path> l = new ArrayList<>();
     String s = setting("apksim.skinsShared", "APKSIM_SKINS");
     if (s != null) for (String p : s.split(":")) if (!p.isEmpty()) l.add(Path.of(p));
+    l.addAll(extraDirs);
     return l;
+  }
+
+  /** Folders a server adds (`serve --skins DIR`), searched after APKSIM_SKINS's. */
+  private static volatile List<Path> extraDirs = List.of();
+
+  public static void addDirs(List<Path> dirs) {
+    List<Path> l = new ArrayList<>(extraDirs);
+    for (Path d : dirs) l.add(d.toAbsolutePath().normalize());
+    extraDirs = List.copyOf(l);
   }
 
   private static String setting(String property, String env) {

@@ -2,8 +2,8 @@
 
 A skin is a device frame image plus the device it frames. apksim stores them and `apksim skin` adds, shows and
 exports them. They are local data: nothing is built in, anyone can add their own, and a private skin stays on the
-machine. This page is the format, the commands, and how a running instance draws one ("Drawing"). Serving skins to a
-browser tab (`serve`, `beam`) is a separate issue and not done yet.
+machine. This page is the format, the commands, and how a running instance draws one ("Drawing"). `serve` and `beam`
+hand them to a browser tab, which draws the frame around its canvas (docs/serve.md "Skins").
 
 ## Format
 
@@ -100,6 +100,8 @@ takes it away. `skin NAME` for a skin with another device switches to that devic
 - **Screenshots.** `shot FILE` is still the app's pixels alone. `shot --skin FILE` (File > Save Screen with Skin,
   Cmd+Opt+S) is the screen in the frame, at the frame's size scaled to the display, transparent outside the device.
 - **Headless and Linux** there is no window, but the device, what the app is told and `shot --skin` are the same.
+- **`--device-kind KIND`** (phone, foldable, tablet, desktop, tv, watch) gives a launch that cannot read the skin store
+  (a beamed instance, a server skin's start on a visitor's Mac) the skin's kind with its `--device`.
 - **The device's kind** is the skin's `kind` when it names one: a `227x227@2` skin of kind `watch` runs as a watch
   (round, UI_MODE_TYPE_WATCH, no bars), as `--device watch` would, at launch and with `skin NAME`.
 - **Test runs** (`--instrument`) take the skin's device and report its cutout and corners; nothing is drawn. The

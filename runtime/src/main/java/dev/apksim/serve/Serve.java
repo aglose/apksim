@@ -36,7 +36,7 @@ public final class Serve {
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
-                          [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
+                          [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
@@ -169,6 +169,8 @@ public final class Serve {
       System.exit(BeamLaunchd.command(s.launcher, state, args[1], List.of(args).subList(2, args.length)));
     }
     if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status").contains(args[1])) {
+      // The agent's own commands: its rules for saved options (a server skin's device, a skin it does not have).
+      Catalog.agent = true;
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
     for (int i = 0; i < args.length; i++) {
@@ -182,6 +184,7 @@ public final class Serve {
         // Flags without a value: past the step over a value after the switch, to the next argument.
         case "--beam" -> {
           s.beam = true;
+          Catalog.agent = true;
           continue;
         }
         case "--allow-beam" -> {
@@ -251,6 +254,15 @@ public final class Serve {
             System.exit(2);
           }
           s.deviceSizes.put(name, size);
+        }
+        case "--skins" -> {
+          // More folders of skins (docs/skins.md, docs/serve.md "Skins"), searched after ~/.apksim/skins and APKSIM_SKINS.
+          Path d = Path.of(need(a, v));
+          if (!Files.isDirectory(d)) {
+            System.err.println("--skins: no folder " + d + "\n" + USAGE);
+            System.exit(2);
+          }
+          dev.apksim.skin.Skins.addDirs(List.of(d));
         }
         case "--launch-timeout" -> s.launchTimeoutSeconds = Integer.parseInt(need(a, v));
         case "--trust-proxy" -> {
@@ -630,6 +642,11 @@ public final class Serve {
       for (String k : List.of("APKSIM_SANDBOXED", "APKSIM_NOCACHE", "APKSIM_SANDBOX_TEST")) pb.environment().remove(k);
     } else {
       pb.environment().remove("APKSIM_BEAM_SANDBOX");
+      // The skin folders this server searches (--skins too), for an instance started with --skin (issue 246).
+      // Absolute: the instance runs in another folder (serve's logs), where a relative one would find nothing.
+      List<String> shared = dev.apksim.skin.Skins.sharedDirs().stream().map(p -> p.toAbsolutePath().normalize().toString()).toList();
+      if (!shared.isEmpty()) pb.environment().put("APKSIM_SKINS", String.join(":", shared));
+      pb.environment().put("APKSIM_SKINS_DIR", dev.apksim.skin.Skins.store().toAbsolutePath().normalize().toString());
     }
   }
 
@@ -822,6 +839,10 @@ public final class Serve {
       appState(r.path().substring("/api/apps/".length()), out);
       return;
     }
+    if (r.method().equals("GET") && r.path().startsWith("/api/skins/")) {
+      skinImage(r, r.path().substring("/api/skins/".length()), out);
+      return;
+    }
     if (r.method().equals("GET") && r.path().matches("/api/sessions/[0-9a-f]{12}/log")) {
       sessionLog(r.path().substring("/api/sessions/".length(), "/api/sessions/".length() + 12), out);
       return;
@@ -865,8 +886,15 @@ public final class Serve {
           if (b.length() > 1) b.append(',');
           b.append("{\"name\":").append(Http.q(d.getKey())).append(",\"size\":").append(Http.q(d.getValue())).append('}');
         }
+        // The stored skins beside them (issue 246): a picker shows "Pixel 9" for its device, and starts with skin=NAME.
+        for (dev.apksim.skin.Skin k : skins()) {
+          if (b.length() > 1) b.append(',');
+          b.append("{\"name\":").append(Http.q(k.device)).append(",\"size\":").append(Http.q(skinSize(k))).append(",\"skin\":")
+              .append(Http.q(k.name)).append(",\"title\":").append(Http.q(k.title)).append('}');
+        }
         Http.json(out, 200, b.append(']').toString());
       }
+      case "GET /api/skins" -> Http.json(out, 200, skinsJson());
       case "GET /api/status" -> Http.json(out, 200, status());
       case "POST /api/upload" -> upload(r, out);
       case "POST /api/apps" -> addApp(r, out);
@@ -1090,6 +1118,108 @@ public final class Serve {
     Http.respond(out, 200, "text/plain; charset=utf-8", (String.join("\n", lines) + "\n").getBytes(StandardCharsets.UTF_8));
   }
 
+  // ---------------------------------------------------------------- skins (issue 246, docs/serve.md "Skins")
+
+  /** This server's skins (the agent's: the visitor's own), every one that reads and whose device resolves. */
+  static List<dev.apksim.skin.Skin> skins() {
+    List<dev.apksim.skin.Skin> out = new ArrayList<>();
+    try {
+      for (dev.apksim.skin.Skin k : dev.apksim.skin.Skins.all(null)) {
+        try {
+          k.spec();
+          out.add(k);
+        } catch (IOException e) {
+          // a device this build cannot resolve: not offered
+        }
+      }
+    } catch (IOException e) {
+      // no store
+    }
+    return out;
+  }
+
+  /** The skin of that name this server has, or null. */
+  static dev.apksim.skin.Skin skin(String name) {
+    if (name == null || !dev.apksim.skin.Skin.NAME.matcher(name).matches()) return null;
+    for (dev.apksim.skin.Skin k : skins()) if (k.name.equals(name)) return k;
+    return null;
+  }
+
+  /**
+   * Launch options with `--skin NAME` replaced by that skin's `--device` (unless they name one): for a launch that cannot
+   * read the skin store (a beamed instance or warm-up, whose sandbox reads nothing in the home folder) or may not have the
+   * skin (a Mac start of a server's app). A skin this server does not have is just dropped.
+   */
+  static List<String> skinAsDevice(List<String> given) {
+    List<String> launch = new ArrayList<>(given);
+    int si = launch.lastIndexOf("--skin");
+    if (si < 0 || si + 1 >= launch.size()) return launch;
+    dev.apksim.skin.Skin k = skin(launch.get(si + 1));
+    for (int i = launch.size() - 2; i >= 0; i--) {
+      if (launch.get(i).equals("--skin")) {
+        launch.remove(i + 1);
+        launch.remove(i);
+      }
+    }
+    if (k != null && !launch.contains("--device")) {
+      launch.addAll(List.of("--device", k.device));
+      // Its kind too (a custom-size watch is a watch), which the size alone would not give.
+      if (k.kind != null && !launch.contains("--device-kind")) launch.addAll(List.of("--device-kind", k.kind));
+    }
+    return launch;
+  }
+
+  /** "411x914@2.625": the skin's device as dp and density. */
+  static String skinSize(dev.apksim.skin.Skin k) {
+    try {
+      dev.apksim.DeviceSpec d = k.spec();
+      return d.widthDp() + "x" + d.heightDp() + "@" + (d.density() == (int) d.density() ? String.valueOf((int) d.density()) : String.valueOf(d.density()));
+    } catch (IOException e) {
+      return k.device;
+    }
+  }
+
+  /** `GET /api/skins` (`/beam/skins` on the agent): what a page needs to draw each frame around its canvas. */
+  static String skinsJson() {
+    StringBuilder b = new StringBuilder("[");
+    for (dev.apksim.skin.Skin k : skins()) {
+      try {
+        String j = k.apiJson();
+        if (b.length() > 1) b.append(',');
+        b.append(j);
+      } catch (IOException e) {
+        // its frame is missing or not a PNG: not offered
+      }
+    }
+    return b.append(']').toString();
+  }
+
+  /**
+   * `GET /api/skins/NAME/frame.png` (frame-land.png, mask.png): a skin's image, revalidated by an ETag of its contents
+   * (a page caches it; a changed skin is fetched again).
+   */
+  static void skinImage(Http.Request r, String rest, OutputStream out) throws IOException {
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("([a-z0-9-]+)/(frame\\.png|frame-land\\.png|mask\\.png)").matcher(rest);
+    dev.apksim.skin.Skin k = m.matches() ? skin(m.group(1)) : null;
+    Path f = k == null ? null : k.image(m.group(2));
+    if (f == null) {
+      Http.text(out, 404, "no such skin image");
+      return;
+    }
+    byte[] body = Files.readAllBytes(f);
+    String etag;
+    try {
+      etag = "\"" + HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(body), 0, 16) + "\"";
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IOException(e);
+    }
+    if (etag.equals(r.header("if-none-match"))) {
+      Http.respond(out, 304, "image/png", new byte[0], "ETag: " + etag, "Cache-Control: private, no-cache");
+      return;
+    }
+    Http.respond(out, 200, "image/png", body, "ETag: " + etag, "Cache-Control: private, no-cache");
+  }
+
   /** `GET /api/apps/ID`: an uploaded or added app's state (downloading, ready, failed), for a service that added it. */
   private void appState(String id, OutputStream out) throws IOException {
     Catalog.Download d = catalog.download(id);
@@ -1119,7 +1249,8 @@ public final class Serve {
     }
     String detail = warmer.detail(a);
     Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name())
-        + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "") + ",\"state\":\"ready\",\"cache\":"
+        + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "")
+        + (Session.appSkin(a) != null ? ",\"skin\":" + Http.q(Session.appSkin(a)) : "") + ",\"state\":\"ready\",\"cache\":"
         + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + expiry(a.id()) + "}");
   }
 
@@ -1395,6 +1526,22 @@ public final class Serve {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }
+    // A skin (issue 246): one of this server's (the agent's: the visitor's), never a path; its device unless the page
+    // names one. `off` starts without the app's own --skin.
+    // The device's kind the page's skin gives (a custom-size watch), for a device this server does not have a skin for.
+    String kindParam = r.param("kind");
+    if (kindParam != null && kindParam.matches("phone|foldable|tablet|desktop|tv|watch")) options.put("kind", kindParam);
+    String skinParam = r.param("skin");
+    if ("off".equals(skinParam)) options.put("skin", "off");
+    else if (skinParam != null && !skinParam.isEmpty()) {
+      dev.apksim.skin.Skin k = skin(skinParam);
+      if (k == null) {
+        ws.sendText("r skin: no skin named " + skinParam.replaceAll("[^a-z0-9-]", "?") + " here: it starts without one");
+        options.put("skin", "off");  // without one: not the app's own either
+      } else {
+        options.put("skin", k.name);
+      }
+    }
     // A reopened saved session (issue 181) starts as it was saved (device, appearance, locale, font scale, permissions),
     // as `apksim beam run` does, unless the page names them.
     Map<String, Object> reopenedRec = beam && seed != null && reopened.containsKey(seed) ? store.saved(reopened.get(seed)) : null;
@@ -1500,8 +1647,11 @@ public final class Serve {
       Http.file(out, apk, "application/vnd.android.package-archive");
       return;
     }
+    // The app's options as the Mac's agent takes them. A --skin is this server's: the Mac may not have it, so it goes as
+    // the skin's device (unless the app names one); the page draws the server's frame either way (issue 246).
+    List<String> launch = skinAsDevice(a.launch());
     StringBuilder opts = new StringBuilder("[");
-    for (String o : a.launch()) opts.append(opts.length() > 1 ? "," : "").append(Http.q(o));
+    for (String o : launch) opts.append(opts.length() > 1 ? "," : "").append(Http.q(o));
     String sha = catalog.sha256(apk);
     Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"size\":" + Files.size(apk)
         + ",\"sha256\":" + Http.q(sha) + ",\"options\":" + opts.append(']') + ",\"ticket\":" + Http.q(tickets.mint(a.id(), sha))
@@ -1890,6 +2040,17 @@ public final class Serve {
         return;
       }
       sessionFile(r, out, x, fm.group(2), fm.group(1));
+      return;
+    }
+    // The visitor's own skins (issue 246): to a site they trust only, as their private frames are their own. The page
+    // draws the frame around its canvas; nothing is uploaded anywhere.
+    if (r.method().equals("GET") && (r.path().equals("/beam/skins") || r.path().startsWith("/beam/skins/"))) {
+      if (!agent.trusted(o)) {
+        Http.text(out, 403, "this Mac's skins are for sites it trusts (apksim beam trust allow ORIGIN)");
+        return;
+      }
+      if (r.path().equals("/beam/skins")) Http.json(out, 200, skinsJson());
+      else skinImage(r, r.path().substring("/beam/skins/".length()), out);
       return;
     }
     switch (r.method() + " " + r.path()) {

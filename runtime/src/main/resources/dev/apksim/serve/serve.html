@@ -34,6 +34,13 @@ main { flex: 1; display: flex; min-height: 0; gap: 16px; padding: 16px; }
   line-height: 0; }
 #screen { display: block; border-radius: 12px; background: #000; touch-action: none; outline: none; cursor: default; }
 #bezel.typing { box-shadow: 0 0 0 2px var(--accent), 0 6px 30px rgba(0,0,0,.25); }
+/* A skin (docs/serve.md "Skins"): the frame image over the canvas (its hole shows the screen; clicks pass through it to
+   the canvas, whose own box maps them), the canvas at the frame's screen, black in the hole around it. */
+#bezel.skinned { padding: 0; background: transparent; box-shadow: none; border-radius: 0; }
+#bezel.skinned #screen { position: absolute; }
+#skinFrame { position: absolute; pointer-events: none; z-index: 2; transform-origin: 50% 50%; }
+#skinHole { position: absolute; background: #000; }
+#skinFrame[hidden], #skinHole[hidden] { display: none; }
 /* Fill (a session on this Mac, docs/beam.md phase 3): the display is the stage's size, one frame pixel per screen pixel,
    pinned top left (a frame from before a resize is never stretched). */
 body.fill #stage { align-items: flex-start; justify-content: flex-start; overflow: hidden; }
@@ -91,6 +98,7 @@ body.embed.bare aside { width: auto; }
     <option value="desktop">Desktop</option><option value="tv">TV</option>
     <option value="watch">Watch</option><option value="watch-small">Watch (small)</option><option value="watch-large">Watch (large)</option>
   </select>
+  <select id="skin" aria-label="Skin" title="A device frame around the screen, and its device (docs/skins.md)"><option value="off">No skin</option></select>
   <label><input id="dark" type="checkbox"> Dark</label>
   <select id="runOn" aria-label="Where the app runs" hidden title="Run the app on this server, or on this Mac with its own apksim (docs/beam.md)">
     <option value="server">On the server</option><option value="mac">On this Mac</option>
@@ -107,7 +115,9 @@ body.embed.bare aside { width: auto; }
       your clicks, drags, scrolls and typing.</div>
     <div id="moveChip" hidden></div>
     <div id="bezel" hidden>
+      <div id="skinHole" hidden></div>
       <canvas id="screen" width="822" height="1782"></canvas>
+      <img id="skinFrame" alt="" hidden>
       <textarea id="keys" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Keyboard input to the app"></textarea>
       <div id="overlay" hidden><div id="overlayText"></div><button id="overlayBtn" hidden></button></div>
     </div>
@@ -176,7 +186,7 @@ const KEYS = { Backspace: "DEL", Delete: "FORWARD_DEL", Enter: "ENTER", Tab: "TA
 const params = new URLSearchParams(location.search);
 const state = { app: params.get("app") || "", device: params.get("device") || "", appearance: params.get("appearance") || "light",
   locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
-  orientation: params.get("orientation") || "" };
+  orientation: params.get("orientation") || "", skin: params.get("skin") || "" };
 let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
 // Embedded (?embed=1, docs/serve.md): the host page picks the app; a token in the frame's URL is kept in memory and
 // sent with this page's own requests (a cross-site frame gets no SameSite cookie), and taken out of the address.
@@ -232,7 +242,11 @@ async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link 
   try {
     const r = await fetch(withToken("api/apps/" + encodeURIComponent(app)));
     if (!r.ok || app !== state.app) return;
-    const d = (await r.json()).device || "";
+    const info = await r.json(), d = info.device || "";
+    // The app's own skin (its --skin): the menu shows it while nothing else was chosen.
+    appSkinDefault = info.skin || "";
+    // Nothing chosen and nothing running: the new app's own skin, else none (not the previous app's).
+    if (!state.skin && !live()) $("skin").value = info.skin && [...$("skin").options].some(o => o.value === info.skin) ? info.skin : "off";
     if (d && ![...sel.options].some(o => o.value === d)) {
       const o = document.createElement("option");
       o.value = o.textContent = d;
@@ -246,6 +260,7 @@ async function loadDevices() {
   try {
     const r = await fetch(withToken("api/devices"));
     if (r.ok) for (const d of await r.json()) {
+      if (d.skin) continue;  // a skin's device: the Skin menu offers it by its title
       const o = document.createElement("option");
       o.value = d.name; o.textContent = d.name + " (" + d.size + ")";
       $("device").appendChild(o);
@@ -262,6 +277,7 @@ async function loadApps() {
   if (embed && !state.app) $("empty").textContent = "No app: the page embedding this one names it (?app=ID).";
   if (state.app) { addApp(state.app, state.app.startsWith("u") ? "Shared build" : state.app); $("app").value = state.app; }
   await loadDevices();
+  await loadSkins();
   if (state.device) setDevice(state.device);
   offerAppDevice(true);
   $("dark").checked = state.appearance === "dark";
@@ -271,6 +287,7 @@ async function loadApps() {
   refresh();
   await codecReady;
   await beamSetup();
+  await loadMacSkins();
   if (state.app) start();
 }
 function refresh() {
@@ -313,6 +330,11 @@ function start() {
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
   if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
+  // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
+  const startSkin = skinFor($("skin").value);
+  const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
+  skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
+  skin.active = $("skin").value !== "off" ? $("skin").value : "";
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
   if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
@@ -334,6 +356,10 @@ function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" 
 function sessionQuery() {
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
+  if (state.skin) q.set("skin", state.skin);  // a stored skin's name, or off (the app's own --skin otherwise)
+  // The skin's kind with its device (a custom-size watch is a watch), for an endpoint that does not have the skin.
+  const sk = skinFor($("skin").value);
+  if (sk && sk.kind && state.device === sk.device) q.set("kind", sk.kind);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
   // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).
@@ -357,6 +383,7 @@ function openSocket(url, onMac, fallback) {
 // session's socket may still be closing (or delivering) when Start opens the next, or a move replaces it.
 function wire(sock, onMac) {
   sock.onMac = onMac;
+  if (onMac) loadMacSkins();  // a session on this Mac: the agent trusts this site now, so its skins can be listed
   sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
     if (sock === ws && macFallback(sock, "the session closed before its first frame")) return;
@@ -502,6 +529,16 @@ function onText(t) {
   }
   else if (kind === "d") {
     const d = JSON.parse(body);
+    if ("skin" in d) {  // the skin the session started with (the page's, or the app's own): its frame is drawn
+      // On this Mac the agent may not have the server's skin (it starts on that skin's device without it): the page
+      // still draws the frame it chose, unless the choice was No skin.
+      const chosen = $("skin").value !== "off" ? $("skin").value : "";
+      skin.active = d.skin || (ws && ws.onMac ? chosen : "");
+      if (d.skin && !skinFor(d.skin)) log("skin " + d.skin + " is not one this page lists: no frame");
+      if (d.skin && [...$("skin").options].some(o => o.value === d.skin)) $("skin").value = d.skin;
+      fit();
+      return;
+    }
     const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
       new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
       busy: "another session has this key: it starts without the kept data, and keeps nothing",
@@ -777,13 +814,196 @@ window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length,
   frames: (ws && ws.shownFrames) || 0,
   width: frameW, height: frameH, codec: mode });
 function fit() {
-  if (fill.on) { fillFit(); return; }
+  if (fill.on) { skinOff(); fillFit(); return; }
+  if (skinFit()) return;
   const stage = $("stage"), w = frameW || canvas.width, h = frameH || canvas.height;
   const s = Math.max(0.05, Math.min((stage.clientWidth - 20) / w, (stage.clientHeight - 20) / h, 1 / Math.max(1, devicePixelRatio)));
   canvas.style.width = Math.floor(w * s) + "px";
   canvas.style.height = Math.floor(h * s) + "px";
 }
 addEventListener("resize", fit);
+
+// ---------------------------------------------------------------- skins (issue 246, docs/serve.md "Skins")
+// The server's skins (api/skins), and on a session on this Mac the agent's (the visitor's own, never uploaded). The
+// frame is drawn around the canvas when the session's display has the skin's screen shape; the canvas stays the one
+// thing that takes input, so pointer mapping is its own box as without a skin. The frame turns with the display:
+// ROTATION_90 (Rotate right) puts the device's top edge on the left, as the instance turns it.
+// Prototype-free tables (a skin may be named "constructor"); each source's own entries, as the server and this Mac may
+// both have a skin of one name with different frames: the one drawn is the session's endpoint's (skinFor).
+const skin = { server: Object.create(null), mac: Object.create(null), active: "", turns: 0, urls: Object.create(null), warned: "" };
+let appSkinDefault = "";
+let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
+function skinFor(name) {
+  if (!name) return undefined;
+  // The running session's endpoint; before one exists, the one the next Start goes to.
+  const onMac = ws ? ws.onMac : $("runOn").value === "mac" && beam.ok;
+  return onMac ? skin.mac[name] || skin.server[name] : skin.server[name] || skin.mac[name];
+}
+function addSkin(k, from) {
+  const table = from === "mac" ? skin.mac : skin.server;
+  if (table[k.name]) return;
+  k.from = from;
+  table[k.name] = k;
+  // One menu entry per name: the server's title, else this Mac's.
+  if ([...$("skin").options].some(o => o.value === k.name)) return;
+  const o = document.createElement("option");
+  o.value = k.name; o.textContent = k.title + (from === "mac" ? " (this Mac)" : "");
+  $("skin").appendChild(o);
+}
+function showChosenSkin() {
+  if (!state.skin) return;
+  $("skin").value = [...$("skin").options].some(o => o.value === state.skin) ? state.skin : "off";
+  // A link's skin=NAME without device=: the skin's device, carried to the session (on this Mac too, where the agent may
+  // not have that skin).
+  const k = skinFor(state.skin);
+  if (k && !params.get("device") && !deviceChosen) { state.device = k.device; setDevice(k.device); }
+}
+async function loadSkins() {
+  try {
+    const r = await fetch(withToken("api/skins"));
+    if (r.ok) for (const k of await r.json()) addSkin(k, "server");
+  } catch (e) { log("could not list skins: " + e); }
+  showChosenSkin();
+}
+// The agent's skins, for a site it trusts (it answers 403 otherwise): listed after the server's, once beamSetup has
+// found the agent. A session on the server cannot use them (the server does not have them); one on this Mac can.
+async function loadMacSkins() {
+  if (!beam.ok || !beam.url) return;
+  try {
+    const r = await fetch(beam.url + "/beam/skins");
+    if (r.ok) for (const k of await r.json()) addSkin(k, "mac");
+  } catch (e) { /* no agent, or it does not trust this site */ }
+  showChosenSkin();
+  fit();  // a session already laid out without this Mac's skins: its frame now
+}
+$("skin").onchange = () => {
+  state.skin = $("skin").value;
+  const k = skinFor(state.skin);
+  if (k) { state.device = k.device; setDevice(k.device); }
+  const live = ws && ws.readyState <= 1 && !ended;
+  // A live session keeps its device: the frame shows if it fits, and Start again runs on the skin's device.
+  skin.active = k ? k.name : "";
+  if (live && k) log("skin " + k.title + ": its device (" + k.device + ") applies from the next Start");
+  fit();
+};
+async function skinUrl(k, file) {
+  const key = k.from + "/" + k.name + "/" + file;
+  if (!skin.urls[key]) {
+    skin.urls[key] = (async () => {
+      const r = await fetch(k.from === "mac" ? beam.url + "/beam/skins/" + k.name + "/" + file : withToken("api/skins/" + k.name + "/" + file));
+      if (!r.ok) throw new Error(file + ": " + r.status);
+      return URL.createObjectURL(await r.blob());
+    })();
+  }
+  return skin.urls[key];
+}
+// An image turned by quarter turns counterclockwise, as a blob URL (the mask, which CSS cannot turn on its own).
+async function turnedUrl(k, file, q) {
+  const key = k.from + "/" + k.name + "/" + file + "@" + q;
+  if (!skin.urls[key]) {
+    skin.urls[key] = (async () => {
+      const img = new Image();
+      img.src = await skinUrl(k, file);
+      await img.decode();
+      const c = document.createElement("canvas"), w = img.naturalWidth, h = img.naturalHeight;
+      c.width = q % 2 ? h : w; c.height = q % 2 ? w : h;
+      const g = c.getContext("2d");
+      g.translate(c.width / 2, c.height / 2); g.rotate(-q * Math.PI / 2); g.drawImage(img, -w / 2, -h / 2);
+      return URL.createObjectURL(await new Promise(res => c.toBlob(res)));
+    })();
+  }
+  return skin.urls[key];
+}
+// A rectangle of a w x h frame turned q quarter turns counterclockwise (Skinning.turnRect).
+function turnRect(r, q, w, h) {
+  return [[r.x, r.y, r.width, r.height], [r.y, w - r.x - r.width, r.height, r.width],
+    [w - r.x - r.width, h - r.y - r.height, r.width, r.height], [h - r.y - r.height, r.x, r.height, r.width]][q & 3];
+}
+function skinOff() {
+  $("bezel").classList.remove("skinned");
+  $("skinFrame").hidden = $("skinHole").hidden = true;
+  $("skinFrame").dataset.src = "";  // a frame still being fetched is not shown when it arrives
+  for (const p of ["maskImage", "webkitMaskImage"]) $("skinHole").style[p] = "";
+  for (const p of ["left", "top", "borderRadius", "maskImage", "webkitMaskImage"]) canvas.style[p] = "";
+  for (const p of ["left", "top", "width", "height", "inset"]) $("overlay").style[p] = "";
+  $("bezel").style.width = $("bezel").style.height = "";
+  $("keys").style.left = $("keys").style.top = "";
+}
+// Lays the frame out around the canvas when the active skin fits the display; false (and no frame) otherwise.
+function skinFit() {
+  const k = skinFor(skin.active), w = frameW || canvas.width, h = frameH || canvas.height;
+  if (!k || $("bezel").hidden) { skinOff(); return false; }
+  const s0 = k.screen, ka = Math.max(s0.width, s0.height) / Math.min(s0.width, s0.height), da = Math.max(w, h) / Math.min(w, h);
+  if (Math.abs(ka / da - 1) > 0.01) {
+    if (skin.warned !== k.name + w + "x" + h) {
+      skin.warned = k.name + w + "x" + h;
+      console.info("apksim: skin " + k.name + " is not drawn: its screen (" + s0.width + "x" + s0.height + ") is not the shape of the display (" + w + "x" + h + ")");
+    }
+    skinOff();
+    return false;
+  }
+  // The turn: the page's own count of rotations, made to agree with the display's orientation.
+  // A square display keeps the page's count as it is: its shape says nothing about the turn.
+  const odd = (s0.width > s0.height) !== (w > h) && w !== h;
+  let q = skin.turns;
+  if (w !== h && s0.width !== s0.height && q % 2 !== (odd ? 1 : 0)) q = odd ? 1 : 0;
+  const F = k.frameSize, fw = q % 2 ? F.height : F.width, fh = q % 2 ? F.width : F.height;
+  const [hx, hy, hw, hh] = turnRect(s0, q, F.width, F.height);
+  const kk = w >= h ? w / hw : h / hh;  // display pixels per frame pixel, from the long side
+  const stage = $("stage");
+  const sc = Math.max(0.05, Math.min((stage.clientWidth - 20) / (fw * kk), (stage.clientHeight - 20) / (fh * kk), 1 / Math.max(1, devicePixelRatio)));
+  const px = v => v * sc + "px";
+  const b = $("bezel");
+  b.classList.add("skinned");
+  b.style.width = px(fw * kk); b.style.height = px(fh * kk);
+  const sx = hx * kk + (hw * kk - w) / 2, sy = hy * kk + (hh * kk - h) / 2;
+  canvas.style.left = px(sx); canvas.style.top = px(sy);
+  canvas.style.width = Math.floor(w * sc) + "px"; canvas.style.height = Math.floor(h * sc) + "px";
+  const radius = s0.cornerRadius * kk * sc;
+  const hole = $("skinHole");
+  hole.hidden = false;
+  hole.style.left = px(hx * kk); hole.style.top = px(hy * kk); hole.style.width = px(hw * kk); hole.style.height = px(hh * kk);
+  hole.style.borderRadius = k.mask ? "0" : radius + "px";
+  canvas.style.borderRadius = k.mask ? "0" : radius + "px";
+  const ov = $("overlay").style;
+  ov.inset = "auto"; ov.left = canvas.style.left; ov.top = canvas.style.top; ov.width = canvas.style.width; ov.height = canvas.style.height;
+  $("keys").style.left = canvas.style.left; $("keys").style.top = canvas.style.top;
+  // The frame: frame-land.png is the frame at ROTATION_90; else frame.png turned. Shown once its image has loaded.
+  const land = k.frameLand && q % 2 === 1, file = land ? "frame-land.png" : "frame.png", turn = land ? q - 1 : q;
+  const iw = (land ? F.height : F.width) * kk * sc, ih = (land ? F.width : F.height) * kk * sc;
+  const img = $("skinFrame"), want = k.from + "/" + k.name + "/" + file;
+  img.style.width = iw + "px"; img.style.height = ih + "px";
+  img.style.left = (fw * kk * sc - iw) / 2 + "px"; img.style.top = (fh * kk * sc - ih) / 2 + "px";
+  img.style.transform = turn ? "rotate(" + -90 * turn + "deg)" : "";
+  if (img.dataset.src !== want) {
+    // The old image goes now: another layout before this one arrives must not show it with the new geometry.
+    img.hidden = true; img.dataset.src = want; img.removeAttribute("src");
+    // Shown only if the layout still wants it: Fill, No skin or another skin since leave dataset.src elsewhere.
+    skinUrl(k, file).then(u => { if (img.dataset.src === want) { img.src = u; fit(); } })
+      .catch(e => log("skin " + k.name + ": " + e.message));
+  } else if (img.getAttribute("src")) img.hidden = false;
+  if (k.mask) {
+    // The canvas and the black behind it both take the screen's shape: a round face leaves the corners clear.
+    // Only the latest layout's mask: an earlier decode (another turn, or the other source's skin) finishing last is dropped.
+    const token = skin.maskToken = k.from + "/" + k.name + "@" + q;
+    turnedUrl(k, "mask.png", q).then(u => {
+      if (skin.maskToken !== token || skinFor(skin.active) !== k || !$("bezel").classList.contains("skinned")) return;
+      for (const el of [canvas, hole]) {
+        el.style.maskImage = el.style.webkitMaskImage = "url(" + u + ")";
+        el.style.maskSize = el.style.webkitMaskSize = "100% 100%";
+      }
+    }).catch(e => log("skin " + k.name + " mask: " + e.message));
+  } else {
+    for (const el of [canvas, hole]) el.style.maskImage = el.style.webkitMaskImage = "";
+  }
+  return true;
+}
+window.apksimSkin = () => {  // for scripts (scripts/serve-skin-check.py): where the frame and the canvas are
+  const r = el => { const b = el.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; };
+  return { active: skin.active, drawn: $("bezel").classList.contains("skinned") && !$("skinFrame").hidden,
+    bezel: r($("bezel")), canvas: r(canvas), frame: r($("skinFrame")),
+    skins: [...new Set([...Object.keys(skin.server), ...Object.keys(skin.mac)])] };
+};
 
 // ---------------------------------------------------------------- Fill: the display sized to the page (docs/beam.md, phase 3)
 // The instance's display is the one truth; the tab and apksim's own window are two views of it. The tab sends a size
@@ -955,9 +1175,10 @@ keys.addEventListener("compositionend", () => setTimeout(takeText, 0));
 $("back").onclick = () => { send("back"); markInput(); };
 $("home").onclick = () => { send("home"); onHome = true; overlay("Home screen. Click to return to the app."); };
 $("overlay").addEventListener("pointerdown", () => { if (onHome) { onHome = false; send("resume"); overlay(null); keys.focus(); } });
-$("rotl").onclick = () => send("rotate left");
-$("rotr").onclick = () => send("rotate right");
-$("device").onchange = () => { state.device = $("device").value; send("device " + state.device); };
+// A square display's frames keep their size after a turn, so nothing else would lay the frame out again.
+$("rotl").onclick = () => { skin.turns = (skin.turns + 3) % 4; send("rotate left"); setTimeout(fit, 400); };
+$("rotr").onclick = () => { skin.turns = (skin.turns + 1) % 4; send("rotate right"); setTimeout(fit, 400); };
+$("device").onchange = () => { deviceChosen = true; state.device = $("device").value; skin.turns = 0; send("device " + state.device); };
 $("dark").onchange = () => { state.appearance = $("dark").checked ? "dark" : "light"; send("appearance " + state.appearance); };
 $("fontscale").onchange = () => { state.fontscale = $("fontscale").value === "1" ? "" : $("fontscale").value; send("fontscale " + $("fontscale").value); };
 $("locale").onchange = () => {
@@ -974,6 +1195,9 @@ $("copy").onclick = async () => {
   const q = new URLSearchParams({ app: state.app, device: $("device").value });
   if (state.appearance === "dark") q.set("appearance", "dark");
   for (const k of ["locale", "fontscale", "open"]) if (state[k]) q.set(k, state[k]);
+  // The skin as chosen, `off` included (else the app's own default would come back).
+  if ($("skin").value !== "off") q.set("skin", $("skin").value);
+  else if (state.skin === "off" || skinFor(appSkinDefault)) q.set("skin", "off");
   // Always the screen's current orientation: some devices start in landscape (foldable, tablet), others in portrait.
   if (frameW && frameH) q.set("orientation", frameW > frameH ? "landscape" : "portrait");
   const link = location.origin + base + "?" + q;
@@ -1034,6 +1258,7 @@ async function beamHello(asked) {
       return null;
     }
     beam.protocol = common; beam.ok = true;
+    if (h.trusted) loadMacSkins();  // found (now, or again after the browser's prompt): its skins, if it trusts this site
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
   } catch (e) {

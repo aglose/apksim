@@ -249,8 +249,8 @@ to the iOS Simulator are tracked in [docs/ios-simulator-parity.md](docs/ios-simu
 ## Skins
 
 A skin is a device frame image plus the device it frames, kept on your machine and added from the command line.
-Skins are local data: apksim ships none, and a private one never leaves your machine. (Showing them in `serve` and
-`beam` is separate work.)
+Skins are local data: apksim ships none, and a private one never leaves your machine. `apksim serve` hands its skins
+to the page, which draws them around the screen (`&skin=NAME`, a Skin menu; [docs/serve.md](docs/serve.md) "Skins").
 
 ```bash
 apksim skin add pixel --frame frame.png --screen auto --device phone   # the screen is the frame's transparent hole
