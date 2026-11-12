@@ -171,9 +171,9 @@ espresso-intents in the tests. With the fixes below, all 47 pass on both sides, 
 |---|---|---|---|---|
 | WorkManagerConformanceTest (a one-time request's output, a chain's input, a failure failing its dependents, retry after backoff, unique work KEEP and REPLACE, cancelling a CoroutineWorker, an unmet constraint, an initial delay) | 9 | 9 | 0 | |
 | RoomConformanceTest (a blocking DAO call from the test body and on the main thread, suspend queries, a Flow re-emitting, an invalidation observer, a transaction rolled back, a file database reopened, a migration, a destructive fallback, a missing migration) | 10 | 10 | 4 | the test body's thread |
-| DataStoreConformanceTest (an edit read back, data's emissions, a new store on the same file, two active stores, a failed edit, a corrupt file with and without a handler, the preferencesDataStore delegate across tests) | 9 | 9 | 0 | |
+| DataStoreConformanceTest (an edit read back, data's emissions, a new store on the same file, two active stores, a failed edit, a corrupt file with and without a handler, one preferencesDataStore delegate store per process) | 8 | 8 | 0 | |
 | EspressoConformanceTest (typeText, an idling resource, onIdle and a delayed post, onData, a Spinner's popup, a dialog's root and pressBack, scrollTo, missing and ambiguous matches, espresso-intents stubs and a result, replaceText) | 10 | 10 | 0 | |
-| UiAutomatorConformanceTest (a click by text, setText, scrollUntil, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 9 | 9 | 1 | scroll events |
+| UiAutomatorConformanceTest (a click by text, setText, scrollUntil in a ScrollView and a RecyclerView, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 10 | 10 | 1 | scroll events |
 
 ### Causes found
 
@@ -193,7 +193,8 @@ espresso-intents in the tests. With the fixes below, all 47 pass on both sides, 
    scrollY against maxScrollY, or the from and to index against the item count), and counts a swipe with no event as a
    null scroll, giving up after five (`MAX_NULL_SCROLL_RETRY`). apksim has no event stream, so an 80-row ScrollView
    stopped at rows 40 to 53. Now the wait reports a scroll event for each view whose scroll state changed, filled by
-   the view's own `onInitializeAccessibilityEvent`, before the window change it already reported. Compose's scrolling
+   the view's own `onInitializeAccessibilityEvent` (through its accessibility delegate when it has one, as
+   RecyclerView does: from and to positions and the item count), before the window change it already reported. Compose's scrolling
    has no such state on its view, so it still gets no scroll event.
 3. **With `--realtime-clock`, UiAutomator's idle wait returned before a new window's first layout**
    (`ShadowSimUiAutomation.settle`). It ran what was due and stopped as soon as nothing was, but a window just shown

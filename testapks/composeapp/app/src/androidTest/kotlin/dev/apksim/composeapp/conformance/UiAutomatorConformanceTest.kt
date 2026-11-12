@@ -94,6 +94,37 @@ class UiAutomatorConformanceTest {
     assertTrue(device.wait(Until.hasObject(By.text("typed")), 5_000))
   }
 
+  /** A RecyclerView of 100 rows: its accessibility delegate reports the visible positions and the item count. */
+  class Rows : Fragment() {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, state: Bundle?): View =
+      androidx.recyclerview.widget.RecyclerView(inflater.context).apply {
+        contentDescription = "recycler"
+        fitsSystemWindows = true
+        layoutManager = androidx.recyclerview.widget.LinearLayoutManager(context)
+        adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
+          override fun getItemCount() = 100
+          override fun onCreateViewHolder(parent: ViewGroup, type: Int) =
+            object : androidx.recyclerview.widget.RecyclerView.ViewHolder(TextView(parent.context).apply { minHeight = 120 }) {}
+          override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
+            (holder.itemView as TextView).text = "item $position"
+          }
+        }
+      }
+  }
+
+  /** scrollUntil scrolls a RecyclerView until a row far down is bound and on screen. */
+  @Test
+  fun scrollUntilFindsARecyclerViewRowFarDown() {
+    val rows = launchFragmentInContainer<Rows>(themeResId = android.R.style.Theme_Material_Light_NoActionBar)
+    try {
+      val list = device.findObject(By.desc("recycler"))
+      val row = list.scrollUntil(Direction.DOWN, Until.findObject(By.text("item 90")))
+      if (row == null) fail("item 90 never came on screen: ${seen()}")
+    } finally {
+      rows.close()
+    }
+  }
+
   /** scrollUntil scrolls a container until a row far down is on screen. */
   @Test
   fun scrollUntilFindsARowFarDown() {

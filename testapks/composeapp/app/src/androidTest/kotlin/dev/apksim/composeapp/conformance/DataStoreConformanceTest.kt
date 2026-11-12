@@ -29,16 +29,13 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
-import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.MethodSorters
 
 private val Context.conformanceStore by preferencesDataStore(name = "conformance-delegate")
 
 /** androidx.datastore (Preferences) as documented, checked on an API 36 emulator first (docs/conformance.md). */
 @RunWith(AndroidJUnit4::class)
-@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class DataStoreConformanceTest {
   private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
   private val count = intPreferencesKey("count")
@@ -151,17 +148,15 @@ class DataStoreConformanceTest {
   }
 
   /**
-   * The preferencesDataStore delegate is one DataStore per process: what one test writes, the next test in the same
-   * process reads (z1 then z2: the class runs its methods by name).
+   * The preferencesDataStore delegate is one DataStore per process: the application's context and an activity's give
+   * the same instance, and what one writes the other reads.
    */
   @Test
-  fun z1_theDelegateWrites() = runBlocking {
-    context.conformanceStore.edit { it[name] = "from z1" }
-    assertEquals("from z1", context.conformanceStore.data.first()[name])
-  }
-
-  @Test
-  fun z2_theDelegateReadsInTheNextTest() = runBlocking {
-    assertEquals("from z1", context.conformanceStore.data.first()[name])
+  fun theDelegateIsOneStorePerProcess() = runBlocking {
+    val value = "written ${UUID.randomUUID()}"
+    context.conformanceStore.edit { it[name] = value }
+    val app = context.applicationContext
+    assertTrue("a second DataStore for the same name", app.conformanceStore === context.conformanceStore)
+    assertEquals(value, app.conformanceStore.data.first()[name])
   }
 }
