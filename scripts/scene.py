@@ -30,7 +30,7 @@ scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role
 On a failure every running role's screen is saved as DIR/failed-ROLE.png. Writes DIR/result.json (steps, times,
 failure) and prints a line per step. Exits 1 on a failure, 2 on a bad scene file.
 """
-import json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS)
@@ -81,6 +81,44 @@ def on_screen(dump):
     return "; ".join(keep)
 
 
+class DeadlineSocket(socket.socket):
+    """A control connection whose every write and read stops at `deadline` (a time.time()), when one is set: the time
+    left is worked out again before each, so an answer arriving in pieces cannot run past it. Otherwise 60 s each."""
+
+    deadline = None
+
+    def _arm(self):
+        left = 60 if self.deadline is None else self.deadline - time.time()
+        if left <= 0:
+            raise TimeoutError("past the deadline")
+        self.settimeout(left)
+
+    def send(self, *a):
+        self._arm()
+        return super().send(*a)
+
+    def sendall(self, *a):
+        self._arm()
+        return super().sendall(*a)
+
+    def recv_into(self, *a):
+        self._arm()
+        return super().recv_into(*a)
+
+
+class Dropped:
+    """A role's connection after a read ran past its deadline: closed at once, so the wait ends then, and opened
+    again by the next command (`Role.call`). Anything that reaches it unopened gets an OSError, as a dead one would."""
+
+    def __bool__(self):
+        return True  # still a role that had a connection (Scene.shots, Scene.finish)
+
+    def write(self, _):
+        raise OSError("the control connection was dropped and could not be opened again")
+
+    flush = readline = write
+
+
 class Role:
     def __init__(self, name, spec, scene_dir):
         self.name = name
@@ -95,9 +133,66 @@ class Role:
         self.last = ""
         self.ready = None
 
-    def send(self, cmd):
-        with self.lock:
+    def send(self, cmd, deadline=None):
+        """CMD's answer. With a deadline, TimeoutError once it passes, waiting for the lock, for a connection or for
+        the answer."""
+        if deadline is None:
+            with self.lock:
+                return self.call(cmd)
+        if not self.lock.acquire(timeout=max(0.0, deadline - time.time())):
+            raise TimeoutError(cmd)
+        try:
+            return self.call(cmd, deadline)
+        finally:
+            self.lock.release()
+
+    def call(self, cmd, deadline=None):
+        """CMD's answer on this role's connection, opened again first if it was dropped; the lock held."""
+        if not isinstance(self.inst.sock, DeadlineSocket):
+            self.reconnect(deadline)
+        self.inst.sock.deadline = deadline
+        try:
             return self.inst.send(cmd)
+        except TimeoutError:
+            self.drop()  # the late answer would be read as the next command's
+            raise
+        finally:
+            if isinstance(self.inst.sock, DeadlineSocket):
+                self.inst.sock.deadline = None
+
+    def stop(self):
+        """`quit` on this role's connection (opened again if it was dropped); the lock held."""
+        if not isinstance(self.inst.sock, DeadlineSocket):
+            try:
+                self.reconnect()
+            except OSError:
+                pass  # Instance.stop then waits for the process alone
+        return self.inst.stop()
+
+    def drop(self):
+        inst = self.inst
+        for c in (inst.file, inst.sock):
+            try:
+                c.close()
+            except (OSError, AttributeError):
+                pass
+        inst.file, inst.sock = Dropped(), None
+
+    def reconnect(self, deadline=None):
+        """A new control connection (a DeadlineSocket) in place of the one there, which may be left waiting for an
+        answer (Control serves each connection on its own); connecting stops at the deadline too."""
+        self.drop()
+        wait = 2 if deadline is None else min(2.0, deadline - time.time())
+        if wait <= 0:
+            raise TimeoutError("past the deadline")
+        sock = DeadlineSocket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(wait)
+            sock.connect(("127.0.0.1", self.inst.port))
+        except OSError:
+            sock.close()
+            raise
+        self.inst.sock, self.inst.file = sock, sock.makefile("rw")
 
 
 class Scene:
@@ -216,12 +311,13 @@ class Scene:
                 raise Failure(f"{role.name} " + (f"exited with status {code}" if code is not None else "did not answer ping")
                               + f" (see {role.inst.log})")
             print(f"{role.name:>10}: {role.device}, port {role.inst.port}, ready in {role.ready:.1f} s")
+            role.reconnect()  # a DeadlineSocket from the start, so a first `until` need not connect in its wait
 
     # ---- commands ----
 
-    def nodes(self, role):
+    def nodes(self, role, deadline=None):
         # `nodes`: the windows accessibility reports, so not what a dialog covers, as tap-text and a user see them.
-        return role.send("nodes")
+        return role.send("nodes", deadline)
 
     def run_command(self, role, raw):
         cmd = self.expand(raw, role)
@@ -231,18 +327,27 @@ class Scene:
         elif word in ("until", "gone"):
             ms, _, text = rest.partition(" ")
             deadline = time.time() + int(ms) / 1000
+            answered = False
             while True:
-                # A reply counts only if it came by the deadline (UI reads queue behind the main thread's work).
-                role.last = self.nodes(role)
+                # A reply counts only if it came by the deadline (UI reads queue behind the main thread's work), and
+                # neither the role's lock (another role's `to`) nor the read waits past it.
+                try:
+                    role.last = self.nodes(role, deadline)
+                    answered = True
+                except TimeoutError:
+                    if not answered:
+                        raise Failure(f"{text!r}: no `nodes` answer within {ms} ms")
+                    break
                 if failed(role.last):
                     raise Failure(f"nodes: {role.last}")
                 present = text in on_screen(role.last)
                 if present == (word == "until") and time.time() <= deadline:
                     return
                 if time.time() > deadline:
-                    raise Failure(f"{text!r} {'not on screen' if word == 'until' else 'still on screen'} after {ms} ms: "
-                                  f"{role.last[:400]!r}")
+                    break
                 time.sleep(0.1)
+            raise Failure(f"{text!r} {'not on screen' if word == 'until' else 'still on screen'} after {ms} ms: "
+                          f"{role.last[:400]!r}")
         elif word == "expect":
             if rest not in role.last:
                 raise Failure(f"{rest!r} not in the last answer {role.last[:400]!r}")
@@ -262,7 +367,11 @@ class Scene:
             other = self.roles.get(target)
             if other is None:
                 raise Failure(f"to {target}: no such role")
-            reply = other.send(inner)
+            inner_word, _, inner_rest = inner.partition(" ")
+            if inner_word in ("shot", "wshot") and inner_rest:  # staged and checked as the role's own shots are
+                reply = self.capture(other, inner_word, inner_rest)
+            else:
+                reply = other.send(inner)
             if failed(reply):
                 raise Failure(f"to {target} {inner!r}: {reply}")
             role.last = reply
@@ -272,12 +381,12 @@ class Scene:
                 raise Failure(role.last)
         elif word == "quit":
             with role.lock:  # not while another role's `to` reads this connection
-                why = role.inst.stop()
+                why = role.stop()
             if why:
                 raise Failure(why)
         else:
             with role.lock:
-                role.last = role.inst.send(cmd)
+                role.last = role.call(cmd)
             if failed(role.last):
                 raise Failure(role.last)
 
@@ -338,7 +447,7 @@ class Scene:
             self.captures += 1
             staged = os.path.join(self.stage, f"capture-{self.captures}{ext}")
         with role.lock:
-            reply = role.inst.send(" ".join([word, *flags, staged]))
+            reply = role.call(" ".join([word, *flags, staged]))
         if not failed(reply):
             if not os.path.exists(staged):
                 return f"error: {word} answered {reply!r} but wrote nothing"
@@ -372,7 +481,7 @@ class Scene:
                     return
                 if inst.proc.poll() is None:
                     with role.lock:
-                        why = inst.stop()
+                        why = role.stop()
                 else:
                     why = None if inst.proc.returncode == 0 else f"exited with status {inst.proc.returncode}"
                 if why:
