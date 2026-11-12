@@ -99,7 +99,7 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-12, release 0.31.0. This table says where each item stands. What changes by the hour (check
+As of 2026-11-12, release 0.32.0. This table says where each item stands. What changes by the hour (check
 results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |
@@ -113,7 +113,7 @@ results, draft state, the base branch) is on each pull request's page. "In revie
 | 7 Coverage | coverage | r2 | #255 | in 0.28.0 |
 | 8 Conformance sweep | conformance | r1-r3 | #265, #266, #267, #272, #273, #283, #286, #296, #302 | first batch in 0.27.0; the main-thread latch fix (#272) and batch 2 (#273) in 0.28.0; endlessly repeating animators (#286) and main-thread waits under the real-time clock (#283) in 0.29.0; batch 3 (#296) in 0.30.0; UiAutomation scroll event sources (#302) in 0.31.0; AndroidX's own suites not built |
 | 9 PR preview, compare | serve | r1 | #252 | in 0.27.0 |
-| 10 Report button, inspector | serve | r2 | #259 | in 0.28.0 |
+| 10 Report button, inspector | serve | r2 | #259, #315, #318 | in 0.28.0; larger rule and captured bodies (#315) and the inspector in a beamed session (#318) in 0.32.0 |
 | 11 Crawler | crawler | r1 | #260 | in 0.27.0 |
 | 12 Resilience sweep | crawler | r2 | #263 | in 0.28.0 |
 | 13 MCP server | mcp | r3 | #250, #293 | in 0.29.0; fixes in 0.30.0 |
