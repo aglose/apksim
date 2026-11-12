@@ -42,8 +42,9 @@ import org.robolectric.shadows.ShadowSystemClock;
  *   <li><b>Accessibility</b> ({@link #connect}, {@link #onEvent}): once a test uses UiAutomation, AccessibilityManager
  *       is enabled with no service listed, as a device's is while only UiAutomation is connected, so views send their
  *       accessibility events. They reach UiAutomation's listener and executeAndWaitForEvent's filter
- *       ({@link #runAndAwait}), which ends when the filter accepts one or the UI is idle (no more can come), not at
- *       its timeout.
+ *       ({@link #runAndAwait}), which ends when the filter accepts one or nothing it can see is left that could send
+ *       one, not at its timeout. The listener's events carry no source node (reading one inside the view's own call
+ *       is not safe); a filter's do.
  *   <li><b>Workers</b> ({@link UiaWorkers}): a poll's sleep gives the app's other threads real time while they are
  *       at work, at most the sleep's length, as a device's sleep does; the simulated clock gave them none, and a
  *       wait's whole timeout could pass before a worker's result reached the main thread. Not an idle wait: a
@@ -159,8 +160,11 @@ public final class Uia {
 
   /**
    * executeAndWaitForEvent: runs the command and offers the filter each accessibility event from then on, as it
-   * arrives, while the UI settles ({@link #idle}). Returns the event the filter accepted, or null once the UI is idle
-   * or the timeout has passed with none: idle, nothing more can come, so the rest of the timeout is not waited out.
+   * arrives. Returns the event the filter accepted, or null once the timeout has passed (in the app's time) or
+   * nothing is left that could send one: no work scheduled on the main thread within the timeout (the clock moves to
+   * what is, a delayed post included), frames that no longer change the tree, and no other thread at work (those get
+   * real time, at most the timeout). A device waits its timeout out whatever happens; what this cannot see coming (an
+   * answer from the network, a timer on another thread) is not waited for.
    */
   static AccessibilityEvent runAndAwait(Runnable command, UiAutomation.AccessibilityEventFilter filter, long timeoutMs) {
     List<AccessibilityEvent> got = new ArrayList<>();
@@ -183,9 +187,25 @@ public final class Uia {
         }
         return hit[0] != null;
       };
-      if (!check.getAsBoolean()) {
-        idle(500, Math.max(timeoutMs, 500), check);
-        check.getAsBoolean();
+      long real0 = System.nanoTime();
+      long deadline = from + Math.max(timeoutMs, 1);
+      while (!check.getAsBoolean()) {
+        long left = deadline - SystemClock.uptimeMillis();
+        if (left <= 0) break;
+        idle(left, left, check, left);  // work scheduled any time before the timeout gets its turn
+        if (check.getAsBoolean() || !WORKERS || !UiaWorkers.busy()) break;
+        if (System.nanoTime() - real0 >= timeoutMs * 1_000_000L) break;
+        if (!TestActivities.canRunMainQueue()) break;
+        long t = System.nanoTime();
+        try {
+          TestActivities.sleep(1);  // a worker is at work: real time for it, the main queue running meanwhile
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+        Stats.workerWaits++;
+        Stats.workerNanos += System.nanoTime() - t;
+        UiaWorkers.held(System.nanoTime() - t);
       }
       Stats.waits++;
       if (hit[0] != null) Stats.waitsByEvent++;
@@ -215,17 +235,24 @@ public final class Uia {
   private static final int WORK = 2;
   /** Work that is due now: it runs before any wait ends. */
   private static final int DUE = 4;
-  private static final java.lang.reflect.Field MESSAGES;
-  private static final java.lang.reflect.Field NEXT;
 
-  static {
-    try {
-      MESSAGES = MessageQueue.class.getDeclaredField("mMessages");
-      MESSAGES.setAccessible(true);
-      NEXT = Message.class.getDeclaredField("next");
-      NEXT.setAccessible(true);
-    } catch (NoSuchFieldException e) {
-      throw new ExceptionInInitializerError(e);
+  /**
+   * The main queue's fields, looked up when an idle wait first reads the queue: not in this class's own initializer,
+   * which every test run reaches (on(), report()), with the engine off and before the framework is set up.
+   */
+  private static final class Queue {
+    static final java.lang.reflect.Field MESSAGES;
+    static final java.lang.reflect.Field NEXT;
+
+    static {
+      try {
+        MESSAGES = MessageQueue.class.getDeclaredField("mMessages");
+        MESSAGES.setAccessible(true);
+        NEXT = Message.class.getDeclaredField("next");
+        NEXT.setAccessible(true);
+      } catch (NoSuchFieldException e) {
+        throw new ExceptionInInitializerError(e);
+      }
     }
   }
 
@@ -245,7 +272,7 @@ public final class Uia {
     int mask = 0;
     try {
       synchronized (q) {
-        for (Message m = (Message) MESSAGES.get(q); m != null; m = (Message) NEXT.get(m)) {
+        for (Message m = (Message) Queue.MESSAGES.get(q); m != null; m = (Message) Queue.NEXT.get(m)) {
           if (m.getTarget() == null) {  // a sync barrier: a traversal waiting for its frame
             mask |= FRAME;
             continue;
@@ -274,13 +301,21 @@ public final class Uia {
    * happens. With the clock on real time, it is fast-forwarded meanwhile.
    */
   static Idle idle(long quietMs, long globalMs, BooleanSupplier stop) {
+    return idle(quietMs, globalMs, stop, -1);
+  }
+
+  /**
+   * As {@link #idle(long, long, BooleanSupplier)}; {@code workMs} (when not negative) is how far ahead scheduled work
+   * holds the wait, on either clock: an event wait gives it its whole timeout.
+   */
+  static Idle idle(long quietMs, long globalMs, BooleanSupplier stop, long workMs) {
     long real0 = System.nanoTime();
     int held0 = Stats.workerWaits;
     boolean realTime = RealTimeClock.requested();
     if (realTime) RealTimeClock.fastForward++;
     Idle how;
     try {
-      how = idleLoop(quietMs, globalMs, stop, realTime, real0);
+      how = idleLoop(quietMs, globalMs, stop, realTime, real0, workMs);
     } finally {
       if (realTime) RealTimeClock.fastForward--;
     }
@@ -292,12 +327,13 @@ public final class Uia {
     return how;
   }
 
-  private static Idle idleLoop(long quietMs, long globalMs, BooleanSupplier stop, boolean realTime, long real0) {
+  private static Idle idleLoop(long quietMs, long globalMs, BooleanSupplier stop, boolean realTime, long real0,
+      long workMs) {
     ShadowLooper main = shadowOf(Looper.getMainLooper());
     long t0 = SystemClock.uptimeMillis();
     // Work scheduled up to here is waited for (the clock jumps to it): the quiet time, as before the engine; with the
     // clock on real time only what is due soon, as before there.
-    long workBy = t0 + (realTime ? SOON_MS : quietMs);
+    long workBy = t0 + (workMs >= 0 ? workMs : realTime ? SOON_MS : quietMs);
     long cap = t0 + Math.min(globalMs, Math.max(quietMs, MOVING_MS));
     long realCap = real0 + Math.max(quietMs, 1) * 1_000_000L;
     boolean have = false;
@@ -346,17 +382,15 @@ public final class Uia {
 
   /**
    * The app's other threads are at work: gives them a moment more (a real millisecond, waited here) and says so, at
-   * most the quiet time per wait, after which the threads still busy are taken for background noise.
+   * most the quiet time per wait.
    */
   private static boolean workersHold(long real0, long quietMs) {
-    if (System.nanoTime() - real0 >= quietMs * 1_000_000L) {
-      UiaWorkers.busyIsNoise();
-      return false;
-    }
+    if (System.nanoTime() - real0 >= quietMs * 1_000_000L) return false;
     long t = System.nanoTime();
     java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
     Stats.workerWaits++;
     Stats.workerNanos += System.nanoTime() - t;
+    UiaWorkers.held(System.nanoTime() - t);
     return true;
   }
 
@@ -452,12 +486,14 @@ public final class Uia {
       boolean waited = false;
       while (System.nanoTime() - end < 0 && UiaWorkers.busy()) {
         waited = true;
+        long step = System.nanoTime();
         try {
           TestActivities.sleep(1);  // runs what reaches the main queue meanwhile
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           break;
         }
+        UiaWorkers.held(System.nanoTime() - step);  // a thread that never stops is not waited for for ever
       }
       if (waited) {
         Stats.workerWaits++;

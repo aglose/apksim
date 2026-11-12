@@ -61,6 +61,16 @@ class UiaEngineTest {
           }, "uia-engine-test-worker").start()
         }
       })
+      // An event that comes a second and a half after the click, from a delayed post.
+      column.addView(Button(c).apply {
+        text = "Later"; isAllCaps = false
+        setOnClickListener {
+          postDelayed({
+            status.text = "later"
+            status.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED)
+          }, 1_500)
+        }
+      })
       // A view that takes 600 ms to arrive where it can be tapped: it slides across the screen.
       val target = Button(c).apply { text = "Target"; isAllCaps = false; setOnClickListener { status.text = "target hit" } }
       column.addView(Button(c).apply {
@@ -112,6 +122,18 @@ class UiaEngineTest {
     assertEquals("android.widget.Button", event.className?.toString())
     assertEquals(listOf("Tap me"), event.text.map { it.toString() })
     assertEquals("Tap me", event.source?.text?.toString())
+  }
+
+  /** An event sent a second and a half after the action, by a delayed post, still reaches the filter within its timeout. */
+  @Test
+  fun aFilterGetsAnEventThatComesLater() {
+    assumeTrue(!onApksim || engine)
+    launch()
+    val button = device.findObject(By.text("Later"))
+    val event = instrumentation.uiAutomation.executeAndWaitForEvent(
+        { button.click() }, { it.eventType == AccessibilityEvent.TYPE_VIEW_SELECTED }, 5_000)
+    assertEquals("android.widget.TextView", event.className?.toString())
+    assertTrue("later", device.hasObject(By.text("later")))
   }
 
   /**

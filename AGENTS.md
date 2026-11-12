@@ -1415,7 +1415,7 @@ AccessibilityManager is enabled with no service listed, as on a device, and the 
 UiAutomation's listener and executeAndWaitForEvent's filter, the synthesized ones remaining as the fallback; and with
 the default clock a poll's sleep gives the app's other threads real time while they are at work (`UiaWorkers`), where
 a wait's whole timeout used to pass in a few real milliseconds. The test app's UiAutomator tests with
-`--realtime-clock`: 41.0 s classic (19 tests), 7.2 s with the engine (22); the suite's 341 tests pass with it on either
+`--realtime-clock`: 42.1 s classic (19 tests), 8.8 s with the engine (23); the suite's 342 tests pass with it on either
 clock. `UiaEngineTest` (CI runs it and the other
 UiAutomator tests with `--uia engine -e uiaEngine true`, on both clocks) checks it, and passes on the API 36 emulator.
 `-Dapksim.uia.trace=true` prints each idle wait, sleep and event.

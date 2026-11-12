@@ -16,7 +16,7 @@ import java.util.Set;
  * before is watched that long once. A thread waiting for the network's answer therefore does not count, which only
  * the network hooks could tell from an idle connection; nor does one asleep or parked with a timeout (a delay on
  * another dispatcher), which a thread pool's idle workers are too. JIT and GC threads are not Java threads and never
- * count; apksim's own are left out by name. Main thread.
+ * count; apksim's own are left out by name, and one that never pauses becomes noise ({@link #held}). Main thread.
  */
 final class UiaWorkers {
   private UiaWorkers() {}
@@ -26,7 +26,14 @@ final class UiaWorkers {
   private static final long STILL_NANOS = 20_000_000L;
   /** Per thread seen in a native call: its CPU time, and when (System.nanoTime) that last changed. Kept across tests. */
   private static final java.util.Map<Long, long[]> NATIVE = new java.util.HashMap<>();
+  /**
+   * A thread held for (see {@link #held}) this long without a pause is background noise from then on, for the rest of
+   * the process: a thread that spins for ever would otherwise turn every sleep of every wait into real time.
+   */
+  private static final long NOISE_NANOS = 2_000_000_000L;
+  private static final java.util.Map<Long, Long> HELD = new java.util.HashMap<>();
   private static final Set<Long> NOISE = new HashSet<>();
+  private static final boolean TRACE = Boolean.getBoolean("apksim.uia.traceWorkers");
   private static final Set<Long> LAST_BUSY = new HashSet<>();
   private static Thread[] threads = new Thread[64];
 
@@ -39,13 +46,21 @@ final class UiaWorkers {
   }
 
   static void reset() {
-    NOISE.clear();
     LAST_BUSY.clear();
+    HELD.clear();
   }
 
-  /** The threads found at work by the last {@link #busy} are background noise from here on (until the next test). */
-  static void busyIsNoise() {
-    NOISE.addAll(LAST_BUSY);
+  /**
+   * A wait gave the threads the last {@link #busy} found at work {@code nanos} more of real time. One that has been
+   * at work through {@link #NOISE_NANOS} of such waits on end is noise from here on; one that paused starts again.
+   */
+  static void held(long nanos) {
+    HELD.keySet().retainAll(LAST_BUSY);
+    for (long id : LAST_BUSY) {
+      long total = HELD.merge(id, nanos, Long::sum);
+      if (total >= NOISE_NANOS) NOISE.add(id);
+    }
+    if (NOISE.size() > 1024) NOISE.clear();  // threads long gone
   }
 
   private static boolean ours(String name) {
@@ -77,7 +92,7 @@ final class UiaWorkers {
       ids[count++] = id;
     }
     LAST_BUSY.clear();
-    if (Boolean.getBoolean("apksim.uia.traceWorkers")) {
+    if (TRACE) {
       StringBuilder sb = new StringBuilder("[apksim] uia workers:");
       Thread[] all = new Thread[256];
       int m = root.enumerate(all, true);

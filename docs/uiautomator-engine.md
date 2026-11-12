@@ -47,16 +47,23 @@ changes how time is spent, not how the tree is read.
   is enabled with no service listed, as on a device while only UiAutomation is connected (checked on an API 36
   emulator). Views then send their accessibility events, and each window registers under the id its nodes carry.
   The events go to UiAutomation's listener and to `executeAndWaitForEvent`'s filter as they arrive
-  (`Uia.runAndAwait`), sealed and with their source node, as a service receives them. The wait ends when the filter
-  takes one or the UI is idle, since nothing more can come then, not at its timeout. The classic path's synthesized
+  (`Uia.runAndAwait`); a filter's are sealed and carry their source node, as a service receives them, the
+  listener's carry no source (reading a node inside the view's own call is not safe). The wait ends when the filter
+  takes one, at its timeout in the app's time, or when nothing the engine can see is left that could send one: no
+  work scheduled on the main thread within the timeout (the clock moves to a delayed post), frames that no longer
+  change the tree, and no other thread at work (those get real time, at most the timeout). A device waits its
+  timeout out whatever happens, so an event that follows an answer from the network or a timer on another thread is
+  missed here where a device would get it. The classic path's synthesized
   events (a scroll for each view whose scroll state changed, then a window change) remain as the fallback: the system
   sends window changes on a device, not the app, and Compose sends no scroll events while only UiAutomation listens.
 - **Workers** (`UiaWorkers`). With the default clock a poll's sleep only moved the simulated clock, so a wait's whole
   timeout could pass in a few real milliseconds, before another thread had finished what the test was waiting for.
   A poll's sleep now gives the app's other threads real time while they are at work, at most the sleep's length.
   At work means RUNNABLE and either running Java code or inside a native call with its CPU time still moving (SQLite
-  and image decoding are native work; a socket's read is a native wait). An idle wait does not hold for workers: a
-  device's does not either (`-Dapksim.uia.holdIdle=true` makes it).
+  and image decoding are native work; a socket's read is a native wait). A thread that has been at work through
+  2 s of such waits without a pause is taken for background noise from then on, so one that spins for ever does not
+  turn every wait into real time. An idle wait does not hold for workers: a device's does not either
+  (`-Dapksim.uia.holdIdle=true` makes it).
 
 `-Dapksim.uia.events=false` and `-Dapksim.uia.workers=false` turn those two parts off for A/B runs.
 `-Dapksim.uia.trace=true` prints each idle wait, sleep and event; a run with the engine on ends with one line of what
@@ -77,6 +84,10 @@ it did:
 | whole suite, default clock | 47.8 s (338 pass; the 3 engine-only tests fail when forced) | 47.1 s (341 pass) |
 | whole suite, `--realtime-clock` | 208 s (336 tests, before `UiaEngineTest`) | 177 s (341 pass) |
 
+Since those runs `UiaEngineTest` has a sixth test (an event that comes 1.5 s after its action) and an event wait
+runs the work scheduled within its timeout: the 23 tests take 8.8 s with the engine on the real-time clock, against
+42.1 s classic for the 19 it runs.
+
 One process each, times as JUnit reports them. The three tests the classic path does not run are `UiaEngineTest`'s
 engine-only ones. In the engine's real-time run 16.2 s of gesture time passed in 0.5 s, and 191 idle waits took 0.9 s
 together (223 tree reads in 0.26 s). Most of what is left of a real-time run is waits on the app that are real on
@@ -87,9 +98,10 @@ pass on both sides; `UiAutomatorTest#swipeScrollsTheListWithoutWaitingForFrames`
 (StaleObjectException) and passes here, on either path.
 
 `UiaEngineTest` (the test app's suite; on apksim its engine-only tests run with `-e uiaEngine true`) holds the
-behaviours down. The classic path fails three of them: accessibility is not on, a click's own `TYPE_VIEW_CLICKED`
-never reaches a filter, and a one-second `wait(Until.hasObject)` for what a thread takes 80 ms to compute times out
-(the default clock's starvation above). The emulator passes all five.
+behaviours down. The classic path fails four of them: accessibility is not on, neither a click's own
+`TYPE_VIEW_CLICKED` nor an event a delayed post sends 1.5 s later reaches a filter, and a one-second
+`wait(Until.hasObject)` for what a thread takes 80 ms to compute times out (the default clock's starvation above).
+The emulator passes all six.
 
 ## What a test may notice
 

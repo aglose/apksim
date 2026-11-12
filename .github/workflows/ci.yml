@@ -212,11 +212,11 @@ jobs:
           classes=dev.apksim.composeapp.UiAutomatorTest,dev.apksim.composeapp.conformance.UiAutomatorConformanceTest,dev.apksim.composeapp.UiaEngineTest
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-uia-engine.xml -e class "$classes" -e uiaEngine true -- --uia engine
-          python3 scripts/ci-no-skips.py tests/junit-uia-engine.xml 22
+          python3 scripts/ci-no-skips.py tests/junit-uia-engine.xml 23
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-uia-engine-realtime.xml -e class "$classes" -e uiaEngine true -e realtimeClock true \
             -- --uia engine --realtime-clock
-          python3 scripts/ci-no-skips.py tests/junit-uia-engine-realtime.xml 22
+          python3 scripts/ci-no-skips.py tests/junit-uia-engine-realtime.xml 23
       # --start-activities (opt-in): an activity the app starts comes up, and the one below it is stopped with its
       # window hidden until it is back on top.
       - name: Test run with activities started

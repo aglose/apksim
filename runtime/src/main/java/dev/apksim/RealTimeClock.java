@@ -75,6 +75,7 @@ final class RealTimeClock {
     main = Looper.getMainLooper().getThread();
     handler = new Handler(Looper.getMainLooper());
     vsyncPosted = false;
+    fastForward = 0;  // balanced by its users; a test never inherits one left up
     barrierSince = -1;
     barrierSeen = -1;
     ShadowChoreographer.setPaused(true);
