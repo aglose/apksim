@@ -46,7 +46,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file");
+      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast");
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
@@ -158,7 +158,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
-    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0;
+    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0, broadcasts = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -201,6 +201,16 @@ final class Catalog {
       }
       if (o.equals("--camera") && !v.matches("off|fake")) {
         throw new IOException("--camera takes off or fake (no image file here)");
+      }
+      if (o.equals("--broadcast")) {
+        try {
+          dev.apksim.LaunchBroadcasts.parse(v);
+        } catch (IllegalArgumentException e) {
+          throw new IOException(e.getMessage());
+        }
+        if (++broadcasts > dev.apksim.LaunchBroadcasts.COUNT_MAX) {
+          throw new IOException("--broadcast: at most " + dev.apksim.LaunchBroadcasts.COUNT_MAX);
+        }
       }
       if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
         throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");

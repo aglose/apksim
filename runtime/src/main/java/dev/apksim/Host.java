@@ -149,6 +149,7 @@ public class Host {
     Replay.HostSide replaySide = replay == null ? null : replaySide();
     try {
       if (replay == null) {
+        LaunchBroadcasts.send(app);  // --broadcast: after Application.onCreate, before the first activity
         start(System.getProperty("apksim.startActivity"), startIntent());
       } else {
         try {

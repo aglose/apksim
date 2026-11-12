@@ -256,4 +256,5 @@ def main():
     sys.exit(1 if failed else 0)
 
 
-main()
+if __name__ == "__main__":  # scripts/scene.py imports Instance
+    main()

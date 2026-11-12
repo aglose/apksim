@@ -30,6 +30,7 @@ apksim app-debug.apk
 - [Screenshot tests](#screenshot-tests)
 - [Network: record, replay and conditions](#network-record-replay-and-conditions)
 - [Replay, trace viewer and crawler](#replay-trace-viewer-and-crawler)
+- [Agents, Bluetooth LE and scenes](#agents-bluetooth-le-and-scenes)
 - [Linux and Docker](#linux-and-docker)
 - [Debugging](#debugging)
 - [Configuration reference](#configuration-reference)
@@ -47,11 +48,12 @@ apksim app-debug.apk
 | **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
 | **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. |
-| **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
+| **Scriptable** | An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
 | **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`), code coverage without rebuilding the app, and a flake hunter that says whether a flaky test depends on order or timing. |
 | **Replay a session** | A flight recording plays again from its checkpoint, with the network answered from the recording, and says where the screen first differed; the same recording bisects a list of builds to the first that changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles. |
 | **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen; its resilience sweep puts every screen through process death, rotation, offline, permission denial, large text, right-to-left and dark mode. |
+| **Devices that talk to each other** | Scripted Bluetooth LE peripherals the app scans for, connects to and reads, writes and subscribes to over GATT, and scenes that drive several instances (two users of one backend, a phone and its watch) step by step through one script. |
 | **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
 | **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
@@ -179,6 +181,7 @@ Density is 2 (xhdpi) unless given. You can also switch devices while the app run
 | | `--fresh` | Erase the app's data first, with the data slot's `/sdcard` and Settings values: a new device with the app just installed |
 | | `--setting NS:KEY=VALUE` | A `Settings.Global`, `Secure` or `System` value (`global:my_flag=1`) set before `Application.onCreate`, as `adb shell settings put` before a first launch would. Repeatable |
 | | `--sdcard-file PATH=VALUE` | A file written to `/sdcard/PATH` in the data slot before the app starts, over any file the slot had, for apps that read a config file once in `Application.onCreate`. `VALUE` is `text:TEXT` or base64, never a host file; at most 64 KB a file and 72 KB in all. Repeatable; allowed in `serve` catalog lines and URL adds and in beam |
+| | `--broadcast 'ACTION;es:K=V;ez:K=true'` | Sends one broadcast to the app's own package after `Application.onCreate` and before the first activity, for debug receivers that set flag overrides (what `adb shell am broadcast -a ACTION --es/--ez/--ei/--el/--ef` does). Extras are `es`, `ez`, `ei`, `el` or `ef:KEY=VALUE`, separated by `;` (no spaces in `serve` catalog lines). Reaches receivers registered at run time and manifest ones; logs `[apksim] broadcast ACTION: result=N`. Repeatable (8 at most); allowed in `serve` catalog lines and URL adds and in beam |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
 | | `--camera off\|fake\|fake=IMAGE` | Simulated cameras (default off): declares `android.hardware.camera`, `.any` and `.front` and lists a back camera (id `0`) and a front one (`1`) in `CameraManager`, with 1280x720 and 1920x1080 YUV_420_888/JPEG/PRIVATE streams. Opening one needs the `CAMERA` permission; Camera2 sessions and CameraX (`Preview`, `ImageAnalysis`, `ImageCapture`) get 30 fps frames of a moving test pattern, or of the still `IMAGE`. The `camera pattern\|image PATH\|off` command and Features > Camera switch it while the app runs (`off`: black frames, as Android's camera privacy toggle) |
@@ -428,7 +431,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.28.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.29.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -495,9 +498,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.29.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.29.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -571,6 +574,25 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
   screen through process death, recreation, rotation, offline, permission denial, large text, right-to-left and dark
   mode and reports what broke (lost state, crashes, endless spinners, cut-off text) as JUnit failures with the commands
   that reproduce each. See [docs/crawl.md](docs/crawl.md).
+
+## Agents, Bluetooth LE and scenes
+
+```bash
+apksim mcp --apps builds/                               # an MCP server over stdio; agents may launch APKs from builds/
+apksim --ble heart-rate app.apk                         # a scripted peripheral the app can scan for and connect to
+scripts/scene.py testapks/composeapp/scenes/board.json  # several instances, one script, one shared backend
+```
+
+- **MCP server:** `apksim mcp` lets an agent launch an APK, tap, type and swipe, and read the screen as a short list
+  of nodes; every action is settled and answered with what changed since the last answer, not the whole tree. See
+  [docs/mcp.md](docs/mcp.md).
+- **Bluetooth LE peripherals:** `--ble FILE|PRESET` (repeatable) and the `ble` command play the device's Bluetooth
+  stack against scripted peripherals: advertisements the app's scanner finds, GATT services it discovers, reads,
+  writes, notifications, bonding, MTU and PHY, in a running instance and in a test run. An emulator has no Bluetooth
+  LE at all. See [docs/ble.md](docs/ble.md).
+- **Scenes:** `scripts/scene.py` runs different roles, each its own instance with its own APK, device and options,
+  through one ordered script whose steps wait on one another's state, against one shared server. See
+  [docs/scenes.md](docs/scenes.md).
 
 ## Linux and Docker
 

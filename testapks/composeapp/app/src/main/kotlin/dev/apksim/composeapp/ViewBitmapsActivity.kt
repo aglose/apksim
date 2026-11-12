@@ -33,9 +33,13 @@ import android.widget.TextView
  */
 class ViewBitmapsActivity : Activity() {
   private var player: androidx.media3.exoplayer.ExoPlayer? = null
+  private var spin: ObjectAnimator? = null
 
   override fun onDestroy() {
     player?.release()
+    // An animator repeating for ever outlives its activity unless cancelled (on a device too): its frames went on
+    // after Back, and the screen never settled again.
+    spin?.cancel()
     super.onDestroy()
   }
 
@@ -97,7 +101,7 @@ class ViewBitmapsActivity : Activity() {
     })
     setContentView(root)
     if (animate) {
-      ObjectAnimator.ofFloat(spinner, View.ROTATION, 0f, 360f).apply {
+      spin = ObjectAnimator.ofFloat(spinner, View.ROTATION, 0f, 360f).apply {
         duration = 1000
         repeatCount = ValueAnimator.INFINITE
         interpolator = LinearInterpolator()

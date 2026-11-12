@@ -195,6 +195,12 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --setting)
       [[ "$2" =~ ^(global|secure|system):[^=]+= ]] || { echo "--setting takes global|secure|system:KEY=VALUE" >&2; exit 2; }
       EXTRA+=("-Dapksim.setting.${SETTING_N:-0}=$2"); SETTING_N=$((${SETTING_N:-0} + 1)); shift 2 ;;
+    # A broadcast sent to the app's own package after Application.onCreate, before the first activity (repeatable):
+    # 'ACTION;es:KEY=VALUE;ez:KEY=true;ei|el|ef:...' (LaunchBroadcasts.java).
+    --broadcast)
+      [[ "$2" =~ ^[A-Za-z0-9_.$]+(;|$) ]] || { echo "--broadcast takes ACTION[;es|ez|ei|el|ef:KEY=VALUE]..." >&2; exit 2; }
+      ((${BROADCAST_N:-0} < 8 && ${#2} <= 1024)) || { echo "--broadcast: at most 8, of 1024 characters each" >&2; exit 2; }
+      EXTRA+=("-Dapksim.broadcast.${BROADCAST_N:-0}=$2"); BROADCAST_N=$((${BROADCAST_N:-0} + 1)); shift 2 ;;
     # A file written to /sdcard before the app starts (repeatable): PATH=text:TEXT or PATH=BASE64 (SlotDevice.java).
     --sdcard-file)
       [[ "$2" =~ ^[^=]+= ]] || { echo "--sdcard-file takes PATH=text:TEXT or PATH=BASE64" >&2; exit 2; }
@@ -337,7 +343,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
