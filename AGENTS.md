@@ -383,7 +383,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   "Releases"),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
-- `docs/`: `ios-simulator-parity.md` (feature gaps and status), `flight-recorder.md` (`--rec`, checkpoints, `.apkrec` bundles, the replay plan), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `skins.md` (device skins: format and `apksim skin`), `linux-docker.md`, `crawl.md` (the crawler and screen map: what a screen is, budgets, safety, `--base`), `ci-testbed.md` (a large app's
+- `docs/`: `architecture.svg` (the README's system design diagram, a hand-edited SVG with light and dark colours:
+  update its boxes when what they describe changes), `ios-simulator-parity.md` (feature gaps and status), `flight-recorder.md` (`--rec`, checkpoints, `.apkrec` bundles, the replay plan), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `skins.md` (device skins: format and `apksim skin`), `linux-docker.md`, `crawl.md` (the crawler and screen map: what a screen is, budgets, safety, `--base`), `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
