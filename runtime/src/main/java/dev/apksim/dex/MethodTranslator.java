@@ -2554,15 +2554,33 @@ final class MethodTranslator implements Opcodes {
     return target;
   }
 
+  /**
+   * Whether invoking {@code m} on {@code from} would run {@code target}'s: target is reachable, and no other interface
+   * in from's ancestry (any branch) redeclares the method unless target itself inherits through it.
+   */
   private boolean reaches(String from, String target, DexFile.MethodRef m, int depth) {
-    if (from.equals(target)) return true;
-    if (depth > 32) return false;
-    int def = dex.classDefIndex(from);
-    if (def < 0 || dex.declaresMethod(def, m.name(), m.descriptor())) return false;
-    for (String s : dex.interfacesOf(def)) {
-      if (reaches(s, target, m, depth + 1)) return true;
+    java.util.Set<String> seen = new java.util.HashSet<>();
+    if (!closure(from, seen, 0) || !seen.contains(target)) return false;
+    java.util.Set<String> below = new java.util.HashSet<>();
+    closure(target, below, 0);
+    for (String x : seen) {
+      if (x.equals(target) || below.contains(x)) continue;
+      int def = dex.classDefIndex(x);
+      if (def >= 0 && dex.declaresMethod(def, m.name(), m.descriptor())) return false;
     }
-    return false;
+    return true;
+  }
+
+  /** Adds {@code from} and every superinterface of it this DEX holds to {@code out}; false if too deep. */
+  private boolean closure(String from, java.util.Set<String> out, int depth) {
+    if (depth > 32) return false;
+    if (!out.add(from)) return true;
+    int def = dex.classDefIndex(from);
+    if (def < 0) return true;
+    for (String s : dex.interfacesOf(def)) {
+      if (!closure(s, out, depth + 1)) return false;
+    }
+    return true;
   }
 
   private static final String RUNTIME_SHADER = "android/graphics/RuntimeShader";
