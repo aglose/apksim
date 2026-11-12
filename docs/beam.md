@@ -888,6 +888,22 @@ readable by any origin. Requests to the server carry its token as everything els
    (what the app writes is kept in it), with `"dataFrom": ID` starts a newer build of the same app, signed by the same
    key, on a copy of it ("Saved data from the tab").
 
+## Skins (2026-11-12, issue 246)
+
+The agent lists the visitor's own skins (docs/skins.md: `~/.apksim/skins`, `APKSIM_SKINS`) as serve does (docs/serve.md
+"Skins"): `GET /beam/skins` and `GET /beam/skins/NAME/frame.png` (`frame-land.png`, `mask.png`), with an ETag. Only a
+site the agent trusts gets them (`403` otherwise): they may be private frames, and they never leave the Mac. The page
+lists them in its Skin menu as "(this Mac)" after the server's, and draws them around a session's canvas the same way.
+A start on this Mac takes `skin=NAME` (the agent's skins) and the launch option `--skin` as serve does, for the session's
+device. A server's app whose default is a server skin reaches the agent with that skin's `--device` instead (the Mac may
+not have the skin; the page draws the server's frame), and the agent drops a `--skin` it does not have rather than
+refusing the start, so an error never lists the visitor's skins to a page. The page draws the session's own endpoint's
+skin when both have one of the same name; the beamed instance is not given `--skin`, as its sandbox reads nothing in the home folder, so the app there is
+not told the skin's cutout and corners (the frame is drawn all the same). It gets the skin's kind as `--device-kind KIND`
+(a launch option that needs no skin store), so a custom-size watch skin's session is a watch. `apksim beam run ID --skin NAME` opens a kept
+session with a skin around its window, on the skin's device unless `--device` is given too; a recorded `--skin` this Mac
+no longer has is dropped.
+
 ## The tab relay (2026-11-11, issue 276)
 
 A page behind a sign-in proxy (single sign-on) can serve the app on the visitor's Mac what only its signed-in tab can

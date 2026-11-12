@@ -162,7 +162,10 @@ final class Http {
     StringBuilder h = new StringBuilder("HTTP/1.1 ").append(status).append(' ').append(reason(status)).append("\r\n");
     h.append("Content-Type: ").append(type).append("\r\n");
     h.append("Content-Length: ").append(body.length).append("\r\n");
-    h.append("Cache-Control: no-store\r\n");
+    // no-store unless the caller names its own cache policy (skin images: revalidated by their ETag).
+    boolean ownCache = false;
+    for (String e : extraHeaders) ownCache |= e.regionMatches(true, 0, "Cache-Control:", 0, 14);
+    if (!ownCache) h.append("Cache-Control: no-store\r\n");
     h.append("X-Content-Type-Options: nosniff\r\n");
     h.append("Referrer-Policy: no-referrer\r\n");
     for (String e : extraHeaders) h.append(e).append("\r\n");

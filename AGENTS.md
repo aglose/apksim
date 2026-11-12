@@ -275,7 +275,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
-  - `skin/` (`Skins`, `Skin`, `Frames`; `DeviceSpec` resolves a `--device` value): `apksim skin`, the local skin store and its commands, docs/skins.md. Runs on a plain JVM with only apksim.jar (the launcher's `skin` case). The serve/beam part is a separate issue.
+  - `skin/` (`Skins`, `Skin`, `Frames`; `DeviceSpec` resolves a `--device` value): `apksim skin`, the local skin store and its commands, docs/skins.md. Runs on a plain JVM with only apksim.jar (the launcher's `skin` case). serve and beam hand skins to a page (issue 246, docs/serve.md "Skins"): `Serve.skins()`/`skinsJson`/`skinImage` (`/api/skins`, the agent's `/beam/skins` for trusted sites only), `--skins DIR` (`Skins.addDirs`), the `--skin` launch option (`Catalog`), `/ws?skin=` and the app's own `--skin` setting the session's device (`Session.skin`, `appSkin`; a serve instance gets `--skin` and the skin folders in `APKSIM_SKINS`, a beamed one not, as its sandbox cannot read them), and serve.html's Skin menu and `skinFit()` (`window.apksimSkin()`); `scripts/serve-skin-check.py` (Chrome).
   - `Skinning`, `SkinShape`: a skin drawn around the screen (`--skin NAME`, `skin NAME|off`, Device > Skin, issue 245;
     docs/skins.md "Drawing"). `Skinning` (plain Java, used by Main before the framework exists) picks the skin, its
     device unless `--device` names one, and the layout for the display's size and rotation: the frame turned with

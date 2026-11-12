@@ -203,6 +203,75 @@ public final class Skin {
     return b.toString();
   }
 
+  /** An image's width and height from its PNG header (skins store PNG only). */
+  public static int[] pngSize(Path f) throws IOException {
+    byte[] h = new byte[24];
+    try (java.io.InputStream in = Files.newInputStream(f)) {
+      if (in.readNBytes(h, 0, 24) < 24 || h[1] != 'P' || h[2] != 'N' || h[3] != 'G') throw new IOException(f.getFileName() + " is not a PNG");
+    }
+    java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(h);
+    return new int[] {b.getInt(16), b.getInt(20)};
+  }
+
+  /**
+   * The skin as serve's and beam's `/api/skins` give it to a page (docs/serve.md "Skins"): what it needs to draw the
+   * frame around its own canvas. Image names are the published ones (frame.png, frame-land.png, mask.png), not the
+   * folder's; no path on the server is given.
+   */
+  public String apiJson() throws IOException {
+    DeviceSpec s = spec();
+    int[] fs = pngSize(dir.resolve(frame));
+    StringBuilder b = new StringBuilder("{\"name\":").append(q(name)).append(",\"title\":").append(q(title));
+    b.append(",\"device\":").append(q(device)).append(",\"kind\":").append(q(effectiveKind()));
+    b.append(",\"deviceResolved\":{\"widthDp\":").append(s.widthDp()).append(",\"heightDp\":").append(s.heightDp())
+        .append(",\"density\":").append(s.density()).append(",\"widthPx\":").append(s.widthPx()).append(",\"heightPx\":")
+        .append(s.heightPx()).append("}");
+    b.append(",\"screen\":{\"x\":").append(x).append(",\"y\":").append(y).append(",\"width\":").append(width).append(",\"height\":")
+        .append(height).append(",\"cornerRadius\":").append(cornerRadius).append("}");
+    b.append(",\"frameSize\":{\"width\":").append(fs[0]).append(",\"height\":").append(fs[1]).append("}");
+    // Only a landscape frame that is frame.png's size turned, as Skinning draws it (any other is ignored there).
+    boolean land = false;
+    if (frameLand != null && Files.isRegularFile(dir.resolve(frameLand))) {
+      try {
+        int[] ls = pngSize(dir.resolve(frameLand));
+        land = ls[0] == fs[1] && ls[1] == fs[0];
+      } catch (IOException e) {
+        land = false;
+      }
+    }
+    b.append(",\"frameLand\":").append(land);
+    b.append(",\"mask\":").append(mask != null && Files.isRegularFile(dir.resolve(mask)));
+    b.append(",\"cutout\":").append(cutout == null ? "null" : json(cutout));
+    b.append(",\"source\":").append(source == null || source.isEmpty() ? "null" : json(source));
+    return b.append("}").toString();
+  }
+
+  /** The file behind a published image name, or null: frame.png, frame-land.png or mask.png, if the skin has it. */
+  public Path image(String published) {
+    String f = switch (published) {
+      case "frame.png" -> frame;
+      case "frame-land.png" -> frameLand;
+      case "mask.png" -> mask;
+      default -> null;
+    };
+    if (f == null || f.contains("..") || f.startsWith("/") || f.contains("\\")) return null;
+    Path p = dir.resolve(f);
+    return Files.isRegularFile(p, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? p : null;
+  }
+
+  /** A flat map as compact JSON (numbers as numbers, the rest as strings). */
+  static String json(Map<String, Object> m) {
+    StringBuilder b = new StringBuilder("{");
+    for (Map.Entry<String, Object> e : m.entrySet()) {
+      if (b.length() > 1) b.append(',');
+      b.append(q(e.getKey())).append(':');
+      Object v = e.getValue();
+      if (v instanceof Number n) b.append(n.doubleValue() == Math.rint(n.doubleValue()) ? String.valueOf(n.longValue()) : n.toString());
+      else b.append(q(String.valueOf(v)));
+    }
+    return b.append('}').toString();
+  }
+
   static String obj(Map<String, Object> m) {
     StringBuilder b = new StringBuilder("{ ");
     boolean first = true;

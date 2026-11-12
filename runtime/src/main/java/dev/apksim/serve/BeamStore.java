@@ -794,12 +794,25 @@ final class BeamStore {
         // Checked again (the record is a file anyone here could edit). First the app's own options (its --device was its
         // default: the session's device is recorded), then what the session ended with (device, appearance, locale,
         // font scale, as its tab last set them), then options given here, which win.
+        // A skin it was started with that this Mac no longer has is dropped rather than refusing the run (issue 246).
+        for (int i = launch.size() - 2; i >= 0; i--) {
+          if (launch.get(i).equals("--skin") && Serve.skin(launch.get(i + 1)) == null) {
+            launch.remove(i + 1);
+            launch.remove(i);
+          }
+        }
         List<String> own = Catalog.launchOptions(launch);
+        // `--skin NAME` given here without --device: the skin's device, as a launch takes it, not the recorded one.
+        List<String> given = args.subList(1, args.size());
+        // `--skin off` only takes the frame away: the recorded device stays.
+        int gs = given.lastIndexOf("--skin");
+        boolean skinDevice = gs >= 0 && gs + 1 < given.size() && !given.get(gs + 1).equals("off") && !given.contains("--device");
         for (int i = 0; i < own.size(); i++) {
-          if (own.get(i).equals("--device") && r.get("device") instanceof String) i++;
+          if (own.get(i).equals("--device") && (r.get("device") instanceof String || skinDevice)) i++;
+          else if (own.get(i).equals("--skin") && given.contains("--skin")) i++;
           else cmdLine.add(own.get(i));
         }
-        if (r.get("device") instanceof String d) cmdLine.addAll(List.of("--device", d));
+        if (r.get("device") instanceof String d && !skinDevice) cmdLine.addAll(List.of("--device", d));
         if (r.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) cmdLine.addAll(List.of("--appearance", a));
         if (r.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmdLine.addAll(List.of("--locale", l));
         if (r.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) cmdLine.addAll(List.of("--font-scale", f));

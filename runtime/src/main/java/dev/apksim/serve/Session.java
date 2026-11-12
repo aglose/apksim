@@ -1,5 +1,7 @@
 package dev.apksim.serve;
 
+import dev.apksim.skin.Skin;
+
 import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -153,16 +155,35 @@ final class Session {
     }
     this.ws = ws;
     ws.onPong = this::ponged;
-    // The tab's device (checked by Serve), else the app's own default, else the phone.
+    // The skin (issue 246): the tab's (checked by Serve; `off` for none), else the app's own --skin.
+    String tabSkin = options.get("skin");
+    this.skin = "off".equals(tabSkin) ? null : tabSkin != null ? tabSkin : appSkin(app);
+    // The tab's device (checked by Serve), else the tab's skin's, else the app's own default (its --device, else its
+    // --skin's device), else the phone.
     String own = appDevice(app);
-    this.device = options.getOrDefault("device", own != null ? own : "phone");
+    Skin k = tabSkin != null && !"off".equals(tabSkin) ? Serve.skin(tabSkin) : null;
+    this.device = options.getOrDefault("device", k != null ? k.device : own != null ? own : "phone");
+  }
+
+  /** The stored skin the session runs with (`--skin` to a serve instance; the page draws its frame), or null. */
+  final String skin;
+
+  /** The app's own `--skin` (catalog line or URL add, checked by Catalog.launchOptions), if this server has it. */
+  static String appSkin(Catalog.App app) {
+    List<String> l = app.launch();
+    int i = l.lastIndexOf("--skin");
+    String name = i >= 0 && i + 1 < l.size() ? l.get(i + 1) : null;
+    return name != null && Serve.skin(name) != null ? name : null;
   }
 
   /** The device size the app's launch options give (`--device`, checked by Catalog.launchOptions), or null. */
   static String appDevice(Catalog.App app) {
     List<String> l = app.launch();
     int i = l.lastIndexOf("--device");  // the last, as the launcher takes it
-    return i >= 0 && i + 1 < l.size() ? l.get(i + 1) : null;
+    if (i >= 0 && i + 1 < l.size()) return l.get(i + 1);
+    // As the launcher does: a --skin without --device runs on the skin's device.
+    String k = appSkin(app);
+    return k == null ? null : Serve.skin(k).device;
   }
 
   /** The app's own launch options a reopened saved session's recorded setting replaces, and that setting's name. */
@@ -171,7 +192,10 @@ final class Session {
 
   /** Whether a tab may ask for this device: a built-in one, a size serve was given a name for, or the app's own default. */
   static boolean deviceAllowed(Serve serve, Catalog.App app, String name) {
-    return DEVICES.contains(name) || serve.deviceSizes.containsKey(name) || name.equals(appDevice(app));
+    return DEVICES.contains(name) || serve.deviceSizes.containsKey(name) || name.equals(appDevice(app))
+        || Serve.skins().stream().anyMatch(k -> k.device.equals(name))  // a skin's device (issue 246)
+        // On a visitor's own Mac, any device a skin may name: a page's server skin starts there on its device.
+        || serve.beam && Catalog.skinDevice(name);
   }
 
   /** What the instance's `--device` and `device` command take for a device name of this session. */
@@ -279,6 +303,9 @@ final class Session {
     // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     for (int i = 0; i < own.size(); i++) {
       if (own.get(i).equals("--device")) i++;
+      else if (own.get(i).equals("--skin")) i++;  // the session's skin, below
+      // The app's own --device-kind goes with its own --device (Serve.skinAsDevice adds the pair): not with another.
+      else if (own.get(i).equals("--device-kind") && !device.equals(appDevice(app))) i++;
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
       // app's own defaults, as `apksim beam run` puts them.
       else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
@@ -294,7 +321,19 @@ final class Session {
         logLine(line);
       });
     }
+    // The skin's cutout and corners for the app (issue 246). Not to a beamed instance: its sandbox reads nothing in the
+    // home folder, the skin store included; the page draws the frame either way.
+    if (skin != null && !serve.beam) cmd.addAll(List.of("--skin", skin));
+    // A beamed instance gets the skin's kind instead (a custom-size watch skin is a watch), which needs no skin store.
+    Skin sk = skin != null && serve.beam ? Serve.skin(skin) : null;
+    // Each skin-derived kind only with its own device: another device the session runs on keeps its own kind.
+    String kind = null;
+    if (sk != null && sk.kind != null && device.equals(sk.device)) kind = sk.kind;
+    else if (skin == null && options.get("kind") != null && device.equals(options.get("device"))) kind = options.get("kind");  // the page's skin's
+    // The command as assembled: the app's own --device-kind may have been left out above (it went with another device).
+    if (kind != null && !cmd.contains("--device-kind")) cmd.addAll(List.of("--device-kind", kind));
     cmd.add(apk.toString());
+    ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     ws.sendText("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);

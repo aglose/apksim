@@ -15,7 +15,7 @@ This page is the spec, then how it is built, then what was measured.
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
-             [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
+             [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
 ```
 
@@ -31,6 +31,8 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   not a built-in one. The page's Device menu lists each (`GET /api/devices`), and `/ws?device=NAME` and the tab's
   `device NAME` accept it. `device` stays a checked name: a size spelled out by a client, or any other name, is refused
   (`/ws` falls back to the app's default device, else the phone; a command is answered `r refused`).
+- `--skins DIR` (repeatable): more folders of skins (docs/skins.md), searched after the store (`~/.apksim/skins`,
+  `APKSIM_SKINS_DIR`) and `APKSIM_SKINS`. See "Skins" below.
 - `--idle SECONDS` (default 600): a session with no input for that long is stopped and its tab told so.
 - `--apps`: the catalog. A folder lists its `*.apk` files; a file lists one APK per line, a path or an `https://`
   URL (downloaded once, at first use), optionally followed by a display name and then ` -- ` and launch options of
@@ -226,7 +228,8 @@ Only these are accepted, each with one plain value (no value starting with `-` e
 `--build`, `--setting`, `--sdcard-file` (a file written to `/sdcard` before the app starts: `PATH=text:TEXT` or `PATH=BASE64`,
 inline, at most 64 KB a file and 72 KB in all, `..` refused), `--broadcast` (`ACTION;es:K=V;ez:K=true`, also `ei`, `el`, `ef`: one broadcast to the app's own package after `Application.onCreate`, before the first activity, for debug flag-override receivers; no `;` or spaces inside a value, 8 at most), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
 `--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera` (`off` or `fake`, not
-`fake=IMAGE`: no host files), `--network-profile`, `--device`, and the flags
+`fake=IMAGE`: no host files), `--network-profile`, `--device`, `--skin` (a stored skin's name, never a path; an unknown
+one is refused naming the known ones: see "Skins"), and the flags
 `--soft-keyboard` and `--move-shared-data` (macOS: load a 4 KB-aligned native library whose data shares a page with its
 code, experimental; it only changes how the app's own libraries are mapped, and does nothing on Linux).
 `serve --move-shared-data` gives it to every app, since apps rarely control how their third-party libraries are aligned. A
@@ -291,6 +294,70 @@ inside itself:
   only embed serve in a page whose viewers may have it.
 - To draw the stream with your own client instead, the protocol is the page's (`serve.html`): open `/ws?app=ID` from
   an allowed origin and speak it as above.
+- `&skin=NAME` (or `&skin=off`) on the frame's URL picks a skin (below): the embedded page draws the frame and the
+  session runs on its device.
+
+### Skins
+
+serve hands out the device skins it has (docs/skins.md: `~/.apksim/skins`, `APKSIM_SKINS`, `--skins DIR`), so a page that
+embeds apksim needs no frames or table of device sizes of its own (issue 246).
+
+- `GET /api/skins`: `[{name, title, device, kind, deviceResolved: {widthDp, heightDp, density, widthPx, heightPx},
+  screen: {x, y, width, height, cornerRadius}, frameSize: {width, height}, frameLand, mask, cutout, source}]`. `screen`
+  and `cutout` are in the frame image's pixels; `frameLand` and `mask` say whether those images exist. No path on the
+  server is given. A skin whose device does not resolve or whose frame is not a PNG is left out.
+- `GET /api/skins/NAME/frame.png` (`frame-land.png`, `mask.png`): the image, `image/png`, with an `ETag` from its
+  contents (`Cache-Control: private, no-cache`: a page revalidates, and gets `304` while it is unchanged). An unknown
+  skin or image is a `404`. Same token rules as the rest of `/api/*`.
+- `GET /api/devices` lists each skin beside the `--device-size` names: `{name: DEVICE, size: "WxH@D", skin: NAME,
+  title}`, so a picker can show "Pixel 9" rather than `411x914@2.625`.
+- `/ws?...&skin=NAME` starts the session with that skin: its device unless the page names one (`device=`), and the
+  instance gets `--skin NAME`, so the app is told the skin's cutout and rounded corners (docs/skins.md "Drawing"). An
+  unknown name starts it without one (`r skin: no skin named ...`). `&skin=off` starts without the app's own skin. The
+  first message after the launch, `d {"skin": NAME|null, "device": ...}`, says which skin the session runs with.
+- The launch option `--skin NAME` (catalog lines, `POST /api/apps` `options`) is that app's default skin, as its
+  `--device` is its default device; `GET /api/apps/ID` reports it as `skin` (and its device as `device`). An unknown
+  name is refused at startup or with a `400` that lists the known ones.
+- The page: a Skin menu beside Device lists the server's skins (and, on a page that found this Mac's `apksim beam`
+  and that the agent trusts, the visitor's own, marked "(this Mac)"); `&skin=NAME` / `&skin=off` on the page's own URL
+  and on `/?embed=1&...` pick one. Choosing a skin chooses its device for the next Start; a live session keeps its
+  device. The frame is an image over the canvas with `pointer-events: none`, the canvas at the frame's screen
+  rectangle, clipped to its corner radius (or its mask, turned with the display), with black in the hole around it;
+  input is mapped from the canvas's own box, as without a skin. It turns with the display (Rotate: ROTATION_90 puts the
+  device's top on the left, `frame-land.png` when the skin has one). A skin whose screen is not the display's shape is
+  not drawn, stretched or not: the page says so in the console. Fill mode (a session on this Mac sized to the tab)
+  draws no frame. `window.apksimSkin()` reports where the frame and the canvas are, for scripts.
+
+#### Drawing the frame yourself
+
+A host that keeps its own canvas (a `/ws` client) can draw the frame from the API alone:
+
+```html
+<div id="device" style="position: relative">
+  <img id="frame" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1">
+  <canvas id="screen" style="position: absolute"></canvas>
+</div>
+<script>
+  async function frameFor(base, token, name, scale) {        // scale: CSS pixels per frame pixel
+    const k = (await (await fetch(`${base}/api/skins?token=${token}`)).json()).find(s => s.name === name);
+    const dev = document.getElementById("device"), c = document.getElementById("screen"), s = k.screen;
+    dev.style.width = k.frameSize.width * scale + "px";
+    dev.style.height = k.frameSize.height * scale + "px";
+    document.getElementById("frame").src = `${base}/api/skins/${name}/frame.png?token=${token}`;
+    Object.assign(c.style, { left: s.x * scale + "px", top: s.y * scale + "px", width: s.width * scale + "px",
+      height: s.height * scale + "px", borderRadius: s.cornerRadius * scale + "px" });
+    return k.device;                                          // start the session with /ws?...&skin=NAME (or device=)
+  }
+</script>
+```
+
+The canvas keeps the stream's pixels (`k.deviceResolved.widthPx` x `heightPx`) and is only scaled into the screen
+rectangle. In landscape, turn the frame a quarter turn counterclockwise for ROTATION_90 and use the screen rectangle
+turned the same way (`frame-land.png` if `frameLand`). An `<img>` from serve's own origin needs the token in its URL,
+as above, or the cookie.
+
+`scripts/serve-skin-check.py APK` checks the endpoints, the option and the page in Chrome (the canvas at the frame's
+screen rectangle, a click at its centre landing at the app's centre, the cutout told to the app, `&skin=off`).
 
 ### Stream
 
