@@ -186,6 +186,19 @@ public final class ReplayPlan {
       launch.add(id);
       launch.add("--no-autofill");  // a replay never signs anyone in with the owner's saved sign-ins
       launch.addAll(deviceOptions(device));
+      // The device's kind as recorded, where its size alone would give another (a custom-size watch or TV skin); not
+      // when the replay names its own --device, which wins with its own kind.
+      if (device != null && device.get("kind") instanceof String kind && kind.matches("[a-z]+") && !pass.contains("--device")) {
+        launch.add("--jvm");
+        launch.add("-Dapksim.deviceKind=" + kind);
+      }
+      // A skin's shape (cutout, corners), before the app starts: Skinning.launch reads it, with or without that skin
+      // stored here.
+      if (device != null && device.get("skin") instanceof Map<?, ?> shape) {
+        @SuppressWarnings("unchecked") Map<String, Object> skinShape = (Map<String, Object>) shape;
+        launch.add("--jvm");
+        launch.add("-Dapksim.skinShape=" + Skinning.encodeShape(skinShape));
+      }
       if (clock > 0) {
         launch.add("--clock");
         launch.add(String.valueOf(clock));

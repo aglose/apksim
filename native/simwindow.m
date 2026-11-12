@@ -54,6 +54,16 @@ static int devW, devH;
 static float deviceScale;
 static CALayer *frameLayer;
 static long commits;
+// A skin (Skinning.java): the frame drawn around the screen. Sizes in device pixels; the screen is devW x devH at
+// skinScreen in a frame of skinOuterW x skinOuterH. The window's content is then the frame, the screen view inside it.
+static BOOL skinOn;
+static int skinOuterW, skinOuterH, skinScreenX, skinScreenY, skinRadius, skinHole[4];
+static CGImageRef skinFrame, skinMask;
+static NSView *skinView;
+static CALayer *skinFrameLayer, *skinMaskLayer, *skinHoleLayer, *skinHoleMaskLayer;
+static NSView *simView;
+static int outerW(void) { return skinOn ? skinOuterW : devW; }
+static int outerH(void) { return skinOn ? skinOuterH : devH; }
 // The display's vsync, from a CADisplayLink on the window's view. Host starts each frame just after one, as Android's
 // Choreographer does, and it counts what reached the screen: a vsync without a new frame while frames are flowing is
 // a frame the screen showed twice, and two frames before one vsync means the first was never seen.
@@ -89,7 +99,11 @@ enum {
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
   TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY, TAG_CAMERA_OFF, TAG_CAMERA_PATTERN, TAG_CAMERA_IMAGE,
+  TAG_SCREENSHOT_SKIN,
+  // Device > Skin: None, then one item per stored skin (SimWindow.TAG_SKIN_FIRST).
+  TAG_SKIN_FIRST = 200,
 };
+static NSMenu *skinMenu;
 static BOOL keyboardHit(NSPoint p);  // the software keyboard, below
 static void buildKeyboard(void);
 static CALayer *bannerLayer;  // heads-up notification, below
@@ -222,6 +236,7 @@ static void buildMenus(NSMenu *bar) {
   NSString *right = [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey];
   NSMenu *file = submenu(bar, @"File");
   addItem(file, @"Save Screen", TAG_SCREENSHOT, @"s", cmd);
+  addItem(file, @"Save Screen with Skin", TAG_SCREENSHOT_SKIN, @"s", cmd | opt);
   addItem(file, @"Record Screen", TAG_RECORD, @"r", cmd);
   addItem(file, @"Save Replay", TAG_SAVE_REPLAY, @"s", cmd | shift);
   addItem(file, @"Show Screenshots and Recordings", TAG_SCREENSHOTS_FOLDER, nil, 0);
@@ -237,6 +252,13 @@ static void buildMenus(NSMenu *bar) {
   addItem(type, @"TV", TAG_DEVICE_TV, @"5", cmd | shift);
   typeItem.submenu = type;
   [device addItem:typeItem];
+  // Stored skins (apksim skin list), filled in by the Java side (nativeSetSkinMenu).
+  NSMenuItem *skinItem = [[NSMenuItem alloc] initWithTitle:@"Skin" action:nil keyEquivalent:@""];
+  skinMenu = [[NSMenu alloc] initWithTitle:@"Skin"];
+  skinMenu.autoenablesItems = NO;
+  addItem(skinMenu, @"None", TAG_SKIN_FIRST, nil, 0);
+  skinItem.submenu = skinMenu;
+  [device addItem:skinItem];
   [device addItem:[NSMenuItem separatorItem]];
   addItem(device, @"Rotate Left", TAG_ROTATE_LEFT, left, cmd);
   addItem(device, @"Rotate Right", TAG_ROTATE_RIGHT, right, cmd);
@@ -530,7 +552,7 @@ static int androidMeta(NSEventModifierFlags f) {
 // size goes to the Java side in device pixels, which reconfigures the app and calls nativeResize. While dragging,
 // the last frame stays pinned top left at its own scale rather than stretching.
 - (void)postResize:(BOOL)done {
-  if (selfResizing) return;
+  if (selfResizing || skinOn) return;  // a skinned window is not resizable: its size is the frame's
   NSSize s = self.window.contentView.bounds.size;
   post(EV_RESIZE, (float)(s.width * deviceScale), (float)(s.height * deviceScale), done ? 1 : 0);
 }
@@ -611,6 +633,7 @@ static void openWindow(int w, int h, float scale, NSString *title, int xOffset, 
   view.layer = frameLayer;
   window.contentView = view;
   window.delegate = view;
+  simView = view;
   vsyncLink = [view displayLinkWithTarget:view selector:@selector(vsync:)];
   [vsyncLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
   [window makeFirstResponder:view];
@@ -869,14 +892,14 @@ static void setZoom(int how) {
   CGFloat titleBar = win.frame.size.height - [win contentRectForFrameRect:win.frame].size.height;
   switch (how) {
     case 0: s = openScale; break;
-    case 1: s = MAX(devH / (visible.size.height - titleBar), devW / visible.size.width); break;
+    case 1: s = MAX(outerH() / (visible.size.height - titleBar), outerW() / visible.size.width); break;
     case 2: s = deviceScale / 1.25f; break;
     case 3: s = deviceScale * 1.25f; break;
   }
   s = MIN(MAX(s, openScale / 2.5f), openScale * 4);
   deviceScale = s;
   NSRect content = [win contentRectForFrameRect:win.frame];
-  NSSize size = NSMakeSize(devW / s, devH / s);
+  NSSize size = NSMakeSize(outerW() / s, outerH() / s);
   content.origin.y += content.size.height - size.height;
   content.size = size;
   NSRect frame = [win frameRectForContentRect:content];
@@ -891,6 +914,34 @@ static void setZoom(int how) {
 
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeZoom(JNIEnv *env, jclass c, jint how) {
   onMain(^{ setZoom(how); });
+}
+
+// The window's content to the display's size (or the skin's frame) at the current zoom, its top left corner kept and
+// on the Mac's screen; actualSize goes back to actual size first, zoomed out only as far as the screen needs.
+static void sizeWindow(BOOL actualSize) {
+  NSWindow *win = NSApp.windows.firstObject;
+  // While the user drags an edge the window is already the size asked for (to a pixel): leave it to them.
+  if (win.inLiveResize || (win.styleMask & NSWindowStyleMaskFullScreen)) return;
+  int w = outerW(), h = outerH();
+  NSRect visible = win.screen.visibleFrame;
+  NSRect frame = win.frame;
+  CGFloat titleBar = frame.size.height - [win contentRectForFrameRect:frame].size.height;
+  // Another device opens at actual size, and a display too big for the Mac's screen (a TV, say) zoomed out to fit.
+  if (actualSize) deviceScale = openScale;
+  float fit = MAX(h / (visible.size.height - titleBar), w / visible.size.width);
+  if (visible.size.width > 0 && fit > deviceScale) deviceScale = fit;
+  NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
+  NSRect content = [win contentRectForFrameRect:frame];
+  // Keep the window's top left corner where it was, and on screen.
+  content.origin.y += content.size.height - size.height;
+  content.size = size;
+  frame = [win frameRectForContentRect:content];
+  if (NSMinY(frame) < NSMinY(visible)) frame.origin.y = NSMinY(visible);
+  if (NSMaxX(frame) > NSMaxX(visible)) frame.origin.x = MAX(NSMinX(visible), NSMaxX(visible) - frame.size.width);
+  selfResizing = YES;
+  [win setFrame:frame display:YES animate:NO];
+  selfResizing = NO;
+  frameLayer.contentsGravity = kCAGravityResize;
 }
 
 // ---------------------------------------------------------------- rotation
@@ -914,29 +965,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclas
   devH = h;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
-    NSWindow *win = NSApp.windows.firstObject;
-    // While the user drags an edge the window is already the size asked for (to a pixel): leave it to them.
-    if (!win.inLiveResize && !(win.styleMask & NSWindowStyleMaskFullScreen)) {
-      NSRect visible = win.screen.visibleFrame;
-      NSRect frame = win.frame;
-      CGFloat titleBar = frame.size.height - [win contentRectForFrameRect:frame].size.height;
-      // Another device opens at actual size, and a display too big for the Mac's screen (a TV, say) zoomed out to fit.
-      if (actualSize) deviceScale = openScale;
-      float fit = MAX(h / (visible.size.height - titleBar), w / visible.size.width);
-      if (visible.size.width > 0 && fit > deviceScale) deviceScale = fit;
-      NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
-      NSRect content = [win contentRectForFrameRect:frame];
-      // Keep the window's top left corner where it was, and on screen.
-      content.origin.y += content.size.height - size.height;
-      content.size = size;
-      frame = [win frameRectForContentRect:content];
-      if (NSMinY(frame) < NSMinY(visible)) frame.origin.y = NSMinY(visible);
-      if (NSMaxX(frame) > NSMaxX(visible)) frame.origin.x = MAX(NSMinX(visible), NSMaxX(visible) - frame.size.width);
-      selfResizing = YES;
-      [win setFrame:frame display:YES animate:NO];
-      selfResizing = NO;
-      frameLayer.contentsGravity = kCAGravityResize;
-    }
+    sizeWindow(actualSize);
     frameLayer.contentsScale = deviceScale;
     frameLayer.contents = nil;
     layoutAfterZoom();
@@ -980,10 +1009,12 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, j
 }
 
 // The overlays are laid out in points: rebuild them for the new window size (the Java side re-sends the bars).
+static void layoutSkin(void);
 static void layoutAfterZoom(void) {
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  frameLayer.frame = NSMakeRect(0, 0, devW / deviceScale, devH / deviceScale);
+  layoutSkin();  // the screen view into the frame, or back as the window's content
+  if (!skinOn) frameLayer.frame = NSMakeRect(0, 0, devW / deviceScale, devH / deviceScale);
   [barsLayer removeFromSuperlayer];
   barsLayer = nil;
   darkStatusIcons = darkHandle = -1;
@@ -992,6 +1023,220 @@ static void layoutAfterZoom(void) {
   bannerLayer = nil;
   [CATransaction commit];
   buildKeyboard();  // laid out in points too
+}
+
+// ---------------------------------------------------------------- skins
+
+// The frame view: the window's content while a skin is on, with the screen view (SimView) inside it at the skin's
+// screen rectangle. Clicks on the frame land here and go no further; the screen view takes its own as before, so the
+// app's coordinates are unchanged. The frame image is a layer above the screen (its hole shows the screen through,
+// and its anti-aliased edge falls over the screen's), clipped by nothing.
+@interface SkinView : NSView
+@end
+@implementation SkinView
+- (BOOL)isFlipped { return YES; }
+- (void)mouseDown:(NSEvent *)e {}
+- (void)mouseDragged:(NSEvent *)e {}
+- (void)mouseUp:(NSEvent *)e {}
+- (void)rightMouseDown:(NSEvent *)e {}
+- (void)scrollWheel:(NSEvent *)e {}
+@end
+
+// An image turned by quarter turns counterclockwise (1: its top edge on the left), as Skinning.turnRect turns rects.
+static CGImageRef turnImage(CGImageRef img, int q) {
+  q &= 3;
+  if (!img) return NULL;
+  if (q == 0) return CGImageRetain(img);
+  size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
+  size_t W = q % 2 ? h : w, H = q % 2 ? w : h;
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, W, H, 8, 0, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(cs);
+  // The context is y-up: a positive angle turns counterclockwise as seen.
+  switch (q) {
+    case 1: CGContextTranslateCTM(ctx, W, 0); CGContextRotateCTM(ctx, M_PI_2); break;
+    case 2: CGContextTranslateCTM(ctx, W, H); CGContextRotateCTM(ctx, M_PI); break;
+    case 3: CGContextTranslateCTM(ctx, 0, H); CGContextRotateCTM(ctx, -M_PI_2); break;
+  }
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+  CGImageRef out = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  return out;
+}
+
+static CGImageRef decodeImage(JNIEnv *env, jbyteArray bytes) {
+  if (!bytes) return NULL;
+  jsize n = (*env)->GetArrayLength(env, bytes);
+  NSMutableData *d = [NSMutableData dataWithLength:n];
+  (*env)->GetByteArrayRegion(env, bytes, 0, n, d.mutableBytes);
+  NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:d];
+  return rep.CGImage ? CGImageRetain(rep.CGImage) : NULL;
+}
+
+// Lays the screen view out in the frame view (skin on), or makes it the window's content again (off).
+static void layoutSkin(void) {
+  NSWindow *win = simView.window ?: NSApp.windows.firstObject;
+  if (!win || !simView) return;
+  CGFloat s = deviceScale;
+  if (!skinOn) {
+    if (win.contentView != simView) {
+      [simView removeFromSuperview];
+      win.contentView = simView;
+      [win makeFirstResponder:simView];
+      simView.frame = NSMakeRect(0, 0, devW / s, devH / s);
+    }
+    frameLayer.cornerRadius = 0;
+    frameLayer.masksToBounds = NO;
+    frameLayer.mask = nil;
+    // The layers let go of the skin's images, which nativeSetSkin has released: nothing holds them while it is off.
+    skinFrameLayer.contents = nil;
+    skinMaskLayer.contents = nil;
+    skinHoleMaskLayer.contents = nil;
+    skinHoleLayer.mask = nil;
+    return;
+  }
+  if (!skinView) {
+    skinView = [[SkinView alloc] initWithFrame:NSMakeRect(0, 0, skinOuterW / s, skinOuterH / s)];
+    skinView.wantsLayer = YES;
+    skinFrameLayer = [CALayer layer];
+    skinFrameLayer.zPosition = 100;
+    skinFrameLayer.contentsGravity = kCAGravityResize;
+    skinMaskLayer = [CALayer layer];
+    skinMaskLayer.contentsGravity = kCAGravityResize;
+    // Black under the screen, in the hole's own shape: the frame's hole and the display agree only within 1%.
+    skinHoleLayer = [CALayer layer];
+    skinHoleLayer.zPosition = -10;
+    skinHoleLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    skinHoleMaskLayer = [CALayer layer];  // the mask again: a layer masks only one other
+    skinHoleMaskLayer.contentsGravity = kCAGravityResize;
+  }
+  if (win.contentView != skinView) {
+    [simView removeFromSuperview];
+    win.contentView = skinView;
+    [skinView addSubview:simView];
+    [win makeFirstResponder:simView];
+  }
+  skinView.frame = NSMakeRect(0, 0, skinOuterW / s, skinOuterH / s);
+  simView.frame = NSMakeRect(skinScreenX / s, skinScreenY / s, devW / s, devH / s);
+  if (skinFrameLayer.superlayer != skinView.layer) [skinView.layer addSublayer:skinFrameLayer];
+  if (skinHoleLayer.superlayer != skinView.layer) [skinView.layer addSublayer:skinHoleLayer];
+  // The layer's coordinates are its view's (flipped, top down) as AppKit sets them up for a flipped layer-backed view.
+  skinHoleLayer.frame = CGRectMake(skinHole[0] / s, skinView.layer.geometryFlipped ? skinHole[1] / s
+                                   : (skinOuterH - skinHole[1] - skinHole[3]) / s, skinHole[2] / s, skinHole[3] / s);
+  skinHoleLayer.cornerRadius = skinMask ? 0 : skinRadius / s;
+  // With a mask the backing takes the screen's shape too: its corners outside a round watch face stay transparent.
+  if (skinMask) {
+    skinHoleMaskLayer.frame = skinHoleLayer.bounds;
+    skinHoleMaskLayer.contents = (__bridge id)skinMask;
+    skinHoleLayer.mask = skinHoleMaskLayer;
+  } else {
+    skinHoleLayer.mask = nil;
+  }
+  skinFrameLayer.frame = skinView.layer.bounds;
+  skinFrameLayer.contents = (__bridge id)skinFrame;
+  frameLayer.cornerRadius = skinMask ? 0 : skinRadius / s;
+  frameLayer.masksToBounds = skinRadius > 0 && !skinMask;
+  if (skinMask) {
+    skinMaskLayer.frame = frameLayer.bounds;
+    skinMaskLayer.contents = (__bridge id)skinMask;
+    frameLayer.mask = skinMaskLayer;
+  } else {
+    frameLayer.mask = nil;
+  }
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkin(JNIEnv *env, jclass c, jbyteArray jframe, jint frameTurns,
+    jbyteArray jmask, jint maskTurns, jint ow, jint oh, jintArray jhole, jint sx, jint sy, jint radius) {
+  jint hole[4] = {0, 0, 0, 0};
+  if (jhole) (*env)->GetIntArrayRegion(env, jhole, 0, 4, hole);
+  int h0 = hole[0], h1 = hole[1], h2 = hole[2], h3 = hole[3];
+  CGImageRef frame = NULL, mask = NULL;
+  if (jframe) {
+    CGImageRef f = decodeImage(env, jframe);
+    frame = turnImage(f, frameTurns);
+    if (f) CGImageRelease(f);
+    CGImageRef m = decodeImage(env, jmask);
+    mask = turnImage(m, maskTurns);
+    if (m) CGImageRelease(m);
+  }
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  onMain(^{
+    NSWindow *win = NSApp.windows.firstObject;
+    if (!frame && !skinOn) {  // no skin before or after (a rotation without one): the window keeps its size and zoom
+      dispatch_semaphore_signal(done);
+      return;
+    }
+    if (skinFrame) CGImageRelease(skinFrame);
+    if (skinMask) CGImageRelease(skinMask);
+    skinFrame = frame;
+    skinMask = mask;
+    skinOn = frame != NULL;
+    skinOuterW = ow;
+    skinOuterH = oh;
+    skinScreenX = sx;
+    skinScreenY = sy;
+    skinRadius = radius;
+    skinHole[0] = h0;
+    skinHole[1] = h1;
+    skinHole[2] = h2;
+    skinHole[3] = h3;
+    // The frame has its own shape: the window is not resized by dragging while it is on (zoom still works).
+    // None of this is the user resizing the display: a style change or a new content view resizes the window too.
+    selfResizing = YES;
+    if (skinOn) win.styleMask &= ~NSWindowStyleMaskResizable;
+    else win.styleMask |= NSWindowStyleMaskResizable;
+    selfResizing = NO;
+    sizeWindow(!skinOn);  // back to actual size without one (a frame may have needed the window zoomed out)
+    selfResizing = YES;
+    layoutAfterZoom();
+    selfResizing = NO;
+    dispatch_semaphore_signal(done);
+  });
+  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkinMenu(JNIEnv *env, jclass c, jobjectArray jtitles) {
+  NSMutableArray<NSString *> *titles = [NSMutableArray array];
+  jsize n = (*env)->GetArrayLength(env, jtitles);
+  for (jsize i = 0; i < n; i++) {
+    // UTF-16, not JNI's modified UTF-8: a title with an emoji (a supplementary character) is not valid UTF-8 there,
+    // and stringWithUTF8String: would give nil.
+    jstring t = (*env)->GetObjectArrayElement(env, jtitles, i);
+    const jchar *u = (*env)->GetStringChars(env, t, NULL);
+    NSString *title = [NSString stringWithCharacters:u length:(NSUInteger)(*env)->GetStringLength(env, t)];
+    (*env)->ReleaseStringChars(env, t, u);
+    (*env)->DeleteLocalRef(env, t);
+    [titles addObject:title ?: @"?"];
+  }
+  onMain(^{
+    while (skinMenu.numberOfItems > 1) {
+      NSMenuItem *old = [skinMenu itemAtIndex:skinMenu.numberOfItems - 1];
+      [menuItems removeObjectForKey:@(old.tag)];
+      [skinMenu removeItem:old];
+    }
+    if (titles.count) [skinMenu addItem:[NSMenuItem separatorItem]];
+    for (NSUInteger i = 0; i < titles.count; i++) addItem(skinMenu, titles[i], TAG_SKIN_FIRST + 1 + (int)i, nil, 0);
+  });
+}
+
+// A left click at a point of the window's content (points from its top left), sent through the window: the view
+// under it takes it, as a real click (`window click X Y`).
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeClick(JNIEnv *env, jclass c, jfloat x, jfloat y) {
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  onMain(^{
+    NSWindow *win = NSApp.windows.firstObject;
+    NSView *content = win.contentView;
+    NSPoint p = [content convertPoint:NSMakePoint(x, content.isFlipped ? y : content.bounds.size.height - y) toView:nil];
+    NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
+    for (int i = 0; i < 2; i++) {
+      NSEvent *e = [NSEvent mouseEventWithType:i == 0 ? NSEventTypeLeftMouseDown : NSEventTypeLeftMouseUp location:p
+                                 modifierFlags:0 timestamp:now + i * 0.05 windowNumber:win.windowNumber context:nil
+                                   eventNumber:0 clickCount:1 pressure:i == 0 ? 1 : 0];
+      [win sendEvent:e];
+    }
+    dispatch_semaphore_signal(done);
+  });
+  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
 }
 
 // ---------------------------------------------------------------- software keyboard
@@ -1516,8 +1761,11 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeWindowState(JNIEnv *en
     NSWindow *w = simWindow;
     if (w) {
       NSString *shown = NSApp.hidden ? @"hidden (app)" : w.miniaturized ? @"minimized" : w.visible ? @"visible" : @"hidden";
-      state = [NSString stringWithFormat:@"%@, %@%@", shown, NSApp.active ? @"active" : @"not active",
-                                         w.visible && w.isKeyWindow && NSApp.active ? @", key" : @""];
+      // The content's size in points and the device pixels per point (the zoom), for `window click`.
+      NSSize content = w.contentView.bounds.size;
+      state = [NSString stringWithFormat:@"%@, %@%@, content %.0fx%.0f pt, %.3f px/pt", shown, NSApp.active ? @"active" : @"not active",
+                                         w.visible && w.isKeyWindow && NSApp.active ? @", key" : @"", content.width, content.height,
+                                         deviceScale];
     }
     dispatch_semaphore_signal(done);
   });

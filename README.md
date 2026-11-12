@@ -225,14 +225,15 @@ Other commands: `apksim --version`, `apksim --train` (build the startup cache no
 
 The window is resizable. Dragging an edge resizes the app's display in dp, as a freeform window does, so adaptive
 layouts (window size classes, `BoxWithConstraints`) respond live. Activities get the configuration change they would
-on a device: they're recreated, or resized in place if they declare `screenSize` in `configChanges`.
+on a device: they're recreated, or resized in place if they declare `screenSize` in `configChanges`. With a
+[skin](#skins) on, the window is the frame's size and only zooms (Window menu).
 
 The menus follow the iOS Simulator wherever Android has the same thing:
 
 | Menu | Items |
 |---|---|
-| File | Save Screen (Cmd+S), Record Screen (Cmd+R), Save Replay (Cmd+Shift+S: the flight recorder's last minutes) |
-| Device | Device Type: Phone, Foldable, Tablet, Desktop, TV (Cmd+Shift+1-5); Back; Home (Cmd+Shift+H); Lock (Cmd+L); Volume (Cmd+Opt+= / -); Rotate (Cmd+Left / Right); Software Keyboard (Cmd+K) |
+| File | Save Screen (Cmd+S), Save Screen with Skin (Cmd+Opt+S), Record Screen (Cmd+R), Save Replay (Cmd+Shift+S: the flight recorder's last minutes) |
+| Device | Device Type: Phone, Foldable, Tablet, Desktop, TV (Cmd+Shift+1-5); Skin: None and every stored skin; Back; Home (Cmd+Shift+H); Lock (Cmd+L); Volume (Cmd+Opt+= / -); Rotate (Cmd+Left / Right); Software Keyboard (Cmd+K) |
 | Features | Dark Appearance (Cmd+Shift+A); Larger, Smaller and Default Text (Cmd+Shift+= / - / 0); Language and Region; Location (None, Custom, City Run, Bicycle, Freeway); Fingerprint (Enrolled, Matching Cmd+Opt+M, Non-matching Cmd+Opt+N); Open URL (Cmd+Shift+O) |
 | Window | Actual Size (Cmd+1), Fit Screen (Cmd+3), Zoom In / Out (Cmd+= / -) |
 | Debug | Slow Animations (Cmd+T), Simulate Memory Warning (Cmd+Shift+M), Show Layout Bounds, Accessibility Audit |
@@ -248,8 +249,8 @@ to the iOS Simulator are tracked in [docs/ios-simulator-parity.md](docs/ios-simu
 ## Skins
 
 A skin is a device frame image plus the device it frames, kept on your machine and added from the command line.
-Skins are local data: apksim ships none, and a private one never leaves your machine. (Drawing them in the window,
-in screenshots and in `serve` is separate work; this is the format, the store and the commands.)
+Skins are local data: apksim ships none, and a private one never leaves your machine. (Showing them in `serve` and
+`beam` is separate work.)
 
 ```bash
 apksim skin add pixel --frame frame.png --screen auto --device phone   # the screen is the frame's transparent hole
@@ -267,6 +268,20 @@ fit the hole and stops: the device is never guessed. A skin whose screen does no
 within 1%, whose images are missing or whose hole is not found is refused with the reason. Skins live in
 `~/.apksim/skins/NAME/`; `APKSIM_SKINS` (colon-separated folders) adds shared sets searched after it. The format is in
 [docs/skins.md](docs/skins.md).
+
+```bash
+apksim --skin pixel app.apk           # the frame around the screen, and the skin's device unless --device names one
+scripts/drive.py 7400 'skin off' 'skin pixel' 'shot --skin framed.png'
+```
+
+`--skin NAME` (Device > Skin, the `skin NAME|off` command) draws the frame around the screen in the window: the window
+becomes the frame's size, the screen is clipped to its corners (or its mask), and only the screen takes clicks. It
+turns with the display (`rotate`), using `frame-land.png` when there is one. A skin with another device switches to it;
+a device switch to another shape turns the skin off. The app is told what the frame implies: its cutout as the
+display's `DisplayCutout` and its corner radius as `RoundedCorner`s, in `WindowInsets` and from `Display`, so a layout
+that pads for the camera hole does so as on the device. `shot --skin FILE` (File > Save Screen with Skin) saves the
+screen in the frame, transparent outside the device; `shot` is still the app's pixels alone. Headless and in the Linux
+image there is no window, but the device, the cutout and corners and `shot --skin` are the same.
 
 ## Automation
 
@@ -288,13 +303,13 @@ state folder.
 | Group | Commands |
 |---|---|
 | Input | `tap X Y`, `swipe X1 Y1 X2 Y2 [ms]`, `pinch CX CY FROM TO [ms]`, `wheel X Y AMOUNT`, `type TEXT`, `key NAME [count] [ctrl\|shift\|alt\|meta]`, `back`, `paste` |
-| Device | `device [NAME\|WxH[@d]]`, `size WxH`, `window WxH`, `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
+| Device | `device [NAME\|WxH[@d]]`, `skin [NAME\|off]` (a stored skin around the screen), `size WxH`, `window WxH`, `window click X Y` (a click through the window, in points), `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone [ZONE]`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `bars [status on\|off] [nav gesture\|off]`, `config` |
 | Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
 | Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `bluetooth [on\|off\|toggle]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
-| Capture | `shot FILE.png` (app pixels), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]`, `rec [on\|off [CHANNEL...]]`, `rec save [SECONDS] [FILE]`, `rec checkpoint now\|every SECONDS\|off`, `rec clear` (the flight recorder) |
+| Capture | `shot FILE.png` (app pixels), `shot --skin FILE.png` (in the skin's frame), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]`, `rec [on\|off [CHANNEL...]]`, `rec save [SECONDS] [FILE]`, `rec checkpoint now\|every SECONDS\|off`, `rec clear` (the flight recorder) |
 | Inspection | `activity`, `windows` (each window, its activity and lifecycle state), `viewtree [FILE]` (every view of every window, with ids and screen bounds), `nodes` (the accessibility tree, with bounds), `insets`, `display`, `a11y [show]`, `debug layout on\|off` |
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video [blank\|on]` (decode counts; sets the mode for the next codec), `maxfps [N]` (the frame rate cap, 1-120), `stats` |

@@ -275,7 +275,20 @@ Read README.md for results and limits; this file covers how to work on the code.
     `video/H264Encoder`: VideoToolbox in `native/h264enc.m`, OpenH264 opened at run time in
     `native/linux/h264enc_linux.c`, `libh264enc`). `Control` serves each connection
     on its own thread, so one can stream while another drives.
-  - `skin/` (`Skins`, `Skin`, `Frames`; `DeviceSpec` resolves a `--device` value): `apksim skin`, the local skin store and its commands, docs/skins.md. Runs on a plain JVM with only apksim.jar (the launcher's `skin` case). Drawing skins and the serve/beam parts are separate issues.
+  - `skin/` (`Skins`, `Skin`, `Frames`; `DeviceSpec` resolves a `--device` value): `apksim skin`, the local skin store and its commands, docs/skins.md. Runs on a plain JVM with only apksim.jar (the launcher's `skin` case). The serve/beam part is a separate issue.
+  - `Skinning`, `SkinShape`: a skin drawn around the screen (`--skin NAME`, `skin NAME|off`, Device > Skin, issue 245;
+    docs/skins.md "Drawing"). `Skinning` (plain Java, used by Main before the framework exists) picks the skin, its
+    device unless `--device` names one, and the layout for the display's size and rotation: the frame turned with
+    ROTATION_90 putting the device's top on the left (`turnRect`, the native `turnImage` and Host's `turned` matrix
+    agree), scaled by the screen's long side, the display centred in the hole (black around it). The window
+    (`simwindow.m` `SkinView`, `layoutSkin`) makes the frame the window's content with SimView inside it, so the app's
+    coordinates are unchanged and bezel clicks reach nothing; `outerW/H` replace devW/H wherever the window is sized,
+    and dragging is off while a skin is on. `SkinShape` tells the app: `Display.getCutout/getRoundedCorner`
+    (`ShadowSimDisplay`) and each window's insets state as it arrives (`ShadowSimInsetsController.onStateChanged`:
+    DisplayCutout, RoundedCorners and displayCutout() insets sources, as DisplayPolicy adds them). DeviceControls'
+    `skinChanged` runs after a rotation, a reshape (which turns the skin off for another shape) and the command.
+    `shot --skin` composites on an Android Canvas (headless and Linux too). `scripts/skin-window-check.py` (CI headless in
+    `ci-smoke.sh`; `--window` on the Mac).
   - `serve/`: `apksim serve` itself (`Serve`, `Session`, `Catalog`, `Http`, `WebSocket`; `Beam`: `apksim beam`, the
     loopback agent that runs a browser session's app on the visitor's Mac, docs/beam.md, with the sites its owner
     allowed, the consent dialog (`/beam/hello`'s `asking` while it is up, issue 178) and the addresses it may download a
@@ -414,7 +427,7 @@ repo): read it before working with that app.
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
 lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
-`paste`, `shot file.png` (app pixels), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
+`paste`, `shot file.png` (app pixels), `shot --skin file.png` (in the skin's frame), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
 (each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.
 `.MainActivity{stopped}`), `viewtree [FILE]` (`ViewTree`: every view of every window, indented: class, id name, screen
 position and size, and only what differs from a plain view: invisible/gone, alpha, translate, z, scale, rotation,
@@ -422,7 +435,7 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
+(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time, `lastDown`: where the last touch went down, in display pixels), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
@@ -439,8 +452,10 @@ launch with `--timezone America/New_York`; see `TimeZones` below), `config` (con
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH` (the Mac window's content in points, as dragging its corner would: checks the drag path),
-`window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden
-and whether the app is active), `window close` (as the close button: while a stream viewer is attached, apksim beam's
+`window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden,
+whether the app is active, the content's size in points and the device pixels per point), `window click X Y` (a left
+click at a point of the window's content, in points from its top left, sent through the window as a real one: checks
+which view takes it), `skin [NAME|off]` (`Skinning`: a stored skin around the screen; alone, where it falls), `window close` (as the close button: while a stream viewer is attached, apksim beam's
 tab, it only hides the window),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
 also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
@@ -540,8 +555,8 @@ smallest width, size bucket and orientation follow), applied at most every 100 m
 meanwhile the last frame stays pinned top left. Activities get the configuration change as on a device in a freeform
 window: recreated, or resized in place when they declare `screenSize` in configChanges. Zoom only
 scales the window. A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit.
-Menus as in the iOS Simulator: File (Save Screen Cmd+S, Record Screen Cmd+R, Save Replay Cmd+Shift+S: the flight recorder), Device (Device Type > Phone/Foldable/
-Tablet/Desktop/TV Cmd+Shift+1-5, Back, Home Cmd+Shift+H, Lock
+Menus as in the iOS Simulator: File (Save Screen Cmd+S, Save Screen with Skin Cmd+Opt+S, Record Screen Cmd+R, Save Replay Cmd+Shift+S: the flight recorder), Device (Device Type > Phone/Foldable/
+Tablet/Desktop/TV Cmd+Shift+1-5, Skin > None and the stored skins (menu tags from `SimWindow.TAG_SKIN_FIRST`), Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
 Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Camera > Off/Test Pattern/Image

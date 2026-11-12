@@ -1125,10 +1125,14 @@ public class Host {
     return true;
   }
 
+  /** Where the last touch went down, in display pixels (`stats` lastDown): what a window click reached. */
+  private String lastDown = "none";
+
   private void dispatchTouch(SimWindow.Event e, long now) {
     SystemBars.touch(e.type(), e.x(), e.y(), rootViews(), h);  // a swipe in from a bar the app hid shows it
     if (e.type() == SimWindow.DOWN) {
       downTime = now;
+      lastDown = Math.round(e.x()) + "," + Math.round(e.y());
       List<View> roots = rootViews();
       touchTarget = roots.isEmpty() ? null : roots.get(roots.size() - 1);
       for (int i = roots.size() - 1; i >= 0; i--) {
@@ -1435,6 +1439,98 @@ public class Host {
    * The bitmap is made for the shot and freed after it: kept for the life of the instance it held a display's worth of
    * native memory (5.9 MB on a phone, 16 MB on a tablet) that only screenshots use.
    */
+  /**
+   * The screen in the skin's frame (shot --skin): the frame turned and scaled as the window draws it, the app's
+   * pixels at its screen, clipped to its corners or mask; transparent outside the device.
+   */
+  private void saveSkinned(String path, Skinning.Layout l) throws Exception {
+    Bitmap screen = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+    Bitmap out = Bitmap.createBitmap(l.outerW(), l.outerH(), Bitmap.Config.ARGB_8888);
+    try {
+      hw.withLatestFrame(pixels -> {
+        pixels.rewind();
+        screen.copyPixelsFromBuffer(pixels);
+        pixels.rewind();
+      });
+      android.graphics.Canvas c = new android.graphics.Canvas(out);
+      android.graphics.Paint smooth = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG | android.graphics.Paint.ANTI_ALIAS_FLAG);
+      android.graphics.RectF at = new android.graphics.RectF(l.screenX(), l.screenY(), l.screenX() + w, l.screenY() + h);
+      byte[] maskPng = Skinning.maskImage();
+      // The hole, black (what a few pixels between it and the display show, as a device's glass), and the app's pixels
+      // in it, in one layer clipped to the screen's shape: its rounded corners, or its mask turned and stretched over
+      // the hole, as the window stretches it. Outside that shape both stay transparent.
+      android.graphics.RectF hole = new android.graphics.RectF(l.holeX(), l.holeY(), l.holeX() + l.holeW(), l.holeY() + l.holeH());
+      int layer = c.saveLayer(hole, null);
+      if (maskPng == null && l.cornerRadius() > 0) {
+        android.graphics.Path round = new android.graphics.Path();
+        round.addRoundRect(hole, l.cornerRadius(), l.cornerRadius(), android.graphics.Path.Direction.CW);
+        c.clipPath(round);
+      }
+      c.drawColor(android.graphics.Color.BLACK);
+      c.drawBitmap(screen, l.screenX(), l.screenY(), null);
+      if (maskPng != null) {
+        Bitmap mask = android.graphics.BitmapFactory.decodeByteArray(maskPng, 0, maskPng.length);
+        android.graphics.Paint dstIn = new android.graphics.Paint(smooth);
+        dstIn.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN));
+        int q = l.quarterTurns();
+        int tw = q % 2 == 1 ? mask.getHeight() : mask.getWidth(), th = q % 2 == 1 ? mask.getWidth() : mask.getHeight();
+        android.graphics.Matrix fit = turned(mask.getWidth(), mask.getHeight(), q, 1f, 0, 0);
+        fit.postScale((float) l.holeW() / tw, (float) l.holeH() / th);
+        fit.postTranslate(l.holeX(), l.holeY());
+        c.drawBitmap(mask, fit, dstIn);
+        mask.recycle();
+      }
+      c.restoreToCount(layer);
+      int[] turns = new int[1];
+      byte[] framePng = Skinning.frameImage(l, turns);
+      Bitmap frame = android.graphics.BitmapFactory.decodeByteArray(framePng, 0, framePng.length);
+      c.drawBitmap(frame, turned(frame.getWidth(), frame.getHeight(), turns[0], (float) l.k(), 0, 0), smooth);
+      frame.recycle();
+      try (FileOutputStream o = new FileOutputStream(path)) {
+        out.compress(Bitmap.CompressFormat.PNG, 100, o);
+      }
+    } finally {
+      screen.recycle();
+      out.recycle();
+    }
+  }
+
+  /**
+   * An image of iw x ih turned by q quarter turns counterclockwise (Skinning.turnRect: q 1 puts its top edge on the
+   * left), scaled by k and moved to (dx, dy).
+   */
+  private static android.graphics.Matrix turned(int iw, int ih, int q, float k, float dx, float dy) {
+    android.graphics.Matrix m = new android.graphics.Matrix();
+    float[] v = switch (q & 3) {
+      case 1 -> new float[] {0, 1, 0, -1, 0, iw, 0, 0, 1};
+      case 2 -> new float[] {-1, 0, iw, 0, -1, ih, 0, 0, 1};
+      case 3 -> new float[] {0, -1, ih, 1, 0, 0, 0, 0, 1};
+      default -> new float[] {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    };
+    m.setValues(v);
+    m.postScale(k, k);
+    m.postTranslate(dx, dy);
+    return m;
+  }
+
+  /** " cutout=[l,t][r,b] safe=Insets{...} corners=r,r,r,r" as the window's insets give them (a skin's: SkinShape); "" for none. */
+  private static String cutoutAndCorners(android.view.WindowInsets wi) {
+    StringBuilder b = new StringBuilder();
+    android.view.DisplayCutout c = wi.getDisplayCutout();
+    if (c != null) {
+      b.append(" cutout=");
+      for (android.graphics.Rect r : c.getBoundingRects()) b.append(r.toShortString());
+      b.append(" safe=").append(wi.getInsets(android.view.WindowInsets.Type.displayCutout()));
+    }
+    StringBuilder corners = new StringBuilder();
+    for (int p = 0; p < 4; p++) {
+      android.view.RoundedCorner rc = wi.getRoundedCorner(p);
+      corners.append(p > 0 ? "," : "").append(rc == null ? 0 : rc.getRadius());
+    }
+    if (!corners.toString().equals("0,0,0,0")) b.append(" corners=").append(corners);
+    return b.toString();
+  }
+
   private void saveFrame(String path, boolean display) throws Exception {
     Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     try {
@@ -1668,8 +1764,16 @@ public class Host {
         return "pasted " + n + " characters";
       }
       case "shot" -> {
+        // shot FILE: the app's pixels; --display: as the display shows them (bars, keyboard); --skin: in the skin's frame.
         boolean display = a.length > 2 && a[1].equals("--display");
-        saveFrame(display ? a[2] : a[1], display);
+        boolean skinned = a.length > 2 && a[1].equals("--skin");
+        if (skinned) {
+          Skinning.Layout l = Skinning.layout(w, h, SkinShape.rotation);
+          if (l == null) return "error: no skin (skin NAME, or --skin at launch)";
+          saveSkinned(a[2], l);
+        } else {
+          saveFrame(display ? a[2] : a[1], display);
+        }
       }
       case "restart" -> {
         return restart(a.length > 1 ? a[1] : null);
@@ -1770,7 +1874,8 @@ public class Host {
         for (View r : rootViews()) {
           android.view.WindowInsets wi = r.getRootWindowInsets();
           b.append(r.getClass().getSimpleName()).append(' ').append(wi == null ? "null"
-              : wi.getInsets(android.view.WindowInsets.Type.systemBars()) + " ime=" + wi.getInsets(android.view.WindowInsets.Type.ime()))
+              : wi.getInsets(android.view.WindowInsets.Type.systemBars()) + " ime=" + wi.getInsets(android.view.WindowInsets.Type.ime())
+                  + cutoutAndCorners(wi))
               .append("; ");
         }
         return b.toString();
@@ -1816,9 +1921,9 @@ public class Host {
         long ahead = SystemClock.uptimeMillis() - clockBaseMs - (System.nanoTime() - clockBaseNanos) / 1_000_000L;
         // footprintMb: the process as the system counts it (Footprint), which Java's heap figure is a fraction of.
         long fp = Footprint.bytes();
-        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d", frames,
+        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d lastDown=%s", frames,
             (rt.totalMemory() - rt.freeMemory()) >> 20, fp < 0 ? -1 : fp >> 20, Footprint.cpuMs(),
-            ProcessHandle.current().pid(), dataDir, ahead);
+            ProcessHandle.current().pid(), dataDir, ahead, lastDown);
       }
       case "redraw" -> {
         // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).

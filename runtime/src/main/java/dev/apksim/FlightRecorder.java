@@ -340,7 +340,7 @@ final class FlightRecorder {
   }
 
   /** Device commands a replay must repeat: they change what the app sees. Input commands arrive as their events. */
-  private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "size", "window",
+  private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "skin", "size", "window",
       "rotate", "animscale", "memory", "home", "resume", "lock", "unlock", "open", "push", "permission", "location",
       "biometrics", "recreate", "process-death", "keyboard", "clock", "timezone", "bluetooth", "notifications", "jobs",
       "pick", "clipboard", "paste", "bars", "thermal", "restart", "network", "ambient", "camera");
@@ -351,7 +351,15 @@ final class FlightRecorder {
     if (a[0].equals("network") && (a.length == 1 || a[1].equals("status") || a[1].equals("unmatched") || a[1].equals("save"))) return;
     if (a[0].equals("ambient") && a.length == 1) return;  // the status query
     if ((a[0].equals("jobs") || a[0].equals("notifications")) && a.length == 1) return;  // listings
+    if (a[0].equals("skin") && a.length == 1) return;  // the status query
+    // A click through the window: its DOWN and UP are recorded as input; repeating the command would tap twice.
+    if (a[0].equals("window") && a.length > 1 && a[1].equals("click")) return;
     List<String> args = new ArrayList<>(List.of(a));
+    if (a[0].equals("skin") && a.length == 2 && !a[1].equals("off")) {
+      // The skin's shape and kind with its name: a replay where it is not stored applies them (DeviceControls).
+      Map<String, Object> shape = Skinning.shapeOf(a[1]);
+      if (shape != null) args.addAll(List.of("--shape", Skinning.encodeShape(shape)));
+    }
     if (a[0].equals("clipboard") && a.length > 2 && a[1].equals("set")) {
       // The text stays here: a replay sets a placeholder of the same length.
       int n = String.join(" ", List.of(a).subList(2, a.length)).length();
@@ -1243,6 +1251,7 @@ final class FlightRecorder {
     // What `apksim replay` launches with (docs/replay.md): the device preset and its rotation, the zone, the animator scale.
     Device d = Device.current();
     device.put("name", d.name());
+    device.put("kind", d.kind());  // a skin's watch or TV at a custom size: replayed as recorded, not inferred
     device.put("widthDp", d.widthDp());
     device.put("heightDp", d.heightDp());
     try {
@@ -1250,6 +1259,9 @@ final class FlightRecorder {
     } catch (RuntimeException e) {
       // without it
     }
+    // A skin's shape (its cutout and corners, which the app was told): replayed without the skin's images.
+    Map<String, Object> skinShape = Skinning.shape();
+    if (skinShape != null) device.put("skin", skinShape);
     device.put("timezone", java.util.TimeZone.getDefault().getID());
     // The wall clock the app sees (SimClock: --clock, `clock`), which the checkpoint's own wall time (real) is not.
     device.put("clock", SimClock.currentTimeMillis());
