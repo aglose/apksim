@@ -30,6 +30,7 @@ apksim app-debug.apk
 - [Screenshot tests](#screenshot-tests)
 - [Network: record, replay and conditions](#network-record-replay-and-conditions)
 - [Replay, trace viewer and crawler](#replay-trace-viewer-and-crawler)
+- [Agents, Bluetooth LE and scenes](#agents-bluetooth-le-and-scenes)
 - [Linux and Docker](#linux-and-docker)
 - [Debugging](#debugging)
 - [Configuration reference](#configuration-reference)
@@ -47,11 +48,12 @@ apksim app-debug.apk
 | **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
 | **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. |
-| **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
+| **Scriptable** | An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
 | **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`), code coverage without rebuilding the app, and a flake hunter that says whether a flaky test depends on order or timing. |
 | **Replay a session** | A flight recording plays again from its checkpoint, with the network answered from the recording, and says where the screen first differed; the same recording bisects a list of builds to the first that changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles. |
 | **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen; its resilience sweep puts every screen through process death, rotation, offline, permission denial, large text, right-to-left and dark mode. |
+| **Devices that talk to each other** | Scripted Bluetooth LE peripherals the app scans for, connects to and reads, writes and subscribes to over GATT, and scenes that drive several instances (two users of one backend, a phone and its watch) step by step through one script. |
 | **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
 | **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
@@ -413,7 +415,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.28.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.29.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -480,9 +482,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.29.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.29.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -556,6 +558,25 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
   screen through process death, recreation, rotation, offline, permission denial, large text, right-to-left and dark
   mode and reports what broke (lost state, crashes, endless spinners, cut-off text) as JUnit failures with the commands
   that reproduce each. See [docs/crawl.md](docs/crawl.md).
+
+## Agents, Bluetooth LE and scenes
+
+```bash
+apksim mcp                                              # an MCP server over stdio, for an AI agent's tool list
+apksim --ble heart-rate app.apk                         # a scripted peripheral the app can scan for and connect to
+scripts/scene.py testapks/composeapp/scenes/board.json  # several instances, one script, one shared backend
+```
+
+- **MCP server:** `apksim mcp` lets an agent launch an APK, tap, type and swipe, and read the screen as a short list
+  of nodes; every action is settled and answered with what changed since the last answer, not the whole tree. See
+  [docs/mcp.md](docs/mcp.md).
+- **Bluetooth LE peripherals:** `--ble FILE|PRESET` (repeatable) and the `ble` command play the device's Bluetooth
+  stack against scripted peripherals: advertisements the app's scanner finds, GATT services it discovers, reads,
+  writes, notifications, bonding, MTU and PHY, in a running instance and in a test run. An emulator has no Bluetooth
+  LE at all. See [docs/ble.md](docs/ble.md).
+- **Scenes:** `scripts/scene.py` runs different roles, each its own instance with its own APK, device and options,
+  through one ordered script whose steps wait on one another's state, against one shared server. See
+  [docs/scenes.md](docs/scenes.md).
 
 ## Linux and Docker
 
