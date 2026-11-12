@@ -132,6 +132,30 @@ class CameraTest {
   }
 
   @Test
+  fun availabilityCallbacksReportEveryCameraThenOpenAndClose() {
+    assumeTrue(mode == "fake")
+    val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    shell("pm grant ${context.packageName} ${Manifest.permission.CAMERA}")
+    val events = CopyOnWriteArrayList<String>()
+    val callback = object : CameraManager.AvailabilityCallback() {
+      override fun onCameraAvailable(cameraId: String) { events.add("available $cameraId") }
+      override fun onCameraUnavailable(cameraId: String) { events.add("unavailable $cameraId") }
+    }
+    cm.registerAvailabilityCallback(callback, handler)
+    try {
+      // The first registration is told every listed camera at once.
+      waitFor("the initial availability") { events.containsAll(listOf("available 0", "available 1")) }
+      events.clear()
+      val device = open(cm)
+      waitFor("the camera to become unavailable") { "unavailable 0" in events }
+      device.close()
+      waitFor("the camera to become available again") { "available 0" in events }
+    } finally {
+      cm.unregisterAvailabilityCallback(callback)
+    }
+  }
+
+  @Test
   fun openingTheCameraNeedsThePermission() {
     assumeTrue(mode == "fake")
     val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
