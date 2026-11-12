@@ -2556,7 +2556,7 @@ final class MethodTranslator implements Opcodes {
 
   /**
    * Whether invoking {@code m} on {@code from} would run {@code target}'s: target is reachable, and no other interface
-   * in from's ancestry (any branch) redeclares the method unless target itself inherits through it.
+   * in from's ancestry (any branch) redeclares the method or is unknown here, unless target itself inherits through it.
    */
   private boolean reaches(String from, String target, DexFile.MethodRef m, int depth) {
     java.util.Set<String> seen = new java.util.HashSet<>();
@@ -2566,7 +2566,8 @@ final class MethodTranslator implements Opcodes {
     for (String x : seen) {
       if (x.equals(target) || below.contains(x)) continue;
       int def = dex.classDefIndex(x);
-      if (def >= 0 && dex.declaresMethod(def, m.name(), m.descriptor())) return false;
+      // Not in this DEX (another DEX or the framework): it may redeclare the method, which cannot be told here.
+      if (def < 0 || dex.declaresMethod(def, m.name(), m.descriptor())) return false;
     }
     return true;
   }
