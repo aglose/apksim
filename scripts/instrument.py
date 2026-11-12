@@ -13,7 +13,9 @@ the app's own statics carry over). If that process ends before every test has a 
 apksim's Timeout watchdog ending a test that ignores interrupts past its timeout), the test that was running is
 reported failed, with the exit status and the tail of the process's stderr, and the tests with no result yet run in a
 new process, again until each has one. Which tests those are comes from listing the suite (`-e log true`, with the
-same -e arguments) once the first process has died, so a run that does not crash pays nothing for it; the rest is
+same -e arguments) once the first process has died, so a run that does not crash pays nothing for it (nor one
+that reports a result for every test it announced: a class that failed in @BeforeClass reports one Class#null for all
+its tests, so a run with one and fewer results than tests is listed, to tell which tests have none); the rest is
 passed as `-e class` (whole classes where none of their tests ran, else Class#method), the other -e arguments kept,
 in chunks short enough for one argument. A comma in a name (Parameterized's `test[0: x, y]`) is written `\\,` and a
 backslash `\\\\`: apksim's -e class/notClass read those escapes (a device's runner has none; --isolate uses them too). No test with a result runs again. A new process that adds no result
@@ -691,12 +693,35 @@ def incomplete(r, results, test=None):
         return timeout_note(r)
     if "INSTRUMENTATION_CODE: " not in r.stdout:
         return f"apksim exited ({r.returncode}) before the run finished"
-    # (a class that failed at class level, in @BeforeClass, reports one Class#null for all its tests: no count to check)
-    if announced and len(results) < max(announced) and not any(res[1] in (None, "null") for res in results):
+    # A test that started and never ended, whatever the count says (a class-level failure, in @BeforeClass or
+    # @AfterClass, adds or stands for results).
+    stuck = unfinished(r.stdout)
+    if stuck:
+        return (f"apksim reported no end for {stuck[0][0]}#{stuck[0][1]}"
+                + (f" and {len(stuck) - 1} more tests" if len(stuck) > 1 else "") + ", which started")
+    # A class that failed at class level (@BeforeClass) reports one Class#null for all its tests, so with one a
+    # shortfall may be no gap: one_process lists the suite to tell (shortfall).
+    if announced and len(results) < max(announced) and not class_level(results):
         return f"apksim reported {len(results)} of the {max(announced)} tests it started"
     if r.returncode != 0 and not any(res[2] == "failed" for res in results):
         return f"apksim exited with {r.returncode} although no test failed"
     return None
+
+
+def class_level(results):
+    """Whether [results] hold a class-level failure (Class#null: initializationError, @BeforeClass), which stands for
+    every test of its class."""
+    return any(res[1] in (None, "null") for res in results)
+
+
+def shortfall(r, results):
+    """How many fewer results a run reported than the tests it announced (numtests), when a class-level failure is
+    among them: then the count alone cannot tell a gap from that class's other tests, and only the suite's listing
+    can (numtests gives no count per class). 0 without a class-level failure: incomplete() checks that count."""
+    announced = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
+    if not announced or not class_level(results):
+        return 0
+    return max(0, max(announced) - len(results))
 
 
 def parse(raw):
@@ -707,7 +732,17 @@ def parse(raw):
 def parse_run(raw):
     """am instrument -r output -> ([(class, method, status, stack)] for each finished test, (class, method) of the test
     that had started and not finished when the output ends, or None)."""
-    out, block, key, running = [], {}, None, None
+    return parse_all(raw)[:2]
+
+
+def unfinished(raw):
+    """am instrument -r output -> (class, method) of every test that started and never ended, in order: the one running
+    when the output ends (parse_run's), and any the run went on from, which a later test's end would hide."""
+    return parse_all(raw)[2]
+
+
+def parse_all(raw):
+    out, block, key, running, started = [], {}, None, None, {}
     for line in raw.splitlines():
         m = re.match(r"INSTRUMENTATION_STATUS: (\w+)=(.*)", line)
         if m:
@@ -717,15 +752,17 @@ def parse_run(raw):
             code = int(line.split(": ")[1])
             if code != 1:
                 out.append((block.get("class"), block.get("test"), CODES.get(code, f"code {code}"), block.get("stack", "")))
+                started.pop((block.get("class"), block.get("test")), None)
                 running = None
             else:
                 running = (block.get("class"), block.get("test"))
+                started[running] = True
             block, key = {}, None
         elif line.startswith("INSTRUMENTATION_"):
             key = None
         elif key:
             block[key] += "\n" + line
-    return out, running
+    return out, running, list(started)
 
 
 def escape_selector(name):
@@ -794,9 +831,27 @@ def one_process(a, passthrough, label=""):
         return t in done or t[0] in done_classes
 
     listing, remaining, args, processes, first_count = None, None, a.e, 0, None
+
+    def list_suite(failed):
+        """The suite's tests in order, from a listing process; None when that fails, with a "(listing)" entry saying
+        [failed] and why."""
+        nonlocal processes
+        listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
+        processes += 1
+        lwhy = incomplete(listed, parse(listed.stdout))
+        if lwhy:
+            results.append(("(listing)", "incomplete" + label, "failed",
+                            f"{failed} ({lwhy}):\n" + listed.stderr[-4000:], None))
+            return None
+        out = [(c, m) for c, m, _, _ in parse(listed.stdout)]
+        if first_count is not None and first_count != len(out):
+            print(f"the suite{label} lists {len(out)} tests, the run announced {first_count}", file=sys.stderr)
+        return out
+
     while True:
         r = apksim(a.app, a.test, args, passthrough)
         processes += 1
+        this = processes  # (a listing may run before this process's results are reported)
         got, running = parse_run(r.stdout)
         if remaining is None:
             new = [g for g in got if not has_result((g[0], g[1]))]
@@ -809,22 +864,43 @@ def one_process(a, passthrough, label=""):
         for g in new:
             record(*g, r.seconds.get((g[0], g[1])))
         why = incomplete(r, got)
+        if not why and remaining is None and shortfall(r, got):
+            # A class failed at class level and the count is short: do the other tests all have results?
+            listing = list_suite(f"the run reported {len(got)} of the {first_count} tests it started, with a "
+                                 "class-level failure, and listing the suite to account for the rest failed")
+            if listing is None:
+                break
+            missing = [t for t in listing if not has_result(t)]
+            if missing:
+                why = (f"apksim reported {len(got)} of the {first_count} tests it started: {len(missing)} listed tests "
+                       f"of classes that did not fail at class level have no result ({missing[0][0]}#{missing[0][1]}"
+                       + (", ..." if len(missing) > 1 else "") + ")")
         out = tail(r)
         crashed = None
         if why:
             sys.stderr.write(out if out.endswith("\n") else out + "\n")
-            if running and not has_result(running) and (remaining is None or running in set(remaining)):
-                crashed = running
+            # Each test that started and never ended fails here, not in a rerun (which could pass): the one running
+            # when the process ended, and any the run went on from.
+            # (by its own result: its class's @AfterClass failing after it reports Class#null, which is not its own)
+            stuck = [t for t in unfinished(r.stdout)
+                     if t not in done and (remaining is None or t in set(remaining))]
+            for t in stuck:
+                if t != running:
+                    record(*t, "failed", f"apksim reported no end for this test: it started, and the run went on to "
+                                         f"other tests ({why}):\n" + out)
+            if running in stuck:
                 finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
                 record(*running, "failed", (f"timed out after {r.timed_out:g} s while this test was running: no test "
                                             "started or ended for that long (--test-timeout), so instrument.py killed "
                                             "the apksim process" if r.timed_out else
                                             f"apksim exited ({r.returncode}) while this test was running"
                                             + (f" ({why})" if finished else "")) + ":\n" + out)
+            if stuck:
+                crashed = running if running in stuck else stuck[-1]
             elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
                 # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
                 # device. One entry per such process, named apart so the XML keeps one entry per name.
-                name = ("incomplete" if processes == 1 else f"incomplete (process {processes})") + label
+                name = ("incomplete" if this == 1 else f"incomplete (process {this})") + label
                 results.append(("(run)", name, "failed", why + ":\n" + out, None))
                 counts = [int(n) for n in re.findall(r"INSTRUMENTATION_STATUS: numtests=(\d+)", r.stdout)]
                 if remaining is None and "INSTRUMENTATION_CODE: " in r.stdout and counts and len(got) >= max(counts):
@@ -841,16 +917,9 @@ def one_process(a, passthrough, label=""):
                                                + out)
             break
         if listing is None:
-            listed = apksim(a.app, a.test, a.e + [("log", "true")], passthrough)
-            processes += 1
-            lwhy = incomplete(listed, parse(listed.stdout))
-            if lwhy:
-                results.append(("(listing)", "incomplete" + label, "failed", f"after the run failed ({why}), listing the suite "
-                                f"to run the rest failed too ({lwhy}):\n" + listed.stderr[-4000:], None))
+            listing = list_suite(f"after the run failed ({why}), listing the suite to run the rest failed too")
+            if listing is None:
                 break
-            listing = [(c, m) for c, m, _, _ in parse(listed.stdout)]
-            if first_count is not None and first_count != len(listing):
-                print(f"the suite{label} lists {len(listing)} tests, the run announced {first_count}", file=sys.stderr)
         remaining = [t for t in listing if not has_result(t)]
         if not remaining:
             break

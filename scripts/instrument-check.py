@@ -130,10 +130,20 @@ def fake():
     if sc == "hang-startup":
         hang(state, "p.Startup", "boot")
     for n, (c, m) in enumerate(tests):
-        if sc in ("before-class", "before-class-only") and c == "p.C001":
+        if sc.startswith("before-class") and c == "p.C001":
             if m == "m0":
                 block(c, "null", n + 1, 1)
                 block(c, "null", n + 1, -2, "java.lang.IllegalStateException: @BeforeClass failed")
+            continue
+        if sc == "before-class-skipped" and calls == 1 and (c, m) == ("p.C002", "m1"):
+            continue  # no result at all, and the run still ends with INSTRUMENTATION_CODE
+        if (sc == "before-class-unfinished-early" and calls == 1 and (c, m) == ("p.C002", "m1")
+                or sc in ("unfinished-early", "after-class-unfinished") and calls == 1 and (c, m) == ("p.C000", "m1")
+                or sc == "after-class-unfinished-same" and calls == 1 and (c, m) == ("p.C002", "m1")):
+            block(c, m, n + 1, 1)  # started, never finished, and a later test does finish
+            continue
+        if sc == "before-class-unfinished" and (c, m) == ("p.C002", "m2"):
+            block(c, m, n + 1, 1)  # started, never finished, and the run still ends with INSTRUMENTATION_CODE
             continue
         if sc == "between-tests" and calls == 1 and n == 2:
             print("dies between tests", file=sys.stderr)
@@ -164,6 +174,9 @@ def fake():
             print("dies in a test", file=sys.stderr)
             sys.exit(134)
         block(c, m, n + 1, 0)
+        if sc.startswith("after-class-unfinished") and calls == 1 and (c, m) == ("p.C002", "m2"):
+            block(c, "null", n + 1, 1)  # C002's @AfterClass fails: one more result, which fills numtests
+            block(c, "null", n + 1, -2, "java.lang.IllegalStateException: @AfterClass failed")
     print("INSTRUMENTATION_CODE: -1")
     if sc == "reap-early-hang":  # reports its status as apksim does (-Dapksim.exitMarks), then a teardown that never ends
         print("APKSIM_EXIT: 0", flush=True)
@@ -298,8 +311,23 @@ SCENARIOS = {
     "at-exit": (1, 1, 10, ["(run)#incomplete"]),
     "rerun-startup": (1, 3, 9, ["p.C000#m1"] + [f"p.C00{c}#m{m}" for c in range(3) for m in range(3)][2:]),
     "before-class": (1, 3, 7, ["p.C001#null", "p.C002#m1"]),
-    # C001's @BeforeClass fails and the run ends: one Class#null for its 3 tests is no shortfall (no "(run)", no listing).
-    "before-class-only": (1, 1, 7, ["p.C001#null"]),
+    # C001's @BeforeClass fails and the run ends: one Class#null for its 3 tests is no shortfall (no "(run)"), which the
+    # suite's listing shows (numtests gives no count per class).
+    "before-class-only": (1, 2, 7, ["p.C001#null"]),
+    # As before-class-only, and C002#m2 starts but never ends: it fails, whatever C001's Class#null explains.
+    "before-class-unfinished": (1, 2, 7, ["p.C001#null", "p.C002#m2"]),
+    # As before-class-unfinished, the test that never ends (C002#m1) followed by one that does: it still fails, and is
+    # not run again (it would pass).
+    "before-class-unfinished-early": (1, 2, 7, ["p.C001#null", "p.C002#m1"]),
+    # The same without a class-level failure: C000#m1 starts and never ends, the run goes on and ends.
+    "unfinished-early": (1, 2, 9, ["p.C000#m1"]),
+    # As unfinished-early, and C002's @AfterClass fails: its Class#null makes the results as many as numtests, and
+    # C000#m1 still fails.
+    "after-class-unfinished": (1, 2, 10, ["p.C000#m1", "p.C002#null"]),
+    # The same, the test that never ends (C002#m1) in the class whose @AfterClass fails: it still gets its own entry.
+    "after-class-unfinished-same": (1, 2, 10, ["p.C002#m1", "p.C002#null"]),
+    # As before-class-only, and C002#m1 has no result at all: the listing finds it, and a new process runs it.
+    "before-class-skipped": (1, 3, 8, ["(run)#incomplete", "p.C001#null"]),
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),
     "parameterized": (1, 3, 10, ["p.C000#m0"]),
     "big": (1, 3, 3000, ["com.example.averylongpackagenamefortheargumentlimit.feature.C000#m1"]),
