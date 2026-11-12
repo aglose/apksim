@@ -28,7 +28,7 @@ DEVICE = {"appearance": r"dark|light|toggle", "locale": r"[A-Za-z]{2,3}([-_][A-Z
           "fontscale": r"[0-9.]+|\+|-", "rotate": r"left|right|portrait|landscape",
           "network": r"online|offline|3g|lossy", "permission": r"(allow|deny|reset)|(grant|revoke) [A-Za-z0-9_.]+",
           "timezone": r"[A-Za-z0-9_/+:-]+", "animscale": r"[0-9.]+|toggle", "bluetooth": r"on|off|toggle",
-          "device": r"phone|foldable|tablet|desktop|tv|[0-9]+x[0-9]+(@[0-9]+)?", "lock": r"", "unlock": r"",
+          "device": r"phone|foldable|tablet|desktop|tv|watch|watch-small|watch-large|[0-9]+x[0-9]+(@[0-9]+(\.[0-9]+)?)?", "lock": r"", "unlock": r"",
           "home": r"", "resume": r"", "recreate": r""}
 KEYS = re.compile(r"^[A-Za-z0-9_]{1,24}$")
 ANSWER_LINES = 30  # most changed nodes an action's answer lists before pointing at `nodes`
@@ -530,6 +530,13 @@ class Server:
         i.close()
         return "quit " + i.id
 
+    def act(self, i, text):
+        """Send an action; the instance answers `error: ...` for what it could not do, which is the tool's error."""
+        r = i.cmd(text)
+        if r.startswith("error"):
+            raise Fail("%s: %s" % (text.split()[0], r))
+        return r
+
     def resolve(self, i, ref):
         """The node a reference named, found again in the screen as it is now (it may have moved or gone)."""
         old = next((n for n in i.tree.nodes if n["ref"] == ref), None)
@@ -542,21 +549,25 @@ class Server:
             raise Fail("%s is no longer on screen: call nodes" % ref)
         return min(same, key=lambda n: abs(n["b"][0] - old["b"][0]) + abs(n["b"][1] - old["b"][1]))
 
+    def find(self, i, a):
+        """The node a ref or text names, from the screen as it is now; text must name one (exact label first)."""
+        if a.get("ref"):
+            return self.resolve(i, a["ref"])
+        want = a["text"].lower()
+        cands = [n for n in self.nodes(i) if label(n)]
+        ex = [n for n in cands if label(n).lower() == want] or [n for n in cands if want in label(n).lower()]
+        if not ex:
+            raise Fail("no node with text %r: call nodes" % a["text"])
+        if len(ex) > 1:
+            known = {tuple(n["b"]): n["ref"] for n in i.tree.nodes}
+            raise Fail("%d nodes match: use ref (%s)" % (len(ex), ", ".join(
+                "%s %s" % (known.get(tuple(n["b"]), "?"), json.dumps(label(n))) for n in ex[:6])))
+        return ex[0]
+
     def tap_point(self, i, a):
         before = self.prepare(i)
-        if a.get("ref"):
-            x, y = center(self.resolve(i, a["ref"]))
-        elif a.get("text"):
-            want = a["text"].lower()
-            cands = [n for n in self.nodes(i) if label(n)]
-            ex = [n for n in cands if label(n).lower() == want] or [n for n in cands if want in label(n).lower()]
-            if not ex:
-                raise Fail("no node with text %r: call nodes" % a["text"])
-            if len(ex) > 1:
-                known = {tuple(n["b"]): n["ref"] for n in i.tree.nodes}
-                raise Fail("%d nodes match: use ref (%s)" % (len(ex), ", ".join(
-                    "%s %s" % (known.get(tuple(n["b"]), "?"), json.dumps(label(n))) for n in ex[:6])))
-            x, y = center(ex[0])
+        if a.get("ref") or a.get("text"):
+            x, y = center(self.find(i, a))
         elif "x" in a and "y" in a:
             x, y = int(a["x"]), int(a["y"])
         else:
@@ -566,7 +577,7 @@ class Server:
     def t_tap(self, a):
         i = self.get(a)
         before, x, y = self.tap_point(i, a)
-        r = i.cmd("tap %d %d" % (x, y))
+        r = self.act(i, "tap %d %d" % (x, y))
         return self.answer(i, "tap %d,%d %s" % (x, y, r if r != "ok" else "ok"), before)
 
     def t_type(self, a):
@@ -577,14 +588,14 @@ class Server:
         before = self.prepare(i)
         if a.get("ref") or a.get("tap_text"):
             _, x, y = self.tap_point(i, {"ref": a.get("ref"), "text": a.get("tap_text"), "instance": i.id})
-            i.cmd("tap %d %d" % (x, y))
+            self.act(i, "tap %d %d" % (x, y))
             self.settle(i)
         r = "ok"
         for part in re.split(r"( +)", t):  # the control channel collapses spaces: send them as key presses
             if part.startswith(" "):
-                r = i.cmd("key SPACE %d" % len(part))
+                r = self.act(i, "key SPACE %d" % len(part))
             elif part:
-                r = i.cmd("type " + part)  # never logged here: only the length is echoed
+                r = self.act(i, "type " + part)  # never logged here: only the length is echoed
         return self.answer(i, "typed %d chars %s" % (len(t), r), before)
 
     def t_key(self, a):
@@ -594,7 +605,7 @@ class Server:
             raise Fail("key: a name such as ENTER, DEL, TAB, A")
         mods = [m for m in a.get("modifiers", []) if m in ("ctrl", "shift", "alt", "meta")]
         before = self.prepare(i)
-        r = i.cmd("key %s %d %s" % (k, max(1, min(int(a.get("count", 1)), 50)), " ".join(mods)))
+        r = self.act(i, "key %s %d %s" % (k, max(1, min(int(a.get("count", 1)), 50)), " ".join(mods)))
         return self.answer(i, "key " + k + ("" if r == "ok" else " " + r), before)
 
     def t_swipe(self, a):
@@ -607,7 +618,7 @@ class Server:
         d = a.get("direction")
         if d:
             # the finger moves the way named: "up" scrolls a list to its later items
-            cx, cy = (w // 2, h // 2) if not (a.get("ref") or a.get("text")) else center(self._node(i, a))
+            cx, cy = (w // 2, h // 2) if not (a.get("ref") or a.get("text")) else center(self.find(i, a))
             vx, vy = {"up": (0, -h // 3), "down": (0, h // 3), "left": (-w // 2, 0), "right": (w // 2, 0)}.get(d, (None, None))
             if vx is None:
                 raise Fail("direction: up, down, left or right")
@@ -618,21 +629,13 @@ class Server:
                 x1, y1, x2, y2 = (int(a[k]) for k in ("x1", "y1", "x2", "y2"))
             except (KeyError, ValueError):
                 raise Fail("give direction, or x1 y1 x2 y2")
-        r = i.cmd("swipe %d %d %d %d %d" % (x1, y1, x2, y2, max(50, min(int(a.get("ms", 300)), 3000))))
+        r = self.act(i, "swipe %d %d %d %d %d" % (x1, y1, x2, y2, max(50, min(int(a.get("ms", 300)), 3000))))
         return self.answer(i, "swipe %d,%d>%d,%d %s" % (x1, y1, x2, y2, r), before)
-
-    def _node(self, i, a):
-        r = self.resolve(i, a["ref"]) if a.get("ref") else None
-        if not r and a.get("text"):
-            r = next((n for n in i.tree.nodes if a["text"].lower() in label(n).lower()), None)
-        if not r:
-            raise Fail("node not on screen: call nodes")
-        return r
 
     def t_back(self, a):
         i = self.get(a)
         before = self.prepare(i)
-        return self.answer(i, "back " + i.cmd("back"), before)
+        return self.answer(i, "back " + self.act(i, "back"), before)
 
     def t_open_url(self, a):
         i = self.get(a)
@@ -642,7 +645,7 @@ class Server:
         if re.match(r"(?i)(file|content|intent|android-app)://", u):
             raise Fail("url: file, content and intent links are not opened (they name host files or other apps)")
         before = self.prepare(i)
-        return self.answer(i, "open " + i.cmd("open " + u), before)
+        return self.answer(i, "open " + self.act(i, "open " + u), before)
 
     def t_device(self, a):
         i = self.get(a)
@@ -650,7 +653,7 @@ class Server:
         if s not in DEVICE or not re.fullmatch(DEVICE[s], v):
             raise Fail("setting/value: " + "; ".join("%s %s" % (k, p) for k, p in DEVICE.items()))
         before = self.prepare(i)
-        return self.answer(i, ("%s %s: " % (s, v)).strip() + i.cmd((s + " " + v).strip()), before)
+        return self.answer(i, ("%s %s: " % (s, v)).strip() + self.act(i, (s + " " + v).strip()), before)
 
     def t_nodes(self, a):
         i = self.get(a)

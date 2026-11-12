@@ -161,9 +161,11 @@ FAKE = textwrap.dedent("""\
             w = line.split()[0]
             if mode == "silent" or (mode == "hangtap" and w == "tap"):
                 time.sleep(3600)
+            if mode == "err" and w not in ("nodes", "activity", "config", "settle", "quit"):
+                f.write("error: nope\\n"); f.flush(); continue
             if w == "quit":
                 f.write("ok\\n"); f.flush(); os._exit(0)
-            f.write({"nodes": '[0,0,10,10] text="Hello" ; ', "activity": "x.Main", "config": "mBounds=Rect(0, 0 - 822, 1782)"}.get(w, "ok") + "\\n"); f.flush()
+            f.write({"nodes": '[0,0,10,10] text="Hello" ; ' + ('[0,20,10,30] text="Hello" ; ' if mode == "dup" else ''), "activity": "x.Main", "config": "mBounds=Rect(0, 0 - 822, 1782)"}.get(w, "ok") + "\\n"); f.flush()
     while True:
         c, _ = srv.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 """)
@@ -192,6 +194,21 @@ qc.ok("launch", apk=apk)
 t, res = qc.tool("tap", x=5, y=5)
 check(res.get("isError") and "did not answer" in t and time.time() - t0 < 20, "a tap the app never answers ends in an error")
 check("Hello" in qc.ok("nodes"), "the next call works on a new connection")
+q.stdin.close(); q.wait(30)
+# --- an instance's `error:` answer is the tool's error; a targeted swipe names one node; a fractional density passes
+q, qc = stuck("err", 5)
+qc.ok("launch", apk=apk)
+for tool, kw in (("tap", dict(x=5, y=5)), ("key", dict(key="ENTER")), ("back", {}), ("swipe", dict(direction="up")),
+                 ("device", dict(setting="appearance", value="dark")), ("open_url", dict(url="apksim://x"))):
+    t, res = qc.tool(tool, **kw)
+    check(res.get("isError") and "error: nope" in t, "%s: the instance's error is the tool's error" % tool)
+q.stdin.close(); q.wait(30)
+q, qc = stuck("dup", 5)
+qc.ok("launch", apk=apk)
+t, res = qc.tool("swipe", text="Hello", direction="up")
+check(res.get("isError") and "2 nodes match" in t, "a swipe at a text two nodes share is refused, not sent to the first")
+t, res = qc.tool("device", setting="device", value="1080x2400@2.625")
+check(not res.get("isError"), "a fractional density is accepted: " + t.splitlines()[0])
 q.stdin.close(); q.wait(30)
 signal.alarm(0)
 print("output folder:", sorted(os.listdir(out)))
