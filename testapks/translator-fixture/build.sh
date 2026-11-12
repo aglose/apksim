@@ -10,6 +10,7 @@ ANDROID_JAR="$(ls -d "$SDK"/platforms/android-* | sort -V | tail -1)/android.jar
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 javac --release 11 -nowarn -d "$OUT/classes" $(find "$HERE/src" -name "*.java")
+java -cp "$HERE/../../work/lib/*" "$HERE/RetargetSuper.java" "$OUT/classes"
 (cd "$OUT/classes" && jar cf "$OUT/in.jar" .)
 mkdir -p "$OUT/dex"
 java -cp "$BT/lib/d8.jar" com.android.tools.r8.R8 --release --min-api 26 --lib "$ANDROID_JAR" \

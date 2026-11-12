@@ -2526,10 +2526,62 @@ final class MethodTranslator implements Opcodes {
       switch (kind) {
         case 0 -> call(INVOKEVIRTUAL, ownerName, m, false);
         case 4 -> call(INVOKEINTERFACE, ownerName, m, true);
-        default -> call(INVOKESPECIAL, ownerName, m, !"<init>".equals(m.name()) && isInterface.test(ownerName));
+        default -> {
+          boolean itf = !"<init>".equals(m.name()) && isInterface.test(ownerName);
+          if (itf) ownerName = directSuperinterface(ownerName, m);
+          call(INVOKESPECIAL, ownerName, m, itf);
+        }
       }
     }
     afterCall(i, m.ret());
+  }
+
+  /**
+   * HotSpot allows an invokespecial of an interface method only through a direct superinterface of the calling class;
+   * ART resolves a super call to a default method through any superinterface. R8 merges interfaces, leaving a class
+   * whose call names an indirect one (IncompatibleClassChangeError). Returns the direct superinterface of this class
+   * (found in this DEX) that reaches {@code target} without an interface on the way redeclaring the method (that
+   * one would run instead of the target's: not expressible, so the original owner stays), else {@code target}.
+   */
+  private String directSuperinterface(String target, DexFile.MethodRef m) {
+    int self = dex.classDefIndex(owner);
+    if (self < 0) return target;
+    String[] direct = dex.interfacesOf(self);
+    for (String d : direct) if (d.equals(target)) return target;
+    for (String d : direct) {
+      if (reaches(d, target, m, 0)) return d;
+    }
+    return target;
+  }
+
+  /**
+   * Whether invoking {@code m} on {@code from} would run {@code target}'s: target is reachable, and no other interface
+   * in from's ancestry (any branch) redeclares the method or is unknown here, unless target itself inherits through it.
+   */
+  private boolean reaches(String from, String target, DexFile.MethodRef m, int depth) {
+    java.util.Set<String> seen = new java.util.HashSet<>();
+    if (!closure(from, seen, 0) || !seen.contains(target)) return false;
+    java.util.Set<String> below = new java.util.HashSet<>();
+    closure(target, below, 0);
+    for (String x : seen) {
+      if (x.equals(target) || below.contains(x)) continue;
+      int def = dex.classDefIndex(x);
+      // Not in this DEX (another DEX or the framework): it may redeclare the method, which cannot be told here.
+      if (def < 0 || dex.declaresMethod(def, m.name(), m.descriptor())) return false;
+    }
+    return true;
+  }
+
+  /** Adds {@code from} and every superinterface of it this DEX holds to {@code out}; false if too deep. */
+  private boolean closure(String from, java.util.Set<String> out, int depth) {
+    if (depth > 32) return false;
+    if (!out.add(from)) return true;
+    int def = dex.classDefIndex(from);
+    if (def < 0) return true;
+    for (String s : dex.interfacesOf(def)) {
+      if (!closure(s, out, depth + 1)) return false;
+    }
+    return true;
   }
 
   private static final String RUNTIME_SHADER = "android/graphics/RuntimeShader";

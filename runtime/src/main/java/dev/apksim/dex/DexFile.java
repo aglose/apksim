@@ -27,6 +27,7 @@ public final class DexFile {
     volatile MethodRef[] methods;
     volatile FieldRef[] fields;
     volatile String[] internalTypes;
+    volatile int[] defsByType;
   }
 
   public DexFile(ByteBuffer data) {
@@ -141,6 +142,50 @@ public final class DexFile {
       if (out[t] < 0) out[t] = i;
     }
     return out;
+  }
+
+  /** The class definition index of {@code internalName} in this DEX, or -1; the type index is cached once, shared. */
+  public int classDefIndex(String internalName) {
+    int t = findClassType(internalName);
+    if (t < 0) return -1;
+    int[] all = shared.defsByType;
+    if (all == null) shared.defsByType = all = classDefsByType();
+    return all[t];
+  }
+
+  /** The interfaces class definition {@code def} lists (an interface's superinterfaces), as internal names. */
+  public String[] interfacesOf(int def) {
+    int ifaces = i32(classDefOffset(def) + 12);
+    if (ifaces == 0) return new String[0];
+    String[] ts = typeList(ifaces);
+    for (int i = 0; i < ts.length; i++) ts[i] = ts[i].substring(1, ts[i].length() - 1);
+    return ts;
+  }
+
+  /** Whether class definition {@code def} declares a method with this name and descriptor. */
+  public boolean declaresMethod(int def, String name, String descriptor) {
+    int data = i32(classDefOffset(def) + 24);
+    if (data == 0) return false;
+    Cursor cur = new Cursor(data);
+    int sf = cur.uleb();
+    int inf = cur.uleb();
+    int dm = cur.uleb();
+    int vm = cur.uleb();
+    for (int i = 0; i < sf + inf; i++) {
+      cur.uleb();
+      cur.uleb();
+    }
+    for (int n : new int[] {dm, vm}) {
+      int idx = 0;
+      for (int i = 0; i < n; i++) {
+        idx += cur.uleb();
+        cur.uleb();
+        cur.uleb();
+        MethodRef m = method(idx);
+        if (m.name().equals(name) && m.descriptor().equals(descriptor)) return true;
+      }
+    }
+    return false;
   }
 
   /**
