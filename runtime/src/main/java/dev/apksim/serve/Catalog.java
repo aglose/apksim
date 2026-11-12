@@ -54,6 +54,15 @@ final class Catalog {
    */
   static volatile boolean agent;
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
+  /** The launch options and flags as a JSON array, sorted: `/beam/hello`'s `options` (what a start may carry). */
+  static String optionsJson() {
+    java.util.TreeSet<String> all = new java.util.TreeSet<>(LAUNCH_OPTIONS);
+    all.addAll(LAUNCH_FLAGS);
+    StringBuilder b = new StringBuilder("[");
+    for (String o : all) b.append(b.length() > 1 ? "," : "").append(Http.q(o));
+    return b.append(']').toString();
+  }
+
   static final Set<String> LAUNCH_FLAGS = Set.of("--soft-keyboard", "--move-shared-data");
 
   /** An app being downloaded from a URL added at run time: its id is answered at once, the APK comes later. */

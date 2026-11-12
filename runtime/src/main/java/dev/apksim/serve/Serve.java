@@ -168,7 +168,7 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && List.of("install", "uninstall").contains(args[1])) {
       System.exit(BeamLaunchd.command(s.launcher, state, args[1], List.of(args).subList(2, args.length)));
     }
-    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status").contains(args[1])) {
+    if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status", "stop").contains(args[1])) {
       // The agent's own commands: its rules for saved options (a server skin's device, a skin it does not have).
       Catalog.agent = true;
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
@@ -554,6 +554,16 @@ public final class Serve {
       }, 1, 1, TimeUnit.MINUTES);
     }
     if (launchd) {
+      // Another release installed under this launcher's path (`brew upgrade`): the next page's request would still meet
+      // this one. With no session running it ends, and launchd starts the new release at that request (issue 309).
+      final String startedVersion = Beam.version(root);
+      timer.scheduleWithFixedDelay(() -> {
+        if (sessions.isEmpty() && busy.get() == 0 && !Beam.version(root).equals(startedVersion)) {
+          System.err.printf("[beam] release %s replaced by %s: exiting (launchd starts the new one for the next page)%n",
+              startedVersion, Beam.version(root));
+          System.exit(0);
+        }
+      }, 5, 5, TimeUnit.SECONDS);
       // Nothing runs until a page asks: launchd starts the agent again on the next connection.
       // In two steps: first the lock file says "exiting", so `apksim beam status` stops connecting, and requests already
       // on their way are still answered for one more round; then it ends. A connection queued on launchd's socket as
@@ -2014,10 +2024,30 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
+    // `apksim beam stop` (same rule): the agent ends once this answer is out; launchd starts it again for the next page.
+    if (sent == null && r.method().equals("POST") && r.path().equals("/beam/stop")) {
+      statusRequest.set(true);
+      boolean force = "1".equals(r.param("force"));
+      if (!sessions.isEmpty() && !force) {
+        Http.text(out, 409, sessions.size() + " session(s) running: apksim beam stop --force ends them too");
+        return;
+      }
+      Http.json(out, 200, "{\"stopping\":true,\"sessions\":" + sessions.size() + "}");
+      Thread.ofPlatform().daemon().name("apksim-beam-stop").start(() -> {
+        try {
+          Thread.sleep(300);
+        } catch (InterruptedException e) {
+          // ends anyway
+        }
+        System.err.println("[beam] stopped by `apksim beam stop`");
+        System.exit(0);
+      });
+      return;
+    }
     if (sent == null && r.method().equals("GET") && r.path().equals("/beam/status")) {
       statusRequest.set(true);
       StringBuilder b = new StringBuilder("{\"port\":" + port + ",\"max\":" + max + ",\"keeps\":" + Http.q(store.config.describe())
@@ -2449,7 +2479,7 @@ public final class Serve {
   }
 
   private String status() {
-    StringBuilder b = new StringBuilder("{\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
+    StringBuilder b = new StringBuilder("{\"apksim\":").append(Http.q(Beam.version(root))).append(",\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
         .append(",\"maxUploadMb\":").append(maxUploadMb).append(",\"uptimeS\":").append((System.currentTimeMillis() - startedAt) / 1000)
         .append(",\"warmLaunches\":").append(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"))
         .append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");

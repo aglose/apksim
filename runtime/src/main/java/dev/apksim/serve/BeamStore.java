@@ -979,6 +979,25 @@ final class BeamStore {
         System.out.println(BeamLaunchd.state());
         return 0;
       }
+      case "stop" -> {
+        // Ends the running agent (launchd starts the current release again at the next page's request).
+        int port = store.agentPort();
+        if (port <= 0) {
+          System.out.println(port == -1 ? "agent: not running" : "agent: " + (port == 0 ? "a sweep is running" : "already exiting"));
+          return 0;
+        }
+        try {
+          java.net.http.HttpResponse<String> r = java.net.http.HttpClient.newHttpClient().send(
+              java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/beam/stop"
+                  + (args.contains("--force") ? "?force=1" : ""))).timeout(java.time.Duration.ofSeconds(5))
+                  .POST(java.net.http.HttpRequest.BodyPublishers.noBody()).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+          System.out.println(r.statusCode() == 200 ? "agent: stopping" : "agent: not stopped: " + r.body().strip());
+          return r.statusCode() == 200 ? 0 : 1;
+        } catch (IOException | InterruptedException e) {
+          System.out.println("agent: holds its lock (port " + port + ") but does not answer: " + e.getMessage());
+          return 1;
+        }
+      }
       case "sweep" -> {
         int port = store.agentPort();
         if (port >= 0) {
@@ -1006,6 +1025,7 @@ final class BeamStore {
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
+             apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
              apksim beam status                 what the agent runs, the sites it lets in, what it keeps
              apksim beam install [--trust ORIGIN]... | uninstall    let pages start the agent through launchd (or not)""";
