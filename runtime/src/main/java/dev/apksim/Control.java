@@ -78,12 +78,24 @@ final class Control {
         }
         Pending p = new Pending(args);
         submit(p);
-        out.println(p.await());
+        out.println(oneLine(p.await()));
       }
     } catch (IOException | InterruptedException | RuntimeException e) {
       // The client went away (or sent a bad stream request).
     }
   }
+
+  /**
+   * A reply as one line: its line breaks become "; ", as viewtree joins its lines. Every client reads one line per
+   * command, so a second line (an exception message, the app's clipboard) was read as the next command's answer.
+   */
+  static String oneLine(String reply) {
+    if (reply == null) return "null";
+    if (reply.indexOf('\n') < 0 && reply.indexOf('\r') < 0) return reply;  // nearly every reply: no copy
+    return LINE_BREAK.matcher(reply.strip()).replaceAll("; ");
+  }
+
+  private static final java.util.regex.Pattern LINE_BREAK = java.util.regex.Pattern.compile("\\s*[\\r\\n]+\\s*");
 
   static void start(int port) throws IOException {
     // Loopback only, unless told otherwise: inside a container the host reaches it through a published port.
