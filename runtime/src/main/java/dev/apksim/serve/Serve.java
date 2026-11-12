@@ -1254,6 +1254,8 @@ public final class Serve {
     String detail = warmer.detail(a);
     Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name())
         + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "")
+        // Its own --device rather than its skin's: a page naming the app's skin to the agent names this device with it.
+        + (a.launch().contains("--device") ? ",\"deviceGiven\":true" : "")
         + (Session.appSkin(a) != null ? ",\"skin\":" + Http.q(Session.appSkin(a)) : "") + ",\"state\":\"ready\",\"cache\":"
         + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + expiry(a.id()) + "}");
   }

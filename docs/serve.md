@@ -316,7 +316,8 @@ embeds apksim needs no frames or table of device sizes of its own (issue 246).
   unknown name starts it without one (`r skin: no skin named ...`). `&skin=off` starts without the app's own skin. The
   first message after the launch, `d {"skin": NAME|null, "device": ...}`, says which skin the session runs with.
 - The launch option `--skin NAME` (catalog lines, `POST /api/apps` `options`) is that app's default skin, as its
-  `--device` is its default device; `GET /api/apps/ID` reports it as `skin` (and its device as `device`). An unknown
+  `--device` is its default device; `GET /api/apps/ID` reports it as `skin` (and its device as `device`, with
+  `"deviceGiven": true` when the app names its own `--device` rather than taking the skin's). An unknown
   name is refused at startup or with a `400` that lists the known ones.
 - The page: a Skin menu beside Device lists the server's skins (and, on a page that found this Mac's `apksim beam`
   and that the agent trusts, the visitor's own, marked "(this Mac)"); `&skin=NAME` / `&skin=off` on the page's own URL

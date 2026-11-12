@@ -233,6 +233,7 @@ function setDevice(name) {
 async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link named this size (?device=)
   if (!state.app) return;
   const app = state.app, sel = $("device");
+  if (appDefault.app !== app) appDefault = { app: "", skin: "", device: "" };  // the previous app's, until this one's arrive
   const live = () => ws && ws.readyState <= 1 && !ended;
   // The chosen skin's device stays offered: a start then still carries it (an endpoint without the skin needs it).
   const chosenSkin = $("skin").value !== "off" ? skinFor($("skin").value) : undefined;
@@ -248,6 +249,7 @@ async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link 
     const info = await r.json(), d = info.device || "";
     // The app's own skin (its --skin): the menu shows it while nothing else was chosen.
     appSkinDefault = info.skin || "";
+    appDefault = { app, skin: info.skin || "", device: info.deviceGiven ? d : "" };
     // Nothing chosen and nothing running: the new app's own skin, else none (not the previous app's).
     if (!state.skin && !live()) $("skin").value = info.skin && [...$("skin").options].some(o => o.value === info.skin) ? info.skin : "off";
     // Arrived after this app's session on this Mac started with nothing chosen: the agent drops a server's skin it does
@@ -370,7 +372,12 @@ function sessionQuery() {
   // The app's own skin the menu shows, named to this Mac: the agent never gets the server's --skin (only its device and
   // kind), and a Mac skin of that name is the frame drawn, so its kind must be the one the app runs with. The agent
   // drops a name it does not have, keeping the server skin's device and kind.
-  else if ($("skin").value !== "off" && $("runOn").value === "mac" && beam.ok) q.set("skin", $("skin").value);
+  // Only this app's own (not the previous app's while this one's are still on their way), with its own --device if it
+  // names one: the agent would otherwise take the skin's device over it.
+  else if (appDefault.app === state.app && appDefault.skin && $("skin").value === appDefault.skin && $("runOn").value === "mac" && beam.ok) {
+    q.set("skin", appDefault.skin);
+    if (!state.device && appDefault.device) q.set("device", appDefault.device);
+  }
   // The skin's kind with its device (a custom-size watch is a watch), for an endpoint that does not have the skin.
   const sk = skinFor($("skin").value);
   if (sk && sk.kind && state.device === sk.device) q.set("kind", sk.kind);
@@ -848,6 +855,7 @@ const skin = { server: Object.create(null), mac: Object.create(null), active: ""
 let appSkinDefault = "";  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
 let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it
 let startedApp = "";  // the app the latest Start ran
+let appDefault = { app: "", skin: "", device: "" };  // the app's own skin and own --device (api/apps/ID), and whose
 function skinFor(name) {
   if (!name) return undefined;
   // The running session's endpoint; before one exists, the one the next Start goes to.
