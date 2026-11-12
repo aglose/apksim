@@ -48,7 +48,7 @@ recyclerview and espresso-contrib.
 
 ## Batch 1: activity, fragment, lifecycle, navigation
 
-54 tests. With the three fixes below, everything that runs on both sides passes on both; some of
+56 tests. With the four fixes below, everything that runs on both sides passes on both; some of
 AppCallbacksConformanceTest's tests run only here (they need a second Application, which a device's process never has)
 or only with an `-e` switch.
 
@@ -60,6 +60,7 @@ or only with an `-e` switch.
 | NavigationConformanceTest (NavHostFragment: navigate and back, popUpTo, deep links, recreate, results, navigateUp) | 6 | 6 | 0 | |
 | NavigationComposeConformanceTest (rememberSaveable across back, predictive back) | 2 | 2 | 0 | |
 | RotationConformanceTest (no second pause on a rotation while stopped) | 1 | 1 | 1 | the pause fix |
+| ValueAnimatorConformanceTest (INFINITE read back, an endless animator still repeating after its fifth cycle) | 2 | 2, here with `--realtime-clock` | 2 | the repeat count |
 | LatchConformanceTest (a CountDownLatch awaited for main-thread work: posts, delayed posts, no timeout, a timeout, a worker, an interrupt, FullyDrawnReporter, a worker and a timeout during an endless frame loop) | 9 | 9 | 5, and the frame loop's 2 in the default clock mode | the latch wait |
 | AppCallbacksConformanceTest (a singleton's activity and component callbacks heard in later tests and unregistered through the Application it kept, a per-Application one replaced, changes made while the next Application starts, a failed setup between tests) | 14 | the ones a device can run | 2 | AppCallbacks |
 
@@ -106,6 +107,17 @@ or only with an `-e` switch.
    between them, as UiAutomator's frame wait does; with `--realtime-clock` frames come at real vsyncs and `idle()` is
    kept.
 
+4. **A ValueAnimator set to repeat for ever repeated once** (`ShadowRepeatingAnimator`). Robolectric's
+   `ShadowValueAnimator.setRepeatCount` turns `INFINITE` into 1 (its bytecode: `if (count == -1) count = 1` before the
+   real setter), so `getRepeatCount()` said 1 and the animator ended after its second cycle. Found writing the
+   frame-loop latch tests (a 100 ms one ended at 273 ms). Its shadows are on in running instances too: the test app's
+   own rotating square on `apksim://bitmaps` stopped at 360 degrees after two seconds. Robolectric caps it because its
+   unpaused Choreographer runs every frame asked for at once, so an endless animator would never let the main looper go
+   idle. Host's loop and `--realtime-clock` run frames at vsyncs, so there the real count is set; default test runs
+   keep the cap, which Robolectric-style suites rely on. `-Dapksim.repeatForever=false` keeps the cap everywhere.
+   Repro: `ValueAnimatorConformanceTest` (on apksim with `--realtime-clock -e realtimeClock true`: both failed before,
+   2 of 2 on the emulator), and `ci-smoke.sh` checks the square still turns after 3.5 s.
+
 Also found while running the suite: `UncaughtExceptionTest` left its coroutine exception in kotlinx-coroutines-test's
 collector, which failed whichever Compose rule test ran next ("uncaught exceptions before the test started"); it now
 takes it itself.
@@ -120,11 +132,6 @@ takes it itself.
   would not send (a device defers the relaunch until the activity is visible again).
 - **Back on a task's root activity** ends stopped here at once; on the emulator the stop comes after the task's
   transition, and in one run of three the activity was destroyed. Timing-dependent on the device, so not in the suite.
-- **A ValueAnimator set to repeat for ever repeats once**: Robolectric's `ShadowValueAnimator.setRepeatCount` turns
-  `INFINITE` into 1, so the animator ends after its second cycle (found writing the frame-loop latch tests: a 100 ms
-  one ended at 273 ms). Its shadows are on in running instances too, so an app's endless View spinner should stop
-  there as well. Not checked on the emulator or in a running instance yet.
-
 ## Batch 2: Compose ui and foundation, material3, recyclerview
 
 46 tests, in the same package, with recyclerview 1.4.0 and espresso-contrib (RecyclerViewActions) added to the test app.
