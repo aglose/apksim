@@ -651,6 +651,9 @@ Report button and network inspector (same doc; `serve --allow-rec --issue-url`, 
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
 capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`); `scripts/inspector-check.py`.
 
+## MCP server
+`apksim mcp --apps DIR [--out DIR]` (`scripts/mcp.py`, stdlib Python, protocol 2026-07-28 and the handshake revisions): tools to launch and drive instances over `--control`; each action answers with the node changes since the last answer. Allow-listed launch options, output folder only, `--no-autofill`. docs/mcp.md; `scripts/mcp-check.py` checks it.
+
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,
 timings, each host's certificate chain; Authorization, Proxy-Authorization, Cookie and Set-Cookie redacted, more with
