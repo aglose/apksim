@@ -30,8 +30,10 @@ Note the last tag and the open PRs. Skip drafts (list them in the report).
 ## 2. Merge open PRs
 Oldest number first (a PR cut from another's branch merges after its parent). For each non-draft PR:
 1. `gh pr checks N`: wait (`gh pr checks N --watch`, run in background if long) until `linux-smoke` passes.
-2. Read Copilot's review comments (`gh pr view N --comments`, `gh api repos/aglose/apksim/pulls/N/comments`). Fix
-   real issues on the PR's branch in a worktree and push; ignore nits.
+2. Review it with the `pr-reviewer` agent (Sonnet; Copilot reviews are off), unless this conversation already ran it
+   on the PR's current head. Start the reviews of all PRs at once, in parallel, while you wait for checks. Also read
+   any human review comments (`gh pr view N --comments`, `gh api repos/aglose/apksim/pulls/N/comments`). Fix
+   confirmed issues on the PR's branch in a worktree and push; ignore nits.
 3. If it conflicts with main, rebase its branch on `origin/main` in a worktree (not a merge of main into it),
    resolve, `git push --force-with-lease`, and wait for checks again. A PR cut from one just squashed is rebased
    with `git rebase --onto origin/main OLD_PARENT_TIP` so the parent's commits are not replayed.

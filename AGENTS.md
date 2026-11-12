@@ -1511,7 +1511,14 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   branch's own authors).
 - **No AI attribution:** no `Co-Authored-By` trailer for Claude (or any other assistant) in commit messages, and no
   "Generated with" line in PR bodies; GitHub lists co-authors as contributors. `.claude/settings.json` turns Claude
-  Code's own trailers off. Every pull request gets a Copilot review automatically (a repository ruleset).
+  Code's own trailers off.
+- **Every pull request gets a thorough code review on Sonnet** (Copilot reviews are off): right after `gh pr create`,
+  run the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`, model `sonnet`) on the PR, fix its confirmed findings
+  on the branch and push, and report what it found and what was fixed or left. It is read-only and posts nothing to
+  GitHub. A `PostToolUse` hook in `.claude/settings.json` (`.claude/hooks/pr-created.py`) reminds a Claude Code
+  session after each `gh pr create`; a PR opened any other way (the app's Create PR button, the web) needs the same
+  review before it is merged. Other agents (Codex and the like) without the agent file: review the diff with the same
+  checklist, on a Sonnet-class model where you can choose.
 
 ## Hard-won rules
 - Restart your instance with `scripts/relaunch.sh PORT APK [LOG]`: launching while the old instance still holds the
