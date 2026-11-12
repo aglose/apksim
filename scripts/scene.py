@@ -30,7 +30,7 @@ scene file against the APK it built). APKSIM_OPTIONs after `--` go to every role
 On a failure every running role's screen is saved as DIR/failed-ROLE.png. Writes DIR/result.json (steps, times,
 failure) and prints a line per step. Exits 1 on a failure, 2 on a bad scene file.
 """
-import json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS)
@@ -95,9 +95,41 @@ class Role:
         self.last = ""
         self.ready = None
 
-    def send(self, cmd):
-        with self.lock:
-            return self.inst.send(cmd)
+    def send(self, cmd, deadline=None):
+        """CMD's answer. With a deadline, TimeoutError once it passes, waiting for the lock or for the answer."""
+        if deadline is None:
+            with self.lock:
+                return self.inst.send(cmd)
+        if not self.lock.acquire(timeout=max(0.0, deadline - time.time())):
+            raise TimeoutError(cmd)
+        try:
+            left = deadline - time.time()
+            if left <= 0:
+                raise TimeoutError(cmd)
+            self.inst.sock.settimeout(left)
+            try:
+                return self.inst.send(cmd)
+            except TimeoutError:
+                self.reconnect()  # the late answer would be read as the next command's
+                raise
+            finally:
+                if self.inst.sock:
+                    self.inst.sock.settimeout(60)
+        finally:
+            self.lock.release()
+
+    def reconnect(self):
+        """A new control connection in place of one left waiting for an answer (Control serves each on its own)."""
+        inst = self.inst
+        for c in (inst.file, inst.sock):
+            try:
+                c.close()
+            except OSError:
+                pass
+        inst.file = inst.sock = None
+        inst.sock = socket.create_connection(("127.0.0.1", inst.port), timeout=2)
+        inst.sock.settimeout(60)
+        inst.file = inst.sock.makefile("rw")
 
 
 class Scene:
@@ -219,9 +251,9 @@ class Scene:
 
     # ---- commands ----
 
-    def nodes(self, role):
+    def nodes(self, role, deadline=None):
         # `nodes`: the windows accessibility reports, so not what a dialog covers, as tap-text and a user see them.
-        return role.send("nodes")
+        return role.send("nodes", deadline)
 
     def run_command(self, role, raw):
         cmd = self.expand(raw, role)
@@ -231,18 +263,27 @@ class Scene:
         elif word in ("until", "gone"):
             ms, _, text = rest.partition(" ")
             deadline = time.time() + int(ms) / 1000
+            answered = False
             while True:
-                # A reply counts only if it came by the deadline (UI reads queue behind the main thread's work).
-                role.last = self.nodes(role)
+                # A reply counts only if it came by the deadline (UI reads queue behind the main thread's work), and
+                # neither the role's lock (another role's `to`) nor the read waits past it.
+                try:
+                    role.last = self.nodes(role, deadline)
+                    answered = True
+                except TimeoutError:
+                    if not answered:
+                        raise Failure(f"{text!r}: no `nodes` answer within {ms} ms")
+                    break
                 if failed(role.last):
                     raise Failure(f"nodes: {role.last}")
                 present = text in on_screen(role.last)
                 if present == (word == "until") and time.time() <= deadline:
                     return
                 if time.time() > deadline:
-                    raise Failure(f"{text!r} {'not on screen' if word == 'until' else 'still on screen'} after {ms} ms: "
-                                  f"{role.last[:400]!r}")
+                    break
                 time.sleep(0.1)
+            raise Failure(f"{text!r} {'not on screen' if word == 'until' else 'still on screen'} after {ms} ms: "
+                          f"{role.last[:400]!r}")
         elif word == "expect":
             if rest not in role.last:
                 raise Failure(f"{rest!r} not in the last answer {role.last[:400]!r}")
@@ -262,7 +303,11 @@ class Scene:
             other = self.roles.get(target)
             if other is None:
                 raise Failure(f"to {target}: no such role")
-            reply = other.send(inner)
+            inner_word, _, inner_rest = inner.partition(" ")
+            if inner_word in ("shot", "wshot") and inner_rest:  # staged and checked as the role's own shots are
+                reply = self.capture(other, inner_word, inner_rest)
+            else:
+                reply = other.send(inner)
             if failed(reply):
                 raise Failure(f"to {target} {inner!r}: {reply}")
             role.last = reply

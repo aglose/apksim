@@ -56,11 +56,11 @@ python3 scripts/scene.py my-scene.json --out work/scenes/run1 --apk app.apk -- -
 | Command | |
 |---|---|
 | `wait MS` | sleep |
-| `until MS TEXT` | repeat `nodes` until TEXT is on screen in an answer received within MS (`nodes`: the windows accessibility reports, so not text a dialog covers, as `tap-text` sees them; a node `nodes` marks `offscreen`, scrolled away, does not count) |
+| `until MS TEXT` | repeat `nodes` until TEXT is on screen in an answer received within MS (`nodes`: the windows accessibility reports, so not text a dialog covers, as `tap-text` sees them; a node `nodes` marks `offscreen`, scrolled away, does not count; waiting for the role's connection or for an answer never runs past MS) |
 | `gone MS TEXT` | until TEXT is not on screen |
 | `expect TEXT` | the last answer contains TEXT |
 | `capture NAME REGEX` | REGEX's first group, in the last answer or else in `nodes`, becomes `{NAME}`; a bad REGEX fails the step |
-| `to ROLE CMD` | sends CMD to another role's instance from this step: `to watch open apksim://x?code={code}`, `to bob push otp={otp}` |
+| `to ROLE CMD` | sends CMD to another role's instance from this step: `to watch open apksim://x?code={code}`, `to bob push otp={otp}`; `to bob shot FILE` is saved in the output folder like bob's own `shot` |
 | `quit` | ends this role; its process must exit 0 |
 
 - **Values**: `{NAME}` in any command or option: captured values, `--var NAME=VALUE`, `{fixture}`, `{out}` (the run's
