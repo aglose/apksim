@@ -419,18 +419,23 @@ class SystemSourcesTest {
 
   /**
    * A callback registered without a Handler runs on a background ConnectivityThread, not the main thread (as on a
-   * device): the main thread waits here without running its looper, and onAvailable still arrives.
+   * device), so onAvailable arrives while the test waits for it.
    */
   @Test
   fun aCallbackWithoutAHandlerArrivesWhileTheMainThreadWaits() {
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val latch = CountDownLatch(1)
+    val onMain = java.util.concurrent.atomic.AtomicReference<Boolean>()  // the first onAvailable's thread
     val cb = object : ConnectivityManager.NetworkCallback() {
-      override fun onAvailable(n: Network) { latch.countDown() }
+      override fun onAvailable(n: Network) {
+        onMain.compareAndSet(null, android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
+        latch.countDown()
+      }
     }
     cm.registerDefaultNetworkCallback(cb)
     try {
       assertTrue("onAvailable while the main thread waits", latch.await(5, TimeUnit.SECONDS))
+      assertEquals("onAvailable on the main thread", false, onMain.get())
     } finally {
       cm.unregisterNetworkCallback(cb)
     }

@@ -17,8 +17,8 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
+import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -141,15 +141,7 @@ class ActivityConformanceTest {
         a.fullyDrawnReporter.addOnReportDrawnListener { drawn.countDown() }
         a.fullyDrawnReporter.removeReporter()
       }
-      // Polled rather than drawn.await(): in an apksim test run the body is on the main thread, which a blocking
-      // await would hold while the frame that reports is due (with --realtime-clock it comes after the idle).
-      // docs/conformance.md lists that difference.
-      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-      while (drawn.count > 0 && System.nanoTime() < deadline) {
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        Thread.sleep(10)
-      }
-      assertEquals(0L, drawn.count)
+      assertTrue(drawn.await(5, TimeUnit.SECONDS))
       scenario.onActivity { a -> assertTrue(a.fullyDrawnReporter.isFullyDrawnReported) }
     }
   }

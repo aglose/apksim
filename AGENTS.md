@@ -1302,7 +1302,12 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   or provider calling getInstrumentation().getContext() at startup gets the app's).
 - bindService to a service no installed app has returns false and never calls back, in running instances too (see
   "Bound services"). `LockSupport.parkNanos` on the main thread in a test run
-  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does.
+  (`runBlocking`'s event loop) runs the main queue meanwhile, the clock following real time, where `Thread.sleep` does;
+  so does `CountDownLatch.await` (`TestActivities.await`: a test waiting for a post or a listener on the main thread
+  timed out, `LatchConformanceTest`). All three run the queue's due tasks one at a time (`runDue`), checking the
+  latch, an interrupt and the deadline between them, not `ShadowLooper.idle()`: an endless frame loop (a Compose
+  Popup, an animation that never ends) never lets that return with Robolectric's unpaused Choreographer, and a wait
+  or sleep under one never ended.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's
