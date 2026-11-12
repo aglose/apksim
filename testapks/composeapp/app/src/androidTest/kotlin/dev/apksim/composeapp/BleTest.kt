@@ -354,6 +354,46 @@ class BleTest {
   }
 
   @Test
+  fun b_eASecondClientSharesTheLinkItsMtuPhyAndGetsItsOwnNotificationPayload() {
+    val file = java.io.File(context.cacheDir, "two-clients.json")
+    file.writeText("""[{"address": "C0:FF:EE:00:00:81", "name": "shared",
+      "services": [{"uuid": "FFF0", "characteristics": [
+        {"uuid": "FFF1", "properties": ["write-no-response"]},
+        {"uuid": "FFF2", "properties": ["notify"], "value": "0102"}]}]}]""")
+    shell("apksim ble add ${file.absolutePath}")
+    // The first client's callback scribbles over the payload it was handed, on the binder thread.
+    val first = object : Recorder() {
+      override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
+        super.onCharacteristicChanged(g, c, value)
+        value.fill(0)
+      }
+    }
+    val (a, _) = connected("C0:FF:EE:00:00:81", first)
+    a.requestMtu(247)
+    waitFor("mtu") { first.has("mtu") }
+    a.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+    waitFor("phy update") { first.has("phy update") }
+    val (b, second) = connected("C0:FF:EE:00:00:81")
+    val sink = b.getService(uuid16(0xFFF0)).getCharacteristic(uuid16(0xFFF1))
+    assertEquals(0, b.writeCharacteristic(sink, ByteArray(100), BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE))
+    waitFor("write") { second.has("write") }
+    assertTrue("100 bytes fit the link's MTU of 247: ${second.events}", second.has("write 0"))
+    b.readPhy()
+    waitFor("phy") { second.has("phy read") }
+    assertTrue(second.events.toString(), second.has("phy read 2 2 0"))
+    for ((g, cb) in listOf(a to first, b to second)) {
+      val c = g.getService(uuid16(0xFFF0)).getCharacteristic(uuid16(0xFFF2))
+      assertTrue(g.setCharacteristicNotification(c, true))
+      assertEquals(0, g.writeDescriptor(c.getDescriptor(BleActivity.CCC), BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE))
+      waitFor("descriptor") { cb.has("descriptor") }
+    }
+    shell("apksim ble notify C0:FF:EE:00:00:81 FFF2 0304")
+    waitFor("both notified") { first.has("changed") && second.has("changed") }
+    assertEquals(listOf("changed 0304"), first.events.filter { it.startsWith("changed") })
+    assertEquals(listOf("changed 0304"), second.events.filter { it.startsWith("changed") })
+  }
+
+  @Test
   fun c_aThePeripheralGoingAwayOrHangingUp() {
     shell("apksim ble add heart-rate")
     val (_, cb) = connected("C0:FF:EE:00:18:0D")
@@ -485,6 +525,32 @@ class BleTest {
     context.unregisterReceiver(receiver)
     assertEquals(listOf(BluetoothDevice.BOND_BONDING, BluetoothDevice.BOND_NONE), states.toList())
     assertFalse(adapter.bondedDevices.any { it.address == "C0:FF:EE:00:00:71" })
+  }
+
+  @Test
+  fun d_dPairingAcrossAnAdapterPowerCycleEndsUnbonded() {
+    val file = java.io.File(context.cacheDir, "slow-bond.json")
+    file.writeText("""[{"address": "C0:FF:EE:00:00:72", "latencyMs": 1000}]""")
+    shell("apksim ble add ${file.absolutePath}")
+    val states = Collections.synchronizedList(mutableListOf<Int>())
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, intent: Intent) {
+        states += intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+      }
+    }
+    context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_EXPORTED)
+    val device = adapter.getRemoteDevice("C0:FF:EE:00:00:72")
+    assertTrue(device.createBond())
+    pass(200)
+    shell("svc bluetooth disable")
+    shell("svc bluetooth enable")
+    pass(1_200)
+    waitFor("the bond attempt ending") { states.size >= 2 }
+    pass(200)
+    context.unregisterReceiver(receiver)
+    assertEquals("the attempt ends as the adapter goes off, and nothing after",
+      listOf(BluetoothDevice.BOND_BONDING, BluetoothDevice.BOND_NONE), states.toList())
+    assertFalse(adapter.bondedDevices.any { it.address == "C0:FF:EE:00:00:72" })
   }
 
   @Test

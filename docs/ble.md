@@ -123,8 +123,8 @@ the SDK; what apksim does there follows that code as of Android 14-16, and the r
 | A GATT call without a connection: nothing (the stack logs it), `ERROR_DEVICE_NOT_CONNECTED` from a write | system side |
 | A direct connection to nothing in range: status 133 (GATT_ERROR) after 30 s; autoConnect waits for as long as it takes | system side and what devices report |
 | Peripheral out of range: status 8; peripheral hangs up: 19; `disconnect()`: 0; `close()` without `disconnect()`: no callback | Bluetooth core specification's reason codes, as Android passes them on |
-| MTU: the smaller of the request (at most 517) and the peripheral's, one per link; `onConnectionUpdated` for `requestConnectionPriority` with AOSP's default intervals; PHY: `setPreferredPhy` gets the fastest PHY asked for, kept per link, which `readPhy` returns | system side |
-| `createBond`: ACTION_BOND_STATE_CHANGED BONDING then BONDED (or NONE for a peripheral that is not there or refuses) 100 ms later; `getBondedDevices` follows | system side's broadcasts; the delay is apksim's |
+| MTU: the smaller of the request (at most 517) and the peripheral's, one per link; `onConnectionUpdated` for `requestConnectionPriority` with AOSP's default intervals; PHY: `setPreferredPhy` gets the fastest PHY asked for, kept per link, which `readPhy` returns; a second client joining a link gets its MTU and PHY; each client's notification payload is its own copy | system side |
+| `createBond`: ACTION_BOND_STATE_CHANGED BONDING then BONDED (or NONE for a peripheral that is not there or refuses) 100 ms later; `getBondedDevices` follows; the adapter going off ends an attempt under way with NONE at once | system side's broadcasts; the delay is apksim's |
 | The BLE stack is up (or down) before STATE_ON (STATE_OFF) is broadcast | AdapterService's order |
 | Adapter off: scans stop silently, connections end with status 22 (GATT_CONN_TERMINATE_LOCAL_HOST), `connectGatt` returns null (no GATT service); a scan started meanwhile fails with SCAN_FAILED_INTERNAL_ERROR (apksim keeps an LE scanner while off, `Bluetooth.java`) | apksim's choice for the status; the rest framework |
 | Write without response longer than MTU - 3: status 13 (invalid attribute length) | apksim's choice (one packet, no long write without a response) |
@@ -157,7 +157,9 @@ No thread is started and nothing is posted until the app scans or connects; with
   GATT callback, an answer delayed by latency dropped when the peripheral goes first, a name with a line break kept
   to one reply line, no notification before the CCC write and
   then the timeline in order, `ble notify`, the deprecated callbacks with a `Handler` (every callback on its thread),
-  status 19, 8, 133 after 30 s (not before 29 s), autoConnect waiting 40 s for `ble add`, bonding broadcasts,
+  status 19, 8, 133 after 30 s (not before 29 s), autoConnect waiting 40 s for `ble add`, bonding broadcasts
+  (pairing ended by the peripheral going or the adapter switching off and on), a second client on one link (its MTU,
+  PHY and its own notification payload),
   `SecurityException` for BLUETOOTH_SCAN and BLUETOOTH_CONNECT, no results without location, the sixth scan in 30 s
   hearing nothing, the adapter going off (status 22, a failed scan, `connectGatt` null), and the next test starting
   with no peripherals.

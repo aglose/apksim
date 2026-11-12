@@ -69,6 +69,8 @@ public final class Ble {
   /** CCC values per peripheral link (address → descriptor handle → value), as a peripheral keeps them per link. */
   private static final Map<String, Map<Integer, byte[]>> linkCcc = new HashMap<>();
   private static final Set<String> bonded = new HashSet<>();
+  /** Pairing attempts under way, by address: the adapter going off ends them, so a later completion is ignored. */
+  private static final Map<String, Object> pairing = new HashMap<>();
   private static final ArrayDeque<Long> scanStarts = new ArrayDeque<>();
   private static int nextId = 1;
   private static int generation;
@@ -152,6 +154,7 @@ public final class Ble {
       scanners.clear();
       linkCcc.clear();
       bonded.clear();
+      pairing.clear();
       scanStarts.clear();
       BluetoothAdapter a = BluetoothAdapter.getDefaultAdapter();
       adapterOn = a != null && a.isEnabled();
@@ -186,6 +189,11 @@ public final class Ble {
         }
       }
       linkCcc.keySet().removeIf(a -> !bonded.contains(a));
+      // Pairing in progress fails as the stack goes down, whatever happens to the adapter after.
+      for (String address : new ArrayList<>(pairing.keySet())) {
+        pairing.remove(address);
+        Devices.bondState(BluetoothAdapter.getDefaultAdapter().getRemoteDevice(address), BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING);
+      }
     }
   }
 
@@ -427,7 +435,8 @@ public final class Ble {
     byte[] value = current(c).clone();
     for (Client cl : clients.values()) {
       if (cl.connected && p.address.equals(cl.address) && cl.notify.contains(c.handle)) {
-        answer(null, cl, cb -> cb.onNotify(p.address, c.handle, value));
+        byte[] own = value.clone();  // each client its own copy, as each gets its own parcel
+        answer(null, cl, cb -> cb.onNotify(p.address, c.handle, own));
       }
     }
   }
@@ -654,8 +663,12 @@ public final class Ble {
     c.pending = false;
     c.connected = true;
     c.epoch++;
-    c.mtu = 23;
-    c.txPhy = c.rxPhy = BluetoothDevice.PHY_LE_1M;
+    // MTU and PHY belong to the link: a client joining one already up gets what was negotiated on it.
+    Client joined = null;
+    for (Client o : clients.values()) if (o != c && o.connected && c.address.equals(o.address)) joined = o;
+    c.mtu = joined != null ? joined.mtu : 23;
+    c.txPhy = joined != null ? joined.txPhy : BluetoothDevice.PHY_LE_1M;
+    c.rxPhy = joined != null ? joined.rxPhy : BluetoothDevice.PHY_LE_1M;
     timelines(p);  // a bonded link's CCC survives a reconnect
     answer(p, c, cb -> cb.onClientConnectionState(GATT_SUCCESS, c.id, true, c.address));
   }
@@ -1005,12 +1018,16 @@ public final class Ble {
     String address = device.getAddress();
     synchronized (LOCK) {
       if (!adapterOn) return false;
-      if (bonded.contains(address)) return false;
+      if (bonded.contains(address) || pairing.containsKey(address)) return false;
       Peripheral p = peripherals.get(address);
       boolean ok = p != null && p.bondable && p.connectable;
+      Object attempt = new Object();
+      pairing.put(address, attempt);
       Devices.bondState(device, BluetoothDevice.BOND_BONDING, BluetoothDevice.BOND_NONE);
       later(p != null ? Math.max(p.latencyMs, 100) : 100, () -> {
-        // Pairing interrupted (the adapter off, the peripheral gone or replaced) ends unbonded.
+        if (pairing.get(address) != attempt) return;  // ended already (the adapter went off)
+        pairing.remove(address);
+        // Pairing interrupted (the peripheral gone or replaced) ends unbonded.
         boolean done = ok && adapterOn && peripherals.get(address) == p;
         if (done) bonded.add(address);
         Devices.bondState(device, done ? BluetoothDevice.BOND_BONDED : BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING);
