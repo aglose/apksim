@@ -149,6 +149,7 @@ public final class TabRelayCheck {
         }
       }
       if (path.startsWith("/never")) return null;
+      if (path.startsWith("/over")) return reply(200, "", new byte[TabRelay.MAX_BODY + 1]);
       if (path.startsWith("/missing")) return reply(404, "\"X-Why\":\"nothing\"", "gone".getBytes());
       if (path.startsWith("/echo")) return reply(201, "\"Content-Type\":\"application/octet-stream\"", bodyOf(req));
       return text(req, "hello " + path);
@@ -192,6 +193,21 @@ public final class TabRelayCheck {
       check(exchange(("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: " + (TabRelay.MAX_BODY + 1) + "\r\n\r\n").getBytes(), 5000)
           .startsWith("HTTP/1.1 413 "), "a declared body over 512 KB: 413");
       check(exchange("GARBAGE\r\n\r\n".getBytes(), 5000).startsWith("HTTP/1.1 400 "), "not HTTP: 400");
+      // Payload-size edges: a body of exactly the limit goes both ways; one byte over is refused each way; headers that
+      // would make the line too long for the link are refused at once, not left to time out.
+      byte[] full = new byte[TabRelay.MAX_BODY];
+      ByteArrayOutputStream fr = new ByteArrayOutputStream();
+      fr.write(("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: " + full.length + "\r\n\r\n").getBytes());
+      fr.write(full);
+      String fullBack = exchange(fr.toByteArray(), 5000);
+      check(fullBack.startsWith("HTTP/1.1 201 ") && fullBack.contains("Content-Length: " + full.length + "\r\n"), "exactly 512 KB each way: carried");
+      long t431 = System.currentTimeMillis();
+      check(get("/over").startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t431 < 1000, "an answer one byte over 512 KB: 502 at once");
+      String big = "X-Big: " + "a".repeat(15_000) + "\r\n";
+      check(exchange(("GET /x HTTP/1.1\r\nHost: x\r\n" + big.repeat(5) + "\r\n").getBytes(), 5000).startsWith("HTTP/1.1 431 "), "headers over 64 KB: 431");
+      check(exchange("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nhello\r\n0\r\n\r\n".getBytes(), 5000)
+          .startsWith("HTTP/1.1 400 "), "a negative chunk size: 400");
+      check(exchange("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n".getBytes(), 5000).startsWith("HTTP/1.1 400 "), "a negative Content-Length: 400");
       check(exchange(new byte[] {0x16, 0x03, 0x01, 0x00, 0x05, 'h', '\n'}, 5000).startsWith("HTTP/1.1 400 "), "a TLS hello: 400, plain HTTP only");
       check(get("/never").startsWith("HTTP/1.1 504 "), "no answer within the limit: 504");
 

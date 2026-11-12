@@ -911,7 +911,9 @@ host are carried to the tab, which answers them with its own credentials.
     Content-Length and `Connection: close` itself and drops the answer's Content-Encoding (a browser's `fetch` has
     decoded the body already).
 - **Limits**: GET, HEAD, POST, PUT, PATCH and DELETE (405 otherwise); bodies up to 512 KB each way (413 on the app's
-  side; a longer answer is a 502), so a base64 message stays under the WebSocket's 1 MiB; 15 s for the tab to answer
+  side; a longer answer is a 502 at once, checked on the decoded body), a request's line and headers up to 64 KB
+  (431), so a `y` message stays under the WebSocket's 1 MiB and none is dropped on the way (a tab message over 1 MiB
+  ends the session, as any message that long does); an answer that is not JSON is a 502 for that request; 15 s for the tab to answer
   (504); 16 requests in flight (503); anything pending when the tab goes is a 502; one request per connection. The
   app's own read timeout counts too: OkHttp's default 10 s ends a 12 s answer with a SocketTimeoutException.
 - **The page decides what to answer.** The agent filters no path or header: a page should relay only to its own origin

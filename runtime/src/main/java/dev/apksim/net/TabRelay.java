@@ -43,6 +43,10 @@ public final class TabRelay {
   public static final String HOST = "page.apksim.invalid";
   public static final int MAX_BODY = 512 * 1024;
   static final int MAX_IN_FLIGHT = 16;
+  /** A request's head (line and headers) at most; with it and a full body a `y` line stays under {@link #MAX_LINE}. */
+  static final int MAX_HEAD = 64 * 1024;
+  /** The longest `y` line sent: under the agent's and the WebSocket's 1 MiB, so none is ever dropped on the way. */
+  static final int MAX_LINE = 1_000_000;
   static final long ANSWER_MS = Long.getLong("apksim.tabRelay.answerMs", 15_000);
   private static final Set<String> METHODS = Set.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE");
   /** Headers that belong to one hop of the app's connection, or that the tab's fetch sets itself. */
@@ -137,8 +141,12 @@ public final class TabRelay {
         }
       }
       String b64 = m.get("body") instanceof String s ? s : "";
+      // The length is checked before decoding (no large allocation for a refused answer) and again after: base64's
+      // last group can hide a byte or two over the limit.
       if (b64.length() > (MAX_BODY / 3 + 1) * 4) throw new IllegalArgumentException("body over " + MAX_BODY / 1024 + " KB");
-      f.complete(new Reply(status, headers, Base64.getDecoder().decode(b64)));
+      byte[] body = Base64.getDecoder().decode(b64);
+      if (body.length > MAX_BODY) throw new IllegalArgumentException("body over " + MAX_BODY / 1024 + " KB");
+      f.complete(new Reply(status, headers, body));
     } catch (RuntimeException e) {
       f.complete(text(502, "the tab's answer could not be used: " + e.getMessage()));
     }
@@ -206,6 +214,8 @@ public final class TabRelay {
         quote(b, e.getValue().toString());
       }
       b.append("},\"body\":\"").append(Base64.getEncoder().encodeToString(body)).append("\"}");
+      // Never a line the agent or the WebSocket would drop (the app would wait out the 504): refused here instead.
+      if (b.length() > MAX_LINE) return text(431, "the request's path and headers are too large for the tab relay");
       // Sent on a thread of its own: a stalled link holds only this send, and the deadline below still applies.
       PrintWriter w = out;
       Thread.ofVirtual().name("apksim-relay-send").start(() -> {
@@ -369,10 +379,15 @@ public final class TabRelay {
       List<String[]> headers = new ArrayList<>();
       long length = 0;
       boolean chunked = false, expect = false;
+      int head = line.length();
       for (int n = 0; ; n++) {
         String h = readLine(in);
         if (h == null) return;
         if (h.isEmpty()) break;
+        if ((head += h.length() + 2) > MAX_HEAD) {
+          respond(resp, text(431, "the tab relay takes request headers up to " + MAX_HEAD / 1024 + " KB"), method);
+          return;
+        }
         int c = h.indexOf(':');
         if (c <= 0 || n > 200) {
           respond(resp, text(400, "bad header"), method);
@@ -383,6 +398,7 @@ public final class TabRelay {
         if (lower.equals("content-length")) {
           try {
             length = Long.parseLong(value);
+            if (length < 0) throw new NumberFormatException();
           } catch (NumberFormatException e) {
             respond(resp, text(400, "bad Content-Length"), method);
             return;
@@ -409,7 +425,14 @@ public final class TabRelay {
           String size = readLine(in);
           if (size == null) return;
           int semi = size.indexOf(';');
-          long n = Long.parseLong((semi < 0 ? size : size.substring(0, semi)).trim(), 16);
+          long n;
+          try {
+            n = Long.parseLong((semi < 0 ? size : size.substring(0, semi)).trim(), 16);
+            if (n < 0) throw new NumberFormatException();
+          } catch (NumberFormatException e) {
+            respond(resp, text(400, "bad chunk size"), method);
+            return;
+          }
           if (n == 0) {
             while (true) {  // trailers
               String t = readLine(in);

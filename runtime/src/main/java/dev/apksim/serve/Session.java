@@ -379,7 +379,8 @@ final class Session {
           return;
         }
         for (String line; (line = r.readLine()) != null; ) {
-          if (line.length() < RELAY_LINE_MAX && line.startsWith("y ")) ws.sendText(line);
+          // The instance sends none over its own limit (TabRelay.MAX_LINE, under this one): nothing is dropped here.
+          if (line.length() <= RELAY_LINE_MAX && line.startsWith("y ")) ws.sendText(line);
         }
       } catch (IOException e) {
         // the instance went away
@@ -390,7 +391,11 @@ final class Session {
   /** The tab's `y ID {json}` to the instance, if this session asked for the relay and the line is one. */
   private void relayAnswer(String text) {
     Socket s = relaywatch;
-    if (s == null || text.length() >= RELAY_LINE_MAX || !text.matches("(?s)y [0-9]{1,18} \\{.*") || text.indexOf('\n') >= 0) return;
+    // Anything with a request's id goes on, as one line (JSON may have line breaks between its tokens): the instance
+    // answers what it cannot use (not JSON, a body over the limit) with 502 for that request. Dropped here, the app
+    // would wait out the 504. A message is at most the WebSocket's 1 MiB.
+    if (s == null || text.length() > RELAY_LINE_MAX || !text.matches("(?s)y [0-9]{1,18} .*")) return;
+    text = text.replace('\n', ' ').replace('\r', ' ');
     try {
       synchronized (s) {
         s.getOutputStream().write((text + "\n").getBytes(StandardCharsets.UTF_8));
