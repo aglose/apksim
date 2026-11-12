@@ -1199,10 +1199,14 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkinMenu(JNIEnv *env, 
   NSMutableArray<NSString *> *titles = [NSMutableArray array];
   jsize n = (*env)->GetArrayLength(env, jtitles);
   for (jsize i = 0; i < n; i++) {
+    // UTF-16, not JNI's modified UTF-8: a title with an emoji (a supplementary character) is not valid UTF-8 there,
+    // and stringWithUTF8String: would give nil.
     jstring t = (*env)->GetObjectArrayElement(env, jtitles, i);
-    const char *u = (*env)->GetStringUTFChars(env, t, NULL);
-    [titles addObject:[NSString stringWithUTF8String:u]];
-    (*env)->ReleaseStringUTFChars(env, t, u);
+    const jchar *u = (*env)->GetStringChars(env, t, NULL);
+    NSString *title = [NSString stringWithCharacters:u length:(NSUInteger)(*env)->GetStringLength(env, t)];
+    (*env)->ReleaseStringChars(env, t, u);
+    (*env)->DeleteLocalRef(env, t);
+    [titles addObject:title ?: @"?"];
   }
   onMain(^{
     while (skinMenu.numberOfItems > 1) {
