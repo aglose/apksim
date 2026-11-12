@@ -1256,7 +1256,9 @@ UI is quiet, for its quiet time at most: an open Compose Popup polls its positio
 unpaused Choreographer that frame loop never let the looper idle). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue one task at a time until the frame has been drawn, checking the latch and timeout between tasks (an open Popup's frame loop never let `idle()` return) (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`, `PopupTouchTest.aSwipeWithAPopupOpenWaitsOnlyForFrames`). No accessibility event stream: executeAndWaitForEvent reports, after the action settles, a
 TYPE_VIEW_SCROLLED for each view whose scroll state changed (filled by the view's own onInitializeAccessibilityEvent:
 scrollY/maxScrollY, or from/to/item count; changed means those or its first child's position, as a list moves its
-children and a swipe within a tall item changes no index), then a window change; other filters time out. UiAutomator's scroll, fling
+children and a swipe within a tall item changes no index; sealed, its source the view, on the window's in-process
+connection, so a filter's `getSource()` is that view's node, as a service receives it), then a window change; other
+filters time out. UiAutomator's scroll, fling
 and scrollUntil read the end from that scroll event (`Until.scrollFinished`); without it scrollUntil took each swipe
 for a null scroll and gave up after five (`UiAutomatorConformanceTest`). Compose scrolling has no such view state, so
 it gets none. With `--realtime-clock` the idle wait (`settle`) runs what comes due for its quiet time and stops once

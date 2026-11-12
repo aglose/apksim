@@ -108,16 +108,21 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     }
   }
 
+  /** Gives the window its accessibility id unless it has one. */
+  private static void giveWindowId(ViewRootImpl root) {
+    Object attach = ReflectionHelpers.getField(root, "mAttachInfo");
+    if (ReflectionHelpers.<Integer>getField(attach, "mAccessibilityWindowId") == AccessibilityWindowInfo.UNDEFINED_WINDOW_ID) {
+      ReflectionHelpers.setField(attach, "mAccessibilityWindowId", windowId(root));
+    }
+  }
+
   /** The root node of a window, linked to its views so that the whole tree can be walked from it. */
   private static AccessibilityNodeInfo rootNode(Win w) {
     // The window's accessibility id, which the system gives each window it reports (here no one did): every node of
     // the window carries it, and a node's equals and hashCode include it. Without it every window's root node was
     // equal to every other's (the same root item id, window id undefined), and UiDevice, which collects the roots in a
     // set, kept only the active window's.
-    Object attach = ReflectionHelpers.getField(w.root, "mAttachInfo");
-    if (ReflectionHelpers.<Integer>getField(attach, "mAccessibilityWindowId") == AccessibilityWindowInfo.UNDEFINED_WINDOW_ID) {
-      ReflectionHelpers.setField(attach, "mAccessibilityWindowId", windowId(w.root));
-    }
+    giveWindowId(w.root);
     AccessibilityNodeInfo info = w.view.createAccessibilityNodeInfo();
     if (info == null) return null;
     info.setQueryFromAppProcessEnabled(w.view, true);
@@ -317,7 +322,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       List<AccessibilityEvent> out = new ArrayList<>();
       for (java.util.Map.Entry<View, String> e : before.entrySet()) {
         View v = e.getKey();
-        if (v.isAttachedToWindow() && !scrollState(v).equals(e.getValue())) out.add(scrollEvent(v));
+        if (v.isAttachedToWindow() && !scrollState(v).equals(e.getValue())) out.add(delivered(v, scrollEvent(v)));
       }
       return out;
     });
@@ -355,6 +360,25 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     AccessibilityEvent e = new AccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SCROLLED);
     v.onInitializeAccessibilityEvent(e);
     e.setEventTime(SystemClock.uptimeMillis());
+    return e;
+  }
+
+  /**
+   * The event as an accessibility service receives it: its source the view (View's own onInitializeAccessibilityEvent
+   * sets it, with the window's id, which the window gets here if no query gave it one yet), sealed, on the window's
+   * in-process connection, and getSource() that view's node. Before, getSource() was null, so a filter that reads it
+   * matched nothing and the wait timed out (UiAutomatorConformanceTest.aScrollEventsSourceIsTheScrolledView).
+   */
+  private static AccessibilityEvent delivered(View v, AccessibilityEvent e) {
+    ViewRootImpl root = v.getViewRootImpl();
+    if (root == null) return e;
+    giveWindowId(root);
+    e.setSource(v);
+    e.setConnectionId(root.getDirectAccessibilityConnectionId());
+    e.setSealed(true);
+    // Robolectric's AccessibilityRecord shadow answers getSource() only with a node given to it (setSourceNode),
+    // never through the connection: the node the source fields name, looked up as a service's getSource() would.
+    Shadow.<org.robolectric.shadows.ShadowAccessibilityRecord>extract(e).setSourceNode(e.getSource(0));
     return e;
   }
 
