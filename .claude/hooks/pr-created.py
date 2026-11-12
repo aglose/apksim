@@ -14,12 +14,14 @@ except ValueError:
     sys.exit(0)
 
 command = (event.get("tool_input") or {}).get("command") or ""
-if not re.search(r"\bgh\s+pr\s+create\b", command):
+# gh pr create as a command of its own (start of the line or after ; & | ( ), not words in an echo or a --body.
+if not re.search(r"(?:^|[;&|(]|&&|\|\|)\s*gh\s+pr\s+create\b", command, re.M):
     sys.exit(0)
 
+# gh pr create prints the new PR's URL on a stdout line by itself; other output that names a PR does not count.
 response = event.get("tool_response")
-text = json.dumps(response) if not isinstance(response, str) else response
-urls = sorted(set(re.findall(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", text)))
+stdout = response.get("stdout") if isinstance(response, dict) else response
+urls = sorted(set(re.findall(r"^\s*(https://github\.com/[\w.-]+/[\w.-]+/pull/\d+)\s*$", str(stdout or ""), re.M)))
 if not urls:
     sys.exit(0)  # the create failed or printed no PR: nothing to review
 
