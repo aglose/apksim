@@ -2766,6 +2766,20 @@ final class MethodTranslator implements Opcodes {
           "(Landroid/app/Instrumentation;)Landroid/content/Context;", false);
       return;
     }
+    if ("androidx/room/RoomDatabase".equals(owner)) {
+      // Room's "Cannot access database on the main thread" check: a test body runs on the instrumentation thread on
+      // a device, so in a test run the body is not the main thread here either (TestActivities.roomMainThread).
+      if (opcode == INVOKEVIRTUAL && "android/os/Looper".equals(ownerName) && "getThread".equals(m.name())
+          && "()Ljava/lang/Thread;".equals(m.descriptor())) {
+        mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "roomMainThread", "(Landroid/os/Looper;)Ljava/lang/Thread;", false);
+        return;
+      }
+      if (opcode == INVOKEVIRTUAL && "androidx/arch/core/executor/ArchTaskExecutor".equals(ownerName)
+          && "isMainThread".equals(m.name()) && "()Z".equals(m.descriptor())) {  // Room before 2.6
+        mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "roomIsMainThread", "(Ljava/lang/Object;)Z", false);
+        return;
+      }
+    }
     if (opcode == INVOKEVIRTUAL && "java/util/concurrent/CountDownLatch".equals(ownerName) && "await".equals(m.name())
         && "(JLjava/util/concurrent/TimeUnit;)Z".equals(m.descriptor()) && "androidx/test/uiautomator/InteractionController".equals(owner)) {
       // UiAutomator's wait for a frame after each gesture step; on the main thread in a test run, the main queue

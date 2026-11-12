@@ -48,8 +48,8 @@ import org.robolectric.util.ReflectionHelpers;
  *
  * Shell commands run apksim's adb shell in this process ({@link #executeShellCommand}).
  *
- * <p>Not here: accessibility events (executeAndWaitForEvent runs the action, lets the UI settle and reports a window
- * change, else times out) and global actions other than Back.
+ * <p>Not here: an accessibility event stream (executeAndWaitForEvent runs the action, lets the UI settle and reports
+ * the scrolls and window change it made, else times out) and global actions other than Back.
  */
 @Implements(UiAutomation.class)
 public class ShadowSimUiAutomation extends ShadowUiAutomation {
@@ -252,9 +252,25 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     ShadowLooper main = shadowOf(Looper.getMainLooper());
     if (RealTimeClock.requested()) {
       // The clock follows real time, so an endless animation always has its next frame due and idle() never ends; on a
-      // device the wait returns after its timeout. Run what is due for at most the quiet time, in real time.
+      // device the wait returns after its timeout. Run what comes due for at most the quiet time, in real time, and
+      // stop early once nothing is scheduled within 50 ms. Not at the first moment nothing is due: a window just
+      // shown has its first layout at the next vsync, a few ms on, and a query before it found an empty window
+      // (UiAutomatorConformanceTest's first queries after a launch, with --realtime-clock).
       long until = System.nanoTime() + quietMillis * 1_000_000L;
-      while (!main.isIdle() && System.nanoTime() < until) main.runOneTask();
+      while (System.nanoTime() < until) {
+        if (!main.isIdle()) {
+          main.runOneTask();
+          continue;
+        }
+        long next = main.getNextScheduledTaskTime().toMillis();
+        if (next == 0 || next - SystemClock.uptimeMillis() > 50) return;  // the clock read moves it up to real time
+        try {
+          Thread.sleep(1);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
       return;
     }
     // Not main.idle() or idleFor(): with Robolectric's Choreographer unpaused, as in test runs, a frame asked for runs
@@ -275,13 +291,19 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   }
 
   /**
-   * Without accessibility events: runs the action, lets the UI settle, and offers the filter the events a window
-   * change would bring. UiAutomator's clickAndWait(newWindow / windowChanged) then return once the action is done;
-   * a filter that wants something else (scroll positions) times out, which its callers treat as "nothing happened".
+   * Without an event stream: runs the action, lets the UI settle, and offers the filter the events the action would
+   * have brought. First a TYPE_VIEW_SCROLLED for each view whose scroll state changed (filled by the view itself, as
+   * its own event would be: scrollY and maxScrollY for a ScrollView, from, to and item count for an AdapterView or
+   * RecyclerView), then those of a window change. UiAutomator's clickAndWait(newWindow / windowChanged) return once
+   * the action is done, and its scroll, fling and scrollUntil learn whether the end was reached from the scroll
+   * event (Until.scrollFinished). Without it each scroll looked like nothing happened, and scrollUntil gave up after
+   * five (UiAutomatorConformanceTest). Compose's scrolling reports no such state through its view, so it still does.
+   * A filter that wants anything else times out.
    */
   @Implementation
   protected AccessibilityEvent executeAndWaitForEvent(Runnable command, UiAutomation.AccessibilityEventFilter filter,
       long timeoutMillis) throws TimeoutException {
+    java.util.Map<View, String> before = onMain(ShadowSimUiAutomation::scrollStates);
     command.run();
     if (TestActivities.testRun()) {
       onMain(() -> {
@@ -291,6 +313,17 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     } else {
       liveSettle(500);
     }
+    List<AccessibilityEvent> scrolled = onMain(() -> {
+      List<AccessibilityEvent> out = new ArrayList<>();
+      for (java.util.Map.Entry<View, String> e : before.entrySet()) {
+        AccessibilityEvent now = scrollEvent(e.getKey());
+        if (e.getKey().isAttachedToWindow() && !scrollFields(now).equals(e.getValue())) out.add(now);
+      }
+      return out;
+    });
+    for (AccessibilityEvent e : scrolled) {
+      if (filter.accept(e)) return e;
+    }
     for (int type : new int[] {AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
         AccessibilityEvent.TYPE_WINDOWS_CHANGED}) {
       AccessibilityEvent e = new AccessibilityEvent(type);
@@ -298,6 +331,35 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       if (filter.accept(e)) return e;
     }
     throw new TimeoutException("apksim: no accessibility events; nothing matched after the action");
+  }
+
+  /** Each shown view of the reported windows that can scroll, with its scroll event's fields. Main thread. */
+  private static java.util.Map<View, String> scrollStates() {
+    java.util.Map<View, String> out = new java.util.LinkedHashMap<>();
+    for (Win w : windows()) addScrollables(w.view(), out);
+    return out;
+  }
+
+  private static void addScrollables(View v, java.util.Map<View, String> out) {
+    if (v.getVisibility() != View.VISIBLE) return;
+    if (v.canScrollVertically(1) || v.canScrollVertically(-1) || v.canScrollHorizontally(1) || v.canScrollHorizontally(-1)) {
+      out.put(v, scrollFields(scrollEvent(v)));
+    }
+    if (v instanceof android.view.ViewGroup g) {
+      for (int i = 0; i < g.getChildCount(); i++) addScrollables(g.getChildAt(i), out);
+    }
+  }
+
+  /** The TYPE_VIEW_SCROLLED event the view would send now, as View.sendAccessibilityEvent fills it. */
+  private static AccessibilityEvent scrollEvent(View v) {
+    AccessibilityEvent e = new AccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SCROLLED);
+    v.onInitializeAccessibilityEvent(e);
+    e.setEventTime(SystemClock.uptimeMillis());
+    return e;
+  }
+
+  private static String scrollFields(AccessibilityEvent e) {
+    return e.getScrollX() + "," + e.getScrollY() + "," + e.getFromIndex() + "," + e.getToIndex() + "," + e.getItemCount();
   }
 
   @Implementation

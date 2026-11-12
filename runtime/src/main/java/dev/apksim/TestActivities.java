@@ -315,6 +315,40 @@ public final class TestActivities {
     return Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
   }
 
+  /** Stands for the instrumentation thread a device runs a test body on. Never started. */
+  private static final Thread TEST_BODY_THREAD = new Thread("apksim-test-body");
+
+  /**
+   * Room's main-thread check ({@code Looper.getMainLooper().getThread() == Thread.currentThread()} in
+   * RoomDatabase, which the translator sends here): in a test run, the main thread running the test body itself is
+   * not the main thread, as on a device, where the body runs on the instrumentation thread. A device test calling a
+   * blocking DAO method from its body threw "Cannot access database on the main thread" here
+   * (RoomConformanceTest). Inside a message's dispatch or runOnMainSync (onActivity, onFragment) it is the main
+   * thread, and Room refuses as on a device. Main-thread work an Espresso action runs inline from the body is let
+   * through, where a device would refuse.
+   */
+  public static Thread roomMainThread(Looper looper) {
+    Thread main = looper.getThread();
+    return main == Thread.currentThread() && inTestBody() ? TEST_BODY_THREAD : main;
+  }
+
+  /** As {@link #roomMainThread}, for Room before 2.6 (ArchTaskExecutor.isMainThread). */
+  public static boolean roomIsMainThread(Object archTaskExecutor) {
+    boolean main;
+    try {  // the app's class, so by reflection; its delegate decides (InstantTaskExecutorRule's says always)
+      main = (Boolean) archTaskExecutor.getClass().getMethod("isMainThread").invoke(archTaskExecutor);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+    return main && !(Looper.getMainLooper().isCurrentThread() && inTestBody());
+  }
+
+  /** The main thread in a test body, outside any dispatch or runOnMainSync. Off with -Dapksim.roomTestBody=false. */
+  private static boolean inTestBody() {
+    return testRun() && !"false".equals(System.getProperty("apksim.roomTestBody")) && canRunMainQueue()
+        && StackWalker.getInstance().walk(s -> s.noneMatch(f -> f.getMethodName().equals("runOnMainSync")));
+  }
+
   /**
    * On the main thread outside a dispatch ({@link #canRunMainQueue}): runs the main queue's due messages until
    * {@code done} or {@code nanos} have passed, for work that waits on its own thread's queue (an ordered broadcast's
