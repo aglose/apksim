@@ -60,12 +60,15 @@ public final class TabRelay {
 
   public static void load() {
     on = Boolean.getBoolean("apksim.tabRelay");
+    linkDeadline = System.currentTimeMillis() + FIRST_LINK_MS;
   }
 
   private static volatile PrintWriter sender;
   /** A tab has attached at least once (the agent attaches just after the control port opens, around app start). */
   private static volatile boolean linked;
-  private static final long FIRST_LINK_MS = Long.getLong("apksim.tabRelay.firstLinkMs", 5_000);
+  /** How long after the launch a request waits for the first tab: the agent attaches as the app starts. Later, 502 at once. */
+  private static final long FIRST_LINK_MS = Long.getLong("apksim.tabRelay.firstLinkMs", 10_000);
+  private static volatile long linkDeadline;
   private static final Map<Long, CompletableFuture<Reply>> pending = new ConcurrentHashMap<>();
   /** The link each pending request went out on, so a link's end fails only its own. */
   private static final Map<Long, PrintWriter> owners = new ConcurrentHashMap<>();
@@ -173,9 +176,8 @@ public final class TabRelay {
     PrintWriter out = sender;
     if (out == null && !linked) {  // a request from Application.onCreate can come before the agent has attached
       synchronized (TabRelay.class) {
-        long end = System.currentTimeMillis() + FIRST_LINK_MS;
         try {
-          while (sender == null && !linked && System.currentTimeMillis() < end) TabRelay.class.wait(100);
+          while (sender == null && !linked && System.currentTimeMillis() < linkDeadline) TabRelay.class.wait(100);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
         }
