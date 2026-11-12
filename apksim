@@ -207,6 +207,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # a moving test pattern at 30 fps) or fake=IMAGE (that still image instead).
     --camera) [[ "$2" =~ ^(off|fake|fake=.+)$ ]] || { echo "--camera takes off|fake|fake=IMAGE" >&2; exit 2; }; EXTRA+=("-Dapksim.camera=$2"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
+    # The tab relay (docs/beam.md): the app's plain-HTTP requests to page.apksim.invalid go to the browser tab that
+    # started the session. The agent adds it for a start that asked.
+    --tab-relay) EXTRA+=("-Dapksim.tabRelay=true"); shift ;;
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
     --nav-bar) EXTRA+=("-Dapksim.navBar=$2"); shift 2 ;;
@@ -324,7 +327,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.camera=*|-Dapksim.setting.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
-      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
+      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;
       -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || WARM_OK="" ;;  # a standby's sandbox writes only under STATE

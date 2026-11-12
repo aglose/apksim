@@ -93,6 +93,9 @@ jobs:
       - name: serve pacing check (an H.264 tab slower than the app, on a simulated clock)
         if: needs.changes.outputs.code != 'false'
         run: scripts/check-pacer.sh
+      - name: tab relay check (a stand-in tab: both clients, bodies, limits, timeouts)
+        if: needs.changes.outputs.code != 'false'
+        run: scripts/check-tab-relay.sh
       - name: serve ttl check (added apps expire; a running session keeps its APK)
         if: needs.changes.outputs.code != 'false'
         run: scripts/check-ttl.sh

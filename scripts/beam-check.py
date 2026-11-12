@@ -27,6 +27,7 @@ Everything runs in a state folder of its own (`APKSIM_HOME`, removed at the end)
 sites and builds are not touched; its instances therefore start without the class cache or startup cache.
 """
 import argparse
+import base64
 import hashlib
 import http.client
 import importlib.util
@@ -1135,7 +1136,7 @@ def main():
         g = agent(apksim, gp, "deny")
         st, h, body = req(gp, "GET", "/beam/hello", A)
         hello = json.loads(body)
-        check(st == 200 and hello.get("protocol") == 2 and hello.get("trusted") is False, f"agent: hello ({body!r})")
+        check(st == 200 and hello.get("protocol") == 3 and hello.get("trusted") is False, f"agent: hello ({body!r})")
         check(h.get("access-control-allow-origin") == A, "agent: any page may read its hello")
         st, h, _ = req(gp, "OPTIONS", "/beam/start", A, headers={"Access-Control-Request-Method": "POST",
                                                                   "Access-Control-Request-Private-Network": "true"})
@@ -1377,6 +1378,87 @@ def main():
         check(until(lambda: len(saved_ids(apksim)) == 1, 10), "keep: and is saved without asking")
         for i in saved_ids(apksim):
             beam(apksim, "forget", i)
+
+        # ---- the tab relay (docs/beam.md "The tab relay", issue 276)
+        stop(g)
+        g = agent(apksim, gp, "allow")
+        st, _, body = req(gp, "GET", "/beam/hello", B)
+        check(json.loads(body).get("relay") is True, "relay: hello says this agent has it")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start, protocol=2, relay=True))
+        check(st == 409 and b"protocol 3" in body, f"relay: a start in protocol 2 cannot ask for it ({st} {body[:60]!r})")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start, protocol=3, relay="yes"))
+        check(st == 400, "relay: it takes true or false")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start, protocol=3, options=["--tab-relay"]))
+        check(st in (400, 403), "relay: a page cannot name the launch flag itself")
+        # Without it the host stays unresolved: the Relay button's request fails in the app, nothing reaches the tab.
+        gr, _ = begin(gp, B, dict(start, protocol=3), apk)
+        sr = open_session(gp, gr, B)
+        pid = sr.stats.get("pid", 0)
+        control(pid, "open apksim://network")
+        time.sleep(2)
+        control(pid, "tap-text Relay URL")
+        sr.pump(4)
+        nd = ""
+        for _ in range(20):
+            nd = control(pid, "nodes")
+            if "relay urlconnection: UnknownHostException" in nd or "relay urlconnection: ConnectException" in nd:
+                break
+            time.sleep(0.5)
+        check(not any(t.startswith("y ") for t in sr.texts) and "relay urlconnection: idle" not in nd,
+              "relay: not asked for, the app's request fails and the tab hears nothing")
+        close_session(sr)
+        # Asked for: the tab gets `y` messages and answers them.
+        gr, _ = begin(gp, B, dict(start, protocol=3, relay=True), apk)
+        sr = open_session(gp, gr, B)
+        pid = sr.stats.get("pid", 0)
+        control(pid, "open apksim://network")
+        time.sleep(2)
+        seen = []
+
+        def serve_tab(until_n, delay=0.0):
+            """Answers the app's requests as the tab does, until it has answered until_n."""
+            end = time.time() + 30
+            while len(seen) < until_n and time.time() < end:
+                sr.pump(0.3)
+                for t in list(sr.texts):
+                    if t.startswith("y ") and t not in seen:
+                        seen.append(t)
+                        _, i, rest = t.split(" ", 2)
+                        r = json.loads(rest)
+                        body = json.dumps({"path": r["path"], "method": r["method"],
+                                           "got": base64.b64decode(r["body"]).decode(),
+                                           "from": r["headers"].get("X-From")}).encode()
+                        time.sleep(delay)
+                        sr.ws.send("y %s %s" % (i, json.dumps({"status": 200, "headers": {"X-Relay": "tab"},
+                                                                 "body": base64.b64encode(body).decode()})))
+
+        control(pid, "tap-text Relay URL")
+        serve_tab(1)
+        nd = ""
+        for _ in range(20):
+            sr.pump(0.3)
+            nd = control(pid, "nodes")
+            if "relay urlconnection: 200" in nd:
+                break
+        check("relay urlconnection: 200" in nd and "/relay/url" in nd and "[tab]" in nd,
+              "relay: HttpURLConnection's GET reaches the tab and its answer comes back")
+        control(pid, "tap-text Relay")
+        serve_tab(2)
+        for _ in range(20):
+            sr.pump(0.3)
+            nd = control(pid, "nodes")
+            if "relay okhttp: 200" in nd:
+                break
+        check("relay okhttp: 200" in nd and "POST" in nd and "[tab]" in nd, "relay: OkHttp's POST (a body each way) reaches the tab")
+        first = json.loads(seen[0].split(" ", 2)[2])
+        check(first["method"] == "GET" and first["path"] == "/relay/url" and first["headers"].get("X-From") == "urlconnection"
+              and "Host" not in first["headers"], f"relay: the request the tab gets ({first['method']} {first['path']})")
+        # A `y` the tab invents is not passed to the app: no pending request, nothing to answer.
+        sr.ws.send('y 999999 {"status":200,"headers":{},"body":""}')
+        sr.ws.send("y 1 not json")
+        sr.pump(1)
+        check(alive(pid), "relay: answers to requests nobody asked, or that are not JSON, change nothing")
+        check(close_session(sr), "relay: that session ends")
     finally:
         if g:
             stop(g)

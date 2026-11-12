@@ -290,6 +290,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
+  - `net/TabRelay`, `RelaySocket`, `RelayConnection`: the beam tab relay (issue 276, docs/beam.md "The tab relay"): with
+    `--tab-relay` (the agent adds it for a start with `"relay": true`, protocol 3), plain-HTTP requests to
+    `page.apksim.invalid` are carried to the browser tab as `y ID {json}` text messages and answered by it. In-JVM (the
+    beam sandbox denies loopback): `SocketFactory.createSocket()` in app code goes to `Net.createSocket`, which returns a
+    `RelaySocket` while the relay is on (the factory's own socket for any other address), `URL.openConnection` a
+    `RelayConnection`; the instance's `relaywatch` control connection is the link to `Session`. `scripts/check-tab-relay.sh` (CI).
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.

@@ -353,6 +353,51 @@ final class Session {
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
     if (serve.inspectNetwork && !serve.beam) watchNetwork(p);
+    if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
+  }
+
+  // ---------------------------------------------------------------- the tab relay (docs/beam.md, issue 276)
+
+  private volatile Socket relaywatch;
+  /** The longest `y` line taken from the tab: 512 KB of body as base64, and headers. */
+  private static final int RELAY_LINE_MAX = 900_000;
+
+  /**
+   * The app's requests to the page's own site: the instance's `relaywatch` connection carries `y ID {json}` lines, passed
+   * on to the tab as text messages (a page answers them with the cookies of its sign-in), and the tab's `y` answers
+   * come back the same way. The agent looks at no path: what to answer is the page's decision.
+   */
+  private void watchRelay(int port) throws IOException {
+    Socket s = relaywatch = connect(port);
+    s.getOutputStream().write("relaywatch\n".getBytes(StandardCharsets.US_ASCII));
+    Thread.ofVirtual().name("serve-relay-" + id).start(() -> {
+      try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+        String first = r.readLine();
+        if (first == null || !first.equals("ok relaywatch")) {
+          logLine("[beam] tab relay: " + first);
+          closeQuietly(s);
+          return;
+        }
+        for (String line; (line = r.readLine()) != null; ) {
+          if (line.length() < RELAY_LINE_MAX && line.startsWith("y ")) ws.sendText(line);
+        }
+      } catch (IOException e) {
+        // the instance went away
+      }
+    });
+  }
+
+  /** The tab's `y ID {json}` to the instance, if this session asked for the relay and the line is one. */
+  private void relayAnswer(String text) {
+    Socket s = relaywatch;
+    if (s == null || text.length() >= RELAY_LINE_MAX || !text.matches("(?s)y [0-9]{1,18} \\{.*") || text.indexOf('\n') >= 0) return;
+    try {
+      synchronized (s) {
+        s.getOutputStream().write((text + "\n").getBytes(StandardCharsets.UTF_8));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
   }
 
   // ---------------------------------------------------------------- the network inspector (docs/pr-preview.md)
@@ -959,6 +1004,10 @@ final class Session {
       // its own across machines (NTP's way: the sample with the shortest round trip wins).
       java.time.Instant now = java.time.Instant.now();
       ws.sendText(text + " " + (now.getEpochSecond() * 1000 + now.getNano() / 1_000_000.0));
+      return;
+    }
+    if (text.startsWith("y ")) {
+      relayAnswer(text);
       return;
     }
     if (text.equals("stats")) {
@@ -1598,6 +1647,7 @@ final class Session {
     closeQuietly(control);
     closeQuietly(stream);
     closeQuietly(netwatch);
+    closeQuietly(relaywatch);
     keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.

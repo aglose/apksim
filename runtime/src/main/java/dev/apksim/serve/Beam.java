@@ -33,8 +33,10 @@ final class Beam {
    *
    * 2 (issue 173): a start with data the agent cannot download itself may answer `need: "data"`, and the page sends the
    * pack to `/beam/upload-data`. A protocol 1 page would read that answer as a session grant, so it still gets the 502.
+   *
+   * 3 (issue 276): the start's `"relay": true` and the `y` text messages of the tab relay; `/beam/hello` says `"relay": true`.
    */
-  static final int PROTOCOL = 2;
+  static final int PROTOCOL = 3;
   static final int MIN_PROTOCOL = 1;
 
   /** {min, max} this build speaks (or the checks' override). */

@@ -70,6 +70,35 @@ object GreetingClient {
     }
   }
 
+  /**
+   * The page's own site through the tab relay (docs/beam.md "The tab relay"): plain HTTP to page.apksim.invalid, which
+   * apksim carries to the browser tab that started a beam session with `relay`. A POST of a body through OkHttp, whose
+   * default read timeout is 10 s.
+   */
+  const val RELAY = "http://page.apksim.invalid"
+
+  fun relayFetch(path: String = "/relay/okhttp"): Result {
+    val t0 = System.nanoTime()
+    val request = Request.Builder().url(RELAY + path).post("""{"from":"okhttp"}""".toRequestBody("application/json".toMediaType())).build()
+    OkHttpClient().newCall(request).execute().use { r ->
+      return Result(r.code, r.body.string(), r.header("X-Relay"), (System.nanoTime() - t0) / 1_000_000)
+    }
+  }
+
+  /** GET through HttpURLConnection (plain http: not the HttpsURLConnection above). */
+  fun relayFetchWithUrlConnection(path: String = "/relay/url"): Result {
+    val t0 = System.nanoTime()
+    val c = URL(RELAY + path).openConnection() as java.net.HttpURLConnection
+    c.setRequestProperty("X-From", "urlconnection")
+    try {
+      val code = c.responseCode
+      val body = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: ""
+      return Result(code, body, c.getHeaderField("X-Relay"), (System.nanoTime() - t0) / 1_000_000)
+    } finally {
+      c.disconnect()
+    }
+  }
+
   /** `--feature dev.apksim.testapp.no_timings` leaves the time out: it is real time, which a replay cannot repeat. */
   fun describe(r: Result, timing: Boolean = true) =
     "${r.code} ${r.greeting}${r.replay?.let { " [$it]" } ?: ""}" + if (timing) " in ${r.ms} ms" else ""
@@ -107,6 +136,8 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
         val scope = rememberCoroutineScope()
         var okhttp by androidx.compose.runtime.remember { mutableStateOf("idle") }
         var huc by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        var relayOk by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        var relayHuc by androidx.compose.runtime.remember { mutableStateOf("idle") }
         fun run(set: (String) -> Unit, f: () -> GreetingClient.Result) {
           set("fetching")
           scope.launch {
@@ -122,6 +153,13 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
             Button({ run({ okhttp = it }) { GreetingClient.fetch("/v1/missing") } }, Modifier.padding(start = 8.dp)) { Text("Fetch other") }
             Button({ run({ huc = it }) { GreetingClient.fetchWithUrlConnection() } }, Modifier.padding(start = 8.dp)) { Text("URL") }
           }
+          Row(Modifier.padding(top = 8.dp)) {
+            Button({ run({ relayOk = it }) { GreetingClient.relayFetch() } }) { Text("Relay") }
+            Button({ run({ relayOk = it }) { GreetingClient.relayFetch("/relay/slow") } }, Modifier.padding(start = 8.dp)) { Text("Relay slow") }
+            Button({ run({ relayHuc = it }) { GreetingClient.relayFetchWithUrlConnection() } }, Modifier.padding(start = 8.dp)) { Text("Relay URL") }
+          }
+          Text("relay okhttp: $relayOk", Modifier.padding(top = 8.dp))
+          Text("relay urlconnection: $relayHuc", Modifier.padding(top = 8.dp))
           Text("okhttp: $okhttp", Modifier.padding(top = 12.dp))
           Text("urlconnection: $huc", Modifier.padding(top = 8.dp))
           Text("connectivity: $connectivity", Modifier.padding(top = 8.dp))

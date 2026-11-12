@@ -71,6 +71,11 @@ final class Control {
           if (dev.apksim.net.Net.inspecting()) dev.apksim.net.Net.watch(s, out);
           return;
         }
+        if (args[0].equals("relaywatch")) {
+          // relaywatch: this connection becomes the tab relay's link, `y ID {json}` lines both ways (dev.apksim.net.TabRelay).
+          dev.apksim.net.TabRelay.serve(in, out);
+          return;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(p.await());
