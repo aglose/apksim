@@ -25,6 +25,11 @@ public final class Checks {
       out.append("SuperCall threw ").append(e).append('\n');
     }
     try {
+      expect(out, "super call through the superclass's interface", "impl+base", new SuperCall2.Impl().who());
+    } catch (RuntimeException | LinkageError e) {
+      out.append("SuperCall2 threw ").append(e).append('\n');
+    }
+    try {
       Animate.Ref last = new Animate.Ref();
       float half = Animate.animate(1f, 0f, 100, 1f, now -> now + 50, last);
       expect(out, "animate to its end", 0f, half);

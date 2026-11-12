@@ -2528,7 +2528,19 @@ final class MethodTranslator implements Opcodes {
         case 4 -> call(INVOKEINTERFACE, ownerName, m, true);
         default -> {
           boolean itf = !"<init>".equals(m.name()) && isInterface.test(ownerName);
-          if (itf) ownerName = directSuperinterface(ownerName, m);
+          if (itf) {
+            String d = directSuperinterface(ownerName, m);
+            if (d.equals(ownerName) && !reachesThroughOwnInterfaces(ownerName)) {
+              // Reached through the superclass's interfaces (R8): resolution through the direct superclass finds it.
+              String sup = superclassReaching(ownerName, m);
+              if (sup != null) {
+                ownerName = sup;
+                itf = false;
+              }
+            } else {
+              ownerName = d;
+            }
+          }
           call(INVOKESPECIAL, ownerName, m, itf);
         }
       }
@@ -2552,6 +2564,38 @@ final class MethodTranslator implements Opcodes {
       if (reaches(d, target, m, 0)) return d;
     }
     return target;
+  }
+
+  private boolean reachesThroughOwnInterfaces(String target) {
+    int self = dex.classDefIndex(owner);
+    if (self < 0) return true; // unknown: leave the call as it was.
+    for (String d : dex.interfacesOf(self)) {
+      java.util.Set<String> seen = new java.util.HashSet<>();
+      // Any own interface that reaches (or fails to be searched) keeps the interface route, redeclaration or not.
+      if (!closure(d, seen, 0) || seen.contains(target)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The direct superclass (found in this DEX) when one of its interfaces, or theirs, is {@code target} and none of
+   * those redeclares the method (JVMS 5.4.3.3 then resolves the Methodref to target's default), else null.
+   */
+  private String superclassReaching(String target, DexFile.MethodRef m) {
+    int self = dex.classDefIndex(owner);
+    if (self < 0) return null;
+    String sup = dex.superclassOf(self);
+    if (sup == null) return null;
+    for (int depth = 0, def = dex.classDefIndex(sup); def >= 0 && depth < 32; depth++) {
+      if (dex.declaresMethod(def, m.name(), m.descriptor())) return null; // would run its own override, not the interface's default: not expressible.
+      for (String d : dex.interfacesOf(def)) {
+        if (d.equals(target) || reaches(d, target, m, 0)) return sup;
+      }
+      String up = dex.superclassOf(def);
+      if (up == null) return null;
+      def = dex.classDefIndex(up);
+    }
+    return null;
   }
 
   /**
