@@ -272,14 +272,31 @@ public final class TabRelay {
     private int pos;
     private boolean closed;
     private final long cap;
+    /** A writer past the cap waits for the reader (the engine's links) instead of failing (the relay's requests). */
+    private final boolean blocking;
 
     Pipe(long cap) {
+      this(cap, false);
+    }
+
+    Pipe(long cap, boolean blocking) {
       this.cap = cap;
+      this.blocking = blocking;
     }
 
     synchronized void write(byte[] b, int off, int len) throws IOException {
+      if (blocking) {
+        while (!closed && buf.size() + (data.length - pos) > cap) {
+          try {
+            wait(200);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.io.InterruptedIOException();
+          }
+        }
+      }
       if (closed) throw new IOException("Broken pipe");
-      if (buf.size() + (data.length - pos) + len > cap) throw new IOException("the tab relay takes requests up to " + cap / 1024 + " KB");
+      if (!blocking && buf.size() + (data.length - pos) + len > cap) throw new IOException("the tab relay takes requests up to " + cap / 1024 + " KB");
       buf.write(b, off, len);
       notifyAll();
     }
@@ -311,6 +328,7 @@ public final class TabRelay {
       int n = Math.min(len, data.length - pos);
       System.arraycopy(data, pos, b, off, n);
       pos += n;
+      if (blocking) notifyAll();
       return n;
     }
 

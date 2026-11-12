@@ -74,6 +74,11 @@ final class NetEngine {
     }
   }
 
+  /** An in-memory connection (the beam sandbox denies loopback): served on a thread of its own, as an accepted one. */
+  void serveInMemory(TabRelay.Pipe fromApp, TabRelay.Pipe toApp) {
+    Thread.ofVirtual().name("apksim-net-conn").start(() -> serve(new PipeSocket(fromApp, toApp)));
+  }
+
   private void serve(Socket client) {
     Conn c = new Conn(client);
     open.add(c);

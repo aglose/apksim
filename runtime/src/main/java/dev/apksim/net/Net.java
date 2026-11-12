@@ -47,6 +47,13 @@ public final class Net {
 
   enum Mode { SHAPE, RECORD, REPLAY }
 
+  /**
+   * The beam sandbox (docs/beam.md) denies loopback, where the engine listens: app sockets reach it through in-memory
+   * pipes (RelaySocket#connectEngine), and the JDK's own HttpURLConnection, which would need its proxy on loopback,
+   * goes out directly (not captured). `-Dapksim.netInMemory=true` does the same outside the sandbox, to check it.
+   */
+  static final boolean inMemory = Boolean.getBoolean("apksim.beamSandbox") || Boolean.getBoolean("apksim.netInMemory");
+
   /** Any --network option was given: the hooks below act. */
   static volatile boolean active;
   static Mode mode = Mode.SHAPE;
@@ -432,16 +439,17 @@ public final class Net {
   }
 
   public static void connect(Socket s, SocketAddress a, int timeout) throws IOException {
-    if (s instanceof RelaySocket rs) {  // the tab relay is on (docs/beam.md "The tab relay")
-      rs.connectTo(a, timeout);
-      return;
+    Socket raw = s;  // what connects directly
+    if (s instanceof RelaySocket rs) {  // the tab relay is on (docs/beam.md "The tab relay"), or the engine is in memory
+      if (rs.relayConnect(a)) return;
+      raw = rs.real();
     }
     if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
-      s.connect(a, timeout);
+      raw.connect(a, timeout);
       return;
     }
     if (!active) {
-      s.connect(a, timeout);
+      raw.connect(a, timeout);
       directly(s, isa);  // for a `network offline` later
       startedMeanwhile(s);
       return;
@@ -461,7 +469,7 @@ public final class Net {
         unmatched.add(msg);
         throw new ConnectException(msg);
       }
-      s.connect(a, timeout);
+      raw.connect(a, timeout);
       directly(s, isa);
       return;
     }
@@ -477,7 +485,8 @@ public final class Net {
     }
     Conditions.sleep(rtt);
     int left = timeout > 0 ? timeout - rtt : 0;
-    s.connect(engine.address(), left);
+    if (s instanceof RelaySocket rs && inMemory) rs.connectEngine(engine, isa);
+    else raw.connect(engine.address(), left);
     int before = s.getSoTimeout();
     try {
       OutputStream out = s.getOutputStream();
@@ -508,7 +517,7 @@ public final class Net {
   /** `factory.createSocket()`: with the tab relay on, a plain factory's socket can be connected to the relay's host. */
   public static Socket createSocket(SocketFactory f) throws IOException {
     Socket s = f.createSocket();
-    return TabRelay.on && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
+    return (TabRelay.on || inMemory) && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
   }
 
   /** A socket already connected to the relay's host (the factory's two-argument forms). */
@@ -534,6 +543,7 @@ public final class Net {
     Socket s;
     try {
       s = f instanceof SSLSocketFactory ? new Socket() : f.createSocket();
+      if (inMemory && s.getClass() == Socket.class) s = new RelaySocket(s);
     } catch (IOException | UnsupportedOperationException e) {
       // A factory that makes only connected sockets: its connection cannot go through the engine. Offline and replaying
       // that means failing (nothing may leave); otherwise it connects directly, unrecorded.
@@ -605,7 +615,7 @@ public final class Net {
     if (s instanceof RelaySocket rs) {
       // TLS over a plain factory's socket (OkHttp's https): layered on the socket the factory made; the relay is plain HTTP only.
       if (rs.isRelay()) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
-      s = rs.real();
+      if (!rs.isEngineLink()) s = rs.real();
     }
     if (active && mode != Mode.SHAPE && redirected.contains(s)) return new FakeTlsSocket(s, host, port, autoClose, f);
     return f.createSocket(s, host, port, autoClose);
@@ -623,6 +633,8 @@ public final class Net {
     return open(u, null).getInputStream();
   }
 
+  private static volatile boolean urlConnectionLogged;
+
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
     String host = u.getHost();
@@ -638,6 +650,14 @@ public final class Net {
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
     // (no lookup to fail) would otherwise still reach the server.
     if (conditions.offline()) return OfflineConnection.of(u, p);
+    if (inMemory && mode != Mode.REPLAY && (p == null || p.type() == Proxy.Type.DIRECT)) {
+      // The engine's proxy would be on loopback, which the beam sandbox denies: out directly, not captured.
+      if (!urlConnectionLogged) {
+        urlConnectionLogged = true;
+        log("network: HttpURLConnection requests go out directly in the beam sandbox: not captured, recorded or shaped");
+      }
+      return trackedTls(u.openConnection());
+    }
     if (p != null && p.type() != Proxy.Type.DIRECT && mode != Mode.REPLAY) {
       // The app's own proxy is its route out: kept, so the request goes through it as it would have (not recorded or
       // shaped). Replaying, nothing goes out, so the engine answers as for any other request.
