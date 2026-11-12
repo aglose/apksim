@@ -4,7 +4,8 @@ import org.objectweb.asm.*;
 /** build.sh: rewrites fixture/SuperCall$Impl's invokespecial of SuperCall$Mid.who to SuperCall$Base.who. */
 public class RetargetSuper {
   public static void main(String[] a) throws Exception {
-    Path p = Path.of(a[0], "fixture", "SuperCall$Impl.class");
+    for (String c : new String[] {"SuperCall$Impl.class"}) {
+    Path p = Path.of(a[0], "fixture", c);
     ClassReader cr = new ClassReader(Files.readAllBytes(p));
     ClassWriter cw = new ClassWriter(0);
     cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
@@ -20,5 +21,6 @@ public class RetargetSuper {
       }
     }, 0);
     Files.write(p, cw.toByteArray());
+    }
   }
 }

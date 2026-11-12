@@ -2528,7 +2528,7 @@ final class MethodTranslator implements Opcodes {
         case 4 -> call(INVOKEINTERFACE, ownerName, m, true);
         default -> {
           boolean itf = !"<init>".equals(m.name()) && isInterface.test(ownerName);
-          if (itf) ownerName = directSuperinterface(ownerName);
+          if (itf) ownerName = directSuperinterface(ownerName, m);
           call(INVOKESPECIAL, ownerName, m, itf);
         }
       }
@@ -2540,41 +2540,29 @@ final class MethodTranslator implements Opcodes {
    * HotSpot allows an invokespecial of an interface method only through a direct superinterface of the calling class;
    * ART resolves a super call to a default method through any superinterface. R8 merges interfaces, leaving a class
    * whose call names an indirect one (IncompatibleClassChangeError). Returns the direct superinterface of this class
-   * (found in this DEX) that reaches {@code target}, else {@code target}.
+   * (found in this DEX) that reaches {@code target} without an interface on the way redeclaring the method (that
+   * one would run instead of the target's: not expressible, so the original owner stays), else {@code target}.
    */
-  private String directSuperinterface(String target) {
-    java.util.List<String> direct = directInterfaces(owner);
-    if (direct.contains(target)) return target;
+  private String directSuperinterface(String target, DexFile.MethodRef m) {
+    int self = dex.classDefIndex(owner);
+    if (self < 0) return target;
+    String[] direct = dex.interfacesOf(self);
+    for (String d : direct) if (d.equals(target)) return target;
     for (String d : direct) {
-      if (reaches(d, target, 0)) return d;
+      if (reaches(d, target, m, 0)) return d;
     }
     return target;
   }
 
-  private boolean reaches(String from, String target, int depth) {
+  private boolean reaches(String from, String target, DexFile.MethodRef m, int depth) {
     if (from.equals(target)) return true;
     if (depth > 32) return false;
-    for (String s : directInterfaces(from)) {
-      if (reaches(s, target, depth + 1)) return true;
+    int def = dex.classDefIndex(from);
+    if (def < 0 || dex.declaresMethod(def, m.name(), m.descriptor())) return false;
+    for (String s : dex.interfacesOf(def)) {
+      if (reaches(s, target, m, depth + 1)) return true;
     }
     return false;
-  }
-
-  /** The interfaces a class of this DEX lists (an interface's superinterfaces); none for classes it does not hold. */
-  private java.util.List<String> directInterfaces(String name) {
-    int t = dex.findClassType(name);
-    if (t < 0) return java.util.List.of();
-    int n = dex.classDefsSize;
-    for (int c = 0; c < n; c++) {
-      int def = dex.classDefOffset(c);
-      if (dex.i32(def) != t) continue;
-      int ifaces = dex.i32(def + 12);
-      if (ifaces == 0) return java.util.List.of();
-      java.util.List<String> out = new java.util.ArrayList<>();
-      for (String ty : dex.typeList(ifaces)) out.add(ty.substring(1, ty.length() - 1));
-      return out;
-    }
-    return java.util.List.of();
   }
 
   private static final String RUNTIME_SHADER = "android/graphics/RuntimeShader";
