@@ -76,7 +76,8 @@ apksim skin export NAME [--out ZIP]
 `apksim --skin NAME app.apk` (or the `skin NAME` command, or Device > Skin in the window) puts a skin around the
 screen. The launch takes the skin's `device` unless `--device` names one; that device must have the skin's screen shape
 (either orientation, within 1%), or a line says so and no skin is drawn. An unknown or broken skin stops the launch with
-exit 2, as a bad `--device` does. `skin` alone says where everything falls now and lists the stored skins; `skin off`
+exit 2, as a bad `--device` does. A skin edited or shared by hand is held to `skin add`'s rules there and by the `skin`
+command (the screen inside the frame, its aspect within 1% of the device's, the mask the screen's size, a known kind). `skin` alone says where everything falls now and lists the stored skins; `skin off`
 takes it away. `skin NAME` for a skin with another device switches to that device, as `device` does; a `device`,
 `size` or Device Type switch to another shape turns the skin off and says so.
 
@@ -106,7 +107,8 @@ takes it away. `skin NAME` for a skin with another device switches to that devic
 - **Flight recordings** keep the skin's shape (not its images) in each checkpoint's device, and a `skin NAME` command
   is journaled with its shape (`--shape TOKEN`). `apksim replay` starts with that shape and its device's kind
   (`-Dapksim.skinShape`) and repeats the switches, so the app gets the same device, cutout and corners with or without
-  that skin stored where it replays. `window click` is not journaled: its touches are.
+  that skin stored where it replays: the recorded shape wins over a stored skin of that name whose shape has changed.
+  `window click` is not journaled: its touches are.
 - A warm launch has the standby's environment, so the launcher passes `APKSIM_SKINS_DIR` and `APKSIM_SKINS` on as
   `-Dapksim.skinsDir` and `-Dapksim.skinsShared`.
 

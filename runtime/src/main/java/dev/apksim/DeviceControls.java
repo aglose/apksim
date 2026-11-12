@@ -656,7 +656,14 @@ final class DeviceControls {
           return "off";
         }
         dev.apksim.skin.Skin s;
-        try {
+        // A replayed `skin NAME --shape TOKEN`: the recorded shape is what the app saw. A stored skin of that name is
+        // used (its images drawn) only when it still has that shape; otherwise the recorded one, without images.
+        java.util.Map<String, Object> recorded = a.length > 3 && a[2].equals("--shape") ? Skinning.decodeShape(a[3]) : null;
+        if (recorded != null && !Skinning.sameShape(recorded, Skinning.shapeOf(a[1]))) {
+          Skinning.restoreShape(recorded);
+          s = Skinning.current();
+          if (s == null) return "error: the recorded shape of " + a[1] + " is not usable";
+        } else try {
           s = Skinning.use(a[1]);
         } catch (java.io.IOException e) {
           // A replayed `skin NAME --shape TOKEN` (FlightRecorder journals the shape with it): the recorded shape when

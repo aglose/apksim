@@ -182,6 +182,22 @@ final class Skinning {
     }
   }
 
+  /** Two shapes alike, numbers compared as numbers (a decoded one has JSON's, a fresh one Java's). */
+  static boolean sameShape(java.util.Map<?, ?> a, java.util.Map<?, ?> b) {
+    if (a == null || b == null || !a.keySet().equals(b.keySet())) return false;
+    for (Object k : a.keySet()) {
+      Object x = a.get(k), y = b.get(k);
+      if (x instanceof Number n && y instanceof Number m) {
+        if (n.doubleValue() != m.doubleValue()) return false;
+      } else if (x instanceof java.util.Map<?, ?> mx && y instanceof java.util.Map<?, ?> my) {
+        if (!sameShape(mx, my)) return false;
+      } else if (!java.util.Objects.equals(x == null ? null : String.valueOf(x), y == null ? null : String.valueOf(y))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** The shape of a stored skin, as {@link #shape()} gives the current one (a recorded `skin NAME`), or null. */
   static java.util.Map<String, Object> shapeOf(String name) {
     try {
@@ -233,6 +249,7 @@ final class Skinning {
   /** Turns a skin on (the `skin` command); the caller then switches the device if it has to. */
   static Skin use(String name) throws IOException {
     Skin s = Skins.lookup(name);
+    if (!Skin.NAME.matcher(s.name).matches()) throw new IOException("skin \"" + s.name + "\" has a bad name");
     s.spec();
     read(s);
     skin = s;
@@ -275,8 +292,28 @@ final class Skinning {
   }
 
   private static void read(Skin s) throws IOException {
+    for (String f : new String[] {s.frame, s.frameLand, s.mask}) {
+      if (f != null && (f.contains("..") || f.startsWith("/") || f.contains("\\"))) throw new IOException("skin " + s.name + ": " + f + " must be a file inside the skin's folder");
+    }
     byte[] f = Files.readAllBytes(s.dir.resolve(s.frame));
     int[] fs = pngSize(f, s.frame);
+    // What `apksim skin add` refuses (Skin.check), without decoding the images in the app's process: a skin edited or
+    // shared by hand is held to the same rules before it is drawn or told to the app.
+    DeviceSpec spec = s.spec();
+    if (s.width <= 0 || s.height <= 0) throw new IOException("skin " + s.name + ": the screen is " + s.width + "x" + s.height);
+    if (s.cornerRadius < 0) throw new IOException("skin " + s.name + ": screen.cornerRadius is negative");
+    if (s.x < 0 || s.y < 0 || s.x + s.width > fs[0] || s.y + s.height > fs[1]) {
+      throw new IOException("skin " + s.name + ": the screen (" + s.x + "," + s.y + " " + s.width + "x" + s.height + ") does not fit in "
+          + s.frame + " (" + fs[0] + "x" + fs[1] + ")");
+    }
+    double a = (double) s.width / s.height, b = (double) spec.widthPx() / spec.heightPx();
+    if (Math.abs(a / b - 1) > 0.01) {
+      throw new IOException("skin " + s.name + ": the screen is " + s.width + "x" + s.height + " px but device " + s.device + " is "
+          + spec.widthPx() + "x" + spec.heightPx() + " px (the aspect may differ by at most 1%)");
+    }
+    if (s.kind != null && !java.util.List.of("phone", "foldable", "tablet", "desktop", "tv", "watch").contains(s.kind)) {
+      throw new IOException("skin " + s.name + ": kind \"" + s.kind + "\" is not one apksim knows");
+    }
     byte[] fl = null;
     int[] fls = null;
     if (s.frameLand != null) {
@@ -285,7 +322,12 @@ final class Skinning {
       if (fls[0] != fs[1] || fls[1] != fs[0]) fl = null;  // not the frame turned: turn the frame instead
     }
     byte[] m = s.mask == null ? null : Files.readAllBytes(s.dir.resolve(s.mask));
-    if (m != null) pngSize(m, s.mask);
+    if (m != null) {
+      int[] ms = pngSize(m, s.mask);
+      if (ms[0] != s.width || ms[1] != s.height) {
+        throw new IOException("skin " + s.name + ": mask " + s.mask + " is " + ms[0] + "x" + ms[1] + " but the screen is " + s.width + "x" + s.height);
+      }
+    }
     frame = f;
     frameW = fs[0];
     frameH = fs[1];
