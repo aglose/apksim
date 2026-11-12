@@ -792,6 +792,12 @@ First review:
   back; the app goes on otherwise (timers, sound, network). Any tab may send `maxfps 1-120` (it only slows its own
   session), so a remote serve saves the drawing and encoding too: the Shader tab's instance draws ~1 frame a second
   hidden against 120 in front (`beam-page-check.py`). Not answered (it is not input either).
+- **Matching a page's release (issue 309).** `GET /beam/hello` lists `options`, the launch options a start may carry, so
+  a page knows one will be refused before it starts a session; `GET /api/status` on a serve says `"apksim"`, its
+  release. `apksim beam stop [--force]` ends the running agent (refused while sessions run unless `--force`; launchd
+  starts the current release again at the next page's request), and a launchd agent with no session exits by itself
+  once `work/release` under its launcher names another release (`brew upgrade`). Not done: installing a chosen
+  release (versioned casks or an `apksim self use`).
 - **`apksim beam status`**: whether the agent runs (its lock and port), its sessions (app, site, device, kept or not,
   pid, idle time, from `GET /beam/status`, which answers only a request without an `Origin`: never a page), the sites
   allowed and refused, the builds kept and their hold, saved sessions and the settings (`beam-check.py`).
