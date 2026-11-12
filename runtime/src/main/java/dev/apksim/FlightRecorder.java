@@ -656,6 +656,9 @@ final class FlightRecorder {
           }
         } finally {
           for (int i = topFirst.size() - 1; i >= 0; i--) Host.moveTo(topFirst.get(i), before[i]);
+          // Put the stack as a device has it after coming back (windows shown and touchable again, in order), or
+          // touches may not reach the views once a checkpoint has run (issue 320). Backgrounded stays so.
+          Host.arrange(topFirst, before.length > 0 && before[0] == 0);
         }
       });
       ActivityController<? extends Activity> top = stack.peek();
