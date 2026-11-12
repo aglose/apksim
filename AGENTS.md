@@ -527,6 +527,7 @@ no use restriction is enforced.
 `record` without a Mac window (headless, Linux) writes Motion-JPEG `.avi` (`MjpegRecorder`, 30 fps, Android's JPEG
 encoder); with a window `.mov` H.264, or `.avi` if the file name says so. Configuration changes recreate activities as on a device (state not in
 `rememberSaveable`/`onSaveInstanceState` resets). A command that throws answers `error: ...` instead of ending the app.
+Every answer is one line (`Control.oneLine`: line breaks become `; `), as every client reads one line per command.
 `nodes tree [all]` (every accessibility node with depth, class, id and flags, records split by U+001E: what `scripts/crawl.py`
 hashes and taps),
 `ctl.py apps|container PKG|erase PKG` lists, locates and deletes app data (erase refuses while an instance holds it),
