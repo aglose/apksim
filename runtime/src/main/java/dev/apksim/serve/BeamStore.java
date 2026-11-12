@@ -812,11 +812,13 @@ final class BeamStore {
         // tablet given here is not made a watch. A --device-kind given here comes last and wins.
         int od = own.lastIndexOf("--device"), gd = given.lastIndexOf("--device");
         String ownDevice = od >= 0 && od + 1 < own.size() ? own.get(od + 1) : null;
-        dev.apksim.skin.Skin givenSkin = skinDevice ? Serve.skin(given.get(gs + 1)) : null;
+        // A skin given here (with or without --device): on its own device it decides the kind, as a launch's does.
+        dev.apksim.skin.Skin givenSkin = gs >= 0 && gs + 1 < given.size() && !given.get(gs + 1).equals("off") ? Serve.skin(given.get(gs + 1)) : null;
         String runDevice = gd >= 0 && gd + 1 < given.size() ? given.get(gd + 1)
             : skinDevice ? (givenSkin != null ? givenSkin.device : "")
             : r.get("device") instanceof String d ? d : ownDevice;
-        boolean ownKind = !skinDevice && (runDevice == null || runDevice.equals(ownDevice));  // a given skin decides its own
+        boolean ownKind = !skinDevice && !(givenSkin != null && givenSkin.device.equals(runDevice))
+            && (runDevice == null || runDevice.equals(ownDevice));
         for (int i = 0; i < own.size(); i++) {
           if (own.get(i).equals("--device-kind") && !ownKind) i++;
           else if (own.get(i).equals("--device") && (r.get("device") instanceof String || skinDevice)) i++;

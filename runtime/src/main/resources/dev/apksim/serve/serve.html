@@ -367,6 +367,10 @@ function sessionQuery() {
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
   if (state.skin) q.set("skin", state.skin);  // a stored skin's name, or off (the app's own --skin otherwise)
+  // The app's own skin the menu shows, named to this Mac: the agent never gets the server's --skin (only its device and
+  // kind), and a Mac skin of that name is the frame drawn, so its kind must be the one the app runs with. The agent
+  // drops a name it does not have, keeping the server skin's device and kind.
+  else if ($("skin").value !== "off" && $("runOn").value === "mac" && beam.ok) q.set("skin", $("skin").value);
   // The skin's kind with its device (a custom-size watch is a watch), for an endpoint that does not have the skin.
   const sk = skinFor($("skin").value);
   if (sk && sk.kind && state.device === sk.device) q.set("kind", sk.kind);
