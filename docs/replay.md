@@ -219,13 +219,15 @@ the touch slop is a `swipe` with its end points and duration (coordinates: a scr
 lifting; it keeps its path with timings, which journey.py plays back as `touch down|move|up` at the recorded times
 (older journeys: an untimed `swipe` for a fling, a timed drag otherwise). A fling step gets no expectations: where a
 fling ends varies from run to run (above), so what it scrolls into view is not something a test can expect;
-held 500 ms or more, a `longpress` on its node, with how long it was held (`ms`). Taps that follow one another as a
-double tap does (each within 300 ms of the last one's lift and 100 dp of the first: ViewConfiguration's double tap
-timeout and slop) are one step with each tap's start and length (`times`, ms), played as recorded: two steps would have
+held 500 ms or more, a `longpress` on its node, with how long it was held (`ms`). Taps on the same node (or, with none, the
+same point) that follow one another as a double tap does (each within 300 ms of the last one's lift and 100 dp of the
+first: ViewConfiguration's double tap timeout and slop) are one step, closed against the screen before its first tap, with each tap's start and length (`times`, ms), played as recorded: two steps would have
 a settle between them and be two single taps. Typed characters become one `type` step, keys `key` steps, Back
 `back`, wheel steps `wheel`, commands (`open URL`, `rotate`...) `command` steps. Two-finger gestures and window resizes
 are left out and listed in the journey's `notes`. A replay that crashes (exit 10) still writes the journey, with the
-steps up to the crash and a note saying where it crashed.
+steps up to the crash and a note saying where it crashed; a finger still down then (a long press whose onLongClick
+crashed, a double tap's second tap) is lifted at the crash, so the press that crashed is kept (`scripts/check-journey.sh`
+checks these on a stand-in screen).
 
 **Expectations.** At each step's start the texts on screen are read (only what is on screen: `nodes` now marks a node
 that is in the tree but not visible, a list item scrolled away, `offscreen`, and neither the generator nor journey.py's
@@ -233,7 +235,7 @@ matching counts it); a step expects the texts that appeared on
 screen for the first time in the journey (up to 6), or, when none did (Back to an earlier screen), the first 3 that
 appeared since it started. Times, dates and durations are left out (`12:30`, `327 ms`), as are sizes (`411×891`) and
 texts over 80 characters, wherever they are in a text, on any of its lines ("Fetched\n327 ms";
-`scripts/check-journey-texts.sh`, CI). A screen that comes back after Back brings its whole furniture back, a window size class among it
+`scripts/check-journey.sh`, CI). A screen that comes back after Back brings its whole furniture back, a window size class among it
 ("compact 411×891"), which would tie a journey to one device; first appearances do not.
 
 **The runner** (`scripts/journey.py`, also in the Linux image beside `instrument.py`): without `--port` it starts the

@@ -626,7 +626,7 @@ final class Replay {
     if (r.journey != null) {
       // The steps up to the crash: a journey that reproduces it is as useful as one that ends normally.
       try {
-        System.err.println("[apksim] replay: journey " + r.journey.crashed("the app crashed after " + where + ": " + e));
+        System.err.println("[apksim] replay: journey " + r.journey.crashed("the app crashed after " + where + ": " + e, r.base >= 0 ? SystemClock.uptimeMillis() - r.base : -1));
       } catch (Throwable t) {
         r.notes.add("journey not written: " + t);
       }

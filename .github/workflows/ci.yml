@@ -108,8 +108,8 @@ jobs:
         run: scripts/check-translator.sh
       - name: Call-site check (direct binding, re-binding after invalidation, the binding race)
         run: scripts/check-call-sites.sh
-      - name: journey texts check (what a journey may expect on screen; times on any line left out)
-        run: scripts/check-journey-texts.sh
+      - name: journey check (texts a journey may expect, double taps, a crash mid-press; a stand-in screen)
+        run: scripts/check-journey.sh
       - name: Launch selection check (resource intent-filter priorities)
         run: scripts/launch-priority-check.sh
       - name: serve pacing check (an H.264 tab slower than the app, on a simulated clock)
