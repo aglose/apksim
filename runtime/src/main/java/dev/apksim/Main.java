@@ -29,6 +29,7 @@ public final class Main {
         }
       })));
     }
+    dev.apksim.net.TabRelay.load();
     dev.apksim.net.Net.configure();  // --network options: before any app code makes a connection
     dev.apksim.rec.Rec.launch();  // --rec: its net and db channels are on before the app's first connection or query
     String zone = System.getProperty("apksim.timezone");

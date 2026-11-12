@@ -99,6 +99,7 @@ final class Standby {
       Biometrics.enrolled = Boolean.getBoolean("apksim.biometricsEnrolled");
       // --max-fps, --video, --audio: the warm-up read the standby's own; the app's onCreate must see the launch's.
       Features.load();
+      dev.apksim.net.TabRelay.load();  // --tab-relay (beam sessions that asked for it)
       Timing.mark("handoff");
       Thread hangup = new Thread(() -> {
         nativeAwaitHangup();
