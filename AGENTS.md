@@ -323,7 +323,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `bench.py` (launch times, cold and warm; `--mem` adds footprints), `startup-gate.py` (CI's startup-time gate: this build against an anchor
   release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
-  docs/parallel.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
+  docs/parallel.md), `scene.py` (a scene: roles with their own APK, device and options driven step by step,
+  waiting on one another, against one shared fixture; `scene-check.sh` in CI; docs/scenes.md), `snapshot.py` (screenshot tests: screens × device/appearance/locale/fontscale matrix against
   goldens, HTML report, `--update`; see docs/snapshots.md), `instrument.py` (androidTest suites, JUnit XML;
   `--apksim CMD` runs the Linux image instead; `--test-timeout SEC` kills a process stuck SEC s on one test;
   `instrument-check.py` checks how it handles a process that dies or hangs,

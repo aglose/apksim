@@ -1,0 +1,23 @@
+{
+  "name": "phone-watch",
+  "description": "A phone and a watch as one scene: the phone reads a heart rate from a BLE strap (--ble heart-rate) and posts it to the shared backend, opens the board on the watch from its own step, and the watch answers (docs/scenes.md).",
+  "fixture": {"command": ["python3", "{scripts}/network-fixture.py", "{out}/fixture"], "ready": "ready (\\d+)"},
+  "options": ["--network-host", "api.apksim.test=127.0.0.1:{fixture}", "--network-trust", "{out}/fixture/cert.pem",
+              "--network", "record", "{out}/{role}.har"],
+  "roles": {
+    "phone": {"apk": "../app/build/outputs/apk/debug/app-debug.apk", "device": "phone",
+              "options": ["--ble", "heart-rate", "--permissions", "grant"]},
+    "watch": {"apk": "../app/build/outputs/apk/debug/app-debug.apk", "device": "watch"}
+  },
+  "steps": [
+    {"name": "both up", "all": "until 60000 FAB clicks"},
+    {"name": "the phone reads the strap", "phone": ["open apksim://ble", "until 15000 heart rate:", "capture bpm heart rate: (\\d+) bpm"]},
+    {"name": "the phone posts it and opens the board on the watch", "phone": [
+      "open apksim://board?user=phone&post=bpm%20{bpm}", "until 10000 posted: bpm {bpm}",
+      "to watch open apksim://board?user=watch"]},
+    {"name": "the watch shows it", "watch": "until 15000 phone: bpm {bpm}"},
+    {"name": "the watch answers", "watch": ["tap-text Post ping", "until 10000 posted: ping 1"]},
+    {"name": "the phone sees the answer", "phone": "until 10000 watch: ping 1"},
+    {"all": "shot phone-watch-{role}.png"}
+  ]
+}
