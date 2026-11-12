@@ -117,8 +117,9 @@ class Hunt:
                     RUN_FAILURES.append(f"{label}: {t[0]}#{t[1]} (see {base}.log)")
                     continue
                 ran.append(t)
-                if t[1] in (None, "null") and c.find("failure") is not None:
-                    # (@BeforeClass/@AfterClass: after its tests passed, too, which must not leave the hunt "stable")
+                if t[1] in (None, "null") and c.find("failure") is not None and label != "ddmin":
+                    # (@BeforeClass/@AfterClass: after its tests passed, too, which must not leave the hunt "stable";
+                    # not in a ddmin trial, where it is what the trial looks for: a victim's @BeforeClass failing again)
                     RUN_FAILURES.append(f"{label}: {t[0]} failed at class level (see {base}.log)")
                 f = c.find("failure")
                 results[t] = "failed" if f is not None else "skipped" if c.find("skipped") is not None else "passed"
@@ -332,12 +333,18 @@ def main():
     # Order dependence: a test that failed in a shuffled run (or the suite's order) and passed alone.
     alone_ok = {t: all(s == "passed" for s in results["isolate"][t]) for t in tests} if "isolate" in results else {}
     culprits = {}  # victim -> (culprits, order of the minimal run, command)
+    listed_tests = set(tests)
     for x, t, order, _ in failures:
-        if t in culprits or order is None or t not in order:
+        if t in culprits or order is None:
+            continue
+        # Where it ran: its own entry, else its class's class-level one (a @BeforeClass that failed: the run reports
+        # Class#null and nothing for the class's tests). What ran before it is reduced by the tests' own selectors.
+        at = next((order.index(k) for k in (t, (t[0], "null"), (t[0], None)) if k in order), None)
+        if at is None:
             continue
         if "isolate" in results and not alone_ok[t]:
             continue  # fails alone too: not (only) order
-        before = order[:order.index(t)]
+        before = [k for k in order[:at] if k in listed_tests]
         print(f"order: {t[0]}#{t[1]} failed after {len(before)} tests; reproducing", file=sys.stderr)
         if not before or not hunt.victim_fails(t, before):
             print("  not reproduced with the same tests before it: not an order dependence", file=sys.stderr)

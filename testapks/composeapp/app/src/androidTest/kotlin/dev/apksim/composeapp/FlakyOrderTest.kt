@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assume.assumeTrue
+import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -13,8 +14,9 @@ import org.junit.runner.RunWith
  * [FlakyStateTest.leavesAStaticSet] sets a static and never clears it, and [FlakyOrderTest.expectsAFreshStatic] fails
  * when it runs after that in the same process (app and test statics carry over between a process's tests, as on a
  * device). In the suite's order (classes by name) FlakyOrderTest runs first and passes; shuffled, or with the polluter
- * named first, it fails. The other tests are bystanders the hunter must not blame. Only with `-e flakyOnPurpose true`:
- * otherwise every one is skipped.
+ * named first, it fails. [FlakyClassOrderTest] checks the same static in its `@BeforeClass`, so after the polluter its
+ * class fails as a whole (JUnit's `Class#null`, no result for its test). The other tests are bystanders the hunter must
+ * not blame. Only with `-e flakyOnPurpose true`: otherwise every one is skipped (the static is set only then).
  */
 internal object FlakyState {
   @JvmStatic var polluted = false
@@ -35,6 +37,21 @@ class FlakyOrderTest {
   fun bystanderOne() {
     flakyOnPurpose()
     assertEquals(4, 2 + 2)
+  }
+}
+
+@RunWith(AndroidJUnit4::class)
+class FlakyClassOrderTest {
+  companion object {
+    @BeforeClass
+    @JvmStatic
+    fun expectsAFreshStaticBeforeTheClass() =
+      assertFalse("FlakyState.polluted was left set by a test that ran before this class in the process", FlakyState.polluted)
+  }
+
+  @Test
+  fun runsAfterItsClassSetUp() {
+    flakyOnPurpose()
   }
 }
 

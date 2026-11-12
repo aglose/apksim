@@ -41,7 +41,9 @@ For each test that failed in a `shuffle` run and passes alone (every `isolate` r
 came before it in that run again, with it, in the same order, in one process. If it fails again, and passes when run alone (a skip or no result alone is not enough),
 delta debugging (Zeller's ddmin) reduces those tests to a 1-minimal set that still makes it fail: removing any one of
 them makes it pass. Each step is one process. The verdict is then `order-dependent`, with that set as the culprits and
-a command (instrument.py with `-e class` and `-e apksimOrder`) that reproduces it. Otherwise a test that failed only
+a command (instrument.py with `-e class` and `-e apksimOrder`) that reproduces it. A test whose class failed at class
+level (a `@BeforeClass` that found another test's state: the run reports only `Class#null`) is placed where that entry
+ran, and reduced and reproduced by its own name. Otherwise a test that failed only
 under `oversubscribe` or `realtime` is `timing-dependent`, one that failed elsewhere too `nondeterministic`, one that
 never passed `failing`, the rest `stable`.
 
@@ -53,13 +55,14 @@ stable.
 
 ## The check
 
-The test app has three flaky-on-purpose classes, skipped unless `-e flakyOnPurpose true`: `FlakyStateTest`'s
+The test app has four flaky-on-purpose classes, skipped unless `-e flakyOnPurpose true`: `FlakyStateTest`'s
 `leavesAStaticSet` sets a static that `FlakyOrderTest#expectsAFreshStatic` expects clear (in the suite's order it runs
-first and passes), and `FlakyTimingTest#aDelayedTaskRunsWithoutWaiting` posts a task 2 s ahead, waits 2 s on the
+first and passes), as does `FlakyClassOrderTest`'s `@BeforeClass` (after the polluter its class fails as a whole), and
+`FlakyTimingTest#aDelayedTaskRunsWithoutWaiting` posts a task 2 s ahead, waits 2 s on the
 uptime clock and expects it done within 1 s of real time: true on the simulated clock, which jumps over idle time, and
 false with `--realtime-clock` (or on a device), as a suite written against one clock fails on the other. `scripts/flake-hunt-check.py APP TEST [--apksim CMD --local DIR]`
-hunts in those plus bystanders (the other tests of those classes, `AndroidIdTest`) and checks that the order-dependent
-test is blamed on `leavesAStaticSet` and nothing else, that the printed command reproduces it, that the timing test fails
+hunts in those plus bystanders (the other tests of those classes, `AndroidIdTest`) and checks that both order-dependent
+tests are blamed on `leavesAStaticSet` and nothing else, that each printed command reproduces its failure, that the timing test fails
 under `realtime` and is called timing-dependent, and that every bystander is stable.
 
 ## Measured
