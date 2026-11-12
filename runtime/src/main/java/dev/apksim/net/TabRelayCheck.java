@@ -34,6 +34,8 @@ import javax.net.SocketFactory;
  */
 public final class TabRelayCheck {
   private static int failures;
+  private static final AtomicInteger HELD = new AtomicInteger();
+  private static final CountDownLatch RELEASE = new CountDownLatch(1);
 
   private TabRelayCheck() {}
 
@@ -132,7 +134,7 @@ public final class TabRelayCheck {
 
   public static void main(String[] args) throws Exception {
     System.setProperty("apksim.tabRelay", "true");
-    System.setProperty("apksim.tabRelay.answerMs", "1500");
+    System.setProperty("apksim.tabRelay.answerMs", "3000");
     System.setProperty("apksim.tabRelay.firstLinkMs", "300");
     TabRelay.load();
     check(TabRelay.on, "on with -Dapksim.tabRelay=true");
@@ -145,6 +147,13 @@ public final class TabRelayCheck {
       if (path.startsWith("/slow")) {
         try {
           Thread.sleep(700);
+        } catch (InterruptedException ignored) {
+        }
+      }
+      if (path.startsWith("/hold")) {
+        HELD.incrementAndGet();
+        try {
+          RELEASE.await();
         } catch (InterruptedException ignored) {
         }
       }
@@ -206,7 +215,7 @@ public final class TabRelayCheck {
       String fullBack = exchange(fr.toByteArray(), 5000);
       check(fullBack.startsWith("HTTP/1.1 201 ") && fullBack.contains("Content-Length: " + full.length + "\r\n"), "exactly 512 KB each way: carried");
       long t431 = System.currentTimeMillis();
-      check(get("/over").startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t431 < 1000, "an answer one byte over 512 KB: 502 at once");
+      check(get("/over").startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t431 < 2500, "an answer one byte over 512 KB: 502 at once");
       String big = "X-Big: " + "a".repeat(15_000) + "\r\n";
       check(exchange(("GET /x HTTP/1.1\r\nHost: x\r\n" + big.repeat(5) + "\r\n").getBytes(), 5000).startsWith("HTTP/1.1 431 "), "headers over 64 KB: 431");
       String one = exchange(("GET /hello HTTP/1.1\r\nHost: x\r\nAuthorization: " + "b".repeat(20_000) + "\r\n\r\n").getBytes(), 5000);
@@ -290,21 +299,24 @@ public final class TabRelayCheck {
         s.close();
       }
 
-      // At most 16 in flight (503), then they finish. (First the slow ones above have been answered.)
+      // At most 16 in flight (503): the tab holds its answers until 16 are with it and the other 4 were refused, so
+      // the count does not depend on timing. (First the slow ones above have been answered.)
       Thread.sleep(1200);
       List<Thread> threads = new ArrayList<>();
       AtomicInteger ok = new AtomicInteger(), busy = new AtomicInteger();
-      CountDownLatch go = new CountDownLatch(1);
       for (int i = 0; i < 20; i++) {
         threads.add(Thread.ofVirtual().start(() -> {
           try {
-            String x = get("/slow");
+            String x = get("/hold");
             if (x.startsWith("HTTP/1.1 200 ")) ok.incrementAndGet();
             else if (x.startsWith("HTTP/1.1 503 ")) busy.incrementAndGet();
           } catch (IOException ignored) {
           }
         }));
       }
+      long until = System.currentTimeMillis() + 2500;
+      while ((HELD.get() < 16 || busy.get() < 4) && System.currentTimeMillis() < until) Thread.sleep(10);
+      RELEASE.countDown();
       for (Thread th : threads) th.join();
       check(ok.get() == 16 && busy.get() == 4, "20 at once: 16 answered, 4 refused with 503 (" + ok + "/" + busy + ")");
     }
@@ -322,7 +334,7 @@ public final class TabRelayCheck {
       });
       long t0 = System.currentTimeMillis();
       String r = get("/never");
-      check(r.startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t0 < 1400, "the tab leaves with a request pending: 502 at once");
+      check(r.startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t0 < 2500, "the tab leaves with a request pending: 502 at once");
       waiter.join();
     }
 

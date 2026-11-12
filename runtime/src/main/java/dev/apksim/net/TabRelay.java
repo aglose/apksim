@@ -109,7 +109,7 @@ public final class TabRelay {
     }
     if (old != null) failAll(old, 502, "the tab was replaced by another");
     try {
-      for (String line; (line = in.readLine()) != null; ) answer(line);
+      for (String line; (line = in.readLine()) != null; ) answer(out, line);
     } finally {
       synchronized (TabRelay.class) {
         if (sender == out) sender = null;
@@ -119,7 +119,7 @@ public final class TabRelay {
   }
 
   /** The tab's `y ID {json}`: {"status", "headers", "body"} (base64). Anything wrong with it is a 502 for that request. */
-  static void answer(String line) {
+  static void answer(PrintWriter link, String line) {
     if (!line.startsWith("y ")) return;
     int sp = line.indexOf(' ', 2);
     if (sp < 0) return;
@@ -130,7 +130,8 @@ public final class TabRelay {
       return;
     }
     CompletableFuture<Reply> f = pending.get(id);
-    if (f == null) return;  // answered late (504 went already), or never asked
+    // Answered late (504 went already), never asked, or asked of another link: a replaced tab answers nothing of the new one's.
+    if (f == null || owners.get(id) != link) return;
     try {
       if (!(Json.parse(line.substring(sp + 1)) instanceof Map<?, ?> m)) throw new IllegalArgumentException("not an object");
       int status = m.get("status") instanceof Number n ? n.intValue() : 0;
@@ -191,8 +192,8 @@ public final class TabRelay {
     }
     long id = ids.incrementAndGet();
     CompletableFuture<Reply> f = new CompletableFuture<>();
-    pending.put(id, f);
     owners.put(id, out);
+    pending.put(id, f);
     try {
       StringBuilder b = new StringBuilder(256 + body.length * 4 / 3);
       b.append("y ").append(id).append(" {\"method\":");
