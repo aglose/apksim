@@ -103,8 +103,10 @@ takes it away. `skin NAME` for a skin with another device switches to that devic
   (round, UI_MODE_TYPE_WATCH, no bars), as `--device watch` would, at launch and with `skin NAME`.
 - **Test runs** (`--instrument`) take the skin's device and report its cutout and corners; nothing is drawn. The
   shape follows the framework's display (its size and rotation), so UiDevice's rotation turns it too.
-- **Flight recordings** keep the skin's shape (not its images) in each checkpoint's device, and `apksim replay` tells
-  the app the same cutout and corners, with or without that skin stored where it replays.
+- **Flight recordings** keep the skin's shape (not its images) in each checkpoint's device, and a `skin NAME` command
+  is journaled with its shape (`--shape TOKEN`). `apksim replay` starts with that shape and its device's kind
+  (`-Dapksim.skinShape`) and repeats the switches, so the app gets the same device, cutout and corners with or without
+  that skin stored where it replays. `window click` is not journaled: its touches are.
 - A warm launch has the standby's environment, so the launcher passes `APKSIM_SKINS_DIR` and `APKSIM_SKINS` on as
   `-Dapksim.skinsDir` and `-Dapksim.skinsShared`.
 

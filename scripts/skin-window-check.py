@@ -158,13 +158,26 @@ def main():
         m = re.search("^" + re.escape(cmd) + r" -> (.*)$", out, re.M)
         return m.group(1) if m else ""
 
-    proc, _ = launch("--skin", "fixture")
+    proc, started = launch("--skin", "fixture")
+    proc_name = proc if a.docker else None
+    if a.docker:
+        proc = None
     try:
-        for _ in range(180):
+        # One overall deadline: each drive.py ping already retries its connection for a while, and an app that exited
+        # never answers, so stop as soon as the process (or container) is gone.
+        deadline = time.time() + 240
+        up = False
+        while time.time() < deadline:
+            if proc is not None and proc.poll() is not None:
+                break
+            if a.docker and subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", proc_name], capture_output=True,
+                                           text=True).stdout.strip() != "true":
+                break
             if "pong" in drive("ping"):
+                up = True
                 break
             time.sleep(1)
-        else:
+        if not up:
             check(False, "the app answered on the control channel")
             return
         drive("wait 1500")

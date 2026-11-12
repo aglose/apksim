@@ -659,7 +659,13 @@ final class DeviceControls {
         try {
           s = Skinning.use(a[1]);
         } catch (java.io.IOException e) {
-          return "error: " + e.getMessage();
+          // A replayed `skin NAME --shape TOKEN` (FlightRecorder journals the shape with it): the recorded shape when
+          // this machine does not have the skin, so the app gets the same device, cutout and corners.
+          java.util.Map<String, Object> shape = a.length > 3 && a[2].equals("--shape") ? Skinning.decodeShape(a[3]) : null;
+          if (shape == null) return "error: " + e.getMessage();
+          Skinning.restoreShape(shape);
+          s = Skinning.current();
+          if (s == null) return "error: " + e.getMessage();
         }
         Device to = Skinning.deviceOf(s);
         Device now = Device.current();

@@ -53,6 +53,26 @@ final class Skinning {
    * True to go on.
    */
   static boolean launch() {
+    // `apksim replay` (ReplayPlan): the recorded skin's shape, without its images, with the device's kind restored
+    // before anything runs, whether or not the skin is stored here.
+    String shape = System.getProperty("apksim.skinShape");
+    if (shape != null && !shape.isEmpty() && (System.getProperty("apksim.skin") == null)) {
+      java.util.Map<String, Object> m = decodeShape(shape);
+      if (m != null) {
+        restoreShape(m);
+        Skin s = skin;
+        String given = System.getProperty("apksim.device");
+        if (s != null && given != null) {
+          try {
+            Device d = Device.named(given), k = deviceOf(s);
+            if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && !d.kind().equals(k.kind())) Device.setCurrent(k);
+          } catch (IllegalArgumentException e) {
+            // Main reports a bad --device
+          }
+        }
+      }
+      return true;
+    }
     String name = System.getProperty("apksim.skin");
     if (name == null || name.isEmpty() || name.equals("off")) return true;
     Skin s;
@@ -118,6 +138,74 @@ final class Skinning {
     m.put("cornerRadius", s.cornerRadius);
     if (s.cutout != null) m.put("cutout", new java.util.LinkedHashMap<>(s.cutout));
     return m;
+  }
+
+  /** The shape as one token for a command line or a property: base64url of its JSON. */
+  static String encodeShape(java.util.Map<String, Object> m) {
+    StringBuilder b = new StringBuilder("{");
+    for (java.util.Map.Entry<String, Object> e : m.entrySet()) {
+      if (b.length() > 1) b.append(',');
+      b.append(jq(e.getKey())).append(':');
+      Object v = e.getValue();
+      if (v instanceof java.util.Map<?, ?> inner) {
+        StringBuilder c = new StringBuilder("{");
+        for (java.util.Map.Entry<?, ?> f : inner.entrySet()) {
+          if (c.length() > 1) c.append(',');
+          c.append(jq(String.valueOf(f.getKey()))).append(':');
+          c.append(f.getValue() instanceof Number n ? n.toString() : jq(String.valueOf(f.getValue())));
+        }
+        b.append(c.append('}'));
+      } else {
+        b.append(v instanceof Number n ? n.toString() : jq(String.valueOf(v)));
+      }
+    }
+    return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b.append('}').toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+  }
+
+  private static String jq(String v) {
+    StringBuilder b = new StringBuilder("\"");
+    for (char c : v.toCharArray()) {
+      if (c == '"' || c == '\\') b.append('\\').append(c);
+      else if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+      else b.append(c);
+    }
+    return b.append('"').toString();
+  }
+
+  @SuppressWarnings("unchecked")
+  static java.util.Map<String, Object> decodeShape(String token) {
+    try {
+      Object o = dev.apksim.serve.Json.parse(new String(java.util.Base64.getUrlDecoder().decode(token), java.nio.charset.StandardCharsets.UTF_8));
+      return o instanceof java.util.Map<?, ?> m ? (java.util.Map<String, Object>) m : null;
+    } catch (IOException | IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /** The shape of a stored skin, as {@link #shape()} gives the current one (a recorded `skin NAME`), or null. */
+  static java.util.Map<String, Object> shapeOf(String name) {
+    try {
+      Skin s = Skins.lookup(name);
+      int[] f;
+      try (java.io.InputStream in = Files.newInputStream(s.dir.resolve(s.frame))) {
+        f = pngSize(in.readNBytes(24), s.frame);
+      }
+      java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+      m.put("name", s.name);
+      m.put("device", s.device);
+      if (s.kind != null) m.put("kind", s.kind);
+      m.put("frameWidth", f[0]);
+      m.put("frameHeight", f[1]);
+      m.put("x", s.x);
+      m.put("y", s.y);
+      m.put("width", s.width);
+      m.put("height", s.height);
+      m.put("cornerRadius", s.cornerRadius);
+      if (s.cutout != null) m.put("cutout", new java.util.LinkedHashMap<>(s.cutout));
+      return m;
+    } catch (IOException e) {
+      return null;
+    }
   }
 
   /** A recorded shape (`apksim replay`): the app is told the same cutout and corners; nothing is drawn (no images). */
