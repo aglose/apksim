@@ -1323,8 +1323,8 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   so does `CountDownLatch.await` (`TestActivities.await`: a test waiting for a post or a listener on the main thread
   timed out, `LatchConformanceTest`). All three run the queue's due tasks one at a time (`runDue`), checking the
   latch, an interrupt and the deadline between them, not `ShadowLooper.idle()`: an endless frame loop (a Compose
-  Popup, an animation that never ends) never lets that return with Robolectric's unpaused Choreographer, and a wait
-  or sleep under one never ended.
+  Popup, an animation that never ends) never lets that return with Robolectric's unpaused Choreographer, nor a
+  Runnable that posts itself again in either clock mode, and a wait or sleep under one never ended.
 - Views draw after each traversal (`ShadowSimViewRootImpl`: recorded into a display list that is dropped, so
   View.computeScroll runs and Scroller-driven moves finish), a focusable window on top (a dialog) takes the window
   focus (`ShadowSimWindowManagerImpl`: Espresso looks in the focused window), and Espresso's

@@ -7,6 +7,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -106,7 +108,7 @@ class LatchConformanceTest {
       assertTrue("opened", done.await(5, TimeUnit.SECONDS))
       val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
       assertTrue("took $tookMs ms", tookMs < 3_000)
-      assertTrue("frames ${loop.frames}", loop.frames > 0)
+      assertTrue("frames ${loop.frames.get()}", loop.frames.get() > 0)
     } finally {
       loop.stop()
     }
@@ -121,20 +123,47 @@ class LatchConformanceTest {
       assertFalse(CountDownLatch(1).await(300, TimeUnit.MILLISECONDS))
       val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
       assertTrue("took $tookMs ms", tookMs in 250..3_000)
-      assertTrue("frames ${loop.frames}", loop.frames > 0)
+      assertTrue("frames ${loop.frames.get()}", loop.frames.get() > 0)
     } finally {
       loop.stop()
     }
   }
 
-  /** Asks for every next frame, as an endless animation does. */
-  private class FrameLoop : android.view.Choreographer.FrameCallback {
-    var frames = 0
-    private var running = false
-    fun start() { running = true; android.view.Choreographer.getInstance().postFrameCallback(this) }
-    fun stop() { running = false; android.view.Choreographer.getInstance().removeFrameCallback(this) }
+  /** Nor a Runnable on the main thread that posts itself again each time it runs. */
+  @Test
+  fun aWorkerEndsTheWaitWhileARunnableRepostsItself() {
+    val runs = AtomicInteger()
+    val running = AtomicBoolean(true)
+    val spin = object : Runnable {
+      override fun run() { runs.incrementAndGet(); if (running.get()) main.post(this) }
+    }
+    main.post(spin)
+    try {
+      val done = CountDownLatch(1)
+      Thread { Thread.sleep(50); done.countDown() }.start()
+      val start = System.nanoTime()
+      assertTrue("opened", done.await(5, TimeUnit.SECONDS))
+      val tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+      assertTrue("took $tookMs ms", tookMs < 3_000)
+      assertTrue("runs ${runs.get()}", runs.get() > 0)
+    } finally {
+      running.set(false)
+      main.removeCallbacks(spin)
+    }
+  }
+
+  /**
+   * Asks for every next frame on the main thread's Choreographer, as an endless animation does. Started and stopped
+   * with posts to the main thread (on a device the test body is on the instrumentation thread, which has no
+   * Choreographer; not runOnMainSync, which waits for the main thread to go idle here: docs/conformance.md).
+   */
+  private inner class FrameLoop : android.view.Choreographer.FrameCallback {
+    val frames = AtomicInteger()
+    @Volatile private var running = false
+    fun start() { running = true; main.post { android.view.Choreographer.getInstance().postFrameCallback(this) } }
+    fun stop() { running = false; main.post { android.view.Choreographer.getInstance().removeFrameCallback(this) } }
     override fun doFrame(frameTimeNanos: Long) {
-      frames++
+      frames.incrementAndGet()
       if (running) android.view.Choreographer.getInstance().postFrameCallback(this)
     }
   }
