@@ -46,12 +46,12 @@ apksim app-debug.apk
 | **Fast launches** | Warm launches put the app's first frame on screen in ~0.2-0.5 s, and the window in ~10 ms. A stock emulator takes 8-18 s from a snapshot or boot. |
 | **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
-| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. |
+| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. |
 | **Scriptable** | A line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
-| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, and `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`). |
+| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`), code coverage without rebuilding the app, and a flake hunter that says whether a flaky test depends on order or timing. |
 | **Replay a session** | A flight recording plays again from its checkpoint, with the network answered from the recording, and says where the screen first differed; the same recording bisects a list of builds to the first that changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles. |
-| **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen. |
+| **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen; its resilience sweep puts every screen through process death, rotation, offline, permission denial, large text, right-to-left and dark mode. |
 | **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
 | **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
 | **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
@@ -358,7 +358,10 @@ signed in where the last one left off. See
 Two builds side by side: `/?compare=BASE_ID,NEW_ID` starts a session for each, sends every tap, drag, key and device
 control to both, and shows a third screen marking the pixels that differ. `scripts/pr-preview.py` and the
 `.github/actions/preview` Action put a pull request's build on a server and keep one comment on the pull request with
-its preview and compare links; added apps can expire (`ttl`). See [docs/pr-preview.md](docs/pr-preview.md).
+its preview and compare links; added apps can expire (`ttl`). With `--allow-rec` a tab's report button packs a
+recording, the device's settings and a note into one zip (and with `--issue-url` opens an issue in the reviewer's own
+browser); with `--inspect-network` a panel lists the app's requests as they happen and can rewrite a response. Both are
+off by default. See [docs/pr-preview.md](docs/pr-preview.md).
 
 ## Instrumented tests and CI
 
@@ -410,7 +413,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.27.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.28.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -426,6 +429,18 @@ each test to one that is ready, so a test no longer waits for its process's JVM,
 still runs in a process nothing else ran in. `--prewarm N` sets how many, `--prewarm off` starts each cold as before.
 On the test app's suite at `-j 3` a run took 29-47% less time than cold, for ~10-15% more CPU. See
 [docs/test-pool.md](docs/test-pool.md).
+
+Code coverage needs no rebuild of the app: `instrument.py ... --coverage cov` counts the methods and lines each test
+run reached and writes JaCoCo XML, LCOV and an HTML page, merged across processes and shards (`--mapping` for an R8
+build). See [docs/coverage.md](docs/coverage.md).
+
+`scripts/flake-hunt.py` runs chosen tests many times under shuffled order, isolation, CPU pressure and the real-time
+clock, and says which are order-dependent (with the fewest earlier tests that make one fail) and which depend on
+timing. See [docs/flake-hunt.md](docs/flake-hunt.md).
+
+The test app's suite also checks AndroidX libraries' documented behaviour (activity, fragment, lifecycle, navigation,
+Compose ui and foundation, material3, recyclerview) against an API 36 emulator with `scripts/conformance.py`; each
+difference found is traced and fixed with its own repro. See [docs/conformance.md](docs/conformance.md).
 
 ### Failure bundles
 
@@ -465,9 +480,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.27.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.27.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.28.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -537,7 +552,10 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
 - **Crawler:** `scripts/crawl.py` walks an APK's screens through the accessibility tree within a budget, with no test
   code: a clickable map of screens and the actions between them, the shortest replayable path to each, each screen
   captured across a device, appearance, locale and font-scale matrix, and any crash with the path that caused it. With
-  `--base` it walks a second build and says which screens are new, gone or changed. See [docs/crawl.md](docs/crawl.md).
+  `--base` it walks a second build and says which screens are new, gone or changed. `--sweep all` then puts every
+  screen through process death, recreation, rotation, offline, permission denial, large text, right-to-left and dark
+  mode and reports what broke (lost state, crashes, endless spinners, cut-off text) as JUnit failures with the commands
+  that reproduce each. See [docs/crawl.md](docs/crawl.md).
 
 ## Linux and Docker
 
@@ -545,7 +563,7 @@ Each release publishes a headless Linux image, `ghcr.io/aglose/apksim:VERSION`, 
 one tag (Docker pulls the host's), with `:latest` following the newest release. It's about 565 MB and holds:
 - the launcher and a trained startup cache;
 - Mesa, for offscreen GLES;
-- `instrument.py`, `snapshot.py`, `crawl.py`, `journey.py` and `drive.py` on the `PATH`.
+- `instrument.py`, `coverage.py`, `flake-hunt.py`, `snapshot.py`, `crawl.py`, `journey.py` and `drive.py` on the `PATH`.
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
 VideoToolbox: rendering and shaders run on the CPU, and MediaCodec's H.264 decoder is libavcodec (the published image
