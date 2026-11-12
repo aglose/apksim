@@ -106,6 +106,19 @@ class DeadlineSocket(socket.socket):
         return super().recv_into(*a)
 
 
+class Dropped:
+    """A role's connection after a read ran past its deadline: closed at once, so the wait ends then, and opened
+    again by the next command (`Role.call`). Anything that reaches it unopened gets an OSError, as a dead one would."""
+
+    def __bool__(self):
+        return True  # still a role that had a connection (Scene.shots, Scene.finish)
+
+    def write(self, _):
+        raise OSError("the control connection was dropped and could not be opened again")
+
+    flush = readline = write
+
+
 class Role:
     def __init__(self, name, spec, scene_dir):
         self.name = name
@@ -121,47 +134,65 @@ class Role:
         self.ready = None
 
     def send(self, cmd, deadline=None):
-        """CMD's answer. With a deadline, TimeoutError once it passes, waiting for the lock or for the answer."""
+        """CMD's answer. With a deadline, TimeoutError once it passes, waiting for the lock, for a connection or for
+        the answer."""
         if deadline is None:
             with self.lock:
-                return self.inst.send(cmd)
+                return self.call(cmd)
         if not self.lock.acquire(timeout=max(0.0, deadline - time.time())):
             raise TimeoutError(cmd)
         try:
-            if not isinstance(self.inst.sock, DeadlineSocket):
-                self.reconnect()
-            self.inst.sock.deadline = deadline
-            try:
-                return self.inst.send(cmd)
-            except TimeoutError:
-                self.reconnect()  # the late answer would be read as the next command's
-                raise
-            finally:
-                if self.inst.sock:
-                    self.inst.sock.deadline = None
+            return self.call(cmd, deadline)
         finally:
             self.lock.release()
 
-    def reconnect(self):
-        """A new control connection (a DeadlineSocket) in place of the one there, which may be left waiting for an
-        answer (Control serves each connection on its own)."""
+    def call(self, cmd, deadline=None):
+        """CMD's answer on this role's connection, opened again first if it was dropped; the lock held."""
+        if not isinstance(self.inst.sock, DeadlineSocket):
+            self.reconnect(deadline)
+        self.inst.sock.deadline = deadline
+        try:
+            return self.inst.send(cmd)
+        except TimeoutError:
+            self.drop()  # the late answer would be read as the next command's
+            raise
+        finally:
+            if isinstance(self.inst.sock, DeadlineSocket):
+                self.inst.sock.deadline = None
+
+    def stop(self):
+        """`quit` on this role's connection (opened again if it was dropped); the lock held."""
+        if not isinstance(self.inst.sock, DeadlineSocket):
+            try:
+                self.reconnect()
+            except OSError:
+                pass  # Instance.stop then waits for the process alone
+        return self.inst.stop()
+
+    def drop(self):
         inst = self.inst
         for c in (inst.file, inst.sock):
-            if c is None:
-                continue
             try:
                 c.close()
-            except OSError:
+            except (OSError, AttributeError):
                 pass
-        inst.file = inst.sock = None
+        inst.file, inst.sock = Dropped(), None
+
+    def reconnect(self, deadline=None):
+        """A new control connection (a DeadlineSocket) in place of the one there, which may be left waiting for an
+        answer (Control serves each connection on its own); connecting stops at the deadline too."""
+        self.drop()
+        wait = 2 if deadline is None else min(2.0, deadline - time.time())
+        if wait <= 0:
+            raise TimeoutError("past the deadline")
         sock = DeadlineSocket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock.settimeout(2)
-            sock.connect(("127.0.0.1", inst.port))
+            sock.settimeout(wait)
+            sock.connect(("127.0.0.1", self.inst.port))
         except OSError:
             sock.close()
             raise
-        inst.sock, inst.file = sock, sock.makefile("rw")
+        self.inst.sock, self.inst.file = sock, sock.makefile("rw")
 
 
 class Scene:
@@ -280,6 +311,7 @@ class Scene:
                 raise Failure(f"{role.name} " + (f"exited with status {code}" if code is not None else "did not answer ping")
                               + f" (see {role.inst.log})")
             print(f"{role.name:>10}: {role.device}, port {role.inst.port}, ready in {role.ready:.1f} s")
+            role.reconnect()  # a DeadlineSocket from the start, so a first `until` need not connect in its wait
 
     # ---- commands ----
 
@@ -349,12 +381,12 @@ class Scene:
                 raise Failure(role.last)
         elif word == "quit":
             with role.lock:  # not while another role's `to` reads this connection
-                why = role.inst.stop()
+                why = role.stop()
             if why:
                 raise Failure(why)
         else:
             with role.lock:
-                role.last = role.inst.send(cmd)
+                role.last = role.call(cmd)
             if failed(role.last):
                 raise Failure(role.last)
 
@@ -415,7 +447,7 @@ class Scene:
             self.captures += 1
             staged = os.path.join(self.stage, f"capture-{self.captures}{ext}")
         with role.lock:
-            reply = role.inst.send(" ".join([word, *flags, staged]))
+            reply = role.call(" ".join([word, *flags, staged]))
         if not failed(reply):
             if not os.path.exists(staged):
                 return f"error: {word} answered {reply!r} but wrote nothing"
@@ -449,7 +481,7 @@ class Scene:
                     return
                 if inst.proc.poll() is None:
                     with role.lock:
-                        why = inst.stop()
+                        why = role.stop()
                 else:
                     why = None if inst.proc.returncode == 0 else f"exited with status {inst.proc.returncode}"
                 if why:
