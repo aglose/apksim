@@ -220,16 +220,17 @@ def png_scale(data, maxdim):
                 cur[i] = (cur[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
         rows.append(cur)
         prev = cur
-    nw, nh, out = w // f, h // f, bytearray()
+    nw, nh, out = -(-w // f), -(-h // f), bytearray()  # at least one pixel; edge blocks average what is there
     for y in range(nh):
         out.append(0)
         block = rows[y * f:(y + 1) * f]
         for x in range(nw):
+            cnt = len(block) * (min((x + 1) * f, w) - x * f)
             for c in range(bpp):
                 s = 0
                 for r in block:
-                    s += sum(r[(x * f) * bpp + c:(x * f + f) * bpp + c:bpp])
-                out.append(s // (f * f))
+                    s += sum(r[(x * f) * bpp + c:min((x + 1) * f, w) * bpp:bpp])
+                out.append(s // cnt)
     def chunk(k, d): return len(d).to_bytes(4, "big") + k + d + (zlib.crc32(k + d) & 0xffffffff).to_bytes(4, "big")
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", nw.to_bytes(4, "big") + nh.to_bytes(4, "big") + bytes([8, ctype, 0, 0, 0]))
             + chunk(b"IDAT", zlib.compress(bytes(out), 6)) + chunk(b"IEND", b""))
