@@ -122,6 +122,14 @@ assert log.get("_apksimCertificates", {}).get("api.apksim.test"), "no certificat
 print(f"ok: recording has {len(entries)} entries, bodies kept, Authorization and Set-Cookie redacted")
 EOF
 
+echo "== the engine reached in memory (as in the beam sandbox, where loopback is denied: issue 317)"
+start inmemory.log fixture -- --jvm -Dapksim.netInMemory=true --network-inspect --network-host "api.apksim.test=127.0.0.1:@FPORT@" \
+  --network-trust @OUT@/fixture/cert.pem
+expect "OkHttp fetch over the in-memory link" "$(fetch Fetch okhttp:)" '^okhttp: 200 Hello, apksim! in'
+expect "a second fetch (the connection reused or made again)" "$(fetch Fetch okhttp:)" '^okhttp: 200 Hello, apksim! in'
+expect "the engine captured them" "$(drive network)" '[1-9][0-9]* recorded'
+stop
+
 echo "== replay with the server gone"
 start replay.log "" -- --network replay @OUT@/rec.har
 expect "connectivity at launch" "$(text connectivity:)" '^connectivity: (wifi|cellular|vpn|other)'

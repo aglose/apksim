@@ -21,6 +21,7 @@ import java.nio.channels.SocketChannel;
 final class RelaySocket extends Socket {
   private final Socket real;
   private TabRelay.Pipe up, down;  // the app's bytes to the relay, and back
+  private volatile boolean engineLink;  // the pipes end at the network engine, not the tab relay
   private volatile boolean relay, closed, shutIn, shutOut;  // relay is set last, once both pipes exist
   private volatile int soTimeout;
   private boolean tcpNoDelay, keepAlive;
@@ -42,19 +43,35 @@ final class RelaySocket extends Socket {
     return real;
   }
 
+  /** Connected to the tab relay (not to the network engine). */
   boolean isRelay() {
-    return relay;
+    return relay && !engineLink;
+  }
+
+  boolean isEngineLink() {
+    return engineLink;
   }
 
   /** `Net.connect` for this socket: the relay's host in memory, anything else through Net on the real socket. */
   void connectTo(SocketAddress a, int timeout) throws IOException {
-    synchronized (this) {
-      if (relayConnect(a)) return;
-    }
-    Net.connect(real, a, timeout);
+    Net.connect(this, a, timeout);
   }
 
-  private boolean relayConnect(SocketAddress a) throws IOException {
+  /**
+   * Connects to the network engine in memory (the beam sandbox denies loopback, where the engine listens): the engine
+   * serves the other end of a pair of pipes. `dest` is where the app was going.
+   */
+  synchronized void connectEngine(NetEngine engine, InetSocketAddress dest) throws IOException {
+    if (relay || closed) throw new SocketException(closed ? "Socket is closed" : "already connected");
+    remote = dest;
+    up = new TabRelay.Pipe(256 * 1024, true);
+    down = new TabRelay.Pipe(256 * 1024, true);
+    engineLink = true;
+    relay = true;
+    engine.serveInMemory(up, down);
+  }
+
+  synchronized boolean relayConnect(SocketAddress a) throws IOException {
     if (relay || closed) throw new SocketException(closed ? "Socket is closed" : "already connected");
     if (a instanceof InetSocketAddress isa && TabRelay.matches(isa)) {
       if (!TabRelay.on) throw new ConnectException("the tab relay is off");
@@ -148,6 +165,7 @@ final class RelaySocket extends Socket {
       return;
     }
     shutIn = true;
+    if (engineLink) return;  // the engine's answer must still be able to end the connection
     down.discard();  // readers blocked or reading on see the end
   }
 
@@ -327,6 +345,6 @@ final class RelaySocket extends Socket {
 
   @Override
   public String toString() {
-    return relay ? "RelaySocket[" + TabRelay.HOST + "]" : real.toString();
+    return relay ? "RelaySocket[" + (engineLink ? "engine" : TabRelay.HOST) + "]" : real.toString();
   }
 }
