@@ -149,6 +149,7 @@ public final class TabRelayCheck {
         }
       }
       if (path.startsWith("/never")) return null;
+      if (path.startsWith("/inject")) return reply(200, "\"Content-Length\":\"5\\r\\nX-Injected: yes\",\"X-Ok\":\"a\\r\\nX-Injected: yes\"", new byte[0]);
       if (path.startsWith("/over")) return reply(200, "", new byte[TabRelay.MAX_BODY + 1]);
       if (path.startsWith("/missing")) return reply(404, "\"X-Why\":\"nothing\"", "gone".getBytes());
       if (path.startsWith("/echo")) return reply(201, "\"Content-Type\":\"application/octet-stream\"", bodyOf(req));
@@ -187,6 +188,9 @@ public final class TabRelayCheck {
       String head = exchange("HEAD /hello HTTP/1.1\r\nHost: x\r\n\r\n".getBytes(), 5000);
       System.out.println("   head: " + head.replace("\r\n", "|"));
       check(head.startsWith("HTTP/1.1 200 ") && head.endsWith("\r\n\r\n"), "HEAD: no body");
+
+      String inj = exchange("HEAD /inject HTTP/1.1\r\nHost: x\r\n\r\n".getBytes(), 5000);
+      check(inj.startsWith("HTTP/1.1 200 ") && !inj.contains("X-Injected") && inj.contains("Content-Length: 0\r\n"), "HEAD: a header value with a line break in it is not written");
 
       // The limits.
       check(exchange("TRACE /x HTTP/1.1\r\nHost: x\r\n\r\n".getBytes(), 5000).startsWith("HTTP/1.1 405 "), "TRACE: 405");

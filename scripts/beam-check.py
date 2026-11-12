@@ -1404,7 +1404,8 @@ def main():
             if "relay urlconnection: UnknownHostException" in nd or "relay urlconnection: ConnectException" in nd:
                 break
             time.sleep(0.5)
-        check(not any(t.startswith("y ") for t in sr.texts) and "relay urlconnection: idle" not in nd,
+        check(not any(t.startswith("y ") for t in sr.texts)
+              and ("relay urlconnection: UnknownHostException" in nd or "relay urlconnection: ConnectException" in nd),
               "relay: not asked for, the app's request fails and the tab hears nothing")
         close_session(sr)
         # Asked for: the tab gets `y` messages and answers them.

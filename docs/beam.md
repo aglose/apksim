@@ -927,7 +927,8 @@ host are carried to the tab, which answers them with its own credentials.
   real one). `URL.openConnection` gets a `RelayConnection` (HttpURLConnection; redirects are not followed). The
   requests go over a control connection of the instance, `relaywatch` (lines `y ID {json}` both ways), which the
   agent's Session passes to the tab as text messages. A `new Socket()` the app connects itself is not carried; Ktor CIO
-  and other NIO clients are not either.
+  and other NIO clients are not either. Relayed requests do not pass the network engine, so the flight recorder's net
+  channel and `--network record` do not hold them.
 - **Checked**: `scripts/check-tab-relay.sh` (CI: a stand-in tab on the link; both clients' paths, bodies, the limits, a
   read timeout), `beam-check.py` (hello, the protocol gate, a session without it and with it, the test app's Relay
   buttons through OkHttp and HttpURLConnection answered over the WebSocket), and by hand the test app's 12 s answer

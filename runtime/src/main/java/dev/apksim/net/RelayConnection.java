@@ -120,7 +120,7 @@ final class RelayConnection extends HttpURLConnection {
     }
     String length = String.valueOf(reply.body().length);
     if (method.equals("HEAD")) {  // the tab's length describes the GET's body
-      for (String[] h : reply.headers()) if (h[0].equalsIgnoreCase("content-length")) length = h[1];
+      for (String[] h : reply.headers()) if (h[0].equalsIgnoreCase("content-length") && h[1].matches("[0-9]{1,18}")) length = h[1];
     }
     header.add(new String[] {"Content-Length", length});
   }

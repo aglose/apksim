@@ -479,7 +479,7 @@ public final class TabRelay {
     String headLength = null;
     for (String[] e : r.headers) {
       String lower = e[0].toLowerCase(Locale.ROOT);
-      if (method.equals("HEAD") && lower.equals("content-length")) headLength = e[1];
+      if (method.equals("HEAD") && lower.equals("content-length") && e[1].matches("[0-9]{1,18}")) headLength = e[1];  // digits only: it is written into the head
       if (NOT_RETURNED.contains(lower) || e[0].indexOf('\r') >= 0 || e[0].indexOf('\n') >= 0 || e[1].indexOf('\r') >= 0
           || e[1].indexOf('\n') >= 0) {
         continue;
