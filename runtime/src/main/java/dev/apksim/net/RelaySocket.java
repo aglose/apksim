@@ -165,6 +165,7 @@ final class RelaySocket extends Socket {
       return;
     }
     shutIn = true;
+    if (engineLink) return;  // the engine's answer must still be able to end the connection
     down.discard();  // readers blocked or reading on see the end
   }
 

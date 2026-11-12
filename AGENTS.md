@@ -307,6 +307,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
+  - In the beam sandbox (`Net.inMemory`; `-Dapksim.netInMemory=true` elsewhere, for checks) loopback is denied, so the network
+    engine is reached in memory: plain-factory sockets are `RelaySocket`s and `connectEngine` joins them to the engine
+    by pipes (`PipeSocket` is the engine's end; `TabRelay.Pipe` has a blocking mode). `HttpURLConnection` there goes out
+    directly (its engine proxy would be on loopback): not captured or recorded (issue 317).
   - `net/TabRelay`, `RelaySocket`, `RelayConnection`: the beam tab relay (issue 276, docs/beam.md "The tab relay"): with
     `--tab-relay` (the agent adds it for a start with `"relay": true`, protocol 3), plain-HTTP requests to
     `page.apksim.invalid` are carried to the browser tab as `y ID {json}` text messages and answered by it. In-JVM (the

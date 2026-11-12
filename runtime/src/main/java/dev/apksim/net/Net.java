@@ -506,6 +506,7 @@ public final class Net {
       if (!s.isClosed()) s.setSoTimeout(before);
     }
     redirected.add(s);
+    if (s instanceof RelaySocket rs && !inMemory) redirected.add(rs.real());  // TLS is layered on the real one
   }
 
   private static String hostOf(InetSocketAddress isa) {
