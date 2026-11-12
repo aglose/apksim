@@ -153,6 +153,9 @@ def touches(c, x, y, times):
         r = c(f"touch down {x} {y}")
         if r.startswith(("error", "unknown", "usage")):
             return r
+        # Timed from when the app took the finger down: a busy app answering late must not shorten the hold (a long
+        # press would become a tap), and the touches after it move with it.
+        t0 = max(t0, time.time() - at / 1000)
         sleep_until(t0 + (at + down) / 1000)
         r = c(f"touch up {x} {y}")
         if r.startswith(("error", "unknown", "usage")):

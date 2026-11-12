@@ -11,6 +11,7 @@ is this script (`--fake`), which plays `apksim replay ... --control auto`: it pr
   silent  `replay` is never answered: the same, by --start-timeout (not the control channel's 90 s read timeout)
   starts  `replay` answers "starting" twice, then its result: journey.py runs the step and passes (exit 0)
   steps   a long press is a finger down and up as long apart as recorded (not a timed `swipe`, which holds 120 ms more),
+          timed from when the app took the finger down (the stand-in takes it 200 ms late),
           a double tap (`times`) its four touches at their recorded times with no settle between, and a `type` step's
           wait for its input counts the Host's 7 ms per character (the stand-in says "input queued" until then)
 """
@@ -47,6 +48,8 @@ def fake():
             open(os.path.join(state, "timed.txt"), "a").write(f"{time.time():.3f} {cmd}\n")
             if cmd.startswith("type64 "):
                 typed_until = time.time() + 0.007 * len(base64.b64decode(cmd.split()[1]).decode())
+            if cmd == "touch down 100 200":  # a busy app: it takes the long press's finger down 200 ms late
+                time.sleep(0.2)
             if cmd == "ping":
                 answer = "pong"
             elif cmd == "replay" and os.environ["CHECK_SCENARIO"] == "silent":
@@ -139,8 +142,9 @@ def main():
     check(code == 0, f"exit 0 ({code}, {took:.1f} s): {err.strip()[-200:]}")
     t = [(at, c) for at, c in timed("steps", root) if c.startswith(("touch", "tap", "swipe", "type64", "settle"))]
     press = [(at, c) for at, c in t if c.endswith(" 100 200")]
-    check([c for _, c in press] == ["touch down 100 200", "touch up 100 200"] and 0.65 <= press[1][0] - press[0][0] < 0.85,
-          "a long press: down, then up 700 ms later: " + str([(round(at - t[0][0], 2), c) for at, c in press]))
+    check([c for _, c in press] == ["touch down 100 200", "touch up 100 200"] and 0.65 <= press[1][0] - press[0][0] - 0.2 < 0.85,
+          "a long press: down, then up 700 ms after the app took it (200 ms late): "
+          + str([(round(at - t[0][0], 2), c) for at, c in press]))
     i = next((k for k, (_, c) in enumerate(t) if c.endswith(" 300 400")), None)
     tap = t[i:i + 4] if i is not None else []
     check([c for _, c in tap] == ["touch down 300 400", "touch up 300 400"] * 2 and 0.15 <= tap[2][0] - tap[0][0] < 0.35,
