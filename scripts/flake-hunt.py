@@ -81,8 +81,9 @@ class Hunt:
             cmd += ["--"] + opts
         return cmd
 
-    def run(self, label, hogs=0, **kw):
-        """One instrument.py run: {(class, method): "passed"|"failed"|"skipped"}, its log, how long it took."""
+    def run(self, label, hogs=0, victim_class=None, **kw):
+        """One instrument.py run: {(class, method): "passed"|"failed"|"skipped"}, its log, how long it took.
+        [victim_class]: a ddmin trial's victim's class, whose class-level failure is what the trial looks for."""
         self.n += 1
         base = os.path.join(self.runs_dir, f"{self.n:03d}-{label}")
         cmd = self.command(xml=base + ".xml", **kw)
@@ -117,8 +118,9 @@ class Hunt:
                     RUN_FAILURES.append(f"{label}: {t[0]}#{t[1]} (see {base}.log)")
                     continue
                 ran.append(t)
-                if t[1] in (None, "null") and c.find("failure") is not None:
-                    # (@BeforeClass/@AfterClass: after its tests passed, too, which must not leave the hunt "stable")
+                if t[1] in (None, "null") and c.find("failure") is not None and t[0] != victim_class:
+                    # (@BeforeClass/@AfterClass: after its tests passed, too, which must not leave the hunt "stable";
+                    # not the victim's own class in a ddmin trial: that is the reproduction it looks for)
                     RUN_FAILURES.append(f"{label}: {t[0]} failed at class level (see {base}.log)")
                 f = c.find("failure")
                 results[t] = "failed" if f is not None else "skipped" if c.find("skipped") is not None else "passed"
@@ -137,7 +139,7 @@ class Hunt:
         key = (victim, tuple(before))
         if key not in self.trials:
             order = list(before) + [victim]
-            got, _, _ = self.run("ddmin", tests=order, order=order)
+            got, _, _ = self.run("ddmin", tests=order, order=order, victim_class=victim[0])
             # (strict: a run that failed before the victim ran is no reproduction, so it does not count as its failure)
             self.trials[key] = status_of(got, victim, strict=True)
         return self.trials[key]
@@ -332,12 +334,36 @@ def main():
     # Order dependence: a test that failed in a shuffled run (or the suite's order) and passed alone.
     alone_ok = {t: all(s == "passed" for s in results["isolate"][t]) for t in tests} if "isolate" in results else {}
     culprits = {}  # victim -> (culprits, order of the minimal run, command)
+    listed_tests = set(tests)
+    class_reduced = {}  # (class, tests before it) -> culprits, for a class that failed in @BeforeClass
     for x, t, order, _ in failures:
-        if t in culprits or order is None or t not in order:
+        if t in culprits or order is None:
+            continue
+        # Where it ran: its own entry, else its class's class-level one (a @BeforeClass that failed: the run reports
+        # Class#null and nothing for the class's tests). What ran before it is reduced by the tests' own selectors.
+        own = t in order
+        at = next((order.index(k) for k in (t, (t[0], "null"), (t[0], None)) if k in order), None)
+        if at is None:
             continue
         if "isolate" in results and not alone_ok[t]:
             continue  # fails alone too: not (only) order
-        before = order[:order.index(t)]
+        before = []
+        for k in order[:at]:
+            if k in listed_tests:
+                before.append(k)
+            elif k[1] in (None, "null") and not any(b[0] == k[0] for b in before):
+                # (a class that failed in @BeforeClass ran its setup, which may be what the victim finds: it takes
+                # part through its first test, whose selection runs that setup again; Class#null is no selector)
+                first = next((x for x in tests if x[0] == k[0]), None)
+                if first is not None:
+                    before.append(first)
+        if not own and (t[0], tuple(before)) in class_reduced:
+            # (its class failed before any of its tests ran: what was found for one of them holds for every one)
+            minimal = class_reduced[(t[0], tuple(before))]
+            run = minimal + [t]
+            culprits[t] = (minimal, run, hunt.command(tests=run, order=run))
+            print(f"order: {t[0]}#{t[1]}: its class failed in @BeforeClass, as for another of its tests", file=sys.stderr)
+            continue
         print(f"order: {t[0]}#{t[1]} failed after {len(before)} tests; reproducing", file=sys.stderr)
         if not before or not hunt.victim_fails(t, before):
             print("  not reproduced with the same tests before it: not an order dependence", file=sys.stderr)
@@ -347,6 +373,8 @@ def main():
             print(f"  {alone} alone: not an order dependence", file=sys.stderr)
             continue
         minimal = ddmin(before, lambda s: hunt.victim_fails(t, s))
+        if not own:
+            class_reduced[(t[0], tuple(before))] = minimal
         run = minimal + [t]
         cmd = hunt.command(tests=run, order=run)
         culprits[t] = (minimal, run, cmd)

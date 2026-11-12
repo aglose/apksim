@@ -691,7 +691,8 @@ def incomplete(r, results, test=None):
         return timeout_note(r)
     if "INSTRUMENTATION_CODE: " not in r.stdout:
         return f"apksim exited ({r.returncode}) before the run finished"
-    if announced and len(results) < max(announced):
+    # (a class that failed at class level, in @BeforeClass, reports one Class#null for all its tests: no count to check)
+    if announced and len(results) < max(announced) and not any(res[1] in (None, "null") for res in results):
         return f"apksim reported {len(results)} of the {max(announced)} tests it started"
     if r.returncode != 0 and not any(res[2] == "failed" for res in results):
         return f"apksim exited with {r.returncode} although no test failed"
