@@ -390,7 +390,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   and why, what each client gets), `snapshots.md` (screenshot tests: spec, determinism, Mac against the Linux
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor), `conformance.md` (libraries'
-  documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left).
+  documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left),
+  `uiautomator-engine.md` (`--uia engine`: UiAutomator's idle waits, gesture time and accessibility events decided
+  in-process; a prototype).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
   split by `SMOKE_PARTS`, the androidTest runs, affected-check), and `linux-smoke`, the check every pull request must
@@ -1405,6 +1407,24 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   after the JDK's providers (`KeyStores`), and AES/GCM set up again with the same key and IV is allowed, as Android's
   provider allows it (`Ciphers`: unsafe, but what the app gets on a device); `android.net.ssl.SSLSockets` supports
   the JDK's TLS sockets, so OkHttp's Android platform sets ALPN and offers HTTP/2 (`ShadowSimSSLSockets`).
+**The UiAutomator engine** (`--uia engine`, `-Dapksim.uia=engine`; a prototype, off by default: `--uia classic` is
+everything above; docs/uiautomator-engine.md has the design, the measurements and what is not done). `Uia` decides
+what UiAutomator otherwise waits for: an idle wait runs the main queue until nothing is due soon, or frames keep
+coming while a hash of the accessibility tree (`UiaTree`) has stood still for 250 ms of the app's time, or a tree
+still moving has had 1000 ms; with `--realtime-clock` its own waits fast-forward (`RealTimeClock.fastForward`: the
+clock moves to the next frame or message without the wall-clock wait, real time's base moved back by what was
+skipped), which covers idle waits, the frame wait after a swipe's step and the sleeps UiAutomator paces gestures with
+(the translator sends `SystemClock.sleep` in `androidx/test/uiautomator/` classes to `Uia.sleep` with its kind,
+gesture or poll; without the engine that is the sleep itself); from a test's first use of UiAutomation
+AccessibilityManager is enabled with no service listed, as on a device, and the events views send reach
+UiAutomation's listener and executeAndWaitForEvent's filter, the synthesized ones remaining as the fallback; and with
+the default clock a poll's sleep gives the app's other threads real time while they are at work (`UiaWorkers`), where
+a wait's whole timeout used to pass in a few real milliseconds. The test app's UiAutomator tests with
+`--realtime-clock`: 42.1 s classic (19 tests), 8.8 s with the engine (23); the suite's 342 tests pass with it on either
+clock. `UiaEngineTest` (CI runs it and the other
+UiAutomator tests with `--uia engine -e uiaEngine true`, on both clocks) checks it, and passes on the API 36 emulator.
+`-Dapksim.uia.trace=true` prints each idle wait, sleep and event.
+
 Not supported yet: `adb shell am instrument` of a test APK (only of a self-targeting instrumentation, see "adb device"), shell commands that need another process or the Host loop (input, screencap, `am instrument`), and
 test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;

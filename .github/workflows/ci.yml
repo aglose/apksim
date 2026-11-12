@@ -203,6 +203,20 @@ jobs:
             --xml tests/junit-badlistener.xml -e class dev.apksim.composeapp.RunnerListenersTest \
             -e listener does.not.Exist || status=$?
           test "$status" = 1
+      # --uia engine (opt-in, docs/uiautomator-engine.md): UiAutomator's idle waits, gesture time and accessibility
+      # events decided in-process. Every UiAutomator test with it, on both clocks; UiaEngineTest's engine-only tests
+      # run with -e uiaEngine true.
+      - name: Test run with the UiAutomator engine
+        if: matrix.leg == 'tests'
+        run: |
+          classes=dev.apksim.composeapp.UiAutomatorTest,dev.apksim.composeapp.conformance.UiAutomatorConformanceTest,dev.apksim.composeapp.UiaEngineTest
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-uia-engine.xml -e class "$classes" -e uiaEngine true -- --uia engine
+          python3 scripts/ci-no-skips.py tests/junit-uia-engine.xml 23
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-uia-engine-realtime.xml -e class "$classes" -e uiaEngine true -e realtimeClock true \
+            -- --uia engine --realtime-clock
+          python3 scripts/ci-no-skips.py tests/junit-uia-engine-realtime.xml 23
       # --start-activities (opt-in): an activity the app starts comes up, and the one below it is stopped with its
       # window hidden until it is back on top.
       - name: Test run with activities started
@@ -382,6 +396,8 @@ jobs:
             tests/junit.xml
             tests/junit-network.xml
             tests/junit-realtime.xml
+            tests/junit-uia-engine.xml
+            tests/junit-uia-engine-realtime.xml
             tests/junit-crash.xml
             tests/junit-sharded.xml
             tests/bundle-check

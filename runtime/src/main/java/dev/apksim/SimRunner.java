@@ -259,6 +259,7 @@ public class SimRunner extends RobolectricTestRunner {
       // launch waits for Host.)
       if (TestActivities.testRun()) AdbServer.frameworkReady();
       if (RealTimeClock.requested()) RealTimeClock.startTest();  // after: Looper needs Robolectric's configuration
+      if (Uia.on()) Uia.startTest();  // --uia engine: accessibility is off again until this test uses UiAutomation
       Timing.detail("setup-app-state-done");
       if (System.getProperty("apksim.instrument") == null) return;
       AppCallbacks.carryOver(RuntimeEnvironment.getApplication());  // its startup is over: what it replaced goes

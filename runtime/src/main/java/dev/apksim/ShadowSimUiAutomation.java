@@ -50,9 +50,13 @@ import org.robolectric.util.ReflectionHelpers;
  *
  * <p>Not here: an accessibility event stream (executeAndWaitForEvent runs the action, lets the UI settle and reports
  * the scrolls and window change it made, else times out) and global actions other than Back.
+ *
+ * <p>With `--uia engine` ({@link Uia}; test runs, off by default) the idle wait and the event wait are the engine's:
+ * accessibility is on from a test's first call here, and the events the views send are the event stream.
  */
 @Implements(UiAutomation.class)
 public class ShadowSimUiAutomation extends ShadowUiAutomation {
+  @org.robolectric.annotation.RealObject private UiAutomation real;
   private AccessibilityServiceInfo serviceInfo = new AccessibilityServiceInfo();
   /** Window ids for the roots, stable for as long as the root lives (UiAutomator compares them). */
   private static final java.util.Map<ViewRootImpl, Integer> WINDOW_IDS = new java.util.WeakHashMap<>();
@@ -95,6 +99,13 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     return out;
   }
 
+  /** The root views of the windows accessibility reports, bottom to top; main thread only. */
+  static List<View> reportedViews() {
+    List<View> out = new ArrayList<>();
+    for (Win w : windows()) out.add(w.view);
+    return out;
+  }
+
   /** The root views of every shown window, covered ones included, bottom to top; main thread only. */
   static List<View> rootViews() {
     List<View> out = new ArrayList<>();
@@ -131,7 +142,10 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   @Implementation
   protected AccessibilityNodeInfo getRootInActiveWindow() {
-    return onMain(ShadowSimUiAutomation::activeRoot);
+    return onMain(() -> {
+      Uia.connect(real);
+      return activeRoot();
+    });
   }
 
   /** The root node of the active window (the topmost focusable one), linked to its views; main thread only. */
@@ -150,7 +164,10 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
 
   @Implementation
   protected List<AccessibilityWindowInfo> getWindows() {
-    return onMain(ShadowSimUiAutomation::windowInfos);
+    return onMain(() -> {
+      Uia.connect(real);
+      return windowInfos();
+    });
   }
 
   /**
@@ -226,7 +243,12 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       return;
     }
     onMain(() -> {
-      settle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
+      if (Uia.active()) {  // --uia engine: idle decided from the queue, the frames and the tree
+        Uia.connect(real);
+        Uia.waitForIdle(idleTimeoutMillis, globalTimeoutMillis);
+      } else {
+        settle(Math.min(idleTimeoutMillis, globalTimeoutMillis));
+      }
       return null;
     });
   }
@@ -309,6 +331,19 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected AccessibilityEvent executeAndWaitForEvent(Runnable command, UiAutomation.AccessibilityEventFilter filter,
       long timeoutMillis) throws TimeoutException {
     java.util.Map<View, String> before = onMain(ShadowSimUiAutomation::scrollStates);
+    if (Uia.active()) {
+      // --uia engine: the events the views sent, as they come, until the filter takes one or the UI is idle. Then
+      // the events below, which stand for what the system would send (a window change) or a view did not.
+      Uia.connect(real);
+      AccessibilityEvent sent = Uia.runAndAwait(command, filter, timeoutMillis);
+      if (sent != null) return sent;
+      AccessibilityEvent made = synthesized(before, filter);
+      if (made != null) {
+        Uia.Stats.waitsBySynthesized++;
+        return made;
+      }
+      throw new TimeoutException("apksim: no accessibility event matched after the action, and the UI is idle");
+    }
     command.run();
     if (TestActivities.testRun()) {
       onMain(() -> {
@@ -318,6 +353,17 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     } else {
       liveSettle(500);
     }
+    AccessibilityEvent made = synthesized(before, filter);
+    if (made != null) return made;
+    throw new TimeoutException("apksim: no accessibility events; nothing matched after the action");
+  }
+
+  /**
+   * The events an action would have brought, made from what changed: a TYPE_VIEW_SCROLLED for each view whose scroll
+   * state differs from {@code before}, then those of a window change. The first the filter accepts, or null.
+   */
+  private static AccessibilityEvent synthesized(java.util.Map<View, String> before,
+      UiAutomation.AccessibilityEventFilter filter) {
     List<AccessibilityEvent> scrolled = onMain(() -> {
       List<AccessibilityEvent> out = new ArrayList<>();
       for (java.util.Map.Entry<View, String> e : before.entrySet()) {
@@ -335,7 +381,35 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       e.setEventTime(SystemClock.uptimeMillis());
       if (filter.accept(e)) return e;
     }
-    throw new TimeoutException("apksim: no accessibility events; nothing matched after the action");
+    return null;
+  }
+
+  /**
+   * An event a view sent itself ({@link Uia#onEvent}), as a service receives it: sealed, on its window's in-process
+   * connection, getSource() the node it names. One whose window has no id (sent before its window registered) or is
+   * gone is passed on as it is, with no source.
+   */
+  static AccessibilityEvent asDelivered(AccessibilityEvent e) {
+    if (ReflectionHelpers.<Boolean>getField(e, "mSealed")) return e;  // offered to a filter before
+    ViewRootImpl root = null;
+    int windowId = e.getWindowId();
+    synchronized (WINDOW_IDS) {
+      for (java.util.Map.Entry<ViewRootImpl, Integer> w : WINDOW_IDS.entrySet()) {
+        if (w.getValue() == windowId) root = w.getKey();
+      }
+    }
+    if (root != null && root.getView() != null) {
+      e.setConnectionId(root.getDirectAccessibilityConnectionId());
+      e.setSealed(true);
+      try {
+        Shadow.<org.robolectric.shadows.ShadowAccessibilityRecord>extract(e).setSourceNode(e.getSource(0));
+      } catch (RuntimeException gone) {
+        // the view it names has left the window since
+      }
+    } else {
+      e.setSealed(true);
+    }
+    return e;
   }
 
   /** Each shown view of the reported windows that can scroll, with its scroll event's fields. Main thread. */
@@ -462,7 +536,10 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
   protected boolean injectInputEvent(android.view.InputEvent event, boolean sync) {
     // On the main thread (an instrumentation's onCreate, runOnMainSync) the Host loop that would take the event is
     // this thread, so the queue would never be served: dispatch directly, as in test runs.
-    if (TestActivities.testRun() || Looper.myLooper() == Looper.getMainLooper()) return super.injectInputEvent(event, sync);
+    if (TestActivities.testRun() || Looper.myLooper() == Looper.getMainLooper()) {
+      Uia.connect(real);  // --uia engine: a test's first use of UiAutomation turns accessibility on, as on a device
+      return super.injectInputEvent(event, sync);
+    }
     if (event instanceof android.view.MotionEvent m) {
       int masked = m.getActionMasked();
       String action = masked == android.view.MotionEvent.ACTION_DOWN ? "down"
@@ -569,7 +646,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
         }
         Host.windowsInOrder(order);
       }
-      settle(100);
+      if (Uia.active()) Uia.idle(100, 100, null); else settle(100);
       return true;
     });
   }
@@ -627,6 +704,32 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
    */
   @Implements(android.view.accessibility.AccessibilityManager.class)
   public static class ShadowSimAccessibilityManager extends org.robolectric.shadows.ShadowAccessibilityManager {
+    /** An event a view sends while accessibility is on: also to the UiAutomator engine, when it listens. */
+    @Implementation
+    @Override
+    protected void sendAccessibilityEvent(AccessibilityEvent event) {
+      super.sendAccessibilityEvent(event);
+      Uia.onEvent(event);
+    }
+
+    /**
+     * A window registering with accessibility (ViewRootImpl, once it is on): the id the system would give it, the one
+     * its nodes carry here. Robolectric's stand-in service answered 0 for every window, and two windows' root nodes
+     * were then equal (see rootNode).
+     */
+    @Implementation
+    protected int addAccessibilityInteractionConnection(android.view.IWindow windowToken, android.os.IBinder leashToken,
+        String packageName, android.view.accessibility.IAccessibilityInteractionConnection connection) {
+      try {
+        java.lang.ref.WeakReference<ViewRootImpl> ref = ReflectionHelpers.getField(connection, "mViewRootImpl");
+        ViewRootImpl root = ref == null ? null : ref.get();
+        if (root != null) return windowId(root);
+      } catch (RuntimeException e) {
+        // not a view root's connection
+      }
+      return AccessibilityWindowInfo.UNDEFINED_WINDOW_ID;
+    }
+
     @Implementation(minSdk = 33)
     @Override
     protected Object getWindowTransformationSpec(int windowId) {

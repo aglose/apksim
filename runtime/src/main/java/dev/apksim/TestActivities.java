@@ -167,6 +167,7 @@ public final class TestActivities {
   public static boolean awaitFrame(java.util.concurrent.CountDownLatch latch, long timeout, TimeUnit unit)
       throws InterruptedException {
     if (!pumpsWhileSleeping()) return latch.await(timeout, unit);
+    if (Uia.active() && RealTimeClock.requested()) return Uia.awaitFrame(latch, unit.toNanos(timeout));  // --uia engine
     org.robolectric.shadows.ShadowLooper main = Shadow.extract(Looper.getMainLooper());
     long frameMs = org.robolectric.shadows.ShadowChoreographer.getFrameDelay().toMillis() + 1;
     long end = System.nanoTime() + unit.toNanos(timeout);
