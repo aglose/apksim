@@ -563,7 +563,7 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
 ## Agents, Bluetooth LE and scenes
 
 ```bash
-apksim mcp                                              # an MCP server over stdio, for an AI agent's tool list
+apksim mcp --apps builds/                               # an MCP server over stdio; agents may launch APKs from builds/
 apksim --ble heart-rate app.apk                         # a scripted peripheral the app can scan for and connect to
 scripts/scene.py testapks/composeapp/scenes/board.json  # several instances, one script, one shared backend
 ```
