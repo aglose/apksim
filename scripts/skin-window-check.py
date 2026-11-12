@@ -219,7 +219,12 @@ def main():
             check(abs(int(d1[1]) - 1) <= 2 and abs(int(d1[2]) - 1) <= 2, f"a click at the screen's top left lands at the app's ({d1[1]},{d1[2]})")
             check(abs(int(d2[1]) - 820) <= 2 and abs(int(d2[2]) - 1780) <= 2, f"a click at its bottom right lands at the app's ({d2[1]},{d2[2]})")
             drive(at(733, 1533))
-            n1 = int(fab()[1])
+            n1 = n0
+            for _ in range(15):  # the count shows once the app has recomposed: poll for it, up to 3 s
+                n1 = int(fab()[1])
+                if n1 != n0:
+                    break
+                time.sleep(0.2)
             check(n1 == n0 + 1, f"a click on the floating button counts ({n0} -> {n1})")
             d2 = re.search(r"lastDown=(-?\d+),(-?\d+)", st())
             drive(f"window click {10 * k / s0:.2f} {FH / 2 * k / s0:.2f}")
@@ -253,8 +258,12 @@ def main():
                 proc.wait(20)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+# The verdict whatever way main() ended: an early return (the app never answered, the skin was not on) is a failure
+# already recorded, and must not exit 0.
+try:
+    main()
+finally:
     print("\nFAILED: " + ", ".join(failures) if failures else "\nall passed")
-    sys.exit(1 if failures else 0)
-
-
-main()
+sys.exit(1 if failures else 0)

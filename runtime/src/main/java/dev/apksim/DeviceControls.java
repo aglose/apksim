@@ -661,8 +661,9 @@ final class DeviceControls {
         } catch (java.io.IOException e) {
           return "error: " + e.getMessage();
         }
-        Device to = Device.named(s.device);
-        if (!Device.current().name().equals(to.name()) || !Skinning.fits(s, w, h)) {
+        Device to = Skinning.deviceOf(s);
+        Device now = Device.current();
+        if (!now.name().equals(to.name()) || !now.kind().equals(to.kind()) || !Skinning.fits(s, w, h)) {
           String r = reshape(to, to.widthPx(), to.heightPx(), true, before);
           return "skin " + s.name + ": " + r;
         }
@@ -814,7 +815,8 @@ final class DeviceControls {
     h = nh;
     resizer.resize(nw, nh, false);
     Device.setCurrent(Device.current().withSize(Math.round(nw / d), Math.round(nh / d)));
-    skinChanged();  // the frame turns with the display, and the cutout with it
+    SkinShape.rotation = rotation;
+    if (Skinning.current() != null) skinChanged();  // the frame turns with the display, and the cutout with it
     String r = configurationChanged(before);
     windowsResized();
     showTitle();

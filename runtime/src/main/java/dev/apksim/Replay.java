@@ -206,6 +206,12 @@ final class Replay {
         && app.getResources().getDisplayMetrics().widthPixels < app.getResources().getDisplayMetrics().heightPixels) {
       rotation = 1;  // an older bundle: landscape on a portrait device
     }
+    // The skin's shape the app was told (cutout, corners), before the stack is rebuilt: its windows lay out with it.
+    if (device != null && device.get("skin") instanceof Map<?, ?> shape) {
+      @SuppressWarnings("unchecked") Map<String, Object> m = (Map<String, Object>) shape;
+      Skinning.restoreShape(m);
+      SkinShape.changed();
+    }
     for (int i = 0; i < rotation; i++) controls.run(new String[] {"rotate", "right"});
     // The app's wall clock as the checkpoint had it. ReplayPlan launched with it (--clock, so the Application and its
     // providers saw that date); set again now, after the start, unless the replay was given a --clock of its own.

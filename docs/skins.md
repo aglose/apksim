@@ -87,7 +87,7 @@ takes it away. `skin NAME` for a skin with another device switches to that devic
   and turns a quarter more when a display's orientation still differs from the frame's (a landscape tablet in a
   portrait frame).
 - **The window** (`Skinning`, `simwindow.m`'s `SkinView`) is the frame's size: the frame image above the screen, the
-  screen clipped to `cornerRadius` or `mask`. Clicks on the bezel go nowhere; the screen's own view takes the rest,
+  screen and the black behind it clipped to `cornerRadius` or `mask` (stretched over the hole). Clicks on the bezel go nowhere; the screen's own view takes the rest,
   with the app's coordinates as before. While a skin is on the window is not resized by dragging (the frame has its
   own shape); Zoom In/Out, Actual Size and Fit Screen scale it. `skin off` gives the bare window back at actual size.
   The status bar, the gesture handle and the software keyboard are drawn inside the screen, clipped with it.
@@ -99,7 +99,12 @@ takes it away. `skin NAME` for a skin with another device switches to that devic
 - **Screenshots.** `shot FILE` is still the app's pixels alone. `shot --skin FILE` (File > Save Screen with Skin,
   Cmd+Opt+S) is the screen in the frame, at the frame's size scaled to the display, transparent outside the device.
 - **Headless and Linux** there is no window, but the device, what the app is told and `shot --skin` are the same.
-- **Test runs** (`--instrument`) take the skin's device and report its cutout and corners; nothing is drawn.
+- **The device's kind** is the skin's `kind` when it names one: a `227x227@2` skin of kind `watch` runs as a watch
+  (round, UI_MODE_TYPE_WATCH, no bars), as `--device watch` would, at launch and with `skin NAME`.
+- **Test runs** (`--instrument`) take the skin's device and report its cutout and corners; nothing is drawn. The
+  shape follows the framework's display (its size and rotation), so UiDevice's rotation turns it too.
+- **Flight recordings** keep the skin's shape (not its images) in each checkpoint's device, and `apksim replay` tells
+  the app the same cutout and corners, with or without that skin stored where it replays.
 - A warm launch has the standby's environment, so the launcher passes `APKSIM_SKINS_DIR` and `APKSIM_SKINS` on as
   `-Dapksim.skinsDir` and `-Dapksim.skinsShared`.
 

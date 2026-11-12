@@ -1250,6 +1250,9 @@ final class FlightRecorder {
     } catch (RuntimeException e) {
       // without it
     }
+    // A skin's shape (its cutout and corners, which the app was told): replayed without the skin's images.
+    Map<String, Object> skinShape = Skinning.shape();
+    if (skinShape != null) device.put("skin", skinShape);
     device.put("timezone", java.util.TimeZone.getDefault().getID());
     // The wall clock the app sees (SimClock: --clock, `clock`), which the checkpoint's own wall time (real) is not.
     device.put("clock", SimClock.currentTimeMillis());

@@ -1455,23 +1455,28 @@ public class Host {
       android.graphics.Paint smooth = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG | android.graphics.Paint.ANTI_ALIAS_FLAG);
       android.graphics.RectF at = new android.graphics.RectF(l.screenX(), l.screenY(), l.screenX() + w, l.screenY() + h);
       byte[] maskPng = Skinning.maskImage();
-      // The hole's own shape, black: what a few pixels between it and the display show, as a device's glass.
-      android.graphics.Paint black = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-      black.setColor(android.graphics.Color.BLACK);
-      c.drawRoundRect(new android.graphics.RectF(l.holeX(), l.holeY(), l.holeX() + l.holeW(), l.holeY() + l.holeH()),
-          l.cornerRadius(), l.cornerRadius(), black);
-      int layer = c.saveLayer(at, null);
+      // The hole, black (what a few pixels between it and the display show, as a device's glass), and the app's pixels
+      // in it, in one layer clipped to the screen's shape: its rounded corners, or its mask turned and stretched over
+      // the hole, as the window stretches it. Outside that shape both stay transparent.
+      android.graphics.RectF hole = new android.graphics.RectF(l.holeX(), l.holeY(), l.holeX() + l.holeW(), l.holeY() + l.holeH());
+      int layer = c.saveLayer(hole, null);
       if (maskPng == null && l.cornerRadius() > 0) {
         android.graphics.Path round = new android.graphics.Path();
-        round.addRoundRect(at, l.cornerRadius(), l.cornerRadius(), android.graphics.Path.Direction.CW);
+        round.addRoundRect(hole, l.cornerRadius(), l.cornerRadius(), android.graphics.Path.Direction.CW);
         c.clipPath(round);
       }
+      c.drawColor(android.graphics.Color.BLACK);
       c.drawBitmap(screen, l.screenX(), l.screenY(), null);
       if (maskPng != null) {
         Bitmap mask = android.graphics.BitmapFactory.decodeByteArray(maskPng, 0, maskPng.length);
         android.graphics.Paint dstIn = new android.graphics.Paint(smooth);
         dstIn.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN));
-        c.drawBitmap(mask, turned(mask.getWidth(), mask.getHeight(), l.quarterTurns(), (float) l.k(), l.screenX(), l.screenY()), dstIn);
+        int q = l.quarterTurns();
+        int tw = q % 2 == 1 ? mask.getHeight() : mask.getWidth(), th = q % 2 == 1 ? mask.getWidth() : mask.getHeight();
+        android.graphics.Matrix fit = turned(mask.getWidth(), mask.getHeight(), q, 1f, 0, 0);
+        fit.postScale((float) l.holeW() / tw, (float) l.holeH() / th);
+        fit.postTranslate(l.holeX(), l.holeY());
+        c.drawBitmap(mask, fit, dstIn);
         mask.recycle();
       }
       c.restoreToCount(layer);

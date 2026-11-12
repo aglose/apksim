@@ -31,10 +31,26 @@ final class SkinShape {
   private static volatile boolean used;
 
   static Skinning.Layout layout() {
-    Device d = Device.current();
-    Skinning.Layout l = Skinning.layout(d.widthPx(), d.heightPx(), rotation);
+    if (Skinning.current() == null) return null;
+    int[] d = display();
+    Skinning.Layout l = Skinning.layout(d[0], d[1], d[2]);
     if (l != null) used = true;
     return l;
+  }
+
+  /**
+   * The display as the framework has it (width, height, rotation): what the app's windows are laid out on, in running
+   * instances and test runs alike (UiDevice's rotation turns it without DeviceControls).
+   */
+  static int[] display() {
+    try {
+      android.view.DisplayInfo di = android.hardware.display.DisplayManagerGlobal.getInstance().getDisplayInfo(Display.DEFAULT_DISPLAY);
+      if (di != null && di.logicalWidth > 0) return new int[] {di.logicalWidth, di.logicalHeight, di.rotation};
+    } catch (RuntimeException e) {
+      // before the framework is up: the device
+    }
+    Device d = Device.current();
+    return new int[] {d.widthPx(), d.heightPx(), rotation};
   }
 
   /** The display's rotation (Surface.ROTATION_*), kept by DeviceControls as it turns the display. */
@@ -81,11 +97,11 @@ final class SkinShape {
     if (!used && Skinning.current() == null) return;
     DisplayCutout cutout = cutout();
     RoundedCorners corners = corners();
-    Device d = Device.current();
+    int[] dd = display();
     state.setDisplayCutout(cutout != null ? cutout : DisplayCutout.NO_CUTOUT);
     // The cutout's safe insets as insets sources of type displayCutout(), one per side, as DisplayPolicy adds them:
     // WindowInsets.getInsets(Type.displayCutout()) is made from these, not from the cutout itself.
-    int w = d.widthPx(), h = d.heightPx();
+    int w = dd[0], h = dd[1];
     int[] sides = cutout == null ? new int[4]
         : new int[] {cutout.getSafeInsetLeft(), cutout.getSafeInsetTop(), cutout.getSafeInsetRight(), cutout.getSafeInsetBottom()};
     for (int i = 0; i < 4; i++) {
@@ -103,7 +119,7 @@ final class SkinShape {
       state.getOrCreateSource(id, WindowInsets.Type.displayCutout()).setFrame(f).setVisible(true);
     }
     state.setRoundedCorners(corners != null ? corners : RoundedCorners.NO_ROUNDED_CORNERS);
-    state.setRoundedCornerFrame(new Rect(0, 0, d.widthPx(), d.heightPx()));
+    state.setRoundedCornerFrame(new Rect(0, 0, w, h));
   }
 
   /** Every window gets its insets again (the skin, or the display under it, changed). */

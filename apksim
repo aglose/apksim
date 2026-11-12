@@ -308,8 +308,9 @@ done
 [[ -n "${SKIP_LIBS:-}" ]] && EXTRA+=("-Dapksim.skipLibraries=$SKIP_LIBS")
 # The skin store's folders (docs/skins.md), for --skin and the `skin` command: an instance from a standby has the
 # standby's environment, not this one's.
-[[ -n "${APKSIM_SKINS_DIR:-}" ]] && EXTRA+=("-Dapksim.skinsDir=$APKSIM_SKINS_DIR")
-[[ -n "${APKSIM_SKINS:-}" ]] && EXTRA+=("-Dapksim.skinsShared=$APKSIM_SKINS")
+# Always both, empty when unset: empty means the default (no store override, no shared folders), where leaving one
+# out would keep what the standby's own environment had.
+EXTRA+=("-Dapksim.skinsDir=${APKSIM_SKINS_DIR:-}" "-Dapksim.skinsShared=${APKSIM_SKINS:-}")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
 if [[ -n "${BUNDLES:-}" ]]; then
   IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"

@@ -67,6 +67,8 @@ final class Skinning {
     String given = System.getProperty("apksim.device");
     if (given == null || given.isEmpty()) {
       System.setProperty("apksim.device", s.device);
+      // With its kind (a custom-size watch or TV skin), which the size alone would make a phone or a tablet.
+      Device.setCurrent(deviceOf(s));
     } else {
       Device d;
       try {
@@ -83,6 +85,61 @@ final class Skinning {
     }
     skin = s;
     return true;
+  }
+
+  /**
+   * The skin's device, of the skin's own kind when it names one: `227x227@2` with `"kind": "watch"` is a watch (round,
+   * UI_MODE_TYPE_WATCH, no bars), not the phone the size alone gives.
+   */
+  static Device deviceOf(Skin s) {
+    Device d = Device.named(s.device);
+    if (s.kind == null || s.kind.equals(d.kind()) || !d.name().equals(s.device) || !java.util.List.of("phone", "foldable",
+        "tablet", "desktop", "tv", "watch").contains(s.kind)) return d;
+    return new Device(d.name(), s.kind, d.widthDp(), d.heightDp(), d.density(), d.exactWidthPx(), d.exactHeightPx());
+  }
+
+  /**
+   * The skin's shape, without its images, for a flight recording's checkpoint (FlightRecorder.device): what the app was
+   * told (cutout, corners) depends on it, and a replay elsewhere may not have the skin stored.
+   */
+  static java.util.Map<String, Object> shape() {
+    Skin s = skin;
+    if (s == null) return null;
+    java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+    m.put("name", s.name);
+    m.put("device", s.device);
+    if (s.kind != null) m.put("kind", s.kind);
+    m.put("frameWidth", frameW);
+    m.put("frameHeight", frameH);
+    m.put("x", s.x);
+    m.put("y", s.y);
+    m.put("width", s.width);
+    m.put("height", s.height);
+    m.put("cornerRadius", s.cornerRadius);
+    if (s.cutout != null) m.put("cutout", new java.util.LinkedHashMap<>(s.cutout));
+    return m;
+  }
+
+  /** A recorded shape (`apksim replay`): the app is told the same cutout and corners; nothing is drawn (no images). */
+  @SuppressWarnings("unchecked")
+  static void restoreShape(java.util.Map<String, Object> m) {
+    if (m == null) return;
+    Skin s = new Skin();
+    s.name = String.valueOf(m.get("name"));
+    s.title = s.name;
+    s.device = String.valueOf(m.get("device"));
+    s.kind = m.get("kind") instanceof String k ? k : null;
+    s.x = (int) num(m.get("x"));
+    s.y = (int) num(m.get("y"));
+    s.width = (int) num(m.get("width"));
+    s.height = (int) num(m.get("height"));
+    s.cornerRadius = (int) num(m.get("cornerRadius"));
+    s.cutout = m.get("cutout") instanceof java.util.Map<?, ?> c ? (java.util.Map<String, Object>) c : null;
+    if (s.width <= 0 || s.height <= 0) return;
+    clear();
+    frameW = (int) num(m.get("frameWidth"));
+    frameH = (int) num(m.get("frameHeight"));
+    skin = s;
   }
 
   /** Turns a skin on (the `skin` command); the caller then switches the device if it has to. */
@@ -238,6 +295,7 @@ final class Skinning {
 
   /** The frame image for this layout and the quarter turns still to apply to it (frame-land.png is the frame at q 1). */
   static byte[] frameImage(Layout l, int[] turnsOut) {
+    if (frame == null) return null;  // a recorded shape: nothing to draw
     if (frameLand != null && l.quarterTurns() % 2 == 1) {
       turnsOut[0] = l.quarterTurns() == 1 ? 0 : 2;
       return frameLand;

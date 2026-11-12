@@ -60,7 +60,7 @@ static BOOL skinOn;
 static int skinOuterW, skinOuterH, skinScreenX, skinScreenY, skinRadius, skinHole[4];
 static CGImageRef skinFrame, skinMask;
 static NSView *skinView;
-static CALayer *skinFrameLayer, *skinMaskLayer, *skinHoleLayer;
+static CALayer *skinFrameLayer, *skinMaskLayer, *skinHoleLayer, *skinHoleMaskLayer;
 static NSView *simView;
 static int outerW(void) { return skinOn ? skinOuterW : devW; }
 static int outerH(void) { return skinOn ? skinOuterH : devH; }
@@ -1102,6 +1102,8 @@ static void layoutSkin(void) {
     skinHoleLayer = [CALayer layer];
     skinHoleLayer.zPosition = -10;
     skinHoleLayer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    skinHoleMaskLayer = [CALayer layer];  // the mask again: a layer masks only one other
+    skinHoleMaskLayer.contentsGravity = kCAGravityResize;
   }
   if (win.contentView != skinView) {
     [simView removeFromSuperview];
@@ -1116,7 +1118,15 @@ static void layoutSkin(void) {
   // The layer's coordinates are its view's (flipped, top down) as AppKit sets them up for a flipped layer-backed view.
   skinHoleLayer.frame = CGRectMake(skinHole[0] / s, skinView.layer.geometryFlipped ? skinHole[1] / s
                                    : (skinOuterH - skinHole[1] - skinHole[3]) / s, skinHole[2] / s, skinHole[3] / s);
-  skinHoleLayer.cornerRadius = skinRadius / s;
+  skinHoleLayer.cornerRadius = skinMask ? 0 : skinRadius / s;
+  // With a mask the backing takes the screen's shape too: its corners outside a round watch face stay transparent.
+  if (skinMask) {
+    skinHoleMaskLayer.frame = skinHoleLayer.bounds;
+    skinHoleMaskLayer.contents = (__bridge id)skinMask;
+    skinHoleLayer.mask = skinHoleMaskLayer;
+  } else {
+    skinHoleLayer.mask = nil;
+  }
   skinFrameLayer.frame = skinView.layer.bounds;
   skinFrameLayer.contents = (__bridge id)skinFrame;
   frameLayer.cornerRadius = skinMask ? 0 : skinRadius / s;
@@ -1147,6 +1157,10 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkin(JNIEnv *env, jcla
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
     NSWindow *win = NSApp.windows.firstObject;
+    if (!frame && !skinOn) {  // no skin before or after (a rotation without one): the window keeps its size and zoom
+      dispatch_semaphore_signal(done);
+      return;
+    }
     if (skinFrame) CGImageRelease(skinFrame);
     if (skinMask) CGImageRelease(skinMask);
     skinFrame = frame;
