@@ -26,6 +26,8 @@ import java.util.concurrent.TimeoutException;
  */
 final class RelayConnection extends HttpURLConnection {
   private TabRelay.Reply reply;
+  private IOException failure;  // a request is sent once: a later accessor repeats this, never the request
+  private InputStream stream;
   private final ByteArrayOutputStream sent = new ByteArrayOutputStream();
   private final List<String[]> header = new ArrayList<>();  // [key or null, value]; index 0 is the status line
 
@@ -78,6 +80,7 @@ final class RelayConnection extends HttpURLConnection {
   }
 
   private synchronized void execute() throws IOException {
+    if (failure != null) throw failure;
     if (reply != null) return;
     String m = method;
     if (doOutput && m.equals("GET")) m = "POST";
@@ -93,12 +96,15 @@ final class RelayConnection extends HttpURLConnection {
     try {
       reply = getReadTimeout() > 0 ? f.get(getReadTimeout(), TimeUnit.MILLISECONDS) : f.get();
     } catch (TimeoutException e) {
-      throw new SocketTimeoutException("Read timed out");
+      failure = new SocketTimeoutException("Read timed out");
+      throw failure;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new java.io.InterruptedIOException();
+      failure = new java.io.InterruptedIOException();
+      throw failure;
     } catch (ExecutionException e) {
-      throw new IOException(e.getCause());
+      failure = new IOException(e.getCause());
+      throw failure;
     }
     responseCode = reply.status();
     responseMessage = Net.statusText(reply.status());
@@ -132,7 +138,8 @@ final class RelayConnection extends HttpURLConnection {
       if (responseCode == 404 || responseCode == 410) throw new FileNotFoundException(url.toString());
       throw new IOException("Server returned HTTP response code: " + responseCode + " for URL: " + url);
     }
-    return new ByteArrayInputStream(method.equals("HEAD") ? new byte[0] : reply.body());
+    if (stream == null) stream = new ByteArrayInputStream(method.equals("HEAD") ? new byte[0] : reply.body());
+    return stream;
   }
 
   @Override
