@@ -64,6 +64,8 @@ EOF
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
+  # An MCP server over stdio so AI agents can drive instances (docs/mcp.md): a stdlib Python script.
+  mcp) shift; exec python3 "$ROOT/scripts/mcp.py" --apksim "$ROOT/apksim" "$@" ;;
   # Device skins (docs/skins.md): the local store and its commands, on a plain JVM like serve.
   skin) SERVE=1; SKIN=1; shift ;;
   # A browser session's app run on this Mac (docs/beam.md): serve in its loopback-only agent mode, same JVM below.
@@ -209,10 +211,15 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
+    # Scripted BLE peripherals (dev.apksim.ble, docs/ble.md): a JSON file or a preset (heart-rate, battery). Repeatable.
+    --ble) EXTRA+=("-Dapksim.ble.${BLE_N:-0}=$2"); BLE_N=$((${BLE_N:-0} + 1)); shift 2 ;;
     # Simulated cameras (Cameras.java): off (default), fake (camera features, a back and a front camera in CameraManager,
     # a moving test pattern at 30 fps) or fake=IMAGE (that still image instead).
     --camera) [[ "$2" =~ ^(off|fake|fake=.+)$ ]] || { echo "--camera takes off|fake|fake=IMAGE" >&2; exit 2; }; EXTRA+=("-Dapksim.camera=$2"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
+    # The tab relay (docs/beam.md): the app's plain-HTTP requests to page.apksim.invalid go to the browser tab that
+    # started the session. The agent adds it for a start that asked.
+    --tab-relay) EXTRA+=("-Dapksim.tabRelay=true"); shift ;;
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
     --nav-bar) EXTRA+=("-Dapksim.navBar=$2"); shift 2 ;;
@@ -327,10 +334,10 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
-      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*) ;;
+      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;
       -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || WARM_OK="" ;;  # a standby's sandbox writes only under STATE

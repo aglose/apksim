@@ -99,9 +99,8 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-12, release 0.28.0. This table says where each item's work is and nothing that changes by the hour:
-check results, whether a pull request is a draft and which branch it is based on are on its own page. "In review"
-means open and not merged.
+As of 2026-11-12, release 0.28.0. This table says where each item stands. What changes by the hour (check
+results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |
 |---|---|---|---|---|
@@ -112,7 +111,7 @@ means open and not merged.
 | 5 Pre-warmed test processes | test processes | r1 | #257 | in 0.27.0 |
 | 6 Flake hunter | test processes | r2 | #261 | in 0.28.0 |
 | 7 Coverage | coverage | r2 | #255 | in 0.28.0 |
-| 8 Conformance sweep | conformance | r1-r3 | #265-#267, #272, #273 | first batch in 0.27.0; the main-thread latch fix (#272) and batch 2 (#273) in 0.28.0; batch 3 not started; AndroidX's own suites not built |
+| 8 Conformance sweep | conformance | r1-r3 | #265, #266, #267, #272, #273 | first batch in 0.27.0; the main-thread latch fix (#272) and batch 2 (#273) in 0.28.0; batch 3 not started; AndroidX's own suites not built |
 | 9 PR preview, compare | serve | r1 | #252 | in 0.27.0 |
 | 10 Report button, inspector | serve | r2 | #259 | in 0.28.0 |
 | 11 Crawler | crawler | r1 | #260 | in 0.27.0 |

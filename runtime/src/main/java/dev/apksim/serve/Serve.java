@@ -1854,7 +1854,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2057,7 +2057,10 @@ public final class Serve {
       size = body.get("size") instanceof Number n ? n.longValue() : -1;
       List<String> given = new ArrayList<>();
       // A reopened session runs with the options it was saved with unless the page names them.
-      Object opts = body.get("options") == null && rec != null && local.startsWith("@saved ") ? rec.get("launch") : body.get("options");
+      boolean fromSaved = body.get("options") == null && rec != null && local.startsWith("@saved ");
+      Object opts = fromSaved ? rec.get("launch") : body.get("options");
+      // Issue 276: the tab relay is the start's own opt-in, never carried over from a saved session's options.
+      if (fromSaved && opts instanceof List<?> ol && ol.contains("--tab-relay")) opts = ol.stream().filter(x -> !"--tab-relay".equals(x)).toList();
       if (opts instanceof List<?> l) {
         for (Object x : l) {
           if (!(x instanceof String str)) throw new IOException("\"options\" takes strings");
@@ -2065,6 +2068,16 @@ public final class Serve {
         }
       }
       launch = Catalog.launchOptions(given);
+      Object relay = body.get("relay");
+      if (relay != null && !(relay instanceof Boolean)) throw new IOException("\"relay\" takes true or false");
+      if (Boolean.TRUE.equals(relay)) {
+        if (protocol < 3) {
+          Http.text(out, 409, "\"relay\" is protocol 3's: name \"protocol\": 3 (GET /beam/hello says \"relay\": true when this Mac's apksim has it)");
+          return;
+        }
+        launch = new ArrayList<>(launch);
+        launch.add("--tab-relay");  // the agent's own: Catalog.launchOptions does not let a page name it
+      }
     } catch (IOException | RuntimeException e) {
       Http.text(out, 400, String.valueOf(e.getMessage()));
       return;

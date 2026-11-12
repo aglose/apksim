@@ -825,6 +825,8 @@ months apart in either direction.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
   built"). 0.20.0 and later speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
   `source` (issues 177, 178); the start's `saved` and `dataFrom` and `GET /beam/saved` (issue 181, 0.21.0 and later).
+  3 (issue 276): the start's `"relay": true`, hello's `"relay": true` and the `y` text messages of the tab relay
+  ("The tab relay"). A start in protocol 2 or 1 that asks for the relay is refused with 409.
 - **Checked**: `beam-check.py` (the ranges in both answers; a start in 99 refused with `brew upgrade apksim`, in 0 as
   the site's being older; a `/ws` in 99 refused and the same grant then opening in 1) and `beam-page-check.py`
   (Chrome, agents started with `APKSIM_BEAM_PROTOCOLS=2-3` and `0-0`: the menu's option disabled with each reason, the
@@ -850,7 +852,7 @@ readable by any origin. Requests to the server carry its token as everything els
    to tell the visitor the Mac waits for them ("The consent wait").
 3. **The app's build.** `GET SERVER/api/apps/ID/beam` → `{"id", "name", "size", "sha256", "options", "ticket",
    "ticketSeconds"}` (409 while an added app still downloads).
-4. **A grant.** `POST AGENT/beam/start` with JSON `{"protocol": P, "sha256", "name", "size", "options", "ticket",
+4. **A grant.** `POST AGENT/beam/start` with JSON `{"protocol": P, "relay"?: true (3: see "The tab relay"), "sha256", "name", "size", "options", "ticket",
    "url": SERVER + "api/beam/apk"}`, plus `"data": {"ticket", "url": SERVER + "api/beam/data"}` for a move with data
    (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
    store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
@@ -885,6 +887,52 @@ readable by any origin. Requests to the server carry its token as everything els
    "lastUsed"}]`, this origin's saved sessions (404 from an agent before this). Step 4 with `"saved": ID` reopens one
    (what the app writes is kept in it), with `"dataFrom": ID` starts a newer build of the same app, signed by the same
    key, on a copy of it ("Saved data from the tab").
+
+## The tab relay (2026-11-11, issue 276)
+
+A page behind a sign-in proxy (single sign-on) can serve the app on the visitor's Mac what only its signed-in tab can
+fetch: a dev server's API, a document the app polls, events it posts back. The agent cannot pass the proxy, and the
+page's options were to open an unauthenticated path for the app or not to offer beam for that feature. (Issues 173
+and 177 solved the same for the build and the data pack.) With the relay, the app's plain-HTTP requests to a reserved
+host are carried to the tab, which answers them with its own credentials.
+
+- **Opt in**: `POST /beam/start` with `"protocol": 3` and `"relay": true` (a start in protocol 1 or 2 that asks is
+  refused, 409). `GET /beam/hello` says `"relay": true` on an agent that has it. The agent adds the launch flag
+  `--tab-relay` itself (a page cannot name it in `options`, and a saved session's options do not carry it over: the
+  start asks each time). Without it the host resolves to nothing, as any `.invalid` name.
+- **The host**: `http://page.apksim.invalid` (`.invalid` never resolves anywhere else). Plain HTTP only: `https://` to
+  it is refused. An app whose network security config denies cleartext still reaches it, since apksim applies no such
+  config; keep the host exempt if it ever does.
+- **Messages** (text; the tab's binary messages are dropped), both carrying the same id:
+  - agent to tab: `y ID {"method","path","headers":{...},"body":"<base64>"}`, `path` keeping the query, `headers` the
+    app's (repeats joined with ", "; without Host, Content-Length, Transfer-Encoding, Expect and the other hop-by-hop
+    ones).
+  - tab to agent: `y ID {"status","headers":{...},"body":"<base64>"}`. A header value may be an array. The agent sets
+    Content-Length and `Connection: close` itself and drops the answer's Content-Encoding (a browser's `fetch` has
+    decoded the body already).
+- **Limits**: GET, HEAD, POST, PUT, PATCH and DELETE (405 otherwise); bodies up to 512 KB each way (413 on the app's
+  side; a longer answer is a 502 at once, checked on the decoded body), a request's line and headers up to 64 KB
+  (431), so a `y` message stays under the WebSocket's 1 MiB and none is dropped on the way (a tab message over 1 MiB
+  ends the session, as any message that long does); an answer that is not JSON is a 502 for that request; 15 s for the tab to answer
+  (504); 16 requests in flight (503); anything pending when the tab goes is a 502; one request per connection. The
+  app's own read timeout counts too: OkHttp's default 10 s ends a 12 s answer with a SocketTimeoutException.
+- **The page decides what to answer.** The agent filters no path or header: a page should relay only to its own origin
+  and only the paths it means to expose, and take care what an app's `Authorization` header or cookies carry.
+- **Where it hooks**: the beam sandbox denies loopback, and a warm standby fixes its sandbox before any session
+  exists, so a per-session port was no option; the hop stays inside the JVM. `NetResolver` gives the host a placeholder
+  address; app calls to `SocketFactory.createSocket()` (a plain factory: OkHttp's) are translated to `Net.createSocket`,
+  which with the relay on returns a `RelaySocket`: the factory's own socket until it connects, then, for the host, a
+  pair of in-memory pipes (`TabRelay` parses one HTTP/1.1 request on them: declared or chunked body, `Expect:
+  100-continue`) and for any other address that real socket, connected through `Net` as before (TLS is layered on the
+  real one). `URL.openConnection` gets a `RelayConnection` (HttpURLConnection; redirects are not followed). The
+  requests go over a control connection of the instance, `relaywatch` (lines `y ID {json}` both ways), which the
+  agent's Session passes to the tab as text messages. A `new Socket()` the app connects itself is not carried; Ktor CIO
+  and other NIO clients are not either. Relayed requests do not pass the network engine, so the flight recorder's net
+  channel and `--network record` do not hold them.
+- **Checked**: `scripts/check-tab-relay.sh` (CI: a stand-in tab on the link; both clients' paths, bodies, the limits, a
+  read timeout), `beam-check.py` (hello, the protocol gate, a session without it and with it, the test app's Relay
+  buttons through OkHttp and HttpURLConnection answered over the WebSocket), and by hand the test app's 12 s answer
+  against OkHttp's read timeout.
 
 ## Builds from an artifact store (2026-11-08, issue 177)
 

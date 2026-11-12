@@ -290,6 +290,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     when a page asks, `--launchd` taking the socket on stdin; `SlotPack`: a session's data slot and `.device` folder
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
+  - `net/TabRelay`, `RelaySocket`, `RelayConnection`: the beam tab relay (issue 276, docs/beam.md "The tab relay"): with
+    `--tab-relay` (the agent adds it for a start with `"relay": true`, protocol 3), plain-HTTP requests to
+    `page.apksim.invalid` are carried to the browser tab as `y ID {json}` text messages and answered by it. In-JVM (the
+    beam sandbox denies loopback): `SocketFactory.createSocket()` in app code goes to `Net.createSocket`, which returns a
+    `RelaySocket` while the relay is on (the factory's own socket for any other address), `URL.openConnection` a
+    `RelayConnection`; the instance's `relaywatch` control connection is the link to `Session`. `scripts/check-tab-relay.sh` (CI).
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
@@ -470,6 +476,10 @@ instance startService runs, and an `android:process` service gets its local bind
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
 only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
+`ble [add FILE|PRESET[:ADDR]|remove ADDR|all|rssi ADDR N|notify|set ADDR CHAR HEX|disconnect ADDR]` and `--ble FILE|PRESET`
+(`dev.apksim.ble`, docs/ble.md): scripted BLE peripherals that the framework's own BluetoothLeScanner and BluetoothGatt
+find and talk to (apksim answers their IBluetoothScan/IBluetoothGatt binders), in running instances and test runs
+(`BleTest`; `scripts/ble-check.py` drives `apksim://ble`).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
 open and streaming devices, frames, images, drops, outputs).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
@@ -644,6 +654,9 @@ and `.github/actions/preview` put a pull request's build on a serve (with `ttl`,
 Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
 capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`); `scripts/inspector-check.py`.
+
+## MCP server
+`apksim mcp --apps DIR [--out DIR]` (`scripts/mcp.py`, stdlib Python, protocol 2026-07-28 and the handshake revisions): tools to launch and drive instances over `--control`; each action answers with the node changes since the last answer. Allow-listed launch options, output folder only, `--no-autofill`. docs/mcp.md; `scripts/mcp-check.py` checks it.
 
 ## Network (record, replay, conditions)
 docs/network.md is the spec. `--network record FILE` captures every HTTP(S) exchange into a HAR (bodies, headers,

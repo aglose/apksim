@@ -25,6 +25,12 @@ public final class NetResolver extends InetAddressResolverProvider {
     return new InetAddressResolver() {
       @Override
       public Stream<InetAddress> lookupByName(String host, LookupPolicy policy) throws UnknownHostException {
+        if (TabRelay.on && TabRelay.isHost(host)) {  // the tab relay's host (docs/beam.md): an address of its own, never a lookup
+          if ((policy.characteristics() & LookupPolicy.IPV4) == 0 && (policy.characteristics() & LookupPolicy.IPV6) != 0) {
+            throw new UnknownHostException(host);
+          }
+          return Stream.of(placeholder(host.toLowerCase(Locale.ROOT)));
+        }
         if (!Net.active || local(host)) return builtin.lookupByName(host, policy);
         if (Net.conditions.offline()) {
           throw new UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname");

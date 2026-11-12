@@ -432,6 +432,10 @@ public final class Net {
   }
 
   public static void connect(Socket s, SocketAddress a, int timeout) throws IOException {
+    if (s instanceof RelaySocket rs) {  // the tab relay is on (docs/beam.md "The tab relay")
+      rs.connectTo(a, timeout);
+      return;
+    }
     if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
       s.connect(a, timeout);
       return;
@@ -501,7 +505,25 @@ public final class Net {
     return original != null ? original : h;
   }
 
+  /** `factory.createSocket()`: with the tab relay on, a plain factory's socket can be connected to the relay's host. */
+  public static Socket createSocket(SocketFactory f) throws IOException {
+    Socket s = f.createSocket();
+    return TabRelay.on && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
+  }
+
+  /** A socket already connected to the relay's host (the factory's two-argument forms). */
+  private static Socket relayed(SocketFactory f, InetSocketAddress dest) throws IOException {
+    Socket s = createSocket(f);
+    if (!(s instanceof RelaySocket)) {
+      s.close();
+      throw new ConnectException("the tab relay needs a plain socket factory");
+    }
+    connect(s, dest, 0);
+    return s;
+  }
+
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
+    if (TabRelay.on && TabRelay.isHost(host) && !(f instanceof SSLSocketFactory)) return relayed(f, new InetSocketAddress(host, port));
     if (!active) return startedMeanwhile(tracked(f.createSocket(host, port)));
     return createSocket(f, new InetSocketAddress(host, port), host);
   }
@@ -570,6 +592,9 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
+    if (TabRelay.on && !(f instanceof SSLSocketFactory) && TabRelay.matches(new InetSocketAddress(address, port))) {
+      return relayed(f, new InetSocketAddress(address, port));
+    }
     if (!active) return startedMeanwhile(tracked(f.createSocket(address, port)));
     // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
     InetSocketAddress dest = new InetSocketAddress(address, port);
@@ -577,6 +602,11 @@ public final class Net {
   }
 
   public static Socket createSocket(SSLSocketFactory f, Socket s, String host, int port, boolean autoClose) throws IOException {
+    if (s instanceof RelaySocket rs) {
+      // TLS over a plain factory's socket (OkHttp's https): layered on the socket the factory made; the relay is plain HTTP only.
+      if (rs.isRelay()) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
+      s = rs.real();
+    }
     if (active && mode != Mode.SHAPE && redirected.contains(s)) return new FakeTlsSocket(s, host, port, autoClose, f);
     return f.createSocket(s, host, port, autoClose);
   }
@@ -596,6 +626,10 @@ public final class Net {
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
     String host = u.getHost();
+    if (TabRelay.on && TabRelay.isHost(host)) {
+      if (!proto.equals("http")) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
+      return new RelayConnection(u);
+    }
     if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, 1))
         || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
