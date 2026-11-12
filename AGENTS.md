@@ -1323,8 +1323,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   `-Dapksim.providerFailures=log`). `--network-profile offline` still holds through it (`NetConnectivity.networksReplaced`). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
 - Room's "Cannot access database on the main thread" check counts the test body as the instrumentation thread it is
   on a device: the translator sends `RoomDatabase`'s `Looper.getThread()` (Room 2.6+) or `ArchTaskExecutor.isMainThread()`
-  (older) to `TestActivities.roomMainThread`/`roomIsMainThread`, which answer "not main" on the main thread outside any
-  dispatch or `runOnMainSync` (so `onActivity`/`onFragment` still throw, as on a device). A device test calling a
+  (older) to `TestActivities.roomMainThread`/`roomIsMainThread`, which answer "not main" only for the test's own code
+  (under JUnit's `FrameworkMethod`) outside any dispatch, `runOnMainSync`, `ActivityScenario.onActivity` or lifecycle
+  call (`Instrumentation.call*`, a provider's `attachInfo`), so the app's startup, `onActivity`/`onFragment` blocks and
+  the callbacks of an activity the body launches still throw, as on a device. A device test calling a
   blocking DAO method from its body failed here (`RoomConformanceTest`). Work an Espresso action runs inline from the
   body passes where a device would throw. Only an unminified `RoomDatabase` is matched (a test calling an R8 app's Room
   keeps Room's own check); `-Dapksim.roomTestBody=false` turns it off.

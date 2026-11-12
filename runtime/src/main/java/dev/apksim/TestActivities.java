@@ -323,8 +323,8 @@ public final class TestActivities {
    * RoomDatabase, which the translator sends here): in a test run, the main thread running the test body itself is
    * not the main thread, as on a device, where the body runs on the instrumentation thread. A device test calling a
    * blocking DAO method from its body threw "Cannot access database on the main thread" here
-   * (RoomConformanceTest). Inside a message's dispatch or runOnMainSync (onActivity, onFragment) it is the main
-   * thread, and Room refuses as on a device. Main-thread work an Espresso action runs inline from the body is let
+   * (RoomConformanceTest). Inside a message's dispatch, runOnMainSync (onActivity, onFragment) or a lifecycle call
+   * (the app's startup, an activity's onCreate) it is the main thread, and Room refuses as on a device. Main-thread work an Espresso action runs inline from the body is let
    * through, where a device would refuse.
    */
   public static Thread roomMainThread(Looper looper) {
@@ -343,10 +343,31 @@ public final class TestActivities {
     return main && !(Looper.getMainLooper().isCurrentThread() && inTestBody());
   }
 
-  /** The main thread in a test body, outside any dispatch or runOnMainSync. Off with -Dapksim.roomTestBody=false. */
+  /**
+   * The main thread running a test's own code (the test method, @Before, @After: under JUnit's
+   * FrameworkMethod.runReflectiveCall), outside any dispatch, runOnMainSync, ActivityScenario.onActivity (which runs
+   * its block at once when called on the main thread, onFragment's too), or lifecycle call the framework makes
+   * (Instrumentation.callApplicationOnCreate, callActivityOnCreate and the rest, a provider's attachInfo), which a
+   * device runs on the main thread. So the app's startup, which runs before the test method, and an activity or
+   * fragment a test launches from its body still count as the main thread. Off with -Dapksim.roomTestBody=false.
+   */
   private static boolean inTestBody() {
-    return testRun() && !"false".equals(System.getProperty("apksim.roomTestBody")) && canRunMainQueue()
-        && StackWalker.getInstance().walk(s -> s.noneMatch(f -> f.getMethodName().equals("runOnMainSync")));
+    if (!testRun() || "false".equals(System.getProperty("apksim.roomTestBody")) || !canRunMainQueue()) return false;
+    return StackWalker.getInstance().walk(s -> {
+      boolean junit = false;
+      for (StackWalker.StackFrame f : (Iterable<StackWalker.StackFrame>) s::iterator) {
+        String c = f.getClassName();
+        String m = f.getMethodName();
+        if (m.equals("runOnMainSync")
+            || (c.equals("androidx.test.core.app.ActivityScenario") && m.equals("onActivity"))  // inline on main here
+            || (c.equals("android.app.Instrumentation") && m.startsWith("call"))
+            || (c.equals("android.content.ContentProvider") && m.equals("attachInfo"))) {
+          return false;
+        }
+        if (c.equals("org.junit.runners.model.FrameworkMethod$1") && m.equals("runReflectiveCall")) junit = true;
+      }
+      return junit;
+    });
   }
 
   /**

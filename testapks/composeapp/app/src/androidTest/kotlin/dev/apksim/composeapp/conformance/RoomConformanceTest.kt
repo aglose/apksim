@@ -2,6 +2,9 @@ package dev.apksim.composeapp.conformance
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.os.Bundle
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.testing.launchFragmentInContainer
 import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
@@ -70,6 +73,19 @@ class RoomConformanceTest {
     abstract fun tasks(): Tasks
   }
 
+  /** Runs a blocking query in its onCreate, which a device runs on the main thread. */
+  class QueriesInOnCreate : Fragment() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+      super.onCreate(savedInstanceState)
+      thrown = runCatching { db!!.notes().countBlocking() }.exceptionOrNull()
+    }
+  }
+
+  companion object {
+    @Volatile var db: NotesDb? = null
+    @Volatile var thrown: Throwable? = null
+  }
+
   private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
   private val open = mutableListOf<RoomDatabase>()
 
@@ -101,6 +117,15 @@ class RoomConformanceTest {
       }
     }
     assertTrue("no IllegalStateException", thrown?.message?.contains("main thread") == true)
+  }
+
+  /** A blocking query in a lifecycle callback (a fragment's onCreate) throws, though the test body launched it. */
+  @Test
+  fun aBlockingQueryInALifecycleCallbackThrows() {
+    db = memoryDb()
+    thrown = null
+    launchFragmentInContainer<QueriesInOnCreate>().close()
+    assertTrue("no IllegalStateException: $thrown", thrown is IllegalStateException && thrown!!.message!!.contains("main thread"))
   }
 
   /** Suspend inserts and queries, from runBlocking in the test. */
