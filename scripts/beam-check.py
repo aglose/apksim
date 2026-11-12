@@ -1019,7 +1019,8 @@ def dataFrom_checks(apksim, gp, apk_path, sid, slot_start, sd_file, sg):
 
 
 def relay_checks(apksim, gp, apk, sha, size):
-    """Protocol 3's tab relay, end to end: this script is the tab, the test app's network screen the app."""
+    """Protocol 3's tab relay, end to end: this script is the tab, the test app's network screen the app. The test app
+    denies cleartext everywhere (its network security config): the relay's host must work for it all the same."""
     import base64
     g = agent(apksim, gp, "allow")
     try:

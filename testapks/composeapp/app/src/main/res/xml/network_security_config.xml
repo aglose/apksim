@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Plain http to the beam tab relay's host only (docs/beam.md "Tab relay"), as an app using it on a device would allow. -->
+<!-- No cleartext anywhere, as most apps ship: apksim exempts the beam tab relay's host itself (docs/beam.md "Tab relay"),
+     which the relay mode of scripts/beam-check.py checks against this. -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">page.apksim.invalid</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

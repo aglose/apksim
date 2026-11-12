@@ -45,7 +45,8 @@
         <activity android:name=".TripChooserActivity" android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
         <!-- apksim://network: an HTTPS fetch with OkHttp and with HttpURLConnection (docs/network.md "Checks"), and
-             plain http to the beam tab relay's host (docs/beam.md "Tab relay", scripts/beam-check.py relay_checks). -->
+             plain http to the beam tab relay's host (docs/beam.md "Tab relay", scripts/beam-check.py relay_checks),
+             which the app's network security config does not allow: apksim applies no such config. -->
         <activity android:name=".NetworkActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

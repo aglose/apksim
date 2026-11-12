@@ -904,9 +904,12 @@ nothing leaves the instance's JVM, and the Mac holds no credentials.
   with the relay, every HTTP/1.1 request the app makes to it is relayed: through OkHttp or any client on
   `Socket.connect` / `SocketFactory` (the name resolves to a placeholder address that `dev.apksim.net.Net` hands an
   in-memory connection, `TabRelay`), and through `URL.openConnection` (an HttpURLConnection of the relay's own). https
-  and other ports are refused at connect. Without the relay the name fails to resolve, as before. An app that targets
-  devices too needs cleartext allowed for that host (a network security config `domain-config` with
-  `cleartextTrafficPermitted="true"`, as the test app has).
+  and other ports are refused at connect. Without the relay the name fails to resolve, as before. An app's own
+  cleartext rules do not apply: apksim installs no network security config (nothing calls Android's
+  `NetworkSecurityConfigProvider.install`, so libcore's default policy permits plain http everywhere), and the host
+  never reaches a network anyway. The test app denies cleartext everywhere (`base-config
+  cleartextTrafficPermitted="false"`), so `beam-check.py --relay` checks that an app which does not list the host
+  still reaches it. Should apksim ever enforce an app's config, this host must stay exempt.
 - **Opt in**: the page's `POST /beam/start` says `"relay": true` (protocol 3; anything but a boolean is a 400). The agent
   then launches the instance with `-Dapksim.beamRelay=true`: its own launch property, never one of the page's
   options. `GET /beam/hello` says `"relay": true` when the agent can.

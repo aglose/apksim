@@ -37,6 +37,10 @@ import java.util.function.Consumer;
  * {@link RelayUrlConnection}. One request a connection is read, handed to the control connection that said `relay
  * attach` as a line `relay ID BASE64(JSON)`, and the answer that comes back as `relayed ID BASE64(JSON)` is the
  * response (`Connection: close`).
+ *
+ * An app's network security config does not stop it: apksim installs none (libcore's default policy permits cleartext),
+ * so an app that denies plain http everywhere reaches the relay too (the test app does, beam-check.py --relay). Should
+ * that change, this host must stay exempt: it never reaches a network.
  */
 public final class TabRelay {
   private TabRelay() {}
