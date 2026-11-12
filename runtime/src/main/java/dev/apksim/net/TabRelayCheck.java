@@ -133,6 +133,7 @@ public final class TabRelayCheck {
   public static void main(String[] args) throws Exception {
     System.setProperty("apksim.tabRelay", "true");
     System.setProperty("apksim.tabRelay.answerMs", "1500");
+    System.setProperty("apksim.tabRelay.firstLinkMs", "300");
     TabRelay.load();
     check(TabRelay.on, "on with -Dapksim.tabRelay=true");
 

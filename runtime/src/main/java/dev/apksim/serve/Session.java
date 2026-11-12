@@ -360,7 +360,7 @@ final class Session {
 
   private volatile Socket relaywatch;
   /** The longest `y` line taken from the tab: 512 KB of body as base64, and headers. */
-  private static final int RELAY_LINE_MAX = 900_000;
+  private static final int RELAY_LINE_MAX = 1 << 20;  // the WebSocket's cap; the instance refuses bodies over 512 KB itself (502)
 
   /**
    * The app's requests to the page's own site: the instance's `relaywatch` connection carries `y ID {json}` lines, passed
@@ -1600,6 +1600,7 @@ final class Session {
 
   /** Quit, then kill after 5 s; then close the connections and erase the data slot. */
   private void endInstance() {
+    closeQuietly(relaywatch);  // pending requests of the app get their 502 now, not after it exits
     // A seed slot's time refreshed while the instance still holds its lock: another server's sweep of unused seed slots
     // (Serve.dropUnusedSeeds) takes only one unlocked and untouched for an hour, which a long session's slot would be
     // once its instance has gone, while this one packs it (keepData) or erases it.
@@ -1964,7 +1965,7 @@ final class Session {
       } catch (IOException | RuntimeException e) {
         signers = null;  // a newer build then needs this one still here to start on its data
       }
-      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch(),
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
           options.get("permissions"), site, signers));
       if (id != null) {

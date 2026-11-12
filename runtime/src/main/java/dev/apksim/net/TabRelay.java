@@ -59,6 +59,9 @@ public final class TabRelay {
   }
 
   private static volatile PrintWriter sender;
+  /** A tab has attached at least once (the agent attaches just after the control port opens, around app start). */
+  private static volatile boolean linked;
+  private static final long FIRST_LINK_MS = Long.getLong("apksim.tabRelay.firstLinkMs", 5_000);
   private static final Map<Long, CompletableFuture<Reply>> pending = new ConcurrentHashMap<>();
   private static final AtomicLong ids = new AtomicLong();
   private static final AtomicInteger inFlight = new AtomicInteger();
@@ -90,6 +93,8 @@ public final class TabRelay {
     out.println("ok relaywatch");
     synchronized (TabRelay.class) {
       sender = out;
+      linked = true;
+      TabRelay.class.notifyAll();
     }
     try {
       for (String line; (line = in.readLine()) != null; ) answer(line);
@@ -150,6 +155,17 @@ public final class TabRelay {
     if (!METHODS.contains(method)) return text(405, "the tab relay carries " + String.join(", ", new java.util.TreeSet<>(METHODS)));
     if (body.length > MAX_BODY) return text(413, "the tab relay carries bodies up to " + MAX_BODY / 1024 + " KB");
     PrintWriter out = sender;
+    if (out == null && !linked) {  // a request from Application.onCreate can come before the agent has attached
+      synchronized (TabRelay.class) {
+        long end = System.currentTimeMillis() + FIRST_LINK_MS;
+        try {
+          while (sender == null && !linked && System.currentTimeMillis() < end) TabRelay.class.wait(100);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        out = sender;
+      }
+    }
     if (out == null) return text(502, "no tab to relay to");
     if (inFlight.incrementAndGet() > MAX_IN_FLIGHT) {
       inFlight.decrementAndGet();
@@ -181,10 +197,14 @@ public final class TabRelay {
         quote(b, e.getValue().toString());
       }
       b.append("},\"body\":\"").append(Base64.getEncoder().encodeToString(body)).append("\"}");
-      synchronized (out) {
-        out.println(b);
-        if (out.checkError()) return text(502, "the tab went away");
-      }
+      // Sent on a thread of its own: a stalled link holds only this send, and the deadline below still applies.
+      PrintWriter w = out;
+      Thread.ofVirtual().name("apksim-relay-send").start(() -> {
+        synchronized (w) {
+          w.println(b);
+          if (w.checkError()) f.complete(text(502, "the tab went away"));
+        }
+      });
       try {
         return f.get(ANSWER_MS, TimeUnit.MILLISECONDS);
       } catch (java.util.concurrent.TimeoutException e) {

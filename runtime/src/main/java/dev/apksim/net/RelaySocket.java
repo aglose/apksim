@@ -21,7 +21,7 @@ import java.nio.channels.SocketChannel;
 final class RelaySocket extends Socket {
   private final Socket real;
   private TabRelay.Pipe up, down;  // the app's bytes to the relay, and back
-  private volatile boolean relay, closed, shutIn, shutOut;
+  private volatile boolean relay, closed, shutIn, shutOut;  // relay is set last, once both pipes exist
   private volatile int soTimeout;
   private boolean tcpNoDelay, keepAlive;
   private InetSocketAddress remote;
@@ -41,20 +41,27 @@ final class RelaySocket extends Socket {
 
   /** `Net.connect` for this socket: the relay's host in memory, anything else through Net on the real socket. */
   void connectTo(SocketAddress a, int timeout) throws IOException {
-    if (relay || closed) throw new SocketException(closed ? "Socket is closed" : "already connected");
-    if (a instanceof InetSocketAddress isa && TabRelay.matches(isa)) {
-      if (!TabRelay.on) throw new ConnectException("the tab relay is off");
-      relay = true;
-      remote = isa;
-      up = new TabRelay.Pipe(TabRelay.MAX_BODY * 2L);
-      down = new TabRelay.Pipe(Long.MAX_VALUE);
-      TabRelay.start(up, down);
-      return;
+    synchronized (this) {
+      if (relayConnect(a)) return;
     }
     real.setSoTimeout(soTimeout);
     real.setTcpNoDelay(tcpNoDelay);
     real.setKeepAlive(keepAlive);
     Net.connect(real, a, timeout);
+  }
+
+  private boolean relayConnect(SocketAddress a) throws IOException {
+    if (relay || closed) throw new SocketException(closed ? "Socket is closed" : "already connected");
+    if (a instanceof InetSocketAddress isa && TabRelay.matches(isa)) {
+      if (!TabRelay.on) throw new ConnectException("the tab relay is off");
+      remote = isa;
+      up = new TabRelay.Pipe(TabRelay.MAX_BODY * 2L);
+      down = new TabRelay.Pipe(Long.MAX_VALUE);
+      relay = true;
+      TabRelay.start(up, down);
+      return true;
+    }
+    return false;
   }
 
   @Override
@@ -72,7 +79,28 @@ final class RelaySocket extends Socket {
     if (!relay) return real.getInputStream();
     if (closed) throw new SocketException("Socket is closed");
     if (shutIn) throw new SocketException("Socket input is shutdown");
-    return TabRelay.reader(down, () -> soTimeout);
+    InputStream in = TabRelay.reader(down, () -> soTimeout);
+    return new InputStream() {
+      @Override
+      public int read() throws IOException {
+        return in.read();
+      }
+
+      @Override
+      public int read(byte[] b, int off, int len) throws IOException {
+        return in.read(b, off, len);
+      }
+
+      @Override
+      public int available() {
+        return 0;
+      }
+
+      @Override
+      public void close() throws IOException {
+        RelaySocket.this.close();
+      }
+    };
   }
 
   @Override
@@ -90,6 +118,11 @@ final class RelaySocket extends Socket {
       public void write(byte[] b, int off, int len) throws IOException {
         if (closed || shutOut) throw new SocketException("Socket closed");
         up.write(b, off, len);
+      }
+
+      @Override
+      public void close() throws IOException {
+        RelaySocket.this.close();
       }
     };
   }

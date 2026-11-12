@@ -34,8 +34,21 @@ final class RelayConnection extends HttpURLConnection {
   }
 
   @Override
-  public void connect() {
+  public synchronized void connect() {
+    snapshot();
     connected = true;
+  }
+
+  private List<String[]> requestHeaders;
+
+  /** The request headers as they are before connecting (the base class refuses to list them afterwards). */
+  private synchronized void snapshot() {
+    if (requestHeaders != null) return;
+    List<String[]> l = new ArrayList<>();
+    for (Map.Entry<String, List<String>> e : getRequestProperties().entrySet()) {
+      if (e.getKey() != null) for (String v : e.getValue()) l.add(new String[] {e.getKey(), v});
+    }
+    requestHeaders = l;
   }
 
   @Override
@@ -68,10 +81,8 @@ final class RelayConnection extends HttpURLConnection {
     if (reply != null) return;
     String m = method;
     if (doOutput && m.equals("GET")) m = "POST";
-    List<String[]> headers = new ArrayList<>();
-    for (Map.Entry<String, List<String>> e : getRequestProperties().entrySet()) {
-      if (e.getKey() != null) for (String v : e.getValue()) headers.add(new String[] {e.getKey(), v});
-    }
+    snapshot();
+    List<String[]> headers = requestHeaders;
     String file = url.getFile();
     String path = file == null || file.isEmpty() ? "/" : file.startsWith("/") ? file : "/" + file;
     byte[] body = sent.toByteArray();
@@ -95,7 +106,11 @@ final class RelayConnection extends HttpURLConnection {
     for (String[] h : reply.headers()) {
       if (!h[0].equalsIgnoreCase("content-length") && !h[0].equalsIgnoreCase("content-encoding")) header.add(h);
     }
-    header.add(new String[] {"Content-Length", String.valueOf(reply.body().length)});
+    String length = String.valueOf(reply.body().length);
+    if (method.equals("HEAD")) {  // the tab's length describes the GET's body
+      for (String[] h : reply.headers()) if (h[0].equalsIgnoreCase("content-length")) length = h[1];
+    }
+    header.add(new String[] {"Content-Length", length});
   }
 
   @Override
