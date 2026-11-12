@@ -310,7 +310,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   - In the beam sandbox (`Net.inMemory`; `-Dapksim.netInMemory=true` elsewhere, for checks) loopback is denied, so the network
     engine is reached in memory: plain-factory sockets are `RelaySocket`s and `connectEngine` joins them to the engine
     by pipes (`PipeSocket` is the engine's end; `TabRelay.Pipe` has a blocking mode). `HttpURLConnection` there goes out
-    directly (its engine proxy would be on loopback): not captured or recorded (issue 317).
+    directly (its engine proxy would be on loopback), as does a socket the app made itself (`new Socket()`): not captured
+    or recorded, one log line each (issue 317). `network-check.sh` has an in-memory pass.
   - `net/TabRelay`, `RelaySocket`, `RelayConnection`: the beam tab relay (issue 276, docs/beam.md "The tab relay"): with
     `--tab-relay` (the agent adds it for a start with `"relay": true`, protocol 3), plain-HTTP requests to
     `page.apksim.invalid` are carried to the browser tab as `y ID {json}` text messages and answered by it. In-JVM (the

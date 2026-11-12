@@ -473,6 +473,18 @@ public final class Net {
       directly(s, isa);
       return;
     }
+    if (inMemory && !(s instanceof RelaySocket) && mode != Mode.REPLAY) {
+      // No way to the engine for this socket (the app made it itself, or before the layer started; loopback is
+      // denied): it connects as it would have, unseen by the engine, rather than fail. Replaying, nothing may leave.
+      if (!directLogged) {
+        directLogged = true;
+        log("network: a socket the app made itself (" + s.getClass().getName() + ") to " + where
+            + " connects directly in the beam sandbox: not captured, recorded or shaped (said once)");
+      }
+      s.connect(a, timeout);
+      directly(s, isa);
+      return;
+    }
     if (c.refuse()) {
       Conditions.sleep(Math.min(timeout > 0 ? timeout : 10_000, 10_000));
       throw new SocketTimeoutException("failed to connect to " + where + " after " + (timeout > 0 ? timeout : 10_000) + "ms");
@@ -518,7 +530,7 @@ public final class Net {
   /** `factory.createSocket()`: with the tab relay on, a plain factory's socket can be connected to the relay's host. */
   public static Socket createSocket(SocketFactory f) throws IOException {
     Socket s = f.createSocket();
-    return (TabRelay.on || inMemory) && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
+    return (TabRelay.on || inMemory && active) && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
   }
 
   /** A socket already connected to the relay's host (the factory's two-argument forms). */
@@ -634,7 +646,7 @@ public final class Net {
     return open(u, null).getInputStream();
   }
 
-  private static volatile boolean urlConnectionLogged;
+  private static volatile boolean urlConnectionLogged, directLogged;
 
   private static URLConnection open(URL u, Proxy p) throws IOException {
     String proto = u.getProtocol();
