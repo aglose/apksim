@@ -305,7 +305,8 @@ async function loadApps() {
 function refresh() {
   // A start on this Mac has no socket while it waits for the agent (its prompt) or sends the APK: it counts as running,
   // so Stop can drop it.
-  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen;
+  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen
+    || waitingStart !== 0 && waitingStart === startGen;
   $("start").disabled = !$("app").value || running;
   $("stop").disabled = !running;
   for (const id of ["back", "home", "rotl", "rotr", "go", "copy", "keep"]) $(id).disabled = !running;
@@ -354,6 +355,7 @@ function start() {
   overlay("Starting…");
   const gen = ++startGen, app = state.app;
   const go = () => {
+    if (waitingStart === gen) { waitingStart = 0; refresh(); }
     if (gen !== startGen || app !== state.app) return;
     // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
     const startSkin = skinFor($("skin").value);
@@ -366,11 +368,12 @@ function start() {
     fit();
   };
   if (ready) go();
-  else loaded.then(go, go);
+  else { waitingStart = gen; refresh(); loaded.then(go, go); }  // Stop drops it meanwhile
 }
 // A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
 let startGen = 0;
 let macStart = 0;  // the start generation asking this Mac (no socket yet), else 0
+let waitingStart = 0;  // the start generation waiting for its app's defaults (no query yet), else 0
 function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q); }
 // What a session starts with: the app, the device and settings chosen, the last deep link (a restart or a move to the
 // other side starts the app there again), and H.264 when this browser decodes it.
