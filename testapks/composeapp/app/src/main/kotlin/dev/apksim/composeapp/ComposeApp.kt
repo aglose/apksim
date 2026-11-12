@@ -57,6 +57,21 @@ open class ComposeApp : Application() {
     slotAtCreate = SlotStateActivity.describe(this)
     if (packageManager.hasSystemFeature(LAUNCH_OVERLAY)) addLaunchOverlay()
     listenForTheNetwork()
+    listenForFlags()
+  }
+
+  /**
+   * A debug flag-override receiver as apps have (`am broadcast -a dev.apksim.testapp.SET_FLAG --es name X --ez value true`),
+   * registered in onCreate: apksim's `--broadcast` must reach it before the first activity (log: "flag NAME=VALUE").
+   */
+  private fun listenForFlags() {
+    val receiver = object : android.content.BroadcastReceiver() {
+      override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+        Log.i("ComposeApp", "flag ${i.getStringExtra("name")}=${i.getBooleanExtra("value", false)} n=${i.getIntExtra("n", -1)}")
+        resultCode = 7
+      }
+    }
+    registerReceiver(receiver, android.content.IntentFilter("dev.apksim.testapp.SET_FLAG"), RECEIVER_EXPORTED)
   }
 
   /**
