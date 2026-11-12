@@ -2,7 +2,9 @@
 
 Launch time is apksim's first goal (a warm launch's first frame in ~0.22 s for the test app), and nothing else in CI
 would notice it creeping back up. The `startup-gate` job in `.github/workflows/ci.yml` times launches of every pull
-request and every push to main on an Apple Silicon runner and fails when startup gets slower than its budget.
+request and every push to main on an Apple Silicon runner and fails when startup gets slower than its budget. A
+pull request that changes nothing a packaged Mac launch is built from (only docs, the test app, `docker/`,
+`native/linux/`, CI's check scripts or Python tools: the `changes` job decides) skips it, which counts as passed.
 
 ## What it measures
 

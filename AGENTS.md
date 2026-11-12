@@ -372,11 +372,17 @@ Read README.md for results and limits; this file covers how to work on the code.
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor), `conformance.md` (libraries'
   documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left).
-- `.github/workflows/ci.yml`: the `linux-smoke` job every pull request must pass (see "Git and pull requests"),
-  `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs the `testapp` job builds), and
-  `startup-gate` on an Apple Silicon runner (`macos-15`, or a self-hosted Mac while the `STARTUP_GATE_RUNNER` repository variable is set; the Mac's job-started hook, `scripts/runner-job-started.sh`, refuses every other job and forks' pull requests: docs/startup-gate.md). A `changes` job skips the build, test and Mac jobs for a pull request that touches only Markdown, `.txt`,
-  `docs/`, `.claude/`, LICENSE or NOTICE (skipped jobs count as passed for the required checks, which a workflow path
-  filter would leave pending); `linux-smoke` still runs its personal-information check.
+- `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
+  then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
+  split by `SMOKE_PARTS`, the androidTest runs, affected-check), and `linux-smoke`, the check every pull request must
+  pass (see "Git and pull requests"), which passes when they all did; ~15 min where one runner took ~38. Add a new
+  image check to the leg whose time it fits (each is ~5-8 min; the crawler's alone is ~7).
+  `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs `build` makes; on pull requests only
+  when natives, the image, the Gradle build or the smoke script change, always on `main`; not required), and
+  `startup-gate` on an Apple Silicon runner (`macos-15`, or a self-hosted Mac while the `STARTUP_GATE_RUNNER` repository variable is set; the Mac's job-started hook, `scripts/runner-job-started.sh`, refuses every other job and forks' pull requests: docs/startup-gate.md). A `changes` job runs the personal-information check and skips the build, test and Mac jobs for a pull request that
+  touches only Markdown, `.txt`, `docs/`, `.claude/`, LICENSE or NOTICE, and `startup-gate` for one that touches
+  nothing a packaged Mac launch is built from (only the test app, `docker/`, `native/linux/`, CI's check scripts or
+  Python tools; skipped jobs count as passed for the required checks, which a workflow path filter would leave pending).
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
@@ -1444,8 +1450,8 @@ server can ANR; `both.py` retakes shots until the two agree.
 
 ## Git and pull requests
 The repo is public (https://github.com/aglose/apksim, Apache 2.0). `main` takes changes only through pull requests: a
-GitHub ruleset requires a PR whose `linux-smoke` check passes (`.github/workflows/ci.yml`: builds the runtime and the
-Linux image, then runs the test app headless), and blocks force-pushes and deleting `main`. No approving review is
+GitHub ruleset requires a PR whose `linux-smoke` and `startup-gate` checks pass (`.github/workflows/ci.yml`: builds the
+runtime and the Linux image, then runs the test app headless in parallel legs; launch times on a Mac), and blocks force-pushes and deleting `main`. No approving review is
 needed. Work on a branch, push it, `gh pr create`, wait for the check, then squash it: `gh pr merge --squash`, one
 commit per PR on `main` (`--rebase` when a PR's commits are worth keeping apart). Keep branches current by rebasing,
 never by merging `main` in: `git rebase origin/main` and `git push --force-with-lease` on your own branch. A branch cut

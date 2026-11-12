@@ -180,12 +180,14 @@ sheet with CPU-rendered AGSL backgrounds. The device controls work headless too 
 
 `.github/workflows/ci.yml` runs on every push to `main` and on pull requests, on `ubuntu-latest`: it fetches the
 libraries (`gradle deps`), compiles the runtime with JDK 24 (`scripts/build.sh` takes `JAVA_HOME` on Linux), builds
-the test app and the image (`scripts/docker-build.sh`), then runs `scripts/ci-smoke.sh`. That checks the first
-frame, then over the control channel switches to Trips, renames a trip (a SQLite write) and checks the list shows
-the new name. Screenshots and logs are uploaded as the `smoke` artifact. `linux-smoke-arm64` does the same with the
-arm64 image on `ubuntu-24.04-arm`, without the adb device check (adb is x86_64-only on Linux), plus the test app's
-suite; its APKs come from the `testapp` job, since Google's Android build tools are x86_64-only on Linux too. Run the
-same test locally:
+the test app and the image (`scripts/docker-build.sh`) in its `build` job, then hands the image to five `linux` legs
+that run `scripts/ci-smoke.sh` (split with `SMOKE_PARTS`: `app`, `device`, `replay`, `crawl`, `serve`) and the test
+suite side by side. The smoke test checks the first frame, then over the control channel switches to Trips, renames a
+trip (a SQLite write) and checks the list shows the new name, and goes on from there. Screenshots and logs are uploaded
+as each leg's `smoke-LEG` artifact. `linux-smoke-arm64` runs every part with the arm64 image on `ubuntu-24.04-arm`,
+without the adb device check (adb is x86_64-only on Linux), plus the test app's suite; its APKs come from `build`,
+since Google's Android build tools are x86_64-only on Linux too. Run the same test locally (all parts unless
+`SMOKE_PARTS` names some, e.g. `SMOKE_PARTS="app serve"`):
 
 ```bash
 scripts/docker-build.sh apksim:ci
