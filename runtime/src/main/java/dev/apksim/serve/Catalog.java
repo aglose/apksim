@@ -223,12 +223,12 @@ final class Catalog {
       }
       if (o.equals("--broadcast")) {
         try {
-          dev.apksim.LaunchBroadcasts.parse(v);
+          dev.apksim.BroadcastSpec.parse(v);
         } catch (IllegalArgumentException e) {
           throw new IOException(e.getMessage());
         }
-        if (++broadcasts > dev.apksim.LaunchBroadcasts.COUNT_MAX) {
-          throw new IOException("--broadcast: at most " + dev.apksim.LaunchBroadcasts.COUNT_MAX);
+        if (++broadcasts > dev.apksim.BroadcastSpec.COUNT_MAX) {
+          throw new IOException("--broadcast: at most " + dev.apksim.BroadcastSpec.COUNT_MAX);
         }
       }
       if (o.equals("--rec") && BeamStore.recSetting(v) == null) {

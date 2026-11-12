@@ -1032,6 +1032,10 @@ public final class Serve {
       Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
     } catch (IOException e) {
       Http.text(out, 400, e.getMessage());
+    } catch (RuntimeException | LinkageError e) {
+      // Validation must answer, not drop the connection (issue 307: a framework class missing on this JVM).
+      System.err.println("[serve] adding an app failed: " + e);
+      Http.text(out, 400, "the app's launch options could not be checked");
     }
   }
 

@@ -358,6 +358,14 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
   --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
+# Issue 307: a --broadcast launch option is validated on serve's own JVM (no framework classes there): accepted, and a bad one is a 400.
+tok="$(cat "$OUT/serve.token")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
+  -d '{"url":"http://127.0.0.1:9/b.apk","name":"b.apk","options":["--broadcast","com.example.ACTION;ez:flag=true"]}' "http://127.0.0.1:$SERVE_PORT/api/apps")
+[ "$code" = 200 ] || { echo "serve: --broadcast option answered $code, wanted 200" >&2; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
+  -d '{"url":"http://127.0.0.1:9/b.apk","name":"b.apk","options":["--broadcast","com.example.ACTION;ez:flag=maybe"]}' "http://127.0.0.1:$SERVE_PORT/api/apps")
+[ "$code" = 400 ] || { echo "serve: bad --broadcast option answered $code, wanted 400" >&2; exit 1; }
 # Compare mode and PR previews (docs/pr-preview.md): two mirrored sessions, a build added with a time to live, pr-preview.py.
 python3 "$ROOT/scripts/compare-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --apk "$OUT/app.apk" | tee "$OUT/compare-check.log"
 # This server runs without --allow-rec and --inspect-network: the tab's rec and inspect commands are refused (the rest of that check needs both).
