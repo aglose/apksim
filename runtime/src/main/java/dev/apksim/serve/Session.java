@@ -300,12 +300,18 @@ final class Session {
     if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
       cmd.addAll(List.of("--rec", serve.store.config.rec()));
     }
+    // The session's skin on its own device decides the kind (its own, or what the size gives), as the device chosen
+    // decides the size: this server's skin (the agent's on a Mac), or the page's skin this endpoint lacks (`kind`).
+    Skin chosen = skin != null ? Serve.skin(skin) : null;
+    boolean pageKind = skin == null && options.get("kind") != null && device.equals(options.get("device"));
+    boolean skinKind = chosen != null && device.equals(chosen.device) || pageKind;
     // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
     for (int i = 0; i < own.size(); i++) {
       if (own.get(i).equals("--device")) i++;
       else if (own.get(i).equals("--skin")) i++;  // the session's skin, below
-      // The app's own --device-kind goes with its own --device (Serve.skinAsDevice adds the pair): not with another.
-      else if (own.get(i).equals("--device-kind") && !device.equals(appDevice(app))) i++;
+      // The app's own --device-kind goes with its own --device (Serve.skinAsDevice adds the pair): not with another
+      // device, nor where the session's skin decides (a kind generated from another skin of that device included).
+      else if (own.get(i).equals("--device-kind") && (!device.equals(appDevice(app)) || skinKind)) i++;
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
       // app's own defaults, as `apksim beam run` puts them.
       else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
@@ -325,13 +331,11 @@ final class Session {
     // home folder, the skin store included; the page draws the frame either way.
     if (skin != null && !serve.beam) cmd.addAll(List.of("--skin", skin));
     // A beamed instance gets the skin's kind instead (a custom-size watch skin is a watch), which needs no skin store.
-    Skin sk = skin != null && serve.beam ? Serve.skin(skin) : null;
     // Each skin-derived kind only with its own device: another device the session runs on keeps its own kind.
     String kind = null;
-    if (sk != null && sk.kind != null && device.equals(sk.device)) kind = sk.kind;
-    else if (skin == null && options.get("kind") != null && device.equals(options.get("device"))) kind = options.get("kind");  // the page's skin's
-    // The command as assembled: the app's own --device-kind may have been left out above (it went with another device).
-    if (kind != null && !cmd.contains("--device-kind")) cmd.addAll(List.of("--device-kind", kind));
+    if (chosen != null && serve.beam && skinKind) kind = chosen.kind;
+    else if (pageKind) kind = options.get("kind");  // the page's skin's
+    if (kind != null) cmd.addAll(List.of("--device-kind", kind));
     cmd.add(apk.toString());
     ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     ws.sendText("p launching " + app.name());

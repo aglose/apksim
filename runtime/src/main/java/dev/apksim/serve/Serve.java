@@ -1161,9 +1161,13 @@ public final class Serve {
         launch.remove(i);
       }
     }
-    if (k != null && !launch.contains("--device")) {
-      launch.addAll(List.of("--device", k.device));
-      // Its kind too (a custom-size watch is a watch), which the size alone would not give.
+    int di = launch.lastIndexOf("--device");
+    String device = di >= 0 && di + 1 < launch.size() ? launch.get(di + 1) : null;
+    // The skin's device, unless the options name another (which keeps its own kind). Named or not, the skin's own
+    // device gets its kind (a custom-size watch is a watch), which the size alone would not give; an explicit
+    // --device-kind stays as it is.
+    if (k != null && (device == null || device.equals(k.device))) {
+      if (device == null) launch.addAll(List.of("--device", k.device));
       if (k.kind != null && !launch.contains("--device-kind")) launch.addAll(List.of("--device-kind", k.kind));
     }
     return launch;

@@ -807,8 +807,19 @@ final class BeamStore {
         // `--skin off` only takes the frame away: the recorded device stays.
         int gs = given.lastIndexOf("--skin");
         boolean skinDevice = gs >= 0 && gs + 1 < given.size() && !given.get(gs + 1).equals("off") && !given.contains("--device");
+        // The device it runs on: given here, else the given skin's, else the recorded one, else the app's own. The app's
+        // own --device-kind (a skin's, from Serve.skinAsDevice, or its author's) goes with its own --device only: a
+        // tablet given here is not made a watch. A --device-kind given here comes last and wins.
+        int od = own.lastIndexOf("--device"), gd = given.lastIndexOf("--device");
+        String ownDevice = od >= 0 && od + 1 < own.size() ? own.get(od + 1) : null;
+        dev.apksim.skin.Skin givenSkin = skinDevice ? Serve.skin(given.get(gs + 1)) : null;
+        String runDevice = gd >= 0 && gd + 1 < given.size() ? given.get(gd + 1)
+            : skinDevice ? (givenSkin != null ? givenSkin.device : "")
+            : r.get("device") instanceof String d ? d : ownDevice;
+        boolean ownKind = !skinDevice && (runDevice == null || runDevice.equals(ownDevice));  // a given skin decides its own
         for (int i = 0; i < own.size(); i++) {
-          if (own.get(i).equals("--device") && (r.get("device") instanceof String || skinDevice)) i++;
+          if (own.get(i).equals("--device-kind") && !ownKind) i++;
+          else if (own.get(i).equals("--device") && (r.get("device") instanceof String || skinDevice)) i++;
           else if (own.get(i).equals("--skin") && given.contains("--skin")) i++;
           else cmdLine.add(own.get(i));
         }

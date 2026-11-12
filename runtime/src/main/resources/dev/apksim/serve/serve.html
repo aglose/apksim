@@ -234,8 +234,11 @@ async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link 
   if (!state.app) return;
   const app = state.app, sel = $("device");
   const live = () => ws && ws.readyState <= 1 && !ended;
+  // The chosen skin's device stays offered: a start then still carries it (an endpoint without the skin needs it).
+  const chosenSkin = $("skin").value !== "off" ? skinFor($("skin").value) : undefined;
   for (const o of [...sel.options]) {
-    if (o.dataset.app && !(live() && o.value === sel.value) && !(keepLinked && o.value === state.device)) o.remove();
+    if (o.dataset.app && !(live() && o.value === sel.value) && !(keepLinked && o.value === state.device)
+        && !(chosenSkin && o.value === chosenSkin.device)) o.remove();
   }
   if (!live() && ![...sel.options].some(o => o.value === sel.value)) sel.value = "phone";
   if (state.device && ![...sel.options].some(o => o.value === state.device)) state.device = "";  // the server would refuse it
@@ -247,6 +250,12 @@ async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link 
     appSkinDefault = info.skin || "";
     // Nothing chosen and nothing running: the new app's own skin, else none (not the previous app's).
     if (!state.skin && !live()) $("skin").value = info.skin && [...$("skin").options].some(o => o.value === info.skin) ? info.skin : "off";
+    // Arrived after this app's session on this Mac started with nothing chosen: the agent drops a server's skin it does
+    // not have (its `d` names none) but runs on that skin's device, so the frame is the app's own skin's.
+    if (!state.skin && live() && ws.onMac && startedApp === app && !skin.active && info.skin && skinFor(info.skin)) {
+      $("skin").value = skin.active = info.skin;
+      fit();
+    }
     if (d && ![...sel.options].some(o => o.value === d)) {
       const o = document.createElement("option");
       o.value = o.textContent = d;
@@ -279,7 +288,7 @@ async function loadApps() {
   await loadDevices();
   await loadSkins();
   if (state.device) setDevice(state.device);
-  offerAppDevice(true);
+  await offerAppDevice(true);  // the app's own skin and device, before the first start reads the menus
   $("dark").checked = state.appearance === "dark";
   if (state.fontscale) $("fontscale").value = state.fontscale;
   $("locale").value = state.locale;
@@ -335,6 +344,7 @@ function start() {
   const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
   skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
   skin.active = $("skin").value !== "off" ? $("skin").value : "";
+  startedApp = state.app;
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
   if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
   offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
@@ -831,8 +841,9 @@ addEventListener("resize", fit);
 // Prototype-free tables (a skin may be named "constructor"); each source's own entries, as the server and this Mac may
 // both have a skin of one name with different frames: the one drawn is the session's endpoint's (skinFor).
 const skin = { server: Object.create(null), mac: Object.create(null), active: "", turns: 0, urls: Object.create(null), warned: "" };
-let appSkinDefault = "";
-let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
+let appSkinDefault = "";  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
+let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it
+let startedApp = "";  // the app the latest Start ran
 function skinFor(name) {
   if (!name) return undefined;
   // The running session's endpoint; before one exists, the one the next Start goes to.
