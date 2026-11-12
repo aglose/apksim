@@ -137,6 +137,10 @@ def fake():
             continue
         if sc == "before-class-skipped" and calls == 1 and (c, m) == ("p.C002", "m1"):
             continue  # no result at all, and the run still ends with INSTRUMENTATION_CODE
+        if (sc == "before-class-unfinished-early" and calls == 1 and (c, m) == ("p.C002", "m1")
+                or sc == "unfinished-early" and calls == 1 and (c, m) == ("p.C000", "m1")):
+            block(c, m, n + 1, 1)  # started, never finished, and a later test does finish
+            continue
         if sc == "before-class-unfinished" and (c, m) == ("p.C002", "m2"):
             block(c, m, n + 1, 1)  # started, never finished, and the run still ends with INSTRUMENTATION_CODE
             continue
@@ -308,6 +312,11 @@ SCENARIOS = {
     "before-class-only": (1, 2, 7, ["p.C001#null"]),
     # As before-class-only, and C002#m2 starts but never ends: it fails, whatever C001's Class#null explains.
     "before-class-unfinished": (1, 2, 7, ["p.C001#null", "p.C002#m2"]),
+    # As before-class-unfinished, the test that never ends (C002#m1) followed by one that does: it still fails, and is
+    # not run again (it would pass).
+    "before-class-unfinished-early": (1, 2, 7, ["p.C001#null", "p.C002#m1"]),
+    # The same without a class-level failure: C000#m1 starts and never ends, the run goes on and ends.
+    "unfinished-early": (1, 2, 9, ["p.C000#m1"]),
     # As before-class-only, and C002#m1 has no result at all: the listing finds it, and a new process runs it.
     "before-class-skipped": (1, 3, 8, ["(run)#incomplete", "p.C001#null"]),
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),

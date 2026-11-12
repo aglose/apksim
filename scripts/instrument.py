@@ -698,10 +698,11 @@ def incomplete(r, results, test=None):
             return f"apksim reported {len(results)} of the {max(announced)} tests it started"
         # A class that failed at class level (@BeforeClass) reports one Class#null for all its tests, so a shortfall
         # may be no gap: one_process lists the suite to tell (shortfall). A test that started and never ended is one.
-        running = parse_run(r.stdout)[1]
-        if running:
+        stuck = unfinished(r.stdout)
+        if stuck:
             return (f"apksim reported {len(results)} of the {max(announced)} tests it started, and "
-                    f"{running[0]}#{running[1]} did not end")
+                    f"{stuck[0][0]}#{stuck[0][1]}" + (f" and {len(stuck) - 1} more" if len(stuck) > 1 else "")
+                    + " started and did not end")
     if r.returncode != 0 and not any(res[2] == "failed" for res in results):
         return f"apksim exited with {r.returncode} although no test failed"
     return None
@@ -731,7 +732,17 @@ def parse(raw):
 def parse_run(raw):
     """am instrument -r output -> ([(class, method, status, stack)] for each finished test, (class, method) of the test
     that had started and not finished when the output ends, or None)."""
-    out, block, key, running = [], {}, None, None
+    return parse_all(raw)[:2]
+
+
+def unfinished(raw):
+    """am instrument -r output -> (class, method) of every test that started and never ended, in order: the one running
+    when the output ends (parse_run's), and any the run went on from, which a later test's end would hide."""
+    return parse_all(raw)[2]
+
+
+def parse_all(raw):
+    out, block, key, running, started = [], {}, None, None, {}
     for line in raw.splitlines():
         m = re.match(r"INSTRUMENTATION_STATUS: (\w+)=(.*)", line)
         if m:
@@ -741,15 +752,17 @@ def parse_run(raw):
             code = int(line.split(": ")[1])
             if code != 1:
                 out.append((block.get("class"), block.get("test"), CODES.get(code, f"code {code}"), block.get("stack", "")))
+                started.pop((block.get("class"), block.get("test")), None)
                 running = None
             else:
                 running = (block.get("class"), block.get("test"))
+                started[running] = True
             block, key = {}, None
         elif line.startswith("INSTRUMENTATION_"):
             key = None
         elif key:
             block[key] += "\n" + line
-    return out, running
+    return out, running, list(started)
 
 
 def escape_selector(name):
@@ -866,14 +879,23 @@ def one_process(a, passthrough, label=""):
         crashed = None
         if why:
             sys.stderr.write(out if out.endswith("\n") else out + "\n")
-            if running and not has_result(running) and (remaining is None or running in set(remaining)):
-                crashed = running
+            # Each test that started and never ended fails here, not in a rerun (which could pass): the one running
+            # when the process ended, and any the run went on from.
+            stuck = [t for t in unfinished(r.stdout)
+                     if not has_result(t) and (remaining is None or t in set(remaining))]
+            for t in stuck:
+                if t != running:
+                    record(*t, "failed", f"this test started and never ended: the run went on to other tests ({why}):\n"
+                                         + out)
+            if running in stuck:
                 finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
                 record(*running, "failed", (f"timed out after {r.timed_out:g} s while this test was running: no test "
                                             "started or ended for that long (--test-timeout), so instrument.py killed "
                                             "the apksim process" if r.timed_out else
                                             f"apksim exited ({r.returncode}) while this test was running"
                                             + (f" ({why})" if finished else "")) + ":\n" + out)
+            if stuck:
+                crashed = running if running in stuck else stuck[-1]
             elif remaining is None or new:  # (a later process with no result: its tests' "not run" says why)
                 # Between tests, at startup or at exit: nothing to put it on, but the run must still fail, as on a
                 # device. One entry per such process, named apart so the XML keeps one entry per name.
