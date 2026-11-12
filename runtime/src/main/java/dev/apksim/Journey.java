@@ -24,15 +24,21 @@ import java.util.regex.Pattern;
  * characters), the texts on screen are read; the step before gets as its expectations the texts that appeared since
  * it started (time-like ones left out). A tap is resolved to the node under it: the deepest one there with a text,
  * else a content description, else a resource id (when clickable or editable, as `nodes` lists it), with its index
- * among nodes with the same label when there are several. Drags and long presses keep coordinates (a long press on a
- * node is resolved too); typed characters become one `type` step; keys, Back, wheel steps and commands are kept as
- * they are. Two-finger gestures and window resizes are left out (noted).
+ * among nodes with the same label when there are several. Taps that follow one another as a double tap does (each
+ * within 300 ms of the last one's lift and 100 dp of the first) are one step with their timing (`times`), played as
+ * recorded: as separate steps, with a settle between, they would be two single taps. Drags and long presses keep
+ * coordinates (a long press on a node is resolved too); typed characters become one `type` step; keys, Back, wheel
+ * steps and commands are kept as they are. Two-finger gestures and window resizes are left out (noted). A replay that
+ * crashes writes the steps it got to (`crashed`).
  */
 final class Journey {
-  /** Texts that change by themselves: times and durations. */
-  private static final Pattern VOLATILE = Pattern.compile(".*(\\d{1,2}:\\d{2}|\\d+(\\.\\d+)? ?(ms|s)\\b|\\d{4}-\\d{2}-\\d{2}).*");
+  /** Texts that change by themselves: times and durations. Found anywhere in a text, on any of its lines. */
+  private static final Pattern VOLATILE = Pattern.compile("\\d{1,2}:\\d{2}|\\d+(\\.\\d+)? ?(ms|s)\\b|\\d{4}-\\d{2}-\\d{2}");
   /** Texts that depend on the device: a size (a window size class's "411×891", "1280x800 px"). */
-  private static final Pattern DEVICE = Pattern.compile(".*\\d+ ?[×x] ?\\d+.*");
+  private static final Pattern DEVICE = Pattern.compile("\\d+ ?[×x] ?\\d+");
+  /** ViewConfiguration's double tap timeout (ms) and slop (dp): a tap this soon and near after one is part of it. */
+  private static final int DOUBLE_TAP_MS = 300;
+  private static final int DOUBLE_TAP_SLOP_DP = 100;
 
   private final Path file;
   private final float slopPx;
@@ -44,6 +50,13 @@ final class Journey {
   private final java.util.Set<String> everSeen = new java.util.HashSet<>();
   private Gesture gesture;
   private int lastType = -1;
+  /** The texts at the last point, applied once the item after it starts a step (not a further tap of a tap step). */
+  private List<String> pending;
+  /** The last tap step's first finger down and the last lift in it (uptime ms), and where it was. */
+  private long tapT0, tapUp;
+  private float tapX, tapY;
+  /** The finger now down may be a further tap of the tap step before it. */
+  private boolean anotherTap;
 
   /** A finger's gesture while it is down. */
   private static final class Gesture {
@@ -57,7 +70,35 @@ final class Journey {
     final List<List<Integer>> path = new ArrayList<>();
   }
 
+  /** The screen as a journey reads it: the accessibility tree here, a stand-in in JourneyCheck. */
+  interface Screen {
+    List<String> texts();
+
+    Map<String, Object> target(float x, float y);
+  }
+
+  private static final Screen TREE = new Screen() {
+    @Override
+    public List<String> texts() {
+      return Journey.texts();
+    }
+
+    @Override
+    public Map<String, Object> target(float x, float y) {
+      return Journey.target(x, y);
+    }
+  };
+
+  private final Screen screen;
+  /** The time of the last item (ms on the replay's clock). */
+  private long lastT;
+
   Journey(Path file, float density, Map<String, Object> manifest, String bundle) {
+    this(file, density, manifest, bundle, TREE);
+  }
+
+  Journey(Path file, float density, Map<String, Object> manifest, String bundle, Screen screen) {
+    this.screen = screen;
     this.file = file;
     this.slopPx = 8 * density;  // the framework's touch slop
     head.put("format", "apksim-journey/1");
@@ -66,11 +107,28 @@ final class Journey {
     head.put("start", "checkpoint");
   }
 
-  /** At a point: the texts now close the step before it (main thread). */
+  /** At a point: the texts now close the step before it (main thread), once the next item starts a step. */
   void point() {
-    List<String> now = texts();
-    close(now);
-    textsAtOpen = now;
+    pending = screen.texts();
+  }
+
+  /** The item after the last point starts a step: the point's texts close the step before. */
+  private void startStep() {
+    if (pending == null) return;
+    close(pending);
+    textsAtOpen = pending;
+    pending = null;
+  }
+
+  /** Whether a finger down at (x, y) at t may be a further tap of the tap step just before (a double tap's second). */
+  private boolean tapFollows(float x, float y, long t) {
+    return open != null && "tap".equals(open.get("do")) && lastType == SimWindow.UP && t - tapUp <= DOUBLE_TAP_MS
+        && Math.hypot(x - tapX, y - tapY) <= DOUBLE_TAP_SLOP_DP * slopPx / 8;
+  }
+
+  /** Whether a text can be expected on screen: not a time, a duration, a date or a size, on any of its lines. */
+  static boolean expectable(String t) {
+    return t.length() <= 80 && !VOLATILE.matcher(t).find() && !DEVICE.matcher(t).find();
   }
 
   /**
@@ -86,7 +144,7 @@ final class Journey {
     List<String> first = new ArrayList<>();
     List<String> back = new ArrayList<>();
     for (String t : now) {
-      if (textsAtOpen.contains(t) || t.length() > 80 || VOLATILE.matcher(t).matches() || DEVICE.matcher(t).matches()) continue;
+      if (textsAtOpen.contains(t) || !expectable(t)) continue;
       if (!everSeen.contains(t) && first.size() < 6) first.add(t);
       if (back.size() < 3) back.add(t);
     }
@@ -104,6 +162,8 @@ final class Journey {
   /** Every item the replay plays, in order (main thread), with the item's uptime. */
   void event(SimWindow.Event e, long t) {
     int type = e.type();
+    if (type == SimWindow.DOWN && gesture == null) anotherTap = tapFollows(e.x(), e.y(), t);
+    if (!anotherTap) startStep();
     switch (type) {
       case SimWindow.DOWN -> {
         if (gesture != null) return;  // a second finger: the first one's gesture goes on
@@ -113,7 +173,7 @@ final class Journey {
         gesture.t0 = t;
         gesture.recent.add(new float[] {t, e.x(), e.y()});
         gesture.path.add(List.of(0, Math.round(e.x()), Math.round(e.y())));
-        gesture.target = target(e.x(), e.y());
+        gesture.target = screen.target(e.x(), e.y());
       }
       case SimWindow.MOVE -> {
         if (gesture == null) return;
@@ -130,35 +190,12 @@ final class Journey {
         if (gesture == null) return;
         Gesture g = gesture;
         gesture = null;
-        g.maxDist = Math.max(g.maxDist, (float) Math.hypot(e.x() - g.x0, e.y() - g.y0));
-        long ms = t - g.t0;
-        Map<String, Object> s = new LinkedHashMap<>();
-        if (g.maxDist <= slopPx) {
-          s.put("do", ms >= 500 ? "longpress" : "tap");
-          if (g.target != null) s.put("target", g.target);
-          s.put("at", List.of(Math.round(g.x0), Math.round(g.y0)));
-          if (ms >= 500) s.put("ms", ms);
-        } else {
-          s.put("do", "swipe");
-          s.put("from", List.of(Math.round(g.x0), Math.round(g.y0)));
-          s.put("to", List.of(Math.round(e.x()), Math.round(e.y())));
-          s.put("ms", Math.max(1, ms));
-          // Whether it flung: its speed over the last 50-100 ms before lifting, against the framework's minimum fling
-          // velocity (50 dp/s). Not its whole duration: a slow drag can end in a flick, a quick one in a hold.
-          float[] from = g.recent.isEmpty() ? new float[] {g.t0, g.x0, g.y0} : g.recent.peekFirst();
-          for (float[] p : g.recent) if (t - p[0] >= 50) from = p;
-          double dt = Math.max(1, t - from[0]);
-          double speed = Math.hypot(e.x() - from[1], e.y() - from[2]) / dt * 1000;  // px/s
-          s.put("fling", speed > 50 * slopPx / 8);
-          // The finger's path with its timing (the lift last): journey.py plays it as touches, so a fling flies as far
-          // as it can and a drag stops where it stopped, whichever it was.
-          List<List<Integer>> path = new ArrayList<>(g.path);
-          path.add(List.of((int) ms, Math.round(e.x()), Math.round(e.y())));
-          s.put("path", path);
-        }
-        add(s);
+        lift(g, e.x(), e.y(), t);
       }
-      case SimWindow.CANCEL -> gesture = null;
+      case SimWindow.CANCEL -> {
+        gesture = null;
+        anotherTap = false;
+      }
       case SimWindow.CHAR -> {
         String c = new String(Character.toChars((int) e.value()));
         if (lastType == SimWindow.CHAR && open != null && "type".equals(open.get("do"))) {
@@ -203,10 +240,70 @@ final class Journey {
       }
     }
     lastType = type;
+    lastT = t;
+  }
+
+  /** A finger lifting at (x, y) at t: a tap, a long press or a swipe, or one more tap of a double tap. */
+  private void lift(Gesture g, float x, float y, long t) {
+    g.maxDist = Math.max(g.maxDist, (float) Math.hypot(x - g.x0, y - g.y0));
+    long ms = t - g.t0;
+    boolean tap = g.maxDist <= slopPx && ms < 500;
+    if (anotherTap) {
+      anotherTap = false;
+      // One more tap of the step before, on the same node (or, with none, the same point): its time from the first
+      // down and how long it was down. A tap on another control nearby is a step of its own: `times` has one target.
+      if (tap && java.util.Objects.equals(open.get("target"), g.target)
+          && (g.target != null || Math.hypot(g.x0 - tapX, g.y0 - tapY) <= slopPx)) {
+        @SuppressWarnings("unchecked")
+        List<List<Long>> times = (List<List<Long>>) open.get("times");
+        if (times == null) {
+          times = new ArrayList<>();
+          times.add(List.of(0L, tapUp - tapT0));
+          open.put("times", times);
+        }
+        times.add(List.of(g.t0 - tapT0, ms));
+        tapUp = t;
+        pending = null;  // the screen between its taps: the step is closed against the one before its first
+        return;
+      }
+      startStep();  // a drag, a long press or another control after a tap: a step of its own
+    }
+    Map<String, Object> s = new LinkedHashMap<>();
+    if (tap) {
+      tapT0 = g.t0;
+      tapUp = t;
+      tapX = g.x0;
+      tapY = g.y0;
+    }
+    if (g.maxDist <= slopPx) {
+      s.put("do", ms >= 500 ? "longpress" : "tap");
+      if (g.target != null) s.put("target", g.target);
+      s.put("at", List.of(Math.round(g.x0), Math.round(g.y0)));
+      if (ms >= 500) s.put("ms", ms);
+    } else {
+      s.put("do", "swipe");
+      s.put("from", List.of(Math.round(g.x0), Math.round(g.y0)));
+      s.put("to", List.of(Math.round(x), Math.round(y)));
+      s.put("ms", Math.max(1, ms));
+      // Whether it flung: its speed over the last 50-100 ms before lifting, against the framework's minimum fling
+      // velocity (50 dp/s). Not its whole duration: a slow drag can end in a flick, a quick one in a hold.
+      float[] from = g.recent.isEmpty() ? new float[] {g.t0, g.x0, g.y0} : g.recent.peekFirst();
+      for (float[] p : g.recent) if (t - p[0] >= 50) from = p;
+      double dt = Math.max(1, t - from[0]);
+      double speed = Math.hypot(x - from[1], y - from[2]) / dt * 1000;  // px/s
+      s.put("fling", speed > 50 * slopPx / 8);
+      // The finger's path with its timing (the lift last): journey.py plays it as touches, so a fling flies as far
+      // as it can and a drag stops where it stopped, whichever it was.
+      List<List<Integer>> path = new ArrayList<>(g.path);
+      path.add(List.of((int) ms, Math.round(x), Math.round(y)));
+      s.put("path", path);
+    }
+    add(s);
   }
 
   /** A command the replay ran (`open URL`, `rotate`...). */
   void command(String[] a) {
+    startStep();
     // The recording keeps clipboard text as "<N characters>", which the replay sets as N x's: so does the journey, or
     // the app would get the marker itself and not what the replay that made the expectations gave it.
     if (a.length > 2 && a[0].equals("clipboard") && a[1].equals("set") && a[2].matches("<\\d+ characters>")) {
@@ -231,7 +328,37 @@ final class Journey {
 
   /** The end of the replay: the last step's expectations, then the file. */
   Path finish() throws IOException {
-    close(texts());
+    startStep();
+    close(screen.texts());
+    return write();
+  }
+
+  /**
+   * The app crashed during the replay (any thread, the app going down) at t on the replay's clock (-1: unknown): the
+   * steps it got to, without reading the screen again, and why the journey ends there. A finger still down (a long
+   * press whose onLongClick crashed, a double tap's second tap) is lifted there, so the step that crashed is kept.
+   */
+  Path crashed(String why, long t) throws IOException {
+    if (gesture != null) {
+      Gesture g = gesture;
+      gesture = null;
+      lift(g, g.x, g.y, Math.max(t, lastT));
+      notes.add("step " + open.get("n") + " ends at the crash: its finger was still down");
+    }
+    startStep();
+    notes.add("the replay ended here: " + why);
+    return write();
+  }
+
+  List<Map<String, Object>> steps() {
+    return steps;
+  }
+
+  List<String> notes() {
+    return notes;
+  }
+
+  private Path write() throws IOException {
     Map<String, Object> m = new LinkedHashMap<>(head);
     m.put("steps", steps);
     if (!notes.isEmpty()) m.put("notes", notes);

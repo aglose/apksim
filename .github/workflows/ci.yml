@@ -108,6 +108,8 @@ jobs:
         run: scripts/check-translator.sh
       - name: Call-site check (direct binding, re-binding after invalidation, the binding race)
         run: scripts/check-call-sites.sh
+      - name: journey check (texts a journey may expect, double taps, a crash mid-press; a stand-in screen)
+        run: scripts/check-journey.sh
       - name: Launch selection check (resource intent-filter priorities)
         run: scripts/launch-priority-check.sh
       - name: serve pacing check (an H.264 tab slower than the app, on a simulated clock)
@@ -118,7 +120,7 @@ jobs:
         run: scripts/check-ttl.sh
       - name: inspector rule patterns (no regex backtracking)
         run: scripts/check-inspector-rules.sh
-      - name: journey.py start check (a replay that never gets past starting, against a stand-in apksim)
+      - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
