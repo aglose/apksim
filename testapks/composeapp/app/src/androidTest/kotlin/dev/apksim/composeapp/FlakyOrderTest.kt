@@ -53,6 +53,11 @@ class FlakyClassOrderTest {
   fun runsAfterItsClassSetUp() {
     flakyOnPurpose()
   }
+
+  @Test
+  fun alsoRunsAfterItsClassSetUp() {
+    flakyOnPurpose()
+  }
 }
 
 @RunWith(AndroidJUnit4::class)

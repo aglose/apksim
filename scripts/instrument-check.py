@@ -130,7 +130,7 @@ def fake():
     if sc == "hang-startup":
         hang(state, "p.Startup", "boot")
     for n, (c, m) in enumerate(tests):
-        if sc == "before-class" and c == "p.C001":
+        if sc in ("before-class", "before-class-only") and c == "p.C001":
             if m == "m0":
                 block(c, "null", n + 1, 1)
                 block(c, "null", n + 1, -2, "java.lang.IllegalStateException: @BeforeClass failed")
@@ -298,6 +298,8 @@ SCENARIOS = {
     "at-exit": (1, 1, 10, ["(run)#incomplete"]),
     "rerun-startup": (1, 3, 9, ["p.C000#m1"] + [f"p.C00{c}#m{m}" for c in range(3) for m in range(3)][2:]),
     "before-class": (1, 3, 7, ["p.C001#null", "p.C002#m1"]),
+    # C001's @BeforeClass fails and the run ends: one Class#null for its 3 tests is no shortfall (no "(run)", no listing).
+    "before-class-only": (1, 1, 7, ["p.C001#null"]),
     "listing-fails": (1, 2, 3, ["(listing)#incomplete", "p.C000#m1"]),
     "parameterized": (1, 3, 10, ["p.C000#m0"]),
     "big": (1, 3, 3000, ["com.example.averylongpackagenamefortheargumentlimit.feature.C000#m1"]),

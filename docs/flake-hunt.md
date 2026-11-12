@@ -43,7 +43,9 @@ delta debugging (Zeller's ddmin) reduces those tests to a 1-minimal set that sti
 them makes it pass. Each step is one process. The verdict is then `order-dependent`, with that set as the culprits and
 a command (instrument.py with `-e class` and `-e apksimOrder`) that reproduces it. A test whose class failed at class
 level (a `@BeforeClass` that found another test's state: the run reports only `Class#null`) is placed where that entry
-ran, and reduced and reproduced by its own name. Otherwise a test that failed only
+ran, and reduced and reproduced by its own name; one reduction serves all the tests of that class. A class that failed
+at class level before the victim takes part in the reduction through its first test, which runs that setup again.
+Otherwise a test that failed only
 under `oversubscribe` or `realtime` is `timing-dependent`, one that failed elsewhere too `nondeterministic`, one that
 never passed `failing`, the rest `stable`.
 

@@ -4,8 +4,8 @@
 Usage: flake-hunt-check.py APP.apk TEST.apk [-n N] [--perturb LIST] [--apksim CMD --local DIR]
 
 Hunts in FlakyOrderTest, FlakyClassOrderTest, FlakyStateTest, FlakyTimingTest and AndroidIdTest with `-e flakyOnPurpose
-true` and checks: FlakyOrderTest#expectsAFreshStatic, and FlakyClassOrderTest#runsAfterItsClassSetUp (whose class fails
-in its @BeforeClass, so the run reports only FlakyClassOrderTest#null), are each found order-dependent with
+true` and checks: FlakyOrderTest#expectsAFreshStatic, and FlakyClassOrderTest's two tests (whose class fails in its
+@BeforeClass, so the run reports only FlakyClassOrderTest#null), are each found order-dependent with
 FlakyStateTest#leavesAStaticSet, and only it, as the culprit, and the printed command reproduces each failure; FlakyTimingTest#aDelayedTaskRunsWithoutWaiting fails with
 --realtime-clock and is called timing-dependent, not order-dependent; every other test is stable; the JUnit XML and the HTML summary are
 written. -n and --perturb go to flake-hunt.py (CI: -n 1 --perturb suite,shuffle,isolate,realtime: the first shuffled
@@ -18,7 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = "dev.apksim.composeapp."
 VICTIM = PKG + "FlakyOrderTest#expectsAFreshStatic"
 CLASS_VICTIM = PKG + "FlakyClassOrderTest#runsAfterItsClassSetUp"  # (its class's @BeforeClass is what fails)
-VICTIMS = (VICTIM, CLASS_VICTIM)
+CLASS_VICTIM_2 = PKG + "FlakyClassOrderTest#alsoRunsAfterItsClassSetUp"  # (the same class: one reduction for both)
+VICTIMS = (VICTIM, CLASS_VICTIM, CLASS_VICTIM_2)
 CULPRIT = PKG + "FlakyStateTest#leavesAStaticSet"
 TIMING = PKG + "FlakyTimingTest#aDelayedTaskRunsWithoutWaiting"
 
@@ -88,7 +89,7 @@ def main():
     if problems:
         print(f"logs in {out}")
         sys.exit(1)
-    print(f"ok: {VICTIM} and {CLASS_VICTIM} blamed on {CULPRIT}, reproduced; {TIMING} {timing['verdict']} {timing['rates']}")
+    print(f"ok: {VICTIM} and FlakyClassOrderTest's two tests blamed on {CULPRIT}, reproduced; {TIMING} {timing['verdict']} {timing['rates']}")
     shutil.rmtree(out, ignore_errors=True)
 
 
