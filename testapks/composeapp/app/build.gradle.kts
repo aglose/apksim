@@ -2,6 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
+  alias(libs.plugins.ksp)
 }
 
 android {
@@ -108,6 +109,16 @@ dependencies {
   // Batch 2: RecyclerView and Espresso's RecyclerViewActions.
   implementation(libs.androidx.recyclerview)
   androidTestImplementation(libs.androidx.test.espresso.contrib)
+  // Batch 3: WorkManager (in the app, so its startup initializer and job service are the app's, as on a device),
+  // Room (the database is the tests' own, compiled by KSP), DataStore (in the app: in the test APK alone its tracing
+  // classes were left out on a device, since the app had an older androidx.tracing) and espresso-intents.
+  implementation(libs.androidx.work.runtime.ktx)
+  implementation(libs.androidx.room.runtime)  // WorkManager's own Room, at the tests' version
+  androidTestImplementation(libs.androidx.work.testing)
+  androidTestImplementation(libs.androidx.room.ktx)
+  kspAndroidTest(libs.androidx.room.compiler)
+  implementation(libs.androidx.datastore.preferences)  // in the app, as an app that uses it has it
+  androidTestImplementation(libs.androidx.test.espresso.intents)
 
   // Navigation
   

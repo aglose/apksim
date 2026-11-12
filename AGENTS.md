@@ -1253,8 +1253,14 @@ linked to its views with
 AccessibilityInteractionController (By.text/desc/res with testTagsAsResourceId, clicks and gestures by injection,
 setOrientation* as a real configuration change, waitForIdle advancing the simulated clock frame by frame until the
 UI is quiet, for its quiet time at most: an open Compose Popup polls its position every frame, and with Robolectric's
-unpaused Choreographer that frame loop never let the looper idle). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue one task at a time until the frame has been drawn, checking the latch and timeout between tasks (an open Popup's frame loop never let `idle()` return) (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`, `PopupTouchTest.aSwipeWithAPopupOpenWaitsOnlyForFrames`). No accessibility events: executeAndWaitForEvent reports a window change after the action settles,
-other filters time out. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
+unpaused Choreographer that frame loop never let the looper idle). UiAutomator waits for a Choreographer frame after each step of `UiDevice.swipe`/`drag`, `UiObject.swipe*`, `UiScrollable` and multi-pointer gestures (`InteractionController.waitForNextFrame`: a post to the main looper, then `latch.await(5 s)`); on the main thread that post never ran and each step waited out 5 s (a 20-step swipe took 100 s), so the translator sends that await to `TestActivities.awaitFrame`, which runs the main queue one task at a time until the frame has been drawn, checking the latch and timeout between tasks (an open Popup's frame loop never let `idle()` return) (`UiAutomatorTest.swipeScrollsTheListWithoutWaitingForFrames`, `PopupTouchTest.aSwipeWithAPopupOpenWaitsOnlyForFrames`). No accessibility event stream: executeAndWaitForEvent reports, after the action settles, a
+TYPE_VIEW_SCROLLED for each view whose scroll state changed (filled by the view's own onInitializeAccessibilityEvent:
+scrollY/maxScrollY, or from/to/item count; changed means those or its first child's position, as a list moves its
+children and a swipe within a tall item changes no index), then a window change; other filters time out. UiAutomator's scroll, fling
+and scrollUntil read the end from that scroll event (`Until.scrollFinished`); without it scrollUntil took each swipe
+for a null scroll and gave up after five (`UiAutomatorConformanceTest`). Compose scrolling has no such view state, so
+it gets none. With `--realtime-clock` the idle wait (`settle`) runs what comes due for its quiet time and stops once
+nothing is scheduled within 50 ms, so a window just shown has its first layout before a query. `TestActivities` does the system server's part that Host's stack does otherwise: BACK goes to
 the window's back callback as ViewRootImpl would (Robolectric injects past it), back on a launcher task's root moves it
 to the background, finish() pauses/stops/destroys and resumes the one below, and a start for a running
 singleTask/singleTop activity is delivered to its onNewIntent. More of a device's behaviour that a test run needs
@@ -1332,6 +1338,15 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   providers are created, highest initOrder first (AndroidX Startup's initializers run; not for the runner probe's
   plain Application; a provider that fails fails the test's setup, as it crashes a device's app start, unless
   `-Dapksim.providerFailures=log`). `--network-profile offline` still holds through it (`NetConnectivity.networksReplaced`). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
+- Room's "Cannot access database on the main thread" check counts the test body as the instrumentation thread it is
+  on a device: the translator sends `RoomDatabase`'s `Looper.getThread()` (Room 2.6+) or `ArchTaskExecutor.isMainThread()`
+  (older) to `TestActivities.roomMainThread`/`roomIsMainThread`, which answer "not main" only for the test's own code
+  (under JUnit's `FrameworkMethod`) outside any dispatch, `runOnMainSync`, `ActivityScenario.onActivity`,
+  `Activity.runOnUiThread` or lifecycle call (`Instrumentation.call*`, a provider's `attachInfo`), so the app's
+  startup, `onActivity`/`onFragment`/`runOnUiThread` blocks and the callbacks of an activity the body launches still
+  throw, as on a device. A device test calling a blocking DAO method from its body failed here (`RoomConformanceTest`). Work an Espresso action runs inline from the
+  body passes where a device would throw. Only an unminified `RoomDatabase` is matched (a test calling an R8 app's Room
+  keeps Room's own check); `-Dapksim.roomTestBody=false` turns it off.
 - `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
   the translator (`TestActivities.instrumentationContext`).
 - JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child

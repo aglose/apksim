@@ -315,6 +315,63 @@ public final class TestActivities {
     return Looper.myLooper() == Looper.getMainLooper() && !inDispatch();
   }
 
+  /** Stands for the instrumentation thread a device runs a test body on. Never started. */
+  private static final Thread TEST_BODY_THREAD = new Thread("apksim-test-body");
+
+  /**
+   * Room's main-thread check ({@code Looper.getMainLooper().getThread() == Thread.currentThread()} in
+   * RoomDatabase, which the translator sends here): in a test run, the main thread running the test body itself is
+   * not the main thread, as on a device, where the body runs on the instrumentation thread. A device test calling a
+   * blocking DAO method from its body threw "Cannot access database on the main thread" here
+   * (RoomConformanceTest). Inside a message's dispatch, runOnMainSync (onActivity, onFragment) or a lifecycle call
+   * (the app's startup, an activity's onCreate) it is the main thread, and Room refuses as on a device. Main-thread work an Espresso action runs inline from the body is let
+   * through, where a device would refuse.
+   */
+  public static Thread roomMainThread(Looper looper) {
+    Thread main = looper.getThread();
+    return main == Thread.currentThread() && inTestBody() ? TEST_BODY_THREAD : main;
+  }
+
+  /** As {@link #roomMainThread}, for Room before 2.6 (ArchTaskExecutor.isMainThread). */
+  public static boolean roomIsMainThread(Object archTaskExecutor) {
+    boolean main;
+    try {  // the app's class, so by reflection; its delegate decides (InstantTaskExecutorRule's says always)
+      main = (Boolean) archTaskExecutor.getClass().getMethod("isMainThread").invoke(archTaskExecutor);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+    return main && !(Looper.getMainLooper().isCurrentThread() && inTestBody());
+  }
+
+  /**
+   * The main thread running a test's own code (the test method, @Before, @After: under JUnit's
+   * FrameworkMethod.runReflectiveCall), outside any dispatch, runOnMainSync, ActivityScenario.onActivity (which runs
+   * its block at once when called on the main thread, onFragment's too), Activity.runOnUiThread (the same), or
+   * lifecycle call the framework makes
+   * (Instrumentation.callApplicationOnCreate, callActivityOnCreate and the rest, a provider's attachInfo), which a
+   * device runs on the main thread. So the app's startup, which runs before the test method, and an activity or
+   * fragment a test launches from its body still count as the main thread. Off with -Dapksim.roomTestBody=false.
+   */
+  private static boolean inTestBody() {
+    if (!testRun() || "false".equals(System.getProperty("apksim.roomTestBody")) || !canRunMainQueue()) return false;
+    return StackWalker.getInstance().walk(s -> {
+      boolean junit = false;
+      for (StackWalker.StackFrame f : (Iterable<StackWalker.StackFrame>) s::iterator) {
+        String c = f.getClassName();
+        String m = f.getMethodName();
+        if (m.equals("runOnMainSync")
+            || (c.equals("androidx.test.core.app.ActivityScenario") && m.equals("onActivity"))  // inline on main here
+            || (c.equals("android.app.Activity") && m.equals("runOnUiThread"))  // inline on the main thread too
+            || (c.equals("android.app.Instrumentation") && m.startsWith("call"))
+            || (c.equals("android.content.ContentProvider") && m.equals("attachInfo"))) {
+          return false;
+        }
+        if (c.equals("org.junit.runners.model.FrameworkMethod$1") && m.equals("runReflectiveCall")) junit = true;
+      }
+      return junit;
+    });
+  }
+
   /**
    * On the main thread outside a dispatch ({@link #canRunMainQueue}): runs the main queue's due messages until
    * {@code done} or {@code nanos} have passed, for work that waits on its own thread's queue (an ordered broadcast's
