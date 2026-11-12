@@ -300,7 +300,7 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
-    if (serve.inspectNetwork && !serve.beam) cmd.add("--network-inspect");
+    if (inspecting()) cmd.add("--network-inspect");
     // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
     if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
     if (serve.moveSharedData) cmd.add("--move-shared-data");
@@ -411,7 +411,7 @@ final class Session {
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
-    if (serve.inspectNetwork && !serve.beam) watchNetwork(p);
+    if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
   }
 
@@ -468,6 +468,23 @@ final class Session {
 
   private Socket netwatch;
 
+  /** Whether this session runs the network inspector: the server's `--inspect-network`, on the agent its owner's `inspect-network on`. */
+  boolean inspecting() {
+    return serve.beam ? serve.store != null && serve.store.config.inspectNetwork() : serve.inspectNetwork;
+  }
+
+  /**
+   * The flight recorder channels a beam session starts with (the app's own `--rec`, else the agent's `rec`); null when it
+   * records nothing. Known before the instance starts, as the page is told with the session's first message.
+   */
+  String recChannels() {
+    if (!serve.beam) return null;
+    List<String> own = app.launch();
+    int at = own.indexOf("--rec");
+    String c = at >= 0 && at + 1 < own.size() ? own.get(at + 1) : serve.store != null ? serve.store.config.rec() : "off";
+    return c.equals("off") ? null : c;
+  }
+
   /** The inspector's event stream from the instance, to the tab as `n e {json}`: its own control connection. */
   private void watchNetwork(int port) throws IOException {
     Socket s = netwatch = connect(port);
@@ -498,8 +515,9 @@ final class Session {
    * `network detail ID`, answered as `n r VERB {json}`. Nothing names a file; a body is base64 text, a pattern a few URL characters.
    */
   private void inspectCommand(String t) {
-    if (!serve.inspectNetwork || serve.beam) {
-      ws.sendText("r refused: inspect (the server does not run the network inspector: --inspect-network)");
+    if (!inspecting()) {
+      ws.sendText("r refused: inspect (" + (serve.beam ? "this Mac's agent does not run the network inspector: apksim beam config inspect-network on"
+          : "the server does not run the network inspector: --inspect-network") + ")");
       return;
     }
     String[] w = t.strip().split(" ");
