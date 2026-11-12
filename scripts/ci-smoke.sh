@@ -11,13 +11,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="$1" APK="$2" OUT="$(mkdir -p "$3" && cd "$3" && pwd)" UISERVER="${4:-}"
 PORT=7400 ADB_PORT=7401 NAME=apksim-smoke-$$
-# scripts/conformance.py reads `am instrument` output and tables two runs (docs/conformance.md); no device needed.
-python3 "$ROOT/scripts/conformance-check.py"
 # The image's own platform (linux/amd64 or linux/arm64), so Docker never pulls or emulates another.
 PLATFORM="linux/$(docker image inspect -f '{{.Architecture}}' "$IMAGE")"
 cp "$APK" "$OUT/app.apk"
 drive() { python3 "$ROOT/scripts/drive.py" "$PORT" "$@"; }
+# SMOKE_PARTS (space-separated; default all) runs only some parts, as CI's parallel legs do: app (one instance driven
+# over the control channel, the adb device, --activity, the camera, crashes and exits), device (network, data slot, APK
+# cache), replay (replay, bisect, journeys, coverage, screenshot tests), crawl and serve.
+part() { [[ " ${SMOKE_PARTS:-all} " == *" all "* || " ${SMOKE_PARTS:-all} " == *" $1 "* ]]; }
 
+if part app; then
+# scripts/conformance.py reads `am instrument` output and tables two runs (docs/conformance.md); no device needed.
+python3 "$ROOT/scripts/conformance-check.py"
 docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-first-frame --shot first.png app.apk \
   > "$OUT/first.log" 2>&1 || { cat "$OUT/first.log"; exit 1; }
 grep first-frame "$OUT/first.log"
@@ -264,12 +269,17 @@ exit_run handoff 3 'the app called System.exit(3) on thread'
 exit_run halt 4 'the app called Runtime.halt(4) on thread'
 exit_run kill 137 'the app called Process.killProcess(myPid()) on thread'
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+fi  # app
 
+if part device; then
 # The app's network recorded against a fixture server, replayed without it, offline and slow (docs/network.md).
 NETCHECK_PORT=7470 "$ROOT/scripts/network-check.sh" "$APK" "$OUT/network" "$IMAGE"
 # A data slot's /sdcard and Settings values across launches, a container each, the app data on a shared volume.
 SLOTCHECK_PORT=7480 "$ROOT/scripts/slot-check.sh" "$APK" "$OUT/slot" "$IMAGE"
 APKCACHECHECK_PORT=7490 "$ROOT/scripts/apk-cache-check.sh" "$APK" "$OUT/apk-cache" "$IMAGE"
+fi  # device
+
+if part replay; then
 REPLAYCHECK_PORT=7495 python3 "$ROOT/scripts/replay-check.py" "$APK" "$OUT/replay" --image "$IMAGE"  # docs/replay.md
 BISECTCHECK_PORT=7496 python3 "$ROOT/scripts/bisect-rec-check.py" "$APK" "$OUT/bisect" --image "$IMAGE"  # docs/replay.md
 JOURNEYCHECK_PORT=7497 python3 "$ROOT/scripts/journey-check.py" "$APK" "$OUT/journey" --image "$IMAGE"  # docs/replay.md
@@ -310,11 +320,15 @@ assert rest and all(r["status"] == "match" for r in rest), \
     f"every other capture should match: {[(r['screen'], r['combo'], r['status']) for r in rest if r['status'] != 'match']}"
 print(f"changed screen caught: all {len(home)} home captures differ, all {len(rest)} others match")
 EOF
+fi  # replay
 
+if part crawl; then
 # Automated exploration (scripts/crawl.py, docs/crawl.md) in the image, to depth 2: the tabs, Trips, SecondActivity and the dialogs found,
 # every path replayed and captured, a second walk giving the same graph, and a changed screen reported against a base launch.
 python3 "$ROOT/scripts/crawl-check.py" --docker "$IMAGE" --apk "$APK" --out "$OUT/crawl" --quick | tee "$OUT/crawl-check.log"
+fi  # crawl
 
+if part serve; then
 # apksim serve: a token (any address but loopback needs one), only serve's port published, the test app listed.
 SERVE_NAME=apksim-serve-smoke-$$ SERVE_PORT=7402
 head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$OUT/serve.token"
@@ -363,4 +377,5 @@ for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.to
 python3 "$ROOT/scripts/kept-check.py" "http://127.0.0.1:$SERVE3_PORT" --token "$OUT/serve.token" --state /opt/apksim/work \
   --exec "docker exec $SERVE3_NAME" | tee "$OUT/kept-check.log"
 python3 "$ROOT/scripts/trace-viewer-check.py" --csp-only
-echo "smoke test passed"
+fi  # serve
+echo "smoke test passed (parts: ${SMOKE_PARTS:-all})"

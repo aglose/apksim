@@ -221,7 +221,7 @@ manifest declares, which Robolectric creates for every test) selects every test 
 
 ## Checked
 
-`scripts/affected-check.py` (CI: the `linux-smoke` job, with `--image apksim:ci`) on the test app
+`scripts/affected-check.py` (CI: the `linux` job's `data` leg, with `--image apksim:ci`) on the test app
 (`testapks/composeapp`, 42 tests). It records the suite, then breaks one file at a time with a change that compiles,
 rebuilds both APKs with Gradle, runs the whole suite on the broken build and then only what `--affected-by` selects
 for that file:

@@ -689,9 +689,10 @@ This needs the Xcode command-line tools (`xcode-select --install`).
   - After a native change: `scripts/build-native.sh`.
   - After moving the folder: `scripts/train.sh`, because the cache is tied to the folder's location.
 
-Changes reach `main` through pull requests, and each needs the `linux-smoke` check to pass. That check builds the
-Linux image and runs the test app headless, its androidTest suite in both clock modes, the DEX translator check and a
-privacy check; `linux-smoke-arm64` runs the smoke test and the suite in the arm64 image. On an Apple Silicon runner, `startup-gate`
+Changes reach `main` through pull requests, and each needs the `linux-smoke` check to pass. CI builds the Linux image
+once and runs, in parallel jobs, the test app headless, its androidTest suite in both clock modes, the DEX translator
+check and a privacy check; `linux-smoke` passes when all of them did. `linux-smoke-arm64` runs the smoke test and the
+suite in the arm64 image. On an Apple Silicon runner, `startup-gate`
 fails a pull request whose launches are slower than their budget against a fixed release
 ([docs/startup-gate.md](docs/startup-gate.md)). CI can't cover the other Mac-only parts (the window, Metal,
 VideoToolbox), so say in the PR what you checked locally. [AGENTS.md](AGENTS.md) is the full guide to building,
