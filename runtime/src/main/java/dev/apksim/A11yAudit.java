@@ -17,6 +17,8 @@ final class A11yAudit {
 
   static String run(List<View> roots, float density) {
     List<Seen> all = new ArrayList<>();
+    TextTruncation.Cache cut = new TextTruncation.Cache();
+    List<String> truncated = new ArrayList<>();
     Nodes.walk(roots, n -> {
       if (!n.info.isVisibleToUser()) return;
       Rect r = new Rect();
@@ -24,8 +26,11 @@ final class A11yAudit {
       boolean actionable = n.info.isClickable() || n.info.isLongClickable() || n.info.isCheckable();
       boolean named = !n.text().isEmpty() || !n.description().isEmpty() || n.info.getLabeledBy() != null;
       all.add(new Seen(r, actionable, named, n));
+      if (!n.text().isEmpty() && cut.cutOff(n)) {
+        truncated.add("[" + r.left + "," + r.top + "," + r.right + "," + r.bottom + "] text cut off: \"" + shown(n) + "\"");
+      }
     });
-    List<String> issues = new ArrayList<>();
+    List<String> issues = new ArrayList<>(truncated);
     int min = Math.round(48 * density);
     for (Seen s : all) {
       Rect r = s.bounds();
@@ -51,7 +56,17 @@ final class A11yAudit {
   }
 
   private static String label(Nodes.Node n) {
-    String t = !n.text().isEmpty() ? n.text() : n.description();
+    String t = !n.text().isEmpty() ? shown(n) : flat(n.description());
     return t.isEmpty() ? kind(n.info) : "\"" + t + "\"";
+  }
+
+  /** A node's text for a diagnostic: never a password's, and on one line. */
+  private static String shown(Nodes.Node n) {
+    return n.info.isPassword() ? "•••" : flat(n.text());
+  }
+
+  /** Control replies are one line: a label's line breaks and tabs become spaces. */
+  private static String flat(String s) {
+    return s.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ');
   }
 }

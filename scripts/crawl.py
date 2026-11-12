@@ -699,6 +699,432 @@ def title_of(recs):
     return ""
 
 
+# -------------------------------------------------------------------------------------------- resilience sweep
+
+PERTURBATIONS = ("process-death", "recreate", "rotate", "offline", "permission-deny", "fontscale", "rtl", "dark")
+TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
+
+
+def parse_sweep(spec):
+    """'recreate,fontscale=1.5,rtl' (or 'all') -> [(name, parameter)]; a perturbation named twice keeps its last entry."""
+    chosen = {}
+    for item in [x for x in (spec or "").split(",") if x]:
+        if item == "all":
+            for n in PERTURBATIONS:
+                chosen.setdefault(n, None)
+            continue
+        name, _, param = item.partition("=")
+        if name not in PERTURBATIONS:
+            fail(f"--sweep: unknown perturbation {name!r} (known: {', '.join(PERTURBATIONS)}, all)")
+        if name == "fontscale" and param:
+            try:
+                if float(param) <= 0:
+                    raise ValueError
+            except ValueError:
+                fail(f"--sweep fontscale expects a number above 0, not {param!r}")
+        chosen[name] = param or None
+    return list(chosen.items())
+
+
+def read_allow(path):
+    """Accepted findings: lines of 'RULE SCREEN [DETAIL TEXT]' (RULE and SCREEN are shell patterns, `*` for any; the detail
+    is text the finding must contain; # starts a comment)."""
+    rules = []
+    if not path:
+        return rules
+    try:
+        with open(path) as f:
+            for n, line in enumerate(f, 1):
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split(None, 2)
+                if len(parts) < 2:
+                    fail(f"{path}:{n}: expected 'RULE SCREEN [DETAIL]'")
+                rules.append({"rule": parts[0], "screen": parts[1], "detail": parts[2] if len(parts) > 2 else "", "used": 0})
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
+    return rules
+
+
+def allowed_by(finding, rules):
+    import fnmatch
+    for r in rules:
+        if fnmatch.fnmatchcase(finding["rule"], r["rule"]) and fnmatch.fnmatchcase(finding["screen"], r["screen"]) \
+                and r["detail"] in finding["detail"]:
+            r["used"] += 1
+            return r
+    return None
+
+
+def texts_of(recs):
+    return [r.text for r in recs if "v" in r.flags and r.text and not TIME_RE.search(r.text)]
+
+
+def cut_of(recs):
+    return sorted({r.text for r in recs if "t" in r.flags and "v" in r.flags and r.text})
+
+
+def row_order(recs):
+    """Pairs of texts side by side on one row (centres within 24 px, no overlap, each under 60% of the width) -> whether
+    the first is left of the second: what a mirrored layout flips."""
+    w, _ = screen_size(recs)
+    items = [r for r in recs if "v" in r.flags and r.text and r.box[2] - r.box[0] < w * 0.6 and r.box[2] > r.box[0]]
+    order = {}
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if abs(a.centre()[1] - b.centre()[1]) <= 24 and (a.box[2] <= b.box[0] or b.box[2] <= a.box[0]) and a.text != b.text:
+                order[(a.text, b.text)] = a.box[0] < b.box[0]
+    return order
+
+
+def offscreen(recs):
+    w, h = screen_size(recs)
+    return sorted({r.text for r in recs if "v" in r.flags and r.text and (r.box[0] < -2 or r.box[2] > w + 2)})
+
+
+class Sweep:
+    """The perturbations, run on each screen of an Explorer's graph."""
+
+    def __init__(self, ex, plan, args, allow):
+        self.ex, self.plan, self.args, self.allow = ex, plan, args, allow
+        self.dir = os.path.join(ex.out, "sweep")
+        self.checked = []   # {"perturbation", "screen", "case"}
+        self.omitted = []   # cases the deadline kept from running
+        self.skipped = []   # cases left out on purpose
+        self.found = []
+        self.lock = threading.Lock()
+
+    def run(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+        ids = sorted(self.ex.screens)
+        t0 = time.time()
+        self.ex.run_on_pool([self.ex.screens[i] for i in ids], self.screen)
+        self.seconds = time.time() - t0
+
+    def states_of(self, screen):
+        """The screen as reached, then with each of its first controls that stay on it tapped once (a counter, a toggle):
+        state worth keeping across a perturbation."""
+        scrolled = {a["label"] for a in screen["actions"] if a.get("scrolls")}
+        out = [[]]
+        for e in self.ex.edges:
+            if e["from"] == screen["id"] and e["to"] == screen["id"] and e["kind"] == "control" and e["action"] not in scrolled:
+                steps = list(e.get("steps") or [e["cmd"]])  # with a --fill, the fills come first
+                if len(out) <= self.args.sweep_actions and steps not in out:
+                    out.append(steps)
+        return out
+
+    def screen(self, inst, screen):
+        for kind, param in self.plan:
+            if self.ex.budget.out_of_time():
+                # The time is up: what is left is said, not dropped (a sweep that ran nothing must not look green).
+                self.omit(kind, screen)
+                continue
+            fn = getattr(self, "sw_" + kind.replace("-", "_"))
+            inst.cmds = []
+            inst.net_changed = False
+            try:
+                fn(inst, screen, param)
+            except ReplayFailed as e:
+                self.note(kind, screen, "replay", f"could not set up the case: {e}", [])
+            except Gone as e:
+                c = e.crash
+                cmds = list(getattr(inst, "cmds", []))
+                before = [x for x in cmds if x == "network offline"]  # set before the screen is opened, as the case does
+                self.note(kind, screen, "crash" if c["kind"] == "crash" else "exit", c["detail"], getattr(inst, "case", []),
+                          log=c.get("log"), pre=before, repro_cmds=[x for x in cmds if x not in before])
+            except Exception as e:  # noqa: BLE001  (a bug of the sweep's own is a finding, not a dead worker)
+                self.note(kind, screen, "sweep-error", f"{type(e).__name__}: {e}", [])
+            finally:
+                if kind == "offline" and getattr(inst, "net_changed", False):  # only a case that went offline: back to the launch's profile
+                    opts = self.ex.options
+                    profile = opts[opts.index("--network-profile") + 1] if "--network-profile" in opts else "online"
+                    try:
+                        inst.send(f"network {profile}")
+                    except (snapshot.Closed, OSError, ValueError, AttributeError):
+                        pass
+
+    def omit(self, kind, screen):
+        with self.lock:
+            self.omitted.append({"perturbation": kind, "screen": screen["id"]})
+
+    # --- records
+    def case(self, kind, screen, label):
+        with self.lock:
+            self.checked.append({"perturbation": kind, "screen": screen["id"], "case": label})
+
+    def note(self, kind, screen, rule, detail, steps, pre=(), **more):
+        path = {"start": screen["path"].get("start"), "steps": list(screen["path"]["steps"]) + list(steps)}
+        f = {"kind": "sweep", "perturbation": kind, "rule": rule, "screen": screen["id"], "detail": detail, "path": path,
+             "repro": list(pre) + ["restart" + (f" {path['start']}" if path["start"] else "")] + path["steps"],
+             "build": self.ex.name}
+        f.update(more)
+        with self.lock:
+            self.found.append(f)
+
+    def read(self, inst, screen, tag):
+        settled = inst.settle()
+        obs = inst.observe()
+        path = os.path.join(self.dir, screen["id"], tag + ".png")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        staged = os.path.join(inst.stage, "sweep.png")
+        inst.expect_ok(f"shot {staged}")
+        shutil.move(staged, path)
+        return {"id": obs["id"], "screen": screen["id"], "recs": obs["recs"], "texts": texts_of(obs["recs"]), "settled": settled,
+                "checks": ["K" in r.flags for r in obs["recs"] if "k" in r.flags and "v" in r.flags],
+                "shot": os.path.relpath(path, self.ex.out)}
+
+    def differ(self, inst, a, b, tag):
+        """Why two reads of a screen are not the same state, or None."""
+        if a["id"] != b["id"]:
+            return f"the screen is {b['id']}, not {a['id']}", None
+        if a["texts"] != b["texts"]:
+            lost = [t for t in a["texts"] if t not in b["texts"]]
+            gained = [t for t in b["texts"] if t not in a["texts"]]
+            return "text changed: " + "; ".join([f"'{t}' gone" for t in lost[:4]] + [f"'{t}' appeared" for t in gained[:4]]), None
+        if a["checks"] != b["checks"]:  # before the image comparison, which a screen that never settles skips
+            return "a switch or checkbox is not in the state it was", None
+        if a["settled"] and b["settled"]:
+            d = diff_images(inst, os.path.join(self.ex.out, a["shot"]), os.path.join(self.ex.out, b["shot"]), tag,
+                            os.path.join(self.dir, a["screen"], "diff"), self.args.diff_delta, self.args.sweep_pixels,
+                            self.ex.out)
+            if d.get("error"):
+                return f"the image comparison failed: {d['error']}", None
+            if d.get("differs"):
+                return f"it looks different: {d['pixels']} pixels differ", d.get("map")
+        return None, None
+
+    # --- state kept across a configuration change, a rebuild or a rotation
+    def roundtrip(self, inst, screen, kind, forward, back):
+        for steps in self.states_of(screen):
+            if self.ex.budget.out_of_time():
+                self.omit(kind, screen)
+                break
+            label = (" + ".join(steps) or "as reached")
+            inst.case = steps
+            inst.cmds = []  # this state's commands only, for a crash's reproduction
+            inst.reach_screen(screen, steps)
+            tag = f"{kind}-{len(self.checked)}"
+            before = self.read(inst, screen, tag + "-before")
+            for c in forward + back:
+                inst.cmds.append(c)
+                inst.expect_ok(c)
+                inst.settle()
+            after = self.read(inst, screen, tag + "-after")
+            self.case(kind, screen, label)
+            why, dmap = self.differ(inst, before, after, tag)
+            if why:
+                self.note(kind, screen, "state-lost", f"after {' and '.join(forward + back)}: {why}", steps,
+                          repro_cmds=forward + back, before=before["shot"], after=after["shot"], diff=dmap)
+
+    def sw_process_death(self, inst, screen, param):
+        self.roundtrip(inst, screen, "process-death", ["process-death"], [])
+
+    def sw_recreate(self, inst, screen, param):
+        self.roundtrip(inst, screen, "recreate", ["recreate"], [])
+
+    def sw_rotate(self, inst, screen, param):
+        self.roundtrip(inst, screen, "rotate", ["rotate landscape"], ["rotate portrait"])
+
+    # --- offline: no crash, no wait for ever
+    def spinner(self, inst):
+        deadline = time.time() + self.args.spinner_seconds
+        while True:
+            inst.settle()
+            recs = inst.observe()["recs"]
+            if not any("v" in r.flags and r.cls.endswith("ProgressBar") for r in recs):
+                return False
+            if time.time() > deadline:
+                return True
+            if self.ex.budget.out_of_time():
+                return None  # the time is up: not an answer
+            time.sleep(0.5)
+
+    def sw_offline(self, inst, screen, param):
+        opts = self.ex.options
+        if any(o in opts for o in ("--network", "--no-network", "--network-profile")):
+            with self.lock:  # the caller's network rules (replay, a profile, no network) must not be overridden
+                self.skipped.append({"perturbation": "offline", "screen": screen["id"],
+                                     "why": "the launch options restrict the network"})
+            return
+        inst.case = []
+        self.case("offline", screen, "as reached")
+        inst.ensure()  # an earlier case may have ended the app
+        inst.net_changed = True
+        inst.say("network offline")
+        inst.cmds.append("network offline")
+        inst.reach(screen["path"])  # the path with no network, from a fresh start
+        up = self.spinner(inst)
+        if up is None:
+            self.omit("offline", screen)
+            return
+        if up:
+            inst.say("network online")
+            inst.reach(screen["path"])
+            online = self.spinner(inst)
+            if online is None:  # the time ran out before the online comparison: the case is not done
+                self.omit("offline", screen)
+                return
+            if online is False:  # a spinner that only offline leaves up
+                self.note("offline", screen, "endless-spinner",
+                          f"still a progress indicator {self.args.spinner_seconds:g} s after the screen opened with no network "
+                          "(online it goes)", [], pre=["network offline"])
+
+    # --- permissions denied
+    def sw_permission_deny(self, inst, screen, param):
+        """`permission deny` answers the requests pending when it runs, so it follows each state: the controls
+        tapped there (a camera button) ask, and are told no. Requests a replay raises before that are not answered."""
+        for steps in self.states_of(screen):
+            if self.ex.budget.out_of_time():
+                self.omit("permission-deny", screen)
+                break
+            inst.case = steps
+            inst.cmds = []
+            inst.reach_screen(screen, steps)
+            inst.cmds.append("permission deny")
+            reply = inst.say("permission deny")
+            if reply.startswith("error: app crashed"):
+                raise Gone(inst.ended("permission deny"))
+            if reply.startswith("error"):  # the app's onRequestPermissionsResult threw: not a pass
+                self.note("permission-deny", screen, "callback-failed", f"denying the permission request failed: {reply}", steps,
+                          repro_cmds=list(inst.cmds))
+            inst.settle()
+            inst.observe()
+            self.case("permission-deny", screen, " + ".join(steps) or "as reached")
+
+    # --- large text
+    def sw_fontscale(self, inst, screen, param):
+        scale = float(param or 2.0)
+        inst.case = []
+        inst.reach_screen(screen)
+        inst.settle()
+        before = cut_of(inst.observe()["recs"])
+        inst.cmds.append(f"fontscale {fmt(scale)}")
+        inst.configure(dict(DEFAULT_COMBO, fontscale=scale))
+        inst.settle()
+        after = inst.observe()
+        self.case("fontscale", screen, f"font scale {fmt(scale)}")
+        for t in cut_of(after["recs"]):
+            if t not in before:
+                tag = f"fontscale-{len(self.checked)}"
+                shot = self.read(inst, screen, tag)["shot"]
+                self.note("fontscale", screen, "text-cut-off", f"'{t}' is cut off at font scale {fmt(scale)}", [],
+                          repro_cmds=[f"fontscale {fmt(scale)}"], after=shot)
+
+    # --- right to left
+    def sw_rtl(self, inst, screen, param):
+        locale = param or "ar-EG"
+        inst.case = []
+        inst.reach_screen(screen)
+        inst.settle()
+        ltr = inst.observe()["recs"]
+        inst.cmds.append(f"locale {locale}")
+        inst.configure(dict(DEFAULT_COMBO, locale=locale))
+        inst.settle()
+        rtl = inst.observe()
+        self.case("rtl", screen, locale)
+        shot = None
+
+        def report(rule, detail):
+            nonlocal shot
+            if shot is None:
+                shot = self.read(inst, screen, f"rtl-{len(self.checked)}")["shot"]
+            self.note("rtl", screen, rule, detail, [], repro_cmds=[f"locale {locale}"], after=shot)
+
+        before_cut = cut_of(ltr)
+        for t in cut_of(rtl["recs"]):
+            if t not in before_cut:
+                report("text-cut-off", f"'{t}' is cut off with locale {locale}")
+        were = offscreen(ltr)
+        for t in offscreen(rtl["recs"]):
+            if t not in were:
+                report("offscreen", f"'{t}' extends past the screen edge with locale {locale}")
+        a, b = row_order(ltr), row_order(rtl["recs"])
+        same = [k for k in a if k in b and a[k] == b[k]]
+        for left, right in same[:3]:
+            report("rtl-not-mirrored", f"'{left}' and '{right}' keep their order with locale {locale}: a mirrored layout swaps them")
+
+    # --- dark appearance and the accessibility audit
+    def sw_dark(self, inst, screen, param):
+        inst.case = []
+        inst.reach_screen(screen)
+        inst.cmds.append("appearance dark")
+        inst.configure(dict(DEFAULT_COMBO, appearance="dark"))
+        inst.settle()
+        self.case("dark", screen, "dark appearance, a11y audit")
+        reply = inst.say("a11y")
+        m = re.match(r"\d+ issue\(s\) in \d+ nodes: (.*)", reply)
+        if not m:
+            if not reply.startswith("no issues in"):  # the audit did not run: not a pass
+                self.note("dark", screen, "audit-failed", f"the accessibility audit gave: {reply[:200]}", [],
+                          repro_cmds=["appearance dark", "a11y"])
+            return
+        shot = None
+        for issue in m[1].split(" ; "):
+            rule = ("a11y-unlabeled" if "no label" in issue else "a11y-target-size" if "touch target" in issue
+                    else "text-cut-off" if "text cut off" in issue else "a11y-image" if "image" in issue else "a11y")
+            if shot is None:
+                shot = self.read(inst, screen, f"dark-{len(self.checked)}")["shot"]
+            self.note("dark", screen, rule, issue.strip(), [], repro_cmds=["appearance dark", "a11y"], after=shot)
+
+    # --- the outcome
+    def finish(self):
+        if self.omitted:
+            by = sorted({o["perturbation"] for o in self.omitted})
+            self.note("sweep", {"id": "*", "path": {"start": None, "steps": []}}, "sweep-incomplete",
+                      f"the time ran out: {len(self.omitted)} case(s) not run ({', '.join(by)}); raise --max-seconds", [])
+        for f in self.found:
+            r = allowed_by(f, self.allow)
+            f["allowed"] = r is not None
+            if r is not None:
+                f["allowed_by"] = f"{r['rule']} {r['screen']} {r['detail']}".strip()
+        self.found.sort(key=lambda f: (f["allowed"], f["rule"], f["screen"], f["perturbation"], f["detail"]))
+        # The same finding found in two states of a screen is one.
+        seen, unique = set(), []
+        for f in self.found:
+            k = (f["rule"], f["screen"], f["perturbation"], f["detail"])
+            if k not in seen:
+                seen.add(k)
+                unique.append(f)
+        self.found = unique
+
+
+def junit(path, sweep):
+    """One test case per perturbation and screen checked, passing; one failing case per finding (skipped when allowed)."""
+    from xml.sax.saxutils import escape, quoteattr
+    cases, failures, skipped = [], 0, 0
+    found_keys = {(f["perturbation"], f["screen"]) for f in sweep.found}
+    done = set()
+    for c in sorted(sweep.checked, key=lambda c: (c["perturbation"], c["screen"], c["case"])):
+        key = (c["perturbation"], c["screen"])
+        if key in done or key in found_keys:
+            continue
+        done.add(key)
+        cases.append(f'<testcase classname={quoteattr("crawl." + c["perturbation"])} name={quoteattr(c["screen"])}/>')
+    for o in sweep.skipped:
+        cases.append(f'<testcase classname={quoteattr("crawl." + o["perturbation"])} name={quoteattr(o["screen"])}>'
+                     f'<skipped message={quoteattr("not run: " + o["why"])}/></testcase>')
+    for o in sweep.omitted:
+        cases.append(f'<testcase classname={quoteattr("crawl." + o["perturbation"])} name={quoteattr(o["screen"])}>'
+                     f'<skipped message="not run: the time ran out"/></testcase>')
+    for f in sweep.found:
+        name = f'{f["screen"]}: {f["rule"]}: {f["detail"]}'[:300]
+        body = "path to reproduce (drive.py commands):\n" + "\n".join(f["repro"] + f.get("repro_cmds", [])) + \
+            f"\n\nfound on {f['build']} build, perturbation {f['perturbation']}"
+        if f["allowed"]:
+            skipped += 1
+            cases.append(f'<testcase classname={quoteattr("crawl." + f["perturbation"])} name={quoteattr(name)}>'
+                         f'<skipped message={quoteattr("allowed by: " + f.get("allowed_by", ""))}/></testcase>')
+        else:
+            failures += 1
+            cases.append(f'<testcase classname={quoteattr("crawl." + f["perturbation"])} name={quoteattr(name)}>'
+                         f'<failure message={quoteattr(f["detail"][:500])} type={quoteattr(f["rule"])}>{escape(body)}</failure></testcase>')
+    xml = (f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="crawl-sweep" tests="{len(cases)}" failures="{failures}" '
+           f'skipped="{skipped + len(sweep.omitted) + len(sweep.skipped)}" time="{sweep.seconds:.1f}">\n' + "\n".join(cases) + "\n</testsuite>\n")
+    with open(path, "w") as fh:
+        fh.write(xml)
+
+
 # ------------------------------------------------------------------------------------------ comparing builds
 
 def pair_builds(new, base, args):
@@ -797,10 +1223,15 @@ def html_report(out, doc):
         for s in doc.get(key, []):
             shots.setdefault(key, {})[s["id"]] = {c: img(p, c in first) for c, p in s["captures"].items()}
     diffs = {k: {c: {**d, "map": img(d.get("map"), True)} for c, d in v.items()} for k, v in doc.get("diffs", {}).items()}
+    sweep_images = {}
+    for f in doc["findings"]:
+        for k in ("before", "after", "diff"):
+            if f.get(k):
+                sweep_images[f[k]] = img(f[k], True)
     data = {"screens": [{k: v for k, v in s.items() if k != "captures"} for s in doc["screens"]],
             "edges": doc["edges"], "findings": doc["findings"], "shots": shots.get("screens", {}),
             "baseShots": shots.get("base_screens", {}), "compare": doc.get("compare"), "diffs": diffs,
-            "incomplete": doc.get("incomplete", []), "seconds": doc.get("seconds"), "combos": doc["combos"],
+            "incomplete": doc.get("incomplete", []), "sweep": doc.get("sweep"), "sweepImages": sweep_images, "seconds": doc.get("seconds"), "combos": doc["combos"],
             "baseScreens": [{k: v for k, v in s.items() if k != "captures"} for s in doc.get("base_screens", [])]}
     page = PAGE.replace("__TITLE__", html.escape(doc["apk"])).replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
     with open(os.path.join(out, "report.html"), "w") as f:
@@ -839,7 +1270,6 @@ const D=__DATA__;
 const E=(t,a,...k)=>{const e=document.createElement(t);for(const[x,v]of Object.entries(a||{}))e.setAttribute(x,v);for(const c of k)e.append(c);return e};
 const S=Object.fromEntries(D.screens.map(s=>[s.id,s]));
 const status=Object.fromEntries((D.compare||[]).filter(p=>p.id).map(p=>[p.id,p.status]));
-const crashAt=new Set(D.findings.filter(f=>f.kind==='crash').map(f=>f.path&&f.path.steps?JSON.stringify(f.path.steps.slice(0,-1)):''));
 document.getElementById('sum').textContent=D.screens.length+' screens, '+D.edges.length+' transitions, '+D.findings.filter(f=>f.kind==='crash').length+' crash(es), '+D.combos.length+' capture combination(s) per screen'+(D.seconds?'; walk '+D.seconds.explore+' s, captures '+D.seconds.capture+' s':'')+(D.incomplete.length?'. Incomplete: '+D.incomplete.join('; '):'')+'.';
 // Layout: a column per depth, screens in discovery order; EXIT/CRASH/SKIPPED targets are not drawn as nodes.
 const cols={};D.screens.forEach(s=>(cols[s.depth]=cols[s.depth]||[]).push(s));
@@ -867,9 +1297,17 @@ D.screens.forEach(s=>{const p=pos[s.id];const cls=['node'];if(status[s.id]&&stat
 document.getElementById('map').append(svg);
 // Findings
 const fd=document.getElementById('findings');
-if(D.findings.some(f=>f.kind!=='note')){fd.append(E('h2',{},'Findings'));
- D.findings.forEach(f=>{const d=E('div',{class:'card'},E('span',{class:'badge bad'},f.kind),' ',(f.build||''),E('pre',{},f.detail||''),
+const walkF=D.findings.filter(f=>f.kind!=='note'&&f.kind!=='sweep'),sweepF=D.findings.filter(f=>f.kind==='sweep');
+if(walkF.length){fd.append(E('h2',{},'Walk findings'));
+ walkF.forEach(f=>{const d=E('div',{class:'card'},E('span',{class:'badge '+(f.kind==='crash'?'bad':'warn')},f.kind),' ',(f.build||''),E('pre',{},f.detail||''),
  E('small',{},'path: '),E('code',{},JSON.stringify(f.path)));fd.append(d)})}
+if(D.sweep){fd.append(E('h2',{},'Resilience sweep'));
+ fd.append(E('p',{class:'muted'},D.sweep.plan.join(', ')+': '+D.sweep.checked+' cases in '+D.sweep.seconds+' s, '+sweepF.filter(f=>!f.allowed).length+' finding(s), '+sweepF.filter(f=>f.allowed).length+' allowed'+(D.sweep.stale.length?'. Allow-list entries matching nothing: '+D.sweep.stale.join('; '):'')+'.'));
+ sweepF.forEach(f=>{const c=E('div',{class:'card'},E('span',{class:'badge '+(f.allowed?'warn':'bad')},f.allowed?'allowed':f.rule),' ',E('b',{},f.perturbation),' · ',f.rule+' · ',
+   (S[f.screen]?E('a',{onclick:'select("'+f.screen+'")'},f.screen):f.screen),E('div',{},f.detail),
+   E('small',{},'reproduce with drive.py: '),E('pre',{},f.repro.concat(f.repro_cmds||[]).join('\n')));
+  const row=E('div',{class:'shots'});[['before',f.before],['after',f.after],['difference',f.diff]].forEach(([k,v])=>{if(v){const im=D.sweepImages[v];if(im)row.append(E('figure',{},E('img',{src:im}),E('figcaption',{},k)))}});
+  c.append(row);fd.append(c)})}
 // Comparison
 const cp=document.getElementById('compare');
 if(D.compare){cp.append(E('h2',{},'Against the base build'));
@@ -930,6 +1368,12 @@ def parse(argv):
     p.add_argument("-j", "--jobs", type=int, default=3)
     p.add_argument("--diff-delta", type=int, default=8)
     p.add_argument("--diff-pixels", type=float, default=0, help="share (or count, from 1) of differing pixels allowed")
+    p.add_argument("--sweep", help=f"resilience sweep after the walk: {','.join(PERTURBATIONS)} or all (fontscale=1.5, rtl=he-IL take a value)")
+    p.add_argument("--allow", help="file of accepted sweep findings: lines of 'RULE SCREEN [DETAIL TEXT]', * for any")
+    p.add_argument("--junit", help="JUnit XML of the sweep (default OUT/junit.xml): a failing case per finding")
+    p.add_argument("--sweep-actions", type=int, default=3, help="how many controls that stay on the screen the state perturbations tap, one at a time, besides the screen as reached (default 3: as reached and up to three taps; 0: as reached only)")
+    p.add_argument("--sweep-pixels", type=float, default=0.002, help="share of pixels that may differ between a screen before and after a perturbation")
+    p.add_argument("--spinner-seconds", type=float, default=6, help="how long a progress indicator may stay up offline")
     args = p.parse_args(argv)
     args.apksim = list(tail)
     for s in args.setting:
@@ -987,6 +1431,19 @@ def main():
             log(f"[new] {len(combos)} combination(s) captured in {new.t_capture:.1f} s")
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
+        sweep = None
+        if args.sweep:
+            sweep = Sweep(new, parse_sweep(args.sweep), args, read_allow(args.allow))
+            sweep.run()
+            sweep.finish()
+            doc["sweep"] = {"plan": [n if not v else f"{n}={v}" for n, v in sweep.plan], "checked": len(sweep.checked),
+                            "seconds": round(sweep.seconds, 1), "allow": args.allow,
+                            "stale": [f"{r['rule']} {r['screen']} {r['detail']}".strip() for r in sweep.allow if not r["used"]]}
+            doc["findings"] += sweep.found
+            log(f"[sweep] {len(sweep.checked)} cases in {sweep.seconds:.1f} s: {len(sweep.found)} finding(s), "
+                f"{sum(1 for f in sweep.found if f['allowed'])} allowed")
+            for f in sweep.found:
+                log(f"{'allowed' if f['allowed'] else 'FINDING':>8}  {f['perturbation']:<15} {f['rule']:<18} {f['screen']}  {f['detail']}")
         if base_apk:
             # The new build's instances end first: they hold data slots, and a base instance would take the next
             # ones (another device identity), and twice the JVMs would be alive.
@@ -1044,7 +1501,9 @@ def main():
     with open(os.path.join(out, "crawl.json"), "w") as f:
         json.dump(doc, f, indent=1)
     log(f"report: {os.path.join(out, 'report.html')}")
-    crashes = [f for f in doc["findings"] if f["kind"] in ("crash", "compare")]
+    if args.sweep:
+        junit(args.junit or os.path.join(out, "junit.xml"), sweep)
+    crashes = [f for f in doc["findings"] if f["kind"] in ("crash", "compare") or (f["kind"] == "sweep" and not f["allowed"])]
     differs = [p for p in doc.get("compare", []) if p["status"] != "same"]
     for p in differs:
         log(f"{p['status']:>8}  {p['id'] or p['base']}  {p.get('why') or ''}")

@@ -1,0 +1,7 @@
+# Findings scripts/crawl-check.py accepts on the deliberate faults of apksim://faults (docs/crawl.md "Resilience sweep").
+# RULE SCREEN [TEXT THE DETAIL MUST CONTAIN]; both are shell patterns.
+state-lost          Faults*-*
+text-cut-off        Faults*-*
+endless-spinner     FaultsActivity-*
+rtl-not-mirrored    FaultsActivity-*
+a11y-*              Faults*-*

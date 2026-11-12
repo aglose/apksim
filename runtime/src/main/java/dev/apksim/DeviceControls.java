@@ -616,7 +616,7 @@ final class DeviceControls {
       }
       case "a11y" -> {
         // a11y: unlabeled controls, small touch targets, undescribed focusable images. "a11y show": in a sheet too.
-        String r = A11yAudit.run(rootViews(), app.getResources().getDisplayMetrics().density);
+        String r = A11yAudit.run(AccessibleWindows.reported(rootViews()), app.getResources().getDisplayMetrics().density);  // the windows accessibility reaches, as `nodes`
         if (a.length > 1 && a[1].equals("show")) SimWindow.ask("Accessibility audit", r.replace(" ; ", "\n"), new String[] {"OK"});
         return r;
       }

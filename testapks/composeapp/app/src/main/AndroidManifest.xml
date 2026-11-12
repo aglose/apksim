@@ -225,6 +225,16 @@
                 <data android:scheme="apksim" android:host="slot" />
             </intent-filter>
         </activity>
+        <!-- apksim://faults: deliberate faults for scripts/crawl.py's resilience sweep (docs/crawl.md). -->
+        <activity android:name=".FaultsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="faults" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".FaultsViewsActivity" android:exported="false" />
     </application>
 
 </manifest>

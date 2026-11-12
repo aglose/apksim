@@ -182,12 +182,13 @@ final class Nodes {
    * `nodes tree`: every node, with its depth, class, view id name, state flags and bounds, whether or not it has
    * anything to say (scripts/crawl.py hashes the structure and finds what to tap). Records are separated by \u001e,
    * fields by a tab: depth, class, id, flags (c clickable, l long-clickable, e editable, k checkable, K checked,
-   * s scrollable, f focusable, p password, d disabled, v visible to the user), l,t,r,b, text, description, hint
+   * s scrollable, f focusable, p password, d disabled, v visible to the user, t text cut off: TextTruncation), l,t,r,b, text, description, hint
    * (tabs and line breaks in them become spaces).
    */
   static String tree(List<View> roots) {
     StringBuilder b = new StringBuilder();
     Rect r = new Rect();
+    TextTruncation.Cache cut = new TextTruncation.Cache();
     walkDepth(roots, (n, depth) -> {
       AccessibilityNodeInfo i = n.info;
       i.getBoundsInScreen(r);
@@ -202,6 +203,7 @@ final class Nodes {
       if (i.isPassword()) f.append('p');
       if (!i.isEnabled()) f.append('d');
       if (i.isVisibleToUser()) f.append('v');
+      if (!n.text().isEmpty() && cut.cutOff(n)) f.append('t');
       b.append(depth).append('\t').append(i.getClassName()).append('\t')
           .append(i.getViewIdResourceName() == null ? "" : i.getViewIdResourceName()).append('\t').append(f).append('\t')
           .append(r.left).append(',').append(r.top).append(',').append(r.right).append(',').append(r.bottom).append('\t')
