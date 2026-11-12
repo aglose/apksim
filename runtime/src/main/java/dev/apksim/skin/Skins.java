@@ -68,17 +68,65 @@ public final class Skins {
     }
   }
 
-  static Path store() {
-    String d = System.getenv("APKSIM_SKINS_DIR");
+  /**
+   * The store. A running instance from a standby has the standby's environment, not the launcher's, so the launcher
+   * passes APKSIM_SKINS_DIR and APKSIM_SKINS on as the properties apksim.skinsDir and apksim.skinsShared.
+   */
+  public static Path store() {
+    String d = setting("apksim.skinsDir", "APKSIM_SKINS_DIR");
     if (d != null && !d.isEmpty()) return Path.of(d);
     return Path.of(System.getProperty("user.home"), ".apksim", "skins");
   }
 
-  static List<Path> sharedDirs() {
+  public static List<Path> sharedDirs() {
     List<Path> l = new ArrayList<>();
-    String s = System.getenv("APKSIM_SKINS");
+    String s = setting("apksim.skinsShared", "APKSIM_SKINS");
     if (s != null) for (String p : s.split(":")) if (!p.isEmpty()) l.add(Path.of(p));
     return l;
+  }
+
+  private static String setting(String property, String env) {
+    String v = System.getProperty(property);
+    return v != null ? v : System.getenv(env);
+  }
+
+  /** The skin of that name (store first, then the shared folders); the IOException says why there is none. */
+  public static Skin lookup(String name) throws IOException {
+    try {
+      return find(name);
+    } catch (Fail f) {
+      throw new IOException(f.getMessage());
+    }
+  }
+
+  /** Every skin that reads, store first, a name once; those that do not read are added to `bad` (if given). */
+  public static List<Skin> all(List<String> bad) throws IOException {
+    List<Skin> skins = new ArrayList<>();
+    List<String> seen = new ArrayList<>();
+    List<Path> dirs = new ArrayList<>();
+    dirs.add(store());
+    dirs.addAll(sharedDirs());
+    for (int i = 0; i < dirs.size(); i++) {
+      if (!Files.isDirectory(dirs.get(i))) continue;
+      List<Path> subs;
+      try (Stream<Path> st = Files.list(dirs.get(i))) {
+        subs = st.filter(p -> !p.getFileName().toString().startsWith(".") && Files.isRegularFile(p.resolve("skin.json")))
+            .sorted().toList();
+      }
+      for (Path p : subs) {
+        String n = p.getFileName().toString();
+        if (seen.contains(n)) continue;
+        seen.add(n);
+        try {
+          Skin s = Skin.read(p);
+          s.origin = i == 0 ? "local" : "shared";
+          skins.add(s);
+        } catch (IOException e) {
+          if (bad != null) bad.add(n + ": " + e.getMessage());
+        }
+      }
+    }
+    return skins;
   }
 
   private static void run(String[] a) throws Fail, IOException {
@@ -138,32 +186,8 @@ public final class Skins {
   }
 
   private static void list(boolean json) throws IOException {
-    List<Skin> skins = new ArrayList<>();
     List<String> bad = new ArrayList<>();
-    List<String> seen = new ArrayList<>();
-    List<Path> dirs = new ArrayList<>();
-    dirs.add(store());
-    dirs.addAll(sharedDirs());
-    for (int i = 0; i < dirs.size(); i++) {
-      if (!Files.isDirectory(dirs.get(i))) continue;
-      List<Path> subs;
-      try (Stream<Path> st = Files.list(dirs.get(i))) {
-        subs = st.filter(p -> !p.getFileName().toString().startsWith(".") && Files.isRegularFile(p.resolve("skin.json")))
-            .sorted().toList();
-      }
-      for (Path p : subs) {
-        String n = p.getFileName().toString();
-        if (seen.contains(n)) continue;
-        seen.add(n);
-        try {
-          Skin s = Skin.read(p);
-          s.origin = i == 0 ? "local" : "shared";
-          skins.add(s);
-        } catch (IOException e) {
-          bad.add(n + ": " + e.getMessage());
-        }
-      }
-    }
+    List<Skin> skins = all(bad);
     if (json) {
       StringBuilder b = new StringBuilder("[");
       for (int i = 0; i < skins.size(); i++) b.append(i > 0 ? "," : "").append(skins.get(i).describeJson());

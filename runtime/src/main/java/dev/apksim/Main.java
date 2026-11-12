@@ -34,6 +34,11 @@ public final class Main {
     dev.apksim.rec.Rec.launch();  // --rec: its net and db channels are on before the app's first connection or query
     String zone = System.getProperty("apksim.timezone");
     if (zone != null) TimeZones.parse(zone);  // an unknown zone stops the launch here (TimeZones applies it)
+    // --skin: its device unless --device names one; an unknown skin stops the launch as a bad --device does.
+    if (!Skinning.launch()) {
+      Standby.halt(2);
+      return;
+    }
     // A bad --device stops the launch here, one line and exit 2, before any port is opened or announced.
     Device device;
     try {
@@ -57,6 +62,13 @@ public final class Main {
     System.setProperty("apksim.windowTitle", Path.of(args[0]).getFileName().toString());
     SimWindow.open(device.widthPx(), device.heightPx(), device.density(),
         Path.of(args[0]).getFileName() + " - " + device.name() + " " + device.widthDp() + "\u00d7" + device.heightDp() + " dp");
+    if (Skinning.current() != null) SimWindow.setSkin(Skinning.layout(device.widthPx(), device.heightPx(), 0));
+    if (!SimWindow.isHeadless()) {
+      // Device > Skin: the store is read off the launch's path (a few small files, but nothing a first frame needs).
+      Thread menu = new Thread(DeviceControls::fillSkinMenu, "apksim-skin-menu");
+      menu.setDaemon(true);
+      menu.start();
+    }
     Storage.initScratch();
     Path apk = Path.of(args[0]).toAbsolutePath();
     // For scripts/ctl.py: an instance from a standby has no APK on its command line.

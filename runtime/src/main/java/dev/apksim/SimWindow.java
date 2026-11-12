@@ -362,6 +362,47 @@ final class SimWindow {
 
   private static native void nativeDragResize(int wPts, int hPts);
 
+  /**
+   * Draws a skin around the screen (Skinning), or none with a null layout: the window becomes the frame's size, the
+   * screen sits at its place in it, clipped to its corners or mask, and only the screen takes clicks.
+   */
+  static void setSkin(Skinning.Layout l) {
+    if (headless) return;
+    if (l == null) {
+      nativeSetSkin(null, 0, null, 0, 0, 0, null, 0, 0, 0);
+      return;
+    }
+    int[] turns = new int[1];
+    byte[] frame = Skinning.frameImage(l, turns);
+    nativeSetSkin(frame, turns[0], Skinning.maskImage(), l.quarterTurns(), l.outerW(), l.outerH(),
+        new int[] {l.holeX(), l.holeY(), l.holeW(), l.holeH()}, l.screenX(), l.screenY(), l.cornerRadius());
+  }
+
+  /** frame null: no skin. Sizes in device pixels; the screen is the display's own size; hole: x, y, w, h. */
+  private static native void nativeSetSkin(byte[] frame, int frameTurns, byte[] mask, int maskTurns, int outerW, int outerH,
+      int[] hole, int screenX, int screenY, int cornerRadius);
+
+  /** Device > Skin: None, then these skins (titles), tags {@link #TAG_SKIN_FIRST} + 1 + index. */
+  static void setSkinMenu(java.util.List<String> titles) {
+    if (!headless) nativeSetSkinMenu(titles.toArray(new String[0]));
+  }
+
+  static final int TAG_SKIN_FIRST = 200;
+
+  private static native void nativeSetSkinMenu(String[] titles);
+
+  /**
+   * A mouse click at a point of the window's content (points, top left), sent through the window as the user's would
+   * be (`window click X Y`): checks which view takes it, the screen or the frame around it.
+   */
+  static boolean click(float x, float y) {
+    if (headless) return false;
+    nativeClick(x, y);
+    return true;
+  }
+
+  private static native void nativeClick(float x, float y);
+
   /** Draws the software keyboard over the bottom of the screen, heightPx tall; clicks on it type into the app. */
   static void showKeyboard(int heightPx) {
     if (!headless) nativeShowKeyboard(heightPx);

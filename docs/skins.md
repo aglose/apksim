@@ -2,8 +2,8 @@
 
 A skin is a device frame image plus the device it frames. apksim stores them and `apksim skin` adds, shows and
 exports them. They are local data: nothing is built in, anyone can add their own, and a private skin stays on the
-machine. This page is the format and the commands. Drawing a skin in the window and in screenshots, and serving them
-to a browser tab, are separate issues and not done yet.
+machine. This page is the format, the commands, and how a running instance draws one ("Drawing"). Serving skins to a
+browser tab (`serve`, `beam`) is a separate issue and not done yet.
 
 ## Format
 
@@ -33,10 +33,13 @@ mask.png          optional: the screen's shape (alpha), for round or notched scr
 - `screen` is in the frame image's pixels: where the app's pixels go. `cornerRadius` clips its corners; `mask`
   overrides it for any other shape.
 - `device` is a `--device` value: a preset (`phone`, `tablet`...), `WxH[@density]` in dp, or `WxHpx@Ndpi`. Using the
-  skin implies it unless the launch names its own `--device` (that part comes with the drawing work). A device profile
-  file is not supported yet.
+  skin implies it unless the launch names its own `--device` ("Drawing"). A device profile file is not supported yet.
 - `kind` is `phone`, `foldable`, `tablet`, `desktop`, `tv` or `watch`; derived from `device` when absent.
-- `cutout` is optional: `type` (`hole`), and `x`, `y`, `radius` in frame pixels.
+- `cutout` is optional: `type` (`hole`), and `x`, `y`, `radius` in frame pixels: the centre and radius of the camera
+  hole. A `notch` or `pill` written by hand with `width` and `height` instead of `radius` is that rectangle around the
+  centre. It is what the app is told ("Drawing"); the frame image draws the camera itself.
+- `frame-land.png` is the frame for the display turned to ROTATION_90 (the device's top edge on the left), the same
+  image turned and redrawn (lighting, buttons); it must be `frame.png`'s size turned, or it is not used.
 - `source` is free text shown by `skin show`, for attribution.
 - The aspect of `screen` must match the device's pixels within 1%, or the skin is refused with both sizes.
 
@@ -67,6 +70,45 @@ apksim skin export NAME [--out ZIP]
 - `skin add --from` takes a folder, a zip (files at the top or inside one folder) or an http(s) URL of a zip, at most
   64 MB unpacked, with no paths that leave the folder. The name is the one in its skin.json. `skin export` writes the
   same layout, so the two round-trip.
+
+## Drawing
+
+`apksim --skin NAME app.apk` (or the `skin NAME` command, or Device > Skin in the window) puts a skin around the
+screen. The launch takes the skin's `device` unless `--device` names one; that device must have the skin's screen shape
+(either orientation, within 1%), or a line says so and no skin is drawn. An unknown or broken skin stops the launch with
+exit 2, as a bad `--device` does. `skin` alone says where everything falls now and lists the stored skins; `skin off`
+takes it away. `skin NAME` for a skin with another device switches to that device, as `device` does; a `device`,
+`size` or Device Type switch to another shape turns the skin off and says so.
+
+- **Geometry.** The display's pixels set the scale: device pixels per frame pixel, from the screen's long side. The
+  display is centred in the hole; the shapes agree within 1%, so a pixel or a few of the hole can be left around it,
+  drawn black as a device's glass is. The frame turns with the display's rotation as a device does (`rotate`:
+  ROTATION_90 puts the device's top edge, and its camera, on the left), with `frame-land.png` when the skin has one,
+  and turns a quarter more when a display's orientation still differs from the frame's (a landscape tablet in a
+  portrait frame).
+- **The window** (`Skinning`, `simwindow.m`'s `SkinView`) is the frame's size: the frame image above the screen, the
+  screen clipped to `cornerRadius` or `mask`. Clicks on the bezel go nowhere; the screen's own view takes the rest,
+  with the app's coordinates as before. While a skin is on the window is not resized by dragging (the frame has its
+  own shape); Zoom In/Out, Actual Size and Fit Screen scale it. `skin off` gives the bare window back at actual size.
+  The status bar, the gesture handle and the software keyboard are drawn inside the screen, clipped with it.
+- **What the app is told** (`SkinShape`): the cutout as the display's `DisplayCutout` (its bounds on the nearest edge,
+  the safe inset on that side clearing it), and `cornerRadius` as four `RoundedCorner`s, from `Display.getCutout()` and
+  `getRoundedCorner()` and in every window's `WindowInsets` (`getDisplayCutout()`, `getRoundedCorner()`, and
+  `getInsets(Type.displayCutout())`, from insets sources as a device's window manager adds them). They follow the
+  rotation. With no skin the app sees none, as before. `insets` shows them as the app's windows have them.
+- **Screenshots.** `shot FILE` is still the app's pixels alone. `shot --skin FILE` (File > Save Screen with Skin,
+  Cmd+Opt+S) is the screen in the frame, at the frame's size scaled to the display, transparent outside the device.
+- **Headless and Linux** there is no window, but the device, what the app is told and `shot --skin` are the same.
+- **Test runs** (`--instrument`) take the skin's device and report its cutout and corners; nothing is drawn.
+- A warm launch has the standby's environment, so the launcher passes `APKSIM_SKINS_DIR` and `APKSIM_SKINS` on as
+  `-Dapksim.skinsDir` and `-Dapksim.skinsShared`.
+
+`scripts/skin-window-check.py APK [--window]` writes a fixture skin into a temporary store and checks the cutout and
+corners the app sees, `shot --skin`'s pixels (bezel, camera, the app's pixels in the screen, transparency outside),
+rotation, `skin off`, a device switch and an unknown skin's exit; with `--window` (Mac), clicks through the window at
+the screen's corners, on the floating button and on the bezel (`window click X Y`, points of the window's content;
+`window` reports the content's size and the device pixels per point). CI runs it headless in the Linux image
+(`ci-smoke.sh`).
 
 ## Where skins are
 

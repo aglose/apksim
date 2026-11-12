@@ -340,7 +340,7 @@ final class FlightRecorder {
   }
 
   /** Device commands a replay must repeat: they change what the app sees. Input commands arrive as their events. */
-  private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "size", "window",
+  private static final Set<String> COMMANDS = Set.of("appearance", "locale", "fontscale", "device", "skin", "size", "window",
       "rotate", "animscale", "memory", "home", "resume", "lock", "unlock", "open", "push", "permission", "location",
       "biometrics", "recreate", "process-death", "keyboard", "clock", "timezone", "bluetooth", "notifications", "jobs",
       "pick", "clipboard", "paste", "bars", "thermal", "restart", "network", "ambient", "camera");

@@ -77,7 +77,10 @@ final class DeviceControls {
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
     "bars status toggle", "bars nav toggle", "rec save", "camera off", "camera pattern", "camera image {file}",
+    "screenshot skin",
   };
+  /** Device > Skin's skins, by menu position (SimWindow.TAG_SKIN_FIRST + 1 + index); None is TAG_SKIN_FIRST. */
+  private static volatile List<String> skinMenu = List.of();
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
   private static final int TAG_SOFT_KEYBOARD = 30;
@@ -196,6 +199,11 @@ final class DeviceControls {
 
   /** The control command a menu item stands for, or null. */
   static String menuCommand(int tag) {
+    if (tag >= SimWindow.TAG_SKIN_FIRST) {
+      int i = tag - SimWindow.TAG_SKIN_FIRST - 1;
+      List<String> names = skinMenu;
+      return i < 0 ? "skin off" : i < names.size() ? "skin " + names.get(i) : null;
+    }
     if (tag <= 0 || tag >= MENU.length) return null;
     String c = MENU[tag];
     if (c.contains("{file}")) {
@@ -207,9 +215,9 @@ final class DeviceControls {
       if (text == null || text.isBlank()) return null;
       c = c.replace("{text}", text.trim());
     }
-    if (c.equals("screenshot")) {
+    if (c.equals("screenshot") || c.equals("screenshot skin")) {
       try {
-        c = "shot " + newMediaFile("png");
+        c = (c.equals("screenshot") ? "shot " : "shot --skin ") + newMediaFile("png");
       } catch (java.io.IOException e) {
         return null;
       }
@@ -638,6 +646,29 @@ final class DeviceControls {
         Device to = Device.named(a[1]);
         return reshape(to, to.widthPx(), to.heightPx(), true, before);
       }
+      case "skin" -> {
+        // skin: the skin drawn now and where it falls; skin NAME|off: another, or none (docs/skins.md "Drawing").
+        // A skin with another device switches to it, as `device` does.
+        if (a.length < 2) return Skinning.describe(w, h, rotation) + "; stored: " + String.join(", ", Skinning.names());
+        if (a[1].equals("off")) {
+          Skinning.off();
+          skinChanged();
+          return "off";
+        }
+        dev.apksim.skin.Skin s;
+        try {
+          s = Skinning.use(a[1]);
+        } catch (java.io.IOException e) {
+          return "error: " + e.getMessage();
+        }
+        Device to = Device.named(s.device);
+        if (!Device.current().name().equals(to.name()) || !Skinning.fits(s, w, h)) {
+          String r = reshape(to, to.widthPx(), to.heightPx(), true, before);
+          return "skin " + s.name + ": " + r;
+        }
+        skinChanged();
+        return "skin " + Skinning.describe(w, h, rotation);
+      }
       case "size" -> {
         // size WxH: the display's size in dp, keeping the device's kind (as dragging the window's edge does).
         if (a.length < 2) return Device.current().describe() + " (" + w + "x" + h + " px)";
@@ -652,6 +683,10 @@ final class DeviceControls {
         // window close: as its close button (while a stream viewer is attached it only hides: apksim beam).
         if (a.length == 1) return SimWindow.windowState();
         if (a[1].equals("close")) return SimWindow.close() ? "ok" : "no window";
+        if (a[1].equals("click") && a.length == 4) {
+          // window click X Y: a click at a point of the window's content (points, top left), through the window.
+          return SimWindow.click(Float.parseFloat(a[2]), Float.parseFloat(a[3])) ? "ok" : "no window";
+        }
         int mode = SimWindow.mode(a[1]);
         if (mode >= 0) return SimWindow.setMode(mode) ? "ok" : "no window";
         String[] wh = a[1].split("x");
@@ -779,6 +814,7 @@ final class DeviceControls {
     h = nh;
     resizer.resize(nw, nh, false);
     Device.setCurrent(Device.current().withSize(Math.round(nw / d), Math.round(nh / d)));
+    skinChanged();  // the frame turns with the display, and the cutout with it
     String r = configurationChanged(before);
     windowsResized();
     showTitle();
@@ -845,17 +881,25 @@ final class DeviceControls {
       org.robolectric.Shadows.shadowOf(app.getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(0);
     }
     Device.setCurrent(now);
+    String skinOff = "";
+    dev.apksim.skin.Skin skin = Skinning.current();
+    if (skin != null && !Skinning.fits(skin, now.widthPx(), now.heightPx())) {
+      // Another shape (Device Type, `size`, `device`): the skin no longer frames it.
+      Skinning.off();
+      skinOff = "; skin " + skin.name + " off: it does not frame " + now.widthPx() + "x" + now.heightPx() + " px";
+    }
     if (!now.kind().equals(was.kind())) SystemFeatures.deviceChanged(app, now);  // a TV has no touchscreen, has leanback...
     applySystemUi(now);
     android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
     w = m.widthPixels;
     h = m.heightPixels;
     resizer.resize(w, h, newDevice);
+    if (skin != null || Skinning.current() != null) skinChanged();
     String r = configurationChanged(before);
     windowsResized();
     showTitle();
     updateSystemBars();
-    return r + " (" + now.describe() + ", " + w + "x" + h + " px)";
+    return r + " (" + now.describe() + ", " + w + "x" + h + " px)" + skinOff;
   }
 
   /**
@@ -875,6 +919,31 @@ final class DeviceControls {
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
     SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, ValueAnimator.getDurationScale() > 1f);  // --anim-scale 10
+    String skin = Skinning.name();
+    SimWindow.setMenuState(SimWindow.TAG_SKIN_FIRST, skin == null);
+    List<String> names = skinMenu;
+    for (int i = 0; i < names.size(); i++) SimWindow.setMenuState(SimWindow.TAG_SKIN_FIRST + 1 + i, names.get(i).equals(skin));
+  }
+
+  /** Device > Skin: the stored skins, read again (a skin added while running shows after a `skin` command). */
+  static void fillSkinMenu() {
+    if (SimWindow.isHeadless()) return;
+    List<String> names = Skinning.names();
+    skinMenu = names;
+    SimWindow.setSkinMenu(Skinning.titles(names));
+  }
+
+  /**
+   * The skin, or the display under it, changed: the window draws the frame as it now falls (or none), and every
+   * window gets its insets again with the skin's cutout and corners (SkinShape).
+   */
+  private void skinChanged() {
+    SkinShape.rotation = rotation;
+    SimWindow.setSkin(Skinning.layout(w, h, rotation));
+    SkinShape.changed();
+    if (Skinning.current() != null) fillSkinMenu();
+    showTitle();
+    updateSystemBars();
   }
 
   /**
