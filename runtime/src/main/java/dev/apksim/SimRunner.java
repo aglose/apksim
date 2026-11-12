@@ -46,6 +46,9 @@ import org.robolectric.util.inject.Injector;
 
 /** Points Robolectric's framework bootstrap at the unmodified APK instead of a test project. */
 public class SimRunner extends RobolectricTestRunner {
+  /** Off with -Dapksim.repeatForever=false: Robolectric's cap of INFINITE repeats at 1 everywhere ({@link ShadowRepeatingAnimator}). */
+  static final boolean REPEAT_FOREVER = !"false".equals(System.getProperty("apksim.repeatForever"));
+
   /**
    * One injector, so one SandboxManager and one sandbox, for every class run here. The framework is loaded once per
    * process ({@link FlatLoader}), so a second sandbox would bring a second "main thread" to a main Looper already
@@ -408,9 +411,11 @@ public class SimRunner extends RobolectricTestRunner {
     if (RealTimeClock.requested()) {  // --realtime-clock
       shadows.add(RealTimeClock.ShadowRealTimeSystemClock.class);
       shadows.add(RealTimeClock.ShadowRealTimeDisplayEventReceiver.class);
+      if (REPEAT_FOREVER) shadows.add(ShadowRepeatingAnimator.class);  // frames at vsyncs: INFINITE can mean it
     } else if (!TestActivities.testRun()) {
       shadows.add(ShadowRealSleep.class);  // running instances: SystemClock.sleep takes real time, not simulated
       shadows.add(Exits.ShadowKillableProcess.class);  // running instances: killing the app's own process ends it
+      if (REPEAT_FOREVER) shadows.add(ShadowRepeatingAnimator.class);  // Host's paused Choreographer: INFINITE repeats
     }
     if (Snapshot.ON) shadows.add(Snapshot.ShadowSteadyCaret.class);  // --snapshot: carets that do not blink
     return shadows.toArray(new Class<?>[0]);

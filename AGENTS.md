@@ -240,6 +240,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `gl/`: GLES20/30 and EGL14 on a real GLES (ANGLE) for offscreen rendering in test runs (see "GLES").
   - `ShadowFastRipple`: forces the SOLID ripple with software animation. The patterned ripple's per-pixel shader
     cost ~15 ms a frame, and its render-thread animation never finished, because there is no native looper.
+  - `ShadowRepeatingAnimator`: a ValueAnimator's `INFINITE` repeat count is kept in running instances and with
+    `--realtime-clock`, where frames come at vsyncs. Robolectric's shadow makes it 1, so an endless View animation
+    stopped after two cycles. Default test runs keep that cap: their unpaused Choreographer would never let the looper
+    go idle. `-Dapksim.repeatForever=false` keeps the cap everywhere (docs/conformance.md, cause 4).
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
   - `net/`: the app's network recorded, replayed and shaped (`Net`, `NetEngine`, `FakeTlsSocket`, `NetResolver`,
     `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").

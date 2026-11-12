@@ -76,6 +76,16 @@ echo "Popup and Trace: $shown-> $tapped"
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+# A ValueAnimator set to repeat INFINITE times repeats for ever: apksim://bitmaps' square, turning once a second, still
+# turns after 3.5 s (Robolectric's shadow made INFINITE 1, so it stopped at 360 after two turns).
+spin() { drive viewtree | tr ';' '\n' | grep -oE '48x48 rotation=[0-9.]+' || echo 'not turned'; }
+drive 'open apksim://bitmaps' 'wait 3500' >/dev/null
+turned="$(spin)"
+drive 'wait 300' >/dev/null
+later="$(spin)"
+echo "Endless animator: $turned -> $later"
+[[ "$turned" != "$later" ]] || { echo "a ValueAnimator repeating INFINITE times stopped" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
 # An accessibility provider that lists nodes under several parents and an ancestor as a child must not hang `nodes`
 # (issue 114: the walk repeated every listing down to its depth cap). Each node is listed once.
 drive 'open apksim://cyclic-nodes' 'wait 4000' >/dev/null
