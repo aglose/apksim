@@ -1,10 +1,14 @@
 package dev.apksim;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
 import java.util.List;
@@ -48,14 +52,31 @@ final class Storage {
   private static void sweepDeadInstances(Path base) throws IOException {
     try (Stream<Path> dirs = Files.list(base)) {
       dirs.forEach(d -> {
+        String name = d.getFileName().toString();
         try {
-          long pid = Long.parseLong(d.getFileName().toString());
+          if (name.startsWith(".sweep-")) {
+            // A folder another sweeper claimed: its owner is the last number. Taken over only if that one died.
+            long owner = Long.parseLong(name.substring(name.lastIndexOf('-') + 1));
+            if (ProcessHandle.of(owner).map(ProcessHandle::isAlive).orElse(false)) return;
+            deleteTree(d);
+            return;
+          }
+          long pid = Long.parseLong(name);
           if (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) return;
         } catch (NumberFormatException e) {
           return; // Not one of ours.
         }
-        deleteTree(d);
+        // Claim the dead folder by renaming it, so only one sweeper deletes it; losing the race (or any failure) is fine.
+        Path claimed = d.resolveSibling(".sweep-" + d.getFileName() + "-" + ProcessHandle.current().pid());
+        try {
+          Files.move(d, claimed);
+        } catch (IOException | RuntimeException e) {
+          return;  // gone already, or another sweeper has it
+        }
+        deleteTree(claimed);
       });
+    } catch (UncheckedIOException e) {
+      // Same: best effort.
     }
   }
 
@@ -64,16 +85,36 @@ final class Storage {
   }
 
   static void deleteTree(Path dir) {
-    // Walking does not follow symlinks, so the link to the persistent data dir is removed, not its target.
-    try (Stream<Path> paths = Files.walk(dir)) {
-      paths.sorted(Comparator.reverseOrder()).forEach(p -> {
-        try {
-          Files.deleteIfExists(p);
-        } catch (IOException e) {
-          // Best effort: the next launch sweeps it again.
+    // Walking does not follow symlinks, so the link to the persistent data dir is removed, not its target. Files that
+    // vanish mid-walk (another sweeper, a reaped process finishing its own cleanup) are not errors.
+    try {
+      Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+        @Override
+        public FileVisitResult visitFile(Path f, BasicFileAttributes a) {
+          try {
+            Files.deleteIfExists(f);
+          } catch (IOException e) {
+            // Best effort: the next launch sweeps it again.
+          }
+          return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult visitFileFailed(Path f, IOException e) {
+          return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult postVisitDirectory(Path d, IOException e) {
+          try {
+            Files.deleteIfExists(d);
+          } catch (IOException ex) {
+            // Same.
+          }
+          return FileVisitResult.CONTINUE;
         }
       });
-    } catch (IOException e) {
+    } catch (IOException | RuntimeException e) {
       // Same.
     }
   }
