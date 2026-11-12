@@ -693,16 +693,16 @@ def incomplete(r, results, test=None):
         return timeout_note(r)
     if "INSTRUMENTATION_CODE: " not in r.stdout:
         return f"apksim exited ({r.returncode}) before the run finished"
-    if announced and len(results) < max(announced):
-        if not class_level(results):
-            return f"apksim reported {len(results)} of the {max(announced)} tests it started"
-        # A class that failed at class level (@BeforeClass) reports one Class#null for all its tests, so a shortfall
-        # may be no gap: one_process lists the suite to tell (shortfall). A test that started and never ended is one.
-        stuck = unfinished(r.stdout)
-        if stuck:
-            return (f"apksim reported {len(results)} of the {max(announced)} tests it started, and "
-                    f"{stuck[0][0]}#{stuck[0][1]}" + (f" and {len(stuck) - 1} more" if len(stuck) > 1 else "")
-                    + " started and did not end")
+    # A test that started and never ended, whatever the count says (a class-level failure, in @BeforeClass or
+    # @AfterClass, adds or stands for results).
+    stuck = unfinished(r.stdout)
+    if stuck:
+        return (f"apksim reported no end for {stuck[0][0]}#{stuck[0][1]}"
+                + (f" and {len(stuck) - 1} more tests" if len(stuck) > 1 else "") + ", which started")
+    # A class that failed at class level (@BeforeClass) reports one Class#null for all its tests, so with one a
+    # shortfall may be no gap: one_process lists the suite to tell (shortfall).
+    if announced and len(results) < max(announced) and not class_level(results):
+        return f"apksim reported {len(results)} of the {max(announced)} tests it started"
     if r.returncode != 0 and not any(res[2] == "failed" for res in results):
         return f"apksim exited with {r.returncode} although no test failed"
     return None
@@ -885,8 +885,8 @@ def one_process(a, passthrough, label=""):
                      if not has_result(t) and (remaining is None or t in set(remaining))]
             for t in stuck:
                 if t != running:
-                    record(*t, "failed", f"this test started and never ended: the run went on to other tests ({why}):\n"
-                                         + out)
+                    record(*t, "failed", f"apksim reported no end for this test: it started, and the run went on to "
+                                         f"other tests ({why}):\n" + out)
             if running in stuck:
                 finished = "INSTRUMENTATION_CODE: " in r.stdout  # an odd case: the run ended, this test did not
                 record(*running, "failed", (f"timed out after {r.timed_out:g} s while this test was running: no test "
