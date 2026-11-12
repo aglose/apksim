@@ -3,17 +3,19 @@
 
 Usage: journey-check.py APP.apk [OUT] [--image IMAGE]
 
-Records with `--rec all`: the Trips tab, the rename ("Italian vacation" -> "Roman vacation"), the Home tab and two
-FAB taps. Then:
+Records with `--rec all`: the Trips tab, the rename ("Italian vacation" -> "Roman vacation"), the Home tab, two
+FAB taps and a quick double tap on it. Then:
 
   1. `apksim replay --journey` writes journey.json: the taps target nodes (text "Trips", "Italian vacation", "Home";
-     the FAB, tapped below its icon, by its resource id "fab", a Compose testTag), and the steps expect "Roman
-     vacation", "FAB clicks: 1" and "FAB clicks: 2";
+     the FAB, tapped below its icon, by its resource id "fab", a Compose testTag), the double tap is one step with its
+     timing (`times`), and the steps expect "Roman vacation", "FAB clicks: 1", "FAB clicks: 2" and "FAB clicks: 4";
   2. journey.py runs it from the recording's checkpoint: exit 0, JUnit XML with a test case per step and no failure;
   3. on a tablet (`-- --device tablet`: a navigation rail instead of the bottom bar, other coordinates) it still passes,
      and the same journey by the recorded coordinates (--by-coordinates) fails there;
   4. as a changed build (`-- --feature dev.apksim.testapp.rename_v2`) it fails at the rename, expecting "Roman
-     vacation", exit 1, the later steps skipped in the XML.
+     vacation", exit 1, the later steps skipped in the XML;
+  5. a recording that ends in a crash (the Trips tab, then apksim://crash?kind=post): its replay crashes too (exit 10)
+     and still writes journey.json, with the steps up to the crash and a note that it crashed.
 
 --image runs the replay and journey.py inside the Linux image (journey.py is in it). OUT defaults to
 work/journey-check and is emptied first.
@@ -78,11 +80,11 @@ def tap_text(d, text):
     raise SystemExit(f"no {text!r} on screen")
 
 
-def record():
-    log = os.path.join(a.out, "record.log")
+def record(name="rec", session=None):
+    log = os.path.join(a.out, "record.log" if name == "rec" else name + ".log")
     args = ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0"]
     if a.image:
-        p = subprocess.Popen(docker("journeycheck-rec", args + ["--control", str(PORT), "--control-bind", "0.0.0.0", "/work/app.apk"], port=PORT),
+        p = subprocess.Popen(docker("journeycheck-" + name, args + ["--control", str(PORT), "--control-bind", "0.0.0.0", "/work/app.apk"], port=PORT),
                              stdout=open(log, "w"), stderr=subprocess.STDOUT)
         port = PORT
     else:
@@ -97,16 +99,16 @@ def record():
                 port = int(m.group(1))
                 break
             time.sleep(0.1)
-        return record_session(port, p)
+        return (session or record_session)(port, p, log)
     finally:
         # Whatever happened, the recording's JVM (or container) does not outlive the check holding its data slot.
         if p.poll() is None:
             p.kill()
         if a.image:
-            subprocess.run(["docker", "rm", "-f", "journeycheck-rec"], capture_output=True)
+            subprocess.run(["docker", "rm", "-f", "journeycheck-" + name], capture_output=True)
 
 
-def record_session(port, p):
+def record_session(port, p, log):
     d = control(port)
     d("settle 20000")
     for _ in range(40):  # the first checkpoint: the replay and the journey start from it
@@ -124,6 +126,10 @@ def record_session(port, p):
     d("tap 733 1533")  # the FAB
     time.sleep(0.8)
     d("tap 733 1533")
+    time.sleep(0.8)
+    d("tap 733 1533")  # a double tap: the second ~100 ms after the first lifts
+    time.sleep(0.1)
+    d("tap 733 1533")
     time.sleep(1.5)
     d("rec save 60 " + w(os.path.join(a.out, "rec.apkrec")))
     for _ in range(100):
@@ -137,17 +143,45 @@ def record_session(port, p):
     return os.path.join(a.out, "rec.apkrec")
 
 
-def generate(bundle):
-    out = os.path.join(a.out, "gen")
+def crash_session(port, p, log):
+    """The Trips tab, then a screen that crashes 300 ms after it opens: the flight recorder saves a crash bundle."""
+    d = control(port)
+    d("settle 20000")
+    for _ in range(40):
+        if "checkpoints: #" in d("rec"):
+            break
+        time.sleep(0.25)
+    tap_text(d, "Trips")
+    d("settle 5000")
+    time.sleep(0.8)
+    try:
+        d("open apksim://crash?kind=post")
+    except OSError:
+        pass
+    code = p.wait(timeout=60)
+    check(code == 10, f"the recorded app crashed (exit {code})")
+    m = re.search(r"\[apksim\] rec: the app crashed: (\S+\.apkrec)", open(log, errors="replace").read())
+    if not check(m is not None, "and saved a crash bundle"):
+        return None
+    bundle = os.path.join(a.out, "crash.apkrec")
+    if a.image:
+        subprocess.run(["docker", "cp", "journeycheck-crash:" + m.group(1), bundle], capture_output=True)
+    else:
+        shutil.move(m.group(1), bundle)
+    return bundle
+
+
+def generate(bundle, name="gen", want=0):
+    out = os.path.join(a.out, name)
     args = ["replay", "--journey", "--headless", "--out", w(out), w(bundle)]
     t0 = time.time()
     if a.image:
-        code = subprocess.run(docker("journeycheck-gen", args), stdout=open(out + ".log", "w"), stderr=subprocess.STDOUT).returncode
-        subprocess.run(["docker", "rm", "-f", "journeycheck-gen"], capture_output=True)
+        code = subprocess.run(docker("journeycheck-" + name, args), stdout=open(out + ".log", "w"), stderr=subprocess.STDOUT).returncode
+        subprocess.run(["docker", "rm", "-f", "journeycheck-" + name], capture_output=True)
     else:
         code = subprocess.run([os.path.join(ROOT, "apksim")] + args, stdout=open(out + ".log", "w"), stderr=subprocess.STDOUT,
                               env=dict(os.environ, APKSIM_STANDBY="0")).returncode
-    check(code == 0, f"the replay that writes the journey matched (exit {code}, {time.time() - t0:.0f} s)")
+    check(code == want, f"the replay that writes the journey {'matched' if want == 0 else 'crashed'} (exit {code}, {time.time() - t0:.0f} s)")
     return os.path.join(out, "journey.json")
 
 
@@ -199,9 +233,12 @@ def main():
         print("        " + "\n        ".join(json.dumps(s) for s in steps))
         targets = [s.get("target", {}) for s in steps if s["do"] == "tap"]
         check({"text": "Trips"} in targets and {"text": "Italian vacation"} in targets and {"text": "Home"} in targets
-              and targets.count({"id": "fab"}) == 2, f"taps target nodes: {targets}")
+              and targets.count({"id": "fab"}) == 3, f"taps target nodes: {targets}")
+        double = [s for s in steps if s["do"] == "tap" and len(s.get("times", [])) == 2]
+        check(len(double) == 1 and double[0].get("target") == {"id": "fab"} and double[0]["times"][1][0] < 400,
+              f"the double tap is one step with its timing: {double}")
         expects = [e for s in steps for e in s.get("expect", [])]
-        check(all(t in expects for t in ("Roman vacation", "FAB clicks: 1", "FAB clicks: 2")), f"expectations: {expects}")
+        check(all(t in expects for t in ("Roman vacation", "FAB clicks: 1", "FAB clicks: 2", "FAB clicks: 4")), f"expectations: {expects}")
         print("== journey.py")
         code, cases, took = run_journey("pass", jpath)
         check(code == 0 and cases and not any(f for _, f, _, _ in cases), f"passes: exit {code}, {len(cases)} test cases, {took:.0f} s")
@@ -217,9 +254,20 @@ def main():
         check(code == 1 and len(failed) == 1 and "Italian vacation" in failed[0][0] and "Roman vacation" in failed[0][1],
               f"fails at the rename: exit {code}, {failed[:1]}")
         check(len(skipped) >= 3, f"the steps after it are skipped in the XML: {len(skipped)}")
+        print("== a recording that ends in a crash")
+        crash = record("crash", crash_session)
+        if crash:
+            jpath = generate(crash, "gen-crash", want=10)
+            j = json.load(open(jpath)) if os.path.exists(jpath) else None
+            if check(j is not None, "the replay that crashed wrote journey.json"):
+                print("        " + "\n        ".join(json.dumps(s) for s in j["steps"]) + "\n        notes: " + json.dumps(j.get("notes")))
+                check(any(s.get("target") == {"text": "Trips"} for s in j["steps"])
+                      and any(s.get("command", [])[:1] == ["open"] and "crash" in s["command"][-1] for s in j["steps"]),
+                      "with the steps up to the crash (Trips, the screen that crashes)")
+                check(any("crashed" in n for n in j.get("notes", [])), "and a note that the app crashed")
     finally:
         if a.image:
-            for n in ["rec", "gen", "pass", "tablet", "tablet-coordinates", "changed"]:
+            for n in ["rec", "gen", "pass", "tablet", "tablet-coordinates", "changed", "crash", "gen-crash"]:
                 subprocess.run(["docker", "rm", "-f", "journeycheck-" + n], capture_output=True)
     print()
     if problems:

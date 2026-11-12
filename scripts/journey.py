@@ -8,7 +8,8 @@ A journey is what `apksim replay --journey BUNDLE` writes: steps that find their
 description or resource id (as `nodes` shows them), with the texts each step should bring on screen. For each step:
 
   tap / longpress   the node's centre (`nodes`, waited for up to --timeout), else the recorded point when the
-                    recording found no node there;
+                    recording found no node there; a long press held as long as recorded, a double tap (`times`)
+                    with its recorded timing;
   swipe, wheel, rotary, type, key, back, command   as the control commands of those names;
   then `settle`, and each expected text waited for (up to --timeout seconds, default 10).
 
@@ -118,6 +119,8 @@ def find(c, target, timeout):
 def describe(step):
     d = step["do"]
     if d in ("tap", "longpress"):
+        n = len(step.get("times", []))
+        d = {0: d, 1: d, 2: "double tap", 3: "triple tap"}.get(n, f"{n} taps")
         t = step.get("target")
         if t:
             k = next(k for k in ("text", "desc", "id") if k in t)
@@ -134,6 +137,29 @@ def describe(step):
     return d
 
 
+def sleep_until(t):
+    delay = t - time.time()
+    if delay > 0:
+        time.sleep(delay)
+
+
+def touches(c, x, y, times):
+    """Fingers down and up at (x, y) at the recorded times ([ms from the first down, ms down] each), touch by touch: the
+    `tap` and `swipe` commands have timing of their own (a timed swipe holds 120 ms more before lifting)."""
+    t0 = time.time()
+    r = ""
+    for at, down in times:
+        sleep_until(t0 + at / 1000)
+        r = c(f"touch down {x} {y}")
+        if r.startswith(("error", "unknown", "usage")):
+            return r
+        sleep_until(t0 + (at + down) / 1000)
+        r = c(f"touch up {x} {y}")
+        if r.startswith(("error", "unknown", "usage")):
+            return r
+    return r
+
+
 def run_step(c, step, timeout, by_coordinates=False):
     """Does the step; returns None, or why it failed."""
     d = step["do"]
@@ -146,7 +172,12 @@ def run_step(c, step, timeout, by_coordinates=False):
                 return f"no node with {k}={step['target'][k]!r} on screen after {timeout} s"
         else:
             at = tuple(step["at"])
-        r = c(f"tap {at[0]} {at[1]}") if d == "tap" else c(f"swipe {at[0]} {at[1]} {at[0]} {at[1]} {step.get('ms', 600)}")
+        if d == "longpress":
+            r = touches(c, at[0], at[1], [[0, step.get("ms", 600)]])
+        elif len(step.get("times", [])) > 1:  # a double tap: as one gesture, with no settle between its taps
+            r = touches(c, at[0], at[1], step["times"])
+        else:
+            r = c(f"tap {at[0]} {at[1]}")
     elif d == "swipe" and step.get("path"):
         # The recorded path, touch by touch at its recorded times: the release speed, so whether and how far it flings,
         # is the recording's.
@@ -188,15 +219,16 @@ def run_step(c, step, timeout, by_coordinates=False):
     if r.startswith(("error", "not found", "usage", "unknown")):  # "unknown command: X", "unknown key: X"
         return f"{describe(step)}: {r}"
     # Settle: an endless animation answers with an error after 5 s, and the expectations below wait anyway. Input still
-    # being dispatched (a long press's hold, typed characters) is not that: the step waits for it to be done, as long
-    # as the step itself takes plus --timeout, and fails if it never is.
-    end = time.time() + step.get("ms", 0) / 1000 + timeout
+    # being dispatched (a swipe's moves, typed characters: the Host sends one every 7 ms) is not that: the step waits for
+    # it to be done, as long as the step itself takes plus --timeout, and fails if it never is.
+    budget = (step.get("ms", 0) + 7 * len(step.get("text", "").encode("utf-16-le")) // 2) / 1000 + timeout  # a char per UTF-16 unit
+    end = time.time() + budget
     while True:
         r = c("settle 5000 200")
         if "input queued" not in r:
             break
         if time.time() > end:
-            return f"{describe(step)}: its input was still being dispatched after {step.get('ms', 0) / 1000 + timeout:g} s"
+            return f"{describe(step)}: its input was still being dispatched after {budget:g} s"
     for text in step.get("expect", []):
         end = time.time() + timeout
         # On screen: a node scrolled away is still in the tree (nodes marks it offscreen) and does not count.

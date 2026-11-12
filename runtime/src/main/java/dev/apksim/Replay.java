@@ -623,6 +623,14 @@ final class Replay {
     String where = r.next > 0 && r.next <= r.items.size() ? r.items.get(r.next - 1).what + " at +" + (r.items.get(r.next - 1).t - r.cpUptime) + " ms"
         : "before the first event";
     r.notes.add("crashed after " + where + ": " + e);
+    if (r.journey != null) {
+      // The steps up to the crash: a journey that reproduces it is as useful as one that ends normally.
+      try {
+        System.err.println("[apksim] replay: journey " + r.journey.crashed("the app crashed after " + where + ": " + e));
+      } catch (Throwable t) {
+        r.notes.add("journey not written: " + t);
+      }
+    }
     r.writeReport("crashed");
     System.err.println("[apksim] replay: the app crashed after " + where + "; report " + r.out.resolve("report.json"));
   }

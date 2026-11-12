@@ -24,15 +24,21 @@ import java.util.regex.Pattern;
  * characters), the texts on screen are read; the step before gets as its expectations the texts that appeared since
  * it started (time-like ones left out). A tap is resolved to the node under it: the deepest one there with a text,
  * else a content description, else a resource id (when clickable or editable, as `nodes` lists it), with its index
- * among nodes with the same label when there are several. Drags and long presses keep coordinates (a long press on a
- * node is resolved too); typed characters become one `type` step; keys, Back, wheel steps and commands are kept as
- * they are. Two-finger gestures and window resizes are left out (noted).
+ * among nodes with the same label when there are several. Taps that follow one another as a double tap does (each
+ * within 300 ms of the last one's lift and 100 dp of the first) are one step with their timing (`times`), played as
+ * recorded: as separate steps, with a settle between, they would be two single taps. Drags and long presses keep
+ * coordinates (a long press on a node is resolved too); typed characters become one `type` step; keys, Back, wheel
+ * steps and commands are kept as they are. Two-finger gestures and window resizes are left out (noted). A replay that
+ * crashes writes the steps it got to (`crashed`).
  */
 final class Journey {
-  /** Texts that change by themselves: times and durations. */
-  private static final Pattern VOLATILE = Pattern.compile(".*(\\d{1,2}:\\d{2}|\\d+(\\.\\d+)? ?(ms|s)\\b|\\d{4}-\\d{2}-\\d{2}).*");
+  /** Texts that change by themselves: times and durations. Found anywhere in a text, on any of its lines. */
+  private static final Pattern VOLATILE = Pattern.compile("\\d{1,2}:\\d{2}|\\d+(\\.\\d+)? ?(ms|s)\\b|\\d{4}-\\d{2}-\\d{2}");
   /** Texts that depend on the device: a size (a window size class's "411×891", "1280x800 px"). */
-  private static final Pattern DEVICE = Pattern.compile(".*\\d+ ?[×x] ?\\d+.*");
+  private static final Pattern DEVICE = Pattern.compile("\\d+ ?[×x] ?\\d+");
+  /** ViewConfiguration's double tap timeout (ms) and slop (dp): a tap this soon and near after one is part of it. */
+  private static final int DOUBLE_TAP_MS = 300;
+  private static final int DOUBLE_TAP_SLOP_DP = 100;
 
   private final Path file;
   private final float slopPx;
@@ -44,6 +50,13 @@ final class Journey {
   private final java.util.Set<String> everSeen = new java.util.HashSet<>();
   private Gesture gesture;
   private int lastType = -1;
+  /** The texts at the last point, applied once the item after it starts a step (not a further tap of a tap step). */
+  private List<String> pending;
+  /** The last tap step's first finger down and the last lift in it (uptime ms), and where it was. */
+  private long tapT0, tapUp;
+  private float tapX, tapY;
+  /** The finger now down may be a further tap of the tap step before it. */
+  private boolean anotherTap;
 
   /** A finger's gesture while it is down. */
   private static final class Gesture {
@@ -66,11 +79,28 @@ final class Journey {
     head.put("start", "checkpoint");
   }
 
-  /** At a point: the texts now close the step before it (main thread). */
+  /** At a point: the texts now close the step before it (main thread), once the next item starts a step. */
   void point() {
-    List<String> now = texts();
-    close(now);
-    textsAtOpen = now;
+    pending = texts();
+  }
+
+  /** The item after the last point starts a step: the point's texts close the step before. */
+  private void startStep() {
+    if (pending == null) return;
+    close(pending);
+    textsAtOpen = pending;
+    pending = null;
+  }
+
+  /** Whether a finger down at (x, y) at t may be a further tap of the tap step just before (a double tap's second). */
+  private boolean tapFollows(float x, float y, long t) {
+    return open != null && "tap".equals(open.get("do")) && lastType == SimWindow.UP && t - tapUp <= DOUBLE_TAP_MS
+        && Math.hypot(x - tapX, y - tapY) <= DOUBLE_TAP_SLOP_DP * slopPx / 8;
+  }
+
+  /** Whether a text can be expected on screen: not a time, a duration, a date or a size, on any of its lines. */
+  static boolean expectable(String t) {
+    return t.length() <= 80 && !VOLATILE.matcher(t).find() && !DEVICE.matcher(t).find();
   }
 
   /**
@@ -86,7 +116,7 @@ final class Journey {
     List<String> first = new ArrayList<>();
     List<String> back = new ArrayList<>();
     for (String t : now) {
-      if (textsAtOpen.contains(t) || t.length() > 80 || VOLATILE.matcher(t).matches() || DEVICE.matcher(t).matches()) continue;
+      if (textsAtOpen.contains(t) || !expectable(t)) continue;
       if (!everSeen.contains(t) && first.size() < 6) first.add(t);
       if (back.size() < 3) back.add(t);
     }
@@ -104,6 +134,8 @@ final class Journey {
   /** Every item the replay plays, in order (main thread), with the item's uptime. */
   void event(SimWindow.Event e, long t) {
     int type = e.type();
+    if (type == SimWindow.DOWN && gesture == null) anotherTap = tapFollows(e.x(), e.y(), t);
+    if (!anotherTap) startStep();
     switch (type) {
       case SimWindow.DOWN -> {
         if (gesture != null) return;  // a second finger: the first one's gesture goes on
@@ -132,7 +164,30 @@ final class Journey {
         gesture = null;
         g.maxDist = Math.max(g.maxDist, (float) Math.hypot(e.x() - g.x0, e.y() - g.y0));
         long ms = t - g.t0;
+        boolean tap = g.maxDist <= slopPx && ms < 500;
+        if (anotherTap) {
+          anotherTap = false;
+          if (tap) {  // one more tap of the step before: its time from the first down, and how long it was down
+            @SuppressWarnings("unchecked")
+            List<List<Long>> times = (List<List<Long>>) open.get("times");
+            if (times == null) {
+              times = new ArrayList<>();
+              times.add(List.of(0L, tapUp - tapT0));
+              open.put("times", times);
+            }
+            times.add(List.of(g.t0 - tapT0, ms));
+            tapUp = t;
+            break;
+          }
+          startStep();  // a drag or a long press after a tap: a step of its own
+        }
         Map<String, Object> s = new LinkedHashMap<>();
+        if (tap) {
+          tapT0 = g.t0;
+          tapUp = t;
+          tapX = g.x0;
+          tapY = g.y0;
+        }
         if (g.maxDist <= slopPx) {
           s.put("do", ms >= 500 ? "longpress" : "tap");
           if (g.target != null) s.put("target", g.target);
@@ -158,7 +213,10 @@ final class Journey {
         }
         add(s);
       }
-      case SimWindow.CANCEL -> gesture = null;
+      case SimWindow.CANCEL -> {
+        gesture = null;
+        anotherTap = false;
+      }
       case SimWindow.CHAR -> {
         String c = new String(Character.toChars((int) e.value()));
         if (lastType == SimWindow.CHAR && open != null && "type".equals(open.get("do"))) {
@@ -207,6 +265,7 @@ final class Journey {
 
   /** A command the replay ran (`open URL`, `rotate`...). */
   void command(String[] a) {
+    startStep();
     // The recording keeps clipboard text as "<N characters>", which the replay sets as N x's: so does the journey, or
     // the app would get the marker itself and not what the replay that made the expectations gave it.
     if (a.length > 2 && a[0].equals("clipboard") && a[1].equals("set") && a[2].matches("<\\d+ characters>")) {
@@ -231,7 +290,22 @@ final class Journey {
 
   /** The end of the replay: the last step's expectations, then the file. */
   Path finish() throws IOException {
+    startStep();
     close(texts());
+    return write();
+  }
+
+  /**
+   * The app crashed during the replay (any thread, the app going down): the steps it got to, without reading the screen
+   * again, and why the journey ends there.
+   */
+  Path crashed(String why) throws IOException {
+    startStep();
+    notes.add("the replay ended here: " + why);
+    return write();
+  }
+
+  private Path write() throws IOException {
     Map<String, Object> m = new LinkedHashMap<>(head);
     m.put("steps", steps);
     if (!notes.isEmpty()) m.put("notes", notes);
