@@ -218,7 +218,7 @@ jobs:
         run: |
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-camera-fake.xml -e class dev.apksim.composeapp.CameraTest -e camera fake -- --camera fake
-          python3 scripts/ci-no-skips.py tests/junit-camera-fake.xml 5
+          python3 scripts/ci-no-skips.py tests/junit-camera-fake.xml 6
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-camera-off.xml -e camera off \
             -e class dev.apksim.composeapp.CameraTest#theCameraFeaturesFollowTheOption,dev.apksim.composeapp.CameraTest#cameraManagerListsABackAndAFrontCameraOrNone \
