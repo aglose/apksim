@@ -266,15 +266,12 @@ public final class TestActivities {
    * System.nanoTime() reaches {@code end}: the main-thread waits above (await, parkNanos, sleep). Not main.idle(): an
    * endless frame loop (a Compose Popup polling its anchor, an animation that never ends) never lets it return with
    * Robolectric's unpaused Choreographer, which moves the clock a frame and runs it at once, so the wait never checked
-   * its latch or deadline again (as for awaitFrame). With --realtime-clock frames come at real vsyncs and idle()
-   * returns between them; it also handles a traversal's sync barrier there (RealTimeClock), so it is kept.
+   * its latch or deadline again (as for awaitFrame). With --realtime-clock too: a Runnable that posts itself again
+   * kept idle() draining there (ShadowSimUiAutomation.settle steps the same way; the clock shadow catches the clock
+   * up and waits out a traversal's barrier as the looper looks for its next message).
    */
   private static void runDue(org.robolectric.shadows.ShadowLooper main, java.util.function.BooleanSupplier stop,
       long end) {
-    if (RealTimeClock.requested()) {
-      main.idle();
-      return;
-    }
     while (!main.isIdle() && !stop.getAsBoolean() && !Thread.currentThread().isInterrupted()
         && (end == Long.MAX_VALUE || System.nanoTime() - end < 0)) {
       main.runOneTask();

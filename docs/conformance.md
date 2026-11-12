@@ -61,7 +61,7 @@ or only with an `-e` switch.
 | NavigationComposeConformanceTest (rememberSaveable across back, predictive back) | 2 | 2 | 0 | |
 | RotationConformanceTest (no second pause on a rotation while stopped) | 1 | 1 | 1 | the pause fix |
 | ValueAnimatorConformanceTest (INFINITE read back, an endless animator still repeating after its fifth cycle) | 2 | 2, here with `--realtime-clock` | 2 | the repeat count |
-| LatchConformanceTest (a CountDownLatch awaited for main-thread work: posts, delayed posts, no timeout, a timeout, a worker, an interrupt, FullyDrawnReporter, a worker and a timeout during an endless frame loop) | 9 | 9 | 5, and the frame loop's 2 in the default clock mode | the latch wait |
+| LatchConformanceTest (a CountDownLatch awaited for main-thread work: posts, delayed posts, no timeout, a timeout, a worker, an interrupt, FullyDrawnReporter, a worker and a timeout during an endless frame loop, a worker while a Runnable posts itself again) | 10 | 10 | 5, the frame loop's 2 in the default clock mode, the reposting Runnable's with `--realtime-clock` | the latch wait |
 | AppCallbacksConformanceTest (a singleton's activity and component callbacks heard in later tests and unregistered through the Application it kept, a per-Application one replaced, changes made while the next Application starts, a failed setup between tests) | 14 | the ones a device can run | 2 | AppCallbacks |
 
 ### Causes found
@@ -104,8 +104,8 @@ or only with an `-e` switch.
    clock mode: the unpaused Choreographer moves the clock a frame and runs it at once. A latch wait or a sleep under one
    never ended (`LatchConformanceTest`'s frame loop tests and `MainThreadSleepTest.aSleepEndsDuringAnEndlessFrameLoop`
    hung until `--test-timeout`). They now run due tasks one at a time and check the latch, an interrupt and the deadline
-   between them, as UiAutomator's frame wait does; with `--realtime-clock` frames come at real vsyncs and `idle()` is
-   kept.
+   between them, as UiAutomator's frame wait does, in both clock modes: with `--realtime-clock` a Runnable that posts
+   itself again kept `idle()` draining just the same (`aWorkerEndsTheWaitWhileARunnableRepostsItself`).
 
 4. **A ValueAnimator set to repeat for ever repeated once** (`ShadowRepeatingAnimator`). Robolectric's
    `ShadowValueAnimator.setRepeatCount` turns `INFINITE` into 1 (its bytecode: `if (count == -1) count = 1` before the
@@ -132,6 +132,11 @@ takes it itself.
   would not send (a device defers the relaunch until the activity is visible again).
 - **Back on a task's root activity** ends stopped here at once; on the emulator the stop comes after the task's
   transition, and in one run of three the activity was destroyed. Timing-dependent on the device, so not in the suite.
+- **runOnMainSync waits for the main thread to go idle**: Robolectric's `RoboMonitoringInstrumentation.runOnMainSync`
+  runs the runnable and then `waitForIdleSync`, which an endless frame loop never lets return in the default clock
+  mode (traced: the test's `runOnMainSync` in `ShadowPausedLooper.idle`, the loop's frames under it). A device's only
+  waits for the runnable to run. Found writing the frame-loop tests, which post to the main thread instead.
+
 ## Batch 2: Compose ui and foundation, material3, recyclerview
 
 46 tests, in the same package, with recyclerview 1.4.0 and espresso-contrib (RecyclerViewActions) added to the test app.
