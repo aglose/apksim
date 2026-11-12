@@ -48,7 +48,7 @@ final class RelayConnection extends HttpURLConnection {
     if (requestHeaders != null) return;
     List<String[]> l = new ArrayList<>();
     for (Map.Entry<String, List<String>> e : getRequestProperties().entrySet()) {
-      if (e.getKey() != null) for (String v : e.getValue()) l.add(new String[] {e.getKey(), v});
+      if (e.getKey() != null) for (String v : e.getValue()) l.add(new String[] {e.getKey(), v == null ? "" : v});
     }
     requestHeaders = l;
   }
@@ -91,7 +91,13 @@ final class RelayConnection extends HttpURLConnection {
     byte[] body = sent.toByteArray();
     String method = m;
     CompletableFuture<TabRelay.Reply> f = new CompletableFuture<>();
-    Thread.ofVirtual().name("apksim-relay-url").start(() -> f.complete(TabRelay.fetch(method, path, headers, body)));
+    Thread.ofVirtual().name("apksim-relay-url").start(() -> {
+      try {
+        f.complete(TabRelay.fetch(method, path, headers, body));
+      } catch (RuntimeException e) {
+        f.complete(TabRelay.text(502, "tab relay: " + e));
+      }
+    });
     connected = true;
     try {
       reply = getReadTimeout() > 0 ? f.get(getReadTimeout(), TimeUnit.MILLISECONDS) : f.get();

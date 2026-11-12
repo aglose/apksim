@@ -63,6 +63,8 @@ public final class TabRelay {
   private static volatile boolean linked;
   private static final long FIRST_LINK_MS = Long.getLong("apksim.tabRelay.firstLinkMs", 5_000);
   private static final Map<Long, CompletableFuture<Reply>> pending = new ConcurrentHashMap<>();
+  /** The link each pending request went out on, so a link's end fails only its own. */
+  private static final Map<Long, PrintWriter> owners = new ConcurrentHashMap<>();
   private static final AtomicLong ids = new AtomicLong();
   private static final AtomicInteger inFlight = new AtomicInteger();
 
@@ -91,18 +93,21 @@ public final class TabRelay {
       return;
     }
     out.println("ok relaywatch");
+    PrintWriter old;
     synchronized (TabRelay.class) {
+      old = sender;
       sender = out;
       linked = true;
       TabRelay.class.notifyAll();
     }
+    if (old != null) failAll(old, 502, "the tab was replaced by another");
     try {
       for (String line; (line = in.readLine()) != null; ) answer(line);
     } finally {
       synchronized (TabRelay.class) {
         if (sender == out) sender = null;
       }
-      failAll(502, "the tab went away");
+      failAll(out, 502, "the tab went away");
     }
   }
 
@@ -139,8 +144,11 @@ public final class TabRelay {
     }
   }
 
-  private static void failAll(int status, String why) {
-    for (CompletableFuture<Reply> f : pending.values()) f.complete(text(status, why));
+  private static void failAll(PrintWriter link, int status, String why) {
+    for (Map.Entry<Long, PrintWriter> e : owners.entrySet()) {
+      CompletableFuture<Reply> f = e.getValue() == link ? pending.get(e.getKey()) : null;
+      if (f != null) f.complete(text(status, why));
+    }
   }
 
   static Reply text(int status, String body) {
@@ -174,6 +182,7 @@ public final class TabRelay {
     long id = ids.incrementAndGet();
     CompletableFuture<Reply> f = new CompletableFuture<>();
     pending.put(id, f);
+    owners.put(id, out);
     try {
       StringBuilder b = new StringBuilder(256 + body.length * 4 / 3);
       b.append("y ").append(id).append(" {\"method\":");
@@ -217,6 +226,7 @@ public final class TabRelay {
       }
     } finally {
       pending.remove(id);
+      owners.remove(id);
       inFlight.decrementAndGet();
     }
   }
@@ -293,6 +303,15 @@ public final class TabRelay {
 
     synchronized int available() {
       return (data.length - pos) + buf.size();
+    }
+
+    /** Drops what is buffered and ends the pipe: readers see the end at once. */
+    synchronized void discard() {
+      buf.reset();
+      data = new byte[0];
+      pos = 0;
+      closed = true;
+      notifyAll();
     }
 
     synchronized void close() {

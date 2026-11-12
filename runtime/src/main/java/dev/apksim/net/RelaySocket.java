@@ -28,6 +28,13 @@ final class RelaySocket extends Socket {
 
   RelaySocket(Socket real) {
     this.real = real;
+    try {  // what the factory configured stays
+      soTimeout = real.getSoTimeout();
+      tcpNoDelay = real.getTcpNoDelay();
+      keepAlive = real.getKeepAlive();
+    } catch (SocketException ignored) {
+      // defaults
+    }
   }
 
   /** The factory's own socket (what TLS is layered on), when this was not connected to the relay. */
@@ -44,9 +51,6 @@ final class RelaySocket extends Socket {
     synchronized (this) {
       if (relayConnect(a)) return;
     }
-    real.setSoTimeout(soTimeout);
-    real.setTcpNoDelay(tcpNoDelay);
-    real.setKeepAlive(keepAlive);
     Net.connect(real, a, timeout);
   }
 
@@ -144,6 +148,7 @@ final class RelaySocket extends Socket {
       return;
     }
     shutIn = true;
+    down.discard();  // readers blocked or reading on see the end
   }
 
   @Override
