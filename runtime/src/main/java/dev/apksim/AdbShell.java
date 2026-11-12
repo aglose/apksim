@@ -1723,6 +1723,9 @@ final class AdbShell {
       case "bluetooth" -> {
         return Bluetooth.command(a);
       }
+      case "ble" -> {
+        return dev.apksim.ble.Ble.command(a);  // until the next test's setup, which loads --ble again
+      }
       case "thermal" -> {
         return Thermal.command(a);
       }

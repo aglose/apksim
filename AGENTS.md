@@ -476,6 +476,10 @@ instance startService runs, and an `android:process` service gets its local bind
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
 only to a registered binder). Checked with the owner's app: its messaging service posts the alert.
+`ble [add FILE|PRESET[:ADDR]|remove ADDR|all|rssi ADDR N|notify|set ADDR CHAR HEX|disconnect ADDR]` and `--ble FILE|PRESET`
+(`dev.apksim.ble`, docs/ble.md): scripted BLE peripherals that the framework's own BluetoothLeScanner and BluetoothGatt
+find and talk to (apksim answers their IBluetoothScan/IBluetoothGatt binders), in running instances and test runs
+(`BleTest`; `scripts/ble-check.py` drives `apksim://ble`).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
 open and streaming devices, frames, images, drops, outputs).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,

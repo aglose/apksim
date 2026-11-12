@@ -22,8 +22,9 @@ import org.robolectric.shadows.ShadowBluetoothAdapter;
  * the only record of whether it is on: nothing here keeps a copy that could go stale. A device without
  * android.hardware.bluetooth (`--feature android.hardware.bluetooth=false`) has no adapter: getDefaultAdapter() and
  * BluetoothManager.getAdapter() are null. The adapter's name is Build.MODEL (--build MODEL=...) and its address
- * 02:00:00:00:00:00, what a device tells an app without LOCAL_MAC_ADDRESS. Its LE scanner is Robolectric's (non-null:
- * BLE scanning stays available while Bluetooth is off, as Robolectric's adapter says), and scans find nothing. Set
+ * 02:00:00:00:00:00, what a device tells an app without LOCAL_MAC_ADDRESS. Its LE scanner is the framework's (non-null:
+ * BLE scanning stays available while Bluetooth is off, as Robolectric's adapter says), and scans and GATT connections
+ * reach apksim's scripted peripherals (dev.apksim.ble.Ble, `--ble`, docs/ble.md). Set
  * before Application.onCreate, so per test in a test run, where Robolectric's reset brings a new adapter: each test
  * starts with the launch's state.
  */
@@ -38,6 +39,7 @@ public final class Bluetooth {
   /** At the application's (a test's) start: the launch's state. */
   static void beforeApplicationOnCreate(Application app) {
     apply(app, launchState());
+    dev.apksim.ble.Ble.reset(app);  // the launch's BLE peripherals (--ble), nothing connected or scanning
   }
 
   /** The device's features changed (`device` switched kinds): Bluetooth or none, an adapter keeping its state. */
@@ -138,6 +140,9 @@ public final class Bluetooth {
         Intent intent = new Intent(BluetoothAdapter.ACTION_STATE_CHANGED)
             .putExtra(BluetoothAdapter.EXTRA_STATE, step)
             .putExtra(BluetoothAdapter.EXTRA_PREVIOUS_STATE, now);
+        // The BLE stack is up (or down: scans stop, connections drop) before STATE_ON (STATE_OFF) is broadcast, so a
+        // receiver that scans or connects at once finds it in the state the broadcast says.
+        if (step == target) pending.add(() -> dev.apksim.ble.Ble.adapterSwitched(want));
         pending.add(() -> app.sendBroadcast(intent));
         now = step;
       }
@@ -219,6 +224,29 @@ public final class Bluetooth {
     protected boolean disable() {
       set(RuntimeEnvironment.getApplication(), false);
       return true;
+    }
+
+    /** The system side of BluetoothGatt and BluetoothLeScanner: apksim's scripted peripherals (Ble). */
+    @Implementation
+    @Override
+    protected android.bluetooth.IBluetoothGatt getBluetoothGatt() {
+      return dev.apksim.ble.Ble.gattService();
+    }
+
+    @Implementation
+    protected android.bluetooth.IBluetoothScan getBluetoothScan() {
+      return dev.apksim.ble.Ble.scanService();
+    }
+
+    /** As a phone's controller: filtering and batching in hardware, so every ScanSettings callback type is allowed. */
+    @Implementation
+    protected boolean isOffloadedFilteringSupported() {
+      return isEnabled();
+    }
+
+    @Implementation
+    protected boolean isOffloadedScanBatchingSupported() {
+      return isEnabled();
     }
   }
 }
