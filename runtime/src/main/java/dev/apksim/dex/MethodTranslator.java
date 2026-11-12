@@ -2824,6 +2824,19 @@ final class MethodTranslator implements Opcodes {
         return;
       }
     }
+    if (opcode == INVOKESTATIC && "android/os/SystemClock".equals(ownerName) && "sleep".equals(m.name())
+        && "(J)V".equals(m.descriptor()) && owner.startsWith("androidx/test/uiautomator/")) {
+      // UiAutomator's own sleeps go to its engine (dev.apksim.Uia), with what each is for: the pacing of a gesture it
+      // injects (the time between two touch events, a press's length, the wait for a list to snap back), which the
+      // engine may fast-forward, or a wait on the app between two looks at it. Without --uia engine it is the sleep.
+      boolean gesture = owner.equals("androidx/test/uiautomator/GestureController")
+          || (owner.equals("androidx/test/uiautomator/InteractionController")
+              && (methodName.equals("clickNoSync") || methodName.equals("longTapNoSync") || methodName.equals("swipe")))
+          || (owner.equals("androidx/test/uiautomator/UiObject2") && methodName.equals("scrollUntil"));
+      mv.visitInsn(gesture ? ICONST_1 : ICONST_0);
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/Uia", "sleep", "(JI)V", false);
+      return;
+    }
     if (opcode == INVOKEVIRTUAL && "java/util/concurrent/CountDownLatch".equals(ownerName) && "await".equals(m.name())
         && "(JLjava/util/concurrent/TimeUnit;)Z".equals(m.descriptor()) && "androidx/test/uiautomator/InteractionController".equals(owner)) {
       // UiAutomator's wait for a frame after each gesture step; on the main thread in a test run, the main queue

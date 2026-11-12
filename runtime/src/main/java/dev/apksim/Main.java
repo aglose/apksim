@@ -103,6 +103,7 @@ public final class Main {
       }
       long t0 = System.nanoTime();
       if (Boolean.getBoolean("apksim.profile")) Sampler.report();  // -Dapksim.profile=true: the whole run's samples
+      Uia.report();  // --uia engine: what the UiAutomator engine did
       long t1 = System.nanoTime();
       ClassCache.flush();
       long t2 = System.nanoTime();

@@ -191,11 +191,28 @@ final class RealTimeClock {
     catchUp();
   }
 
+  /**
+   * Main thread only: above 0 while the UiAutomator engine ({@link Uia}) fast-forwards. Wherever this clock would wait
+   * for real time (after an advance past it, for a barrier's frame), it then takes the simulated time as passed
+   * instead: real time's base moves back by what was skipped, so the clock still follows real time from there on,
+   * and a worker's clock reads (real time since the base) see the jump too.
+   */
+  static int fastForward;
+
+  /** Whether the clock moves ahead without waiting right now (the main thread, inside the engine's fast-forward). */
+  private static boolean skipping() {
+    return fastForward > 0 && Thread.currentThread() == main;
+  }
+
   /** After any advance of the clock, on the thread that made it: waits until real time has caught up with it. */
   private static void advanced(Duration by) {
     if (!on || (catchingUp && Thread.currentThread() == main)) return;
     long ahead = aheadNanos();
     if (ahead <= 0) return;
+    if (skipping()) {
+      realBaseNanos -= ahead;  // the time skipped counts as passed
+      return;
+    }
     try {
       if (spinMargin() > 0) waitUntil(System.nanoTime() + ahead);
       else TimeUnit.NANOSECONDS.sleep(ahead);
@@ -217,6 +234,11 @@ final class RealTimeClock {
     });
     m.setAsynchronous(true);
     vsyncPosted = handler.sendMessageAtTime(m, atMs);
+  }
+
+  /** Whether a queued message is this clock's vsync message (a frame that was asked for). Main thread. */
+  static boolean isVsync(Message m) {
+    return handler != null && m.getTarget() == handler;
   }
 
   /** DisplayEventReceiver with a vsync message for each frame asked for; registered only with the switch on. */
@@ -313,6 +335,10 @@ final class RealTimeClock {
     if (frameAt < 0) return;
     long waitMs = frameAt - ApksimClock.uptimeNanos() / 1_000_000L;
     if (waitMs <= 0 || waitMs > BARRIER_WAIT_MS) return;
+    if (skipping()) {  // the engine's fast-forward: the frame comes now (advanced() takes the time as passed)
+      ShadowSystemClock.advanceBy(Duration.ofMillis(waitMs));
+      return;
+    }
     try {
       if (spinMargin() > 0) waitUntil(System.nanoTime() + waitMs * 1_000_000L);
       else Thread.sleep(waitMs);
