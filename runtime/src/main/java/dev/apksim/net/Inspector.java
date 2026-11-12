@@ -33,7 +33,7 @@ public final class Inspector {
   static volatile boolean on;
   /** Exchanges remembered for late viewers and for `detail`. */
   static final int KEEP = 300;
-  /** Captured bodies `detail` shows are cut at this many bytes (a detail line carries two, base64, under the WebSocket's 1 MB). */
+  /** Captured bodies `detail` shows are cut at this many bytes (a detail line carries two, base64: about 0.7 MB, and the browser decodes it). */
   static final int BODY_MAX = 256 * 1024;
   /** A rule's body is at most this many bytes (the tab relay takes the same; serve checks the same limit). */
   static final int RULE_BODY_MAX = 512 * 1024;
@@ -52,6 +52,11 @@ public final class Inspector {
       byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut) {
     long size() {
       return reqBody.length + respBody.length + 1024;
+    }
+  }
+  static long detailBytesForCheck() {
+    synchronized (details) {
+      return detailBytes;
     }
   }
   private static long detailBytes;  // guarded by details
@@ -303,7 +308,7 @@ public final class Inspector {
     synchronized (details) {
       e = details.get(Long.parseLong(a[2]));
     }
-    if (e == null) return "error: no exchange " + a[2] + " (the last " + KEEP + " are kept)";
+    if (e == null) return "error: no exchange " + a[2] + " (only recent exchanges are kept: at most " + KEEP + ", fewer when their bodies are large)";
     StringBuilder b = new StringBuilder("{\"id\":").append(a[2]).append(",\"method\":").append(q(e.method)).append(",\"url\":").append(q(e.url))
         .append(",\"status\":").append(e.status).append(",\"reqHeaders\":").append(headers(e.reqHeaders))
         .append(",\"respHeaders\":").append(headers(e.respHeaders));

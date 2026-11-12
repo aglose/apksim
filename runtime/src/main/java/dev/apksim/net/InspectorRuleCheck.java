@@ -46,6 +46,23 @@ public final class InspectorRuleCheck {
     String d = Inspector.detail(new String[] {"network", "detail", "1"});
     check(d.contains("\\u00e9".repeat(14_000)), "detail has the whole 14,000-character URL");
     check(Inspector.eventsForCheck().get(0).length() < 12_000 && Inspector.eventsForCheck().get(0).contains("\"urlCut\":true"), "a row cuts a long URL and says so");
+    // Rule bodies: 512 KB accepted, one byte more refused with the limit named.
+    String big = java.util.Base64.getEncoder().encodeToString(new byte[512 * 1024]);
+    String big1 = java.util.Base64.getEncoder().encodeToString(new byte[512 * 1024 + 1]);
+    check(Inspector.rule(("network rule add GET /big 200 0 text/plain " + big).split(" ")).startsWith("{"), "a 512 KB rule body is accepted");
+    check(Inspector.rule(("network rule add GET /big 200 0 text/plain " + big1).split(" ")).contains("at most 524288 bytes"), "512 KB + 1 is refused, naming the limit");
+    Inspector.rule("network rule clear".split(" "));
+    // The detail history stays under its byte cap while the newest exchange is kept.
+    for (int i = 0; i < 200; i++) {
+      Recording.Entry b = new Recording.Entry();
+      b.method = "GET";
+      b.url = "https://example.com/" + i;
+      b.status = 200;
+      b.respBody = new byte[300 * 1024];
+      Inspector.exchange(b, 0, 0);
+    }
+    check(Inspector.detailBytesForCheck() <= Inspector.DETAILS_BYTES, "detail bodies stay under the byte cap");
+    check(!Inspector.detail(new String[] {"network", "detail", "201"}).startsWith("error"), "the newest exchange keeps its detail");
     if (failures > 0) {
       System.out.println(failures + " rule check(s) failed");
       System.exit(1);
