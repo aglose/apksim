@@ -81,6 +81,31 @@ def on_screen(dump):
     return "; ".join(keep)
 
 
+class DeadlineSocket(socket.socket):
+    """A control connection whose every write and read stops at `deadline` (a time.time()), when one is set: the time
+    left is worked out again before each, so an answer arriving in pieces cannot run past it. Otherwise 60 s each."""
+
+    deadline = None
+
+    def _arm(self):
+        left = 60 if self.deadline is None else self.deadline - time.time()
+        if left <= 0:
+            raise TimeoutError("past the deadline")
+        self.settimeout(left)
+
+    def send(self, *a):
+        self._arm()
+        return super().send(*a)
+
+    def sendall(self, *a):
+        self._arm()
+        return super().sendall(*a)
+
+    def recv_into(self, *a):
+        self._arm()
+        return super().recv_into(*a)
+
+
 class Role:
     def __init__(self, name, spec, scene_dir):
         self.name = name
@@ -103,10 +128,9 @@ class Role:
         if not self.lock.acquire(timeout=max(0.0, deadline - time.time())):
             raise TimeoutError(cmd)
         try:
-            left = deadline - time.time()
-            if left <= 0:
-                raise TimeoutError(cmd)
-            self.inst.sock.settimeout(left)
+            if not isinstance(self.inst.sock, DeadlineSocket):
+                self.reconnect()
+            self.inst.sock.deadline = deadline
             try:
                 return self.inst.send(cmd)
             except TimeoutError:
@@ -114,22 +138,30 @@ class Role:
                 raise
             finally:
                 if self.inst.sock:
-                    self.inst.sock.settimeout(60)
+                    self.inst.sock.deadline = None
         finally:
             self.lock.release()
 
     def reconnect(self):
-        """A new control connection in place of one left waiting for an answer (Control serves each on its own)."""
+        """A new control connection (a DeadlineSocket) in place of the one there, which may be left waiting for an
+        answer (Control serves each connection on its own)."""
         inst = self.inst
         for c in (inst.file, inst.sock):
+            if c is None:
+                continue
             try:
                 c.close()
             except OSError:
                 pass
         inst.file = inst.sock = None
-        inst.sock = socket.create_connection(("127.0.0.1", inst.port), timeout=2)
-        inst.sock.settimeout(60)
-        inst.file = inst.sock.makefile("rw")
+        sock = DeadlineSocket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(2)
+            sock.connect(("127.0.0.1", inst.port))
+        except OSError:
+            sock.close()
+            raise
+        inst.sock, inst.file = sock, sock.makefile("rw")
 
 
 class Scene:
