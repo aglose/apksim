@@ -455,6 +455,12 @@ public final class TabRelay {
         body.write(b);
       }
       respond(resp, fetch(method, parts[1], headers, body.toByteArray()), method);
+    } catch (HeadTooLarge e) {
+      try {
+        respond(resp, text(431, "the tab relay takes request headers up to " + MAX_HEAD / 1024 + " KB"), "GET");
+      } catch (IOException ignored) {
+        // the app has gone
+      }
     } catch (IOException | RuntimeException e) {
       try {
         respond(resp, text(502, "tab relay: " + e), "GET");
@@ -489,7 +495,10 @@ public final class TabRelay {
     if (!noBody && r.body.length > 0) resp.write(r.body, 0, r.body.length);
   }
 
-  /** A line up to CRLF or LF as ISO-8859-1 (null at the end of input); a line over 16 KB is an error. */
+  /** A request line or header longer than the whole head may be ({@link #MAX_HEAD}): answered 431. */
+  private static final class HeadTooLarge extends IOException {}
+
+  /** A line up to CRLF or LF as ISO-8859-1 (null at the end of input); one over {@link #MAX_HEAD} is {@link HeadTooLarge}. */
   private static String readLine(InputStream in) throws IOException {
     StringBuilder b = new StringBuilder();
     for (int c; (c = in.read()) >= 0; ) {
@@ -499,7 +508,7 @@ public final class TabRelay {
         return b.toString();
       }
       b.append((char) c);
-      if (b.length() > 16 * 1024) throw new IOException("a line over 16 KB");
+      if (b.length() > MAX_HEAD) throw new HeadTooLarge();
     }
     return b.length() == 0 ? null : b.toString();
   }

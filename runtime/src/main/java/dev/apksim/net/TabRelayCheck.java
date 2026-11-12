@@ -205,6 +205,10 @@ public final class TabRelayCheck {
       check(get("/over").startsWith("HTTP/1.1 502 ") && System.currentTimeMillis() - t431 < 1000, "an answer one byte over 512 KB: 502 at once");
       String big = "X-Big: " + "a".repeat(15_000) + "\r\n";
       check(exchange(("GET /x HTTP/1.1\r\nHost: x\r\n" + big.repeat(5) + "\r\n").getBytes(), 5000).startsWith("HTTP/1.1 431 "), "headers over 64 KB: 431");
+      String one = exchange(("GET /hello HTTP/1.1\r\nHost: x\r\nAuthorization: " + "b".repeat(20_000) + "\r\n\r\n").getBytes(), 5000);
+      check(one.startsWith("HTTP/1.1 200 "), "one 20 KB header within the 64 KB head: carried");
+      check(exchange(("GET /x HTTP/1.1\r\nHost: x\r\nX-Big: " + "a".repeat(70_000) + "\r\n\r\n").getBytes(), 5000).startsWith("HTTP/1.1 431 "),
+          "one header line over 64 KB: 431, not a relay failure");
       check(exchange("POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nhello\r\n0\r\n\r\n".getBytes(), 5000)
           .startsWith("HTTP/1.1 400 "), "a negative chunk size: 400");
       check(exchange("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n\r\n".getBytes(), 5000).startsWith("HTTP/1.1 400 "), "a negative Content-Length: 400");
