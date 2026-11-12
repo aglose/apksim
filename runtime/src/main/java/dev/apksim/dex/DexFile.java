@@ -153,10 +153,10 @@ public final class DexFile {
     return all[t];
   }
 
-  /** The superclass of class definition {@code def} as an internal name, or null (java.lang.Object's own, an interface's none). */
+  /** The superclass of class definition {@code def} as an internal name, or null (null for java.lang.Object's own; an interface's is java/lang/Object). */
   public String superclassOf(int def) {
     int t = i32(classDefOffset(def) + 8);
-    if (t == -1 || t == 0xFFFFFFFF) return null;
+    if (t == -1) return null;
     String d = type(t);
     return d.substring(1, d.length() - 1);
   }
