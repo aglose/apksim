@@ -11,7 +11,7 @@ import java.util.*;
  * <pre>java scripts/jdi/Trace.java PORT owner.Class[,other.Class] method [method...]</pre>
  *
  * -Dskip=N ignores the first N hits, -Dlimit=N stops after N more, -Ddepth=N frames per hit (14), and
- * -DthisView=true also prints the receiver's getView() (a ViewRootImpl's window). Translated app classes have line
+ * -Dthis=true prints the receiver (its toString), -DthisView=true also prints the receiver's getView() (a ViewRootImpl's window). Translated app classes have line
  * numbers only with --debug, so frames show methods and offsets.
  */
 public class Trace {
@@ -57,6 +57,10 @@ public class Trace {
               }
             }
             ObjectReference self = th.frame(0).thisObject();
+            if (self != null && Boolean.getBoolean("this")) {
+              Method ts = self.referenceType().methodsByName("toString", "()Ljava/lang/String;").get(0);
+              s.append("\n    this=").append(self.invokeMethod(th, ts, List.of(), ObjectReference.INVOKE_SINGLE_THREADED));
+            }
             if (self != null && Boolean.getBoolean("thisView")) {
               Method gv = self.referenceType().methodsByName("getView").stream().findFirst().orElse(null);
               if (gv != null) {

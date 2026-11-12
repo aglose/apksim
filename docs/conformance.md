@@ -161,7 +161,56 @@ suites are where a main-thread latch would show; none of the tests uses one).
   fails as on the emulator (2 of 2 runs), so suites written for a device have that switch. The test now waits for the
   scroll to settle, as a device test must.
 
-### Run against AndroidX's own tests
+## Batch 3: work, room, datastore, espresso, uiautomator
+
+47 tests, with WorkManager 2.12 and DataStore 1.3 in the app (as an app using them has them: WorkManager's startup
+initializer and job service are then the app's) and Room 2.8 (its database the tests' own, compiled by KSP) and
+espresso-intents in the tests. With the fixes below, all 47 pass on both sides, here in both clock modes.
+
+| Class | Tests | Passes on both | Fails here only, before | Fixed by |
+|---|---|---|---|---|
+| WorkManagerConformanceTest (a one-time request's output, a chain's input, a failure failing its dependents, retry after backoff, unique work KEEP and REPLACE, cancelling a CoroutineWorker, an unmet constraint, an initial delay) | 9 | 9 | 0 | |
+| RoomConformanceTest (a blocking DAO call from the test body and on the main thread, suspend queries, a Flow re-emitting, an invalidation observer, a transaction rolled back, a file database reopened, a migration, a destructive fallback, a missing migration) | 10 | 10 | 4 | the test body's thread |
+| DataStoreConformanceTest (an edit read back, data's emissions, a new store on the same file, two active stores, a failed edit, a corrupt file with and without a handler, the preferencesDataStore delegate across tests) | 9 | 9 | 0 | |
+| EspressoConformanceTest (typeText, an idling resource, onIdle and a delayed post, onData, a Spinner's popup, a dialog's root and pressBack, scrollTo, missing and ambiguous matches, espresso-intents stubs and a result, replaceText) | 10 | 10 | 0 | |
+| UiAutomatorConformanceTest (a click by text, setText, scrollUntil, Until.gone, pressBack on a dialog, the display size, setOrientationLeft, the hierarchy dump, executeShellCommand) | 9 | 9 | 1 | scroll events |
+
+### Causes found
+
+1. **A blocking Room query from the test body threw** (`TestActivities.roomMainThread`). Room refuses a blocking DAO
+   call on the main thread ("Cannot access database on the main thread since it may potentially lock the UI"), and a
+   test body runs on the main thread here, where on a device it runs on the instrumentation thread (the stack: the
+   test method, the generated DAO, `RoomDatabase.assertNotMainThread`, `isMainThread$room_runtime`, which compares
+   `Looper.getMainLooper().getThread()` with the current thread). Four of `RoomConformanceTest`'s tests failed here
+   and passed on the emulator. The translator now sends that `getThread()` in `RoomDatabase` (and older Room's
+   `ArchTaskExecutor.isMainThread()` there) to `TestActivities`, which answers "not the main thread" on the main thread
+   outside any message's dispatch or `runOnMainSync`: `onActivity` and `onFragment` blocks still throw, as on a device
+   (`aBlockingQueryOnTheMainThreadThrows`). Main-thread work an Espresso action runs inline from the body is let
+   through where a device would throw, and a minified app's Room keeps its own check.
+   `-Dapksim.roomTestBody=false` turns it off.
+2. **UiAutomator's scrollUntil stopped part way** (`ShadowSimUiAutomation.executeAndWaitForEvent`). UiAutomator learns
+   whether a scroll reached the end from the TYPE_VIEW_SCROLLED event the gesture brings (`Until.scrollFinished` reads
+   scrollY against maxScrollY, or the from and to index against the item count), and counts a swipe with no event as a
+   null scroll, giving up after five (`MAX_NULL_SCROLL_RETRY`). apksim has no event stream, so an 80-row ScrollView
+   stopped at rows 40 to 53. Now the wait reports a scroll event for each view whose scroll state changed, filled by
+   the view's own `onInitializeAccessibilityEvent`, before the window change it already reported. Compose's scrolling
+   has no such state on its view, so it still gets no scroll event.
+3. **With `--realtime-clock`, UiAutomator's idle wait returned before a new window's first layout**
+   (`ShadowSimUiAutomation.settle`). It ran what was due and stopped as soon as nothing was, but a window just shown
+   lays out at the next vsync, a few ms later, so a query right after a launch found an empty window (three of
+   `UiAutomatorConformanceTest`'s tests, in the full suite with the switch). It now runs what comes due for its quiet
+   time at most and stops once nothing is scheduled within 50 ms, as a device's wait for quiet would.
+
+Found and fixed in the tests themselves, while checking them on the emulator first:
+- DataStore 1.3 in the test APK alone failed on the device with `NoClassDefFoundError: androidx.tracing.PropagationToken`:
+  the app had an older androidx.tracing, so the test APK left those classes out. Here the same test passed (not
+  traced: the class is in neither APK). DataStore went into the app.
+- An Espresso tap on a field just below the top of the screen landed on the activity's action bar on both sides
+  (`launchFragmentInContainer`'s activity has one, and the content is laid out under it); on the emulator the field
+  had the focus already from an earlier test's key events, so typing still reached it. The screens now have no action
+  bar and are padded by the system bars (a device's test runs have them, apksim's none).
+
+## Run against AndroidX's own tests
 
 Not yet: blocked on the permission to build AndroidX's playground projects (`work/androidx`, never committed). Once
 allowed, each library's androidTest APK goes through the same script and its table is added here.
