@@ -105,6 +105,9 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   debugImplementation(libs.androidx.fragment.testing.manifest)
   androidTestImplementation(libs.androidx.fragment.testing)
+  // Batch 2: RecyclerView and Espresso's RecyclerViewActions.
+  implementation(libs.androidx.recyclerview)
+  androidTestImplementation(libs.androidx.test.espresso.contrib)
 
   // Navigation
   

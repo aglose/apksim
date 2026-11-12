@@ -24,6 +24,7 @@ drawerLayout = "1.2.0"
 camerax = "1.6.2"
 fragment = "1.8.9"
 navigation = "2.9.6"
+recyclerview = "1.4.0"
 
 [libraries]
 androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "androidxLifecycle" }
@@ -32,6 +33,8 @@ androidx-fragment-testing = { module = "androidx.fragment:fragment-testing", ver
 androidx-fragment-testing-manifest = { module = "androidx.fragment:fragment-testing-manifest", version.ref = "fragment" }
 androidx-navigation-fragment-ktx = { module = "androidx.navigation:navigation-fragment-ktx", version.ref = "navigation" }
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation" }
+androidx-recyclerview = { module = "androidx.recyclerview:recyclerview", version.ref = "recyclerview" }
+androidx-test-espresso-contrib = { module = "androidx.test.espresso:espresso-contrib", version.ref = "androidxTestEspresso" }
 androidx-drawerlayout = { module = "androidx.drawerlayout:drawerlayout", version.ref = "drawerLayout" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
