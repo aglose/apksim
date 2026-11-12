@@ -102,6 +102,11 @@ final class Skinning {
         clear();
         return true;
       }
+      // The skin's own device named again (`apksim serve` passes the session's device with the skin): its kind too.
+      Device k = deviceOf(s);
+      if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && d.density() == k.density() && !d.kind().equals(k.kind())) {
+        Device.setCurrent(k);
+      }
     }
     skin = s;
     return true;
