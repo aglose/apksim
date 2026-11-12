@@ -79,6 +79,11 @@ final class Session {
   volatile long framesSent;
   volatile long bytesSent;
   volatile String device;
+  /**
+   * The kind the instance was launched with (its --device-kind, else what its device's size gives), for a saved session
+   * (`apksim beam run` reopens it as it ran), until a tab's `device` command replaces the device and its kind: then null.
+   */
+  volatile String launchKind;
   private volatile Path dataDir;
   /** `apksim beam`: the slot name (`bm<hex>`) the agent unpacked this session's moved data into, else null. */
   volatile String seedSlot;
@@ -163,6 +168,15 @@ final class Session {
     String own = appDevice(app);
     Skin k = tabSkin != null && !"off".equals(tabSkin) ? Serve.skin(tabSkin) : null;
     this.device = options.getOrDefault("device", k != null ? k.device : own != null ? own : "phone");
+  }
+
+  /** The kind a --device value gives by itself, or null when it does not resolve. */
+  private static String sizeKind(String spec) {
+    try {
+      return dev.apksim.DeviceSpec.resolve(spec).kind();
+    } catch (RuntimeException e) {
+      return null;
+    }
   }
 
   /** The stored skin the session runs with (`--skin` to a serve instance; the page draws its frame), or null. */
@@ -336,6 +350,8 @@ final class Session {
     if (chosen != null && serve.beam && skinKind) kind = chosen.kind;
     else if (pageKind) kind = options.get("kind");  // the page's skin's
     if (kind != null) cmd.addAll(List.of("--device-kind", kind));
+    int lk = cmd.lastIndexOf("--device-kind");
+    launchKind = lk >= 0 && lk + 1 < cmd.size() ? cmd.get(lk + 1) : sizeKind(deviceSpec(device));
     cmd.add(apk.toString());
     ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     ws.sendText("p launching " + app.name());
@@ -1112,6 +1128,7 @@ final class Session {
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
+      launchKind = null;  // the instance's device command gives the new device its own kind
       wire = "device " + deviceSpec(device);
     }
     String shown = cmd;
@@ -2015,7 +2032,7 @@ final class Session {
       }
       String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
-          options.get("permissions"), site, signers));
+          options.get("permissions"), site, signers, launchKind));
       if (id != null) {
         logLine("[beam] kept on this Mac as " + id + " (apksim beam run " + id + ")");
         System.err.printf("[beam] session %s kept as %s: %s from %s%n", this.id, id, app.name(), site);

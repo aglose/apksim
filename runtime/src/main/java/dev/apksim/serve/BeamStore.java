@@ -263,7 +263,7 @@ final class BeamStore {
 
   /** What a session leaves for its saved record: the slot, what it ran, and where it came from. */
   record Leaving(Path slot, String app, String sha256, List<String> launch, String device, String appearance,
-      String locale, String fontScale, String permissions, String site, List<String> signers) {}
+      String locale, String fontScale, String permissions, String site, List<String> signers, String kind) {}
 
   /**
    * Keeps a session's data slot (its instance has exited): renamed to `k<id>-0`, its `.device` beside it too, and
@@ -307,6 +307,7 @@ final class BeamStore {
         field(j, "sha256", s.sha256());
         field(j, "package", dir.getParent().getFileName().toString());
         field(j, "device", s.device());
+        field(j, "kind", s.kind());  // the kind it ran with (a skin's, an app's --device-kind, or its size's)
         field(j, "appearance", s.appearance());
         field(j, "locale", s.locale());
         field(j, "fontscale", s.fontScale());
@@ -817,7 +818,11 @@ final class BeamStore {
         String runDevice = gd >= 0 && gd + 1 < given.size() ? given.get(gd + 1)
             : skinDevice ? (givenSkin != null ? givenSkin.device : "")
             : r.get("device") instanceof String d ? d : ownDevice;
-        boolean ownKind = !skinDevice && !(givenSkin != null && givenSkin.device.equals(runDevice))
+        // The kind the session ran with on its recorded device, when it runs on that device again: it replaces the app's
+        // own (the session's skin may have decided another), before what is given here.
+        String recKind = r.get("device") instanceof String d && d.equals(runDevice) && r.get("kind") instanceof String k
+            && List.of("phone", "foldable", "tablet", "desktop", "tv", "watch").contains(k) ? k : null;
+        boolean ownKind = !skinDevice && recKind == null && !(givenSkin != null && givenSkin.device.equals(runDevice))
             && (runDevice == null || runDevice.equals(ownDevice));
         for (int i = 0; i < own.size(); i++) {
           if (own.get(i).equals("--device-kind") && !ownKind) i++;
@@ -826,6 +831,7 @@ final class BeamStore {
           else cmdLine.add(own.get(i));
         }
         if (r.get("device") instanceof String d && !skinDevice) cmdLine.addAll(List.of("--device", d));
+        if (recKind != null && !(givenSkin != null && givenSkin.device.equals(runDevice))) cmdLine.addAll(List.of("--device-kind", recKind));
         if (r.get("appearance") instanceof String a && (a.equals("dark") || a.equals("light"))) cmdLine.addAll(List.of("--appearance", a));
         if (r.get("locale") instanceof String l && l.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmdLine.addAll(List.of("--locale", l));
         if (r.get("fontscale") instanceof String f && f.matches("[0-2](\\.\\d{1,2})?")) cmdLine.addAll(List.of("--font-scale", f));

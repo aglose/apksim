@@ -230,6 +230,7 @@ function setDevice(name) {
 }
 // The menu's app-specific part, rebuilt when the app changes: the app's own default device (launch option --device)
 // is offered, and while nothing was chosen and no session runs, shown as what Start will launch (else the Phone).
+// Its promise is what a start waits on for the current app's defaults (its own skin and device) before its query.
 async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link named this size (?device=)
   if (!state.app) return;
   const app = state.app, sel = $("device");
@@ -341,23 +342,31 @@ function start() {
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
   if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
-  // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
-  const startSkin = skinFor($("skin").value);
-  const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
-  skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
-  skin.active = $("skin").value !== "off" ? $("skin").value : "";
   startedApp = state.app;
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
   if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
-  offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
-  const q = sessionQuery();
+  // The current app's defaults first (its own skin and device, which the query and the frame follow), unless they are
+  // in already; a Stop or a newer Start meanwhile drops this one. The previous session's app-specific option goes.
+  const ready = appDefault.app === state.app;
+  const loaded = offerAppDevice(true);
   mode = "jpeg"; closeDecoder();
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  const gen = ++startGen;
-  if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
-  else openSocket(serverSocketUrl(q), false);
-  fit();
+  const gen = ++startGen, app = state.app;
+  const go = () => {
+    if (gen !== startGen || app !== state.app) return;
+    // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
+    const startSkin = skinFor($("skin").value);
+    const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
+    skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
+    skin.active = $("skin").value !== "off" ? $("skin").value : "";
+    const q = sessionQuery();
+    if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
+    else openSocket(serverSocketUrl(q), false);
+    fit();
+  };
+  if (ready) go();
+  else loaded.then(go, go);
 }
 // A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
 let startGen = 0;
@@ -380,7 +389,7 @@ function sessionQuery() {
   }
   // The skin's kind with its device (a custom-size watch is a watch), for an endpoint that does not have the skin.
   const sk = skinFor($("skin").value);
-  if (sk && sk.kind && state.device === sk.device) q.set("kind", sk.kind);
+  if (sk && sk.kind && (q.get("device") || "") === sk.device) q.set("kind", sk.kind);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
   // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).

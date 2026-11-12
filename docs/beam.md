@@ -902,7 +902,8 @@ skin when both have one of the same name; the beamed instance is not given `--sk
 not told the skin's cutout and corners (the frame is drawn all the same). It gets the skin's kind as `--device-kind KIND`
 (a launch option that needs no skin store), so a custom-size watch skin's session is a watch. A kind goes only with its
 own device: the session's skin on its device replaces the app's own `--device-kind`, and another device given to a
-session or to `apksim beam run` keeps its own kind (a `--device-kind` given with it wins). `apksim beam run ID --skin NAME` opens a kept
+session or to `apksim beam run` keeps its own kind (a `--device-kind` given with it wins). A saved session records the
+kind it ran with beside its device, and `apksim beam run` on that device restores it. `apksim beam run ID --skin NAME` opens a kept
 session with a skin around its window, on the skin's device unless `--device` is given too; a recorded `--skin` this Mac
 no longer has is dropped.
 
