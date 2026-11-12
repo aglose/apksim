@@ -230,12 +230,17 @@ function setDevice(name) {
 }
 // The menu's app-specific part, rebuilt when the app changes: the app's own default device (launch option --device)
 // is offered, and while nothing was chosen and no session runs, shown as what Start will launch (else the Phone).
+// Its promise is what a start waits on for the current app's defaults (its own skin and device) before its query.
 async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link named this size (?device=)
   if (!state.app) return;
   const app = state.app, sel = $("device");
+  if (appDefault.app !== app) appDefault = { app: "", skin: "", device: "" };  // the previous app's, until this one's arrive
   const live = () => ws && ws.readyState <= 1 && !ended;
+  // The chosen skin's device stays offered: a start then still carries it (an endpoint without the skin needs it).
+  const chosenSkin = $("skin").value !== "off" ? skinFor($("skin").value) : undefined;
   for (const o of [...sel.options]) {
-    if (o.dataset.app && !(live() && o.value === sel.value) && !(keepLinked && o.value === state.device)) o.remove();
+    if (o.dataset.app && !(live() && o.value === sel.value) && !(keepLinked && o.value === state.device)
+        && !(chosenSkin && o.value === chosenSkin.device)) o.remove();
   }
   if (!live() && ![...sel.options].some(o => o.value === sel.value)) sel.value = "phone";
   if (state.device && ![...sel.options].some(o => o.value === state.device)) state.device = "";  // the server would refuse it
@@ -245,8 +250,15 @@ async function offerAppDevice(keepLinked) {  // keepLinked: the page's own link 
     const info = await r.json(), d = info.device || "";
     // The app's own skin (its --skin): the menu shows it while nothing else was chosen.
     appSkinDefault = info.skin || "";
+    appDefault = { app, skin: info.skin || "", device: info.deviceGiven ? d : "" };
     // Nothing chosen and nothing running: the new app's own skin, else none (not the previous app's).
     if (!state.skin && !live()) $("skin").value = info.skin && [...$("skin").options].some(o => o.value === info.skin) ? info.skin : "off";
+    // Arrived after this app's session on this Mac started with nothing chosen: the agent drops a server's skin it does
+    // not have (its `d` names none) but runs on that skin's device, so the frame is the app's own skin's.
+    if (!state.skin && live() && ws.onMac && startedApp === app && !skin.active && info.skin && skinFor(info.skin)) {
+      $("skin").value = skin.active = info.skin;
+      fit();
+    }
     if (d && ![...sel.options].some(o => o.value === d)) {
       const o = document.createElement("option");
       o.value = o.textContent = d;
@@ -279,7 +291,7 @@ async function loadApps() {
   await loadDevices();
   await loadSkins();
   if (state.device) setDevice(state.device);
-  offerAppDevice(true);
+  await offerAppDevice(true);  // the app's own skin and device, before the first start reads the menus
   $("dark").checked = state.appearance === "dark";
   if (state.fontscale) $("fontscale").value = state.fontscale;
   $("locale").value = state.locale;
@@ -293,7 +305,8 @@ async function loadApps() {
 function refresh() {
   // A start on this Mac has no socket while it waits for the agent (its prompt) or sends the APK: it counts as running,
   // so Stop can drop it.
-  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen;
+  const running = ws && ws.readyState <= 1 && !ended || macStart !== 0 && macStart === startGen
+    || waitingStart !== 0 && waitingStart === startGen;
   $("start").disabled = !$("app").value || running;
   $("stop").disabled = !running;
   for (const id of ["back", "home", "rotl", "rotr", "go", "copy", "keep"]) $(id).disabled = !running;
@@ -330,26 +343,37 @@ function start() {
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
   if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
-  // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
-  const startSkin = skinFor($("skin").value);
-  const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
-  skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
-  skin.active = $("skin").value !== "off" ? $("skin").value : "";
+  startedApp = state.app;
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
   if (fill.on) { fill.on = false; document.body.classList.remove("fill"); $("fitRow").hidden = true; }
-  offerAppDevice(true);  // the previous session's app-specific option goes now that it is closed
-  const q = sessionQuery();
+  // The current app's defaults first (its own skin and device, which the query and the frame follow), unless they are
+  // in already; a Stop or a newer Start meanwhile drops this one. The previous session's app-specific option goes.
+  const ready = appDefault.app === state.app;
+  const loaded = offerAppDevice(true);
   mode = "jpeg"; closeDecoder();
   $("empty").hidden = true; $("bezel").hidden = false;
   overlay("Starting…");
-  const gen = ++startGen;
-  if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
-  else openSocket(serverSocketUrl(q), false);
-  fit();
+  const gen = ++startGen, app = state.app;
+  const go = () => {
+    if (waitingStart === gen) { waitingStart = 0; refresh(); }
+    if (gen !== startGen || app !== state.app) return;
+    // The turn the page's orientation= makes from the device's natural one (a landscape tablet asked for landscape: none).
+    const startSkin = skinFor($("skin").value);
+    const natLand = startSkin ? startSkin.deviceResolved.widthPx > startSkin.deviceResolved.heightPx : false;
+    skin.turns = state.orientation === "landscape" && !natLand || state.orientation === "portrait" && natLand ? 1 : 0;
+    skin.active = $("skin").value !== "off" ? $("skin").value : "";
+    const q = sessionQuery();
+    if ($("runOn").value === "mac" && beam.ok) startOnMac(q, gen);
+    else openSocket(serverSocketUrl(q), false);
+    fit();
+  };
+  if (ready) go();
+  else { waitingStart = gen; refresh(); loaded.then(go, go); }  // Stop drops it meanwhile
 }
 // A newer Start or a Stop replaces a start still asking this Mac (docs/beam.md).
 let startGen = 0;
 let macStart = 0;  // the start generation asking this Mac (no socket yet), else 0
+let waitingStart = 0;  // the start generation waiting for its app's defaults (no query yet), else 0
 function serverSocketUrl(q) { return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + withToken("ws?" + q); }
 // What a session starts with: the app, the device and settings chosen, the last deep link (a restart or a move to the
 // other side starts the app there again), and H.264 when this browser decodes it.
@@ -357,9 +381,18 @@ function sessionQuery() {
   const q = new URLSearchParams({ app: state.app, appearance: state.appearance });
   if (state.device) q.set("device", state.device);
   if (state.skin) q.set("skin", state.skin);  // a stored skin's name, or off (the app's own --skin otherwise)
+  // The app's own skin the menu shows, named to this Mac: the agent never gets the server's --skin (only its device and
+  // kind), and a Mac skin of that name is the frame drawn, so its kind must be the one the app runs with. The agent
+  // drops a name it does not have, keeping the server skin's device and kind.
+  // Only this app's own (not the previous app's while this one's are still on their way), with its own --device if it
+  // names one: the agent would otherwise take the skin's device over it.
+  else if (appDefault.app === state.app && appDefault.skin && $("skin").value === appDefault.skin && $("runOn").value === "mac" && beam.ok) {
+    q.set("skin", appDefault.skin);
+    if (!state.device && appDefault.device) q.set("device", appDefault.device);
+  }
   // The skin's kind with its device (a custom-size watch is a watch), for an endpoint that does not have the skin.
   const sk = skinFor($("skin").value);
-  if (sk && sk.kind && state.device === sk.device) q.set("kind", sk.kind);
+  if (sk && sk.kind && (q.get("device") || "") === sk.device) q.set("kind", sk.kind);
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
   // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).
@@ -831,8 +864,10 @@ addEventListener("resize", fit);
 // Prototype-free tables (a skin may be named "constructor"); each source's own entries, as the server and this Mac may
 // both have a skin of one name with different frames: the one drawn is the session's endpoint's (skinFor).
 const skin = { server: Object.create(null), mac: Object.create(null), active: "", turns: 0, urls: Object.create(null), warned: "" };
-let appSkinDefault = "";
-let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
+let appSkinDefault = "";  // the app's own --skin (api/apps/ID), for Copy link's explicit skin=off
+let deviceChosen = false;  // the Device menu was used: a skin's device (refreshed lists, links) does not replace it
+let startedApp = "";  // the app the latest Start ran
+let appDefault = { app: "", skin: "", device: "" };  // the app's own skin and own --device (api/apps/ID), and whose
 function skinFor(name) {
   if (!name) return undefined;
   // The running session's endpoint; before one exists, the one the next Start goes to.
