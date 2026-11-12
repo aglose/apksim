@@ -1251,6 +1251,7 @@ final class FlightRecorder {
     // What `apksim replay` launches with (docs/replay.md): the device preset and its rotation, the zone, the animator scale.
     Device d = Device.current();
     device.put("name", d.name());
+    device.put("kind", d.kind());  // a skin's watch or TV at a custom size: replayed as recorded, not inferred
     device.put("widthDp", d.widthDp());
     device.put("heightDp", d.heightDp());
     try {

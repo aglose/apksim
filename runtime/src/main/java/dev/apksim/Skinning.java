@@ -53,27 +53,14 @@ final class Skinning {
    * True to go on.
    */
   static boolean launch() {
+    if (System.getProperty("apksim.skinShape") == null) recordedKind();  // a replay without a skin
     // `apksim replay` (ReplayPlan): the recorded skin's shape, without its images, with the device's kind restored
     // before anything runs, whether or not the skin is stored here.
     String shape = System.getProperty("apksim.skinShape");
     if (shape != null && !shape.isEmpty() && (System.getProperty("apksim.skin") == null)) {
       java.util.Map<String, Object> m = decodeShape(shape);
-      if (m != null) {
-        restoreShape(m);
-        Skin s = skin;
-        String given = System.getProperty("apksim.device");
-        if (s != null && given != null) {
-          try {
-            Device d = Device.named(given), k = deviceOf(s);
-            // The same display only (pixels and density): a replay's own device of another density stays as it is.
-            if (d.widthPx() == k.widthPx() && d.heightPx() == k.heightPx() && d.density() == k.density() && !d.kind().equals(k.kind())) {
-              Device.setCurrent(k);
-            }
-          } catch (IllegalArgumentException e) {
-            // Main reports a bad --device
-          }
-        }
-      }
+      if (m != null) restoreShape(m);
+      recordedKind();
       return true;
     }
     String name = System.getProperty("apksim.skin");
@@ -147,6 +134,22 @@ final class Skinning {
     m.put("cornerRadius", s.cornerRadius);
     if (s.cutout != null) m.put("cutout", new java.util.LinkedHashMap<>(s.cutout));
     return m;
+  }
+
+  /**
+   * `apksim replay`: the device's kind as the recording had it (-Dapksim.deviceKind), not inferred from a skin or a size,
+   * on the replay's --device.
+   */
+  static void recordedKind() {
+    String kind = System.getProperty("apksim.deviceKind");
+    String given = System.getProperty("apksim.device");
+    if (kind == null || given == null || !java.util.List.of("phone", "foldable", "tablet", "desktop", "tv", "watch").contains(kind)) return;
+    try {
+      Device d = Device.named(given);
+      if (!d.kind().equals(kind)) Device.setCurrent(new Device(d.name(), kind, d.widthDp(), d.heightDp(), d.density(), d.exactWidthPx(), d.exactHeightPx()));
+    } catch (IllegalArgumentException e) {
+      // Main reports a bad --device
+    }
   }
 
   /** The shape as one token for a command line or a property: base64url of its JSON. */
