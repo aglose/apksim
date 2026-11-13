@@ -353,14 +353,20 @@ final class SimWindow {
 
   private static native void nativeSetTitle(String title);
 
-  /** Resizes the window's content to this many points as the user dragging its corner would; false headless. */
-  static boolean dragResize(int wPts, int hPts) {
-    if (headless) return false;
-    nativeDragResize(wPts, hPts);
-    return true;
+  /**
+   * Resizes the window's content to this many points as the user dragging its corner would: at once as a drag's end,
+   * or with ms over that much real time as a live drag (120 steps a second, then its end). Answers "ok", or why not.
+   */
+  static String dragResize(int wPts, int hPts, int ms) {
+    if (headless) return "no window";
+    return switch (nativeDragResize(wPts, hPts, ms)) {
+      case 1 -> "error: a drag of the window is under way";
+      case 2 -> "error: a skinned window is its frame's size (skin off first)";
+      default -> "ok";
+    };
   }
 
-  private static native void nativeDragResize(int wPts, int hPts);
+  private static native int nativeDragResize(int wPts, int hPts, int ms);
 
   /**
    * Draws a skin around the screen (Skinning), or none with a null layout: the window becomes the frame's size, the

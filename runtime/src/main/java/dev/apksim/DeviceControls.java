@@ -706,7 +706,8 @@ final class DeviceControls {
         return reshape(Device.current(), Math.round(Integer.parseInt(wh[0]) * d), Math.round(Integer.parseInt(wh[1]) * d), false, before);
       }
       case "window" -> {
-        // window WxH: sets the Mac window's content size in points as a drag of its corner would (checks that path).
+        // window WxH [MS]: sets the Mac window's content size in points as a drag of its corner would (checks that
+        // path); with MS as a live drag over that much real time.
         // window front|show|background|minimize|hide: how the window shows itself (--window); window: its state;
         // window close: as its close button (while a stream viewer is attached it only hides: apksim beam).
         if (a.length == 1) return SimWindow.windowState();
@@ -718,8 +719,9 @@ final class DeviceControls {
         int mode = SimWindow.mode(a[1]);
         if (mode >= 0) return SimWindow.setMode(mode) ? "ok" : "no window";
         String[] wh = a[1].split("x");
-        if (wh.length != 2) return "usage: window [WxH (points)|front|show|background|minimize|hide]";
-        return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1])) ? "ok" : "no window";
+        if (wh.length != 2) return "usage: window [WxH (points) [MS]|front|show|background|minimize|hide]";
+        int ms = a.length > 2 ? Integer.parseInt(a[2]) : 0;
+        return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1]), ms);
       }
       case "rotate" -> {
         // rotate left|right (a quarter turn), or rotate portrait|landscape
