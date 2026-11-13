@@ -2058,7 +2058,7 @@ public final class Serve {
         if (b.charAt(b.length() - 1) != '[') b.append(',');
         b.append("{\"id\":").append(Http.q(x.id)).append(",\"app\":").append(Http.q(x.app.name())).append(",\"site\":")
             .append(Http.q(String.valueOf(x.site))).append(",\"device\":").append(Http.q(String.valueOf(x.device)))
-            .append(",\"keep\":").append(x.keep).append(",\"pid\":").append(x.pid).append(",\"idleS\":")
+            .append(",\"keep\":").append(x.keep).append(",\"detached\":").append(x.detached).append(",\"pid\":").append(x.pid).append(",\"idleS\":")
             .append((System.currentTimeMillis() - x.lastInput) / 1000).append('}');
       }
       Http.json(out, 200, b.append("]}").toString());

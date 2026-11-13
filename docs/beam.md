@@ -167,6 +167,15 @@ keeping a session to use later is the visitor's choice.
   - per session, "Keep on this Mac" in the page while it runs there (a `keep on|off` message the agent's `Session`
     takes for itself, never passed to the instance; only from the tab that owns the session);
   - for every session, the agent's `save-sessions` setting.
+  - `detach` (issue 334): a message from the owning tab that hands a running session to apksim's own window. The
+    agent sends the instance `window front`, keeps the session as with `keep on` (answered `k on`; a later `keep off`
+    is answered `k on` again), and answers `d {"detached":ID}`, or `d {"error":...}` when there is no window (the
+    instance's `window front` did not say ok) or the app is not running yet. From then on the tab's socket closing does
+    not end the session: its frame stream is closed (so the window's close button closes the window, which with a
+    viewer attached only hides it) and the session ends as an ordinary local launch does, when the app exits, saved
+    as kept. `GET /beam/status` shows `"detached":true`. It counts against `--max` like any session; the agent's idle
+    limit does not apply to it (window input never reaches the agent, so it would end a session in use). Not done:
+    reattaching a later tab to a detached session (`/beam/start` with `attach`).
   A saved session's slot is renamed when its instance has exited, to `k<12 hex>-0` (and `.device`) beside it, a name
   no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
   appearance, locale, font scale, the site it came from, when, and the package (from the slot's folder).

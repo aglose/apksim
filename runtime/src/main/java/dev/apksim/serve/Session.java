@@ -90,6 +90,9 @@ final class Session {
   /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
   volatile String site;
   volatile boolean keep;
+  /** Issue 334: the agent's own window owns this session now; the tab's socket closing no longer ends it. */
+  volatile boolean detached;
+  private final java.util.concurrent.atomic.AtomicBoolean detaching = new java.util.concurrent.atomic.AtomicBoolean();
   /**
    * Issue 181: the saved session this one reopened (its data copied into {@link #seedSlot}), else null; its copy goes
    * back over the saved slot when the session ends. Its `saved/<id>.lock` is held shared meanwhile, so `forget` and the
@@ -222,7 +225,8 @@ final class Session {
     // The tab is watched from the start: closing it while the app downloads or launches ends the session too.
     Thread tab = Thread.ofVirtual().name("serve-tab-" + id).start(() -> {
       ws.readLoop(this::onMessage);
-      stop(null);
+      if (detached) tabLeftDetached();
+      else stop(null);
     });
     Thread reader = null;
     Thread sender = null;
@@ -252,9 +256,68 @@ final class Session {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+    if (detached && !ended) {
+      // The window owns the session: it ends when the app does (the window closing, quit, a crash), by the instance's own exit.
+      synchronized (this) {
+        while (!ended) {
+          try {
+            wait();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
+          }
+        }
+      }
+    }
     if (reader != null) reader.interrupt();
     if (sender != null) sender.interrupt();
     stop(null);
+  }
+
+  /**
+   * Issue 334: the detached session's tab has gone. Its frame stream goes with it (so the window's close button closes
+   * the window, not just hides it for a viewer), and the session carries on, owned by the window.
+   */
+  private void tabLeftDetached() {
+    logLine("[beam] the tab left; the session carries on in apksim's window");
+    System.err.printf("[beam] session %s: the tab left, carried on in the window%n", id);
+    closeQuietly(stream);
+    closeQuietly(netwatch);
+    synchronized (this) {
+      notifyAll();
+      waiting.clear();
+    }
+  }
+
+  /**
+   * `detach` (issue 334, apksim beam only): the app is shown in apksim's own window (`window front`), kept as with
+   * `keep on`, and the session no longer ends when this tab's socket closes. Answered `d {"detached":ID}` or
+   * `d {"error":...}`; never passed on to the instance.
+   */
+  private void detach() {
+    if (detached) {
+      ws.sendText("d {\"detached\":" + Http.q(id) + "}");
+      return;
+    }
+    if (!detaching.compareAndSet(false, true)) return;
+    if (ended || controlOut == null) {
+      detaching.set(false);
+      ws.sendText("d {\"error\":\"the app is not running yet\"}");
+      return;
+    }
+    send("window front", r -> {
+      if (!r.equals("ok")) {
+        detaching.set(false);
+        ws.sendText("d {\"error\":" + Http.q("no window here: " + r) + "}");
+        return;
+      }
+      if (savedId == null) keep = true;  // saved when it ends, as with keep on
+      detached = true;
+      logLine("[beam] detached: apksim's window owns the session (kept when it ends)");
+      System.err.printf("[beam] session %s detached to apksim's window%n", id);
+      ws.sendText("k on");
+      ws.sendText("d {\"detached\":" + Http.q(id) + "}");
+    });
   }
 
   private void start() throws Exception {
@@ -942,7 +1005,7 @@ final class Session {
    * so the session stops and says so. An instance that exited says why itself (onExit), so it is given a moment.
    */
   private void streamEnded() {
-    if (ended) return;
+    if (ended || detached) return;  // a detached session's stream goes with its tab
     Process p = process;
     try {
       if (p != null && p.waitFor(2, TimeUnit.SECONDS)) return;  // onExit's stop has the reason
@@ -1099,6 +1162,14 @@ final class Session {
     if (text.equals("handoff") && serve.allowBeam && !serve.beam) {
       // Phase 5: the tab moves this session to its Mac with the app's data. Only this session's own socket asks.
       Thread.ofVirtual().name("serve-handoff-" + id).start(this::handoff);
+      return;
+    }
+    if (serve.beam && text.equals("detach")) {
+      detach();
+      return;
+    }
+    if (serve.beam && detached && text.equals("keep off")) {
+      ws.sendText("k on");  // a detached session is kept when it ends
       return;
     }
     if (serve.beam && (text.equals("keep on") || text.equals("keep off"))) {
@@ -1592,7 +1663,7 @@ final class Session {
   private final java.util.concurrent.atomic.AtomicBoolean pinging = new java.util.concurrent.atomic.AtomicBoolean();
 
   void tick() {
-    if (ended) return;
+    if (ended || detached) return;  // a detached session is the window's: no tab to ping, no tab's idle time
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
     // must not keep the session alive.
     if (System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
