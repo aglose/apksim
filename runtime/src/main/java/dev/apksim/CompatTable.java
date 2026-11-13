@@ -11,7 +11,9 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  * The platform's compat changes as a device answers them for an app with no override: Robolectric's Compatibility
  * shadow answers `true` for every id but three, so an app targeting 28 got every target-gated behaviour of the latest SDK.
  * The table (`compat-table.tsv`, written by scripts/gen-compat-table.py from a device's `dumpsys platform_compat`) gives
- * each change's enableSinceTargetSdk or disabled flag; {@link #answer} decides from it and the running app's targetSdk,
+ * each change's enableSinceTargetSdk or disabled flag; {@link #answer} decides from it and the running app's targetSdk
+ * clamped to the platform's SDK, as a device's CompatChange.isEnabled does (min(targetSdk, platform) >= since, so a
+ * change enabled since 37 is off on an API 36 device for every app, one targeting 37 too),
  * which AppInfo reads from the manifest ({@link #configure}, per launch: a standby boots before the APK is known).
  * Plain Java, no Android types, so scripts/check-compat-table.sh runs it on a plain JVM. The lookup is a binary search
  * and an array increment: it allocates nothing (it sits on hot framework paths).
@@ -76,6 +78,16 @@ public final class CompatTable {
     return new Table(ids, since, names);
   }
 
+  /** A device's CompatChange.isEnabled: the app's target, clamped to the platform's SDK, reaches the change's. */
+  static boolean enabledAt(int since, int target) {
+    return Math.min(target, PLATFORM_SDK) >= since;
+  }
+
+  /** Parsed ahead of the first question (a standby's warm-up, a cold launch's helper thread): it needs no APK. */
+  public static void preload() {
+    table();
+  }
+
   private static Table table() {
     Table t = table;
     if (t != null) return t;
@@ -84,7 +96,7 @@ public final class CompatTable {
         try (InputStream in = CompatTable.class.getResourceAsStream("/dev/apksim/compat-table.tsv")) {
           if (in == null) throw new java.io.FileNotFoundException("compat-table.tsv");
           table = parse(new InputStreamReader(in, StandardCharsets.UTF_8));
-        } catch (java.io.IOException e) {
+        } catch (java.io.IOException | RuntimeException e) {  // a malformed line too: log once, answer as before
           System.err.println("[apksim] compat table not loaded: " + e);
           table = new Table(new long[0], new int[0], new String[0]);
         }
@@ -116,7 +128,9 @@ public final class CompatTable {
       t.on.set(i, 0);
       t.off.set(i, 0);
     }
-    t.unknownCount = 0;
+    synchronized (t) {  // countUnknown appends under it
+      t.unknownCount = 0;
+    }
   }
 
   /** The target SDK in use, or -1 when none is known (the table is then not consulted). */
@@ -147,9 +161,21 @@ public final class CompatTable {
       if (count) countUnknown(t, id);
       return UNKNOWN;
     }
-    boolean r = target >= t.since[i];
+    // Robolectric keeps this one off whatever the app targets (its activity controller delivers results itself).
+    boolean r = id != CALL_ACTIVITY_RESULT_BEFORE_RESUME && enabledAt(t.since[i], target);
     if (count) (r ? t.on : t.off).incrementAndGet(i);
     return r ? ON : OFF;
+  }
+
+  /**
+   * The answer for a package that is not installed: a device ignores enableSinceTargetSdk then and takes the change's
+   * default, on unless it is disabled. UNKNOWN for an id the table lacks (the default is on, which the caller says).
+   */
+  public static int answerNotInstalled(long id) {
+    Table t = table();
+    int i = Arrays.binarySearch(t.ids, id);
+    if (i < 0) return UNKNOWN;
+    return t.since[i] == NEVER ? OFF : ON;
   }
 
   private static void countUnknown(Table t, long id) {
@@ -194,11 +220,13 @@ public final class CompatTable {
         .append(enabled ? "" : " (table off: Robolectric's answers)");
     if (all) {
       int on = 0, off = 0;
-      for (int s : t.since) {
-        if (targetSdk >= s) on++; else off++;
+      sb.append("; table ").append(t.ids.length).append(" changes");
+      if (targetSdk > 0) {
+        for (int s : t.since) {
+          if (enabledAt(s, targetSdk)) on++; else off++;
+        }
+        sb.append(", ").append(on).append(" on and ").append(off).append(" off at this target");
       }
-      sb.append("; table ").append(t.ids.length).append(" changes, ").append(on).append(" on and ").append(off)
-          .append(" off at this target");
     }
     int asked = 0;
     for (int i = 0; i < t.ids.length; i++) {

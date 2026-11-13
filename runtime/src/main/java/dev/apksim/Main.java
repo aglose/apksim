@@ -146,6 +146,7 @@ public final class Main {
     Thread t = new Thread(() -> {
       try {
         Class.forName("org.robolectric.android.internal.AndroidTestEnvironment", true, ClassLoader.getSystemClassLoader());
+        CompatTable.preload();
       } catch (Throwable e) {
         // The main thread meets the same error when it gets there, and reports it.
       }

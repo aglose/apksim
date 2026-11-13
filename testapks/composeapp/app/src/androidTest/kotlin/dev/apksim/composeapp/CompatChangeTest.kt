@@ -63,6 +63,9 @@ class CompatChangeTest {
       assertEquals("package $id", want, m.invoke(null, id, pkg, user) as Boolean)
       assertEquals("uid $id", want, u.invoke(null, id, Process.myUid()) as Boolean)
     }
+    // A package that is not installed has the change's default: on unless disabled, whatever it is enabled since.
+    assertEquals(true, m.invoke(null, sinceTarget37, "no.such.package", user) as Boolean)
+    assertEquals(false, m.invoke(null, disabled, "no.such.package", user) as Boolean)
   }
 
   @Test

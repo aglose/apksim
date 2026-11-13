@@ -145,7 +145,7 @@ final class AppInfo {
     return fullName(pkg, name);
   }
 
-  /** A uses-sdk attribute as a number, 0 when absent or a codename (a preview SDK counts as the table's newest). */
+  /** A uses-sdk attribute as a number (decimal or 0x hex), 0 when absent, the platform's SDK for a codename (a preview). */
   private static int usesSdk(Document doc, String attr) {
     NodeList l = doc.getElementsByTagName("uses-sdk");
     if (l.getLength() == 0) return 0;
@@ -154,7 +154,7 @@ final class AppInfo {
     try {
       return Integer.decode(v.trim());
     } catch (NumberFormatException e) {
-      return CompatTable.PLATFORM_SDK + 1;
+      return CompatTable.PLATFORM_SDK;
     }
   }
 

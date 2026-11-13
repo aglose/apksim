@@ -4,4 +4,5 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/jdk.sh"
-exec "$JDK/bin/java" -cp "$ROOT/work/apksim.jar" dev.apksim.CompatTableCheck
+CP="$ROOT/work/apksim.jar:$(ls "$ROOT"/work/lib/*.jar | tr "\n" ":")"
+exec "$JDK/bin/java" -cp "$CP" dev.apksim.CompatTableCheck
