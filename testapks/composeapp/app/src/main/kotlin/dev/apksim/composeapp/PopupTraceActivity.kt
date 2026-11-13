@@ -52,6 +52,7 @@ class PopupTraceActivity : ComponentActivity() {
     var taps by remember { mutableIntStateOf(0) }
     var value by remember { mutableFloatStateOf(0.2f) }
     var tooltip by remember { mutableStateOf(false) }
+    var outside by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
       Text("Popup and Trace", style = MaterialTheme.typography.titleLarge)
       Button(onClick = {
@@ -64,7 +65,7 @@ class PopupTraceActivity : ComponentActivity() {
         Slider(value = value, onValueChange = { value = it; tooltip = true }, modifier = Modifier.testTag("slider"))
         if (tooltip) {
           // Above the slider, as a value label: not focusable, so it never takes touches outside its own bounds.
-          Popup(alignment = Alignment.TopCenter, offset = IntOffset(0, -120), properties = PopupProperties(focusable = false)) {
+          Popup(alignment = Alignment.TopCenter, offset = IntOffset(0, -120), onDismissRequest = { outside++ }, properties = PopupProperties(focusable = false)) {
             Text("value ${(value * 100).toInt()}", Modifier.background(MaterialTheme.colorScheme.primaryContainer).padding(12.dp))
           }
         }
@@ -72,6 +73,7 @@ class PopupTraceActivity : ComponentActivity() {
       Text(if (tooltip) "tooltip: shown" else "tooltip: hidden")
       Button(onClick = { taps++; tooltip = false }, Modifier.padding(top = 48.dp).testTag("tapMe")) { Text("Tap me") }
       Text("taps: $taps")
+      Text("outside: $outside")
     }
   }
 }

@@ -54,7 +54,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     shown and sized to be laid out (`laidOut`), not for the bottom one: an app's overlay added before its activity and
     never sized (0x0) kept the screen black for good (issue 83). A touch goes to the top window it lands in, or on past one that is not touch-modal, as
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
-    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). A touch event's
+    non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). On a DOWN, each visible, touchable window above the target that has FLAG_WATCH_OUTSIDE_TOUCH and does not contain the point gets an ACTION_OUTSIDE in its own coordinates (`sendOutsideTouches`, as InputDispatcher does), so Compose popups dismiss on an outside tap. A touch event's
     raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
     Host places windows itself (`position`: gravity and offsets on the display with `Gravity.apply`, as the window
     manager does, so an axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
@@ -793,7 +793,7 @@ device does (joda-time-android sets Joda's default from it; plain Joda keeps its
 that reaches the wrong window fails it (`keyTarget` in `Host`: keys go to the topmost shown, sized, focusable window).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
-drives it; `PopupTouchTest` in a test run).
+drives it; `PopupTouchTest` in a test run). The tap also gives the popup ACTION_OUTSIDE, so its `onDismissRequest` runs once ("outside: 1").
 `apksim://drawer` opens `DrawerActivity`: a `DrawerLayout` with three items that count clicks, settling through
 ViewDragHelper's Scroller (`DrawerSettleTest`, opt-in, see `--realtime-clock`).
 `apksim://dialogs[?open=full|modal|nonmodal|compose]` opens `DialogsActivity`: a full-screen dialog, a small

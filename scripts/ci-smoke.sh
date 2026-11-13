@@ -70,7 +70,7 @@ echo "Size classes: $tablet, $medium, $(sizeclass)"
 # A Trace async section begun twice is a no-op, as on an untraced device, and a tap outside a non-focusable popup (a
 # slider's value tooltip) reaches the window behind it (the test app's apksim://popup-trace).
 # "Tap me" (behind the popup) counts the tap and closes the tooltip.
-popup() { drive nodes | grep -oE 'text="(trace: begun twice [0-9]+ times|tooltip: [a-z]+|taps: [0-9]+)"' | tr '\n' ' '; }
+popup() { drive nodes | grep -oE 'text="(trace: begun twice [0-9]+ times|tooltip: [a-z]+|taps: [0-9]+|outside: [0-9]+)"' | tr '\n' ' '; }
 drive 'open apksim://popup-trace' 'wait 2000' 'tap 168 152' 'wait 500' 'tap 168 152' 'wait 500' \
   'swipe 200 392 500 392 300' 'wait 1000' >/dev/null
 shown="$(popup)"
@@ -88,8 +88,8 @@ echo "Sign-in: $signin"
 [[ "$signin" == 'text="signin: code=smoke42 (instances 1, new intents 1)"' ]] \
   || { echo "a sign-in's redirect did not reach the waiting activity" >&2; exit 1; }
 drive back 'wait 800' >/dev/null
-[[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" ' \
-   && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
+[[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" text="outside: 0" ' \
+   && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" text="outside: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 # A ValueAnimator set to repeat INFINITE times repeats for ever: apksim://bitmaps' square, turning once a second, still
