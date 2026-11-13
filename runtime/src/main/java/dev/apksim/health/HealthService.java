@@ -66,6 +66,7 @@ import java.util.UUID;
 public final class HealthService {
   static final long NO_PAGE = -1;
   private static final int DEFAULT_PAGE = 1000;
+  private static final int MAX_GROUPS = 100_000;
   private static final String PERM = "android.permission.health.";
 
   private final Health health;
@@ -93,7 +94,15 @@ public final class HealthService {
         try {
           return here.invoke(this, args);
         } catch (InvocationTargetException e) {
-          throw e.getCause();
+          // A failure of the service itself reaches the app as its callback's error, as the platform's
+          // tryAndThrowException turns one into ERROR_INTERNAL, not as an exception on the app's calling thread.
+          Throwable cause = e.getCause();
+          if (args != null && cause instanceof RuntimeException) {
+            for (Object a : args) {
+              if (a != null && answerError(a, HealthConnectException.ERROR_INTERNAL, String.valueOf(cause))) return defaultValue(m.getReturnType());
+            }
+          }
+          throw cause;
         }
       }
       if (args != null) {
@@ -114,10 +123,14 @@ public final class HealthService {
   }
 
   private boolean answerUnsupported(Object callback, String method) {
+    return answerError(callback, HealthConnectException.ERROR_UNSUPPORTED_OPERATION, method + " is not supported by apksim's Health Connect");
+  }
+
+  /** Answers [callback]'s onError(code, message), if it is a callback. */
+  private boolean answerError(Object callback, int code, String message) {
     try {
       Method onError = callback.getClass().getMethod("onError", HealthConnectExceptionParcel.class);
-      health.answer(() -> onError.invoke(callback, exception(HealthConnectException.ERROR_UNSUPPORTED_OPERATION,
-          method + " is not supported by apksim's Health Connect")));
+      health.answer(() -> onError.invoke(callback, exception(code, message)));
       return true;
     } catch (NoSuchMethodException e) {
       return false;
@@ -392,11 +405,22 @@ public final class HealthService {
       long start = req.getStartTime(), end = req.getEndTime();
       Duration duration = req.getDuration();
       Period period = req.getPeriod();
+      // A group size that never moves on, or more groups than anyone reads: refused, rather than a loop under the lock.
+      boolean badPeriod = period != null && (period.isZero() || period.isNegative());
+      boolean badDuration = duration != null && (duration.isZero() || duration.isNegative());
+      if (badPeriod || badDuration || (duration != null && end != -1 && start != -1 && (end - start) / duration.toMillis() > MAX_GROUPS)) {
+        health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Invalid group duration or period")));
+        return;
+      }
       if (period != null) {
         List<AggregateRecordsResponse<?>> groups = new ArrayList<>();
         LocalDateTime from = LocalDateTime.ofEpochSecond(Math.floorDiv(start, 1000), (int) Math.floorMod(start, 1000) * 1_000_000, ZoneOffset.UTC);
         long lo = start;
         while (lo < end) {
+          if (groups.size() >= MAX_GROUPS) {
+            health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Too many groups")));
+            return;
+          }
           from = from.plus(period);
           long hi = Math.min(end, from.toInstant(ZoneOffset.UTC).toEpochMilli());
           groups.add(window(byId, lo, hi, true));
@@ -405,7 +429,7 @@ public final class HealthService {
         out = new AggregateDataResponseParcel(groups).setPeriod(period, req.getTimeRangeFilter());
       } else if (duration != null) {
         List<AggregateRecordsResponse<?>> groups = new ArrayList<>();
-        long step = Math.max(1, duration.toMillis());
+        long step = duration.toMillis();
         for (long lo = start; lo < end; lo += step) groups.add(window(byId, lo, Math.min(end, lo + step), local));
         out = new AggregateDataResponseParcel(groups).setDuration(duration, req.getTimeRangeFilter());
       } else {

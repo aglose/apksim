@@ -47,17 +47,25 @@ final class Store {
     changes.clear();
   }
 
+  /** The change log kept: older entries go, as a device's change tokens expire (after 30 days there). */
+  static final int MAX_CHANGES = 20_000;
+
   void put(RecordInternal<?> r, boolean seed, long now) {
     String id = r.getUuid().toString();
     records.remove(id);  // an update moves it to the end, as a new row would
     records.put(id, new Entry(r, seed));
-    changes.add(new Change(++seq, id, r.getRecordType(), r.getPackageName(), false, now));
+    log(new Change(++seq, id, r.getRecordType(), r.getPackageName(), false, now));
+  }
+
+  private void log(Change c) {
+    changes.add(c);
+    if (changes.size() > MAX_CHANGES) changes.subList(0, changes.size() - MAX_CHANGES).clear();
   }
 
   boolean delete(String uuid, long now) {
     Entry e = records.remove(uuid);
     if (e == null) return false;
-    changes.add(new Change(++seq, uuid, e.record.getRecordType(), e.record.getPackageName(), true, now));
+    log(new Change(++seq, uuid, e.record.getRecordType(), e.record.getPackageName(), true, now));
     return true;
   }
 

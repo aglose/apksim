@@ -93,8 +93,11 @@ ago. The values are the same for the same days on every run (seeded by the date)
 
 - `--health FILE|PRESET` (repeatable): records to start with. A running instance keeps its records with its data slot
   (`<slot>.device/health.store`, beside /sdcard and the Settings values; `--fresh` and `ctl.py erase` clear it), as a
-  device keeps Health Connect's data outside the app's. The seeds of a launch replace the last launch's seeds, so a week
-  preset follows the clock; what the app or `health add` wrote stays. In a test run every test starts with the seeds
+  device keeps Health Connect's data outside the app's, so it also travels with the slot wherever the slot goes (a
+  flight recorder checkpoint, a beam or serve slot pack). The seeds of a launch replace the last launch's seeds, so a
+  week preset follows the clock; a launch without `--health` keeps them as they were. A seed without a client id gets
+  an id from its content, so seeding the same records again changes nothing (no change-log entries, the same ids);
+  what the app or `health add` wrote stays. In a test run every test starts with the seeds
   alone. Read again by a warm launch (a standby takes `-Dapksim.health.N`).
 - `health`: records per type, the app's health permissions (granted and not), and the service calls made since the
   launch (a test's setup): `records: heart-rate 162, sleep-session 7, steps 107, ...; granted: READ_STEPS ...; not
@@ -136,8 +139,11 @@ ago. The values are the same for the same days on every run (seeded by the date)
   data state) answers ERROR_UNSUPPORTED_OPERATION through its callback, so an app never waits for an answer that does
   not come. Permission grant, revoke and listing through the service work.
 
-Answers go out on one thread, `apksim-health-binder`, in the order they were decided, as the platform's oneway calls
-are; the app's executor then gets them. Code that runs for every app references only framework classes
+Answers go out on one thread, `apksim-health-binder`, in the order they were decided; the app's executor then gets
+them. (A device has a pool of binder threads: an app whose executor runs the answer in place and then blocks on another
+Health Connect call there would wait for ever here.) A service method that fails answers ERROR_INTERNAL through its
+callback, as the platform does. The change log keeps the last 20,000 changes. A group-by aggregation with a zero or
+negative duration or period, or more than 100,000 groups, answers ERROR_INVALID_ARGUMENT. Code that runs for every app references only framework classes
 (`android.health.connect`), never AndroidX's.
 
 ## Checks

@@ -85,17 +85,32 @@ public final class Health {
       for (int i = 0; System.getProperty("apksim.health." + i) != null; i++) seeds.add(System.getProperty("apksim.health." + i));
       if (!seeds.isEmpty()) {
         long now = h.now();
-        List<String> old = new ArrayList<>();
-        for (Store.Entry e : h.store.records.values()) if (e.seed) old.add(e.record.getUuid().toString());
-        for (String id : old) h.store.delete(id, now);
+        // Seeds have ids derived from what they hold (Seeds.toInternal), so a launch that seeds the same records again
+        // changes nothing: only seeds that are new or gone show up as changes (a week preset moves on a day at a time).
+        java.util.Map<String, RecordInternal<?>> fresh = new java.util.LinkedHashMap<>();
         for (String s : seeds) {
           try {
-            for (RecordInternal<?> r : Seeds.load(s, now)) h.store.put(r, true, now);
+            for (RecordInternal<?> r : Seeds.load(s, now)) fresh.put(r.getUuid().toString(), r);
           } catch (Exception e) {
             System.err.println("[apksim] --health " + s + ": " + e.getMessage());
           }
         }
-        h.changed();
+        List<String> gone = new ArrayList<>();
+        for (Store.Entry e : h.store.records.values()) {
+          if (e.seed && !fresh.containsKey(e.record.getUuid().toString())) gone.add(e.record.getUuid().toString());
+        }
+        boolean changed = !gone.isEmpty();
+        for (String id : gone) h.store.delete(id, now);
+        for (RecordInternal<?> r : fresh.values()) {
+          Store.Entry old = h.store.records.get(r.getUuid().toString());
+          if (old != null && old.seed) {
+            r.setLastModifiedTime(old.record.getLastModifiedTime());
+            if (java.util.Arrays.equals(Store.toBytes(old.record), Store.toBytes(r))) continue;
+          }
+          h.store.put(r, true, now);
+          changed = true;
+        }
+        if (changed) h.changed();
       }
     }
   }

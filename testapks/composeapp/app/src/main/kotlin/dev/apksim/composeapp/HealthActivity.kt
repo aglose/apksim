@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 
 /**
  * apksim://health: Health Connect as an app sees it through AndroidX's client (apksim's stand-in, `--health week`,
- * docs/health-connect.md). One line each: "health: available", "permissions: 5 of 6 granted", "steps today: 8412",
+ * docs/health-connect.md). One line each: "health: available", "permissions: 5 of 5 granted", "steps today: 8412",
  * "heart rate: 74 bpm at 14:05", "sleep: 7 h 52 min last night". Without the permissions it asks for them with the
  * client's own contract (a runtime permission request). "Insert 100 steps" writes a record for the last five minutes
  * and reads everything again.

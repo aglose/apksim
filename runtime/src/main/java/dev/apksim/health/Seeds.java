@@ -38,6 +38,7 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -209,8 +210,13 @@ final class Seeds {
     RecordInternal<?> ri = r.toRecordInternal();
     ri.setPackageName(origin);
     ri.setAppName(Health.SEED_ORIGIN.equals(origin) ? "apksim" : origin);
+    // Without a client id, an id from the record's content (before its id and time written are set): the same seed
+    // gets the same id at every launch, so seeding it again changes nothing.
+    ri.setUuid(new UUID(0, 0));
+    ri.setLastModifiedTime(0);
+    String key = clientId != null ? clientId : "seed:" + Base64.getEncoder().encodeToString(Store.toBytes(ri));
+    ri.setUuid(HealthService.clientUuid(origin, ri.getRecordType(), key));
     ri.setLastModifiedTime(now);
-    ri.setUuid(clientId != null ? HealthService.clientUuid(origin, ri.getRecordType(), clientId) : UUID.randomUUID());
     return ri;
   }
 
