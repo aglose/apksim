@@ -62,6 +62,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
     position (getLocationOnScreen, boundsInScreen, Compose's window position) is where the window is drawn. Before, a
     centred dialog's views thought they were at the top left, and `nodes`, `tap-text` and UiAutomator missed them.
+    A start that a running activity takes itself is delivered to its onNewIntent, not stacked (`Host.deliverToRunning`,
+    issue 336: singleTask/singleInstance, singleTop on top, CLEAR_TOP with SINGLE_TOP or a non-standard mode; those
+    above it finish; not NEW_TASK | CLEAR_TASK, CLEAR_TOP alone on a standard activity or a start for a result, which
+    stack as before; `ci-smoke.sh` checks it on `apksim://signin`).
     The stack is kept as a device's activity manager keeps it (`Host.arrange`, where every
     path that changes it ends: start, finish (of the top or of one below it), `home`/`resume`, configuration changes,
     `recreate`, `process-death`, test runs' launches): the top resumed; below it, while everything above is translucent or floating (a

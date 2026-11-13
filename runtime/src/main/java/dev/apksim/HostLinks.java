@@ -17,13 +17,22 @@ final class HostLinks {
   private HostLinks() {}
 
   private static final List<PrintWriter> WATCHERS = new CopyOnWriteArrayList<>();
+  /** The last links nobody watched for, with when: a watcher attaching within {@link #EARLY_NANOS} hears of them. */
+  private static final List<Object[]> EARLY = new java.util.ArrayList<>();
+  private static final long EARLY_NANOS = 30_000_000_000L;
   /** A link's longest form sent on: what a tab's `open URL` may be, too (Session.check). */
   private static final int MAX = 4000;
 
   /** The control connection's `hostwatch`: lines go out until the watcher hangs up. */
   static void serve(BufferedReader in, PrintWriter out) {
     out.println("ok hostwatch");
-    WATCHERS.add(out);
+    synchronized (EARLY) {
+      // What the app opened before anyone watched (serve attaches as the app starts): told now, if recent.
+      long now = System.nanoTime();
+      for (Object[] e : EARLY) if (now - (long) e[0] < EARLY_NANOS) out.println((String) e[1]);
+      EARLY.clear();
+      WATCHERS.add(out);
+    }
     try {
       while (in.readLine() != null) {
         // nothing is read: the watcher only listens
@@ -37,8 +46,15 @@ final class HostLinks {
 
   /** Tells the watchers of a link; false when nobody watches, or the link cannot be one line. */
   static boolean offer(String url, String redirect) {
-    if (WATCHERS.isEmpty() || !oneToken(url) || (redirect != null && !oneToken(redirect))) return false;
+    if (!oneToken(url) || (redirect != null && !oneToken(redirect))) return false;
     String line = "o " + url + (redirect == null ? "" : " " + redirect);
+    synchronized (EARLY) {
+      if (WATCHERS.isEmpty()) {
+        if (EARLY.size() >= 4) EARLY.remove(0);
+        EARLY.add(new Object[] {System.nanoTime(), line});
+        return false;
+      }
+    }
     boolean told = false;
     for (PrintWriter w : WATCHERS) {
       synchronized (w) {

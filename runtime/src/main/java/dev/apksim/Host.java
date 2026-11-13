@@ -1019,8 +1019,10 @@ public class Host {
    * above it are finished and it gets onNewIntent, paused around it as ActivityThread does, then comes to the top.
    * An OAuth redirect activity reaches the activity waiting for the sign-in this way (Auth0, AppAuth: CLEAR_TOP |
    * SINGLE_TOP to a singleTask activity); stacked as a second copy, that one finished at once and the first saw a
-   * cancel. Activities that are finishing do not count as being above it (the redirect activity itself). A standard
-   * activity under CLEAR_TOP alone (finished and made again on a device) is still stacked, as every start was.
+   * cancel. Activities that are finishing do not count as being above it (the redirect activity itself). Still stacked,
+   * as every start was: a standard activity under CLEAR_TOP alone (finished and made again on a device), NEW_TASK |
+   * CLEAR_TASK, and a start for a result. Approximate: there is one stack, so a singleInstance activity's return
+   * finishes what is above it, where a device keeps those in another task.
    */
   private boolean deliverToRunning(String name, Intent intent) throws Exception {
     android.content.pm.ActivityInfo info;
@@ -1047,6 +1049,9 @@ public class Host {
         || info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE;
     boolean clearTop = (intent.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0
         && (singleTop || info.launchMode != android.content.pm.ActivityInfo.LAUNCH_MULTIPLE);
+    // NEW_TASK | CLEAR_TASK asks for the task emptied and a fresh instance (an app restarting itself): not this.
+    int clearTask = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK;
+    if ((intent.getFlags() & clearTask) == clearTask) return false;
     if (!task && !clearTop && !(singleTop && onTop)) return false;
     Intent delivered = intent.getComponent() == null
         ? new Intent(intent).setComponent(new ComponentName(app.getPackageName(), name)) : intent;
@@ -1062,9 +1067,8 @@ public class Host {
         above.destroy();
         results.finished(above.get());
       }
-      Activity a = running.get();
-      if (isStopped(a)) running.restart();
-      if (a.isResumed()) running.pause();
+      // As ActivityThread: a resumed one is paused around onNewIntent; a stopped one gets it before onRestart.
+      if (running.get().isResumed()) running.pause();
       running.newIntent(delivered);
       arrange(new ArrayList<>(stack), controls.hidden());
       return null;

@@ -80,6 +80,14 @@ tapped="$(popup)"
 drive 'open apksim://composeapp/trips?overlay=full' 'wait 2500' 'tap 550 1690' 'wait 1000' >/dev/null
 drive nodes | grep -q 'text="Notifications"' || { echo "a tap did not pass an untouchable overlay" >&2; exit 1; }
 echo "Popup and Trace: $shown-> $tapped"
+# A browser sign-in's way back (issue 336): the redirect activity hands the callback to the waiting singleTask activity
+# with CLEAR_TOP | SINGLE_TOP, which gets it in onNewIntent; stacked as a second copy, it showed "not started".
+drive 'open apksim://signin' 'wait 1500' 'tap-text Sign in' 'wait 500' 'open apksim://signin-callback?code=smoke42' 'wait 1500' >/dev/null
+signin="$(drive nodes | grep -oE 'text="signin: [^"]*"')"
+echo "Sign-in: $signin"
+[[ "$signin" == 'text="signin: code=smoke42 (instances 1, new intents 1)"' ]] \
+  || { echo "a sign-in's redirect did not reach the waiting activity" >&2; exit 1; }
+drive back 'wait 800' >/dev/null
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" ' \
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }

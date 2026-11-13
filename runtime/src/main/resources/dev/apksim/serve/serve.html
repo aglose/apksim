@@ -1240,7 +1240,10 @@ function appLink(d) {
   if (typeof d.link !== "string" || !/^https?:\/\//i.test(d.link)) return;
   const signIn = typeof d.redirect === "string" && d.redirect;
   $("applinkTitle").textContent = signIn ? "The app asks you to sign in" : "The app opened a link";
-  $("applinkText").textContent = d.link.length > 300 ? d.link.slice(0, 300) + "..." : d.link;
+  let host = "";
+  try { host = new URL(d.link).host; } catch (e) { return; }
+  // The site first, whole: the address may be long, and where it leads is what the visitor should read.
+  $("applinkText").textContent = host + " \u2014 " + (d.link.length > 300 ? d.link.slice(0, 300) + "..." : d.link);
   $("applinkOpen").href = d.link;
   $("applinkOpen").textContent = signIn ? "Open the sign-in page" : "Open in a new tab";
   $("applinkBack").hidden = !signIn;
