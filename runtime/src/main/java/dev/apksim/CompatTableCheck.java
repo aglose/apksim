@@ -1,8 +1,8 @@
 package dev.apksim;
 
 /**
- * Checks CompatTable on a plain JVM against the committed table: an id enabled since 29 is off for an app targeting 28
- * and on for 29 and 36; one since 36 is off at 35; one since 37 is off at 36 and on at 37; a disabled one is off at
+ * Checks CompatTable on a plain JVM against the committed table: an id enabled since 30 is off for an app targeting 28
+ * and on for 30 and 36; one since 36 is off at 35; one since 37 is off at 36 and on at 37; a disabled one is off at
  * every target; an id the table lacks, and any id with no target, is UNKNOWN (the caller's old answer); a launch's
  * configure() forgets the last launch's target and counts; `compat` lists names, answers and counts; and a lookup
  * allocates nothing. Exits 1 on any failure. scripts/check-compat-table.sh runs it (CI).
@@ -29,7 +29,6 @@ public final class CompatTableCheck {
   }
 
   public static void main(String[] args) throws Exception {
-    final long since29 = 183155436L;
     final long since33 = 183155436L;
     final long since30 = 132742131L;  // RESOURCES_ARSC_COMPRESSED
     final long since36 = 364980165L;  // ENABLE_FILE_SYSTEM_ACCESS
