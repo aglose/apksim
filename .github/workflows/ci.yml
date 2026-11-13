@@ -124,6 +124,8 @@ jobs:
         run: scripts/check-inspector-rules.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
+      - name: Subsystem audit (what the test app refers to, against apksim's status table)
+        run: python3 scripts/subsystem-audit-check.py
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Save the image
