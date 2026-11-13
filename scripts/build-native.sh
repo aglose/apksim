@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/jdk.sh"   # JNI headers
 mkdir -p "$ROOT/work/runtime"
 clang -O2 -fobjc-arc -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" \
-  -framework Cocoa -framework QuartzCore -framework IOSurface -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework UniformTypeIdentifiers -framework AuthenticationServices \
+  -framework Cocoa -framework QuartzCore -framework Metal -framework IOSurface -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework UniformTypeIdentifiers -framework AuthenticationServices \
   -o "$ROOT/work/runtime/libsimwindow.dylib.new" "$ROOT/native/simwindow.m"
 clang -O2 -dynamiclib -Wno-deprecated-declarations -I"$JDK/include" -I"$JDK/include/darwin" \
   -o "$ROOT/work/runtime/libelfloader.dylib.new" "$ROOT/native/elfloader.c" "$ROOT/native/bionic.c" "$ROOT/native/bionic_net.c" "$ROOT/native/jnibridge.c" "$ROOT/native/jnigraphics.c"

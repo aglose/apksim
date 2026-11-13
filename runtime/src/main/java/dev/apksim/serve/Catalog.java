@@ -47,7 +47,7 @@ final class Catalog {
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
       "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
-      "--device-kind");
+      "--device-kind", "--fold");
   /**
    * This process is `apksim beam`'s agent: a --skin it does not have is dropped, not refused, since a site's start may
    * name its server's skin (which the page draws) and the error would list the visitor's own skins to any page.

@@ -185,13 +185,14 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 |---|---|---|
 | `phone` (default) | 411 × 891 | System bars and gesture navigation |
 | `foldable` | 841 × 701 | System bars and gesture navigation |
+| `pixel-10-pro-fold` | 852 × 883 open, 443 × 970 closed | A folding phone at 390 dpi: the inner display (2076 × 2152 px) with a fold down its middle, or the cover display (1079 × 2364 px). `--fold open\|half\|closed` at launch, `fold open\|half\|closed\|toggle\|angle DEGREES` or Device > Fold / Unfold while it runs: the app gets the display change as on a device, and Jetpack WindowManager (`WindowInfoTracker`, Compose's adaptive posture) reports the fold, flat or half-opened, through a stand-in `androidx.window.extensions` library; half-open and rotated is tabletop. A hinge-angle sensor (`TYPE_HINGE_ANGLE`) reports the angle. The density is the Pixel 9 Pro Fold emulator's, not measured on the device. `--skin pixel-10-pro-fold` (built in) draws the device around it, open and closed, and the Mac window plays the fold as the device closing like a book: the left half swings over about the hinge with the cover display on its back |
 | `tablet` | 1280 × 800 | 2560 × 1600 px, the Nexus 10 profile |
 | `desktop` | 1440 × 900 | No system bars |
 | `tv` | 960 × 540 | 1080p; television UI mode, D-pad, no touchscreen |
 | `watch`, `watch-small`, `watch-large` | 227 × 227, 192 × 192, 240 × 240 | Wear OS: round screen (`isScreenRound`), watch UI mode and `android.hardware.type.watch`, no system bars. The wheel is the crown (rotary input; `rotary N`), `key STEM_1` / `STEM_2` / `STEM_PRIMARY` are the buttons, `ambient on\|off` enters ambient mode through a stand-in `com.google.android.wearable` library. `serve` streams the frame with the corners cleared (the Mac window shows a square) |
 | `WxH[@density]` | custom | For example `1024x768@1.5` |
 
-Density is 2 (xhdpi) unless given. You can also switch devices while the app runs, from the Device menu or with the
+Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also switch devices while the app runs, from the Device menu or with the
 `device` command.
 
 ### Launch options

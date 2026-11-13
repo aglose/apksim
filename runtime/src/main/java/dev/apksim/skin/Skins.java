@@ -86,6 +86,54 @@ public final class Skins {
     return l;
   }
 
+  /**
+   * The skins apksim.jar carries (resources dev/apksim/skins/NAME/), searched last, so a stored skin of the same name
+   * wins: a folder inside the jar, read through a zip file system kept open for the process (or a plain folder when
+   * the classes are not in a jar). Null when there is none.
+   */
+  private static volatile Path builtin;
+  private static boolean builtinTried;
+
+  public static synchronized Path builtinDir() {
+    if (builtinTried) return builtin;
+    builtinTried = true;
+    try {
+      java.net.URL u = Skins.class.getResource("/dev/apksim/skins");
+      if (u == null) return null;
+      if (u.getProtocol().equals("jar")) {
+        String spec = u.toString();
+        java.net.URI jar = java.net.URI.create(spec.substring(0, spec.indexOf("!/")));
+        java.nio.file.FileSystem fs;
+        try {
+          fs = java.nio.file.FileSystems.newFileSystem(jar, Map.of("accessMode", "readOnly"));
+        } catch (java.nio.file.FileSystemAlreadyExistsException e) {
+          fs = java.nio.file.FileSystems.getFileSystem(jar);
+        }
+        builtin = fs.getPath("/dev/apksim/skins");
+      } else {
+        builtin = Path.of(u.toURI());
+      }
+    } catch (IOException | RuntimeException | java.net.URISyntaxException e) {
+      System.err.println("[apksim] built-in skins cannot be read: " + e);
+      builtin = null;
+    }
+    return builtin;
+  }
+
+  /** Where skins are looked for, in order: the store, the shared folders, the built-in ones. */
+  private static List<Path> searchDirs() {
+    List<Path> dirs = new ArrayList<>();
+    dirs.add(store());
+    dirs.addAll(sharedDirs());
+    Path b = builtinDir();
+    if (b != null) dirs.add(b);
+    return dirs;
+  }
+
+  private static String originOf(List<Path> dirs, int i) {
+    return i == 0 ? "local" : dirs.get(i).equals(builtin) ? "built-in" : "shared";
+  }
+
   /** Folders a server adds (`serve --skins DIR`), searched after APKSIM_SKINS's. */
   private static volatile List<Path> extraDirs = List.of();
 
@@ -113,9 +161,7 @@ public final class Skins {
   public static List<Skin> all(List<String> bad) throws IOException {
     List<Skin> skins = new ArrayList<>();
     List<String> seen = new ArrayList<>();
-    List<Path> dirs = new ArrayList<>();
-    dirs.add(store());
-    dirs.addAll(sharedDirs());
+    List<Path> dirs = searchDirs();
     for (int i = 0; i < dirs.size(); i++) {
       if (!Files.isDirectory(dirs.get(i))) continue;
       List<Path> subs;
@@ -124,12 +170,12 @@ public final class Skins {
             .sorted().toList();
       }
       for (Path p : subs) {
-        String n = p.getFileName().toString();
+        String n = p.getFileName().toString().replace("/", "");
         if (seen.contains(n)) continue;
         seen.add(n);
         try {
           Skin s = Skin.read(p);
-          s.origin = i == 0 ? "local" : "shared";
+          s.origin = originOf(dirs, i);
           skins.add(s);
         } catch (IOException e) {
           if (bad != null) bad.add(n + ": " + e.getMessage());
@@ -178,15 +224,13 @@ public final class Skins {
 
   private static Skin find(String name) throws Fail {
     if (!Skin.NAME.matcher(name).matches()) throw new Fail("\"" + name + "\" is not a skin name (letters a-z, digits and - only)");
-    List<Path> dirs = new ArrayList<>();
-    dirs.add(store());
-    dirs.addAll(sharedDirs());
+    List<Path> dirs = searchDirs();
     for (int i = 0; i < dirs.size(); i++) {
       Path d = dirs.get(i).resolve(name);
       if (!Files.isRegularFile(d.resolve("skin.json"))) continue;
       try {
         Skin s = Skin.read(d);
-        s.origin = i == 0 ? "local" : "shared";
+        s.origin = originOf(dirs, i);
         return s;
       } catch (IOException e) {
         throw new Fail("skin " + name + " (" + d + "): " + e.getMessage());
@@ -222,7 +266,9 @@ public final class Skins {
 
   private static BufferedImage frameOf(Skin s) throws Fail {
     try {
-      return ImageIO.read(s.dir.resolve(s.frame).toFile());
+      try (java.io.InputStream in = Files.newInputStream(s.dir.resolve(s.frame))) {
+        return ImageIO.read(in);
+      }
     } catch (IOException e) {
       throw new Fail("cannot read " + s.frame + ": " + e.getMessage());
     }
@@ -270,7 +316,12 @@ public final class Skins {
     List<String> problems = s.check();
     if (!problems.isEmpty()) throw new Fail("skin " + name + " is not valid: " + String.join("; ", problems));
     BufferedImage fr = frameOf(s);
-    BufferedImage mk = s.mask == null ? null : ImageIO.read(s.dir.resolve(s.mask).toFile());
+    BufferedImage mk = null;
+    if (s.mask != null) {
+      try (java.io.InputStream in = Files.newInputStream(s.dir.resolve(s.mask))) {
+        mk = ImageIO.read(in);
+      }
+    }
     DeviceSpec d = s.spec();
     String label = s.device.length() < 14 ? s.device + " " + d.widthPx() + "x" + d.heightPx() : d.widthPx() + "x" + d.heightPx();
     BufferedImage img = Frames.preview(fr, mk, s, label);
