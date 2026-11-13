@@ -469,7 +469,7 @@ launch with `--timezone America/New_York`; see `TimeZones` below), `config` (con
 `device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH [MS]` (the Mac window's content in points, as dragging its corner would: checks the drag path; with MS a
-live drag over that much real time, a step per display refresh: `scripts/window-resize-check.py PORT`),
+live drag over that much real time, 120 steps a second: `scripts/window-resize-check.py PORT`, run by hand on the Mac),
 `window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden,
 whether the app is active, the content's size in points and the device pixels per point), `window click X Y` (a left
 click at a point of the window's content, in points from its top left, sent through the window as a real one: checks
@@ -649,7 +649,7 @@ smallest width, size bucket and orientation follow), applied at most every 100 m
 meanwhile the last frame stays pinned top left. A resize waiting in the window's input queue takes the next one's size
 (`post` in `simwindow.m`): a drag posts one per pixel moved, and applied one by one they ran for ~30 s after a 2 s drag,
 each snapping the window back to its stale size. Each resize keeps the last frame up, unscaled at the top left, until the new
-size's first frame is presented (`pinnedForResize`): cleared at the resize, the window flashed black ten times a second. Activities get the configuration change as on a device in a freeform
+size's first frame is presented and the layer is that size (`pinnedForResize`): cleared at the resize, the window flashed black ten times a second. Activities get the configuration change as on a device in a freeform
 window: recreated, or resized in place when they declare `screenSize` in configChanges. Zoom only
 scales the window. A display bigger than the Mac's screen (desktop, TV) opens zoomed out to fit.
 Menus as in the iOS Simulator: File (Save Screen Cmd+S, Save Screen with Skin Cmd+Opt+S, Record Screen Cmd+R, Save Replay Cmd+Shift+S: the flight recorder), Device (Device Type > Phone/Foldable/

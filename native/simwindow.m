@@ -701,9 +701,15 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativePresent(JNIEnv *env, jcla
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     frameLayer.contents = (__bridge id)s;
-    if (pinnedForResize && !(NSApp.windows.firstObject.inLiveResize || scriptedLive)) {
-      frameLayer.contentsGravity = kCAGravityResize;  // the new size's first frame: it fills the layer again
-      pinnedForResize = NO;
+    // The new size's first frame fills the layer again, once the layer is that frame's size: not while a drag moves
+    // the window on, nor between a drag's end and the resize that follows it (a frame of the last size applied would
+    // be stretched over the size the window was let go at).
+    if (pinnedForResize && !(simWindow.inLiveResize || scriptedLive)) {
+      CGSize b = frameLayer.bounds.size;
+      if (skinOn || (fabs(b.width * deviceScale - devW) <= 2 && fabs(b.height * deviceScale - devH) <= 2)) {
+        frameLayer.contentsGravity = kCAGravityResize;
+        pinnedForResize = NO;
+      }
     }
     [CATransaction commit];
     [CATransaction flush];
@@ -1026,9 +1032,16 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTimeZone(JNIEnv *env, 
 
 // Sets the window's content size in points as a drag of its corner would end (the `window` control command), so
 // scripts can check the path a user's resize takes.
-JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, jclass c, jint wPts, jint hPts, jint ms) {
+// Returns 0, or 1 while a scripted drag is under way (its steps would undo this one), or 2 with a skin on (the window
+// is the frame's size, and no resize would come of it).
+JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, jclass c, jint wPts, jint hPts, jint ms) {
+  __block int refused = 0;
+  dispatch_semaphore_t answered = dispatch_semaphore_create(0);
   onMain(^{
-    NSWindow *win = NSApp.windows.firstObject;
+    refused = scriptedLive ? 1 : skinOn ? 2 : 0;
+    dispatch_semaphore_signal(answered);
+    if (refused) return;
+    NSWindow *win = simWindow;
     NSRect from = [win contentRectForFrameRect:win.frame];
     void (^set)(CGFloat, CGFloat) = ^(CGFloat w, CGFloat h) {
       NSRect content = [win contentRectForFrameRect:win.frame];
@@ -1036,26 +1049,28 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, j
       content.size = NSMakeSize(w, h);
       [win setFrame:[win frameRectForContentRect:content] display:YES animate:NO];
     };
-    if (ms <= 0 || scriptedLive) {
+    if (ms <= 0) {
       set(wPts, hPts);
       return;
     }
-    // Over ms of real time, a step per display refresh as a drag's mouse moves come, the run loop turning between
-    // them as it does while AppKit tracks a live resize; then the drag's end.
+    // Over ms of real time, 120 steps a second as a drag's mouse moves come, the run loop turning between them as it
+    // does while AppKit tracks a live resize; then the drag's end.
     scriptedLive = YES;
     SimView *delegate = (SimView *)win.delegate;
-    [delegate windowWillStartLiveResize:nil];
-    CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+    [delegate windowWillStartLiveResize:[NSNotification notificationWithName:NSWindowWillStartLiveResizeNotification object:win]];
+    CFTimeInterval start = CACurrentMediaTime();
     NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 120 repeats:YES block:^(NSTimer *t) {
-      double f = MIN(1.0, (CFAbsoluteTimeGetCurrent() - start) * 1000 / ms);
+      double f = MIN(1.0, (CACurrentMediaTime() - start) * 1000 / ms);
       set(round(from.size.width + (wPts - from.size.width) * f), round(from.size.height + (hPts - from.size.height) * f));
       if (f < 1.0) return;
       [t invalidate];
       scriptedLive = NO;
-      [delegate windowDidEndLiveResize:nil];
+      [delegate windowDidEndLiveResize:[NSNotification notificationWithName:NSWindowDidEndLiveResizeNotification object:win]];
     }];
     [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
   });
+  dispatch_semaphore_wait(answered, DISPATCH_TIME_FOREVER);
+  return refused;
 }
 
 // The overlays are laid out in points: rebuild them for the new window size (the Java side re-sends the bars).

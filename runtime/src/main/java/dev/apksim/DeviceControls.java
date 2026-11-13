@@ -721,7 +721,7 @@ final class DeviceControls {
         String[] wh = a[1].split("x");
         if (wh.length != 2) return "usage: window [WxH (points) [MS]|front|show|background|minimize|hide]";
         int ms = a.length > 2 ? Integer.parseInt(a[2]) : 0;
-        return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1]), ms) ? "ok" : "no window";
+        return SimWindow.dragResize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1]), ms);
       }
       case "rotate" -> {
         // rotate left|right (a quarter turn), or rotate portrait|landscape

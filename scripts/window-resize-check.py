@@ -4,7 +4,7 @@
   ./apksim --control 7400 --window background APK &
   scripts/window-resize-check.py 7400
 
-Drags the window's content to another size over 2 s (`window WxH MS`: a step per display refresh, as a user's drag),
+Drags the window's content to another size over 2 s (`window WxH MS`: 120 steps a second, as a user's drag),
 then back. A drag posts a resize per pixel moved; when each was applied in turn, the window kept snapping back to
 stale sizes for half a minute after a 2 s drag. Passes when the window is at the size asked for within a second of
 each drag's end, stays there, and the app has the display's new size. Mac only (needs the window).
