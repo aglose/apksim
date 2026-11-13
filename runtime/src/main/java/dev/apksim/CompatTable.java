@@ -28,7 +28,7 @@ public final class CompatTable {
   public static final long CALL_ACTIVITY_RESULT_BEFORE_RESUME = 78294732L;
 
   private static final int NEVER = Integer.MAX_VALUE;  // disabled
-  private static final boolean ENABLED = !"false".equals(System.getProperty("apksim.compatTable"));
+  private static volatile boolean enabled = true;  // -Dapksim.compatTable=false, read at each launch (a warm launch sets it after the hand-off)
 
   private static volatile Table table;
   private static volatile int targetSdk = -1;
@@ -99,7 +99,8 @@ public final class CompatTable {
    */
   public static void configure(String pkg, int target) {
     packageName = pkg == null ? "" : pkg;
-    targetSdk = ENABLED ? target : -1;
+    enabled = !"false".equals(System.getProperty("apksim.compatTable"));
+    targetSdk = enabled ? target : -1;
     Table t = table;
     if (t != null) reset(t);
   }
@@ -190,7 +191,7 @@ public final class CompatTable {
     StringBuilder sb = new StringBuilder();
     sb.append("compat: target ").append(targetSdk > 0 ? Integer.toString(targetSdk) : "unknown")
         .append(" of ").append(packageName.isEmpty() ? "?" : packageName)
-        .append(ENABLED ? "" : " (table off: Robolectric's answers)");
+        .append(enabled ? "" : " (table off: Robolectric's answers)");
     if (all) {
       int on = 0, off = 0;
       for (int s : t.since) {
