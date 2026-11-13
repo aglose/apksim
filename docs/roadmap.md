@@ -99,7 +99,7 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-12, release 0.32.1. This table says where each item stands. What changes by the hour (check
+As of 2026-11-13, release 0.33.0. This table says where each item stands. What changes by the hour (check
 results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |
@@ -118,3 +118,8 @@ results, draft state, the base branch) is on each pull request's page. "In revie
 | 12 Resilience sweep | crawler | r2 | #263 | in 0.28.0 |
 | 13 MCP server | mcp | r3 | #250, #293 | in 0.29.0; fixes in 0.30.0 |
 | 14 BLE, linked instances | ble | r3 | #253, #256, #292 | in 0.29.0; scene fixes in 0.30.0 |
+
+Outside these items, 0.33.0 added device subsystems and target-SDK behaviour: simulated sensors (#327), a Health
+Connect stand-in (#328, docs/health-connect.md), platform compat changes that follow the app's targetSdk (#326), a
+target-28 build of the test app compared with API 30 and API 36 emulators (#330, docs/conformance.md), a spike of the
+API 30 framework (#329, docs/api-levels.md) and `scripts/subsystem-audit.py` (#325).
