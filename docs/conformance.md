@@ -292,20 +292,25 @@ on, by layer (✗ = fails, – = skipped or did not run):
 | `RealTimeSwipeTest#aSwipeOverAPostFromEachFrame…`, `FailureBundleParameterizedTest` (2), `Test mechanism` (Test Storage `FileNotFoundException`) | ✗ | ✗ | – | a switch of apksim's (`--realtime-clock`, `-e failOnPurpose`), and Test Storage's output files |
 | `RealTimeClockTest`, `NativeLoaderTest` moved-data tests, `UiaEngineTest` engine-only, `ComposeClockStepTest` | pass | pass | – | apksim skips for want of a switch (`--realtime-clock`, `--move-shared-data`, `--uia engine`) |
 
+The suite was re-measured on `main` with the compatibility table and the sensors (`main-api30/`, `main-api36/`): the same
+266 / 0 / 10 and 264 / 0 / 12, with 31 tests more (`CompatChangeTest`, `SensorsTest`), apksim's own and run here only. Both
+assume what a target-36 app sees, so they are skipped below it (`CompatChangeTest`: the ids are for 36; `SensorsTest`'s
+step counter needs no ACTIVITY_RECOGNITION below target 29, as on Android 11: a target gate apksim follows).
+
 ### System bars: the target gate that does follow the target
 
 At target 28 Compose's `WindowInsets.systemBars` is 0 while the root view's insets are 48 on both emulators (edge-to-edge is
 enforced from target 35): `ComposeUiConformanceTest#systemBarInsetsMatchTheView` fails there, and passes at target 36
 (API 36 emulator, default build). A test run has no bars, so apksim passes both (0 = 0). With bars (`--status-bar on --nav-bar
-gesture`) apksim gives the emulators' answer on `main`: target 28 fails with `expected:<48> but was:<0>`, target 36 passes. On
-the compatibility table's branch the same (checked in a separate worktree, nothing merged or rebased). So this gate is
+gesture`) apksim gives the emulators' answer: target 28 fails with `expected:<48> but was:<0>`, target 36 passes, the same
+before the compatibility table (#326) and after it, on `main`. So this gate is
 already followed through the framework's own code; it is not one of the gates `CompatChanges` reads as enabled.
 
 ### Target-gated behaviour: `Target28Test#probe`
 
 `Target28Test#probe` prints one `t28.KEY=VALUE` line per observation as instrumentation status and asserts nothing; the
-table is made from the probe run alone on a fresh install of each side (`work/conformance/probe/`), once on `main` and
-once on the compatibility table's branch (identical). The asserting tests are few on purpose: `theApkTargetsWhatTheBuildAskedFor`
+table is made from the probe run alone on a fresh install of each side (`work/conformance/probe/`), before the compatibility table landed
+and again on `main` with it (identical). The asserting tests are few on purpose: `theApkTargetsWhatTheBuildAskedFor`
 and `legacyBluetoothPermissionsAllowAScan` (the refusal without the permission is `BleTest`'s `e_a`/`e_c`, which now revoke
 `BLUETOOTH_ADMIN`/`BLUETOOTH` below target 31 and assert Ble.java's message; an emulator cannot revoke a normal permission).
 Notifications are not asserted in a test run: `Notifications.allowed()` (shown below target 33, else only with

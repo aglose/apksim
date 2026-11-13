@@ -7,6 +7,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -25,6 +27,12 @@ class CompatChangeTest {
   private val sinceTarget36 = 364980165L  // ENABLE_FILE_SYSTEM_ACCESS
   private val sinceTarget37 = 297019750L  // RENDERSCRIPT_SCRIPTC_DEPRECATION_CHANGE_ID
   private val disabled = 189969744L  // DOWNSCALE_65
+
+  /** The ids above are for an app of target 36; a target-28 build (docs/conformance.md) has other answers. */
+  @Before
+  fun theIdsAreForTarget36() {
+    assumeTrue(instrumentation.targetContext.applicationInfo.targetSdkVersion == 36)
+  }
 
   private val compatChanges = Class.forName("android.app.compat.CompatChanges")
 
