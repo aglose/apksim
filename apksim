@@ -42,7 +42,8 @@ Usage: apksim [options] APP.apk
        apksim --version | --train | --stop-standbys
 
 Common options (each is listed with its values in the README, "Devices and launch options"):
-  --device NAME|WxH[@density]   phone, foldable, tablet, desktop, tv, or a size in dp (density 0.75-4)
+  --device NAME|WxH[@density]   phone, foldable, tablet, desktop, tv, pixel-10-pro-fold, or a size in dp (density 0.75-4)
+  --fold open|half|closed       a folding device's posture at launch (closed: its cover display)
   --skin NAME                   a stored device skin drawn around the screen, and its device (docs/skins.md)
   --activity PKG/.Act           start this activity instead of the launcher one
   --appearance dark|light, --locale xx-YY, --timezone ZONE, --font-scale N
@@ -138,6 +139,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # classes translated with line numbers and local variables (their own class cache).
     --debug) EXTRA+=("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=$2" "-Dapksim.debugInfo=true"); shift 2 ;;
     --device) EXTRA+=("-Dapksim.device=$2"); shift 2 ;;
+    # A folding device's posture at launch (pixel-10-pro-fold): closed starts on the cover display.
+    --fold)
+      [[ "$2" =~ ^(open|half|closed)$ ]] || { echo "--fold takes open, half or closed" >&2; exit 2; }
+      EXTRA+=("-Dapksim.fold=$2"); shift 2 ;;
     # A stored skin (docs/skins.md): its frame around the screen, its cutout and corners told to the app, and its
     # device unless --device names one.
     --skin) EXTRA+=("-Dapksim.skin=$2"); shift 2 ;;
@@ -362,7 +367,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
-      -Dapksim.device=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
+      -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;

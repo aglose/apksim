@@ -1,8 +1,8 @@
 # Skins
 
 A skin is a device frame image plus the device it frames. apksim stores them and `apksim skin` adds, shows and
-exports them. They are local data: nothing is built in, anyone can add their own, and a private skin stays on the
-machine. This page is the format, the commands, and how a running instance draws one ("Drawing"). `serve` and `beam`
+exports them. They are local data: anyone can add their own, and a private skin stays on the machine; apksim itself
+carries one, for its folding device ("Built-in skins"). This page is the format, the commands, and how a running instance draws one ("Drawing"). `serve` and `beam`
 hand them to a browser tab, which draws the frame around its canvas (docs/serve.md "Skins").
 
 ## Format
@@ -41,6 +41,10 @@ mask.png          optional: the screen's shape (alpha), for round or notched scr
 - `frame-land.png` is the frame for the display turned to ROTATION_90 (the device's top edge on the left), the same
   image turned and redrawn (lighting, buttons); it must be `frame.png`'s size turned, or it is not used.
 - `source` is free text shown by `skin show`, for attribution.
+- `cover` is optional, for a folding device: `{"frame": "cover.png", "screen": {...}, "cutout": {...}}`, the frame
+  around the cover display, with the same fields as the skin's own. It is drawn, and its corners and cutout told to
+  the app, while the device is closed (`fold closed`, `--fold closed`); the skin stays on through a fold. `skin add`
+  has no option for it: write it into skin.json by hand.
 - The aspect of `screen` must match the device's pixels within 1%, or the skin is refused with both sizes.
 
 ## Commands
@@ -120,6 +124,16 @@ rotation, `skin off`, a device switch and an unknown skin's exit; with `--window
 the screen's corners, on the floating button and on the bezel (`window click X Y`, points of the window's content;
 `window` reports the content's size and the device pixels per point). CI runs it headless in the Linux image
 (`ci-smoke.sh`).
+
+## Built-in skins
+
+`pixel-10-pro-fold` ("Pixel 10 Pro Fold") comes with apksim, inside apksim.jar (`runtime/src/main/resources/dev/apksim/skins/`),
+and is found after the store and the shared folders, so a stored skin of that name replaces it; `skin list` shows it as
+`built-in`. It frames `--device pixel-10-pro-fold` open (2076x2152, the camera in the screen's top right corner) and,
+through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre,
+the hinge on the left). A page of `serve` or `beam` gets only the open frame: closed, it draws none. Both frames are drawn by
+`scripts/gen-fold-skin.java` from the device's published sizes, not taken from artwork. In the Mac window a fold plays
+as the device closing or opening in this frame (AGENTS.md, `Fold`).
 
 ## Where skins are
 

@@ -48,7 +48,7 @@ final class Session {
   private static final int MIN_IN_FLIGHT = 2;
   /** Bytes sent and not yet acknowledged, past the first {@link #MIN_IN_FLIGHT} frames: a slow link sees current frames. */
   private static final long IN_FLIGHT_BYTES = 1 << 20;
-  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large");
+  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large", "pixel-10-pro-fold");
 
   final String id;
   final Catalog.App app;
@@ -1552,6 +1552,7 @@ final class Session {
     if (t.matches("rotate (left|right|portrait|landscape)")) return t;
     if (t.matches("appearance (dark|light|toggle)")) return t;
     if (t.matches("device (" + String.join("|", DEVICES) + ")")) return t;
+    if (t.matches("fold (open|half|closed|toggle|angle (1[0-7][0-9]|180|[1-9]?[0-9]))")) return t;
     if (t.matches("permission (allow|deny)")) return t;
     if (t.matches("locale [a-z]{2,3}(-[A-Z]{2})?")) return t;
     if (t.matches("fontscale (0\\.85|1|1\\.0|1\\.15|1\\.3|1\\.5|1\\.8|2|2\\.0)")) return t;

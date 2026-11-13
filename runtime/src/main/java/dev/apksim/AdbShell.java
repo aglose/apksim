@@ -1729,6 +1729,9 @@ final class AdbShell {
       case "thermal" -> {
         return Thermal.command(a);
       }
+      case "fold" -> {
+        return Fold.testRunCommand(a);  // until the next test's setup
+      }
       case "sensor" -> {
         return Sensors.command(a);  // until the next test's setup
       }

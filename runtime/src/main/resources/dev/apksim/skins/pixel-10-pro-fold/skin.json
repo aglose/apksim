@@ -1,0 +1,15 @@
+{
+  "name": "pixel-10-pro-fold",
+  "title": "Pixel 10 Pro Fold",
+  "frame": "frame.png",
+  "screen": { "x": 74, "y": 72, "width": 2076, "height": 2152, "cornerRadius": 104 },
+  "device": "pixel-10-pro-fold",
+  "kind": "foldable",
+  "cutout": { "type": "hole", "x": 1980, "y": 164, "radius": 30 },
+  "cover": {
+    "frame": "cover.png",
+    "screen": { "x": 81, "y": 72, "width": 1080, "height": 2364, "cornerRadius": 96 },
+    "cutout": { "type": "hole", "x": 621, "y": 156, "radius": 30 }
+  },
+  "source": { "author": "apksim (drawn by scripts/gen-fold-skin.java)", "license": "Apache-2.0" }
+}

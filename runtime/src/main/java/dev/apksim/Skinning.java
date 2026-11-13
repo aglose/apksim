@@ -28,6 +28,15 @@ final class Skinning {
   /** Its images, read once when it is turned on. */
   private static byte[] frame, frameLand, mask;
   private static int frameW, frameH, frameLandW, frameLandH;
+  /** A folding device's skin: the frame around its cover display (Skin.cover), drawn while it is closed. */
+  private static byte[] coverFrame;
+  private static int coverW, coverH;
+
+  /** The part of the skin in use: its cover frame while a folding device is closed, else the skin itself. */
+  private static Skin part(Skin s) {
+    return s != null && s.cover != null && coverFrame != null && Fold.spec(Device.peek()) != null
+        && Fold.state() == Fold.State.CLOSED ? s.cover : s;
+  }
 
   /**
    * Where everything falls for one display size and rotation, in device pixels of the turned frame. The hole is the
@@ -78,7 +87,7 @@ final class Skinning {
     if (given == null || given.isEmpty()) {
       System.setProperty("apksim.device", s.device);
       // With its kind (a custom-size watch or TV skin), which the size alone would make a phone or a tablet.
-      Device.setCurrent(deviceOf(s));
+      Device.setCurrent(Fold.initial(deviceOf(s)));  // --fold closed: the cover display
     } else {
       Device d;
       try {
@@ -86,7 +95,7 @@ final class Skinning {
       } catch (IllegalArgumentException e) {
         return true;  // Main reports the bad --device
       }
-      if (!fits(s, d.widthPx(), d.heightPx())) {
+      if (!fits(s, d, d.widthPx(), d.heightPx())) {
         System.err.println("[apksim] --skin " + name + ": --device " + given + " (" + d.widthPx() + "x" + d.heightPx()
             + " px) does not have the skin's screen shape (" + s.width + "x" + s.height + "), so no skin is drawn");
         clear();
@@ -119,14 +128,15 @@ final class Skinning {
    * told (cutout, corners) depends on it, and a replay elsewhere may not have the skin stored.
    */
   static java.util.Map<String, Object> shape() {
-    Skin s = skin;
+    Skin s = part(skin);
     if (s == null) return null;
+    boolean cover = s != skin;
     java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
     m.put("name", s.name);
     m.put("device", s.device);
     if (s.kind != null) m.put("kind", s.kind);
-    m.put("frameWidth", frameW);
-    m.put("frameHeight", frameH);
+    m.put("frameWidth", cover ? coverW : frameW);
+    m.put("frameHeight", cover ? coverH : frameH);
     m.put("x", s.x);
     m.put("y", s.y);
     m.put("width", s.width);
@@ -274,7 +284,7 @@ final class Skinning {
   }
 
   private static void clear() {
-    frame = frameLand = mask = null;
+    frame = frameLand = mask = coverFrame = null;
   }
 
   /** Every stored skin's name, for the menu (the store, then APKSIM_SKINS's folders). */
@@ -340,6 +350,23 @@ final class Skinning {
         throw new IOException("skin " + s.name + ": mask " + s.mask + " is " + ms[0] + "x" + ms[1] + " but the screen is " + s.width + "x" + s.height);
       }
     }
+    byte[] cf = null;
+    int[] cfs = null;
+    if (s.cover != null) {
+      Skin c = s.cover;
+      if (c.frame.contains("..") || c.frame.startsWith("/") || c.frame.contains("\\")) throw new IOException("skin " + s.name + ": " + c.frame + " must be a file inside the skin's folder");
+      cf = Files.readAllBytes(s.dir.resolve(c.frame));
+      cfs = pngSize(cf, c.frame);
+      if (c.width <= 0 || c.height <= 0 || c.cornerRadius < 0 || c.x < 0 || c.y < 0 || c.x + c.width > cfs[0] || c.y + c.height > cfs[1]) {
+        throw new IOException("skin " + s.name + ": the cover screen (" + c.x + "," + c.y + " " + c.width + "x" + c.height + ") does not fit in "
+            + c.frame + " (" + cfs[0] + "x" + cfs[1] + ")");
+      }
+    }
+    coverFrame = cf;
+    if (cf != null) {
+      coverW = cfs[0];
+      coverH = cfs[1];
+    }
     frame = f;
     frameW = fs[0];
     frameH = fs[1];
@@ -361,7 +388,12 @@ final class Skinning {
   }
 
   /** The display (either orientation) has the skin's screen shape, within 1% as `skin add` requires. */
-  static boolean fits(Skin s, int w, int h) {
+  static boolean fits(Skin s, Device d, int w, int h) {
+    // A folding device's either display; the cover's shape counts for no other device (a phone's is within 1% of it).
+    return fitsPart(s, w, h) || (s.cover != null && Fold.spec(d) != null && fitsPart(s.cover, w, h));
+  }
+
+  private static boolean fitsPart(Skin s, int w, int h) {
     double a = (double) Math.max(s.width, s.height) / Math.min(s.width, s.height);
     double b = (double) Math.max(w, h) / Math.min(w, h);
     return Math.abs(a / b - 1) <= 0.01;
@@ -369,8 +401,9 @@ final class Skinning {
 
   /** The layout for a display of w x h pixels at that rotation (0-3, Surface.ROTATION_*), or null with no skin. */
   static Layout layout(int w, int h, int rotation) {
-    Skin s = skin;
+    Skin s = part(skin);
     if (s == null) return null;
+    int frameW = s != skin ? coverW : Skinning.frameW, frameH = s != skin ? coverH : Skinning.frameH;
     int q = rotation & 3;
     // The screen's orientation once turned, against the display's: a quarter turn more when they differ.
     boolean screenLand = (q % 2 == 1) ? s.height > s.width : s.width > s.height;
@@ -387,14 +420,14 @@ final class Skinning {
     int sx = hx + (hw - w) / 2;
     int sy = hy + (hh - h) / 2;
     int radius = (int) Math.round(s.cornerRadius * k);
-    return new Layout(q, k, outerW, outerH, hx, hy, hw, hh, sx, sy, w, h, radius, cutout(s, q, k, sx, sy, w, h));
+    return new Layout(q, k, outerW, outerH, hx, hy, hw, hh, sx, sy, w, h, radius, cutout(s, q, k, sx, sy, w, h, frameW, frameH));
   }
 
   /**
    * The cutout's bounds on the display: a hole is its centre and radius in frame pixels (`cutout` in skin.json); one
    * given with width and height instead of a radius is that rectangle around its centre (a notch, a pill).
    */
-  private static int[] cutout(Skin s, int q, double k, int sx, int sy, int w, int h) {
+  private static int[] cutout(Skin s, int q, double k, int sx, int sy, int w, int h, int frameW, int frameH) {
     Map<String, Object> c = s.cutout;
     if (c == null) return null;
     double cx = num(c.get("x")), cy = num(c.get("y"));
@@ -438,6 +471,10 @@ final class Skinning {
   /** The frame image for this layout and the quarter turns still to apply to it (frame-land.png is the frame at q 1). */
   static byte[] frameImage(Layout l, int[] turnsOut) {
     if (frame == null) return null;  // a recorded shape: nothing to draw
+    if (part(skin) != skin) {
+      turnsOut[0] = l.quarterTurns();
+      return coverFrame;
+    }
     if (frameLand != null && l.quarterTurns() % 2 == 1) {
       turnsOut[0] = l.quarterTurns() == 1 ? 0 : 2;
       return frameLand;
@@ -447,6 +484,7 @@ final class Skinning {
   }
 
   static byte[] maskImage() {
+    if (part(skin) != skin) return null;
     return mask;
   }
 

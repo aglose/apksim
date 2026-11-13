@@ -86,6 +86,8 @@ dependencies {
   implementation("androidx.compose.material:material-icons-core")
   // Window size classes: a navigation rail and a grid once the window is 600 dp wide (apksim: `device tablet`, `size`)
   implementation(libs.androidx.compose.material3.adaptive)
+  // apksim://fold: WindowInfoTracker's folding feature (apksim's androidx.window.extensions stand-in)
+  implementation(libs.androidx.window)
   // Video: the Settings tab's "Play clip" (HEVC + AAC through MediaCodec and AudioTrack)
   implementation(libs.androidx.media3.exoplayer)
   // apksim://camera: a CameraX preview and frame analysis on apksim's fake camera (--camera fake).

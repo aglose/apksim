@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <IOSurface/IOSurface.h>
+#import <Metal/Metal.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -114,7 +115,7 @@ enum {
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
   TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY, TAG_CAMERA_OFF, TAG_CAMERA_PATTERN, TAG_CAMERA_IMAGE,
-  TAG_SCREENSHOT_SKIN,
+  TAG_SCREENSHOT_SKIN, TAG_DEVICE_PIXEL_FOLD, TAG_FOLD,
   // Device > Skin: None, then one item per stored skin (SimWindow.TAG_SKIN_FIRST).
   TAG_SKIN_FIRST = 200,
 };
@@ -129,6 +130,7 @@ static BOOL scriptedLive;  // a scripted drag (`window WxH MS`) is under way: tr
 static BOOL selfResizing;  // a resize this file asked for (zoom, nativeResize), not the user's
 static float openScale;  // device pixels per point at actual size: the display's density
 static NSWindow *simWindow;
+static NSWindow *foldWindow;  // the fold animation's overlay while one runs (below)
 static int launchMode;  // --window, applied once NSApp has finished launching
 static NSRunningApplication *launchedOver;  // the app that was frontmost when this one started
 
@@ -267,6 +269,7 @@ static void buildMenus(NSMenu *bar) {
   addItem(type, @"Tablet", TAG_DEVICE_TABLET, @"3", cmd | shift);
   addItem(type, @"Desktop", TAG_DEVICE_DESKTOP, @"4", cmd | shift);
   addItem(type, @"TV", TAG_DEVICE_TV, @"5", cmd | shift);
+  addItem(type, @"Pixel 10 Pro Fold", TAG_DEVICE_PIXEL_FOLD, @"6", cmd | shift);
   typeItem.submenu = type;
   [device addItem:typeItem];
   // Stored skins (apksim skin list), filled in by the Java side (nativeSetSkinMenu).
@@ -277,6 +280,7 @@ static void buildMenus(NSMenu *bar) {
   skinItem.submenu = skinMenu;
   [device addItem:skinItem];
   [device addItem:[NSMenuItem separatorItem]];
+  addItem(device, @"Fold / Unfold", TAG_FOLD, @"f", cmd | shift);  // a folding device: cover display or inner display
   addItem(device, @"Rotate Left", TAG_ROTATE_LEFT, left, cmd);
   addItem(device, @"Rotate Right", TAG_ROTATE_RIGHT, right, cmd);
   [device addItem:[NSMenuItem separatorItem]];
@@ -860,7 +864,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env
       barsLayer.zPosition = 10;
       [frameLayer addSublayer:barsLayer];
       barsStatus = barsNav = -1;  // new layers (first call, or after a zoom rebuilt them): lay them out below
-      CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+      CGFloat scale = simWindow.backingScaleFactor ?: 2;
       statusLayer = [CALayer layer];
       [barsLayer addSublayer:statusLayer];
       clockLayer = [CATextLayer layer];
@@ -912,7 +916,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env
 // 0 = actual size (as opened), 1 = fit the screen's height, 2 = zoom in, 3 = zoom out.
 static void layoutAfterZoom(void);
 static void setZoom(int how) {
-  NSWindow *win = NSApp.windows.firstObject;
+  NSWindow *win = simWindow;
   if (!win) return;
   float s = deviceScale;
   NSRect visible = win.screen.visibleFrame;
@@ -946,7 +950,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeZoom(JNIEnv *env, jclass 
 // The window's content to the display's size (or the skin's frame) at the current zoom, its top left corner kept and
 // on the Mac's screen; actualSize goes back to actual size first, zoomed out only as far as the screen needs.
 static void sizeWindow(BOOL actualSize) {
-  NSWindow *win = NSApp.windows.firstObject;
+  NSWindow *win = simWindow;
   // While the user drags an edge the window is already the size asked for (to a pixel): leave it to them.
   if (win.inLiveResize || scriptedLive || (win.styleMask & NSWindowStyleMaskFullScreen)) return;
   int w = outerW(), h = outerH();
@@ -960,11 +964,19 @@ static void sizeWindow(BOOL actualSize) {
   NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
   NSRect content = [win contentRectForFrameRect:frame];
   // Keep the window's top left corner where it was, and on screen.
-  content.origin.y += content.size.height - size.height;
+  if (foldWindow) {
+    // A fold: the device stays where it is, so about the content's centre.
+    content.origin.x += (content.size.width - size.width) / 2;
+    content.origin.y += (content.size.height - size.height) / 2;
+  } else {
+    content.origin.y += content.size.height - size.height;
+  }
   content.size = size;
   frame = [win frameRectForContentRect:content];
+  if (foldWindow && NSMaxY(frame) > NSMaxY(visible)) frame.origin.y = NSMaxY(visible) - frame.size.height;
   if (NSMinY(frame) < NSMinY(visible)) frame.origin.y = NSMinY(visible);
   if (NSMaxX(frame) > NSMaxX(visible)) frame.origin.x = MAX(NSMinX(visible), NSMaxX(visible) - frame.size.width);
+  if (foldWindow && NSMinX(frame) < NSMinX(visible)) frame.origin.x = NSMinX(visible);
   selfResizing = YES;
   [win setFrame:frame display:YES animate:NO];
   selfResizing = NO;
@@ -1016,7 +1028,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTitle(JNIEnv *env, jcl
   const char *t = (*env)->GetStringUTFChars(env, title, NULL);
   NSString *ns = [NSString stringWithUTF8String:t];
   (*env)->ReleaseStringUTFChars(env, title, t);
-  onMain(^{ NSApp.windows.firstObject.title = ns; });
+  onMain(^{ simWindow.title = ns; });
 }
 
 // The status bar clock shows this zone (an IANA name), as the device's own clock would.
@@ -1090,6 +1102,406 @@ static void layoutAfterZoom(void) {
   buildKeyboard();  // laid out in points too
 }
 
+// ---------------------------------------------------------------- fold animation
+
+// A folding device closing or opening (`fold`): the display changes size at once underneath, as on a device, and
+// meanwhile the window is hidden and a transparent overlay plays the fold with the device as it is drawn (its skin's
+// frame around the screen, or the bare screen without one). The device is a book: the right half stays face up and
+// slides to where the closed device will be; the left half swings about the hinge towards the viewer and comes down
+// on it, the inner display's left half on its front and the closed device (the cover display in its frame) on its
+// back, with the rail's thickness at its outer edge. Opening is the same run backwards. nativeFoldBegin takes the
+// device's picture before the switch; nativeFoldRun waits for the new display's first frames, takes its picture and
+// plays. The window is resized about its centre meanwhile (sizeWindow), so the device folds in place. Nothing here
+// runs without a visible window.
+static CGImageRef foldOldImage;
+static NSRect foldOldRect;  // the old device on the Mac's screen, in the overlay's coordinates
+static long foldToken;      // a newer fold supersedes one still waiting or playing
+
+static CGImageRef surfaceImage(IOSurfaceRef s) {
+  if (!s) return NULL;
+  size_t w = IOSurfaceGetWidth(s), h = IOSurfaceGetHeight(s);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return NULL;
+  IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL);
+  uint8_t *src = IOSurfaceGetBaseAddress(s), *dst = CGBitmapContextGetData(ctx);
+  size_t stride = IOSurfaceGetBytesPerRow(s), row = CGBitmapContextGetBytesPerRow(ctx);
+  for (size_t y = 0; y < h; y++) memcpy(dst + y * row, src + y * stride, w * 4);
+  IOSurfaceUnlock(s, kIOSurfaceLockReadOnly, NULL);
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  return img;
+}
+
+static void addRoundedRect(CGContextRef ctx, CGRect r, CGFloat radius) {
+  radius = MAX(0, MIN(radius, MIN(r.size.width, r.size.height) / 2));
+  CGPathRef p = CGPathCreateWithRoundedRect(r, radius, radius, NULL);
+  CGContextAddPath(ctx, p);
+  CGPathRelease(p);
+}
+
+// The device as the window shows it now, in device pixels: the screen's picture, inside the skin's frame when one is
+// on (black glass behind it, the screen clipped to its corners), transparent outside the device.
+static CGImageRef deviceImage(void) {
+  CGImageRef screen = surfaceImage((__bridge IOSurfaceRef)frameLayer.contents);
+  if (!screen || !skinOn || !skinFrame) return screen;
+  size_t W = skinOuterW, H = skinOuterH;
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, W, H, 8, 0, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return screen;
+  // The skin's rectangles are top down; the context is bottom up.
+  addRoundedRect(ctx, CGRectMake(skinHole[0], (CGFloat)H - skinHole[1] - skinHole[3], skinHole[2], skinHole[3]), skinRadius);
+  CGContextSetRGBFillColor(ctx, 0, 0, 0, 1);
+  CGContextFillPath(ctx);
+  CGContextSaveGState(ctx);
+  CGRect sr = CGRectMake(skinScreenX, (CGFloat)H - skinScreenY - devH, devW, devH);
+  addRoundedRect(ctx, sr, skinRadius);
+  CGContextClip(ctx);
+  CGContextDrawImage(ctx, sr, screen);
+  // The status bar and gesture handle, which are layers over the screen (laid out top down, in points).
+  if (barsLayer) {
+    CGContextTranslateCTM(ctx, sr.origin.x, sr.origin.y + sr.size.height);
+    CGContextScaleCTM(ctx, deviceScale, -deviceScale);
+    [barsLayer renderInContext:ctx];
+  }
+  CGContextRestoreGState(ctx);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, W, H), skinFrame);
+  CGImageRelease(screen);
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  return img;
+}
+
+// The device's rectangle (the window's content: the skin's frame, or the screen) in the overlay window, which covers
+// the Mac screen the window is on.
+static NSRect foldDeviceRect(void) {
+  NSView *content = simWindow.contentView;
+  NSRect r = [simWindow convertRectToScreen:[content convertRect:content.bounds toView:nil]];
+  NSRect screen = foldWindow.frame;
+  r.origin.x -= screen.origin.x;
+  r.origin.y -= screen.origin.y;
+  return r;
+}
+
+static void foldEnd(void) {
+  if (foldWindow && getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold end: window shown again");
+  if (foldWindow) {
+    simWindow.alphaValue = 1;
+    [foldWindow orderOut:nil];
+    foldWindow = nil;
+  }
+  if (foldOldImage) CGImageRelease(foldOldImage);
+  foldOldImage = NULL;
+}
+
+// One property's run from its value with the device open to its value closed, over a part of the fold (start and
+// length as fractions of a closing); an opening plays the same part backwards.
+static CABasicAnimation *foldAnim(NSString *key, id open, id closed, double start, double length, BOOL closing, double total, CFTimeInterval t0) {
+  CABasicAnimation *a = [CABasicAnimation animationWithKeyPath:key];
+  a.fromValue = closing ? open : closed;
+  a.toValue = closing ? closed : open;
+  a.beginTime = t0 + (closing ? start : 1 - start - length) * total;
+  a.duration = length * total;
+  a.fillMode = kCAFillModeBoth;
+  a.removedOnCompletion = NO;
+  a.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  return a;
+}
+
+static CALayer *foldShade(CGRect frame) {
+  CALayer *shade = [CALayer layer];
+  shade.frame = frame;
+  shade.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+  shade.opacity = 0;
+  return shade;
+}
+
+// How far in from the picture's left edge the device starts, half way up, as a fraction of its width (a skin's frame
+// leaves a margin for its buttons); *rounded: the picture's corner is empty (a device's shape, not a bare screen).
+static CGFloat foldLeftInset(CGImageRef img, BOOL *rounded) {
+  size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
+  *rounded = NO;
+  if (w == 0 || h == 0 || w > 8192) return 0;
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, w, 1, 8, w * 4, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return 0;
+  uint8_t *px = CGBitmapContextGetData(ctx);
+  CGContextDrawImage(ctx, CGRectMake(0, -(CGFloat)(h / 2), w, h), img);  // the middle row
+  size_t x = 0;
+  while (x < w / 8 && px[x * 4 + 3] < 128) x++;
+  memset(px, 0, w * 4);
+  CGContextDrawImage(ctx, CGRectMake(0, 1 - (CGFloat)h, w, h), img);  // the top row
+  *rounded = px[3] < 128;
+  CGContextRelease(ctx);
+  return (CGFloat)x / w;
+}
+
+// The fold's layers, for a parent in the overlay's coordinates moved by -origin: the open device's picture at
+// openRect, the closed one's at closedRect, animated from t0 over `seconds`.
+static CALayer *foldScene(CGImageRef openImage, CGImageRef closedImage, CGRect openRect, CGRect closedRect, CGPoint origin,
+                          BOOL closing, double seconds, CFTimeInterval t0) {
+  CGFloat Wh = openRect.size.width / 2, H = openRect.size.height;
+  CGFloat thick = H * 0.034;  // one half's thickness: 5.2 of 155 mm
+  // Perspective about the middle of where the device is, open and closed.
+  CALayer *stage = [CALayer layer];
+  CGRect all = CGRectUnion(openRect, closedRect);
+  stage.frame = CGRectOffset(all, -origin.x, -origin.y);
+  CATransform3D perspective = CATransform3DIdentity;
+  perspective.m34 = -1.0 / (2.4 * openRect.size.width);
+  stage.sublayerTransform = perspective;
+  CGPoint so = all.origin;  // the stage's own origin in the overlay
+
+  // The device: its origin is the hinge's middle. Closed, the right half is the closed device's rectangle, pushed
+  // back by a half's thickness so the cover display on top of it is in the screen's plane (no perspective left).
+  CATransformLayer *device = [CATransformLayer layer];
+  device.bounds = CGRectMake(-Wh, -H / 2, 2 * Wh, H);
+  CGPoint openAt = CGPointMake(CGRectGetMidX(openRect) - so.x, CGRectGetMidY(openRect) - so.y);
+  CGPoint closedAt = CGPointMake(CGRectGetMinX(closedRect) - so.x, CGRectGetMidY(closedRect) - so.y);
+  CATransform3D closedShape = CATransform3DMakeScale(closedRect.size.width / Wh, closedRect.size.height / H, 1);
+  closedShape.m43 = -thick;
+  device.position = closing ? openAt : closedAt;
+  [stage addSublayer:device];
+  [device addAnimation:foldAnim(@"position", [NSValue valueWithPoint:openAt], [NSValue valueWithPoint:closedAt], 0, 1, closing, seconds, t0) forKey:@"move"];
+  [device addAnimation:foldAnim(@"transform", [NSValue valueWithCATransform3D:CATransform3DIdentity],
+                                [NSValue valueWithCATransform3D:closedShape], 0, 1, closing, seconds, t0) forKey:@"shape"];
+
+  // The right half: face up throughout, in the left half's shadow as that comes over.
+  CALayer *right = [CALayer layer];
+  right.frame = CGRectMake(0, -H / 2, Wh, H);
+  right.contents = (__bridge id)openImage;
+  right.contentsRect = CGRectMake(0.5, 0, 0.5, 1);
+  right.contentsGravity = kCAGravityResize;
+  right.edgeAntialiasingMask = kCALayerRightEdge | kCALayerBottomEdge | kCALayerTopEdge;  // not the hinge: no seam
+  [device addSublayer:right];
+  CAGradientLayer *shadow = [CAGradientLayer layer];
+  shadow.frame = right.bounds;
+  shadow.startPoint = CGPointMake(0, 0.5);
+  shadow.endPoint = CGPointMake(1, 0.5);
+  shadow.colors = @[(id)[NSColor colorWithWhite:0 alpha:0.85].CGColor, (id)[NSColor colorWithWhite:0 alpha:0.25].CGColor];
+  shadow.mask = [CALayer layer];  // the half's own shape: no shadow on the transparent corners
+  shadow.mask.frame = shadow.bounds;
+  shadow.mask.contents = (__bridge id)openImage;
+  shadow.mask.contentsRect = right.contentsRect;
+  shadow.mask.contentsGravity = kCAGravityResize;
+  shadow.opacity = 0;
+  [right addSublayer:shadow];
+  // Covered at the end but for its square corners at the hinge, which the closed device's round ones would show.
+  [right addAnimation:foldAnim(@"opacity", @1, @0, 0.86, 0.14, closing, seconds, t0) forKey:@"cover"];
+  [shadow addAnimation:foldAnim(@"opacity", @0, @1, 0.1, 0.6, closing, seconds, t0) forKey:@"shade"];
+
+  // The left half: turns half a turn about the hinge, its outer edge towards the viewer.
+  CATransformLayer *left = [CATransformLayer layer];
+  left.bounds = CGRectMake(-Wh, -H / 2, Wh, H);
+  left.anchorPoint = CGPointMake(1, 0.5);
+  left.position = CGPointZero;
+  [device addSublayer:left];
+  [left addAnimation:foldAnim(@"transform.rotation.y", @0, @(M_PI), 0, 1, closing, seconds, t0) forKey:@"fold"];
+  CALayer *front = [CALayer layer];
+  front.frame = left.bounds;
+  front.contents = (__bridge id)openImage;
+  front.contentsRect = CGRectMake(0, 0, 0.5, 1);
+  front.contentsGravity = kCAGravityResize;
+  front.doubleSided = NO;
+  front.edgeAntialiasingMask = kCALayerLeftEdge | kCALayerBottomEdge | kCALayerTopEdge;
+  [left addSublayer:front];
+  CALayer *frontShade = foldShade(front.bounds);
+  frontShade.mask = [CALayer layer];
+  frontShade.mask.frame = front.bounds;
+  frontShade.mask.contents = (__bridge id)openImage;
+  frontShade.mask.contentsRect = front.contentsRect;
+  frontShade.mask.contentsGravity = kCAGravityResize;
+  [front addSublayer:frontShade];
+  [frontShade addAnimation:foldAnim(@"opacity", @0, @0.7, 0, 0.5, closing, seconds, t0) forKey:@"shade"];
+  // Its back: the closed device, a half's thickness behind the front and facing the other way.
+  CALayer *back = [CALayer layer];
+  back.frame = left.bounds;
+  back.contents = (__bridge id)closedImage;
+  back.contentsGravity = kCAGravityResize;
+  back.doubleSided = NO;
+  back.zPosition = -thick;
+  back.transform = CATransform3DMakeRotation(M_PI, 0, 1, 0);
+  [left addSublayer:back];
+  CALayer *backShade = foldShade(back.bounds);
+  backShade.mask = [CALayer layer];
+  backShade.mask.frame = back.bounds;
+  backShade.mask.contents = (__bridge id)closedImage;
+  backShade.mask.contentsGravity = kCAGravityResize;
+  [back addSublayer:backShade];
+  [backShade addAnimation:foldAnim(@"opacity", @0, @0.8, 0.5, 0.5, !closing, seconds, t0) forKey:@"shade"];
+  // The rail at its outer edge, between the two faces: seen while the half is on its way over.
+  BOOL rounded;
+  CGFloat inset = foldLeftInset(openImage, &rounded) * 2 * Wh, corner = rounded ? H * 0.07 : 0;
+  CAGradientLayer *rail = [CAGradientLayer layer];
+  rail.bounds = CGRectMake(0, 0, thick, H - 2 * corner);
+  rail.position = CGPointMake(-Wh + inset, 0);
+  rail.zPosition = -thick / 2;
+  rail.startPoint = CGPointMake(0, 0.5);
+  rail.endPoint = CGPointMake(1, 0.5);
+  rail.colors = @[(id)[NSColor colorWithSRGBRed:0.55 green:0.54 blue:0.52 alpha:1].CGColor,
+                  (id)[NSColor colorWithSRGBRed:0.86 green:0.85 blue:0.82 alpha:1].CGColor,
+                  (id)[NSColor colorWithSRGBRed:0.48 green:0.47 blue:0.45 alpha:1].CGColor];
+  rail.cornerRadius = rounded ? thick / 2 : 0;
+  rail.doubleSided = NO;
+  rail.transform = CATransform3DMakeRotation(-M_PI_2, 0, 1, 0);
+  [left addSublayer:rail];
+  return stage;
+}
+
+// APKSIM_FOLD_FRAMES=DIR: the animation's frames rendered off screen into DIR as PNGs (fold-closing-00.png ...), on
+// grey, since scripts cannot see the overlay window.
+static void foldDump(CGImageRef openImage, CGImageRef closedImage, CGRect openRect, CGRect closedRect, BOOL closing, const char *dir) {
+  CGRect crop = CGRectIntegral(CGRectInset(CGRectUnion(openRect, closedRect), -openRect.size.width * 0.35, -openRect.size.height * 0.2));
+  size_t w = crop.size.width, h = crop.size.height;
+  id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();
+  if (!gpu || w == 0 || h == 0) return;
+  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModeShared;
+  id<MTLTexture> tex = [gpu newTextureWithDescriptor:d];
+  id<MTLCommandQueue> queue = [gpu newCommandQueue];
+  CARenderer *r = [CARenderer rendererWithMTLTexture:tex options:@{kCARendererMetalCommandQueue : queue}];
+  CALayer *root = [CALayer layer];
+  root.frame = CGRectMake(0, 0, w, h);
+  root.backgroundColor = [NSColor colorWithWhite:0.88 alpha:1].CGColor;
+  CFTimeInterval t0 = CACurrentMediaTime() + 1;
+  [CATransaction begin];
+  [root addSublayer:foldScene(openImage, closedImage, openRect, closedRect, crop.origin, closing, 1.0, t0)];
+  [CATransaction commit];
+  r.layer = root;
+  r.bounds = root.bounds;
+  [CATransaction flush];
+  int frames = 13;
+  NSMutableData *pixels = [NSMutableData dataWithLength:w * h * 4];
+  for (int i = 0; i < frames; i++) {
+    [r beginFrameAtTime:t0 + (double)i / (frames - 1) timeStamp:NULL];
+    [r addUpdateRect:r.bounds];
+    [r render];
+    [r endFrame];
+    id<MTLCommandBuffer> sync = [queue commandBuffer];
+    [sync commit];
+    [sync waitUntilCompleted];
+    [tex getBytes:pixels.mutableBytes bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+    uint8_t *px = pixels.mutableBytes, tmp[w * 4];  // the texture's rows are bottom up
+    for (size_t y = 0; y < h / 2; y++) {
+      memcpy(tmp, px + y * w * 4, w * 4);
+      memcpy(px + y * w * 4, px + (h - 1 - y) * w * 4, w * 4);
+      memcpy(px + (h - 1 - y) * w * 4, tmp, w * 4);
+    }
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(pixels.mutableBytes, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(cs);
+    CGImageRef img = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    NSString *path = [NSString stringWithFormat:@"%s/fold-%s-%02d.png", dir, closing ? "closing" : "opening", i];
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+    CGImageRelease(img);
+  }
+  r.layer = nil;
+}
+
+static void foldPlay(BOOL closing, double seconds) {
+  CGImageRef newImage = deviceImage();
+  if (!newImage || !foldOldImage || !foldWindow) {
+    if (newImage) CGImageRelease(newImage);
+    foldEnd();
+    return;
+  }
+  NSRect newRect = foldDeviceRect();
+  if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold play: %s over %.2f s, new device %@, picture %zux%zu", closing ? "closing" : "opening", seconds, NSStringFromRect(newRect), CGImageGetWidth(newImage), CGImageGetHeight(newImage));
+  CGImageRef openImage = closing ? foldOldImage : newImage, closedImage = closing ? newImage : foldOldImage;
+  NSRect openRect = closing ? foldOldRect : newRect, closedRect = closing ? newRect : foldOldRect;
+  const char *dump = getenv("APKSIM_FOLD_FRAMES");
+  if (dump) foldDump(openImage, closedImage, openRect, closedRect, closing, dump);
+  CALayer *root = foldWindow.contentView.layer;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  long token = foldToken;
+  [CATransaction setCompletionBlock:^{
+    if (token == foldToken) foldEnd();
+  }];
+  CALayer *scene = foldScene(openImage, closedImage, openRect, closedRect, CGPointZero, closing, seconds, CACurrentMediaTime());
+  root.sublayers = nil;
+  [root addSublayer:scene];
+  [CATransaction commit];
+  CGImageRelease(newImage);
+}
+
+// Before the display changes: 1 when an animation will play (a visible window with a frame on it).
+JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env, jclass c) {
+  __block BOOL ok = NO;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  onMain(^{
+    foldToken++;
+    foldEnd();
+    NSWindow *win = simWindow;
+    if (win && win.visible && !win.miniaturized && !(win.styleMask & NSWindowStyleMaskFullScreen) && win.screen) {
+      foldOldImage = deviceImage();
+      if (foldOldImage) {
+        foldWindow = [[NSWindow alloc] initWithContentRect:win.screen.frame styleMask:NSWindowStyleMaskBorderless
+                                                   backing:NSBackingStoreBuffered defer:NO];
+        foldWindow.releasedWhenClosed = NO;
+        foldWindow.opaque = NO;
+        foldWindow.backgroundColor = NSColor.clearColor;
+        foldWindow.hasShadow = NO;
+        foldWindow.ignoresMouseEvents = YES;
+        foldWindow.contentView.wantsLayer = YES;
+        foldOldRect = foldDeviceRect();
+        CALayer *old = [CALayer layer];
+        old.frame = foldOldRect;
+        old.contents = (__bridge id)foldOldImage;
+        old.contentsGravity = kCAGravityResize;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        [foldWindow.contentView.layer addSublayer:old];
+        [CATransaction commit];
+        // Above the window, but not its child: a child window moves with its parent, and the window is about to be
+        // resized about its centre under an overlay whose rectangles must stay put.
+        foldWindow.level = win.level;
+        [foldWindow orderWindow:NSWindowAbove relativeTo:win.windowNumber];
+        [CATransaction flush];
+        win.alphaValue = 0;  // the device alone until the fold is over: no title bar, no window changing shape
+        ok = YES;
+        // APKSIM_FOLD_DEBUG=1 logs the animation's steps (scripts cannot see the overlay).
+        if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold begin: old device %@ on overlay %@, picture %zux%zu", NSStringFromRect(foldOldRect), NSStringFromRect(foldWindow.frame), CGImageGetWidth(foldOldImage), CGImageGetHeight(foldOldImage));
+      }
+    }
+    dispatch_semaphore_signal(done);
+  });
+  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+  return ok;
+}
+
+// After the display changed: plays once the new display has drawn two frames (the first after a recreate may be
+// partial), or after 0.6 s with whatever is there.
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeFoldRun(JNIEnv *env, jclass c, jboolean closing, jint ms) {
+  onMain(^{
+    if (!foldWindow) return;
+    long token = foldToken, from = commits;
+    __block int polls = 0;
+    // The window is invisible until the fold ends: whatever keeps the animation from finishing (the app hidden, the
+    // display asleep), it comes back.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ms / 1000.0 + 2.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (token == foldToken && foldWindow) foldEnd();
+    });
+    NSTimer *wait = [NSTimer timerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) {
+      if (token != foldToken) {
+        [t invalidate];
+        return;
+      }
+      polls++;
+      if ((commits >= from + 2 && frameLayer.contents) || polls > 36) {
+        [t invalidate];
+        foldPlay(closing, ms / 1000.0);
+      }
+    }];
+    [NSRunLoop.mainRunLoop addTimer:wait forMode:NSRunLoopCommonModes];
+  });
+}
+
 // ---------------------------------------------------------------- skins
 
 // The frame view: the window's content while a skin is on, with the screen view (SimView) inside it at the skin's
@@ -1140,7 +1552,7 @@ static CGImageRef decodeImage(JNIEnv *env, jbyteArray bytes) {
 
 // Lays the screen view out in the frame view (skin on), or makes it the window's content again (off).
 static void layoutSkin(void) {
-  NSWindow *win = simView.window ?: NSApp.windows.firstObject;
+  NSWindow *win = simView.window ?: simWindow;
   if (!win || !simView) return;
   CGFloat s = deviceScale;
   if (!skinOn) {
@@ -1226,7 +1638,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkin(JNIEnv *env, jcla
   }
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
-    NSWindow *win = NSApp.windows.firstObject;
+    NSWindow *win = simWindow;
     if (!frame && !skinOn) {  // no skin before or after (a rotation without one): the window keeps its size and zoom
       dispatch_semaphore_signal(done);
       return;
@@ -1251,7 +1663,8 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkin(JNIEnv *env, jcla
     if (skinOn) win.styleMask &= ~NSWindowStyleMaskResizable;
     else win.styleMask |= NSWindowStyleMaskResizable;
     selfResizing = NO;
-    sizeWindow(!skinOn);  // back to actual size without one (a frame may have needed the window zoomed out)
+    // Back to actual size without one (a frame may have needed the window zoomed out), and for a fold's other frame.
+    sizeWindow(!skinOn || foldWindow != nil);
     selfResizing = YES;
     layoutAfterZoom();
     selfResizing = NO;
@@ -1289,7 +1702,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSkinMenu(JNIEnv *env, 
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeClick(JNIEnv *env, jclass c, jfloat x, jfloat y) {
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
-    NSWindow *win = NSApp.windows.firstObject;
+    NSWindow *win = simWindow;
     NSView *content = win.contentView;
     NSPoint p = [content convertPoint:NSMakePoint(x, content.isFlipped ? y : content.bounds.size.height - y) toView:nil];
     NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
@@ -1321,7 +1734,7 @@ static void buildKeyboard(void) {
   keyCount = 0;
   if (!keyboardPx || !frameLayer) return;
   CGFloat W = devW / deviceScale, H = devH / deviceScale, kh = keyboardPx / deviceScale;
-  CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+  CGFloat scale = simWindow.backingScaleFactor ?: 2;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   keyboardLayer = [CALayer layer];
@@ -1439,7 +1852,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShowBanner(JNIEnv *env, j
   onMain(^{
     if (!frameLayer) return;
     CGFloat W = devW / deviceScale, top = 48 / deviceScale + 6;
-    CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+    CGFloat scale = simWindow.backingScaleFactor ?: 2;
     if (!bannerLayer) {
       bannerLayer = [CALayer layer];
       bannerLayer.frame = CGRectMake(8, top, W - 16, 70);
@@ -1500,7 +1913,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeAsk(JNIEnv *env, jclass c
     for (NSString *b in buttons) [a addButtonWithTitle:b];
     askAlert = a;
     if (!simWindow.visible) [NSApp requestUserAttention:NSInformationalRequest];  // hidden or minimized: bounce the Dock icon
-    [a beginSheetModalForWindow:NSApp.windows.firstObject completionHandler:^(NSModalResponse r) {
+    [a beginSheetModalForWindow:simWindow completionHandler:^(NSModalResponse r) {
       askAnswer = (int)(r - NSAlertFirstButtonReturn);
       askAlert = nil;
     }];
@@ -1512,7 +1925,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeAskAnswer(JNIEnv *env, jc
 // Answered elsewhere (the control channel): take the sheet down without an answer.
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDismissAsk(JNIEnv *env, jclass c) {
   onMain(^{
-    if (askAlert) [NSApp.windows.firstObject endSheet:askAlert.window returnCode:NSModalResponseAbort];
+    if (askAlert) [simWindow endSheet:askAlert.window returnCode:NSModalResponseAbort];
   });
 }
 
@@ -1546,7 +1959,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativePickFiles(JNIEnv *env, jc
     }
     if (types.count) panel.allowedContentTypes = types;
     pickPanel = panel;
-    [panel beginSheetModalForWindow:NSApp.windows.firstObject completionHandler:^(NSModalResponse r) {
+    [panel beginSheetModalForWindow:simWindow completionHandler:^(NSModalResponse r) {
       NSMutableArray *paths = [NSMutableArray array];
       if (r == NSModalResponseOK) for (NSURL *u in panel.URLs) [paths addObject:u.path];
       @synchronized([MenuTarget class]) { pickResult = [paths componentsJoinedByString:@"\n"]; }
@@ -1563,7 +1976,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativePickResult(JNIEnv *env
 
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDismissPick(JNIEnv *env, jclass c) {
   onMain(^{
-    if (pickPanel) [NSApp.windows.firstObject endSheet:pickPanel returnCode:NSModalResponseCancel];
+    if (pickPanel) [simWindow endSheet:pickPanel returnCode:NSModalResponseCancel];
   });
 }
 
@@ -1583,7 +1996,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShare(JNIEnv *env, jclass
     (*env)->ReleaseStringUTFChars(env, jpath, p);
   }
   onMain(^{
-    NSView *view = NSApp.windows.firstObject.contentView;
+    NSView *view = simWindow.contentView;
     NSSharingServicePicker *picker = [[NSSharingServicePicker alloc] initWithItems:items];
     NSRect at = NSMakeRect(NSMidX(view.bounds) - 1, NSMidY(view.bounds) - 1, 2, 2);
     [picker showRelativeToRect:at ofView:view preferredEdge:NSRectEdgeMinY];
@@ -1655,7 +2068,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeWindowSnapshot(JNIEnv *en
   onMain(^{
     typedef CGImageRef (*CaptureFn)(CGRect, uint32_t, uint32_t, uint32_t);
     CaptureFn capture = (CaptureFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
-    NSWindow *win = NSApp.windows.firstObject;
+    NSWindow *win = simWindow;
     CGImageRef img = capture ? capture(CGRectNull, 1 << 3 /* IncludingWindow */, (uint32_t)win.windowNumber, 1 << 0 /* IgnoreFraming */) : NULL;
     if (!img) {
       NSLog(@"capture failed: fn=%p window=%ld", capture, (long)win.windowNumber);
@@ -1720,7 +2133,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeDisplayInfo(JNIEnv *en
   __block long committed = 0;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
-    maxFps = NSApp.windows.firstObject.screen.maximumFramesPerSecond;
+    maxFps = simWindow.screen.maximumFramesPerSecond;
     committed = commits;
     dispatch_semaphore_signal(done);
   });

@@ -192,6 +192,15 @@
                 <data android:scheme="apksim" android:host="timezone" />
             </intent-filter>
         </activity>
+        <!-- apksim://fold: the fold as Jetpack WindowManager reports it (the pixel-10-pro-fold device, `fold`). -->
+        <activity android:name=".FoldActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="fold" />
+            </intent-filter>
+        </activity>
         <!-- apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained: an uncaught exception (issue 104). -->
         <activity android:name=".CrashActivity" android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection|keyboardHidden">
