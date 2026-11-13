@@ -70,14 +70,25 @@ jobs:
           ln -s "$D/apksim" "$RUNNER_TEMP/bin/apksim"
           export APKSIM_HOME="$RUNNER_TEMP/state" APKSIM_STANDBY=0
           "$RUNNER_TEMP/bin/apksim" --version | grep -qx "apksim $VERSION"
-          "$RUNNER_TEMP/bin/apksim" --train --headless
-          "$RUNNER_TEMP/bin/apksim" --headless --no-network --exit-after-first-frame "$D/work/testapp.apk" 2>&1 | tee launch.log
+          du -h "dist/apksim-$VERSION-macos-arm64.tar.gz"
+          # The test app is not in the bundle: training downloads it and checks it against work/testapp.sha256.
+          [[ ! -e "$D/work/testapp.apk" && -s "$D/work/testapp.sha256" ]]
+          # A wrong file is refused, and nothing is trained on it.
+          mkdir -p "$RUNNER_TEMP/bad"
+          echo not-an-apk > "$RUNNER_TEMP/bad/apksim-testapp-$VERSION.apk"
+          if APKSIM_DOWNLOAD_URL="file://$RUNNER_TEMP/bad" "$RUNNER_TEMP/bin/apksim" --train --headless 2> bad.log; then
+            echo "training accepted a test app with the wrong checksum"; exit 1
+          fi
+          grep -q 'checksum mismatch' bad.log
+          [[ ! -e "$APKSIM_HOME/app.aot" && ! -e "$APKSIM_HOME/testapp-$VERSION.apk" ]]
+          APKSIM_DOWNLOAD_URL="file://$PWD/dist" "$RUNNER_TEMP/bin/apksim" --train --headless
+          "$RUNNER_TEMP/bin/apksim" --headless --no-network --exit-after-first-frame "$APKSIM_HOME/testapp-$VERSION.apk" 2>&1 | tee launch.log
           grep -q first-frame launch.log
       - name: Checksums
         run: |
           cd dist
-          # From the bundle just checked: setup.sh builds the test app, or downloads it without an Android SDK.
-          cp "$RUNNER_TEMP/inst/apksim-$VERSION-macos-arm64/work/testapp.apk" "apksim-testapp-$VERSION.apk"
+          # package-release.sh wrote the test app beside the tarball (setup.sh builds it, or downloads it without an
+          # Android SDK); the check above trained on it.
           shasum -a 256 "apksim-$VERSION-macos-arm64.tar.gz" "apksim-testapp-$VERSION.apk" > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@v4

@@ -153,9 +153,10 @@ This installs the release into `~/.local/share/apksim` and links `~/.local/bin/a
 
 ### What gets installed
 
-A release is self-contained: its own JDK 24 runtime, libraries and native code, a 449 MB download. The first launch
-builds a startup cache in the background (1-2 minutes, once per version). Launches are faster once it's built, and
-`apksim --train` builds it right away. An installed apksim keeps everything it writes in `~/.apksim`, or in
+A release is self-contained: its own JDK 24 runtime, libraries and native code, a ~310 MB download. The first launch
+builds a startup cache in the background (1-2 minutes, once per version), downloading the 22 MB test app it trains on.
+Launches are faster once it's built, and `apksim --train` builds it right away (`apksim --train APP.apk` trains on
+any APK, offline). An installed apksim keeps everything it writes in `~/.apksim`, or in
 `$APKSIM_HOME` if set: the startup cache, translated classes, app data and screenshots. `apksim --version` prints
 the installed version.
 

@@ -447,8 +447,12 @@ if [[ "$AOT_ROOT" != "$ROOT" && -f "$ROOT/work/release" && "$OS" == Darwin && -z
   TRAIN_PID=""; { read -r TRAIN_PID < "$STATE/train.pid"; } 2>/dev/null || true
   if [[ -z "$TRAIN_PID" ]] || ! kill -0 "$TRAIN_PID" 2>/dev/null; then
     mkdir -p "$STATE"
-    echo "[apksim] building the startup cache in the background (once, 1-2 minutes); launches are faster after that" >&2
-    "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless
+    # After a failed download (offline) train.sh tries again at most once an hour (train.failed), and says so in
+    # train.log rather than here at every launch.
+    [[ -f "$STATE/train.failed" ]] || \
+      echo "[apksim] building the startup cache in the background (once, 1-2 minutes, downloading the 22 MB test app" \
+        "it trains on); launches are faster after that" >&2
+    "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless --background
   fi
 fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then

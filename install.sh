@@ -53,4 +53,5 @@ case ":$PATH:" in
   *":$BIN:"*) echo "Try:  apksim app.apk" ;;
   *) echo "Add $BIN to your PATH (for zsh: echo 'export PATH=\"$BIN:\$PATH\"' >> ~/.zshrc), then:  apksim app.apk" ;;
 esac
-echo "The first launch builds a startup cache in the background (1-2 minutes, once); apksim --train builds it now."
+echo "The first launch builds a startup cache in the background (1-2 minutes, once, downloading the 22 MB test app it"
+echo "trains on); apksim --train builds it now."

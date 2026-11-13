@@ -1487,8 +1487,14 @@ config" in every journey that showed a live camera. Without a library the shadow
 ## Releases (Homebrew, install.sh)
 `scripts/package-release.sh VERSION` turns a built checkout (`scripts/setup.sh --no-train`) into
 `dist/apksim-VERSION-macos-arm64.tar.gz`: the launcher, `apksim.jar`, `work/lib` (without `nativeruntime-dist`, whose
-fonts and natives are already in `work/runtime`), `work/runtime`, a jlink'ed JDK 24 in `work/jre` (`work/jdk.path`),
-the test app, and `work/release` (the version). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
+fonts and natives are already in `work/runtime`; android-all without its `native/` and `icu/`, which FastNativeLoader
+reads from `work/runtime`, and Conscrypt with only its osx-aarch_64 library), `work/runtime` (only the fonts `fonts.xml`
+names: six of the seven Noto Sans CJK weights and some Latin families are never opened), a jlink'ed JDK 24 in
+`work/jre` (`work/jdk.path`), `work/testapp.sha256`, and `work/release` (the version). The test app is not in it
+(`dist/apksim-testapp-VERSION.apk` beside it, a release file of its own): the first `train.sh` of an install downloads
+it into `STATE/testapp-VERSION.apk` (`APKSIM_DOWNLOAD_URL` for a mirror or `file://` folder) and checks it against
+that hash; offline, training fails with a line saying so and touches `STATE/train.failed`: a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
+change, measured locally). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
 `cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
 `train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
 `STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
