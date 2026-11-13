@@ -22,7 +22,8 @@ import org.robolectric.shadows.ShadowNetworkInfo;
  * Shows the app the host's real network interfaces as Android networks. Robolectric's stand-ins have no
  * interface names or addresses, and libwebrtc ignores every interface that ConnectivityManager does not
  * name, so without this a WebRTC call only ever offered loopback candidates. The interface with the
- * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (WireGuard-style VPNs) become VPNs.
+ * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (WireGuard-style VPNs) become VPNs that also carry the
+ * underlying Wi-Fi's transport, WifiInfo and signal, as a device's VPN network does (issue 347); VPN-only without one.
  */
 final class HostNetworks {
   private HostNetworks() {}
@@ -32,15 +33,21 @@ final class HostNetworks {
     var shadow = shadowOf(cm);
     shadow.clearAllNetworks();
     int netId = 100;
+    // A device's VPN network carries the underlying network's transports too (WIFI|VPN), and an app classifying the
+    // last callback's transports must see Wi-Fi there (issue 347). The underlying one is the first non-tunnel network.
+    NetworkInterface underlying = null;
+    var interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+    for (NetworkInterface ni : interfaces) {
+      if (isDirect(ni)) { underlying = ni; break; }
+    }
     NetworkInfo active = null;
     NetworkCapabilities activeCaps = null;
     LinkProperties activeLinks = null;
-    for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+    for (NetworkInterface ni : interfaces) {
       if (!ni.isUp() || ni.isLoopback() || !hasIpv4(ni)) continue;
-      boolean tunnel = ni.getName().startsWith("utun") || ni.isPointToPoint();
-      // Bridges and virtual adapters are not the way out. Ethernet is en* on macOS and eth* on Linux (a container's
-      // eth0: without it the app saw no network at all there).
-      if (!tunnel && !ni.getName().startsWith("en") && !ni.getName().startsWith("eth")) continue;
+      boolean tunnel = isTunnel(ni);
+      // Bridges and virtual adapters are not the way out.
+      if (!tunnel && !isDirect(ni)) continue;
       int type = tunnel ? ConnectivityManager.TYPE_VPN : ConnectivityManager.TYPE_WIFI;
       NetworkInfo info = ShadowNetworkInfo.newInstance(
           NetworkInfo.DetailedState.CONNECTED, type, 0, true, NetworkInfo.State.CONNECTED);
@@ -52,7 +59,8 @@ final class HostNetworks {
 
       NetworkCapabilities caps = ShadowNetworkCapabilities.newInstance();
       var capsShadow = shadowOf(caps);
-      capsShadow.addTransportType(tunnel ? NetworkCapabilities.TRANSPORT_VPN : NetworkCapabilities.TRANSPORT_WIFI);
+      if (tunnel) capsShadow.addTransportType(NetworkCapabilities.TRANSPORT_VPN);
+      if (!tunnel || underlying != null) capsShadow.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
       capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
       if (!tunnel) capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
@@ -64,11 +72,12 @@ final class HostNetworks {
           NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED}) {
         capsShadow.addCapability(c);
       }
-      if (!tunnel) {
+      if (!tunnel || underlying != null) {
         capsShadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
-        // As ConnectivityService shows a Wi-Fi network to an app: its WifiInfo (location fields redacted) and signal.
+        // As ConnectivityService shows a Wi-Fi network to an app: its WifiInfo (location fields redacted) and signal;
+        // a VPN network over it shows the underlying network's.
         InetAddress v4 = null;
-        for (InterfaceAddress a : ni.getInterfaceAddresses()) {
+        for (InterfaceAddress a : (tunnel ? underlying : ni).getInterfaceAddresses()) {
           if (a.getAddress() instanceof Inet4Address && !a.getAddress().isLinkLocalAddress()) v4 = a.getAddress();
         }
         caps.setTransportInfo(SimWifi.connected(false, v4));
@@ -107,6 +116,16 @@ final class HostNetworks {
       ShadowSimConnectivityManager.rematch();
       SystemBroadcasts.network(context);
     }
+  }
+
+  private static boolean isTunnel(NetworkInterface ni) throws java.net.SocketException {
+    return ni.getName().startsWith("utun") || ni.isPointToPoint();
+  }
+
+  /** Ethernet is en* on macOS and eth* on Linux (a container's eth0: without it the app saw no network at all there). */
+  private static boolean isDirect(NetworkInterface ni) throws java.net.SocketException {
+    return ni.isUp() && !ni.isLoopback() && hasIpv4(ni) && !isTunnel(ni)
+        && (ni.getName().startsWith("en") || ni.getName().startsWith("eth"));
   }
 
   private static boolean hasIpv4(NetworkInterface ni) {

@@ -896,7 +896,7 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   the active network is Wi-Fi (SSID "AndroidWifi", BSSID and network id only with ACCESS_FINE_LOCATION, else redacted
   as a device does; offline: disconnected, rssi -127). Robolectric's stub IWifiManager made getMaxSignalLevel() 0, so code that
   buckets the level as `level / (max / 4)` threw ArithmeticException (issue 96), which an app's coroutine may never
-  report. HostNetworks gives the Wi-Fi network's capabilities that (redacted) WifiInfo and signal strength.
+  report. HostNetworks gives the Wi-Fi network's capabilities that (redacted) WifiInfo and signal strength. A tunnel network (VPN) also gets TRANSPORT_WIFI, NOT_METERED, that WifiInfo and signal when the host has a direct interface, as a device's VPN network reports the underlying transports (issue 347); VPN-only without one.
 - In test runs each test starts with the launch profile and no unmatched requests (`Instrument.RawListener`; a test
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
