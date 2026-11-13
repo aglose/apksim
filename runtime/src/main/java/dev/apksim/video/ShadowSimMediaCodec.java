@@ -221,6 +221,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   @Implementation
   protected void native_setSurface(Surface surface) {
     if (decoder != null) decoder.surface = surface;
+    VideoSurfaces.codecMoved(surface);
   }
 
   @Implementation
@@ -405,6 +406,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       System.err.println("[apksim] MediaCodec " + name + " configured: " + format + (surface == null ? ", no surface" : ""));
       codec.sizeInputs(format);
       this.surface = surface;
+      VideoSurfaces.codecConfigured(surface);
       close();
       blank = dev.apksim.Features.video() == dev.apksim.Features.Video.BLANK;
       // A native decoder that reorders leaves nothing to hold back; blank has none and orders as the Mac does.
