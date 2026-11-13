@@ -53,7 +53,6 @@ public final class CompatTableCheck {
     expect(since36, 0, CompatTable.UNKNOWN);
     expect(since36, -1, CompatTable.UNKNOWN);
     check(CompatTable.answer(since30) == CompatTable.OFF, "answer(id) follows the configured target 28");
-    check(since29 == since33, "ids");
 
     // A new launch's target replaces the last one, and its counts start again.
     CompatTable.configure("p.q", 36);

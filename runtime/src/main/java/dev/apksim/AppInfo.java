@@ -152,7 +152,7 @@ final class AppInfo {
     String v = ((Element) l.item(0)).getAttribute(NS + attr);
     if (v.isEmpty()) return 0;
     try {
-      return Integer.parseInt(v.trim());
+      return Integer.decode(v.trim());
     } catch (NumberFormatException e) {
       return CompatTable.PLATFORM_SDK + 1;
     }
