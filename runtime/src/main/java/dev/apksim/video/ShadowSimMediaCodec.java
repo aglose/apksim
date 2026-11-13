@@ -417,6 +417,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
         return;
       }
       handle = VideoToolbox.create(kind);
+      if (handle == 0) System.err.println("[apksim] MediaCodec " + name + ": no decoder on this system, nothing will be drawn");
       // Parameter sets come in the format (Annex B: csd-0 and csd-1 for H.264, all three in csd-0 for HEVC) rather
       // than in the stream.
       for (String key : new String[] {"csd-0", "csd-1"}) {

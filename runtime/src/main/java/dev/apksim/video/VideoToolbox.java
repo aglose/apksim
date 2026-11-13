@@ -55,11 +55,13 @@ public final class VideoToolbox {
   static final int CODEC_AVC = 0, CODEC_HEVC = 1, CODEC_VP9 = 2;
 
   /**
-   * Whether there is a VP9 decoder: VideoToolbox's (registered at the first try, a supplemental decoder on macOS), or
-   * on Linux libavcodec's in an image built with it (VIDEO_DECODERS=h264,vp9).
+   * Whether there is a VP9 decoder: on the Mac VideoToolbox's supplemental one, taken as present as HEVC is (every
+   * Apple Silicon macOS has it; a trial session costs ~85 ms, too much for every launch, so {@link #create} makes it
+   * when a codec is first configured and answers 0 if the system has none); on Linux libavcodec's in an image built
+   * with it (VIDEO_DECODERS=h264,vp9), found by opening one.
    */
   static boolean vp9Available() {
-    return AVAILABLE && Vp9.PRESENT;
+    return AVAILABLE && (dev.apksim.HostOs.MAC || Vp9.PRESENT);
   }
 
   /** Whether libwebrtc's H.264 decoder ({@link VtH264Decoder}) can run here: VideoToolbox only. */
