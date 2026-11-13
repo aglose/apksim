@@ -224,8 +224,8 @@ Matters for short clips and thumbnails.
   unit: 60 of 60 (was 59). In async mode (ExoPlayer) Robolectric hands out one input buffer at a time, so a kept one is
   replaced from its free queue; the test app's clip plays through with 0 drops.
 
-**9. More codecs.** VP9 and AV1 (VideoToolbox decodes both on Apple Silicon: VP9 since macOS 11, AV1 on M3 and
-later), Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
+**9. More codecs.** VP9 profile 0 is done (issue 340: a progressive WebM played with no video, silently, before). AV1
+(VideoToolbox decodes it on M3 and later), VP8, Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
 phase 1 says whether the owner's app does.
 
 **10. Health Connect stand-in.** Done (2026-11-12, docs/health-connect.md). On API 34+ AndroidX's client uses the

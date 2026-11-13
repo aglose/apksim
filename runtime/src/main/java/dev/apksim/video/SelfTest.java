@@ -40,28 +40,49 @@ public final class SelfTest {
     String f = file.toLowerCase(java.util.Locale.ROOT);
     if (f.endsWith(".aac")) return audio(file, false);
     if (f.endsWith(".mp3")) return audio(file, true);
+    if (f.endsWith(".ivf")) return codec(context, file, VideoToolbox.CODEC_VP9);
     return codec(context, file, f.endsWith(".h265") || f.endsWith(".hevc"));
   }
 
-  /** Decodes an Annex B H.264 or HEVC file (access units split at AUDs) through MediaCodec onto a Surface. */
   public static String codec(Context context, String file, boolean hevc) throws Exception {
+    return codec(context, file, hevc ? VideoToolbox.CODEC_HEVC : VideoToolbox.CODEC_AVC);
+  }
+
+  /**
+   * Decodes an Annex B H.264 or HEVC file (access units split at AUDs), or an IVF file of VP9 frames, through
+   * MediaCodec onto a Surface.
+   */
+  public static String codec(Context context, String file, int kind) throws Exception {
+    boolean hevc = kind == VideoToolbox.CODEC_HEVC, vp9 = kind == VideoToolbox.CODEC_VP9;
     byte[] all = Files.readAllBytes(Path.of(file));
     List<int[]> units = new ArrayList<>();
     int start = -1;
-    for (int i = 0; i + 4 < all.length; i++) {
+    if (vp9) {
+      // IVF: a 32-byte header (its length at 6), then per frame 4 bytes of size and 8 of pts.
+      int at = (all[6] & 255) | (all[7] & 255) << 8;
+      while (at + 12 <= all.length) {
+        int size = (all[at] & 255) | (all[at + 1] & 255) << 8 | (all[at + 2] & 255) << 16 | (all[at + 3] & 255) << 24;
+        if (size <= 0 || at + 12 + size > all.length) break;
+        units.add(new int[] {at + 12, at + 12 + size});
+        at += 12 + size;
+      }
+    }
+    for (int i = 0; !vp9 && i + 4 < all.length; i++) {
       boolean aud = hevc ? (all[i + 4] >> 1 & 0x3f) == 35 : (all[i + 4] & 0x1f) == 9;
       if (all[i] == 0 && all[i + 1] == 0 && all[i + 2] == 0 && all[i + 3] == 1 && aud) {
         if (start >= 0) units.add(new int[] {start, i});
         start = i;
       }
     }
-    if (start >= 0) units.add(new int[] {start, all.length});
+    if (start >= 0 && !vp9) units.add(new int[] {start, all.length});
     SurfaceTexture texture = new SurfaceTexture(false);
     VideoSurfaces.attach(texture, new TextureView(context));
     Surface surface = new Surface(texture);
     // By name, as media players create codecs (and the lookup that once fell back to Robolectric's 512-byte default).
-    MediaCodec codec = MediaCodec.createByCodecName(hevc ? ShadowSimMediaCodec.HEVC_DECODER : ShadowSimMediaCodec.AVC_DECODER);
-    codec.configure(MediaFormat.createVideoFormat(hevc ? MediaFormat.MIMETYPE_VIDEO_HEVC : MediaFormat.MIMETYPE_VIDEO_AVC, 640, 360), surface, null, 0);
+    MediaCodec codec = MediaCodec.createByCodecName(vp9 ? ShadowSimMediaCodec.VP9_DECODER
+        : hevc ? ShadowSimMediaCodec.HEVC_DECODER : ShadowSimMediaCodec.AVC_DECODER);
+    codec.configure(MediaFormat.createVideoFormat(vp9 ? ShadowSimMediaCodec.VP9_MIME
+        : hevc ? MediaFormat.MIMETYPE_VIDEO_HEVC : MediaFormat.MIMETYPE_VIDEO_AVC, vp9 ? 1280 : 640, vp9 ? 720 : 360), surface, null, 0);
     codec.start();
     MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     int rendered = 0;

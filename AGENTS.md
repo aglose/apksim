@@ -1822,8 +1822,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (self-test
   "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
   the CPU.
-- MediaCodec has H.264, HEVC, AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
-  H.264 for libwebrtc); VP9/AV1 video and Opus/Vorbis audio are not listed (the owner's app needs
+- MediaCodec has H.264, HEVC, VP9 (profile 0, `apksim.vp9.decoder`, issue 340: VideoToolbox's supplemental VP9 decoder
+  with a `vpcC` format description built from each key frame's header, as WebM gives no codec data; libavcodec in a Linux
+  image built with `VIDEO_DECODERS=h264,vp9`; `selftest work/media/clip.ivf`), AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
+  H.264 for libwebrtc); AV1 and VP8 video and Opus/Vorbis audio are not listed (the owner's app needs
   none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). On the owner's app, fps with them on the CPU → on
   Metal: a camera page 49 → 130, a weather screen 23 → 86, a map screen 8.6 → 30, and panning the map 26 → 64-73 once

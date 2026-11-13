@@ -1,5 +1,5 @@
-// H.264 and HEVC decoding for MediaCodec on Linux (dev.apksim.video.VideoToolbox's natives, the Mac's being
-// native/videotoolbox.m), on libavcodec with only those two decoders, linked statically (docker/Dockerfile builds
+// H.264, HEVC and VP9 decoding for MediaCodec on Linux (dev.apksim.video.VideoToolbox's natives, the Mac's being
+// native/videotoolbox.m), on libavcodec with only the decoders built in (docker/Dockerfile's VIDEO_DECODERS), linked statically (docker/Dockerfile builds
 // FFmpeg and this file into libvtdecoder.so; its symbols stay private, an APK may bring its own FFmpeg).
 //
 // Unlike VideoToolbox, libavcodec returns pictures in presentation order and later than the input that carried them,
@@ -40,8 +40,9 @@ typedef struct {
   int draining;  // avcodec_send_packet(NULL) was called: a new send needs a flush first
 } AvDec;
 
-static AvDec *avd_create(int hevc) {
-  const AVCodec *codec = avcodec_find_decoder(hevc ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
+// codec: 0 H.264, 1 HEVC, 2 VP9 (superframes are split by the decoder's own bitstream filter).
+static AvDec *avd_create(int codecKind) {
+  const AVCodec *codec = avcodec_find_decoder(codecKind == 2 ? AV_CODEC_ID_VP9 : codecKind == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
   if (!codec) return NULL;
   AvDec *d = calloc(1, sizeof *d);
   if (!d) return NULL;
@@ -178,8 +179,8 @@ static int avd_picture_to_rgba(const AVFrame *f, int w, int h, uint8_t *out, int
 
 #define VT(name) Java_dev_apksim_video_VideoToolbox_##name
 
-JNIEXPORT jlong JNICALL VT(nativeCreate)(JNIEnv *env, jclass c, jboolean hevc) {
-  return (jlong)(intptr_t)avd_create(hevc ? 1 : 0);
+JNIEXPORT jlong JNICALL VT(nativeCreate)(JNIEnv *env, jclass c, jint codec) {
+  return (jlong)(intptr_t)avd_create(codec);
 }
 
 JNIEXPORT void JNICALL VT(nativeRelease)(JNIEnv *env, jclass c, jlong handle) { avd_release((AvDec *)(intptr_t)handle); }

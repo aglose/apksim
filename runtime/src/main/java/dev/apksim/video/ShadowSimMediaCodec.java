@@ -21,7 +21,7 @@ import org.robolectric.shadows.ShadowMediaCodecList;
 import org.robolectric.util.ReflectionHelpers;
 
 /**
- * H.264 and HEVC MediaCodec decoders on VideoToolbox, rendering to the Surface they were configured with, and AAC and
+ * H.264, HEVC and VP9 MediaCodec decoders on VideoToolbox, rendering to the Surface they were configured with, and AAC and
  * MP3 decoders on AudioToolbox, as media players (Media3/ExoPlayer) use them. Robolectric's MediaCodec does the buffer
  * bookkeeping (both modes) and calls a process function per buffer; each codec here gets its own decoder. A video
  * output buffer carries a reference to its decoded picture, drawn into the Surface's TextureView when the app
@@ -31,6 +31,8 @@ import org.robolectric.util.ReflectionHelpers;
 public class ShadowSimMediaCodec extends ShadowMediaCodec {
   static final String AVC_DECODER = "apksim.avc.decoder";
   static final String HEVC_DECODER = "apksim.hevc.decoder";
+  static final String VP9_DECODER = "apksim.vp9.decoder";
+  static final String VP9_MIME = "video/x-vnd.on2.vp9";
   static final String AAC_DECODER = "apksim.aac.decoder";
   static final String MP3_DECODER = "apksim.mp3.decoder";
 
@@ -38,7 +40,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
    * Stand for each decoder in Robolectric's table until a codec is made and gets its own. Told apart by identity, so
    * each is its own object (one lambda would be a single shared instance).
    */
-  private static final CodecConfig.Codec AVC = new Placeholder(), HEVC = new Placeholder(), AAC = new Placeholder(), MP3 = new Placeholder();
+  private static final CodecConfig.Codec AVC = new Placeholder(), HEVC = new Placeholder(), VP9 = new Placeholder(), AAC = new Placeholder(), MP3 = new Placeholder();
 
   private static final class Placeholder implements CodecConfig.Codec {
     @Override
@@ -63,6 +65,15 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       } else {
         // As a device without an HEVC decoder: a player picks an H.264 rendition, or plays the rest of an HEVC clip.
         System.err.println("[apksim] MediaCodec video/hevc: no decoder in this image (H.264 only; docker/Dockerfile VIDEO_DECODERS)");
+      }
+    }
+    if (VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
+      if (VideoToolbox.vp9Available()) {
+        // Profile 0 (8-bit 4:2:0) only: what VideoToolbox's output format here holds.
+        video(VP9_DECODER, VP9_MIME, VP9, MediaCodecInfo.CodecProfileLevel.VP9Level52, MediaCodecInfo.CodecProfileLevel.VP9Profile0);
+      } else {
+        System.err.println("[apksim] MediaCodec video/x-vnd.on2.vp9: no decoder here (a VP9 track is dropped by players,"
+            + " which play the rest of the file; docker/Dockerfile VIDEO_DECODERS)");
       }
     }
     if (!VideoToolbox.available() && dev.apksim.Features.video() != dev.apksim.Features.Video.OFF) {
@@ -168,7 +179,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       Surface s = d.surface;
       SurfaceTexture t = VideoSurfaces.textureOf(s);
       int[] view = VideoSurfaces.viewSize(t);
-      b.append(" [").append(d.hevc ? "hevc" : "avc").append(d.blank ? " blank" : "").append(" -> ")
+      b.append(" [").append(d.kind == VideoToolbox.CODEC_VP9 ? "vp9" : d.kind == VideoToolbox.CODEC_HEVC ? "hevc" : "avc").append(d.blank ? " blank" : "").append(" -> ")
           .append(s == null ? "no surface" : t == null ? "untracked " + ReflectionHelpers.getField(s, "mName")
               : view == null ? "view not laid out" : view[0] + "x" + view[1]).append(']');
     }
@@ -180,8 +191,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   protected void __constructor__(String name, boolean nameIsType, boolean encoder) {
     super.__constructor__(name, nameIsType, encoder);
     Object codec = ReflectionHelpers.getField(this, "fakeCodec");
-    if (codec == AVC || codec == HEVC) {
-      decoder = new Decoder(codec == HEVC, this);
+    if (codec == AVC || codec == HEVC || codec == VP9) {
+      decoder = new Decoder(codec == VP9 ? VideoToolbox.CODEC_VP9 : codec == HEVC ? VideoToolbox.CODEC_HEVC : VideoToolbox.CODEC_AVC, this);
       LIVE.add(decoder);
       ReflectionHelpers.setField(this, "fakeCodec", decoder);
     } else if (codec == AAC || codec == MP3) {
@@ -359,7 +370,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
   /** One codec's VideoToolbox session, the Surface it draws to, and the pictures its output buffers hold. */
   private static final class Decoder implements CodecConfig.Codec {
-    private final boolean hevc;
+    private final int kind;
     private final String name;
     private long handle;
     volatile Surface surface;
@@ -383,10 +394,10 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
     private final ShadowSimMediaCodec codec;
 
-    Decoder(boolean hevc, ShadowSimMediaCodec codec) {
-      this.hevc = hevc;
+    Decoder(int kind, ShadowSimMediaCodec codec) {
+      this.kind = kind;
       this.codec = codec;
-      name = hevc ? HEVC_DECODER : AVC_DECODER;
+      name = kind == VideoToolbox.CODEC_VP9 ? VP9_DECODER : kind == VideoToolbox.CODEC_HEVC ? HEVC_DECODER : AVC_DECODER;
     }
 
     @Override
@@ -405,7 +416,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
         if (t != null) VideoSurfaces.publish(t, null);
         return;
       }
-      handle = VideoToolbox.create(hevc);
+      handle = VideoToolbox.create(kind);
       // Parameter sets come in the format (Annex B: csd-0 and csd-1 for H.264, all three in csd-0 for HEVC) rather
       // than in the stream.
       for (String key : new String[] {"csd-0", "csd-1"}) {

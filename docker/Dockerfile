@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev u
 # (LGPL 2.1+, see THIRD-PARTY-NOTICES.md). Before COPY native so a change to apksim's own code does not rebuild it.
 # nasm is for x86_64's assembly (arm64's is assembled by gcc); pthreads is the C library's.
 # h264 by default: the published image ships no HEVC decoder (its patent licensing is the less settled of the two).
-# `--build-arg VIDEO_DECODERS=h264,hevc` adds it to an image you build yourself; MediaCodec lists what is there.
+# `--build-arg VIDEO_DECODERS=h264,hevc,vp9` adds HEVC and VP9 to an image you build yourself; MediaCodec lists what is there.
 ARG VIDEO_DECODERS=h264
 ARG FFMPEG_VERSION=7.1.5
 ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     ./configure --prefix=/opt/ffmpeg --disable-everything --disable-programs --disable-doc --disable-network \
       --disable-autodetect --disable-debug --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample \
       --enable-pic --enable-static --disable-shared --enable-pthreads \
-      --enable-decoder="$VIDEO_DECODERS" --enable-parser="$VIDEO_DECODERS" --enable-swscale && \
+      --enable-decoder="$VIDEO_DECODERS" --enable-parser="$VIDEO_DECODERS" --enable-bsf=vp9_superframe_split --enable-swscale && \
     make -j"$(nproc)" && make install && \
     cd / && rm -rf /tmp/ffmpeg
 WORKDIR /src

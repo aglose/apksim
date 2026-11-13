@@ -1,4 +1,4 @@
-// H.264 and HEVC (H.265) decoding for Android apps' video (dev.apksim.video.VideoToolbox), on VideoToolbox. Input is
+// H.264, HEVC (H.265) and VP9 decoding for Android apps' video (dev.apksim.video.VideoToolbox), on VideoToolbox. Input is
 // what libwebrtc or a media player hands an Android decoder: one access unit of Annex B NAL units. Output is copied out
 // as I420, or kept as a picture for MediaCodec.
 #import <Accelerate/Accelerate.h>
@@ -13,6 +13,8 @@ typedef struct {
   CMVideoFormatDescriptionRef format;
   VTDecompressionSessionRef session;
   int hevc;
+  int vp9;  // VP9: no NAL units, one frame (or superframe) per input; the session comes from a key frame's header
+  int vp9W, vp9H, vp9Profile, vp9Depth, vp9SubX, vp9SubY, vp9Range, vp9Space;
   uint8_t vps[512], sps[512], pps[512];  // vps: HEVC only
   size_t vpsLen, spsLen, ppsLen;
   CVPixelBufferRef picture;  // The latest decoded picture, NV12.
@@ -41,9 +43,33 @@ static void dropSession(Decoder *d) {
   }
 }
 
+// A VP9 format description with a vpcC atom (WebM carries none per frame), as the container's codec private data
+// would give it: version 1, profile, level (0: unspecified), bit depth, chroma subsampling, range and colour.
+static int makeVp9Format(Decoder *d) {
+  uint8_t vpcc[12] = {1, 0, 0, 0, (uint8_t)d->vp9Profile, 0, 0, 1, 1, 1, 0, 0};
+  int chroma = d->vp9SubX && d->vp9SubY ? 1 : d->vp9SubX ? 2 : 3;
+  vpcc[6] = (uint8_t)(d->vp9Depth << 4 | chroma << 1 | (d->vp9Range ? 1 : 0));
+  int prim = d->vp9Space == 2 ? 1 : d->vp9Space == 1 ? 6 : 2;  // BT.709, BT.601, unspecified
+  vpcc[7] = vpcc[8] = vpcc[9] = (uint8_t)prim;
+  CFDataRef data = CFDataCreate(NULL, vpcc, sizeof vpcc);
+  CFStringRef key = CFSTR("vpcC");
+  CFDictionaryRef atoms = CFDictionaryCreate(NULL, (const void **)&key, (const void **)&data, 1, &kCFTypeDictionaryKeyCallBacks,
+                                             &kCFTypeDictionaryValueCallBacks);
+  CFStringRef extKey = kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms;
+  CFDictionaryRef ext = CFDictionaryCreate(NULL, (const void **)&extKey, (const void **)&atoms, 1, &kCFTypeDictionaryKeyCallBacks,
+                                           &kCFTypeDictionaryValueCallBacks);
+  OSStatus s = CMVideoFormatDescriptionCreate(NULL, kCMVideoCodecType_VP9, d->vp9W, d->vp9H, ext, &d->format);
+  CFRelease(ext);
+  CFRelease(atoms);
+  CFRelease(data);
+  return s == noErr ? 0 : -1;
+}
+
 static int makeSession(Decoder *d) {
   dropSession(d);
-  if (d->hevc) {
+  if (d->vp9) {
+    if (makeVp9Format(d) < 0) return -1;
+  } else if (d->hevc) {
     const uint8_t *sets[3] = {d->vps, d->sps, d->pps};
     const size_t sizes[3] = {d->vpsLen, d->spsLen, d->ppsLen};
     if (CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, 3, sets, sizes, 4, NULL, &d->format) != noErr) return -1;
@@ -79,9 +105,59 @@ static long nextNal(const uint8_t *p, long n, long at, const uint8_t **nal, long
   return j;
 }
 
-JNIEXPORT jlong JNICALL Java_dev_apksim_video_VideoToolbox_nativeCreate(JNIEnv *env, jclass c, jboolean hevc) {
+// The uncompressed header of a VP9 key frame (frame marker, profile, sync code, colour config, size), MSB first.
+// 1 and the stream's properties set in d if [p] starts a key frame, 0 if it is any other frame, -1 if damaged.
+static int vp9Header(Decoder *d, const uint8_t *p, long n, int *w, int *h) {
+  long bit = 0;
+#define BITS(k) ({ unsigned v_ = 0; for (int i_ = 0; i_ < (k); i_++, bit++) { if (bit >> 3 >= n) return -1; v_ = v_ << 1 | ((p[bit >> 3] >> (7 - (bit & 7))) & 1); } v_; })
+  if (BITS(2) != 2) return -1;
+  int profile = (int)BITS(1);
+  profile |= (int)BITS(1) << 1;
+  if (profile == 3) BITS(1);
+  if (BITS(1)) return 0;  // show_existing_frame
+  if (BITS(1)) return 0;  // not a key frame
+  BITS(2);                // show_frame, error_resilient_mode
+  if (BITS(8) != 0x49 || BITS(8) != 0x83 || BITS(8) != 0x42) return -1;
+  int depth = 8;
+  if (profile >= 2) depth = BITS(1) ? 12 : 10;
+  int space = (int)BITS(3), range = 0, subX = 1, subY = 1;
+  if (space != 7) {
+    range = (int)BITS(1);
+    if (profile == 1 || profile == 3) {
+      subX = (int)BITS(1);
+      subY = (int)BITS(1);
+      BITS(1);
+    }
+  } else {
+    range = 1;
+    if (profile == 1 || profile == 3) {
+      subX = subY = 0;
+      BITS(1);
+    }
+  }
+  *w = (int)BITS(16) + 1;
+  *h = (int)BITS(16) + 1;
+#undef BITS
+  d->vp9Profile = profile;
+  d->vp9Depth = depth;
+  d->vp9Space = space;
+  d->vp9Range = range;
+  d->vp9SubX = subX;
+  d->vp9SubY = subY;
+  return 1;
+}
+
+// codec: 0 H.264, 1 HEVC, 2 VP9 (0 returned when the system has no decoder for it).
+JNIEXPORT jlong JNICALL Java_dev_apksim_video_VideoToolbox_nativeCreate(JNIEnv *env, jclass c, jint codec) {
+  if (codec == 2) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9);
+    });
+  }
   Decoder *d = calloc(1, sizeof(Decoder));
-  d->hevc = hevc;
+  d->hevc = codec == 1;
+  d->vp9 = codec == 2;
   return (jlong)(intptr_t)d;
 }
 
@@ -92,10 +168,56 @@ JNIEXPORT void JNICALL Java_dev_apksim_video_VideoToolbox_nativeRelease(JNIEnv *
   free(d);
 }
 
+// One access unit (owned from here: freed with the block buffer) into the session. 1 with [sizeOut] set when a
+// picture came out, 0 when none, -1 on error.
+static jint submit(JNIEnv *env, Decoder *d, uint8_t *avcc, size_t avccLen, jintArray sizeOut) {
+  CMBlockBufferRef block = NULL;
+  CMSampleBufferRef sample = NULL;
+  if (CMBlockBufferCreateWithMemoryBlock(NULL, avcc, avccLen, kCFAllocatorMalloc, NULL, 0, avccLen, 0, &block) != noErr) {
+    free(avcc);
+    return -1;
+  }
+  size_t sampleSize = avccLen;
+  if (CMSampleBufferCreateReady(NULL, block, d->format, 1, 0, NULL, 1, &sampleSize, &sample) != noErr) {
+    CFRelease(block);
+    return -1;
+  }
+  CVPixelBufferRef before = d->picture;
+  d->lastError = noErr;
+  VTDecodeInfoFlags infoFlags = 0;
+  OSStatus s = VTDecompressionSessionDecodeFrame(d->session, sample, 0, NULL, &infoFlags);
+  VTDecompressionSessionWaitForAsynchronousFrames(d->session);
+  CFRelease(sample);
+  CFRelease(block);
+  if (s == kVTInvalidSessionErr) {
+    makeSession(d);
+    return -1;
+  }
+  if (s != noErr || d->lastError != noErr) return -1;
+  if (d->picture == before || !d->picture) return 0;
+  jint dims[2] = {(jint)CVPixelBufferGetWidth(d->picture), (jint)CVPixelBufferGetHeight(d->picture)};
+  (*env)->SetIntArrayRegion(env, sizeOut, 0, 2, dims);
+  return 1;
+}
+
 JNIEXPORT jint JNICALL Java_dev_apksim_video_VideoToolbox_nativeDecode(JNIEnv *env, jclass c, jlong h, jobject buf,
                                                                         jint offset, jint length, jintArray sizeOut) {
   Decoder *d = (Decoder *)(intptr_t)h;
   const uint8_t *p = (const uint8_t *)(*env)->GetDirectBufferAddress(env, buf) + offset;
+  if (d->vp9) {
+    int w = 0, h = 0;
+    int key = vp9Header(d, p, length, &w, &h);
+    if (key < 0) return -1;
+    if (key == 1 && (!d->session || w != d->vp9W || h != d->vp9H)) {
+      d->vp9W = w;
+      d->vp9H = h;
+      if (makeSession(d) < 0) return -1;
+    }
+    if (!d->session) return -1;  // Frames before any key frame: ask for one.
+    uint8_t *copy = malloc((size_t)length);
+    memcpy(copy, p, (size_t)length);
+    return submit(env, d, copy, (size_t)length, sizeOut);
+  }
   // Parameter sets update the session; everything else goes into one AVCC sample (4-byte lengths).
   uint8_t *avcc = malloc((size_t)length + 64);
   size_t avccLen = 0;
@@ -136,33 +258,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_VideoToolbox_nativeDecode(JNIEnv *e
     free(avcc);
     return -1;  // Pictures before any parameter sets: ask for a key frame.
   }
-  CMBlockBufferRef block = NULL;
-  CMSampleBufferRef sample = NULL;
-  if (CMBlockBufferCreateWithMemoryBlock(NULL, avcc, avccLen, kCFAllocatorMalloc, NULL, 0, avccLen, 0, &block) != noErr) {
-    free(avcc);
-    return -1;
-  }
-  size_t sampleSize = avccLen;
-  if (CMSampleBufferCreateReady(NULL, block, d->format, 1, 0, NULL, 1, &sampleSize, &sample) != noErr) {
-    CFRelease(block);
-    return -1;
-  }
-  CVPixelBufferRef before = d->picture;
-  d->lastError = noErr;
-  VTDecodeInfoFlags infoFlags = 0;
-  OSStatus s = VTDecompressionSessionDecodeFrame(d->session, sample, 0, NULL, &infoFlags);
-  VTDecompressionSessionWaitForAsynchronousFrames(d->session);
-  CFRelease(sample);
-  CFRelease(block);
-  if (s == kVTInvalidSessionErr) {
-    makeSession(d);
-    return -1;
-  }
-  if (s != noErr || d->lastError != noErr) return -1;
-  if (d->picture == before || !d->picture) return 0;
-  jint dims[2] = {(jint)CVPixelBufferGetWidth(d->picture), (jint)CVPixelBufferGetHeight(d->picture)};
-  (*env)->SetIntArrayRegion(env, sizeOut, 0, 2, dims);
-  return 1;
+  return submit(env, d, avcc, avccLen, sizeOut);
 }
 
 JNIEXPORT void JNICALL Java_dev_apksim_video_VideoToolbox_nativeCopyI420(JNIEnv *env, jclass c, jlong h, jobject y, jint sy,
