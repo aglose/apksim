@@ -305,7 +305,7 @@ could meet.
 
 The apksim column was run again on the branch of the target-SDK compatibility table (`claude/compat-table-71833e`, built
 and run from a separate worktree, nothing merged or rebased): the same 267 / 1 / 18 / 136 / 3 (agree / fails here only / passes here only / skipped / one side only) against the API 30 emulator, the
-same status for each of the 422 tests that ran, and the same 24 probe lines. This suite and probe read none of the gates
+same status for each of the 422 tests that ran, and the same 24 probe lines (23 after the review dropped a duplicate). This suite and probe read none of the gates
 the table changes (the probe's gates are permissions and notifications, which `CompatChanges` does not decide), so the
 table's effect needs a probe on the gates themselves: a `Target28Test` observation per compat change is the next step once
 it has landed.
