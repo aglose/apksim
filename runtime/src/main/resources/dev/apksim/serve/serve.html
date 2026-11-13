@@ -75,7 +75,7 @@ dd { margin: 0; text-align: right; }
 body.embed header, body.embed .stats, body.embed .hint, body.embed #copyRow, body.embed #linkbox { display: none; }
 body.embed main { padding: 8px; gap: 8px; }
 body.embed aside { width: 200px; }
-body.embed.bare aside > .card:not(#permission) { display: none; }
+body.embed.bare aside > .card:not(#permission):not(#applink) { display: none; }
 body.embed.bare aside { width: auto; }
 @media (max-width: 760px) {
   /* The page scrolls instead: the screen keeps most of the viewport, the controls come below it. */
@@ -127,6 +127,15 @@ body.embed.bare aside { width: auto; }
       <h2>Permission request</h2>
       <div id="permText"></div>
       <div class="row"><button id="permAllow" class="primary">Allow</button><button id="permDeny">Don't allow</button></div>
+    </div>
+    <div class="card" id="applink" hidden>
+      <h2 id="applinkTitle">The app opened a link</h2>
+      <div id="applinkText" style="word-break: break-all"></div>
+      <div class="row"><a id="applinkOpen" target="_blank" rel="noopener noreferrer">Open in a new tab</a><button id="applinkClose">Dismiss</button></div>
+      <div id="applinkBack" hidden>
+        <div id="applinkHint"></div>
+        <div class="row"><input id="applinkUrl" type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="The final address of the sign-in"><button id="applinkSend" class="primary">Send to the app</button></div>
+      </div>
     </div>
     <div class="card">
       <h2>Device</h2>
@@ -572,6 +581,7 @@ function onText(t) {
       fit();
       return;
     }
+    if ("link" in d) { appLink(d); return; }
     const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
       new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
       busy: "another session has this key: it starts without the kept data, and keeps nothing",
@@ -1224,6 +1234,35 @@ $("locale").onchange = () => {
 };
 $("go").onclick = () => { const u = $("url").value.trim(); if (u) { state.open = u; send("open " + u); } };
 $("url").onkeydown = e => { if (e.key === "Enter") $("go").click(); };
+// A web link the app opened outside itself (issue 336): the instance has no browser, so the page offers the link, and
+// for a sign-in (its redirect comes back to the app) a box for the address the sign-in ends at, sent as `open URL`.
+function appLink(d) {
+  if (typeof d.link !== "string" || !/^https?:\/\//i.test(d.link)) return;
+  const signIn = typeof d.redirect === "string" && d.redirect;
+  $("applinkTitle").textContent = signIn ? "The app asks you to sign in" : "The app opened a link";
+  let host = "";
+  try { host = new URL(d.link).host; } catch (e) { return; }
+  // The site first, whole: the address may be long, and where it leads is what the visitor should read.
+  $("applinkText").textContent = host + " \u2014 " + (d.link.length > 300 ? d.link.slice(0, 300) + "..." : d.link);
+  $("applinkOpen").href = d.link;
+  $("applinkOpen").textContent = signIn ? "Open the sign-in page" : "Open in a new tab";
+  $("applinkBack").hidden = !signIn;
+  if (signIn) {
+    const to = d.redirect.split("?")[0];
+    $("applinkHint").textContent = "When the sign-in ends, the browser tries to go to an address that starts with " + to
+      + " and cannot show it. Copy that address from its address bar or the error page and paste it here.";
+    $("applinkUrl").value = "";
+  }
+  $("applink").hidden = false;
+  log(signIn ? "the app opened a sign-in page: open it, then paste the final address" : "the app opened a link");
+}
+$("applinkClose").onclick = () => { $("applink").hidden = true; };
+$("applinkSend").onclick = () => {
+  const v = $("applinkUrl").value.trim();
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\S{1,2000}$/.test(v)) { log("that is not an address the app can take"); return; }
+  send("open " + v);
+  $("applink").hidden = true;
+};
 $("permAllow").onclick = () => { send("permission allow"); $("permission").hidden = true; };
 $("permDeny").onclick = () => { send("permission deny"); $("permission").hidden = true; };
 $("copy").onclick = async () => {

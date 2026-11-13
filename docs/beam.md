@@ -973,6 +973,16 @@ host are carried to the tab, which answers them with its own credentials.
   buttons through OkHttp and HttpURLConnection answered over the WebSocket), and by hand the test app's 12 s answer
   against OkHttp's read timeout.
 
+## Browser sign-in (2026-11-13, issue 336)
+
+A beamed instance has a window (hidden), so a sign-in link the app opens (a web link whose `redirect_uri` one of the
+app's own filters takes) runs in the Mac's `ASWebAuthenticationSession`, as in the desktop window: the system asks the
+visitor before it opens the provider's page, and the address it ends at is delivered to the app. Where this Mac cannot
+wait for the redirect (an https App Link below macOS 14.4), the tab gets the same card as a server session's
+(docs/serve.md "Links the app opens"): the link, and a box for the final address. Other web links open in the Mac's
+browser as before. Not run inside the beam sandbox yet: the session starts with a hidden window outside it, and a
+session that cannot start there counts as cancelled (nothing is delivered, no card).
+
 ## Builds from an artifact store (2026-11-08, issue 177)
 
 Behind a sign-in proxy the agent's download from the page's server always fails, so the tab relays every build it

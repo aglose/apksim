@@ -487,6 +487,43 @@ final class Session {
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
     if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
+    watchLinks(p);
+  }
+
+  // ---------------------------------------------------------------- links the app opens in a browser (issue 336)
+
+  private volatile Socket hostwatch;
+  private static final java.util.regex.Pattern LINK = java.util.regex.Pattern.compile("o (https?://\\S{1,4000})(?: ([a-zA-Z][a-zA-Z0-9+.-]*:\\S{0,4000}))?");
+
+  /**
+   * A web link the app opened outside itself (a Custom Tab, an OAuth SDK's sign-in page): the instance has no browser,
+   * so its `hostwatch` connection names the link (`o URL [REDIRECT]`, HostLinks) and the tab gets
+   * `d {"link": URL, "redirect": REDIRECT}`. The page shows it for its user to open, and for a sign-in a box whose
+   * address comes back as `open URL`, which a tab may send anyway. Nothing is opened by the server.
+   */
+  private void watchLinks(int port) {
+    try {
+      Socket s = hostwatch = connect(port);
+      s.getOutputStream().write("hostwatch\n".getBytes(StandardCharsets.US_ASCII));
+      Thread.ofVirtual().name("serve-links-" + id).start(() -> {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+          String first = r.readLine();
+          if (first == null || !first.equals("ok hostwatch")) {
+            closeQuietly(s);
+            return;
+          }
+          for (String line; (line = r.readLine()) != null; ) {
+            java.util.regex.Matcher m = LINK.matcher(line);
+            if (!m.matches()) continue;
+            ws.sendText("d {\"link\":" + Http.q(m.group(1)) + ",\"redirect\":" + (m.group(2) == null ? "null" : Http.q(m.group(2))) + "}");
+          }
+        } catch (IOException e) {
+          // the instance went away
+        }
+      });
+    } catch (IOException e) {
+      logLine("[serve] links the app opens are not shown: " + e);
+    }
   }
 
   // ---------------------------------------------------------------- the tab relay (docs/beam.md, issue 276)
@@ -1818,6 +1855,7 @@ final class Session {
     closeQuietly(stream);
     closeQuietly(netwatch);
     closeQuietly(relaywatch);
+    closeQuietly(hostwatch);
     keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.

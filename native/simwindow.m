@@ -7,6 +7,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <AuthenticationServices/AuthenticationServices.h>
 #include <dlfcn.h>
 #include <pthread/qos.h>
 #include <jni.h>
@@ -2001,6 +2002,108 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShare(JNIEnv *env, jclass
     NSRect at = NSMakeRect(NSMidX(view.bounds) - 1, NSMidY(view.bounds) - 1, 2, 2);
     [picker showRelativeToRect:at ofView:view preferredEdge:NSRectEdgeMinY];
   });
+}
+
+// ---------------------------------------------------------------- browser sign-in
+
+// A sign-in page the app opened in a browser (a Custom Tab, AppAuth, Auth0) runs in ASWebAuthenticationSession: the system
+// browser, which Google and Apple accept, and which hands back the URL the provider redirects to (issue 336). The result
+// is polled from Java: NULL while nothing is finished, "" once cancelled or failed, else the callback URL.
+@interface WebAuthAnchor : NSObject <ASWebAuthenticationPresentationContextProviding>
+@end
+@implementation WebAuthAnchor
+- (ASPresentationAnchor)presentationAnchorForWebAuthenticationSession:(ASWebAuthenticationSession *)session {
+  return NSApp.keyWindow ?: NSApp.windows.firstObject;
+}
+@end
+
+static ASWebAuthenticationSession *webAuthSession;
+static WebAuthAnchor *webAuthAnchor;
+static NSString *webAuthResult;
+static long webAuthGen;
+
+// Starts a session for url that ends at a redirect to `scheme://...` (host NULL), or to https://host/path (macOS 14.4+).
+// Returns false when this macOS cannot wait for that kind of redirect.
+JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, jclass c, jstring jurl, jstring jscheme,
+                                                                    jstring jhost, jstring jpath) {
+  const char *u = (*env)->GetStringUTFChars(env, jurl, NULL);
+  NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:u]];
+  (*env)->ReleaseStringUTFChars(env, jurl, u);
+  NSString *scheme = nil, *host = nil, *path = nil;
+  if (jscheme) {
+    const char *t = (*env)->GetStringUTFChars(env, jscheme, NULL);
+    scheme = [NSString stringWithUTF8String:t];
+    (*env)->ReleaseStringUTFChars(env, jscheme, t);
+  }
+  if (jhost) {
+    const char *t = (*env)->GetStringUTFChars(env, jhost, NULL);
+    host = [NSString stringWithUTF8String:t];
+    (*env)->ReleaseStringUTFChars(env, jhost, t);
+  }
+  if (jpath) {
+    const char *t = (*env)->GetStringUTFChars(env, jpath, NULL);
+    path = [NSString stringWithUTF8String:t];
+    (*env)->ReleaseStringUTFChars(env, jpath, t);
+  }
+  if (!url) return JNI_FALSE;
+  if (host && !(NSProcessInfo.processInfo.operatingSystemVersion.majorVersion > 14 ||
+                (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion == 14 &&
+                 NSProcessInfo.processInfo.operatingSystemVersion.minorVersion >= 4))) {
+    return JNI_FALSE;
+  }
+  onMain(^{
+    // One sign-in at a time: a newer one replaces this one, whose completion (its cancel, or a late end) then counts
+    // for nothing. Sessions are told apart by a number, not by the object: the handler must not keep its session alive.
+    ASWebAuthenticationSession *old;
+    long gen;
+    @synchronized([WebAuthAnchor class]) {
+      gen = ++webAuthGen;
+      old = webAuthSession;
+      webAuthSession = nil;
+      webAuthResult = nil;
+    }
+    [old cancel];
+    void (^done)(NSURL *, NSError *) = ^(NSURL *callback, NSError *error) {
+      @synchronized([WebAuthAnchor class]) {
+        if (gen != webAuthGen) return;
+        webAuthResult = callback ? callback.absoluteString : @"";
+        webAuthSession = nil;
+      }
+    };
+    ASWebAuthenticationSession *session;
+    if (host) {
+      if (@available(macOS 14.4, *)) {
+        session = [[ASWebAuthenticationSession alloc] initWithURL:url
+                                                         callback:[ASWebAuthenticationSessionCallback callbackWithHTTPSHost:host path:(path.length ? path : @"/")]
+                                                completionHandler:done];
+      }
+    } else {
+      session = [[ASWebAuthenticationSession alloc] initWithURL:url callbackURLScheme:scheme completionHandler:done];
+    }
+    if (!session) {
+      done(nil, nil);
+      return;
+    }
+    if (!webAuthAnchor) webAuthAnchor = [WebAuthAnchor new];
+    session.presentationContextProvider = webAuthAnchor;
+    @synchronized([WebAuthAnchor class]) {
+      webAuthSession = session;
+    }
+    if (![session start]) {
+      NSLog(@"[apksim] the sign-in session did not start");
+      done(nil, nil);
+    }
+  });
+  return JNI_TRUE;
+}
+
+JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeWebAuthResult(JNIEnv *env, jclass c) {
+  NSString *r;
+  @synchronized([WebAuthAnchor class]) {
+    r = webAuthResult;
+    webAuthResult = nil;
+  }
+  return r ? (*env)->NewStringUTF(env, r.UTF8String) : NULL;
 }
 
 // ---------------------------------------------------------------- menu and clipboard plumbing

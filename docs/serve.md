@@ -440,6 +440,15 @@ The tab sends commands in the control channel's own words, and serve passes on o
 Anything else (`shot FILE`, `record`, `pick FILE`, `quit`, ...) never reaches an instance from a tab: those read or
 write files on the machine.
 
+**Links the app opens, and browser sign-in** (issue 336). A server's instance has no browser, so a web link the app
+opens outside itself (a Custom Tab, an OAuth SDK's authorize page) is told to its tab: the instance's `hostwatch`
+control connection names it, serve sends `d {"link": URL, "redirect": REDIRECT|null}`, and the page shows a card with
+the link for the visitor to open in a tab of their own. Nothing is opened by the server or without a click. When the
+link has a `redirect_uri` that one of the app's own filters takes (`redirect`), it is a sign-in: the browser cannot show
+the address the provider redirects to (a custom scheme, or an App Link of the app's), so the card has a box for it, and
+the pasted address is sent as `open URL`, which reaches the app's redirect activity as on a device.
+`scripts/serve-link-check.py URL [--token FILE] [--state DIR]` checks it with the test app's `apksim://signin`.
+
 "Copy link" puts a URL on the clipboard that opens a new session in the same state: the app, device, orientation,
 appearance, locale, text size and the last deep link opened. It does not carry what the app did since (navigation inside the app
 that no deep link names, data entered).

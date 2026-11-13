@@ -80,6 +80,14 @@ tapped="$(popup)"
 drive 'open apksim://composeapp/trips?overlay=full' 'wait 2500' 'tap 550 1690' 'wait 1000' >/dev/null
 drive nodes | grep -q 'text="Notifications"' || { echo "a tap did not pass an untouchable overlay" >&2; exit 1; }
 echo "Popup and Trace: $shown-> $tapped"
+# A browser sign-in's way back (issue 336): the redirect activity hands the callback to the waiting singleTask activity
+# with CLEAR_TOP | SINGLE_TOP, which gets it in onNewIntent; stacked as a second copy, it showed "not started".
+drive 'open apksim://signin' 'wait 1500' 'tap-text Sign in' 'wait 500' 'open apksim://signin-callback?code=smoke42' 'wait 1500' >/dev/null
+signin="$(drive nodes | grep -oE 'text="signin: [^"]*"')"
+echo "Sign-in: $signin"
+[[ "$signin" == 'text="signin: code=smoke42 (instances 1, new intents 1)"' ]] \
+  || { echo "a sign-in's redirect did not reach the waiting activity" >&2; exit 1; }
+drive back 'wait 800' >/dev/null
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" ' \
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \
   || { echo "a Trace section begun twice or a tap outside a non-focusable popup went wrong" >&2; exit 1; }
@@ -455,6 +463,8 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
   --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
+# Issue 336: a web link the app opens (a browser sign-in) reaches the tab, and its final address comes back as `open URL`.
+python3 "$ROOT/scripts/serve-link-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" | tee "$OUT/serve-link-check.log"
 # Issue 307: a --broadcast launch option is validated on serve's own JVM (no framework classes there): accepted, and a bad one is a 400.
 tok="$(cat "$OUT/serve.token")"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
