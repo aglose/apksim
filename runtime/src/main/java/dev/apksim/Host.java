@@ -1134,9 +1134,14 @@ public class Host {
       downTime = now;
       lastDown = Math.round(e.x()) + "," + Math.round(e.y());
       List<View> roots = rootViews();
-      touchTarget = roots.isEmpty() ? null : roots.get(roots.size() - 1);
+      touchTarget = null;
+      for (int i = roots.size() - 1; i >= 0 && touchTarget == null; i--) {
+        if (!isUntouchable(roots.get(i))) touchTarget = roots.get(i);  // the fallback: the topmost window that takes touches
+      }
       for (int i = roots.size() - 1; i >= 0; i--) {
         View r = roots.get(i);
+        // FLAG_NOT_TOUCHABLE: InputDispatcher never targets the window, inside it or not (an overlay above the activity).
+        if (isUntouchable(r)) continue;
         // A hidden window (a stopped activity's) is not drawn, so it takes no touches either.
         if (r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
         int[] at = position(r);
@@ -1161,12 +1166,19 @@ public class Host {
     if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
   }
 
+  /** FLAG_NOT_TOUCHABLE: InputDispatcher never targets the window with a pointer event, inside it or not. */
+  private static boolean isUntouchable(View root) {
+    return root.getLayoutParams() instanceof WindowManager.LayoutParams wl
+        && (wl.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0;
+  }
+
   /**
    * Whether a touch outside this window goes on to the windows behind it. As InputDispatcher's isTouchModal: a window
    * is touch-modal only when it is focusable and has no FLAG_NOT_TOUCH_MODAL, so a non-focusable popup (a slider's
    * value tooltip) takes only the touches inside it. Robolectric's UiAutomation injection, used in test runs, has the
    * same rule.
    */
+
   private static boolean isTouchThrough(View root) {
     ViewGroup.LayoutParams lp = root.getLayoutParams();
     return lp instanceof WindowManager.LayoutParams wl
@@ -1243,7 +1255,10 @@ public class Host {
         0, 0, 1f, 1f, 0, 0, rotary ? InputDevice.SOURCE_ROTARY_ENCODER : InputDevice.SOURCE_MOUSE, 0);
     List<View> roots = rootViews();
     // Rotary input goes to the focused window, as keys do; a mouse wheel to the topmost.
-    View top = rotary ? keyTarget(roots) : roots.isEmpty() ? null : roots.get(roots.size() - 1);
+    View top = rotary ? keyTarget(roots) : null;
+    for (int i = roots.size() - 1; !rotary && i >= 0 && top == null; i--) {
+      if (!isUntouchable(roots.get(i))) top = roots.get(i);  // not an untouchable overlay's
+    }
     if (top != null) {
       int[] at = position(top);
       m.offsetLocation(-at[0], -at[1]);  // raw on the screen, x and y in the window
