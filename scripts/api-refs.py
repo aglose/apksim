@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Which framework classes, methods and fields does apksim.jar use that another API level's framework lacks?
 
-    scripts/api-refs.py FRAMEWORK.jar [APKSIM.jar] [--json FILE] [--all]
+    scripts/api-refs.py FRAMEWORK.jar [APKSIM.jar] [--json FILE]
 
 FRAMEWORK.jar is a Robolectric android-all(-instrumented) jar of the level asked about; APKSIM.jar defaults to
 work/apksim.jar (built against the level apksim ships). Reads class files only: constant pools for what each apksim
