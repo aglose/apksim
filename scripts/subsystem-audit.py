@@ -17,7 +17,7 @@ import json, re, struct, sys, zipfile
 # apksim's status per subsystem, in one place. Take them from AGENTS.md and the README's Limitations; update an
 # entry when a stand-in lands. status: simulated | partial | in progress | missing.
 STATUS = {
-    'sensors': ('in progress', 'none yet', 'motion/body sensors: a stand-in is being built; UPDATE THIS ENTRY WHEN IT LANDS'),
+    'sensors': ('in progress', 'none yet', 'motion/body sensors: no stand-in yet, one is in progress; UPDATE THIS ENTRY WHEN IT LANDS'),
     'health-connect': ('in progress', 'none yet', 'no Health Connect service; a stand-in is being built; UPDATE THIS ENTRY WHEN IT LANDS'),
     'play-location': ('missing', '', 'FusedLocationProviderClient needs Play Services; the plain LocationManager is simulated'),
     'play-services': ('partial', 'push', 'no Play Services; bind to a missing service returns false; FCM pushes via `push`'),
@@ -25,7 +25,7 @@ STATUS = {
     'ble': ('simulated', '--ble FILE|PRESET, ble', 'scripted peripherals through the framework scanner and GATT'),
     'bluetooth-classic': ('missing', '', 'adapter state only (`bluetooth on|off`); no sockets, A2DP or headset profiles'),
     'nfc': ('missing', '', 'no NFC adapter'),
-    'telephony-sms': ('missing', '', 'Robolectric stubs only; telephony features are not declared'),
+    'telephony-sms': ('missing', '', 'Robolectric TelephonyManager/SmsManager stubs: no radio, SMS or calls'),
     'usb': ('missing', '', 'no USB host or accessory'),
     'camera': ('partial', '--camera fake, camera', 'Camera2 and CameraX see a test pattern or image, not a webcam; no encoder surfaces'),
     'microphone': ('missing', '', 'AudioRecord/MediaRecorder have no input device (audio output plays)'),
@@ -35,7 +35,7 @@ STATUS = {
     'mediacodec': ('partial', '--video, --audio', 'H.264, HEVC, AAC, MP3 decoders; no VP9/AV1/Opus/Vorbis; encoders get nothing'),
     'webview': ('partial', '', 'Robolectric WebView stand-in; pages are not rendered'),
     'background-work': ('simulated', 'jobs, services, alarms', 'WorkManager, JobScheduler, AlarmManager and services run on the simulated clock'),
-    'native-gles': ('partial', '--gles on|off', 'offscreen GLES on ANGLE in test runs; GLES in native libraries is a stub'),
+    'native-gles': ('missing', '', 'GLES called from native libraries is a stub (`--gles` covers the Java GLES20/30 API only)'),
     'native-audio': ('missing', '', 'OpenSL ES / AAudio libraries are stubs (Java AudioTrack plays)'),
 }
 
@@ -43,7 +43,7 @@ STATUS = {
 # regex on 'Lpkg/Name;->method'), 'f' (field ref, same shape), 's' (string, regex), 'p'/'u' (manifest permission /
 # uses-feature name regex), 'n' (native import symbol regex). Classes are matched on framework names only.
 RULES = {
-    'sensors': [('t', r'^Landroid/hardware/(SensorManager|SensorEventListener|SensorEvent|TriggerEvent)\b'),
+    'sensors': [('t', r'^Landroid/hardware/(Sensor\w*|TriggerEvent\w*)\b'),
                 ('t', r'^Landroid/hardware/Sensor;'), ('u', r'^android\.hardware\.sensor\.'),
                 ('p', r'^android\.permission\.(BODY_SENSORS|ACTIVITY_RECOGNITION|HIGH_SAMPLING_RATE_SENSORS)'),
                 ('t', r'^Lcom/google/android/gms/location/ActivityRecognition')],
@@ -68,7 +68,7 @@ RULES = {
     'usb': [('t', r'^Landroid/hardware/usb/'), ('u', r'^android\.hardware\.usb\.'), ('s', r'^android\.hardware\.usb\.action\.')],
     'camera': [('t', r'^Landroid/hardware/camera2/'), ('t', r'^Landroid/hardware/Camera;'), ('t', r'^Landroidx/camera/(lifecycle/ProcessCameraProvider|core/(CameraSelector|ImageAnalysis|ImageCapture|Preview|Camera|CameraControl)|video/\w+|view/PreviewView)\b'),
                ('p', r'^android\.permission\.CAMERA$'), ('u', r'^android\.hardware\.camera'),
-               ('s', r'androidx\.camera\.|CameraX')],
+               ('s', r'^androidx\.camera\.')],
     'microphone': [('t', r'^Landroid/media/(AudioRecord|MediaRecorder|SpeechRecognizer)\b'), ('p', r'^android\.permission\.RECORD_AUDIO$'),
                    ('u', r'^android\.hardware\.microphone'), ('t', r'^Landroid/speech/')],
     'location-manager': [('t', r'^Landroid/location/(LocationManager|LocationListener|Location|GnssStatus|OnNmeaMessageListener)\b'),
@@ -134,6 +134,8 @@ def parse_axml(d):
     pos, pool, resmap = hsz, [], []
     while pos < min(size, len(d)):
         t, h, sz = struct.unpack_from('<HHI', d, pos)
+        if sz < 8:
+            raise ValueError('bad XML chunk')
         if t == 0x0001:
             n, _, flags, sstart, _ = struct.unpack_from('<IIIII', d, pos + 8)
             utf8 = flags & 0x100
@@ -184,7 +186,7 @@ def parse_axml(d):
 
 
 def manifest_info(d):
-    info = {'package': None, 'minSdk': None, 'targetSdk': None, 'permissions': [], 'features': []}
+    info = {'package': None, 'minSdk': None, 'targetSdk': None, 'permissions': [], 'features': [], 'actions': []}
     for el, a in parse_axml(d):
         if el == 'manifest':
             info['package'] = a.get('package')
@@ -193,6 +195,8 @@ def manifest_info(d):
             info['targetSdk'] = a.get('targetSdkVersion', info['targetSdk'])
         elif el in ('uses-permission', 'uses-permission-sdk-23') and a.get('name'):
             info['permissions'].append(a['name'])
+        elif el == 'action' and isinstance(a.get('name'), str):
+            info['actions'].append(a['name'])
         elif el == 'uses-feature':
             if a.get('name'):
                 info['features'].append((a['name'], a.get('required', True) is not False))
@@ -286,6 +290,7 @@ def audit(apk):
                 sensor_types.add(m.group(1))
     for p in man['permissions']:
         scan('p', [p])
+    scan('s', man['actions'])
     for f, req in man['features']:
         scan('u', [f])
     libs = {}
@@ -296,7 +301,8 @@ def audit(apk):
                 continue
             try:
                 syms = elf_undefined(z.read(n))
-            except Exception:
+            except Exception as e:
+                print('warning: %s: %s: %s' % (apk, n, e), file=sys.stderr)
                 continue
             for s in syms:
                 libs.setdefault(s, n.split('/')[-1])
@@ -336,7 +342,11 @@ def show(r, everything):
 def main(argv):
     as_json = '--json' in argv
     everything = '--all' in argv
-    apks = [a for a in argv if not a.startswith('--')]
+    unknown = [a for a in argv if a.startswith('-') and a not in ('--json', '--all')]
+    if unknown:
+        print('unknown option: ' + unknown[0], file=sys.stderr)
+        return 2
+    apks = [a for a in argv if not a.startswith('-')]
     if not apks:
         print(__doc__.strip().split('\n\n')[0], file=sys.stderr)
         print('usage: subsystem-audit.py [--json] [--all] APK...', file=sys.stderr)

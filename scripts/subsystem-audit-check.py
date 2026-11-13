@@ -40,6 +40,14 @@ t = subprocess.run([sys.executable, os.path.join(here, 'subsystem-audit.py'), ap
 want(t.returncode == 0 and 'subsystem' in t.stdout and 'ble' in t.stdout, 'table output')
 bad = subprocess.run([sys.executable, os.path.join(here, 'subsystem-audit.py'), __file__], capture_output=True, text=True)
 want(bad.returncode == 1 and 'error' in bad.stderr, 'an unreadable APK should exit 1')
+# The ELF and manifest paths, which the test app's subsystems do not exercise.
+import importlib.util, zipfile
+spec = importlib.util.spec_from_file_location('sa', os.path.join(here, 'subsystem-audit.py'))
+sa = importlib.util.module_from_spec(spec); spec.loader.exec_module(sa)
+z = zipfile.ZipFile(apk)
+so = [n for n in z.namelist() if n.endswith('libbitmapfixture.so') and '/arm64-v8a/' in n]
+want(so and 'AndroidBitmap_getInfo' in sa.elf_undefined(z.read(so[0])), 'ELF imports of libbitmapfixture.so')
+want(any(n == 'android.permission.CAMERA' for n in sa.manifest_info(z.read('AndroidManifest.xml'))['permissions']), 'manifest_info')
 if fails:
     print('FAIL:\n  ' + '\n  '.join(fails)); sys.exit(1)
 print('subsystem-audit-check: ok (%d subsystems, %d referenced)' % (len(subs), sum(1 for v in subs.values() if v['sites'])))
