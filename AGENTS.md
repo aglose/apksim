@@ -524,6 +524,42 @@ open and streaming devices, frames, images, drops, outputs).
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
 overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
 each `thermal` change, and `getCurrentThermalStatus` agrees (`apksim://system-sources` has a "thermal" line).
+`sensor [list|accel X Y Z|gyro X Y Z|tilt PITCH ROLL|shake [MS]|light LUX|proximity near|far|CM|pressure HPA|humidity PCT|temperature C|steps N|+N|heart-rate BPM|off|reset|NAME off|on]`
+and `--sensor NAME=VALUE` (repeatable; `accel=0:9.8:0`, `tilt=-45:0`; `-Dapksim.sensors`, kept by warm launches) (`Sensors`): SensorManager's sensors, which
+Robolectric's ShadowSensorManager has none of (an app coroutine awaiting a first sensor value hung silently: issue 96's
+class). A device has what an API 36 emulator lists (`dumpsys sensorservice`: names, types, ranges and resolutions as it
+gives them; accelerometer, gyroscope, magnetometer, hardware and software orientation, light, proximity, pressure,
+humidity, ambient temperature, the three uncalibrated ones, gravity, linear acceleration, the rotation vectors), plus a
+step counter and detector (a phone has them, the emulator does not) and heart rate on a watch; a TV has none, a
+desktop no proximity, temperature, humidity, pressure or step sensors; the matching `android.hardware.sensor.*`
+features follow (`SystemFeatures`, re-applied by `device` and `sensor NAME off`). `ShadowSimSensorManager` replaces
+Robolectric's: each (listener, sensor) registration is a delayed message on its Handler's looper (the main looper
+without one), re-posted after each event at the rate asked (SENSOR_DELAY_* or microseconds, clamped to the sensor's
+minimum and maximum delay); a continuous sensor delivers at registration, then each period, with
+`SystemClock.elapsedRealtimeNanos` timestamps; an on-change one (light, proximity, humidity, temperature, step counter,
+heart rate) delivers its value at registration and on each change, none when the value is unchanged; the step detector
+fires once per step added. A second registration of a listener for the same sensor returns false and keeps the first,
+as the emulator does (SensorsTest checks that and the rest on both). No thread and nothing while nothing is
+registered, and the clock is never moved. Values are one pose: gravity in the device's frame, at rest from the display
+rotation (portrait upright 0 9.81 0; `rotate right`, ROTATION_90, gives 9.81 0 0), or set by `accel` and `tilt`
+(`tilt 0 0` is flat: 0 0 9.81); the magnetometer is the emulator's field (47.75 uT horizontal, 9.88 vertical) in that
+frame, and orientation and the rotation vectors come from both through SensorManager's own getRotationMatrix, so the
+sensors agree (upright: rotation vector 0.71 0 0 0.71; the emulator 0.68 0 0 0.74 at its slight tilt); `gyro` sets a
+rotation rate that stays; `shake` adds a decaying 8 Hz burst to the accelerometer and linear acceleration. Defaults are
+the emulator's: light 0, proximity 1 (far, its range), pressure 1013.25, humidity 0, temperature 20 (the emulator
+reports -1e28). A sensor that needs a permission (heart rate: BODY_SENSORS; step sensors: ACTIVITY_RECOGNITION,
+which binds only apps targeting 29 and up) returns false from registerListener without it, as the sensor service
+refuses. `sensor NAME off` makes getDefaultSensor return null and stops that sensor's events. Test runs: `reset()` at
+each setup, `executeShellCommand("apksim sensor ...")` as `thermal`; events follow the handler looper's clock, which in
+a default test run is simulated, so a test that does not move it sees each registration's first event only, and a continuous sensor there also delivers at most one event per period of real time (Robolectric's unpaused Choreographer moves the clock 15 ms a frame, so a main-looper listener updating a view per event made each frame bring the next event due inside one `idle()` and the first Espresso check hung: `SensorsTest.zz_...`); waiting on
+the main thread with a `CountDownLatch` (clock following real time) or `idleFor` delivers them, and
+`ShadowLooper.runToEndOfTasks` never returns while a continuous listener is registered. A device switch (and `NAME off`) drops the registrations of sensors the device no longer has; one `Sensor` object per sensor lives as long as the device, so `on` restores it. `heart-rate off` clears the reading (the sensor stays). Under `--snapshot` a continuous sensor delivers its first event only. A sensor's tick is not work that changes the screen: `Host.dueMessage` skips it (before, `settle` never settled while a listener was registered, naming `Sensors$Reg`), and Host's idle sleep is cut to the next tick of a listener on another looper (`nextOtherLooperMs`; a GAME listener on a HandlerThread got ~32 events a second, now 50). Each registration posts on a Handler of its own on the app's looper (an app clearing its handler's messages does not end the stream), tells `onAccuracyChanged(HIGH)` once before its first event as the event queue does, and gives strictly rising timestamps. Sensors that need a permission are hidden from `getDefaultSensor`/`getSensorList` without it (ACTIVITY_RECOGNITION only for apps targeting 29+; heart rate BODY_SENSORS, or on an app targeting 36+ also `android.permission.health.READ_HEART_RATE`: from memory, not checked on a device: the emulator has neither sensor), and an app targeting 31+ without HIGH_SAMPLING_RATE_SENSORS gets the emulator's SecurityException for FASTEST. The `Sensor` objects live for the process (an app static from an earlier test still registers); a negative rate returns false and `flush` true for any registered listener. Robolectric's own test hooks (`shadowOf(sm).sendSensorEventToListeners`, `addSensor`, `getListeners`, `setForceListenersToFail`) do not see these registrations. The control channel's `sensor` is also allowed from a serve tab, values only
+(`Session.check`). Not done: Device > Shake in the Mac menu, a tilt panel, `SensorDirectChannel`, trigger sensors
+(`requestTriggerSensor` returns false), batching, dynamic sensors, data injection, the emulator's two debug sensors, the
+flight recorder (only the commands are kept). The test app's `apksim://sensors[?rate=fastest|game|ui|normal]`
+(`SensorsActivity`) lists every sensor with its range, event count and last values; `SensorsTest` (23 tests, 8 need the
+`sensor` command; 15 run on the emulator) passes on apksim and on the API 36 emulator, and `ci-smoke.sh` drives the screen (the first event,
+gravity per rotation, light and proximity changes, flat, `sensor light off`).
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
@@ -590,7 +626,7 @@ filter it gets MAIN and that filter's LAUNCHER or HOME category, else the compon
 component and its targetActivity is made (the test app's `.SecondAlias`). `restart` starts it again
 and `process-death` rebuilds it; one the manifest lacks stops the launch with exit 2 and the list; not in test runs.
 With no LAUNCHER activity the first MAIN/HOME one starts), `--appearance dark`, `--locale de-DE`, `--timezone America/New_York`, `--clock 2026-01-01T09:41:00Z`, `--font-scale 1.3`, `--permissions ask|grant|deny` (grant = `adb install -g`),
-`--biometrics enrolled`, `--bluetooth on|off`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
+`--biometrics enrolled`, `--bluetooth on|off`, `--sensor NAME=VALUE`, `--status-bar on|off`, `--nav-bar gesture|off`, `--snapshot` (screenshot tests: cold launch), `--window front|nofocus|background|minimized|hidden` (default for every launch:
 `APKSIM_WINDOW`), and device identity (`DeviceIdentity`, set just before Application.onCreate in running instances,
 warm or cold, and in test runs): `--serial VALUE` (Build.getSerial() and Build.SERIAL; by default 16 letters and
 digits hashed from the data slot's name, so one slot keeps one serial and `instance-1` gets another, and test runs get

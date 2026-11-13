@@ -555,6 +555,11 @@ final class DeviceControls {
         });
         return told[0] ? "ok" : "ok (no activity has ambient mode enabled)";
       }
+      case "sensor" -> {
+        // sensor [list|accel X Y Z|gyro X Y Z|tilt P R|shake|light LUX|proximity near|far|steps N|heart-rate BPM|NAME off|on]: Sensors.
+        // Events are posted to each listener's own looper, so a listener's exception is that looper's, not this command's.
+        return Sensors.command(a);
+      }
       case "thermal" -> {
         // thermal [none|light|moderate|severe|critical|emergency|shutdown]: PowerManager's thermal status (Thermal).
         // A listener's exception is the app's crash (Crashes), not a command error; bad arguments answer error: as usual.

@@ -42,7 +42,7 @@ grep first-frame "$OUT/overlay.log"
 
 docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
   -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 \
-  --timezone America/New_York app.apk >/dev/null
+  --timezone America/New_York --sensor light=75 app.apk >/dev/null
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 # Docker's port proxy accepts before the app listens, so wait for an answer rather than a connection.
 for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
@@ -147,6 +147,46 @@ echo "Time ticks: $before -> $crossed -> $same"
 [[ "$before" == 'text="ticks: 0"' && "$crossed" == 'text="ticks: 1"' && "$same" == 'text="ticks: 1"' ]] \
   || { echo "the app did not hear one ACTION_TIME_TICK at the minute boundary" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
+
+# Sensors (Sensors.java, the test app's apksim://sensors): the device lists an emulator's sensors, each registered
+# listener gets a first event at once (an app awaiting one must not hang), at rest the accelerometer reads gravity on the
+# axis the rotation gives, and `sensor ...` changes what the listeners hear: light and proximity (on-change), the pose.
+sensor_line() { drive nodes | grep -oE "text=\"$1 \(type [0-9]+[^\"]*\"" | grep -oE ': [-0-9. ]+, n=[0-9]+' | head -1; }
+drive 'open apksim://sensors' 'wait 2500' >/dev/null
+count="$(drive nodes | grep -oE 'text="sensors: [0-9]+"')"
+rest="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+light0="$(sensor_line 'Goldfish Light sensor')"
+drive 'sensor light 300' 'sensor proximity near' 'wait 600' >/dev/null
+light1="$(sensor_line 'Goldfish Light sensor')"
+prox="$(sensor_line 'Goldfish Proximity sensor')"
+drive 'rotate right' 'wait 800' >/dev/null
+turned="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+drive 'rotate left' 'sensor tilt 0 0' 'wait 800' >/dev/null
+flat="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+drive 'sensor light off' 'sensor' | grep -q 'removed: light' || { echo "sensor light off did not take the light sensor away" >&2; exit 1; }
+echo "Sensors: $count; at rest$rest; light$light0 -> $light1; proximity$prox; rotated$turned; flat$flat"
+[[ "$count" == 'text="sensors: 18"' && "$rest" == ': 0.00 9.81 0.00, n='* && "$light0" == ': 75.00, n=1' && "$light1" == ': 300.00, n=2' \
+   && "$prox" == ': 0.00, n=2' && "$turned" == ': 9.81 0.00 0.00, n='* && "$flat" == ': 0.00 0.00 9.81, n='* ]] \
+  || { echo "the sensors did not deliver, follow the rotation or follow the sensor command" >&2; exit 1; }
+# The rate is the one asked for (UI, 15 Hz, on the main looper; GAME, 50 Hz, on a HandlerThread while the screen is still),
+# not a few events a second (a background looper's tick only runs when Host's idle sleep lets the clock reach it).
+acc_n() { sensor_line 'Goldfish 3-axis Accelerometer' | grep -oE 'n=[0-9]+' | cut -d= -f2; }
+n0="$(acc_n)"; drive 'wait 2000' >/dev/null; n1="$(acc_n)"
+drive back 'open apksim://sensors?rate=game&thread=bg' 'wait 1500' >/dev/null
+b0="$(acc_n)"; drive 'wait 2000' >/dev/null; b1="$(acc_n)"
+echo "Sensor rates: UI $((n1 - n0)) in 2 s (15 Hz: 30), GAME on a HandlerThread $((b1 - b0)) in 2 s (50 Hz: 100)"
+(( n1 - n0 >= 24 && n1 - n0 <= 36 && b1 - b0 >= 85 && b1 - b0 <= 115 )) \
+  || { echo "the sensors did not run at the rate asked" >&2; exit 1; }
+# A screen that registers listeners but does not redraw settles (the sensors' ticks are not work that changes the screen).
+drive 'back' 'open apksim://sensors?redraw=0' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
+  || { echo "a screen with sensor listeners never settled" >&2; exit 1; }
+# Device kinds: what an emulator of each lists (a TV none, a watch adds heart rate, a desktop has no proximity or steps).
+kinds=""
+drive 'sensor light on' >/dev/null
+for k in watch tv desktop phone; do kinds="$kinds $k=$(drive "device $k" 'wait 800' 'sensor' | grep -oE 'sensors: [0-9]+' | tail -1 | cut -d' ' -f2)"; done
+echo "Sensors by device:$kinds"
+[[ "$kinds" == " watch=18 tv=0 desktop=14 phone=20" ]] || { echo "a device kind did not list its sensors" >&2; exit 1; }
+drive 'sensor reset' 'back' 'wait 1000' >/dev/null
 
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
 # to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app

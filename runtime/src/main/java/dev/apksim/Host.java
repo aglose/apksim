@@ -447,6 +447,7 @@ public class Host {
       for (; m != null && m.getWhen() <= until; m = ReflectionHelpers.getField(m, "next")) {
         android.os.Handler target = m.getTarget();
         String handler = target == null ? "" : target.getClass().getName();
+        if (m.getCallback() instanceof Sensors.Reg) continue;  // a sensor's tick: the next event, not work that changes the screen
         if ((m.what == 39 || m.what == 40) && handler.equals("android.view.ViewRootImpl$ViewRootHandler")) continue;
         if (m.what == 2 && handler.equals("android.view.Choreographer$FrameHandler") && m.obj != null
             && m.obj.getClass().getName().startsWith("android.animation.AnimationHandler$$Lambda")) continue;
@@ -682,6 +683,8 @@ public class Host {
     long sleepMs = IDLE_SLEEP_MAX_MS - Math.max(0, elapsedMs);
     Duration next = ((org.robolectric.shadows.ShadowPausedLooper) shadowOf(Looper.getMainLooper())).getNextScheduledTaskTime();
     if (!next.isZero()) sleepMs = Math.min(sleepMs, next.toMillis() - nowMs - elapsedMs);
+    // A sensor listener on another looper runs when the clock reaches its tick, which only this loop moves.
+    sleepMs = Math.min(sleepMs, Sensors.nextOtherLooperMs());
     if (sleepMs < 3) return false;
     parked.set(true);
     // A wake that came after the loop's checks but before parked was set posted nothing: do not sleep through it.

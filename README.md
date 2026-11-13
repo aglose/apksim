@@ -84,7 +84,7 @@ That trade is where both the speed and the limits come from.
 | **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
 | **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
-| **System services** | Stand-ins: no Play Services, Health Connect or sensors, a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
+| **System services** | Stand-ins: no Play Services or Health Connect; simulated sensors (an emulator's list, events at the requested rate, set with `sensor`) and a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
 
@@ -818,7 +818,7 @@ What is still open is under [Limitations](#limitations) and in [AGENTS.md](AGENT
 ## Limitations
 
 - **It isn't a device.**
-  - **System services** are stand-ins: no Play Services, Health Connect or sensors; the camera (`--camera fake`) shows
+  - **System services** are stand-ins: no Play Services or Health Connect; sensors are simulated (`sensor`: the accelerometer follows the rotation, light, proximity, steps, shake); the camera (`--camera fake`) shows
     a test pattern or a still image, not the Mac's webcam.
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere. A stand-in
     browser is installed so that SDKs that look for one before signing in (OAuth) find it.

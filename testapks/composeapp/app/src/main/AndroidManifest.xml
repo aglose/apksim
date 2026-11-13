@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- A signature permission an ordinary APK asks for in vain (InstallPermissionsTest: it must stay denied). -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
@@ -143,6 +146,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="apksim" android:host="dialogs" />
+            </intent-filter>
+        </activity>
+        <!-- apksim://sensors[?rate=fastest|game|ui|normal]: every sensor SensorManager lists, with its events and last values. -->
+        <activity android:name=".SensorsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="sensors" />
             </intent-filter>
         </activity>
         <!-- apksim://timezone: every zone source an app reads, Joda-Time's included, and zone-change broadcasts (issue 91). -->
