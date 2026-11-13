@@ -350,7 +350,11 @@ Read README.md for results and limits; this file covers how to work on the code.
   against a stand-in apksim), `affected.py` (instrument.py's test-impact recording and selection and its
   time-balanced shards, see docs/affected-tests.md; `affected-check.py` checks them on the test app, breaking a file
   and rebuilding it),
-  `subsystem-audit.py APK...` (which device subsystems an APK refers to, from its DEX types, methods and strings, manifest and `.so` imports, against a status table at the top of the script: simulated / partial / in progress / missing and the option that drives each; `--json`; update the table when a stand-in lands; `subsystem-audit-check.py`, CI quick checks, asserts it on the test app),
+  `subsystem-audit.py APK...` (which device subsystems an APK refers to, against a status table at the top of the script:
+  simulated / partial / in progress / missing and the option that drives each; references come from decoding every
+  method's instructions and are counted for the app's own classes, its libraries and the manifest separately; also
+  manifest attributes by resource id, `lib/*/*.so` imports, `--json`; update the table when a stand-in lands;
+  `subsystem-audit-check.py` in CI's quick checks, with `testapks/subsystem-audit-fixture`'s binary manifest),
   `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `video-check.py` (recorded
   video over `--control`: selftest on the H.264 fixture clip, `apksim://video`, no HEVC decoder listed; `--hevc` for an
