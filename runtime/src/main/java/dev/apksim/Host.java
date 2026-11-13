@@ -1156,6 +1156,7 @@ public class Host {
       int[] at = position(touchTarget);
       touchDx = at[0];
       touchDy = at[1];
+      sendOutsideTouches(roots, touchTarget, e, now);
     }
     if (touchTarget == null) return;
     int action = e.type() == SimWindow.CANCEL ? MotionEvent.ACTION_CANCEL : e.type();
@@ -1167,6 +1168,34 @@ public class Host {
     touchTarget.dispatchTouchEvent(m);
     m.recycle();
     if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL) touchTarget = null;
+  }
+
+  /**
+   * As InputDispatcher on ACTION_DOWN: every window above the touched one that has FLAG_WATCH_OUTSIDE_TOUCH and does
+   * not contain the point gets an ACTION_OUTSIDE (coordinates in its own window). Compose's Popup sets the flag and
+   * dismisses on it, so an outside tap closes tooltips, popovers and dropdowns whether or not they are focusable.
+   */
+  private void sendOutsideTouches(List<View> roots, View target, SimWindow.Event e, long now) {
+    int from = roots.indexOf(target) + 1;
+    if (from <= 0) return;
+    List<View> watchers = new java.util.ArrayList<>();
+    for (int i = from; i < roots.size(); i++) {
+      View r = roots.get(i);
+      if (isUntouchable(r) || r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
+      if (!(r.getLayoutParams() instanceof WindowManager.LayoutParams wl)
+          || (wl.flags & WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH) == 0) continue;
+      int[] at = position(r);
+      boolean inside = e.x() >= at[0] && e.x() < at[0] + r.getWidth() && e.y() >= at[1] && e.y() < at[1] + r.getHeight();
+      if (!inside) watchers.add(r);
+    }
+    for (View r : watchers) {  // collected first: a dismissal removes the window from the stack
+      int[] at = position(r);
+      MotionEvent m = MotionEvent.obtain(downTime, now, MotionEvent.ACTION_OUTSIDE, e.x(), e.y(), 0);
+      m.offsetLocation(-at[0], -at[1]);
+      m.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+      r.dispatchTouchEvent(m);
+      m.recycle();
+    }
   }
 
   /** FLAG_NOT_TOUCHABLE: InputDispatcher never targets the window with a pointer event, inside it or not. */
