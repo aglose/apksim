@@ -479,6 +479,23 @@ final class SimWindow {
     if (!headless) nativeShare(text, path);
   }
 
+  /**
+   * Opens a sign-in page in the system browser's authentication session, which ends at a redirect to `scheme://...`
+   * (host null) or to https://host/path. False when this Mac cannot wait for that redirect (https needs macOS 14.4).
+   */
+  static boolean webAuth(String url, String scheme, String host, String path) {
+    return !headless && nativeWebAuth(url, scheme, host, path);
+  }
+
+  /** The URL a finished sign-in session was redirected to, "" if it was cancelled or failed, null while none is done. */
+  static String webAuthResult() {
+    return headless ? null : nativeWebAuthResult();
+  }
+
+  private static native boolean nativeWebAuth(String url, String scheme, String host, String path);
+
+  private static native String nativeWebAuthResult();
+
   private static native void nativePickFiles(String mimeTypes, boolean multiple);
 
   private static native String nativePickResult();
