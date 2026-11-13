@@ -25,6 +25,21 @@ static long qSeq;
 
 static void post(int type, float x, float y, float v) {
   pthread_mutex_lock(&qLock);
+  // Only the newest size matters to a resize: one still waiting takes it (a drag posts one per pixel moved, and each
+  // is a reconfiguration of the app: replayed one by one they ran for half a minute after a 2 s drag, each snapping
+  // the window back to its stale size). It keeps its place among the input around it, and a drag's end stays an end.
+  if (type == EV_RESIZE) {
+    for (int i = qHead; i != qTail; i = (i + 1) % QUEUE_SIZE) {
+      if (queue[i].type != EV_RESIZE) continue;
+      queue[i].x = x;
+      queue[i].y = y;
+      if (v != 0) queue[i].v = v;
+      qSeq++;
+      pthread_cond_broadcast(&qPosted);
+      pthread_mutex_unlock(&qLock);
+      return;
+    }
+  }
   int next = (qTail + 1) % QUEUE_SIZE;
   if (next != qHead) {
     queue[qTail] = (Event){type, x, y, v};
@@ -109,6 +124,8 @@ static void buildKeyboard(void);
 static CALayer *bannerLayer;  // heads-up notification, below
 static NSString *pendingText;
 static NSMutableDictionary<NSNumber *, NSMenuItem *> *menuItems;
+static BOOL pinnedForResize;  // the frame layer shows the last size's frame, unscaled, until the next present
+static BOOL scriptedLive;  // a scripted drag (`window WxH MS`) is under way: treated as the user's live resize
 static BOOL selfResizing;  // a resize this file asked for (zoom, nativeResize), not the user's
 static float openScale;  // device pixels per point at actual size: the display's density
 static NSWindow *simWindow;
@@ -564,7 +581,7 @@ static int androidMeta(NSEventModifierFlags f) {
   frameLayer.contentsGravity = frameLayer.contentsAreFlipped ? kCAGravityBottomLeft : kCAGravityTopLeft;
   [CATransaction commit];
 }
-- (void)windowDidResize:(NSNotification *)n { [self postResize:!self.window.inLiveResize]; }
+- (void)windowDidResize:(NSNotification *)n { [self postResize:!(self.window.inLiveResize || scriptedLive)]; }
 - (void)windowDidEndLiveResize:(NSNotification *)n { [self postResize:YES]; }
 @end
 
@@ -684,6 +701,10 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativePresent(JNIEnv *env, jcla
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     frameLayer.contents = (__bridge id)s;
+    if (pinnedForResize && !(NSApp.windows.firstObject.inLiveResize || scriptedLive)) {
+      frameLayer.contentsGravity = kCAGravityResize;  // the new size's first frame: it fills the layer again
+      pinnedForResize = NO;
+    }
     [CATransaction commit];
     [CATransaction flush];
     commits++;
@@ -921,7 +942,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeZoom(JNIEnv *env, jclass 
 static void sizeWindow(BOOL actualSize) {
   NSWindow *win = NSApp.windows.firstObject;
   // While the user drags an edge the window is already the size asked for (to a pixel): leave it to them.
-  if (win.inLiveResize || (win.styleMask & NSWindowStyleMaskFullScreen)) return;
+  if (win.inLiveResize || scriptedLive || (win.styleMask & NSWindowStyleMaskFullScreen)) return;
   int w = outerW(), h = outerH();
   NSRect visible = win.screen.visibleFrame;
   NSRect frame = win.frame;
@@ -965,10 +986,17 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeResize(JNIEnv *env, jclas
   devH = h;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     sizeWindow(actualSize);
     frameLayer.contentsScale = deviceScale;
-    frameLayer.contents = nil;
+    // The last frame stays up, pinned top left at its own size, until the first frame of the new size is presented
+    // (nativePresent): cleared here, the window was black from each resize to that frame, ten times a second
+    // through a drag of its edge.
+    frameLayer.contentsGravity = frameLayer.contentsAreFlipped ? kCAGravityBottomLeft : kCAGravityTopLeft;
+    pinnedForResize = YES;
     layoutAfterZoom();
+    [CATransaction commit];
     dispatch_semaphore_signal(done);
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
@@ -998,13 +1026,35 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTimeZone(JNIEnv *env, 
 
 // Sets the window's content size in points as a drag of its corner would end (the `window` control command), so
 // scripts can check the path a user's resize takes.
-JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, jclass c, jint wPts, jint hPts) {
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDragResize(JNIEnv *env, jclass c, jint wPts, jint hPts, jint ms) {
   onMain(^{
     NSWindow *win = NSApp.windows.firstObject;
-    NSRect content = [win contentRectForFrameRect:win.frame];
-    content.origin.y += content.size.height - hPts;
-    content.size = NSMakeSize(wPts, hPts);
-    [win setFrame:[win frameRectForContentRect:content] display:YES animate:NO];
+    NSRect from = [win contentRectForFrameRect:win.frame];
+    void (^set)(CGFloat, CGFloat) = ^(CGFloat w, CGFloat h) {
+      NSRect content = [win contentRectForFrameRect:win.frame];
+      content.origin.y += content.size.height - h;
+      content.size = NSMakeSize(w, h);
+      [win setFrame:[win frameRectForContentRect:content] display:YES animate:NO];
+    };
+    if (ms <= 0 || scriptedLive) {
+      set(wPts, hPts);
+      return;
+    }
+    // Over ms of real time, a step per display refresh as a drag's mouse moves come, the run loop turning between
+    // them as it does while AppKit tracks a live resize; then the drag's end.
+    scriptedLive = YES;
+    SimView *delegate = (SimView *)win.delegate;
+    [delegate windowWillStartLiveResize:nil];
+    CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / 120 repeats:YES block:^(NSTimer *t) {
+      double f = MIN(1.0, (CFAbsoluteTimeGetCurrent() - start) * 1000 / ms);
+      set(round(from.size.width + (wPts - from.size.width) * f), round(from.size.height + (hPts - from.size.height) * f));
+      if (f < 1.0) return;
+      [t invalidate];
+      scriptedLive = NO;
+      [delegate windowDidEndLiveResize:nil];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
   });
 }
 
