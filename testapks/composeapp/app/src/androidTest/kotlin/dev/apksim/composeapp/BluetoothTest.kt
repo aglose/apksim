@@ -60,6 +60,7 @@ class BluetoothTest {
    */
   @Before
   fun grantBluetoothConnect() {
+    if (context.applicationInfo.targetSdkVersion < 31) return  // a target-28 app holds the legacy BLUETOOTH instead (Target28Test)
     instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.BLUETOOTH_CONNECT)
     assertEquals(PackageManager.PERMISSION_GRANTED, context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT))
   }

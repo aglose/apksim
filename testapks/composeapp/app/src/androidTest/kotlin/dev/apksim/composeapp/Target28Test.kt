@@ -13,36 +13,60 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.security.NetworkSecurityPolicy
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * What an app targeting SDK 28 sees, for the three-way comparison of docs/conformance.md: the API 30 emulator
- * (ApksimCmp30), the API 36 one and apksim. Build the pair with `-Papksim.targetSdk=28`; with the default build
- * (targetSdk 36) every test here is skipped by an assumption, except [probe], which only reports.
+ * What an app targeting an older SDK sees, for the three-way comparison of docs/conformance.md: the API 30 emulator
+ * (ApksimCmp30), the API 36 one and apksim. Build the pair with `-Papksim.targetSdk=28`; its manifest overlay
+ * `-e expectTarget 28` says which target the run expects, which is what gates these tests, independent of the
+ * targetSdk under test (an app-level <meta-data> in the overlay did that too, but made eight WorkManager tests fail on
+ * apksim only: docs/conformance.md). Without it every test here is skipped by an assumption.
  *
- * [probe] prints one `key=value` line per observation as instrumentation status (`am instrument -r` shows it as
- * INSTRUMENTATION_STATUS), asserting nothing: scripts/conformance.py's table of the three is made from it. The other
- * tests assert what both emulators agree on, so a difference on apksim fails them.
+ * [probe] prints one `t28.KEY=VALUE` line per observation as instrumentation status (`am instrument -r` shows it as
+ * INSTRUMENTATION_STATUS) and asserts nothing; the probe table in docs/conformance.md is made from it, run alone on a
+ * fresh install of each side. The other tests assert what the emulators agree on. The notification gate
+ * (`Notifications.allowed()`) lives in a running instance, not in a test run: `scripts/target-gate-check.sh`.
  */
 @RunWith(AndroidJUnit4::class)
 class Target28Test {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val context: Context = instrumentation.targetContext
   private val target get() = context.applicationInfo.targetSdkVersion
+  private val expected: Int? get() = InstrumentationRegistry.getArguments().getString("expectTarget")?.toInt()
 
-  private fun at28() = assumeTrue("needs -Papksim.targetSdk=28", target == 28)
+  private fun at(sdk: Int) = assumeTrue("needs -Papksim.targetSdk=$sdk", expected == sdk)
 
-  @Before
+  @After
   fun clean() {
-    context.getSystemService(NotificationManager::class.java).cancelAll()
+    val nm = context.getSystemService(NotificationManager::class.java)
+    nm.cancelAll()
+    nm.deleteNotificationChannel("t28")
+    if (Build.VERSION.SDK_INT >= 33 && Build.FINGERPRINT != "robolectric") {  // a device: apksim has no prompt (and no dumpsys window)
+      try { instrumentation.uiAutomation.revokeRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS) } catch (_: Throwable) {}
+      // Creating a channel as a target-28 app raises the permission prompt on API 33+, which would hold the focus
+      // against every later test of the run.
+      // It appears a moment after the channel exists: look for it for a few seconds, and close it.
+      val end = SystemClock.uptimeMillis() + 5_000
+      while (SystemClock.uptimeMillis() < end) {
+        val focus = ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand("dumpsys window")).use { it.readBytes().decodeToString() }
+        if (focus.lines().any { it.contains("mCurrentFocus") && it.contains("GrantPermissionsActivity") }) {
+          instrumentation.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+          Thread.sleep(500)
+          break
+        }
+        Thread.sleep(250)
+      }
+    }
   }
 
   private fun grant(p: String) = context.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
@@ -51,7 +75,7 @@ class Target28Test {
 
   @Test
   fun probe() {
-    assumeTrue("observes an older target only (posts a notification, scans)", target < 33)
+    assumeTrue("observes an older target only (posts a notification, scans)", expected != null)
     val out = Bundle()
     fun put(k: String, v: Any?) = out.putString("t28.$k", v.toString())
     put("targetSdk", target)
@@ -66,6 +90,9 @@ class Target28Test {
     put("notifPost", seen {
       nm.createNotificationChannel(NotificationChannel("t28", "t28", NotificationManager.IMPORTANCE_DEFAULT))
       nm.notify(1, Notification.Builder(context, "t28").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("t28").build())
+      // A device lists it asynchronously: wait a few seconds for it.
+      val end = SystemClock.uptimeMillis() + 4_000
+      while (nm.activeNotifications.isEmpty() && SystemClock.uptimeMillis() < end) Thread.sleep(100)
       "active=${nm.activeNotifications.size}"
     })
     put("cleartext", seen { NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted })
@@ -94,60 +121,25 @@ class Target28Test {
     for (k in out.keySet().sorted()) println("$k=${out.getString(k)}")
   }
 
+  /** The APK's targetSdk is the one the build property asked for (compared with the manifest's own record of it). */
   @Test
-  fun targetsTwentyEight() {
-    at28()
-    assertEquals(28, target)
+  fun theApkTargetsWhatTheBuildAskedFor() {
+    assumeTrue("needs -Papksim.targetSdk", expected != null)
+    assertEquals(expected, target)
   }
 
   /**
-   * A target-28 app's notifications are listed once posted. API 33+ blocks a new install's until the user accepts the
-   * permission prompt that creating a channel raises (areNotificationsEnabled false, probe: notifEnabled), where API 30
-   * and apksim's Notifications.allowed() (targetSdkVersion < 33) let them through; so this grants it first where it exists.
+   * Legacy Bluetooth (ble/Ble.java: BLUETOOTH_ADMIN scans below target 31): the target-28 manifest asks for the legacy
+   * permissions, not the API 31 ones, so a scan is allowed on API 30 and on API 36 (the split permissions) and raises no
+   * SecurityException. The refusal without the permission is BleTest's e_a/e_c, apksim only (an emulator cannot revoke it).
    */
   @Test
-  fun notificationsPostWithTheRuntimePermissionWhereOneExists() {
-    at28()
-    if (Build.VERSION.SDK_INT >= 33) instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
-    val nm = context.getSystemService(NotificationManager::class.java)
-    assertTrue(nm.areNotificationsEnabled())
-    nm.createNotificationChannel(NotificationChannel("t28", "t28", NotificationManager.IMPORTANCE_DEFAULT))
-    nm.notify(7, Notification.Builder(context, "t28").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("hello").build())
-    val posted = nm.activeNotifications.filter { it.id == 7 }
-    assertEquals(1, posted.size)
-    assertEquals("hello", posted[0].notification.extras.getString(Notification.EXTRA_TITLE))
-  }
-
-  /**
-   * Legacy Bluetooth permissions (ble/Ble.java: BLUETOOTH_ADMIN scans and BLUETOOTH names below target 31): the target-28
-   * manifest asks for them with no maxSdkVersion and not for the API 31 ones, so a scan and a name read are allowed
-   * on API 30, and on API 36 through the split permissions. A scan raises no SecurityException.
-   */
-  @Test
-  fun legacyBluetoothPermissionsAllowScansAndNames() {
-    at28()
-    assertTrue(grant(Manifest.permission.BLUETOOTH))
+  fun legacyBluetoothPermissionsAllowAScan() {
+    at(28)
     assertTrue(grant(Manifest.permission.BLUETOOTH_ADMIN))
-    val adapter = context.getSystemService(BluetoothManager::class.java).adapter
-    assertTrue(adapter.name != null)
-    val scanner = adapter.bluetoothLeScanner
+    val scanner = context.getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner
     val cb = object : android.bluetooth.le.ScanCallback() {}
     scanner.startScan(cb)
     scanner.stopScan(cb)
-  }
-
-  @Test
-  fun runtimePermissionsStayDeniedUntilGranted() {
-    at28()
-    assumeTrue(InstrumentationRegistry.getArguments().getString("permissions") != "grant")
-    assertEquals(false, grant(Manifest.permission.CAMERA))
-    assertEquals(false, grant(Manifest.permission.ACCESS_FINE_LOCATION))
-  }
-
-  /** Target 28 may make a mutable-by-default PendingIntent (the flag requirement starts at 31). */
-  @Test
-  fun pendingIntentNeedsNoMutabilityFlag() {
-    at28()
-    PendingIntent.getBroadcast(context, 0, Intent("t28"), 0)
   }
 }

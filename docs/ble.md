@@ -181,7 +181,7 @@ No thread is started and nothing is posted until the app scans or connects; with
 - Reliable writes are applied at once; `executeReliableWrite` only answers `onExecuteWrite`.
 - Location switched off mid-scan stops results (checked at each delivery) but is not covered by a test: a device test
   cannot switch location mode here.
-- An app targeting below 31 is checked by hand with the target-28 build (CI does not build it) of the test app (`-Papksim.targetSdk=28`: `Target28Test`, and
+- An app targeting below 31 is checked with the target-28 build of the test app (`-Papksim.targetSdk=28`, `-e expectTarget 28`; CI's `tests` leg runs it): `Target28Test`, and
   `BleTest`'s permission tests, which then revoke BLUETOOTH_ADMIN and BLUETOOTH; docs/conformance.md). Not covered by a
   check: `neverForLocation` (read from
   `PackageInfo.requestedPermissionsFlags`; the test app's BLUETOOTH_SCAN is not marked, to check the location rule).
