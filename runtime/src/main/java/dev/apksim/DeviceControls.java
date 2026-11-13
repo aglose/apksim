@@ -696,8 +696,10 @@ final class DeviceControls {
           if (s == null) return "error: " + e.getMessage();
         }
         Device to = Skinning.deviceOf(s);
+        // A folding device's skin: the display of the posture it is in, as `device` switches to it.
+        if (Fold.spec(to) != null) to = Fold.spec(to).display(Fold.state());
         Device now = Device.current();
-        if (!now.name().equals(to.name()) || !now.kind().equals(to.kind()) || !Skinning.fits(s, w, h)) {
+        if (!now.name().equals(to.name()) || !now.kind().equals(to.kind()) || !Skinning.fits(s, to, w, h)) {
           String r = reshape(to, to.widthPx(), to.heightPx(), true, before);
           return "skin " + s.name + ": " + r;
         }
@@ -956,7 +958,7 @@ final class DeviceControls {
     Device.setCurrent(now);
     String skinOff = "";
     dev.apksim.skin.Skin skin = Skinning.current();
-    if (skin != null && !Skinning.fits(skin, now.widthPx(), now.heightPx())) {
+    if (skin != null && !Skinning.fits(skin, now, now.widthPx(), now.heightPx())) {
       // Another shape (Device Type, `size`, `device`): the skin no longer frames it.
       Skinning.off();
       skinOff = "; skin " + skin.name + " off: it does not frame " + now.widthPx() + "x" + now.heightPx() + " px";

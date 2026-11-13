@@ -864,7 +864,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetSystemBars(JNIEnv *env
       barsLayer.zPosition = 10;
       [frameLayer addSublayer:barsLayer];
       barsStatus = barsNav = -1;  // new layers (first call, or after a zoom rebuilt them): lay them out below
-      CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+      CGFloat scale = simWindow.backingScaleFactor ?: 2;
       statusLayer = [CALayer layer];
       [barsLayer addSublayer:statusLayer];
       clockLayer = [CATextLayer layer];
@@ -1028,7 +1028,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeSetTitle(JNIEnv *env, jcl
   const char *t = (*env)->GetStringUTFChars(env, title, NULL);
   NSString *ns = [NSString stringWithUTF8String:t];
   (*env)->ReleaseStringUTFChars(env, title, t);
-  onMain(^{ NSApp.windows.firstObject.title = ns; });
+  onMain(^{ simWindow.title = ns; });
 }
 
 // The status bar clock shows this zone (an IANA name), as the device's own clock would.
@@ -1189,7 +1189,6 @@ static void foldEnd(void) {
   if (foldWindow && getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold end: window shown again");
   if (foldWindow) {
     simWindow.alphaValue = 1;
-    [simWindow removeChildWindow:foldWindow];
     [foldWindow orderOut:nil];
     foldWindow = nil;
   }
@@ -1459,7 +1458,10 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
         [CATransaction setDisableActions:YES];
         [foldWindow.contentView.layer addSublayer:old];
         [CATransaction commit];
-        [win addChildWindow:foldWindow ordered:NSWindowAbove];
+        // Above the window, but not its child: a child window moves with its parent, and the window is about to be
+        // resized about its centre under an overlay whose rectangles must stay put.
+        foldWindow.level = win.level;
+        [foldWindow orderWindow:NSWindowAbove relativeTo:win.windowNumber];
         [CATransaction flush];
         win.alphaValue = 0;  // the device alone until the fold is over: no title bar, no window changing shape
         ok = YES;
@@ -1480,7 +1482,12 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeFoldRun(JNIEnv *env, jcla
     if (!foldWindow) return;
     long token = foldToken, from = commits;
     __block int polls = 0;
-    [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) {
+    // The window is invisible until the fold ends: whatever keeps the animation from finishing (the app hidden, the
+    // display asleep), it comes back.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ms / 1000.0 + 2.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (token == foldToken && foldWindow) foldEnd();
+    });
+    NSTimer *wait = [NSTimer timerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) {
       if (token != foldToken) {
         [t invalidate];
         return;
@@ -1491,6 +1498,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeFoldRun(JNIEnv *env, jcla
         foldPlay(closing, ms / 1000.0);
       }
     }];
+    [NSRunLoop.mainRunLoop addTimer:wait forMode:NSRunLoopCommonModes];
   });
 }
 
@@ -1544,7 +1552,7 @@ static CGImageRef decodeImage(JNIEnv *env, jbyteArray bytes) {
 
 // Lays the screen view out in the frame view (skin on), or makes it the window's content again (off).
 static void layoutSkin(void) {
-  NSWindow *win = simView.window ?: NSApp.windows.firstObject;
+  NSWindow *win = simView.window ?: simWindow;
   if (!win || !simView) return;
   CGFloat s = deviceScale;
   if (!skinOn) {
@@ -1726,7 +1734,7 @@ static void buildKeyboard(void) {
   keyCount = 0;
   if (!keyboardPx || !frameLayer) return;
   CGFloat W = devW / deviceScale, H = devH / deviceScale, kh = keyboardPx / deviceScale;
-  CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+  CGFloat scale = simWindow.backingScaleFactor ?: 2;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   keyboardLayer = [CALayer layer];
@@ -1844,7 +1852,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShowBanner(JNIEnv *env, j
   onMain(^{
     if (!frameLayer) return;
     CGFloat W = devW / deviceScale, top = 48 / deviceScale + 6;
-    CGFloat scale = NSApp.windows.firstObject.backingScaleFactor ?: 2;
+    CGFloat scale = simWindow.backingScaleFactor ?: 2;
     if (!bannerLayer) {
       bannerLayer = [CALayer layer];
       bannerLayer.frame = CGRectMake(8, top, W - 16, 70);
@@ -1905,7 +1913,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeAsk(JNIEnv *env, jclass c
     for (NSString *b in buttons) [a addButtonWithTitle:b];
     askAlert = a;
     if (!simWindow.visible) [NSApp requestUserAttention:NSInformationalRequest];  // hidden or minimized: bounce the Dock icon
-    [a beginSheetModalForWindow:NSApp.windows.firstObject completionHandler:^(NSModalResponse r) {
+    [a beginSheetModalForWindow:simWindow completionHandler:^(NSModalResponse r) {
       askAnswer = (int)(r - NSAlertFirstButtonReturn);
       askAlert = nil;
     }];
@@ -1917,7 +1925,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_SimWindow_nativeAskAnswer(JNIEnv *env, jc
 // Answered elsewhere (the control channel): take the sheet down without an answer.
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDismissAsk(JNIEnv *env, jclass c) {
   onMain(^{
-    if (askAlert) [NSApp.windows.firstObject endSheet:askAlert.window returnCode:NSModalResponseAbort];
+    if (askAlert) [simWindow endSheet:askAlert.window returnCode:NSModalResponseAbort];
   });
 }
 
@@ -1951,7 +1959,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativePickFiles(JNIEnv *env, jc
     }
     if (types.count) panel.allowedContentTypes = types;
     pickPanel = panel;
-    [panel beginSheetModalForWindow:NSApp.windows.firstObject completionHandler:^(NSModalResponse r) {
+    [panel beginSheetModalForWindow:simWindow completionHandler:^(NSModalResponse r) {
       NSMutableArray *paths = [NSMutableArray array];
       if (r == NSModalResponseOK) for (NSURL *u in panel.URLs) [paths addObject:u.path];
       @synchronized([MenuTarget class]) { pickResult = [paths componentsJoinedByString:@"\n"]; }
@@ -1968,7 +1976,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativePickResult(JNIEnv *env
 
 JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeDismissPick(JNIEnv *env, jclass c) {
   onMain(^{
-    if (pickPanel) [NSApp.windows.firstObject endSheet:pickPanel returnCode:NSModalResponseCancel];
+    if (pickPanel) [simWindow endSheet:pickPanel returnCode:NSModalResponseCancel];
   });
 }
 
@@ -1988,7 +1996,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShare(JNIEnv *env, jclass
     (*env)->ReleaseStringUTFChars(env, jpath, p);
   }
   onMain(^{
-    NSView *view = NSApp.windows.firstObject.contentView;
+    NSView *view = simWindow.contentView;
     NSSharingServicePicker *picker = [[NSSharingServicePicker alloc] initWithItems:items];
     NSRect at = NSMakeRect(NSMidX(view.bounds) - 1, NSMidY(view.bounds) - 1, 2, 2);
     [picker showRelativeToRect:at ofView:view preferredEdge:NSRectEdgeMinY];
@@ -2125,7 +2133,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeDisplayInfo(JNIEnv *en
   __block long committed = 0;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
-    maxFps = NSApp.windows.firstObject.screen.maximumFramesPerSecond;
+    maxFps = simWindow.screen.maximumFramesPerSecond;
     committed = commits;
     dispatch_semaphore_signal(done);
   });

@@ -157,6 +157,14 @@ public final class Skin {
       }
     }
     if (frameLand != null) image(frameLand, "frame-land", p);
+    if (cover != null) {
+      BufferedImage cf = image(cover.frame, "cover frame", p);
+      if (cf != null && (cover.width <= 0 || cover.height <= 0 || cover.x < 0 || cover.y < 0 || cover.x + cover.width > cf.getWidth()
+          || cover.y + cover.height > cf.getHeight())) {
+        p.add("the cover screen (" + cover.x + "," + cover.y + " " + cover.width + "x" + cover.height + ") does not fit in the "
+            + cover.frame + " image (" + cf.getWidth() + "x" + cf.getHeight() + ")");
+      }
+    }
     if (mask != null) {
       BufferedImage mk = image(mask, "mask", p);
       if (mk != null && width > 0 && (mk.getWidth() != width || mk.getHeight() != height)) {

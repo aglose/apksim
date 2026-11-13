@@ -105,7 +105,7 @@ public final class Skins {
         java.net.URI jar = java.net.URI.create(spec.substring(0, spec.indexOf("!/")));
         java.nio.file.FileSystem fs;
         try {
-          fs = java.nio.file.FileSystems.newFileSystem(jar, Map.of());
+          fs = java.nio.file.FileSystems.newFileSystem(jar, Map.of("accessMode", "readOnly"));
         } catch (java.nio.file.FileSystemAlreadyExistsException e) {
           fs = java.nio.file.FileSystems.getFileSystem(jar);
         }
@@ -114,6 +114,7 @@ public final class Skins {
         builtin = Path.of(u.toURI());
       }
     } catch (IOException | RuntimeException | java.net.URISyntaxException e) {
+      System.err.println("[apksim] built-in skins cannot be read: " + e);
       builtin = null;
     }
     return builtin;

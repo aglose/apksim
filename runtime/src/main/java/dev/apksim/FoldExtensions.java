@@ -102,7 +102,12 @@ public final class FoldExtensions implements WindowExtensions, WindowLayoutCompo
     WindowLayoutInfo now = layout(l.context);
     if (now.equals(l.last[0])) return;
     l.last[0] = now;
-    l.consumer.accept(now);
+    try {
+      l.consumer.accept(now);
+    } catch (RuntimeException e) {
+      // One listener's failure is its own: the others still hear, and a `fold` command still answers.
+      System.err.println("[apksim] fold: a window layout listener threw " + e);
+    }
   }
 
   private static WindowLayoutInfo layout(Context context) {
@@ -124,5 +129,12 @@ public final class FoldExtensions implements WindowExtensions, WindowLayoutCompo
   private static void onMain(Runnable r) {
     if (Looper.getMainLooper().isCurrentThread()) r.run();
     else new Handler(Looper.getMainLooper()).post(r);
+  }
+
+  /** A test's setup: the last test's listeners (and the activities they hold) go. */
+  static void reset() {
+    synchronized (INSTANCE.listeners) {
+      INSTANCE.listeners.clear();
+    }
   }
 }

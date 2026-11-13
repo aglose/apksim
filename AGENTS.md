@@ -102,8 +102,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     device folds in place. The app sees none of it, only the switch. Not played headless, with the window hidden or
     minimized, while rotated, or when a fold follows another before a frame is drawn; `-Dapksim.foldAnimation=false`
     turns it off; `APKSIM_FOLD_DEBUG=1` logs its steps, and `APKSIM_FOLD_FRAMES=DIR` renders 13 frames of each fold
-    off screen (`CARenderer`) into DIR as PNGs, which is how it was looked at (`wshot` cannot see the overlay); the
-    owner has not yet judged it in the window. The built-in skin `pixel-10-pro-fold` (`--skin pixel-10-pro-fold`,
+    off screen (`CARenderer`) into DIR as PNGs, which is how to look at it from a script (`wshot` cannot see the
+    overlay). The built-in skin `pixel-10-pro-fold` (`--skin pixel-10-pro-fold`,
     which implies the device; docs/skins.md "Built-in skins") is a pair: `frame.png` around the inner display and
     `cover.png` around the cover display (skin.json's `cover`), drawn by `scripts/gen-fold-skin.java` from the
     device's published sizes; `Skinning.part` picks the cover frame, corners and camera cutout while the device is

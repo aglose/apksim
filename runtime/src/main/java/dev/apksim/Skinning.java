@@ -95,7 +95,7 @@ final class Skinning {
       } catch (IllegalArgumentException e) {
         return true;  // Main reports the bad --device
       }
-      if (!fits(s, d.widthPx(), d.heightPx())) {
+      if (!fits(s, d, d.widthPx(), d.heightPx())) {
         System.err.println("[apksim] --skin " + name + ": --device " + given + " (" + d.widthPx() + "x" + d.heightPx()
             + " px) does not have the skin's screen shape (" + s.width + "x" + s.height + "), so no skin is drawn");
         clear();
@@ -388,8 +388,9 @@ final class Skinning {
   }
 
   /** The display (either orientation) has the skin's screen shape, within 1% as `skin add` requires. */
-  static boolean fits(Skin s, int w, int h) {
-    return fitsPart(s, w, h) || (s.cover != null && fitsPart(s.cover, w, h));  // a folding device's either display
+  static boolean fits(Skin s, Device d, int w, int h) {
+    // A folding device's either display; the cover's shape counts for no other device (a phone's is within 1% of it).
+    return fitsPart(s, w, h) || (s.cover != null && Fold.spec(d) != null && fitsPart(s.cover, w, h));
   }
 
   private static boolean fitsPart(Skin s, int w, int h) {

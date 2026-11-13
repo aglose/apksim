@@ -178,7 +178,13 @@ echo "Fold: $opened-> $half-> $closed"
   && "$half" == 'text="fold: half-opened vertical 1038,0-1038,2152" text="window: 852x883 dp" text="hinge: 100" ' \
   && "$closed" == 'text="fold: none" text="window: 443x970 dp" text="hinge: 0" ' ]] \
   || { echo "the fold the app sees did not follow the fold command" >&2; exit 1; }
-drive 'fold open' back 'device phone' 'wait 1000' >/dev/null
+# The built-in skin (read from apksim.jar) frames both displays, and comes off for a device that is not the fold.
+skin_open="$(drive 'fold open' 'skin pixel-10-pro-fold')"
+skin_closed="$(drive 'fold closed' 'wait 1000' skin)"
+skin_phone="$(drive 'fold open' back 'device phone' 'wait 1000' skin)"
+echo "Fold skin: $skin_open | $skin_closed | $skin_phone"
+[[ "$skin_open" == *'frame 2224x2296 px'* && "$skin_closed" == *'frame 1242x2508 px'*'corners 96'* && "$skin_phone" == *'off; stored:'* ]] \
+  || { echo "the built-in fold skin did not follow the fold, or stayed on a phone" >&2; exit 1; }
 
 # ACTION_TIME_TICK (issue 109): a receiver registered at runtime hears one tick when the app's clock crosses a minute,
 # and none more within that minute (the test app's apksim://timezone counts them as "ticks: N").

@@ -130,7 +130,8 @@ the screen's corners, on the floating button and on the bezel (`window click X Y
 `pixel-10-pro-fold` ("Pixel 10 Pro Fold") comes with apksim, inside apksim.jar (`runtime/src/main/resources/dev/apksim/skins/`),
 and is found after the store and the shared folders, so a stored skin of that name replaces it; `skin list` shows it as
 `built-in`. It frames `--device pixel-10-pro-fold` open (2076x2152, the camera in the screen's top right corner) and,
-through `cover`, closed (1080x2364, the camera top centre, the hinge on the left). Both frames are drawn by
+through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre,
+the hinge on the left). A page of `serve` or `beam` gets only the open frame: closed, it draws none. Both frames are drawn by
 `scripts/gen-fold-skin.java` from the device's published sizes, not taken from artwork. In the Mac window a fold plays
 as the device closing or opening in this frame (AGENTS.md, `Fold`).
 
