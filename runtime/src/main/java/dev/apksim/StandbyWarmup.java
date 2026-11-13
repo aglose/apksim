@@ -75,6 +75,7 @@ public class StandbyWarmup {
       ClassCache.runtimeHash();
       InstallState.warm(app);
       conscrypt();
+      CompatTable.preload();  // the table does not depend on the APK: parsed here, not on a launch's main thread
       dev.apksim.video.ShadowSimMediaCodec.install();
       javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new java.io.ByteArrayInputStream(
           "<manifest package=\"a\"><application><activity android:name=\".A\"/></application></manifest>".getBytes()))

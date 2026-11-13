@@ -569,6 +569,11 @@ final class DeviceControls {
         });
         return reply[0];
       }
+      case "compat" -> {
+        // compat [all]: the compat changes this process asked about, each with its answer for the app's targetSdk and
+        // its count (CompatTable); `all` adds the table's size and the target in use.
+        return CompatTable.report(a.length > 1 && a[1].equals("all"));
+      }
       case "location" -> {
         return location().run(a);
       }

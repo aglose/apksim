@@ -1732,6 +1732,9 @@ final class AdbShell {
       case "sensor" -> {
         return Sensors.command(a);  // until the next test's setup
       }
+      case "compat" -> {
+        return CompatTable.report(a.length > 1 && a[1].equals("all"));
+      }
       case "camera" -> {
         return Cameras.command(a);  // until the next test's setup
       }
