@@ -23,8 +23,8 @@ import json, re, struct, sys, zipfile
 # apksim's status per subsystem, in one place. Take them from AGENTS.md and the README's Limitations; update an
 # entry when a stand-in lands. status: simulated | partial | in progress | missing.
 STATUS = {
-    'sensors': ('in progress', 'none yet', 'motion/body sensors: no stand-in yet, one is in progress; UPDATE THIS ENTRY WHEN IT LANDS'),
-    'health-connect': ('in progress', 'none yet', 'no Health Connect service; a stand-in is in progress; UPDATE THIS ENTRY WHEN IT LANDS'),
+    'sensors': ('simulated', 'sensor, --sensor', 'an emulator\'s sensor list, events at the requested rate (AGENTS.md "sensor")'),
+    'health-connect': ('simulated', '--health, health', 'scripted records answer HealthConnectClient (docs/health-connect.md)'),
     'play-location': ('missing', '', 'FusedLocationProviderClient needs Play Services; the plain LocationManager is simulated'),
     'play-services': ('missing', '', 'no Play Services: a bind to a missing service returns false (FCM pushes alone work, see firebase)'),
     'firebase': ('partial', 'push', 'FCM messages are delivered by `push`; other Firebase services reach the network only'),
