@@ -672,6 +672,44 @@ public final class TestActivities {
     }
   }
 
+  /**
+   * A device's Activity is a UI context: ContextWrapper.isUiContext()/isConfigurationContext() ask the base, an
+   * activity-type ContextImpl, so Views made with the activity (or a ContextThemeWrapper or DecorContext over it)
+   * never trip StrictMode's incorrect-context check. Robolectric hands an activity the application's ContextImpl as
+   * its base, so every View did (issue 341; a penaltyDeath policy would end the app). The check is made for a context
+   * whose wrapper chain holds an Activity or a DecorContext; the Application and anything else stay non-UI, as on a
+   * device. (Shadowing ContextWrapper.isUiContext itself cannot work: a shadow of a superclass must be the base of
+   * every subclass's shadow, and ShadowActivity's is Robolectric's.)
+   */
+  @Implements(value = android.os.StrictMode.class, isInAndroidSdk = false)
+  public static class ShadowSimStrictMode {
+    @Implementation
+    protected static void assertConfigurationContext(Context context, String methodName) {
+      if (!activityBacked(context)) {
+        org.robolectric.shadow.api.Shadow.directlyOn(android.os.StrictMode.class, "assertConfigurationContext",
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Context.class, context),
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(String.class, methodName));
+      }
+    }
+
+    @Implementation
+    protected static void assertUiContext(Context context, String methodName) {
+      if (!activityBacked(context)) {
+        org.robolectric.shadow.api.Shadow.directlyOn(android.os.StrictMode.class, "assertUiContext",
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Context.class, context),
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(String.class, methodName));
+      }
+    }
+
+    private static boolean activityBacked(Context c) {
+      for (int i = 0; i < 32 && c instanceof android.content.ContextWrapper; i++) {
+        if (c instanceof Activity || c.getClass().getName().endsWith(".DecorContext")) return true;
+        c = ((android.content.ContextWrapper) c).getBaseContext();
+      }
+      return false;
+    }
+  }
+
   @Implements(ActivityClient.class)
   public static class ShadowSimActivityClient {
     @Implementation
