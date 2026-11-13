@@ -23,7 +23,6 @@ public final class VideoSurfaces {
     final java.util.concurrent.atomic.AtomicLong pictures = new java.util.concurrent.atomic.AtomicLong();
     /** A codec was configured with this surface, or something published to it (camera, WebRTC). */
     volatile boolean producer;
-    volatile boolean codec;
 
     Entry(View view) {
       this.view = view;
@@ -46,7 +45,7 @@ public final class VideoSurfaces {
     configured.incrementAndGet();
     SurfaceTexture t = textureOf(surface);
     Entry e = t == null ? null : ENTRIES.get(t);
-    if (e != null) e.codec = e.producer = true;
+    if (e != null) e.producer = true;
   }
 
   private static synchronized void watchFor(SurfaceTexture surface, Entry e) {
@@ -63,7 +62,7 @@ public final class VideoSurfaces {
         int w = e.view.getWidth(), h = e.view.getHeight();
         if (w <= 0 || h <= 0) return;
         System.err.println("[apksim] " + e.view.getClass().getSimpleName() + " " + w + "x" + h + " has had its surface for "
-            + NO_CODEC_WARN_MS / 1000 + " s with no codec attached (nothing has been decoded for it)");
+            + NO_CODEC_WARN_MS / 1000 + " s with no codec attached and no picture published (expected for a map, game or camera view; a player that starts later is fine)");
       } catch (Throwable ignored) {
         // Diagnostics only.
       }
