@@ -252,9 +252,25 @@ final class DeviceControls {
     }
     if (Intent.ACTION_SEND.equals(intent.getAction())) return share(intent);
     Uri uri = intent.getData();
-    if (!Intent.ACTION_VIEW.equals(intent.getAction()) || uri == null || !HostOs.MAC || SimWindow.isHeadless()) return false;
+    if (!Intent.ACTION_VIEW.equals(intent.getAction()) || uri == null) return false;
     String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-    if (!scheme.equals("http") && !scheme.equals("https") && !scheme.equals("mailto")) return false;
+    boolean web = scheme.equals("http") || scheme.equals("https");
+    if (!web && !scheme.equals("mailto")) return false;
+    boolean window = HostOs.MAC && !SimWindow.isHeadless();
+    Uri redirect = web ? signInRedirect(uri) : null;
+    if (redirect != null && window && signIn(uri, redirect)) return true;
+    // No window to open a browser from (apksim serve), or a sign-in this Mac cannot wait for: the tab watching this
+    // instance shows the link, and its user pastes the final address back as `open URL` (HostLinks).
+    if (web && (!window || redirect != null) && HostLinks.offer(uri.toString(), redirect == null ? null : redirect.toString())) {
+      System.err.println("[apksim] link handed to the watching tab: " + uri.getScheme() + "://" + uri.getAuthority()
+          + (redirect != null ? " (a sign-in, back to " + redirect.getScheme() + "://)" : ""));
+      return true;
+    }
+    if (!window) return false;
+    if (redirect != null) {
+      System.err.println("[apksim] sign-in redirect to " + redirect.getScheme() + "://" + (redirect.getAuthority() == null ? "" : redirect.getAuthority())
+          + " needs macOS 14.4 to come back by itself: opening the link; paste the final address into Features > Open URL... when the page ends");
+    }
     try {
       new ProcessBuilder("/usr/bin/open", uri.toString()).start();
       System.err.println("[apksim] opened on the Mac: " + uri);
@@ -263,6 +279,49 @@ final class DeviceControls {
       return false;
     }
   }
+
+  /**
+   * A browser sign-in's way back (issue 336): the link's `redirect_uri` (or `redirect_url`) when one of the app's own
+   * VIEW/BROWSABLE filters takes it (a custom scheme, or an https App Link), else null.
+   */
+  private static Uri signInRedirect(Uri uri) {
+    try {
+      if (!uri.isHierarchical()) return null;
+      for (String key : new String[] {"redirect_uri", "redirect_url"}) {
+        String v = uri.getQueryParameter(key);
+        if (v == null || v.isEmpty()) continue;
+        Uri redirect = Uri.parse(v);
+        String rs = redirect.getScheme() == null ? null : redirect.getScheme().toLowerCase(Locale.ROOT);
+        if (rs == null || rs.equals("http") || (rs.equals("https") && redirect.getHost() == null)) return null;
+        android.app.Application app = RuntimeEnvironment.getApplication();
+        Intent probe = new Intent(Intent.ACTION_VIEW, redirect).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(app.getPackageName());
+        return app.getPackageManager().queryIntentActivities(probe, 0).isEmpty() ? null : redirect;
+      }
+    } catch (RuntimeException e) {
+      // not a link with a query we can read
+    }
+    return null;
+  }
+
+  /**
+   * Runs a sign-in link in the system browser's authentication session; the URL it ends at goes back to the app as
+   * `open URL` would deliver it ({@link #tick}). Cancelled: nothing is delivered. False when this Mac cannot wait for
+   * the redirect (an https one needs macOS 14.4).
+   */
+  private static boolean signIn(Uri uri, Uri redirect) {
+    boolean https = "https".equalsIgnoreCase(redirect.getScheme());
+    String path = redirect.getPath() == null || redirect.getPath().isEmpty() ? "/" : redirect.getPath();
+    if (!SimWindow.webAuth(uri.toString(), https ? null : redirect.getScheme().toLowerCase(Locale.ROOT), https ? redirect.getHost() : null, https ? path : null)) {
+      return false;
+    }
+    System.err.println("[apksim] sign-in in the Mac's browser, waiting for a redirect to "
+        + (https ? redirect.getHost() + path : redirect.getScheme() + "://"));
+    signingIn = true;
+    return true;
+  }
+
+  /** A sign-in session is open, so {@link #tick} polls for its result. */
+  private static volatile boolean signingIn;
 
   /** ACTION_SEND: text (and a subject) or one file to the Mac's share menu; logged either way. */
   private static boolean share(Intent intent) {
@@ -294,6 +353,19 @@ final class DeviceControls {
     if (hiddenBy == null && !stack.isEmpty()) permissions.tick(stack.peek().get());
     Biometrics.tick();
     results.tick();
+    if (signingIn) {
+      String back = SimWindow.webAuthResult();
+      if (back != null) {
+        signingIn = false;
+        if (back.isEmpty()) {
+          System.err.println("[apksim] sign-in cancelled");
+        } else {
+          String[] r = new String[1];
+          Crashes.app((Runnable) () -> r[0] = open(back));
+          System.err.println("[apksim] sign-in redirect delivered: " + r[0]);
+        }
+      }
+    }
     long now = System.nanoTime();
     if (now - keyboardCheckNanos > 50_000_000L && hiddenBy == null) {
       keyboardCheckNanos = now;

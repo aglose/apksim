@@ -1012,6 +1012,70 @@ public class Host {
   /** The activity that last left the top of the stack by finishing: the exit line names it once none is left. */
   private Activity lastFinished;
 
+  /**
+   * A start that a running activity takes itself, as a device's activity manager decides (issue 336): a singleTask or
+   * singleInstance activity that is running; a singleTop one (or FLAG_ACTIVITY_SINGLE_TOP) that is on top; or, with
+   * FLAG_ACTIVITY_CLEAR_TOP, one anywhere in the stack that is not standard or was started with SINGLE_TOP. Those
+   * above it are finished and it gets onNewIntent, paused around it as ActivityThread does, then comes to the top.
+   * An OAuth redirect activity reaches the activity waiting for the sign-in this way (Auth0, AppAuth: CLEAR_TOP |
+   * SINGLE_TOP to a singleTask activity); stacked as a second copy, that one finished at once and the first saw a
+   * cancel. Activities that are finishing do not count as being above it (the redirect activity itself). Still stacked,
+   * as every start was: a standard activity under CLEAR_TOP alone (finished and made again on a device), NEW_TASK |
+   * CLEAR_TASK, and a start for a result. Approximate: there is one stack, so a singleInstance activity's return
+   * finishes what is above it, where a device keeps those in another task.
+   */
+  private boolean deliverToRunning(String name, Intent intent) throws Exception {
+    android.content.pm.ActivityInfo info;
+    try {
+      info = app.getPackageManager().getActivityInfo(new ComponentName(app.getPackageName(), name), 0);
+    } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+      return false;
+    }
+    String className = AppInfo.activityClass(name);
+    ActivityController<? extends Activity> target = null;
+    boolean onTop = true;
+    for (ActivityController<? extends Activity> c : stack) {  // top first
+      if (c.get().isFinishing()) continue;
+      if (c.get().getClass().getName().equals(className)) {
+        target = c;
+        break;
+      }
+      onTop = false;
+    }
+    if (target == null) return false;
+    boolean singleTop = info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_TOP
+        || (intent.getFlags() & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0;
+    boolean task = info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_TASK
+        || info.launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE;
+    boolean clearTop = (intent.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0
+        && (singleTop || info.launchMode != android.content.pm.ActivityInfo.LAUNCH_MULTIPLE);
+    // NEW_TASK | CLEAR_TASK asks for the task emptied and a fresh instance (an app restarting itself): not this.
+    int clearTask = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK;
+    if ((intent.getFlags() & clearTask) == clearTask) return false;
+    if (!task && !clearTop && !(singleTop && onTop)) return false;
+    Intent delivered = intent.getComponent() == null
+        ? new Intent(intent).setComponent(new ComponentName(app.getPackageName(), name)) : intent;
+    ActivityController<? extends Activity> running = target;
+    ActivityResults results = controls.results();
+    Crashes.app(() -> {
+      // Those above it go (the finishing ones too: they would be destroyed at this turn's end anyway).
+      while (stack.peek() != running) {
+        ActivityController<? extends Activity> above = stack.pop();
+        if (!above.get().isFinishing()) above.get().finish();
+        lastFinished = above.get();
+        moveTo(above, 0);
+        above.destroy();
+        results.finished(above.get());
+      }
+      // As ActivityThread: a resumed one is paused around onNewIntent; a stopped one gets it before onRestart.
+      if (running.get().isResumed()) running.pause();
+      running.newIntent(delivered);
+      arrange(new ArrayList<>(stack), controls.hidden());
+      return null;
+    });
+    return true;
+  }
+
   private void updateActivityStack() throws Exception {
     Intent next;
     ActivityResults results = controls.results();
@@ -1040,6 +1104,7 @@ public class Host {
         }
         continue;
       }
+      if (!forResult && deliverToRunning(c.getClassName(), next)) continue;
       start(c.getClassName(), next);
       if (forResult) results.started(stack.peek(), requester, next);
     }
