@@ -70,6 +70,10 @@ final class AppInfo {
     System.setProperty("apksim.apk", apk.toString());
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
+    // The target SDK compat changes follow (CompatTable): the manifest's, as a device reads it; a launch sets it anew.
+    int target = usesSdk(doc, "targetSdkVersion");
+    if (target <= 0) target = usesSdk(doc, "minSdkVersion");  // no target: the minimum, else 1
+    CompatTable.configure(pkg, target > 0 ? target : 1);
     if (launcher != null) System.setProperty("apksim.launcher", fullName(pkg, launcher.getAttribute(NS + "name")));
     StringBuilder aliases = new StringBuilder(",");
     for (Map.Entry<String, Element> e : activities.entrySet()) {
@@ -139,6 +143,19 @@ final class AppInfo {
     String name = a.getAttribute(NS + "targetActivity");
     if (name.isEmpty()) name = a.getAttribute(NS + "name");
     return fullName(pkg, name);
+  }
+
+  /** A uses-sdk attribute as a number, 0 when absent or a codename (a preview SDK counts as the table's newest). */
+  private static int usesSdk(Document doc, String attr) {
+    NodeList l = doc.getElementsByTagName("uses-sdk");
+    if (l.getLength() == 0) return 0;
+    String v = ((Element) l.item(0)).getAttribute(NS + attr);
+    if (v.isEmpty()) return 0;
+    try {
+      return Integer.parseInt(v.trim());
+    } catch (NumberFormatException e) {
+      return CompatTable.PLATFORM_SDK + 1;
+    }
   }
 
   /** A manifest class name made whole as the package parser does: ".X" and "X" are in the app's package. */

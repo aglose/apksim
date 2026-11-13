@@ -560,6 +560,24 @@ flight recorder (only the commands are kept). The test app's `apksim://sensors[?
 (`SensorsActivity`) lists every sensor with its range, event count and last values; `SensorsTest` (23 tests, 8 need the
 `sensor` command; 15 run on the emulator) passes on apksim and on the API 36 emulator, and `ci-smoke.sh` drives the screen (the first event,
 gravity per rotation, light and proximity changes, flat, `sensor light off`).
+`compat [all]` (`CompatTable`, `CompatShadows`, `runtime/src/main/resources/dev/apksim/compat-table.tsv`): platform compat
+changes follow the app's targetSdk. Robolectric's `ShadowCompatibility.isChangeEnabled(long)` answered false for
+78294732, compared the target for two ids and otherwise called the real `Compatibility`, whose default delegate says
+true: an app targeting 28 got every target-gated behaviour of the latest SDK. The table (355 changes, from an API 36
+emulator's `dumpsys platform_compat` by `scripts/gen-compat-table.py [-s SERIAL]`, sorted so a regeneration diffs
+cleanly; per-package overrides ignored) gives each id's enableSinceTargetSdk or `disabled`; `ShadowSimCompatibility`
+answers disabled → false, since N → targetSdk >= N, and an id the table lacks as before. 78294732 stays off
+(Robolectric's activity controller delivers results itself). The target is the manifest's `uses-sdk` (else
+minSdkVersion, else 1), set by `AppInfo.load` per launch (`CompatTable.configure`: a standby boots before the APK is
+known, so nothing is kept; with no target known the old answers stand). `CompatChanges.isChangeEnabled(long, pkg, user)`
+and `(long, uid)` asked a platform_compat service that is not here (they threw); they answer for the app's own package or
+uid from the same table and, for any other, as the platform's SDK (36) would. The lookup is a binary search and an array
+increment: no allocation. `compat` lists the changes this process asked about, "NAME (id): on x3, off x1 [since N]",
+ids the table lacks as "(not in table)"; `compat all` adds the table's size and the target in use. It works in test runs
+too (`executeShellCommand("apksim compat")`; counts restart each test), to see which gates a target-N app hits.
+`-Dapksim.compatTable=false` restores the old answers for A/B runs. `scripts/check-compat-table.sh` (CI,
+`CompatTableCheck`) checks the logic and that a lookup allocates nothing; `CompatChangeTest` (test app, target 36: a
+36-gated change on, a 37-gated one and a disabled one off) passes on the API 36 emulator and here.
 `keyboard soft on|off` / `keyboard show|hide` (`SoftKeyboard`): as in the iOS Simulator a hardware keyboard counts as
 connected, so no soft keyboard by default; with it on (Device > Software Keyboard Cmd+K, `--soft-keyboard`) a focused
 text field raises a drawn keyboard and the app gets real IME insets (imePadding/adjustResize), Back closes it first.
