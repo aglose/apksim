@@ -78,10 +78,10 @@ A checkpoint is what a replay starts from:
 
 Saving instance state works as it does on Android when the user leaves for a moment and comes back. The visible
 activities are paused and stopped, every activity saves its state, and they are restarted and resumed, all in one turn
-of the main thread, so no frame shows it. **The app does see one thing: its onPause/onStop/onStart/onResume run.**
-This is the only way a checkpoint shows in the app. A screen that refreshes in onResume refreshes. Afterwards the stack is
-put back as after any other return to the app (`Host.arrange`: windows shown, touchable and in order; a backgrounded
-app stays in the background). That is why
+of the main thread, so no frame shows it. Afterwards the stack is put back as after any other return to the app
+(`Host.arrange`: windows shown, touchable and in order; a backgrounded app stays in the background).
+**The app does see one thing: its onPause/onStop/onStart/onResume run.**
+This is the only way a checkpoint shows in the app. A screen that refreshes in onResume refreshes. That is why
 checkpoints are not taken on every input:
 
 - the first comes once the first frame is drawn and the user has been idle for a second;
