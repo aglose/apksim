@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Recorded video in a running instance (issue 229): MediaCodec's H.264 decoder, and with --hevc the HEVC one (the
 Linux image has it only when built with VIDEO_DECODERS=h264,hevc), over --control.
-  video-check.py PORT [--clips DIR] [--seconds N] [--min-rendered N] [--hevc]
+  video-check.py PORT [--clips DIR] [--seconds N] [--min-rendered N] [--hevc] [--vp9]
 1. `selftest DIR/clip.h264` (and `DIR/clip.h265`; DIR as the app sees it): every unit drawn and the picture right.
 2. `open apksim://video` (a 1080p60 H.264 clip looping in a TextureView): `video` twice, N s apart: `rendered` in the
    mediacodec part goes up by at least --min-rendered (30; not 60 a second, a shared runner is slower) and
@@ -17,6 +17,7 @@ ap.add_argument("port", type=int)
 ap.add_argument("--clips", default="/work")
 ap.add_argument("--seconds", type=float, default=3)
 ap.add_argument("--min-rendered", type=int, default=30)
+ap.add_argument("--vp9", action="store_true", help="the instance has a VP9 decoder (the Mac; an image built with VIDEO_DECODERS=h264,vp9): also checks DIR/clip.ivf")
 ap.add_argument("--hevc", action="store_true", help="the instance has an HEVC decoder too")
 args = ap.parse_args()
 
@@ -41,7 +42,7 @@ def stats():
     return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", m.group(1))}, out
 
 
-for clip in ("clip.h264", "clip.h265") if args.hevc else ("clip.h264",):
+for clip in ("clip.h264",) + (("clip.h265",) if args.hevc else ()) + (("clip.ivf",) if args.vp9 else ()):
     out = cmd(f"selftest {args.clips}/{clip}")
     m = re.search(r"codec \S+: \d+ of \d+ units drawn.*", out)
     print(f"selftest {clip}: {m.group(0) if m else out}")

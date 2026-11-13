@@ -810,6 +810,8 @@ a TextureView) and an ImageAnalysis on the front camera, "camera: N frames, 1280
 tab's Camera button opens it once the permission is granted on a device with a camera (`--camera fake`; `CameraTest`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
+`apksim://video?codec=vp9` plays a 2 s 640x360 VP9 WebM instead; its label reads "video: vp9 selected, frames N"
+("unsupported" where no VP9 decoder is listed, as the published Linux image).
 `apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
 viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
 (`bare`); `resume`, `config`, `destroy` throw from the second onResume (`recreate`, `restart URL`), onConfigurationChanged
@@ -1841,8 +1843,11 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   linear filter, no local matrix): the bitmaps are bound as textures sampled with clamped edges (self-test
   "input shaders"). Other inputs (gradients, nested runtime shaders) stay on
   the CPU.
-- MediaCodec has H.264, HEVC, AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
-  H.264 for libwebrtc); VP9/AV1 video and Opus/Vorbis audio are not listed (the owner's app needs
+- MediaCodec has H.264, HEVC, VP9 (profile 0, `apksim.vp9.decoder`, issue 340: VideoToolbox's supplemental VP9 decoder
+  with a `vpcC` format description built from each key frame's header, as WebM gives no codec data; libavcodec in a Linux
+  image built with `VIDEO_DECODERS=h264,vp9`; `selftest work/media/clip.ivf`; listed on the Mac without a probe, as a trial session costs ~85 ms of a cold launch: a
+  codec's configure makes it and logs when the system has none), AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
+  H.264 for libwebrtc); AV1 and VP8 video and Opus/Vorbis audio are not listed (the owner's app needs
   none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). On the owner's app, fps with them on the CPU → on
   Metal: a camera page 49 → 130, a weather screen 23 → 86, a map screen 8.6 → 30, and panning the map 26 → 64-73 once

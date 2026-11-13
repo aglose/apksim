@@ -126,7 +126,7 @@ Reading it from the top:
 - **Framework:** real AOSP Android 16 code (API 36) from Robolectric's `android-all`, with its native Skia, HWUI and SQLite for macOS. Robolectric's shadows stand in for system services.
 - **App code:** a from-scratch DEX-to-JVM bytecode translator translates classes lazily, as they're first loaded: about 5,400 classes in about 0.6 s. Methods over the JVM's 64 KB limit are split. Translated classes are cached per DEX file, so a rebuilt APK retranslates only the DEX files that changed.
 - **Native code:** Android arm64 ELF libraries load directly; it's the same CPU, so nothing is emulated. A bionic-to-macOS shim covers structs, constants, errno and pthreads, and a bridge handles the varargs ABI difference.
-- **Pixels:** Android's own render pipeline draws into a buffer that goes straight to an IOSurface on a native Cocoa window, which takes about 0.5 ms a frame to present. AGSL shaders and layer effects are translated to Metal, and H.264 and HEVC video decode on VideoToolbox.
+- **Pixels:** Android's own render pipeline draws into a buffer that goes straight to an IOSurface on a native Cocoa window, which takes about 0.5 ms a frame to present. AGSL shaders and layer effects are translated to Metal, and H.264, HEVC and VP9 video decode on VideoToolbox.
 - **Startup:** the JVM's AOT cache covers the framework for any APK. After each launch, a standby JVM boots the framework in the background, as Android's zygote does, and waits. The next launch hands it the APK and the terminal, and it becomes that instance in ~10 ms.
 
 ## Installation
@@ -647,7 +647,7 @@ one tag (Docker pulls the host's), with `:latest` following the newest release. 
 
 Pin a version in CI: a new release can change how apps are translated. On Linux there is no window, Metal or
 VideoToolbox: rendering and shaders run on the CPU, and MediaCodec's H.264 decoder is libavcodec (the published image
-has no HEVC decoder; an image you build can add it). APKs need native libraries for the host's CPU there: x86_64, or
+has no HEVC or VP9 decoder; an image you build can add them). APKs need native libraries for the host's CPU there: x86_64, or
 arm64-v8a on arm64 (4 KB-aligned ones load). On an Apple Silicon Mac or an arm64 runner the arm64 image runs without
 emulation, so it is the faster choice there. There is no sandbox inside the container,
 so use `docker run --network none` to keep an app off the network. Building the image and

@@ -155,7 +155,7 @@ ExoPlayer plays the Settings tab's HEVC clip to its end.
 
 Limits: a stream whose decoder holds back more than five pictures loses the ones past that at its very end (the Mac
 has the same limit); no sound (no AAC or MP3 decoder, no audio output); libwebrtc's H.264 is not hooked up, so WebRTC
-video uses whatever software codecs the APK's libwebrtc has; no VP9 or AV1. `--video blank|off` work as on the Mac.
+video uses whatever software codecs the APK's libwebrtc has; VP9 only in an image built with `VIDEO_DECODERS=h264,vp9` (the published one logs `no decoder here` at start), no AV1. `--video blank|off` work as on the Mac.
 
 ## Measured (M4 Pro, Colima 4 vCPU)
 

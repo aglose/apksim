@@ -6,7 +6,7 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * H.264 and HEVC decoding and picture conversion on VideoToolbox (native/videotoolbox.m), and on Linux on libavcodec
+ * H.264, HEVC and VP9 decoding and picture conversion on VideoToolbox (native/videotoolbox.m), and on Linux on libavcodec
  * (native/linux/avdecoder_linux.c, the same library name) for MediaCodec only. Kept free of any library an APK brings,
  * so that every app can load it: libwebrtc's adapter is {@link VtH264Decoder}, MediaCodec's is
  * {@link ShadowSimMediaCodec}.
@@ -39,13 +39,29 @@ public final class VideoToolbox {
   }
 
   private static final class Hevc {
-    static final boolean PRESENT = probe();
+    static final boolean PRESENT = probe(CODEC_HEVC);
+  }
 
-    private static boolean probe() {
-      long h = nativeCreate(true);
-      if (h != 0) nativeRelease(h);
-      return h != 0;
-    }
+  private static final class Vp9 {
+    static final boolean PRESENT = probe(CODEC_VP9);
+  }
+
+  private static boolean probe(int codec) {
+    long h = nativeCreate(codec);
+    if (h != 0) nativeRelease(h);
+    return h != 0;
+  }
+
+  static final int CODEC_AVC = 0, CODEC_HEVC = 1, CODEC_VP9 = 2;
+
+  /**
+   * Whether there is a VP9 decoder: on the Mac VideoToolbox's supplemental one, taken as present as HEVC is (every
+   * Apple Silicon macOS has it; a trial session costs ~85 ms, too much for every launch, so {@link #create} makes it
+   * when a codec is first configured and answers 0 if the system has none); on Linux libavcodec's in an image built
+   * with it (VIDEO_DECODERS=h264,vp9), found by opening one.
+   */
+  static boolean vp9Available() {
+    return AVAILABLE && (dev.apksim.HostOs.MAC || Vp9.PRESENT);
   }
 
   /** Whether libwebrtc's H.264 decoder ({@link VtH264Decoder}) can run here: VideoToolbox only. */
@@ -84,14 +100,19 @@ public final class VideoToolbox {
 
   /** An H.264 or HEVC decoder session, or 0 when VideoToolbox is unavailable. */
   static long create(boolean hevc) {
-    return AVAILABLE ? nativeCreate(hevc) : 0;
+    return create(hevc ? CODEC_HEVC : CODEC_AVC);
+  }
+
+  /** A decoder session for CODEC_AVC, CODEC_HEVC or CODEC_VP9, or 0. */
+  static long create(int codec) {
+    return AVAILABLE ? nativeCreate(codec) : 0;
   }
 
   static void destroy(long handle) {
     if (handle != 0) nativeRelease(handle);
   }
 
-  static native long nativeCreate(boolean hevc);
+  static native long nativeCreate(int codec);
 
   static native void nativeRelease(long handle);
 
