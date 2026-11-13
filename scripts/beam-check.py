@@ -1340,6 +1340,36 @@ def main():
         check(ended and "SIGSEGV" in ended[0], f"keep: a beamed JVM's crash report reaches the tab ({ended[:1]})")
         stop(g)
 
+        # Issue 334: detach. The session outlives its tab, owned by apksim's window, and is kept when it ends.
+        g = agent(apksim, gp, "allow")
+        gd, _ = begin(gp, B, start, apk)
+        sd = open_session(gp, gd, B)
+        dpid = sd.stats.get("pid", 0)
+        sd.ws.send("detach")
+        sd.pump(10, until=lambda: any(t.startswith('d {"detached"') or t.startswith('d {"error"') for t in sd.texts))
+        dm = [t for t in sd.texts if t.startswith('d {"detached"') or t.startswith('d {"error"')]
+        dj = json.loads(dm[0][2:]) if dm else {}
+        check(dj.get("detached") and "error" not in dj, f"detach: answered with the session's id ({dm[:1]})")
+        check("k on" in sd.texts, "detach: and kept, as keep on")
+        st, _, body = req(gp, "GET", "/beam/status")
+        stj = json.loads(body) if st == 200 else {}
+        check(any(x.get("detached") for x in stj.get("sessions", [])), f"detach: /beam/status marks it detached ({body[:200]})")
+        check(any(t.startswith("r refused") for t in sd.texts) is False, "detach: never refused or passed to the instance")
+        sd.ws.send("keep off")
+        sd.pump(2, until=lambda: sd.texts.count("k on") > 1)
+        check(sd.texts.count("k on") > 1, "detach: a detached session stays kept (keep off answers k on)")
+        sd.ws.s.close()
+        time.sleep(4)
+        check(alive(dpid), "detach: the app runs on after its tab's socket closed")
+        check(control(dpid, "ping").strip() == "pong", f"detach: and answers its control port ({control(dpid, 'ping').strip()!r})")
+        check(control(dpid, "window").strip().startswith("visible"), f"detach: its window is shown ({control(dpid, 'window').strip()!r})")
+        closed = control(dpid, "window close").strip()
+        check(until(lambda: not alive(dpid), 20), f"detach: closing the window ends it, with no viewer left ({closed!r})")
+        check(until(lambda: len(saved_ids(apksim)) == 1, 10), "detach: and is listed by apksim beam saved")
+        for i in saved_ids(apksim):
+            beam(apksim, "forget", i)
+        stop(g)
+
         # A saved session: "keep on" from the tab, with keep-days 0 (from the config) for its build.
         g = agent(apksim, gp, "allow")
         slot_start = dict(start, options=["--activity", "SlotStateActivity"])
