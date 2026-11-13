@@ -225,7 +225,13 @@ final class Session {
     // The tab is watched from the start: closing it while the app downloads or launches ends the session too.
     Thread tab = Thread.ofVirtual().name("serve-tab-" + id).start(() -> {
       ws.readLoop(this::onMessage);
-      if (detached) tabLeftDetached();
+      boolean carriesOn;
+      synchronized (this) {
+        // Decided with detach's answer under one lock: a tab that closes before `window front` is answered ends the session.
+        tabGone = true;
+        carriesOn = detached && !ended;
+      }
+      if (carriesOn) tabLeftDetached();
       else stop(null);
     });
     Thread reader = null;
@@ -283,11 +289,13 @@ final class Session {
     System.err.printf("[beam] session %s: the tab left, carried on in the window%n", id);
     closeQuietly(stream);
     closeQuietly(netwatch);
+    closeQuietly(relaywatch);  // no tab answers the app's relayed requests any more: they get their 502 now
     synchronized (this) {
-      notifyAll();
       waiting.clear();
     }
   }
+
+  private volatile boolean tabGone;
 
   /**
    * `detach` (issue 334, apksim beam only): the app is shown in apksim's own window (`window front`), kept as with
@@ -300,7 +308,7 @@ final class Session {
       return;
     }
     if (!detaching.compareAndSet(false, true)) return;
-    if (ended || controlOut == null) {
+    if (ended || controlOut == null || stream == null) {  // the frame stream too: the tab leaving must find it to close
       detaching.set(false);
       ws.sendText("d {\"error\":\"the app is not running yet\"}");
       return;
@@ -311,8 +319,11 @@ final class Session {
         ws.sendText("d {\"error\":" + Http.q("no window here: " + r) + "}");
         return;
       }
-      if (savedId == null) keep = true;  // saved when it ends, as with keep on
-      detached = true;
+      synchronized (this) {
+        if (ended || tabGone) return;  // the tab left before the answer: the session is ending, nothing to keep
+        if (savedId == null) keep = true;  // saved when it ends, as with keep on
+        detached = true;
+      }
       logLine("[beam] detached: apksim's window owns the session (kept when it ends)");
       System.err.printf("[beam] session %s detached to apksim's window%n", id);
       ws.sendText("k on");
@@ -1005,7 +1016,7 @@ final class Session {
    * so the session stops and says so. An instance that exited says why itself (onExit), so it is given a moment.
    */
   private void streamEnded() {
-    if (ended || detached) return;  // a detached session's stream goes with its tab
+    if (ended || tabGone) return;  // a detached session's stream goes with its tab
     Process p = process;
     try {
       if (p != null && p.waitFor(2, TimeUnit.SECONDS)) return;  // onExit's stop has the reason
@@ -1663,10 +1674,10 @@ final class Session {
   private final java.util.concurrent.atomic.AtomicBoolean pinging = new java.util.concurrent.atomic.AtomicBoolean();
 
   void tick() {
-    if (ended || detached) return;  // a detached session is the window's: no tab to ping, no tab's idle time
+    if (ended || tabGone) return;  // a detached session whose tab left is the window's: no tab to ping or tell
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
-    // must not keep the session alive.
-    if (System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
+    // must not keep the session alive. Not for a detached session: input in the window never reaches the agent.
+    if (!detached && System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
       if (idleStop.compareAndSet(false, true)) {
         Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("stopped after " + serve.idleSeconds + " s without input"));
       }

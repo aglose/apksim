@@ -1362,9 +1362,9 @@ def main():
         time.sleep(4)
         check(alive(dpid), "detach: the app runs on after its tab's socket closed")
         check(control(dpid, "ping").strip() == "pong", f"detach: and answers its control port ({control(dpid, 'ping').strip()!r})")
-        check(control(dpid, "window").strip() != "", f"detach: its window is there ({control(dpid, 'window').strip()!r})")
-        control(dpid, "quit")
-        check(until(lambda: not alive(dpid), 20), "detach: it ends when the app does")
+        check(control(dpid, "window").strip().startswith("visible"), f"detach: its window is shown ({control(dpid, 'window').strip()!r})")
+        closed = control(dpid, "window close").strip()
+        check(until(lambda: not alive(dpid), 20), f"detach: closing the window ends it, with no viewer left ({closed!r})")
         check(until(lambda: len(saved_ids(apksim)) == 1, 10), "detach: and is listed by apksim beam saved")
         for i in saved_ids(apksim):
             beam(apksim, "forget", i)

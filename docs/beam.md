@@ -174,7 +174,8 @@ keeping a session to use later is the visitor's choice.
     not end the session: its frame stream is closed (so the window's close button closes the window, which with a
     viewer attached only hides it) and the session ends as an ordinary local launch does, when the app exits, saved
     as kept. `GET /beam/status` shows `"detached":true`. It counts against `--max` like any session; the agent's idle
-    limit does not apply to it (window input never reaches the agent, so it would end a session in use). Not done:
+    limit does not apply to it (window input never reaches the agent, so it would end a session in use). `apksim beam stop --force`
+    ends it too, with the agent. Not done:
     reattaching a later tab to a detached session (`/beam/start` with `attach`).
   A saved session's slot is renamed when its instance has exited, to `k<12 hex>-0` (and `.device`) beside it, a name
   no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
