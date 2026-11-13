@@ -128,12 +128,12 @@ final class Seeds {
     String n = name(HealthConnectMappings.getInstance().getRecordIdToExternalRecordClassMap().get(id));
     Metadata m = metadata(origin, o.has("clientId") ? o.getString("clientId") : null);
     return switch (n) {
-      case "steps" -> new StepsRecord.Builder(m, t(o, "start", now), t(o, "end", now), o.getLong("count")).build();
-      case "distance" -> new DistanceRecord.Builder(m, t(o, "start", now), t(o, "end", now), Length.fromMeters(o.getDouble("meters"))).build();
+      case "steps" -> new StepsRecord.Builder(m, t(o, "start", now), t(o, "end", now), o.getLong("count")).buildWithoutValidation();
+      case "distance" -> new DistanceRecord.Builder(m, t(o, "start", now), t(o, "end", now), Length.fromMeters(o.getDouble("meters"))).buildWithoutValidation();
       case "active-calories-burned" -> new ActiveCaloriesBurnedRecord.Builder(m, t(o, "start", now), t(o, "end", now),
-          Energy.fromCalories(o.getDouble("kcal") * 1000)).build();
+          Energy.fromCalories(o.getDouble("kcal") * 1000)).buildWithoutValidation();
       case "total-calories-burned" -> new TotalCaloriesBurnedRecord.Builder(m, t(o, "start", now), t(o, "end", now),
-          Energy.fromCalories(o.getDouble("kcal") * 1000)).build();
+          Energy.fromCalories(o.getDouble("kcal") * 1000)).buildWithoutValidation();
       case "heart-rate" -> {
         List<HeartRateRecord.HeartRateSample> samples = new ArrayList<>();
         Instant start = t(o, "start", now);
@@ -147,11 +147,11 @@ final class Seeds {
           samples.add(new HeartRateRecord.HeartRateSample(o.getLong("bpm"), start));
         }
         Instant end = o.has("end") ? t(o, "end", now) : samples.get(samples.size() - 1).getTime().plusSeconds(1);
-        yield new HeartRateRecord.Builder(m, start, end, samples).build();
+        yield new HeartRateRecord.Builder(m, start, end, samples).buildWithoutValidation();
       }
-      case "resting-heart-rate" -> new RestingHeartRateRecord.Builder(m, t(o, "time", now), o.getLong("bpm")).build();
-      case "weight" -> new WeightRecord.Builder(m, t(o, "time", now), Mass.fromGrams(o.getDouble("kg") * 1000)).build();
-      case "height" -> new HeightRecord.Builder(m, t(o, "time", now), Length.fromMeters(o.getDouble("meters"))).build();
+      case "resting-heart-rate" -> new RestingHeartRateRecord.Builder(m, t(o, "time", now), o.getLong("bpm")).buildWithoutValidation();
+      case "weight" -> new WeightRecord.Builder(m, t(o, "time", now), Mass.fromGrams(o.getDouble("kg") * 1000)).buildWithoutValidation();
+      case "height" -> new HeightRecord.Builder(m, t(o, "time", now), Length.fromMeters(o.getDouble("meters"))).buildWithoutValidation();
       case "sleep-session" -> {
         SleepSessionRecord.Builder b = new SleepSessionRecord.Builder(m, t(o, "start", now), t(o, "end", now));
         if (o.has("title")) b.setTitle(o.getString("title"));
@@ -164,20 +164,20 @@ final class Seeds {
           }
           b.setStages(stages);
         }
-        yield b.build();
+        yield b.buildWithoutValidation();
       }
       case "exercise-session" -> {
         ExerciseSessionRecord.Builder b = new ExerciseSessionRecord.Builder(m, t(o, "start", now), t(o, "end", now),
             constant(ExerciseSessionType.class, "EXERCISE_SESSION_TYPE_", o.opt("exercise") == null ? "other_workout" : o.get("exercise")));
         if (o.has("title")) b.setTitle(o.getString("title"));
-        yield b.build();
+        yield b.buildWithoutValidation();
       }
-      case "floors-climbed" -> new FloorsClimbedRecord.Builder(m, t(o, "start", now), t(o, "end", now), o.getDouble("floors")).build();
-      case "hydration" -> new HydrationRecord.Builder(m, t(o, "start", now), t(o, "end", now), Volume.fromLiters(o.getDouble("liters"))).build();
-      case "oxygen-saturation" -> new OxygenSaturationRecord.Builder(m, t(o, "time", now), Percentage.fromValue(o.getDouble("percent"))).build();
+      case "floors-climbed" -> new FloorsClimbedRecord.Builder(m, t(o, "start", now), t(o, "end", now), o.getDouble("floors")).buildWithoutValidation();
+      case "hydration" -> new HydrationRecord.Builder(m, t(o, "start", now), t(o, "end", now), Volume.fromLiters(o.getDouble("liters"))).buildWithoutValidation();
+      case "oxygen-saturation" -> new OxygenSaturationRecord.Builder(m, t(o, "time", now), Percentage.fromValue(o.getDouble("percent"))).buildWithoutValidation();
       case "blood-pressure" -> new BloodPressureRecord.Builder(m, t(o, "time", now), 0,
-          Pressure.fromMillimetersOfMercury(o.getDouble("systolic")), Pressure.fromMillimetersOfMercury(o.getDouble("diastolic")), 0).build();
-      case "body-fat" -> new BodyFatRecord.Builder(m, t(o, "time", now), Percentage.fromValue(o.getDouble("percent"))).build();
+          Pressure.fromMillimetersOfMercury(o.getDouble("systolic")), Pressure.fromMillimetersOfMercury(o.getDouble("diastolic")), 0).buildWithoutValidation();
+      case "body-fat" -> new BodyFatRecord.Builder(m, t(o, "time", now), Percentage.fromValue(o.getDouble("percent"))).buildWithoutValidation();
       default -> throw new IllegalArgumentException("type " + n + " has no seed format yet (an app can still write and read it)");
     };
   }
@@ -199,6 +199,10 @@ final class Seeds {
     }
     throw new IllegalArgumentException("unknown " + prefix.toLowerCase(Locale.ROOT) + "value " + v);
   }
+
+  // Record builders' build() checks a record is not in the future against the JDK's clock, in framework code that
+  // --clock does not move: seeds made "up to now" on a clock ahead of the real one would be refused. Seeds are built
+  // without that check (buildWithoutValidation); their own times come from SimClock.
 
   private static Metadata metadata(String origin, String clientId) {
     Metadata.Builder b = new Metadata.Builder().setDataOrigin(new DataOrigin.Builder().setPackageName(origin).build());
@@ -275,7 +279,11 @@ final class Seeds {
 
   // ---------------------------------------------------------------- the week preset
 
-  /** A week up to [now] in the app's time zone, the same each run for the same days (seeded by the date). */
+  /**
+   * A week up to [now] in the app's time zone. Every value of a day comes from that day's date alone (a Random per day
+   * and block, every value drawn whether or not it is past [now], then cut at it), so a day is the same at every launch
+   * and records already seeded keep their ids (Seeds' content ids). Run days are every third day by date.
+   */
   static List<Record> week(long now) {
     ZoneId zone = ZoneId.systemDefault();
     Instant end = Instant.ofEpochMilli(now);
@@ -284,73 +292,78 @@ final class Seeds {
     Metadata m = metadata(Health.SEED_ORIGIN, null);
     for (int back = 6; back >= 0; back--) {
       LocalDate day = today.minusDays(back);
-      Random rnd = new Random(day.toEpochDay() * 31 + 7);
-      boolean run = back == 2 || back == 5;
-      // The night before: about 23:00 to 07:00 with 90-minute cycles of light, deep, light and REM sleep.
-      ZonedDateTime bed = day.minusDays(1).atTime(LocalTime.of(22, 40)).plusMinutes(rnd.nextInt(50)).atZone(zone);
-      ZonedDateTime wake = day.atTime(LocalTime.of(6, 30)).plusMinutes(rnd.nextInt(60)).atZone(zone);
-      if (!wake.toInstant().isAfter(end)) {
-        List<SleepSessionRecord.Stage> stages = new ArrayList<>();
-        ZonedDateTime at = bed;
-        int[] cycle = {SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_LIGHT, SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_DEEP,
-            SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_LIGHT, SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_REM};
-        int[] minutes = {25, 30, 20, 15};
-        for (int i = 0; at.isBefore(wake); i++) {
-          ZonedDateTime next = at.plusMinutes(minutes[i % 4] + rnd.nextInt(10));
-          if (i == 9) {
-            next = at.plusMinutes(5 + rnd.nextInt(10));
-            stages.add(new SleepSessionRecord.Stage(at.toInstant(), min(next, wake).toInstant(), SleepSessionRecord.StageType.STAGE_TYPE_AWAKE));
-          } else {
-            stages.add(new SleepSessionRecord.Stage(at.toInstant(), min(next, wake).toInstant(), cycle[i % 4]));
-          }
-          at = next;
-        }
-        out.add(new SleepSessionRecord.Builder(m, bed.toInstant(), wake.toInstant()).setTitle("Night").setStages(stages).build());
+      boolean run = Math.floorMod(day.toEpochDay(), 3) == 0;
+      // The night before: about 23:00 to 07:00 with 90-minute cycles of light, deep, light and REM sleep, awake once.
+      Random rs = random(day, 1);
+      ZonedDateTime bed = day.minusDays(1).atTime(LocalTime.of(22, 40)).plusMinutes(rs.nextInt(50)).atZone(zone);
+      ZonedDateTime wake = day.atTime(LocalTime.of(6, 30)).plusMinutes(rs.nextInt(60)).atZone(zone);
+      List<SleepSessionRecord.Stage> stages = new ArrayList<>();
+      ZonedDateTime at = bed;
+      int[] cycle = {SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_LIGHT, SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_DEEP,
+          SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_LIGHT, SleepSessionRecord.StageType.STAGE_TYPE_SLEEPING_REM};
+      int[] minutes = {25, 30, 20, 15};
+      for (int i = 0; at.isBefore(wake); i++) {
+        boolean awake = i == 9;
+        ZonedDateTime next = at.plusMinutes(awake ? 5 + rs.nextInt(10) : minutes[i % 4] + rs.nextInt(10));
+        stages.add(new SleepSessionRecord.Stage(at.toInstant(), min(next, wake).toInstant(),
+            awake ? SleepSessionRecord.StageType.STAGE_TYPE_AWAKE : cycle[i % 4]));
+        at = next;
       }
+      if (!wake.toInstant().isAfter(end)) {
+        out.add(new SleepSessionRecord.Builder(m, bed.toInstant(), wake.toInstant()).setTitle("Night").setStages(stages).buildWithoutValidation());
+      }
+      Random rm = random(day, 2);
       ZonedDateTime morning = day.atTime(LocalTime.of(7, 5)).atZone(zone);
+      int resting = 56 + rm.nextInt(7);
+      int grams = 72_000 + rm.nextInt(900);
       if (!morning.toInstant().isAfter(end)) {
-        out.add(new RestingHeartRateRecord.Builder(m, morning.toInstant(), 56 + rnd.nextInt(7)).build());
-        out.add(new WeightRecord.Builder(m, morning.toInstant(), Mass.fromGrams(72_000 + rnd.nextInt(900))).build());
+        out.add(new RestingHeartRateRecord.Builder(m, morning.toInstant(), resting).buildWithoutValidation());
+        out.add(new WeightRecord.Builder(m, morning.toInstant(), Mass.fromGrams(grams)).buildWithoutValidation());
       }
       ZonedDateTime runStart = day.atTime(LocalTime.of(18, 0)).atZone(zone), runEnd = runStart.plusMinutes(45);
       if (run && !runEnd.toInstant().isAfter(end)) {
         out.add(new ExerciseSessionRecord.Builder(m, runStart.toInstant(), runEnd.toInstant(),
-            ExerciseSessionType.EXERCISE_SESSION_TYPE_RUNNING).setTitle("Evening run").build());
+            ExerciseSessionType.EXERCISE_SESSION_TYPE_RUNNING).setTitle("Evening run").buildWithoutValidation());
       }
+      Random steps = random(day, 3), heart = random(day, 4);
       int bpm = 58;
       for (int hour = 0; hour < 24; hour++) {
         ZonedDateTime from = day.atTime(hour, 0).atZone(zone), to = from.plusHours(1);
-        if (!from.toInstant().isBefore(end)) break;
         boolean whole = !to.toInstant().isAfter(end);
         boolean awake = hour >= 7 && hour <= 22;
         boolean running = run && hour == 18;
+        long count = running ? 6200 + steps.nextInt(800) : (long) (stepsAt(hour) * (0.6 + steps.nextDouble() * 0.8));
+        if (!awake) count = 0;
         if (whole && awake) {
-          long steps = running ? 6200 + rnd.nextInt(800) : (long) (stepsAt(hour) * (0.6 + rnd.nextDouble() * 0.8));
-          out.add(new StepsRecord.Builder(m, from.toInstant(), to.toInstant(), steps).build());
-          out.add(new DistanceRecord.Builder(m, from.toInstant(), to.toInstant(), Length.fromMeters(steps * (running ? 1.1 : 0.76))).build());
-          out.add(new ActiveCaloriesBurnedRecord.Builder(m, from.toInstant(), to.toInstant(), Energy.fromCalories(steps * 45.0)).build());
+          out.add(new StepsRecord.Builder(m, from.toInstant(), to.toInstant(), count).buildWithoutValidation());
+          out.add(new DistanceRecord.Builder(m, from.toInstant(), to.toInstant(), Length.fromMeters(count * (running ? 1.1 : 0.76))).buildWithoutValidation());
+          out.add(new ActiveCaloriesBurnedRecord.Builder(m, from.toInstant(), to.toInstant(), Energy.fromCalories(count * 45.0)).buildWithoutValidation());
         }
         if (whole) {
-          double active = awake ? stepsAt(hour) * 45.0 : 0;
-          out.add(new TotalCaloriesBurnedRecord.Builder(m, from.toInstant(), to.toInstant(), Energy.fromCalories(68_000 + active)).build());
+          // A resting 68 kcal an hour plus the active calories of the same steps.
+          out.add(new TotalCaloriesBurnedRecord.Builder(m, from.toInstant(), to.toInstant(), Energy.fromCalories(68_000 + count * 45.0)).buildWithoutValidation());
         }
         // Heart rate every five minutes (ten at night), up to now.
         List<HeartRateRecord.HeartRateSample> samples = new ArrayList<>();
         int step = awake ? 5 : 10;
         for (int min = 0; min < 60; min += step) {
-          Instant at = from.plusMinutes(min).toInstant();
-          if (at.isAfter(end)) break;
           int target = running && min < 45 ? 150 : awake ? 74 : 54;
-          bpm += (int) Math.signum(target - bpm) * Math.min(Math.abs(target - bpm), 12) + rnd.nextInt(7) - 3;
+          bpm += (int) Math.signum(target - bpm) * Math.min(Math.abs(target - bpm), 12) + heart.nextInt(7) - 3;
           bpm = Math.max(45, Math.min(185, bpm));
-          samples.add(new HeartRateRecord.HeartRateSample(bpm, at));
+          Instant t = from.plusMinutes(min).toInstant();
+          if (!t.isAfter(end)) samples.add(new HeartRateRecord.HeartRateSample(bpm, t));
         }
         if (!samples.isEmpty()) {
-          out.add(new HeartRateRecord.Builder(m, from.toInstant(), samples.get(samples.size() - 1).getTime().plusSeconds(1), samples).build());
+          out.add(new HeartRateRecord.Builder(m, from.toInstant(), samples.get(samples.size() - 1).getTime().plusSeconds(1), samples).buildWithoutValidation());
         }
       }
     }
     return out;
+  }
+
+  /** The values of one block ([which]) of a day: the same for that date at every launch. */
+  private static Random random(LocalDate day, int which) {
+    return new Random(day.toEpochDay() * 31 + which);
   }
 
   private static ZonedDateTime min(ZonedDateTime a, ZonedDateTime b) {

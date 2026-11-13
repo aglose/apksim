@@ -21,13 +21,18 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <!-- BleActivity, BleTest: BLE scans. Not neverForLocation: a device then delivers results only with fine location. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <!-- HealthActivity, HealthConnectTest: Health Connect. READ_WEIGHT is asked for and never granted (a denied read). -->
+    <!-- HealthActivity, HealthConnectTest: Health Connect. READ_BODY_FAT is asked for and never granted. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.WRITE_STEPS" />
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.WRITE_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.WRITE_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
 
     <application
         android:name=".ComposeApp"

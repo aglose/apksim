@@ -231,7 +231,7 @@ phase 1 says whether the owner's app does.
 **10. Health Connect stand-in.** Done (2026-11-12, docs/health-connect.md). On API 34+ AndroidX's client uses the
 platform's HealthConnectManager, found with `getSystemService("healthconnect")`, not a provider app: apksim publishes an
 in-process IHealthConnectService (`dev.apksim.health`) with records from `--health FILE|PRESET` and the `health` command.
-The owner's app shows its fitness card and heart-rate chip with `--health week`. Left: data-origin priorities, the
+With `--health week` the owner's app shows a card and its heart rate, which it hid. Left: data-origin priorities, the
 30-day history and background-read limits, Health Connect's own screens.
 
 **11. Native GLES and audio.** GLES via ANGLE-on-Metal and OpenSL ES/AAudio on CoreAudio would let games and

@@ -6,7 +6,7 @@ what they would have shown. apksim now runs a stand-in for the platform's Health
 it reads come from the launch (`--health FILE|PRESET`), the `health` command, or what the app itself wrote.
 
 ```bash
-./apksim --health week app.apk                        # a plausible week of steps, heart rate, sleep and two runs
+./apksim --health week app.apk                        # a plausible week of steps, heart rate, sleep and runs
 ./apksim --health records.json --permissions grant app.apk
 python3 scripts/drive.py 7400 'health' 'health add {"type":"weight","time":"-1h","kg":70.1}' 'health clear weight'
 ```
@@ -86,8 +86,9 @@ ISO instants (`2026-11-12T07:30:00Z`), local date-times (`2026-11-12T07:30`), or
 
 The preset `week` is seven days up to now in the app's time zone: steps, distance and active calories for each waking
 hour, total calories for every hour, heart rate every five minutes (ten at night) up to now, a resting heart rate and
-a weight each morning, each night's sleep with light, deep, REM and awake stages, and a 45-minute run two and five days
-ago. The values are the same for the same days on every run (seeded by the date).
+a weight each morning, each night's sleep with light, deep, REM and awake stages, and a 45-minute run at 18:00 every
+third day by date. Every value of a day comes from its date alone (each part of the day draws from a random generator
+seeded by the date), so a past day is the same at every launch and keeps its records' ids.
 
 ## Options and commands
 
@@ -98,12 +99,20 @@ ago. The values are the same for the same days on every run (seeded by the date)
   week preset follows the clock; a launch without `--health` keeps them as they were. A seed without a client id gets
   an id from its content, so seeding the same records again changes nothing (no change-log entries, the same ids);
   what the app or `health add` wrote stays. In a test run every test starts with the seeds
-  alone. Read again by a warm launch (a standby takes `-Dapksim.health.N`).
+  alone (made once per spec and minute of the clock, then copied). Read again by a warm launch (a standby takes
+  `-Dapksim.health.N`). A value that is neither a file, inline JSON nor a preset stops the launcher, and a file whose
+  records do not load stops the launch, both with exit 2 (`[apksim] exit 2: bad --health`); in a test run every
+  test's setup fails instead. The slot's file is written by a thread of its own shortly after each change (and at
+  every way an instance ends), and read only when something first asks for Health Connect: an app that never does
+  pays nothing for it at launch. It is kept only for the framework build that wrote it (records are stored as that
+  build's parcels).
 - `health`: records per type, the app's health permissions (granted and not), and the service calls made since the
   launch (a test's setup): `records: heart-rate 162, sleep-session 7, steps 107, ...; granted: READ_STEPS ...; not
   granted: READ_WEIGHT; calls: aggregateRecords 2, insertRecords 1, readRecords 4`.
 - `health add FILE|PRESET|JSON`: adds records now (inline JSON as above).
 - `health clear [TYPE]`: removes every record, or those of one type (as deletions, so change tokens see them).
+- `health list TYPE`: each record of a type, by start time, with its id (`seed` for the launch's seeds). A seed's id
+  comes from its content, so two lists agree exactly where the records are the same.
 - `health types`: every record type's name.
 - Over `--control`, `adb shell apksim health ...`, and in a test run `executeShellCommand("apksim health ...")` (until
   the next test's setup).
@@ -117,9 +126,12 @@ ago. The values are the same for the same days on every run (seeded by the date)
 - **Insert**: each record needs its type's write permission (else ERROR_SECURITY, a `SecurityException`); it is stored
   with the caller's package as its data origin, the app's label, the time, and a new id, or, with a client record id,
   an id derived from the package, type and client id, so inserting it again replaces it unless its version is older.
-  **Update** needs the record to exist and be the caller's (else ERROR_INVALID_ARGUMENT).
+  An empty client record id counts as none (two such records are two, as on an emulator). **Update** needs the record
+  to exist, be the caller's and be of the same type (else ERROR_INVALID_ARGUMENT, with the device's "No record found
+  for the following input" message).
 - **Read** by ids or by filter: the type's read permission reads every origin; with only the write permission the
-  caller reads its own records, as the platform allows; neither: ERROR_SECURITY. A time filter takes a record whose time
+  caller may read only by naming itself as the only data origin, else ERROR_SECURITY with the device's "... from other
+  applications" message (an emulator refuses an unfiltered read too); neither: ERROR_SECURITY. A time filter takes a record whose time
   (an interval's start) is in `[start, end)`: an interval that began before the filter is not read even if it runs into
   it (checked on an API 36 emulator). Local time filters compare local times. Ordered by start time, ascending or
   descending; pages of `pageSize` (default 1000) with a page token that carries the order, as the platform's does.
@@ -128,38 +140,54 @@ ago. The values are the same for the same days on every run (seeded by the date)
   aggregation's result class (by name where there are several, as NutritionRecord's), or its samples' (heart rate,
   speed, power, cadence, skin temperature). Sums over interval records count the part inside the window (1,000 steps
   over an hour, half of it in the window: 500); averages, minimums and maximums take instant records and samples in the
-  window; durations (sleep, exercise, mindfulness) are the sessions' time in it; a window with no data has no value. It
-  needs the read permission. Without a getter to read (basal calories from a metabolic rate, activity intensity's
-  minutes) there is no value.
+  window; session durations (sleep, exercise, mindfulness) are the sessions' time in it less the stages and segments
+  the framework's `DURATION_EXCLUDE_TYPES` name (awake, out of bed, pauses, rest); a window with no data has no value.
+  It needs the read permission. Without a getter to read (basal calories from a metabolic rate) and for activity
+  intensity's totals there is no value, nor for a nutrient no record set. Records are converted once per request;
+  more than 5000 groups answers ERROR_INVALID_ARGUMENT with the device's message ("Number of buckets must not exceed
+  5000", "Number of groups ..."), as does a zero or negative duration or period.
 - **Delete** by ids or by filter (types, time range): only the caller's own records, with the write permission.
 - **Change logs**: a token remembers where the log stood, which types and which origins; `getChanges` returns each
   record changed since then once (its latest state: the record, or a deletion with its id and time), up to the page
-  size, then a token to go on from and `hasMore`. Needs the read permission of each type.
-- **Everything else** in `IHealthConnectService` (medical records, priorities, backup and restore, export, migration,
-  data state) answers ERROR_UNSUPPORTED_OPERATION through its callback, so an app never waits for an answer that does
-  not come. Permission grant, revoke and listing through the service work.
+  size (1000), then a token to go on from and `hasMore`. Needs the read permission of each type. The log keeps the last
+  20,000 changes; an older token, or one the service did not make, answers ERROR_INVALID_ARGUMENT, which AndroidX
+  reports as `changesTokenExpired` (an emulator does the same for a token it does not know).
+- **Everything else** in `IHealthConnectService` that has a callback taking a HealthConnectExceptionParcel (medical
+  records, priorities, backup and restore, export, data state) answers ERROR_UNSUPPORTED_OPERATION through it; the rest
+  (migration and remote-data staging, whose callbacks take other exceptions, and methods that return their answer)
+  throw UnsupportedOperationException at once. Either way an app never waits for an answer that does not come.
+  Permission grant, revoke and listing through the service work.
+- **Open-ended filters and --clock**: a time filter built without an end gets the JDK's `Instant.now()` plus a day,
+  in framework code, which `--clock` and the `clock` command do not move; with the app's clock more than a day ahead,
+  an open-ended read would miss what the app wrote "now". The service moves such an end (within ten minutes before
+  real now plus a day, at ZoneOffset.MAX for a local filter) by the app's clock's offset.
 
 Answers go out on one thread, `apksim-health-binder`, in the order they were decided; the app's executor then gets
 them. (A device has a pool of binder threads: an app whose executor runs the answer in place and then blocks on another
 Health Connect call there would wait for ever here.) A service method that fails answers ERROR_INTERNAL through its
-callback, as the platform does. The change log keeps the last 20,000 changes. A group-by aggregation with a zero or
-negative duration or period, or more than 100,000 groups, answers ERROR_INVALID_ARGUMENT. Code that runs for every app references only framework classes
-(`android.health.connect`), never AndroidX's.
+callback, as the platform does. Code that runs for every app references only framework classes
+(`android.health.connect`), never AndroidX's. The service's binder is published before Application.onCreate, but the
+interface behind it (a Proxy of the 60-method IHealthConnectService, whose making loads every Health Connect parcel
+class) is made at the app's first `getSystemService("healthconnect")`.
 
 ## Checks
 
-- `HealthConnectTest` in the test app's suite: availability, the granted permissions the client reads, insert and read
-  back (order, pages), which intervals a time filter takes, an upsert by client id, heart-rate aggregates and hourly
-  groups, a change token seeing an insert and then a deletion, a read without its permission; with `--health week -e
-  healthSeed week` the seeded week as well (CI runs both). Every test but two passes on an API 36 emulator as it is
-  (granting itself with `pm grant`); the two apksim-only ones are the seeded week and steps' totals, since a device
-  counts steps only from apps in Health Connect's priority list, which an app joins when the user grants it in Health
-  Connect's own screens, not on `pm grant` (an emulator answers no total there).
+- `HealthConnectTest` in the test app's suite (18 tests): availability, the granted permissions the client reads,
+  insert and read back (order, pages both ways, by id), update, which intervals a time filter takes, upserts by client
+  id and an empty client id, heart-rate and weight aggregates, hourly groups, groups by period and a local-time filter,
+  the 5000-group cap, a change token seeing an insert and then a deletion, changes in pages of 1000 and a bad token read
+  as expired, reads, writes, aggregates, change tokens and deletes without their permission, a write-only app's own
+  reads; with `--health week -e healthSeed week` the seeded week as well (CI runs both). Every test but three passes on
+  an API 36 emulator as it is (granting itself with `pm grant`); the three apksim-only ones are the seeded week, steps'
+  totals and session durations (awake and pauses left out), since a device counts steps, sleep and exercise only from
+  apps in Health Connect's priority list, which an app joins when the user grants it in Health Connect's own screens,
+  not on `pm grant` (an emulator answers no value there).
 - `apksim://health` (`HealthActivity`): availability, permissions (asked for with the client's contract), today's steps,
-  the latest heart rate, last night's sleep, and an insert button. `scripts/ci-smoke.sh` adds a week with `health add
-  week`, grants the permissions, reads the screen and checks the insert adds 100 to today's steps.
-- With `--health week`, the large app from the trace above shows its fitness card (readiness, steps, sleep) and its
-  heart-rate chip, which it hid before.
+  the week's steps, the latest heart rate, last night's sleep, and an insert button. `scripts/ci-smoke.sh` adds a week
+  with `health add week`, grants the permissions, reads the screen (the week's steps over 20,000) and checks the insert
+  adds 100 to today's steps; then it seeds the week at two clocks a day apart and checks the days both cover have the
+  same records (`health list steps`).
+- With `--health week`, the large app from the trace above shows a card and its heart rate, which it hid before.
 
 ## Not done
 
@@ -168,7 +196,12 @@ negative duration or period, or more than 100,000 groups, answers ERROR_INVALID_
   every app had been granted in Health Connect's screens, and overlapping records from several origins are added up.
 - The 30-day history limit (reads before the first grant need READ_HEALTH_DATA_HISTORY), background reads
   (READ_HEALTH_DATA_IN_BACKGROUND), rate limits, record validation beyond what the framework's own builders do, and
-  change tokens expiring after 30 days.
+  change tokens expiring after 30 days (they expire here only once the log has moved past them).
 - Health Connect's own screens (the permission rationale, `ACTION_MANAGE_HEALTH_DATA`), exercise routes' consent flow,
   medical records, and apps below API 34's path (a provider app; apksim is always API 36).
-- `serve` and `beam` do not accept `--health` (it may name a file); the flight recorder records no health calls.
+- `serve` and `beam` do not accept `--health` (it may name a file); the flight recorder records no health calls (the
+  store travels in a checkpoint's slot, above).
+- With `--clock` ahead of the real clock, a record the app builds "now" is refused by the framework's own builder,
+  which checks for records in the future against the real clock (seeds are built without that check).
+- Answers go out on one binder thread, not a pool: an app whose executor runs an answer in place and blocks there on
+  another Health Connect call would wait for ever.

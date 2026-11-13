@@ -57,8 +57,11 @@ import java.util.UUID;
  * manager and AndroidX's HealthConnectClient (which on API 34+ asks for exactly that) finds Health Connect available.
  *
  * <p>The binder is a {@link Proxy} of IHealthConnectService: a method this class has (same name and parameters) runs
- * here; any other one that takes a callback answers ERROR_UNSUPPORTED_OPERATION through it, so the app never waits
- * for an answer that does not come (medical records, backup and restore, export, migration, priorities).
+ * here; any other one that takes a callback with onError(HealthConnectExceptionParcel) answers
+ * ERROR_UNSUPPORTED_OPERATION through it (medical records, backup and restore, export, priorities), and the rest
+ * (migration and remote-data staging, whose callbacks take other exceptions, and methods that return their answer)
+ * throw UnsupportedOperationException at once, so the app never waits for an answer that does not come. A failure
+ * inside a method that has a callback answers ERROR_INTERNAL through it, as the platform's service does.
  *
  * <p>Requests are decided on the calling thread, under Health's lock, and answered on {@code apksim-health-binder}
  * in order, as the platform's oneway calls are.
@@ -66,7 +69,7 @@ import java.util.UUID;
 public final class HealthService {
   static final long NO_PAGE = -1;
   private static final int DEFAULT_PAGE = 1000;
-  private static final int MAX_GROUPS = 100_000;
+  private static final int MAX_GROUPS = 5000;
   private static final String PERM = "android.permission.health.";
 
   private final Health health;
@@ -97,7 +100,7 @@ public final class HealthService {
           // A failure of the service itself reaches the app as its callback's error, as the platform's
           // tryAndThrowException turns one into ERROR_INTERNAL, not as an exception on the app's calling thread.
           Throwable cause = e.getCause();
-          if (args != null && cause instanceof RuntimeException) {
+          if (args != null && (cause instanceof RuntimeException || cause instanceof Error)) {
             for (Object a : args) {
               if (a != null && answerError(a, HealthConnectException.ERROR_INTERNAL, String.valueOf(cause))) return defaultValue(m.getReturnType());
             }
@@ -107,10 +110,12 @@ public final class HealthService {
       }
       if (args != null) {
         for (Object a : args) {
-          if (a != null && answerUnsupported(a, m.getName())) break;
+          if (a != null && answerUnsupported(a, m.getName())) return defaultValue(m.getReturnType());
         }
       }
-      return defaultValue(m.getReturnType());
+      // No callback with onError(HealthConnectExceptionParcel) to answer through (a migration's or backup staging's
+      // callback, or a method that returns its answer): refused at once rather than never answered.
+      throw new UnsupportedOperationException(m.getName() + " is not supported by apksim's Health Connect");
     };
     return (IHealthConnectService) Proxy.newProxyInstance(IHealthConnectService.class.getClassLoader(),
         new Class<?>[] {IHealthConnectService.class}, h);
@@ -239,11 +244,11 @@ public final class HealthService {
       for (RecordInternal<?> in : parcel.getRecords()) {
         RecordInternal<?> r = Store.copy(in);
         stamp(r, pkg, now);
-        String id = r.getClientRecordId() != null ? clientUuid(pkg, r.getRecordType(), r.getClientRecordId()).toString() : UUID.randomUUID().toString();
-        Store.Entry old = health.store.records.get(id);
+        String id = clientId(r) != null ? clientUuid(pkg, r.getRecordType(), clientId(r)).toString() : UUID.randomUUID().toString();
+        Store.Entry old = health.store().records.get(id);
         r.setUuid(id);
         // An upsert by client id with an older version than what is stored leaves the stored one, as the platform does.
-        if (old == null || old.record.getClientRecordVersion() <= r.getClientRecordVersion()) health.store.put(r, false, now);
+        if (old == null || old.record.getClientRecordVersion() <= r.getClientRecordVersion()) health.store().put(r, false, now);
         ids.add(id);
       }
       health.changed();
@@ -260,12 +265,13 @@ public final class HealthService {
           health.answer(() -> cb.onError(denied(writePermission(in.getRecordType()), "write records of type " + in.getRecordType())));
           return;
         }
-        String id = in.getClientRecordId() != null ? clientUuid(pkg, in.getRecordType(), in.getClientRecordId()).toString()
+        String id = clientId(in) != null ? clientUuid(pkg, in.getRecordType(), clientId(in)).toString()
             : in.getUuid() == null ? null : in.getUuid().toString();
-        Store.Entry old = id == null ? null : health.store.records.get(id);
-        if (old == null || !pkg.equals(old.record.getPackageName())) {
+        Store.Entry old = id == null ? null : health.store().records.get(id);
+        if (old == null || !pkg.equals(old.record.getPackageName()) || old.record.getRecordType() != in.getRecordType()) {
+          // The device's message (an API 36 emulator, updating an id it does not have).
           health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT,
-              "No record with id " + in.getUuid() + " of this app to update")));
+              "No record found for the following input : uuid : " + id + " , ")));
           return;
         }
         RecordInternal<?> r = Store.copy(in);
@@ -275,7 +281,7 @@ public final class HealthService {
       long now = health.now();
       for (RecordInternal<?> r : todo) {
         stamp(r, pkg, now);
-        health.store.put(r, false, now);
+        health.store().put(r, false, now);
       }
       health.changed();
     }
@@ -286,6 +292,12 @@ public final class HealthService {
     r.setPackageName(pkg);
     r.setAppName(health.appName(pkg));
     r.setLastModifiedTime(now);
+  }
+
+  /** A record's client record id, or null: an empty one counts as none, as on a device (two such records are two). */
+  static String clientId(RecordInternal<?> r) {
+    String c = r.getClientRecordId();
+    return c == null || c.isEmpty() ? null : c;
   }
 
   /** A record's id from its client id, the same for one app, type and client id (the platform's upsert key). */
@@ -310,18 +322,26 @@ public final class HealthService {
       if (req.getRecordIdFiltersParcel() != null) {
         for (RecordIdFilter f : req.getRecordIdFiltersParcel().getRecordIdFilters()) {
           String id = f.getId() != null ? f.getId() : clientUuid(pkg, type, f.getClientRecordId()).toString();
-          Store.Entry e = health.store.records.get(id);
+          Store.Entry e = health.store().records.get(id);
           if (e != null && e.record.getRecordType() == type && (all || pkg.equals(e.record.getPackageName()))) found.add(e.record);
         }
         out = new ReadRecordsResponseParcel(new RecordsParcel(copies(found)), NO_PAGE);
       } else {
         List<String> origins = req.getPackageFilters();
-        for (Store.Entry e : health.store.records.values()) {
+        // Without the read permission an app may read only by naming itself as the only origin (an API 36 emulator:
+        // an unfiltered read is refused with this message).
+        if (!all && (origins == null || origins.isEmpty() || origins.stream().anyMatch(o -> !o.equals(pkg)))) {
+          Class<?> c = HealthConnectMappings.getInstance().getRecordIdToExternalRecordClassMap().get(type);
+          health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_SECURITY,
+              "Caller does not have permission to read data for the following (recordType: " + c + ") from other applications.")));
+          return;
+        }
+        for (Store.Entry e : health.store().records.values()) {
           RecordInternal<?> r = e.record;
           if (r.getRecordType() != type) continue;
           if (!all && !pkg.equals(r.getPackageName())) continue;
           if (origins != null && !origins.isEmpty() && !origins.contains(r.getPackageName())) continue;
-          if (!inRange(r, req.getStartTime(), req.getEndTime(), req.usesLocalTimeFilter())) continue;
+          if (!inRange(r, req.getStartTime(), openEnd(req.getEndTime(), req.usesLocalTimeFilter()), req.usesLocalTimeFilter())) continue;
           found.add(r);
         }
         // A page token carries the order it was made for (a request with one cannot set its own, as on the platform).
@@ -365,6 +385,23 @@ public final class HealthService {
   }
 
   /**
+   * A filter's end, moved to the app's clock when it is the one the framework filled in. A TimeInstantRangeFilter or
+   * LocalTimeRangeFilter built without an end gets the JDK's {@code Instant.now()} plus a day (the local one at
+   * ZoneOffset.MAX), read in framework code, which apksim does not move with --clock or the clock command: with the
+   * app's clock more than a day ahead, an open-ended read would miss what the app wrote "now". An end within ten
+   * minutes before that real time and a moment after it is taken to be one such and moved by SimClock's offset; with
+   * the clock real, nothing changes.
+   */
+  static long openEnd(long end, boolean local) {
+    if (end == -1) return end;
+    long real = System.currentTimeMillis();
+    long offset = dev.apksim.SimClock.currentTimeMillis() - real;
+    if (Math.abs(offset) < 1000) return end;
+    long filled = real + 86_400_000L + (local ? ZoneOffset.MAX.getTotalSeconds() * 1000L : 0);
+    return end <= filled + 1000 && end >= filled - 600_000 ? end + offset : end;
+  }
+
+  /**
    * Whether [r] falls in a read's or a delete's time filter ([start, end) in epoch ms, or local ms with [local]; -1 for
    * none): the record's time, or an interval's start, inside it. An interval that began before the filter is not in it
    * even when it runs on into it (checked against an API 36 emulator: HealthConnectTest).
@@ -381,7 +418,8 @@ public final class HealthService {
   public void aggregateRecords(AttributionSource source, AggregateDataRequestParcel req, IAggregateRecordsResponseCallback cb) {
     AggregateDataResponseParcel out;
     synchronized (health.lock) {
-      Map<Integer, List<RecordInternal<?>>> byId = new LinkedHashMap<>();
+      Map<Integer, List<Aggregates.Item>> byId = new LinkedHashMap<>();
+      Map<Integer, List<Aggregates.Item>> byType = new HashMap<>();
       List<String> origins = req.getPackageFilters();
       for (int id : req.getAggregateIds()) {
         int type = Aggregates.recordType(id);
@@ -393,23 +431,30 @@ public final class HealthService {
           health.answer(() -> cb.onError(denied(readPermission(type), "aggregate records of type " + type)));
           return;
         }
-        List<RecordInternal<?>> rs = new ArrayList<>();
-        for (Store.Entry e : health.store.records.values()) {
-          if (e.record.getRecordType() != type) continue;
-          if (origins != null && !origins.isEmpty() && !origins.contains(e.record.getPackageName())) continue;
-          rs.add(e.record);
-        }
-        byId.put(id, rs);
+        byId.put(id, byType.computeIfAbsent(type, t -> {
+          List<RecordInternal<?>> rs = new ArrayList<>();
+          for (Store.Entry e : health.store().records.values()) {
+            if (e.record.getRecordType() != t) continue;
+            if (origins != null && !origins.isEmpty() && !origins.contains(e.record.getPackageName())) continue;
+            rs.add(e.record);
+          }
+          return Aggregates.prepare(rs);  // converted once for every group of this request
+        }));
       }
       boolean local = req.useLocalTimeFilter();
-      long start = req.getStartTime(), end = req.getEndTime();
+      long start = req.getStartTime(), end = openEnd(req.getEndTime(), local);
       Duration duration = req.getDuration();
       Period period = req.getPeriod();
-      // A group size that never moves on, or more groups than anyone reads: refused, rather than a loop under the lock.
+      // A group size that never moves on, or more groups than a device answers (5000, with these messages: an API 36
+      // emulator), is refused, rather than a loop under the lock.
       boolean badPeriod = period != null && (period.isZero() || period.isNegative());
       boolean badDuration = duration != null && (duration.isZero() || duration.isNegative());
-      if (badPeriod || badDuration || (duration != null && end != -1 && start != -1 && (end - start) / duration.toMillis() > MAX_GROUPS)) {
+      if (badPeriod || badDuration) {
         health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Invalid group duration or period")));
+        return;
+      }
+      if (duration != null && (start == -1 || end == -1 || (end - start + duration.toMillis() - 1) / duration.toMillis() > MAX_GROUPS)) {
+        health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Number of buckets must not exceed " + MAX_GROUPS)));
         return;
       }
       if (period != null) {
@@ -418,7 +463,7 @@ public final class HealthService {
         long lo = start;
         while (lo < end) {
           if (groups.size() >= MAX_GROUPS) {
-            health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Too many groups")));
+            health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Number of groups must not exceed " + MAX_GROUPS)));
             return;
           }
           from = from.plus(period);
@@ -440,10 +485,10 @@ public final class HealthService {
     health.answer(() -> cb.onResult(answer));
   }
 
-  private static AggregateRecordsResponse<?> window(Map<Integer, List<RecordInternal<?>>> byId, long start, long end, boolean local) {
+  private static AggregateRecordsResponse<?> window(Map<Integer, List<Aggregates.Item>> byId, long start, long end, boolean local) {
     Map<Integer, AggregateResult<?>> results = new HashMap<>();
     Aggregates.Window w = new Aggregates.Window(start == -1 ? Long.MIN_VALUE : start, end == -1 ? Long.MAX_VALUE : end, local);
-    for (Map.Entry<Integer, List<RecordInternal<?>>> e : byId.entrySet()) {
+    for (Map.Entry<Integer, List<Aggregates.Item>> e : byId.entrySet()) {
       AggregateResult<?> r = Aggregates.compute(e.getKey(), e.getValue(), w);
       if (r != null) results.put(e.getKey(), r);
     }
@@ -465,7 +510,7 @@ public final class HealthService {
             return;
           }
           String id = f.getId() != null ? f.getId() : clientUuid(pkg, type, f.getClientRecordId()).toString();
-          Store.Entry e = health.store.records.get(id);
+          Store.Entry e = health.store().records.get(id);
           if (e != null && e.record.getRecordType() == type && pkg.equals(e.record.getPackageName())) gone.add(id);
         }
       } else {
@@ -479,15 +524,15 @@ public final class HealthService {
           }
         }
         // An app deletes only its own records, whatever package filter it asked for.
-        for (Store.Entry e : health.store.records.values()) {
+        for (Store.Entry e : health.store().records.values()) {
           RecordInternal<?> r = e.record;
           if (!types.contains(r.getRecordType()) || !pkg.equals(r.getPackageName())) continue;
           if (!granted(writePermission(r.getRecordType()))) continue;
-          if (!inRange(r, req.getStartTime(), req.getEndTime(), req.isLocalTimeFilter())) continue;
+          if (!inRange(r, req.getStartTime(), openEnd(req.getEndTime(), req.isLocalTimeFilter()), req.isLocalTimeFilter())) continue;
           gone.add(r.getUuid().toString());
         }
       }
-      for (String id : gone) health.store.delete(id, now);
+      for (String id : gone) health.store().delete(id, now);
       if (!gone.isEmpty()) health.changed();
     }
     health.answer(cb::onResult);
@@ -509,7 +554,7 @@ public final class HealthService {
     }
     String token;
     synchronized (health.lock) {
-      token = Token.encode(health.store.seq, types, req.getPackageNamesToFilter());
+      token = Token.encode(health.store().seq, types, req.getPackageNamesToFilter());
     }
     health.answer(() -> cb.onResult(new ChangeLogTokenResponse(token)));
   }
@@ -529,10 +574,15 @@ public final class HealthService {
     ChangeLogsResponse out;
     synchronized (health.lock) {
       int size = req.getPageSize() > 0 ? req.getPageSize() : DEFAULT_PAGE;
+      if (t.seq() < health.store().trimmed) {
+        // Older than the change log kept: expired (AndroidX reports ERROR_INVALID_ARGUMENT here as changesTokenExpired).
+        health.answer(() -> cb.onError(exception(HealthConnectException.ERROR_INVALID_ARGUMENT, "Change token has expired")));
+        return;
+      }
       Map<String, Store.Change> latest = new LinkedHashMap<>();
       long last = t.seq();
       boolean more = false;
-      for (Store.Change c : health.store.changes) {
+      for (Store.Change c : health.store().changes) {
         if (c.seq() <= t.seq()) continue;
         if (!t.types().contains(c.type())) continue;
         if (!t.origins().isEmpty() && !t.origins().contains(c.pkg())) continue;
@@ -547,7 +597,7 @@ public final class HealthService {
       List<RecordInternal<?>> upserted = new ArrayList<>();
       List<ChangeLogsResponse.DeletedLog> deleted = new ArrayList<>();
       for (Store.Change c : latest.values()) {
-        Store.Entry e = health.store.records.get(c.uuid());
+        Store.Entry e = health.store().records.get(c.uuid());
         if (!c.deleted() && e != null) {
           upserted.add(Store.copy(e.record));
         } else if (c.deleted()) {

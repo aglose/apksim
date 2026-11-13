@@ -35,16 +35,20 @@ final class Store {
   /** One change: a record of [type] from [pkg] written (upsert) or deleted at [time], numbered [seq]. */
   record Change(long seq, String uuid, int type, String pkg, boolean deleted, long time) {}
 
-  private static final int VERSION = 1;
+  private static final int VERSION = 2;
 
   /** By UUID, in insertion order. */
   final Map<String, Entry> records = new LinkedHashMap<>();
   final List<Change> changes = new ArrayList<>();
   long seq;
+  /** The newest change dropped from the log (0: none): a token older than it has expired. */
+  long trimmed;
 
   void clear() {
     records.clear();
     changes.clear();
+    seq = 0;
+    trimmed = 0;
   }
 
   /** The change log kept: older entries go, as a device's change tokens expire (after 30 days there). */
@@ -59,7 +63,11 @@ final class Store {
 
   private void log(Change c) {
     changes.add(c);
-    if (changes.size() > MAX_CHANGES) changes.subList(0, changes.size() - MAX_CHANGES).clear();
+    if (changes.size() > MAX_CHANGES) {
+      List<Change> old = changes.subList(0, changes.size() - MAX_CHANGES);
+      trimmed = old.get(old.size() - 1).seq();
+      old.clear();
+    }
   }
 
   boolean delete(String uuid, long now) {
@@ -99,10 +107,25 @@ final class Store {
 
   // ---- the slot's file: records as their parcels, then the change log
 
+  /**
+   * The framework build the parcels are in: the jar that holds HealthConnectManager (android-all's, named after the
+   * Android build). A record's parcel layout is that build's, so a store written by another is not read.
+   */
+  static String framework() {
+    try {
+      String f = android.health.connect.HealthConnectManager.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+      return f.substring(f.lastIndexOf('/') + 1);
+    } catch (RuntimeException e) {
+      return "unknown";
+    }
+  }
+
   void write(OutputStream os) throws IOException {
     DataOutputStream out = new DataOutputStream(os);
     out.writeInt(VERSION);
+    out.writeUTF(framework());
     out.writeLong(seq);
+    out.writeLong(trimmed);
     out.writeInt(records.size());
     for (Entry e : records.values()) {
       byte[] b = toBytes(e.record);
@@ -127,8 +150,11 @@ final class Store {
   void read(InputStream is) throws IOException {
     DataInputStream in = new DataInputStream(is);
     if (in.readInt() != VERSION) throw new IOException("unknown health store version");
+    String built = in.readUTF();
+    if (!built.equals(framework())) throw new IOException("written by another framework build (" + built + ")");
     clear();
     seq = in.readLong();
+    trimmed = in.readLong();
     int n = in.readInt();
     int dropped = 0;
     for (int i = 0; i < n; i++) {

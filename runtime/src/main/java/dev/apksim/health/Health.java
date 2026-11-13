@@ -45,12 +45,27 @@ public final class Health {
   private static Health instance;
 
   final Object lock = new Object();
-  final Store store = new Store();
-  private final HealthService service = new HealthService(this);
-  private final IHealthConnectService binder = service.binder();
+  /** The records: read through {@link #store()}, which reads the slot's file on first use. */
+  private final Store store = new Store();
+  /** The slot's file has not been read yet ([file] may hold records). */
+  private boolean unread;
+  /** The service's binder interface, made at the app's first getSystemService("healthconnect") ({@link #publish}). */
+  private IHealthConnectService binder;
+
+  synchronized IHealthConnectService binder() {
+    if (binder == null) binder = new HealthService(this).binder();
+    return binder;
+  }
   private final Map<String, Integer> calls = new TreeMap<>();
   private ExecutorService answers;
+  private ExecutorService writer;
   private Path file;
+  /** The store changed since it was last written; a write is queued while [writeQueued]. */
+  private boolean dirty, writeQueued;
+  private java.util.function.Supplier<String> tmpTag = () -> String.valueOf(ProcessHandle.current().pid());
+  /** Seeds made for a spec at a minute of the app's clock: a test run seeds every test again. */
+  private static final Map<String, List<byte[]>> SEED_CACHE = new java.util.HashMap<>();
+  private static final Map<String, List<Integer>> SEED_TYPES = new java.util.HashMap<>();
 
   private Health() {}
 
@@ -65,22 +80,19 @@ public final class Health {
    * running instance ([deviceDir], else none), with this launch's --health seeds in place of the last ones; in a test
    * run, the seeds alone.
    */
-  public static void reset(Application app, Path deviceDir) {
+  public static void reset(Application app, Path deviceDir, java.util.function.Supplier<String> tmpTag) {
     Health h = get();
-    ShadowServiceManager.addBinderService(SERVICE, IHealthConnectService.class, h.binder);
+    h.tmpTag = tmpTag;
+    h.publish();
     synchronized (h.lock) {
+      h.flushLocked();  // the last slot's pending write, before the store is replaced
       h.calls.clear();
       h.store.clear();
-      h.store.seq = 0;
+      h.dirty = false;
       h.file = deviceDir == null ? null : deviceDir.resolve(FILE);
-      if (h.file != null && Files.isRegularFile(h.file)) {
-        try (InputStream in = Files.newInputStream(h.file)) {
-          h.store.read(in);
-        } catch (IOException | RuntimeException e) {
-          System.err.println("[apksim] health: could not read " + h.file.getFileName() + ": " + e);
-          h.store.clear();
-        }
-      }
+      // Read when something first asks (the app's first call, the health command, --health below): parsing a store of
+      // a week's records is ~85 ms of a launch without the AOT cache, which an app that never asks need not pay.
+      h.unread = h.file != null;
       List<String> seeds = new ArrayList<>();
       for (int i = 0; System.getProperty("apksim.health." + i) != null; i++) seeds.add(System.getProperty("apksim.health." + i));
       if (!seeds.isEmpty()) {
@@ -89,14 +101,12 @@ public final class Health {
         // changes nothing: only seeds that are new or gone show up as changes (a week preset moves on a day at a time).
         java.util.Map<String, RecordInternal<?>> fresh = new java.util.LinkedHashMap<>();
         for (String s : seeds) {
-          try {
-            for (RecordInternal<?> r : Seeds.load(s, now)) fresh.put(r.getUuid().toString(), r);
-          } catch (Exception e) {
-            System.err.println("[apksim] --health " + s + ": " + e.getMessage());
-          }
+          // A seed that does not load is a bad launch option: the caller ends a running instance with exit 2, and in a
+          // test run every test's setup fails, rather than a launch going on with no records.
+          for (RecordInternal<?> r : seeded(s, now)) fresh.put(r.getUuid().toString(), r);
         }
         List<String> gone = new ArrayList<>();
-        for (Store.Entry e : h.store.records.values()) {
+        for (Store.Entry e : h.store().records.values()) {
           if (e.seed && !fresh.containsKey(e.record.getUuid().toString())) gone.add(e.record.getUuid().toString());
         }
         boolean changed = !gone.isEmpty();
@@ -113,6 +123,91 @@ public final class Health {
         if (changed) h.changed();
       }
     }
+  }
+
+  /**
+   * Publishes "healthconnect" in Robolectric's ServiceManager. The interface is a Proxy of the 60-method
+   * IHealthConnectService, whose making loads every Health Connect parcel and callback class (~60 ms of a cold launch),
+   * so it is made only when the framework asks the binder for it: the published binder is a {@link LazyBinder}, set
+   * as the service's binder, and an app that never asks for Health Connect pays for neither. If Robolectric's
+   * ServiceManager is not as expected, the interface is made now instead.
+   */
+  private void publish() {
+    try {
+      ShadowServiceManager.addBinderService(SERVICE, IHealthConnectService.class, (android.os.IInterface) null);
+      java.lang.reflect.Field services = ShadowServiceManager.class.getDeclaredField("binderServices");
+      services.setAccessible(true);
+      Object entry = ((Map<?, ?>) services.get(null)).get(SERVICE);
+      java.lang.reflect.Field cached = entry.getClass().getDeclaredField("cachedBinder");
+      cached.setAccessible(true);
+      cached.set(entry, new LazyBinder(this));
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      ShadowServiceManager.addBinderService(SERVICE, IHealthConnectService.class, binder());
+    }
+  }
+
+  /** The published binder: answers IHealthConnectService.Stub.asInterface with the service, made on that first call. */
+  private static final class LazyBinder extends android.os.Binder {
+    private final Health health;
+
+    LazyBinder(Health health) {
+      this.health = health;
+    }
+
+    @Override
+    public android.os.IInterface queryLocalInterface(String descriptor) {
+      return IHealthConnectService.DESCRIPTOR.equals(descriptor) ? health.binder() : super.queryLocalInterface(descriptor);
+    }
+  }
+
+  /** [spec]'s records at [now], made once per spec and minute of the app's clock and copied for each use. */
+  private static List<RecordInternal<?>> seeded(String spec, long now) {
+    String key = spec + "@" + now / 60_000;
+    List<byte[]> bytes;
+    List<Integer> types;
+    synchronized (SEED_CACHE) {
+      bytes = SEED_CACHE.get(key);
+      types = SEED_TYPES.get(key);
+    }
+    if (bytes == null) {
+      List<RecordInternal<?>> rs;
+      try {
+        rs = Seeds.load(spec, now);
+      } catch (Exception e) {
+        throw new IllegalArgumentException("--health " + spec + ": " + e.getMessage(), e);
+      }
+      bytes = new ArrayList<>();
+      types = new ArrayList<>();
+      for (RecordInternal<?> r : rs) {
+        bytes.add(Store.toBytes(r));
+        types.add(r.getRecordType());
+      }
+      synchronized (SEED_CACHE) {
+        SEED_CACHE.clear();
+        SEED_CACHE.put(key, bytes);
+        SEED_TYPES.clear();
+        SEED_TYPES.put(key, types);
+      }
+    }
+    List<RecordInternal<?>> out = new ArrayList<>(bytes.size());
+    for (int i = 0; i < bytes.size(); i++) out.add(Store.fromBytes(types.get(i), bytes.get(i)));
+    return out;
+  }
+
+  /** The store, the slot's file read into it on first use (under [lock]). */
+  Store store() {
+    if (unread) {
+      unread = false;
+      if (Files.isRegularFile(file)) {
+        try (InputStream in = Files.newInputStream(file)) {
+          store.read(in);
+        } catch (IOException | RuntimeException e) {
+          System.err.println("[apksim] health: could not read " + file.getFileName() + ": " + e);
+          store.clear();
+        }
+      }
+    }
+    return store;
   }
 
   /** The wall clock the app sees (SimClock: --clock and the clock command move it). */
@@ -154,11 +249,50 @@ public final class Health {
     });
   }
 
-  /** The store changed: written to the slot's file when there is one (beside it, then moved over it). */
+  /**
+   * The store changed (under [lock]): written to the slot's file, when there is one, by {@code apksim-health-store}, not
+   * the caller (changes made meanwhile go in the same write), and at once by {@link #flush} on the way out.
+   */
   void changed() {
     if (file == null) return;
+    dirty = true;
+    if (writeQueued) return;
+    writeQueued = true;
+    synchronized (this) {
+      if (writer == null) {
+        writer = Executors.newSingleThreadExecutor(r -> {
+          Thread t = new Thread(r, "apksim-health-store");
+          t.setDaemon(true);
+          return t;
+        });
+      }
+    }
+    writer.execute(() -> {
+      synchronized (lock) {
+        writeQueued = false;
+        flushLocked();
+      }
+    });
+  }
+
+  /** Writes the store if it changed (SlotDevice.flush: every way a running instance ends, and a checkpoint). */
+  public static void flush() {
+    Health h;
+    synchronized (Health.class) {
+      h = instance;
+    }
+    if (h == null) return;
+    synchronized (h.lock) {
+      h.flushLocked();
+    }
+  }
+
+  /** Beside the file, then moved over it. */
+  private void flushLocked() {
+    if (!dirty || file == null) return;
+    dirty = false;
     try {
-      Path tmp = file.resolveSibling(FILE + ".tmp" + ProcessHandle.current().pid());
+      Path tmp = file.resolveSibling(FILE + tmpTag.get());
       try (OutputStream out = Files.newOutputStream(tmp)) {
         store.write(out);
       }
@@ -209,7 +343,7 @@ public final class Health {
           synchronized (h.lock) {
             long now = h.now();
             List<RecordInternal<?>> rs = Seeds.load(spec, now);
-            for (RecordInternal<?> r : rs) h.store.put(r, false, now);
+            for (RecordInternal<?> r : rs) h.store().put(r, false, now);
             h.changed();
             return "ok (" + rs.size() + " records)";
           }
@@ -220,12 +354,29 @@ public final class Health {
             if (a.length > 2 && type == null) return "error: unknown record type " + a[2] + " (health types lists them)";
             long now = h.now();
             List<String> ids = new ArrayList<>();
-            for (Store.Entry e : h.store.records.values()) {
+            for (Store.Entry e : h.store().records.values()) {
               if (type == null || e.record.getRecordType() == type) ids.add(e.record.getUuid().toString());
             }
-            for (String id : ids) h.store.delete(id, now);
+            for (String id : ids) h.store().delete(id, now);
             h.changed();
             return "ok (" + ids.size() + " removed)";
+          }
+        }
+        case "list" -> {
+          // health list TYPE: each record's start (an instant record's time) and id, by start. Seeds' ids come from
+          // their content, so two lists agree exactly where the records are the same.
+          if (a.length < 3) return "usage: health list TYPE";
+          Integer type = Seeds.typeId(a[2]);
+          if (type == null) return "error: unknown record type " + a[2] + " (health types lists them)";
+          synchronized (h.lock) {
+            List<String> out = new ArrayList<>();
+            for (Store.Entry e : h.store().records.values()) {
+              if (e.record.getRecordType() != type) continue;
+              out.add(java.time.Instant.ofEpochMilli(HealthService.startMillis(e.record)) + " " + e.record.getUuid()
+                  + (e.seed ? " seed" : ""));
+            }
+            out.sort(null);
+            return out.size() + " records" + (out.isEmpty() ? "" : "; " + String.join("; ", out));
           }
         }
         case "types" -> {
@@ -237,7 +388,7 @@ public final class Health {
           return String.join(" ", names);
         }
         default -> {
-          return "usage: health [add FILE|PRESET|JSON | clear [TYPE] | types]";
+          return "usage: health [add FILE|PRESET|JSON | clear [TYPE] | list TYPE | types]";
         }
       }
     } catch (Exception e) {
@@ -249,7 +400,7 @@ public final class Health {
     synchronized (lock) {
       Map<String, Integer> perType = new TreeMap<>();
       Map<Integer, Class<? extends Record>> classes = HealthConnectMappings.getInstance().getRecordIdToExternalRecordClassMap();
-      for (Store.Entry e : store.records.values()) {
+      for (Store.Entry e : store().records.values()) {
         Class<? extends Record> c = classes.get(e.record.getRecordType());
         perType.merge(c == null ? "type" + e.record.getRecordType() : Seeds.name(c), 1, Integer::sum);
       }

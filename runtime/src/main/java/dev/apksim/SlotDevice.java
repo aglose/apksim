@@ -261,6 +261,7 @@ final class SlotDevice {
    * close() has run (before Robolectric's reset after Host.run, which puts the defaults back).
    */
   static synchronized void flush() {
+    dev.apksim.health.Health.flush();  // Health Connect's records, kept beside these (health.store)
     if (dir == null) return;
     Map<String, String> now;
     try {

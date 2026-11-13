@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 
 /**
  * apksim://health: Health Connect as an app sees it through AndroidX's client (apksim's stand-in, `--health week`,
- * docs/health-connect.md). One line each: "health: available", "permissions: 5 of 5 granted", "steps today: 8412",
+ * docs/health-connect.md). One line each: "health: available", "permissions: 5 of 5 granted", "steps today: 8412", "steps this week: 71250",
  * "heart rate: 74 bpm at 14:05", "sleep: 7 h 52 min last night". Without the permissions it asks for them with the
  * client's own contract (a runtime permission request). "Insert 100 steps" writes a record for the last five minutes
  * and reads everything again.
@@ -49,7 +49,7 @@ class HealthActivity : ComponentActivity() {
       gravity = Gravity.CENTER
       setBackgroundColor(Color.rgb(0x20, 0x50, 0x40))
     }
-    for (key in listOf("health", "permissions", "steps today", "heart rate", "sleep", "inserted")) {
+    for (key in listOf("health", "permissions", "steps today", "steps this week", "heart rate", "sleep", "inserted")) {
       val v = TextView(this).apply { textSize = 18f; setTextColor(Color.WHITE) }
       lines[key] = v
       root.addView(v)
@@ -80,6 +80,8 @@ class HealthActivity : ComponentActivity() {
         val now = Instant.now()
         val steps = c.aggregate(AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(midnight, now)))
         show("steps today", "${steps[StepsRecord.COUNT_TOTAL] ?: 0}")
+        val week = c.aggregate(AggregateRequest(setOf(StepsRecord.COUNT_TOTAL), TimeRangeFilter.between(midnight.minus(6, ChronoUnit.DAYS), now)))
+        show("steps this week", "${week[StepsRecord.COUNT_TOTAL] ?: 0}")
         val hr = c.readRecords(ReadRecordsRequest(HeartRateRecord::class, TimeRangeFilter.after(now.minus(1, ChronoUnit.DAYS)),
           ascendingOrder = false, pageSize = 1)).records.firstOrNull()?.samples?.maxByOrNull { it.time }
         show("heart rate", if (hr == null) "none" else "${hr.beatsPerMinute} bpm at ${TIME.format(hr.time.atZone(zone))}")

@@ -229,7 +229,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # Health Connect records to start with (dev.apksim.health, docs/health-connect.md): a JSON file or a preset (week).
     # Repeatable; a file is passed as an absolute path, since a warm launch's process started elsewhere.
     --health)
-      H="$2"; [[ -f "$H" && "$H" != /* ]] && H="$PWD/$H"
+      H="$2"
+      [[ -f "$H" || "$H" == week || "$H" == [{[]* ]] || { echo "--health takes a JSON file or a preset (week): $H" >&2; exit 2; }
+      [[ -f "$H" && "$H" != /* ]] && H="$PWD/$H"
       EXTRA+=("-Dapksim.health.${HEALTH_N:-0}=$H"); HEALTH_N=$((${HEALTH_N:-0} + 1)); shift 2 ;;
     # Simulated cameras (Cameras.java): off (default), fake (camera features, a back and a front camera in CameraManager,
     # a moving test pattern at 30 fps) or fake=IMAGE (that still image instead).
