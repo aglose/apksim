@@ -99,7 +99,7 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-12, release 0.32.0. This table says where each item stands. What changes by the hour (check
+As of 2026-11-12, release 0.32.1. This table says where each item stands. What changes by the hour (check
 results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |

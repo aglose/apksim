@@ -207,7 +207,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     `runCommand`, logcat, net through `Net.capture`, SQLite through translator hooks to `rec.Db`, screen frames from
     the raster thread), checkpoints (stack intents + saved state, a clone of the data folder), and `rec save` to a
     `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`). A checkpoint cycles the visible activities
-    through onStop/onStart as a quick Home and back would: the one way recording shows in the app.
+    through onStop/onStart as a quick Home and back would: the one way recording shows in the app. It ends in
+    `Host.arrange`, as every stack change does (issue 320).
     `scripts/replay-adb.py BUNDLE -s SERIAL --yes` plays a bundle on a device over adb (the checkpoint's data, /sdcard
     and Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192).
     It replaces the app's data, /sdcard files and Settings values there, so it stops without `--yes` and backs the
