@@ -1,9 +1,10 @@
 #!/bin/bash
 # Packages a built checkout as a self-contained release for Apple Silicon Macs: the launcher, the runtime jar and
-# libraries, the native runtime, a JDK 24 runtime (jlink), and the test app (which trains the startup cache on the
-# first launch). Users need nothing else installed, not even the Xcode command-line tools.
+# libraries, the native runtime and a JDK 24 runtime (jlink). Users need nothing else installed, not even the Xcode
+# command-line tools. The test app, which trains the startup cache, is a separate file the first launch downloads.
 # Usage: scripts/package-release.sh VERSION [OUTDIR]   (after scripts/setup.sh, or its steps without training)
-# Writes OUTDIR/apksim-VERSION-macos-arm64.tar.gz (default OUTDIR: dist) and prints its SHA-256.
+# Writes OUTDIR/apksim-VERSION-macos-arm64.tar.gz and OUTDIR/apksim-testapp-VERSION.apk (default OUTDIR: dist) and
+# prints their SHA-256.
 # An installed release keeps what it writes in ~/.apksim, not in its own folder (see the launcher), so the folder can
 # be read-only, as under Homebrew.
 set -euo pipefail
@@ -41,7 +42,48 @@ for j in "$ROOT"/work/lib/*.jar; do
   cp -L "$j" "$D/work/lib/"
 done
 cp -RL "$ROOT/work/runtime" "$D/work/runtime"
-cp "$TESTAPK" "$D/work/testapp.apk"
+
+# What a Mac never reads, taken out of the staged copy only (the checkout keeps everything):
+# - android-all's natives (Windows, Linux, both Macs) and ICU data: FastNativeLoader loads them from work/runtime,
+#   unpacked by prepare-runtime.sh. The Linux image drops them the same way (docker/Dockerfile).
+# - Conscrypt's natives for other systems: it loads its own from the jar by OS and CPU, osx-aarch_64 here.
+# Neither jar is signed, so taking entries out breaks nothing.
+ALL_JAR="$(ls "$D"/work/lib/android-all-instrumented-*.jar | sort -V | tail -1)"
+zip -q -d "$ALL_JAR" 'native/*' 'icu/*'
+! unzip -Z1 "$ALL_JAR" | grep -qE '^(native|icu)/' || fail "$(basename "$ALL_JAR") still has native/ or icu/ entries"
+for j in "$D"/work/lib/conscrypt-openjdk-uber-*.jar; do
+  OTHERS=($(unzip -Z1 "$j" 'META-INF/native/*' 2>/dev/null | grep -v 'osx-aarch_64' || true))
+  [[ ${#OTHERS[@]} -gt 0 ]] && zip -q -d "$j" "${OTHERS[@]}"
+  [[ "$(unzip -Z1 "$j" 'META-INF/native/*' 2>/dev/null | wc -l | tr -d ' ')" == 1 ]] \
+    || fail "$(basename "$j") should keep exactly its osx-aarch_64 library"
+done
+for f in libandroid_runtime.dylib librobolectric-nativeruntime.dylib icu/icudt.dat hyphen-data fonts/fonts.xml; do
+  [[ -e "$D/work/runtime/$f" ]] || fail "work/runtime/$f is missing: run scripts/prepare-runtime.sh"
+done
+# - Font files fonts.xml never names: Android's SystemFonts maps only what it lists, so these are never opened (six of
+#   the seven Noto Sans CJK weights, ~107 MB, and some Latin families). By rule, not by list, to follow Robolectric
+#   upgrades.
+FONTS="$D/work/runtime/fonts"
+DROPPED=0; DROPPED_BYTES=0
+for f in "$FONTS"/*.ttf "$FONTS"/*.ttc "$FONTS"/*.otf; do
+  [[ -e "$f" ]] || continue
+  n="$(basename "$f")"
+  # A <font> element's text is the file name, then its end tag, an <axis> child or a line break.
+  awk -v n="$n" '{ i = index($0, ">" n); if (i) { c = substr($0, i + 1 + length(n), 1); if (c == "<" || c == "" || c ~ /[ \t\r]/) f = 1 } } END { exit !f }' \
+    "$FONTS/fonts.xml" && continue
+  DROPPED_BYTES=$((DROPPED_BYTES + $(stat -f %z "$f"))); DROPPED=$((DROPPED + 1)); rm "$f"
+done
+for keep in Roboto-Regular.ttf NotoSansCJK-Regular.ttc NotoColorEmoji.ttf; do
+  [[ -f "$FONTS/$keep" ]] || fail "fonts/$keep was pruned: fonts.xml no longer names it as expected"
+done
+LEFT="$(ls "$FONTS" | grep -cE '\.(ttf|ttc|otf)$')"
+[[ "$LEFT" -ge 100 ]] || fail "only $LEFT fonts left after pruning: fonts.xml is not what this expects"
+echo "fonts: $LEFT kept, $DROPPED not named in fonts.xml left out ($((DROPPED_BYTES / 1000000)) MB)"
+
+# The test app trains the startup cache on the first launch (train.sh), which downloads it from the release and checks
+# it against this hash: the tarball, which brew and install.sh verify, carries it, so the download needs no other
+# trust. It goes beside the tarball as the release's apksim-testapp-VERSION.apk.
+shasum -a 256 "$TESTAPK" | cut -d' ' -f1 > "$D/work/testapp.sha256"
 
 # The JDK: every module, so --debug (JDWP), the foreign function API and anything an app's libraries reach for work,
 # except jlink and jpackage (which needs it). Temurin 24 has no jmods: jlink then links from the JDK's own run-time
@@ -59,5 +101,6 @@ printf '%s\n' "$VERSION" > "$D/work/release"
 TAR="$OUTDIR/$NAME.tar.gz"
 tar -C "$STAGE" -czf "$TAR.tmp" "$NAME"
 mv -f "$TAR.tmp" "$TAR"
-(cd "$OUTDIR" && shasum -a 256 "$NAME.tar.gz")
+cp "$TESTAPK" "$OUTDIR/apksim-testapp-$VERSION.apk"
+(cd "$OUTDIR" && shasum -a 256 "$NAME.tar.gz" "apksim-testapp-$VERSION.apk")
 du -h "$TAR" | cut -f1

@@ -36,9 +36,10 @@ cask "apksim" do
       trash:     "~/.apksim"
 
   caveats <<~EOS
-    The first launch builds a startup cache in ~/.apksim in the background (1-2 minutes, once per version);
-    launches are faster after that. To build it now instead:
+    The first launch builds a startup cache in ~/.apksim in the background (1-2 minutes, once per version),
+    downloading the 22 MB test app it trains on; launches are faster after that. To build it now instead:
       apksim --train
+    (Offline, apksim --train APP.apk trains on any APK.)
     To let pages of an apksim serve with --allow-beam run their apps on this Mac (each site asks you first):
       apksim beam install
     Your team's own site can be allowed up front, so it does not ask:
