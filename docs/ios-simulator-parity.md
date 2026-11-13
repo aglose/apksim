@@ -60,7 +60,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Free resizing | iPad windows | Done: dragging the window's edge resizes the display (new qualifiers every 100 ms while dragging, and at the end); `size WxH` does it by command | | M |
 | Several devices at once | Yes | Yes (several processes) | Done; add `instance` names to the CLI | - |
 | External display | Yes | No | `DisplayManager` second display + `Presentation` support, rendered into a second window. Low priority | L |
-| OS versions | Install runtimes | API 36 only | Robolectric ships `android-all` for API 21-36; add `--api N`, an AOT cache per API, and fix shadows that differ | L |
+| OS versions | Install runtimes | API 36 only | Robolectric ships `android-all` for API 21-36; add `--api N`, an AOT cache per API, and fix shadows that differ. A spike ran the test app and 266 of its suite's 338 passing tests on API 30: [api-levels.md](api-levels.md) has the breakages and the cost (test runs only: M-L) | L |
 
 ## Input
 
