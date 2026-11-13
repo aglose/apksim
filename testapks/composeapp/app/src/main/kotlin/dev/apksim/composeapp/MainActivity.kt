@@ -65,6 +65,18 @@ class MainActivity : ComponentActivity() {
     }
     // apksim://composeapp/trips?overlay=1 adds an empty overlay window after this activity's window, as some apps do
     // (issue 123): hidden, 0x0, not focusable. Typing must still reach the focused field below it.
+    // overlay=full is a full-screen one that is FLAG_NOT_TOUCHABLE (issue 323): taps must go to the activity below.
+    if (intent?.data?.getQueryParameter("overlay") == "full") {
+      window.decorView.post {
+        val params = android.view.WindowManager.LayoutParams(
+            android.view.WindowManager.LayoutParams.MATCH_PARENT, android.view.WindowManager.LayoutParams.MATCH_PARENT,
+            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            android.graphics.PixelFormat.TRANSLUCENT)
+        getSystemService(android.view.WindowManager::class.java).addView(android.widget.FrameLayout(this), params)
+        Log.i("ComposeApp", "full-screen untouchable overlay added")
+      }
+    }
     if (intent?.data?.getQueryParameter("overlay") == "1") {
       window.decorView.post {
         val params = android.view.WindowManager.LayoutParams(

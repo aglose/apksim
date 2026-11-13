@@ -1134,9 +1134,14 @@ public class Host {
       downTime = now;
       lastDown = Math.round(e.x()) + "," + Math.round(e.y());
       List<View> roots = rootViews();
-      touchTarget = roots.isEmpty() ? null : roots.get(roots.size() - 1);
+      touchTarget = null;
+      for (int i = roots.size() - 1; i >= 0 && touchTarget == null; i--) {
+        if (!isUntouchable(roots.get(i))) touchTarget = roots.get(i);  // the fallback: the topmost window that takes touches
+      }
       for (int i = roots.size() - 1; i >= 0; i--) {
         View r = roots.get(i);
+        // FLAG_NOT_TOUCHABLE: InputDispatcher never targets the window, inside it or not (an overlay above the activity).
+        if (isUntouchable(r)) continue;
         // A hidden window (a stopped activity's) is not drawn, so it takes no touches either.
         if (r.getVisibility() != View.VISIBLE || r.getWidth() == 0 || r.getHeight() == 0) continue;
         int[] at = position(r);
@@ -1167,6 +1172,11 @@ public class Host {
    * value tooltip) takes only the touches inside it. Robolectric's UiAutomation injection, used in test runs, has the
    * same rule.
    */
+  private static boolean isUntouchable(View root) {
+    return root.getLayoutParams() instanceof WindowManager.LayoutParams wl
+        && (wl.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0;
+  }
+
   private static boolean isTouchThrough(View root) {
     ViewGroup.LayoutParams lp = root.getLayoutParams();
     return lp instanceof WindowManager.LayoutParams wl
