@@ -13,6 +13,7 @@ typedef struct {
   CMVideoFormatDescriptionRef format;
   VTDecompressionSessionRef session;
   int hevc;
+  int vp9Cur[4];  // profile, depth, subsampling of the session in use
   int vp9;  // VP9: no NAL units, one frame (or superframe) per input; the session comes from a key frame's header
   int vp9W, vp9H, vp9Profile, vp9Depth, vp9SubX, vp9SubY, vp9Range, vp9Space;
   uint8_t vps[512], sps[512], pps[512];  // vps: HEVC only
@@ -158,6 +159,17 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_video_VideoToolbox_nativeCreate(JNIEnv *
   Decoder *d = calloc(1, sizeof(Decoder));
   d->hevc = codec == 1;
   d->vp9 = codec == 2;
+  if (d->vp9) {
+    // A trial session for a 640x360 profile 0 stream: no decoder on this system means none is listed.
+    d->vp9W = 640, d->vp9H = 360, d->vp9Depth = 8, d->vp9SubX = d->vp9SubY = 1, d->vp9Space = 2;
+    int ok = makeSession(d) == 0;
+    dropSession(d);
+    d->vp9W = d->vp9H = 0;
+    if (!ok) {
+      free(d);
+      return 0;
+    }
+  }
   return (jlong)(intptr_t)d;
 }
 
@@ -208,7 +220,9 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_VideoToolbox_nativeDecode(JNIEnv *e
     int w = 0, h = 0;
     int key = vp9Header(d, p, length, &w, &h);
     if (key < 0) return -1;
-    if (key == 1 && (!d->session || w != d->vp9W || h != d->vp9H)) {
+    if (key == 1 && (!d->session || w != d->vp9W || h != d->vp9H || d->vp9Profile != d->vp9Cur[0] || d->vp9Depth != d->vp9Cur[1]
+                     || d->vp9SubX != d->vp9Cur[2] || d->vp9SubY != d->vp9Cur[3])) {
+      d->vp9Cur[0] = d->vp9Profile, d->vp9Cur[1] = d->vp9Depth, d->vp9Cur[2] = d->vp9SubX, d->vp9Cur[3] = d->vp9SubY;
       d->vp9W = w;
       d->vp9H = h;
       if (makeSession(d) < 0) return -1;

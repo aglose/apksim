@@ -421,7 +421,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       // than in the stream.
       for (String key : new String[] {"csd-0", "csd-1"}) {
         ByteBuffer csd = format.getByteBuffer(key);
-        if (csd == null) continue;
+        if (csd == null || kind == VideoToolbox.CODEC_VP9) continue;  // VP9's (a vpcC) is not a frame
         if (VideoToolbox.REORDERS) send(csd.duplicate(), NO_PTS);
         else decode(csd.duplicate());
       }
