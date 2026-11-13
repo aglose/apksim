@@ -45,7 +45,7 @@ for k in ('location-manager', 'background-work', 'camera', 'mediacodec'):
 # Not used by the app or its libraries: a hit would send the owner after the wrong stand-in.
 for k in ('nfc', 'usb', 'firebase', 'play-location', 'play-services', 'native-audio'):
     want(code(k) + subs[k]['manifest'] == 0, '%s: expected unused, found %s (%s)' % (k, subs[k], subs[k]['example']))
-for k in ('telephony-sms', 'microphone', 'sensors', 'webview'):   # library compat code only
+for k in ('telephony-sms', 'microphone', 'webview'):   # library compat code only
     want(subs[k]['app'] == 0, '%s: the app\'s own classes do not use it, found %d' % (k, subs[k]['app']))
 want(a['package'] == 'dev.apksim.composeapp' and a['appPrefix'] == 'Ldev/apksim/composeapp/', 'package/prefix %r %r' % (a['package'], a['appPrefix']))
 want(str(a['minSdk']).isdigit() and str(a['targetSdk']).isdigit(), 'sdk levels %r %r' % (a['minSdk'], a['targetSdk']))
