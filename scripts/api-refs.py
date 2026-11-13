@@ -17,7 +17,8 @@ Reported per apksim source file, most references first:
   unbound  a shadow's @Implementation that no method of the shadowed class matches at that level (by name and
            parameter types): Robolectric never calls it, silently
   gated    an @Implementation whose minSdk/maxSdk leaves that level out: what it adds is not there
-  string   a string constant that names a missing framework class (reflection, @Implements(className = ...))
+  string   a string constant that looks like a missing android.* class (reflection, @Implements(className = ...),
+           a translator rewrite's owner): advisory
 
 Not seen: members reached by reflection through names built at run time, behaviour differences behind a signature
 that exists at both levels, and what Robolectric's own shadows do at that level. docs/api-levels.md has a run's result.
@@ -204,27 +205,35 @@ def desc_classes(desc):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    if not args:
-        sys.exit(__doc__)
-    out_json = sys.argv[sys.argv.index("--json") + 1] if "--json" in sys.argv else None
-    if out_json in args:
-        args.remove(out_json)
-    apksim = args[1] if len(args) > 1 else "work/apksim.jar"
+    import argparse
+    ap = argparse.ArgumentParser(usage="api-refs.py FRAMEWORK.jar [APKSIM.jar] [--json FILE] [--level N]",
+                                 description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("framework")
+    ap.add_argument("apksim", nargs="?", default="work/apksim.jar")
+    ap.add_argument("--json")
+    ap.add_argument("--level", type=int, help="the jar's API level, when it has no build.prop to say so")
+    opts = ap.parse_args()
+    args = [opts.framework, opts.apksim]
+    out_json, apksim = opts.json, opts.apksim
     fw = {}
-    level = 10000
+    level = opts.level
     with zipfile.ZipFile(args[0]) as z:
         if "build.prop" in z.namelist():
             m = re.search(r"ro\.build\.version\.sdk=(\d+)", z.read("build.prop").decode("utf-8", "replace"))
-            level = int(m.group(1)) if m else level
+            level = int(m.group(1)) if m and level is None else level
         for n in z.namelist():
             if n.endswith(".class"):
                 c = parse(z.read(n))
                 if c:
                     fw[c.name] = c
 
+    if level is None:
+        sys.exit("api-refs.py: %s has no build.prop with its API level: pass --level N" % args[0])
+
     def has(owner, member, kind):
         """True/False, or None when the hierarchy leaves the jar (a JDK class: not judged)."""
+        if kind == "method" and member[0] == "<init>":  # constructors are not inherited
+            return owner not in fw or member in fw[owner].methods
         seen, todo, left = set(), [owner], False
         while todo:
             o = todo.pop()
@@ -240,8 +249,6 @@ def main():
             if c.super:
                 todo.append(c.super)
             todo.extend(c.ifaces)
-        if kind == "method" and member[0] == "<init>":
-            return False
         # Ancestors outside the jar: Robolectric's marker interfaces declare nothing the framework calls; a JDK
         # interface is judged by its few method names; any other JDK ancestor (a collection, a stream) is not judged.
         for o in seen - set(fw):
@@ -310,7 +317,9 @@ def main():
                     found["field"].add("%s.%s:%s" % (owner, name, desc))
             for s in c.strings:
                 t = s.replace(".", "/")
-                if (re.fullmatch(r"[a-z][\w/$]*/[A-Z][\w$]*", t) and FRAMEWORK.match(t) and t not in fw
+                if (re.fullmatch(r"android/[a-z][\w/]*/[A-Z]\w*(\$[A-Z]\w*)*", t) and len(t.split("/")) > 2
+                        and t not in fw
+                        and not any(k.startswith(t) for k in fw)  # a prefix an app's call is tested against
                         and t not in own and not re.search(r"/[A-Z0-9_]+$", t)
                         and not re.search(r"/(action|category|extra|intent|permission)/", t)):
                     found["string"].add(t)
@@ -326,8 +335,9 @@ def main():
                     if name == "__staticInitializer__":
                         continue
                     if values.get("minSdk", 0) > level or -1 < values.get("maxSdk", -1) < level:
-                        found["gated"].add("%s.%s (minSdk %s)" % (
-                            c.name.rsplit("/", 1)[1], name, values.get("minSdk", "-")))
+                        bound = "minSdk %s" % values["minSdk"] if values.get("minSdk", 0) > level else \
+                            "maxSdk %s" % values["maxSdk"]
+                        found["gated"].add("%s.%s (%s)" % (c.name.rsplit("/", 1)[1], name, bound))
                         continue
                     if not binds(target, "<init>" if name == "__constructor__" else name, desc):
                         found["unbound"].add("%s.%s%s on %s" % (

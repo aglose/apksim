@@ -6,7 +6,7 @@ emulators, so the question was whether apksim could run the API 30 (Android 11) 
 `--api 30` option would cost. This is the record of a one-day spike (2026-11-12): what ran, what broke in the order it
 broke, what each breakage is, and a recommendation. No feature came out of it.
 
-The hacks are on the branch `api30-spike-hack` (one commit, **not for merging**): 15 files, 61 lines added. They are
+The hacks are on the branch `api30-spike-hack` (one commit, **not for merging**): 16 files, 70 lines added. They are
 the cheapest change that got past each failure (a version check, a skip), not a design.
 
 ## Result
@@ -93,10 +93,10 @@ but one.
 
 **What apksim references that API 30 lacks.** `scripts/api-refs.py FRAMEWORK.jar [apksim.jar]` compares what
 apksim.jar links against with what a framework jar has (constant pools and member tables, no class loading). Against
-the API 30 jar: 25 of 209 source files, with 1 shadow of a missing class, 2 shadows whose signatures name one,
-13 `@Implementation` methods that no longer match any method of the shadowed class (Robolectric skips those
-silently), 6 more that are gated by their own `minSdk`, 12 missing classes, 47 missing methods and 7 missing fields.
-Against the API 36 jar it reports none of these but 3 unbound methods that are unbound today. By area:
+the API 30 jar: 23 of 209 source files, with 1 shadow of a missing class, 2 shadows whose signatures name one,
+13 `@Implementation` methods that match no method of the shadowed class (Robolectric skips those silently; 10 more
+than on API 36), 6 more that are gated by their own `minSdk`, 12 missing classes, 47 missing methods and 7 missing
+fields. Against the API 36 jar it reports none of these but the 3 methods that are unbound today. By area:
 
 | Area | What is missing at 30 |
 |---|---|
@@ -108,7 +108,8 @@ Against the API 36 jar it reports none of these but 3 unbound methods that are u
 | `camera/`, `Cameras` | Constructors of `TotalCaptureResult` and `StreamConfigurationMap` with other parameter lists: `--camera fake` would fail at its first frame. |
 | `ShadowSimConnectivityManager`, `SimWifi`, `HostNetworks` | `registerBestMatchingNetworkCallback` (31), `WifiSsid.fromBytes` (33), WifiInfo as TransportInfo (31), one capability constant. |
 | `BackgroundWork` | `JobParameters`' constructor, `JobInfo.isExpedited`/`isUserInitiated`. |
-| `ShadowSimSurface`, `ShadowSimBiometricPrompt`, `ShadowSimSSLSockets`, `ShadowSimViewRootImpl` | Native or private methods whose signatures differ, so the shadow method stops binding. |
+| `ShadowSimSurface`, `ShadowSimBiometricPrompt`, `ShadowSimSSLSockets` | Native or private methods whose signatures differ, so the shadow method stops binding. |
+| `ShadowSimViewRootImpl` | `draw` is gated at 34 and `setFrame` at 36 (other signatures below): no draw after a traversal in test runs, and no window-position sync, which is what puts a centred dialog's nodes and `getLocationOnScreen` where it is drawn. The spike opened no dialog in a running instance. |
 | `FlightRecorder`, `DeviceControls` | `SQLiteDatabase.beginTransactionReadOnly` (35), `Intent.getParcelableExtra(String, Class)` (33). |
 
 The scan does not see framework members reached by name: about 200 call sites use `ReflectionHelpers` or
