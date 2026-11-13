@@ -3,6 +3,7 @@
 work/
 .gradle/
 build/
+build-t*/
 local.properties
 .DS_Store
 *.class

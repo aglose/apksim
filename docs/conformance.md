@@ -231,3 +231,112 @@ Found and fixed in the tests themselves, while checking them on the emulator fir
 
 Not yet: blocked on the permission to build AndroidX's playground projects (`work/androidx`, never committed). Once
 allowed, each library's androidTest APK goes through the same script and its table is added here.
+
+## An app that targets 28: API 30, API 36 and apksim (2026-11-13)
+
+A consumer's app has `targetSdk 28` and its CI emulators run API 30 (Android 11); apksim runs the API 36 framework. Two
+layers differ: **target-gated behaviour** (what the platform does for an app of an older target) and **ungated changes**
+between Android 11 and 16. Both are measured with the test app built for target 28 on three: `ApksimCmp30` (AGENTS.md
+"Comparing with the emulator"), the shared `ApksimCmp36` (`emulator-5580`) and apksim.
+
+```bash
+cd testapks/composeapp && ./gradlew -Papksim.targetSdk=28 :app:assembleDebug :app:assembleDebugAndroidTest   # build it last, and both tasks together
+B=testapks/composeapp/app/build-t28/outputs/apk
+python3 scripts/conformance.py $B/androidTest/debug/app-t28-debug-androidTest.apk --app $B/debug/app-t28-debug.apk \
+  --name full-api30 --emulator emulator-5582 --util test-services-1.6.0.apk -e expectTarget 28   # then --name full-api36 --emulator emulator-5580
+scripts/target-gate-check.sh testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk $B/debug/app-t28-debug.apk
+```
+
+The property (`-Papksim.targetSdk=N`) sets `targetSdk` and builds into `app/build-tN/` as `app-tN-debug.apk` and
+`app-tN-debug-androidTest.apk`; without it nothing changes (`app/build/outputs/apk/debug/app-debug.apk`). Run the default
+build first and the target build last, both tasks in one command: a default build after a target one, or one task alone,
+left the other's outputs folder without its androidTest APK in this checkout. The target-28 build also uses
+`src/t28/AndroidManifest.xml` as the debug source set's manifest, which AGP merges over the main one: the legacy
+`BLUETOOTH` and `BLUETOOTH_ADMIN` with no `maxSdkVersion`, and not the API 31 `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, as an app
+of that target declares them (a release build with the property gets the target without the overlay). A non-numeric value
+stops the build with a message. Lint is not part of `assemble`; nothing else needed changing.
+
+`-e expectTarget 28` is what lets `Target28Test` run, and is independent of the targetSdk under test: without it every test
+there is skipped (the default build, or a run that forgets it), and `theApkTargetsWhatTheBuildAskedFor` compares the two. It
+is an argument rather than an app `<meta-data>` in the overlay because that one made eight `WorkManagerConformanceTest`
+tests fail on apksim only (they passed with and without it on the other build, repeatably; the mechanism is untraced and
+is left as a finding).
+
+### The suite (418 tests that ran somewhere; 421 entries with three pseudo-entries: an incomplete `(run)`, Test Storage's `Test mechanism`, `[assumed away]`)
+
+| | API 30 emulator | API 36 emulator |
+|---|---|---|
+| apksim agrees (both pass) | 266 | 264 |
+| fails on apksim only | 0 | 0 |
+| passes on apksim only | 10 | 12 |
+| skipped on a side (assumptions, switches) | 142 | 141 |
+
+The skipped tests are not compared. Every test that passes on an emulator and ran on apksim passes there, with one kind of
+exception below (tests apksim skips for want of a switch). Logs: `work/conformance/full-api30/`, `full-api36/`,
+`rerun-api36/`; the target-28 probe's raw output for each side: `work/conformance/probe/`. The tests the three do not agree
+on, by layer (✗ = fails, – = skipped or did not run):
+
+| Test(s) | API 30 | API 36 | apksim | Layer |
+|---|---|---|---|---|
+| `BluetoothTest#c_svc…` | ✗ timed out waiting for STATE_OFF | pass | pass | Android's: `svc bluetooth disable` on API 30 (not traced) |
+| `NativeBitmapTest#rgba1010102…`, `UiaEngineTest#looksAtAScreen…` | ✗ no `Bitmap.Config.RGBA_1010102` (API 33), no `RuntimeShader` (API 33) | pass | pass | Android's: the test app uses newer API |
+| `UiaEngineTest#aFilter…` (2), the incomplete `(run)` | ✗ the process crashed | pass | – (`--uia engine` only) | Android's 30 (a crash in the process; not traced) |
+| `ParameterizedSkipTest#…[assumed away]` | ✗ "not run: the process crashed before it" (follows the crash above) | – | – | Android's 30 |
+| `NullBindingTest#aConnectionWithoutAutoCreateHearsTheServiceGoAndCome` | ✗ callbacks differ | pass | pass | Android's, 30 vs 36 (not traced) |
+| `ShellCommandTest#logcatHoldsTheProcessLog` | ✗ `logcat -c` leaves the line | pass | pass | Android's (not traced) |
+| `CoveredWindowsTest#aNonModalDialogLeavesTheActivityReported` | pass | ✗ "the tap reached the activity", **also alone and with the default target-36 APK** | pass | Android's 36, not target-gated; untraced; apksim agrees with API 30 |
+| `ValueAnimatorConformanceTest#anInfiniteAnimatorKeepsRepeating` (+1) | pass | ✗ "only 0 repeats" in the full run, **passes alone** at target 28 and 36 | – (`-e repeatForever`) | unexplained: leaked state or order on API 36 |
+| `ComposeUiConformanceTest#lifecycleOwner…`, `FragmentConformanceTest` (2), `RotationConformanceTest`, `UiAutomatorConformanceTest#untilGone…`, `UiAutomatorTest#swipeScrolls…`, `UiaEngineTest#aWait…`, `…#accessibilityIsOn…` | pass | ✗ in the full run, **all pass alone** (`rerun-api36/`) | pass / – | noise of the API 36 run: a target-28 app raises the POST_NOTIFICATIONS prompt on API 33+ and it takes the focus (a watcher pressed Back on it; a run without one failed ~90 UI tests) |
+| `ComposeUiConformanceTest#systemBarInsetsMatchTheView` | ✗ 48 against 0 | ✗ 48 against 0 | pass (no bars: 0 = 0) | **target gate**, Android's (below) |
+| `DialogFocusTest`, `RunnerListenersTest#testStorage…`, `StackWindowsTest` (2) | ✗ | ✗ (differently: `StackWindowsTest` ends CREATED→STARTED on 30, DESTROYED on 36) | pass | neither emulator: their premises are apksim's (a test run's window stack, runner arguments through Test Storage) |
+| `RealTimeSwipeTest#aSwipeOverAPostFromEachFrame…`, `FailureBundleParameterizedTest` (2), `Test mechanism` (Test Storage `FileNotFoundException`) | ✗ | ✗ | – | a switch of apksim's (`--realtime-clock`, `-e failOnPurpose`), and Test Storage's output files |
+| `RealTimeClockTest`, `NativeLoaderTest` moved-data tests, `UiaEngineTest` engine-only, `ComposeClockStepTest` | pass | pass | – | apksim skips for want of a switch (`--realtime-clock`, `--move-shared-data`, `--uia engine`) |
+
+The suite was re-measured on `main` with the compatibility table and the sensors (`main-api30/`, `main-api36/`): the same
+266 / 0 / 10 and 264 / 0 / 12, with 31 tests more (`CompatChangeTest`, `SensorsTest`), apksim's own and run here only. Both
+assume what a target-36 app sees, so they are skipped below it (`CompatChangeTest`: the ids are for 36; `SensorsTest`'s
+step counter needs no ACTIVITY_RECOGNITION below target 29, as on Android 11: a target gate apksim follows).
+
+### System bars: the target gate that does follow the target
+
+At target 28 Compose's `WindowInsets.systemBars` is 0 while the root view's insets are 48 on both emulators (edge-to-edge is
+enforced from target 35): `ComposeUiConformanceTest#systemBarInsetsMatchTheView` fails there, and passes at target 36
+(API 36 emulator, default build). A test run has no bars, so apksim passes both (0 = 0). With bars (`--status-bar on --nav-bar
+gesture`) apksim gives the emulators' answer: target 28 fails with `expected:<48> but was:<0>`, target 36 passes, the same
+before the compatibility table (#326) and after it, on `main`. So this gate is
+already followed through the framework's own code; it is not one of the gates `CompatChanges` reads as enabled.
+
+### Target-gated behaviour: `Target28Test#probe`
+
+`Target28Test#probe` prints one `t28.KEY=VALUE` line per observation as instrumentation status and asserts nothing; the
+table is made from the probe run alone on a fresh install of each side (`work/conformance/probe/`), before the compatibility table landed
+and again on `main` with it (identical). The asserting tests are few on purpose: `theApkTargetsWhatTheBuildAskedFor`
+and `legacyBluetoothPermissionsAllowAScan` (the refusal without the permission is `BleTest`'s `e_a`/`e_c`, which now revoke
+`BLUETOOTH_ADMIN`/`BLUETOOTH` below target 31 and assert Ble.java's message; an emulator cannot revoke a normal permission).
+Notifications are not asserted in a test run: `Notifications.allowed()` (shown below target 33, else only with
+POST_NOTIFICATIONS) lives in a running instance and is checked there by `scripts/target-gate-check.sh` (the test app's Notify
+button: the target-36 build is held back, the target-28 one shown); in a test run `areNotificationsEnabled()` is Robolectric's
+default true whatever the target, which is a gap for target 33+.
+
+| Observation (target 28) | API 30 | API 36 | apksim | Layer |
+|---|---|---|---|---|
+| `checkSelfPermission` BLUETOOTH, BLUETOOTH_ADMIN, VIBRATE; CAMERA, ACCESS_FINE_LOCATION, POST_NOTIFICATIONS denied | same | same | same | |
+| `BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN` | denied | **granted** (split permissions of the legacy ones) | denied | target gate: apksim has no split permissions; `Ble.java` enforces the legacy ones itself, so scans and names behave alike |
+| Adapter name, `startScan` | allowed | allowed | allowed | |
+| `areNotificationsEnabled`; posted notification listed | true; yes | **false; no** (the prompt a channel raises, until accepted) | true; yes | target gate in a running instance (`Notifications.allowed()`, below 33 shown: follows API 30); in a test run Robolectric's default |
+| `canScheduleExactAlarms` | n/a (API 31) | true | **false** | target gate (S, 31: `AlarmManager`): Robolectric's default; apps below S are allowed exact alarms |
+| `getLastKnownLocation("gps")` without the permission | SecurityException | SecurityException | **ok** | ungated: apksim does not enforce location permissions |
+| `getInstalledPackages`, `getPackageInfo("com.android.settings")` | the system's packages | the system's packages | **none** | ungated: apksim has no system apps (visibility filtering starts at target 30, so a target-28 app is meant to see them) |
+| `NetworkSecurityPolicy.isCleartextTrafficPermitted`, `Environment.isExternalStorageLegacy`, `PendingIntent` without a mutability flag | true, false, ok | same | same | not asserted for the last: `ShadowPendingIntent` never throws, so a target-36 app that omits the flag is also fine here (a gap) |
+
+Left, with their mechanisms: split permissions (`InstallState` grants only the permissions an APK lists), exact alarms
+(`ShadowAlarmManager`'s flag is never set from the target), location enforcement, the system package list, PendingIntent
+mutability, `areNotificationsEnabled()` in test runs at target 33+, and the WorkManager observation above.
+
+### CI
+
+The `build` job builds the target-28 pair after the default one and the `tests` leg runs `Target28Test`, `BleTest`,
+`BluetoothTest` and `InstallPermissionsTest` on it (`-e expectTarget 28`). Cost, measured: the target-28 build is ~10 s warm
+on the Mac (cold in CI an estimate of 30-60 s on the 93 s build step, one more Gradle invocation); the whole 418-test suite
+on apksim is 48 s on the Mac and the default suite's CI step 281 s under Rosetta, so this subset is estimated at 30-60 s in
+the image. The CI addition is estimated at about 1.5-2 min in all and was not measured in CI before this PR.

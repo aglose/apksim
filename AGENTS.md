@@ -1592,6 +1592,24 @@ R8-minified apps have pc-encoded lines (retrace them with the app's mapping file
 `e-`, `s-` and `c-NAME.png` (side by side plus a difference map; `work/cmp/.venv` has Pillow). `scripts/vshift.py`
 measures a vertical offset between two shots. Under heavy machine load the emulator lags by seconds and its system
 server can ANR; `both.py` retakes shots until the two agree.
+`ApksimCmp30` is the same on Android 11 (`system-images;android-30;google_apis;arm64-v8a`, `pixel_2`, 2 GB), the
+ground truth for an app that targets 28 and tests on API 30. `avdmanager create avd` refuses that image here ("Package
+path is not valid": the SDK manager's XML is newer than the tool), so the AVD is `ApksimCmp36`'s `config.ini` with
+`android-36` replaced (`image.sysdir.1`, `target`) and an `.ini` beside it. Start it on its own port so it never takes
+`emulator-5580`'s: `emulator -avd ApksimCmp30 -port 5582 -no-window -no-audio -no-boot-anim -no-snapshot-save -gpu
+swiftshader_indirect`, then `wm size 822x1782`, `wm density 320`. Its tablet case is the Nexus 10 the consumer's tests
+use, landscape 2560x1600 at density 2 = `--device tablet` here (the emulator side: `wm size 1600x2560`/`2560x1600`,
+`wm density 320`, and a `user_rotation` of 1; not measured). The target-28 test app is
+`./gradlew -Papksim.targetSdk=28 :app:assembleDebug :app:assembleDebugAndroidTest` in `testapks/composeapp`: its
+outputs are `app/build-t28/outputs/apk/{debug/app-t28-debug.apk,androidTest/debug/app-t28-debug-androidTest.apk}`
+(a build folder of its own: AGP deletes the other APKs of an outputs folder, so the default `app-debug.apk` would
+vanish), the same sources with `src/t28/AndroidManifest.xml` as the debug manifest (legacy Bluetooth permissions only); build
+it last and both tasks together. `Target28Test` is its target-dependent checks (run with `-e expectTarget 28`, else skipped
+by an assumption; its `probe` prints one `t28.KEY=VALUE` status line per observation, which docs/conformance.md tables for
+API 30, API 36 and apksim, with the full-suite comparison). On API 33+ a target-28 app raises the POST_NOTIFICATIONS prompt,
+which takes the focus from later tests of an emulator run: close it (Back) while the run goes. `scripts/target-gate-check.sh
+DEFAULT.apk T28.apk` checks the notification gate of a running instance (`Notifications.allowed()`); CI's `tests` leg runs
+Target28Test, BleTest, BluetoothTest and InstallPermissionsTest on the target-28 pair.
 
 ## Git and pull requests
 The repo is public (https://github.com/aglose/apksim, Apache 2.0). `main` takes changes only through pull requests: a

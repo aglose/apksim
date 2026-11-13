@@ -393,6 +393,8 @@ class SensorsTest {
   @Test
   fun permissionGatedSensorsAreHiddenWithoutThePermission() {
     assumeTrue("a device with no step counter has nothing to hide", onApksim)
+    // ACTIVITY_RECOGNITION is a runtime permission from target 29; an app below that has it without asking.
+    assumeTrue(context.applicationInfo.targetSdkVersion >= 29)
     instrumentation.uiAutomation.revokeRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
     assertNull("hidden without ACTIVITY_RECOGNITION", sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER))
     assertTrue(sm.getSensorList(Sensor.TYPE_ALL).none { it.type == Sensor.TYPE_STEP_COUNTER || it.type == Sensor.TYPE_STEP_DETECTOR })

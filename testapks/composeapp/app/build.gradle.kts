@@ -5,13 +5,31 @@ plugins {
   alias(libs.plugins.ksp)
 }
 
+// -Papksim.targetSdk=28 builds the same app targeting that SDK (docs/conformance.md) into app/build-t28/ (APKs
+// app-t28-debug.apk and app-t28-debug-androidTest.apk under outputs/apk/); without the property nothing changes.
+// A folder of its own, as AGP deletes the other APKs of an outputs folder when it packages one.
+val apksimTargetSdk = (findProperty("apksim.targetSdk") as String?)?.let {
+  it.toIntOrNull() ?: throw GradleException("-Papksim.targetSdk must be a number, not '$it'")
+}
+if (apksimTargetSdk != null) {
+  base.archivesName.set("app-t$apksimTargetSdk")
+  layout.buildDirectory.set(layout.projectDirectory.dir("build-t$apksimTargetSdk"))
+  // src/t28/AndroidManifest.xml, if there is one for the target, is the debug variant's manifest, which AGP merges over the main one (debug builds only: a release build with
+  // the property gets the target without the overlay).
+  if (file("src/t$apksimTargetSdk/AndroidManifest.xml").exists()) {
+    extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
+      sourceSets.getByName("debug").manifest.srcFile("src/t$apksimTargetSdk/AndroidManifest.xml")
+    }
+  }
+}
+
 android {
   namespace = "dev.apksim.composeapp"
   compileSdk = 36
   defaultConfig {
     applicationId = "dev.apksim.composeapp"
     minSdk = 26
-    targetSdk = 36
+    targetSdk = apksimTargetSdk ?: 36
     versionCode = 1
     versionName = "1.0"
     testInstrumentationRunner = "dev.apksim.composeapp.HarnessRunner"

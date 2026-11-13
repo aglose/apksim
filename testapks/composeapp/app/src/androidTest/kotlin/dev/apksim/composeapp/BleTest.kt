@@ -91,7 +91,12 @@ class BleTest {
   @Before
   fun setUp() {
     assumeTrue("apksim only: an emulator has no scripted peripherals", Build.FINGERPRINT == "robolectric")
-    for (p in BleActivity.PERMISSIONS) instrumentation.uiAutomation.grantRuntimePermission(context.packageName, p)
+    // Below target 31 the app asks for the legacy permissions only (src/t28): the API 31 ones are not its to grant.
+    val legacy = context.applicationInfo.targetSdkVersion < 31
+    for (p in BleActivity.PERMISSIONS) {
+      if (legacy && p != Manifest.permission.ACCESS_FINE_LOCATION) continue
+      instrumentation.uiAutomation.grantRuntimePermission(context.packageName, p)
+    }
   }
 
   @After
@@ -553,14 +558,20 @@ class BleTest {
     assertFalse(adapter.bondedDevices.any { it.address == "C0:FF:EE:00:00:72" })
   }
 
+  /** Ble.need's wording: the legacy permissions (target below 31) without their package, the API 31 ones with it. */
+  private fun message(permission: String) =
+    "Need " + (if (context.applicationInfo.targetSdkVersion < 31) permission.substringAfterLast('.') else permission) + " permission"
+
   @Test
   fun e_aScanningWithoutBluetoothScanThrows() {
-    shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_SCAN}")
+    // An app targeting below 31 needs the legacy BLUETOOTH_ADMIN instead (Target28Test; docs/ble.md).
+    val needed = if (context.applicationInfo.targetSdkVersion >= 31) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.BLUETOOTH_ADMIN
+    shell("pm revoke ${context.packageName} $needed")
     try {
       scanner.startScan(Scan())
-      fail("startScan without BLUETOOTH_SCAN")
+      fail("startScan without ${needed.substringAfterLast('.')}")
     } catch (e: SecurityException) {
-      assertTrue(e.message, e.message!!.contains("BLUETOOTH_SCAN"))
+      assertTrue(e.message, e.message!!.contains(message(needed)))
     }
   }
 
@@ -593,12 +604,13 @@ class BleTest {
   @Test
   fun e_cConnectingWithoutBluetoothConnectThrows() {
     shell("apksim ble add heart-rate")
-    shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_CONNECT}")
+    val needed = if (context.applicationInfo.targetSdkVersion >= 31) Manifest.permission.BLUETOOTH_CONNECT else Manifest.permission.BLUETOOTH
+    shell("pm revoke ${context.packageName} $needed")
     try {
       adapter.getRemoteDevice("C0:FF:EE:00:18:0D").connectGatt(context, false, Recorder())
-      fail("connectGatt without BLUETOOTH_CONNECT")
+      fail("connectGatt without ${needed.substringAfterLast('.')}")
     } catch (e: SecurityException) {
-      assertTrue(e.message, e.message!!.contains("BLUETOOTH_CONNECT"))
+      assertTrue(e.message, e.message!!.contains(message(needed)))
     }
   }
 
