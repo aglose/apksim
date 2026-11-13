@@ -661,12 +661,21 @@ Saves go to `work/screenshots` (the sandbox keeps the app out of ~/Desktop). Opt
 centre, Option-Shift-drag pans with two fingers, trackpad pinch/rotate map to two fingers. The status bar (clock,
 Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle are drawn over the app as layers,
 each only while the device has it and the app has not hidden it (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
-app opens outside itself go to the Mac's browser/mail app. A web link with a `redirect_uri`/`redirect_url` that one of the app's
-own VIEW/BROWSABLE filters matches (a custom scheme, or an https App Link on macOS 14.4+) runs in
-`ASWebAuthenticationSession` instead (`DeviceControls.signIn`, `SimWindow.webAuth`): when the provider redirects, the
-callback URL is delivered as `open URL` does; cancelled delivers nothing. Without a match, or an https redirect below
-14.4, the link opens as any other and a stderr line says to paste the final address into Open URL.... Mac window only:
-serve and beam instances are headless and do not do this yet (issue 336); not checked against a real provider. The keyboard sends Control shortcuts, Shift selection,
+app opens outside itself go to the Mac's browser/mail app. A browser sign-in comes back (issue 336,
+`DeviceControls.openOnHost`): a web link with a `redirect_uri`/`redirect_url` that one of the app's own VIEW/BROWSABLE
+filters takes (a custom scheme, or an https App Link on macOS 14.4+) runs in `ASWebAuthenticationSession`
+(`SimWindow.webAuth`), in the Mac window and in a beamed instance (its window is hidden, not absent), and the callback
+URL is delivered as `open URL` does; cancelled delivers nothing. Without a window (`apksim serve`), or when this Mac
+cannot wait for the redirect, the link goes to the session's tab: the instance's `hostwatch` control connection
+(`HostLinks`: `o URL [REDIRECT]`), `Session.watchLinks`, `d {"link","redirect"}`, and the page's card with the link and,
+for a sign-in, a box whose address is sent back as `open URL` (`scripts/serve-link-check.py`, CI). With neither, the link
+opens as any other and a stderr line says to paste the final address into Open URL.... The redirect reaches the waiting
+activity because Host honours launch modes for a running activity (`Host.deliverToRunning`: singleTask/singleInstance,
+singleTop on top, CLEAR_TOP with SINGLE_TOP: those above finish and it gets onNewIntent; before, every start stacked a
+copy, which test runs alone did not). The test app's `apksim://signin` (`SignInActivity`, singleTask, and
+`SignInRedirectActivity`) does it as Auth0 and AppAuth do: "signin: code=abc (instances 1, new intents 1)". Not checked:
+a session finished by hand against a real provider (it starts; the consent dialog needs a person), and the session
+inside the beam sandbox. The keyboard sends Control shortcuts, Shift selection,
 Option+arrow (as Ctrl+arrow: by word), Home/End/Page/Forward Delete as Android key events. Launch options:
 `--activity PKG/.Act|.Act|CLASS` (`AppInfo`: start that activity, exported or not, instead of the manifest's first
 MAIN/LAUNCHER one, as `am start -n` would: a debug manifest's test LAUNCHER listed before a home app's MAIN/HOME

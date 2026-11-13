@@ -76,6 +76,11 @@ final class Control {
           dev.apksim.net.TabRelay.serve(in, out);
           return;
         }
+        if (args[0].equals("hostwatch")) {
+          // hostwatch: this connection hears of the web links the app opens outside itself, `o URL [REDIRECT]` (HostLinks).
+          HostLinks.serve(in, out);
+          return;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(oneLine(p.await()));

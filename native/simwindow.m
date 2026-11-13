@@ -1542,6 +1542,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeShare(JNIEnv *env, jclass
 static ASWebAuthenticationSession *webAuthSession;
 static WebAuthAnchor *webAuthAnchor;
 static NSString *webAuthResult;
+static long webAuthGen;
 
 // Starts a session for url that ends at a redirect to `scheme://...` (host NULL), or to https://host/path (macOS 14.4+).
 // Returns false when this macOS cannot wait for that kind of redirect.
@@ -1573,10 +1574,20 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, 
     return JNI_FALSE;
   }
   onMain(^{
-    __block ASWebAuthenticationSession *me = nil;
+    // One sign-in at a time: a newer one replaces this one, whose completion (its cancel, or a late end) then counts
+    // for nothing. Sessions are told apart by a number, not by the object: the handler must not keep its session alive.
+    ASWebAuthenticationSession *old;
+    long gen;
+    @synchronized([WebAuthAnchor class]) {
+      gen = ++webAuthGen;
+      old = webAuthSession;
+      webAuthSession = nil;
+      webAuthResult = nil;
+    }
+    [old cancel];
     void (^done)(NSURL *, NSError *) = ^(NSURL *callback, NSError *error) {
       @synchronized([WebAuthAnchor class]) {
-        if (webAuthSession != me) return;  // a session already replaced: its late cancel is not the new one's result
+        if (gen != webAuthGen) return;
         webAuthResult = callback ? callback.absoluteString : @"";
         webAuthSession = nil;
       }
@@ -1592,19 +1603,14 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, 
       session = [[ASWebAuthenticationSession alloc] initWithURL:url callbackURLScheme:scheme completionHandler:done];
     }
     if (!session) {
-      @synchronized([WebAuthAnchor class]) { webAuthResult = @""; }
+      done(nil, nil);
       return;
     }
-    me = session;
     if (!webAuthAnchor) webAuthAnchor = [WebAuthAnchor new];
     session.presentationContextProvider = webAuthAnchor;
-    ASWebAuthenticationSession *old;
     @synchronized([WebAuthAnchor class]) {
-      old = webAuthSession;
-      webAuthSession = session;  // before the cancel, so the old session's completion is ignored
-      webAuthResult = nil;
+      webAuthSession = session;
     }
-    [old cancel];  // one sign-in at a time
     if (![session start]) {
       NSLog(@"[apksim] the sign-in session did not start");
       done(nil, nil);

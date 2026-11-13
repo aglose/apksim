@@ -156,6 +156,23 @@
                 <data android:scheme="apksim" android:host="cyclic-nodes" />
             </intent-filter>
         </activity>
+        <!-- apksim://signin: a browser sign-in whose redirect comes back through apksim://signin-callback (issue 336). -->
+        <activity android:name=".SignInActivity" android:exported="true" android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="signin" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".SignInRedirectActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="signin-callback" />
+            </intent-filter>
+        </activity>
         <!-- apksim://drawer: a DrawerLayout that settles through a Scroller, no animator (issue 215). -->
         <activity android:name=".DrawerActivity" android:exported="true">
             <intent-filter>
