@@ -50,7 +50,7 @@ cp -RL "$ROOT/work/runtime" "$D/work/runtime"
 # Neither jar is signed, so taking entries out breaks nothing.
 ALL_JAR="$(ls "$D"/work/lib/android-all-instrumented-*.jar | sort -V | tail -1)"
 zip -q -d "$ALL_JAR" 'native/*' 'icu/*'
-! unzip -Z1 "$ALL_JAR" | grep -qE '^(native|icu)/' || fail "$(basename "$ALL_JAR") still has native/ or icu/ entries"
+[[ -z "$(unzip -Z1 "$ALL_JAR" | grep -E '^(native|icu)/' || true)" ]] || fail "$(basename "$ALL_JAR") still has native/ or icu/ entries"
 for j in "$D"/work/lib/conscrypt-openjdk-uber-*.jar; do
   OTHERS=($(unzip -Z1 "$j" 'META-INF/native/*' 2>/dev/null | grep -v 'osx-aarch_64' || true))
   [[ ${#OTHERS[@]} -gt 0 ]] && zip -q -d "$j" "${OTHERS[@]}"

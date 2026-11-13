@@ -1454,7 +1454,7 @@ names: six of the seven Noto Sans CJK weights and some Latin families are never 
 `work/jre` (`work/jdk.path`), `work/testapp.sha256`, and `work/release` (the version). The test app is not in it
 (`dist/apksim-testapp-VERSION.apk` beside it, a release file of its own): the first `train.sh` of an install downloads
 it into `STATE/testapp-VERSION.apk` (`APKSIM_DOWNLOAD_URL` for a mirror or `file://` folder) and checks it against
-that hash; offline, training fails with a line saying so and the next launch tries again. 471 MB → ~312 MB (0.32.0 against this
+that hash; offline, training fails with a line saying so and touches `STATE/train.failed`: a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
 change, measured locally). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
 `cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
 `train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to

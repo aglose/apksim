@@ -7,11 +7,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HEADLESS=()
 if [[ "${1:-}" == --headless ]]; then HEADLESS=(--headless); shift; fi
+# --background: started by the launcher on a launch (see there), which may happen at every launch while offline.
+BACKGROUND=""
+if [[ "${1:-}" == --background ]]; then BACKGROUND=1; shift; fi
 # Where the launcher keeps its state (see "STATE" there): work/ in a checkout, ~/.apksim for an installed release.
 if [[ -n "${APKSIM_HOME:-}" ]]; then STATE="$APKSIM_HOME"
 elif [[ -f "$ROOT/work/release" ]]; then STATE="$HOME/.apksim"
 else STATE="$ROOT/work"; fi
 mkdir -p "$STATE"
+# A failed test app download (train.failed) is tried again from a launch at most once an hour; apksim --train always.
+if [[ -n "$BACKGROUND" && -n "$(find "$STATE/train.failed" -mmin -60 2>/dev/null)" ]]; then
+  echo "train.sh: the test app download failed less than an hour ago; not trying again yet (apksim --train does)" >&2
+  exit 0
+fi
 # Default: the test app as built here, else the released one (scripts/setup.sh fetches it into a checkout; an
 # installed release downloads it below, once).
 APK="${1:-$ROOT/testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk}"
@@ -46,17 +54,18 @@ if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
   echo "train.sh: downloading the test app the startup cache is trained on (once): $URL" >&2
   if ! curl -fsSL --connect-timeout 10 --max-time 600 -o "$DL" "$URL"; then
     echo "train.sh: could not download the test app; the startup cache is not built. apksim works without it." >&2
-    echo "train.sh: the next launch tries again, or run apksim --train (apksim --train APP.apk trains offline on any APK)" >&2
-    exit 1
+    echo "train.sh: a launch tries again in an hour, or run apksim --train (apksim --train APP.apk trains offline on any APK)" >&2
+    touch "$STATE/train.failed"; exit 1
   fi
   GOT="$(shasum -a 256 "$DL" | cut -d' ' -f1)"
   if [[ "$GOT" != "$WANT" ]]; then
     echo "train.sh: checksum mismatch for the downloaded test app (got $GOT, expected $WANT); not used" >&2
-    exit 1
+    touch "$STATE/train.failed"; exit 1
   fi
   for old in "$STATE"/testapp-*.apk; do [[ -e "$old" ]] && rm -f "$old"; done
   mv -f "$DL" "$RELEASE_APK"
 fi
+rm -f "$STATE/train.failed"
 # Each stage keeps its output, and a failure says which stage and where to look, rather than ending silently.
 stage() {
   local name="$1"; shift
