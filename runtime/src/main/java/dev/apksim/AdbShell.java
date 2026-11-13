@@ -527,10 +527,10 @@ final class AdbShell {
       }
       case "swipe", "draganddrop" -> {
         if (r.size() < 4) return usage("input swipe X1 Y1 X2 Y2 [DURATION_MS]");
-        // A device's swipe takes 300 ms when no duration is given; here that is the control command's fling.
+        // A device's swipe takes 300 ms when no duration is given; so does the control command's.
         List<String> c = new ArrayList<>(List.of("swipe"));
         c.addAll(r.subList(0, Math.min(5, r.size())));
-        long ms = r.size() > 4 ? Long.parseLong(r.get(4)) : 0;
+        long ms = r.size() > 4 ? Long.parseLong(r.get(4)) : 300;
         return reply(delivered(control(c.toArray(new String[0])), ms), false);
       }
       case "text" -> {

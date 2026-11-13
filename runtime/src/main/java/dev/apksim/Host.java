@@ -711,7 +711,7 @@ public class Host {
 
   /** In pendingScript: the next of {@link #drags} starts here. */
   private static final int DRAG = 100;
-  /** How long a timed drag stays still at its end before lifting, so it does not fling. */
+  /** How long a timed press (no movement) stays at its point before lifting. */
   private static final long HOLD_NANOS = 120_000_000L;
   private final ArrayDeque<Drag> drags = new ArrayDeque<>();
   /** The timed drag in progress, or null. Scripted and window input wait for it to end. */
@@ -732,6 +732,8 @@ public class Host {
     long start;
     /** When the move to the end point went out (0 before): the hold counts from there, not from the deadline. */
     long atEnd;
+    /** Start and end are within touch slop (8 dp, 16 px here): a press, which holds before lifting. */
+    final boolean stationary;
 
     Drag(float x1, float y1, float x2, float y2, long ms) {
       this.x1 = x1;
@@ -739,6 +741,7 @@ public class Host {
       this.x2 = x2;
       this.y2 = y2;
       this.nanos = Math.max(0, ms) * 1_000_000L;
+      this.stationary = Math.hypot(x2 - x1, y2 - y1) <= 16;
     }
 
     /** The event due at {@code now}: a move along the way, at the end, then the lift (null once done). */
@@ -748,7 +751,12 @@ public class Host {
         float f = (float) t / nanos;
         return new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
       }
-      if (atEnd == 0) atEnd = now;
+      boolean first = atEnd == 0;
+      if (first) atEnd = now;
+      // A real swipe ends in a move to the end point and the lift, with no still tail (InputShellCommand's), so the
+      // velocity tracker reads the swipe's speed and the list flings. Only a press that stays within the touch slop
+      // (a long press: `swipe X Y X Y 1500`) holds, to lift on time.
+      if (!stationary) return first ? new SimWindow.Event(SimWindow.MOVE, x2, y2, 0) : new SimWindow.Event(SimWindow.UP, x2, y2, 0);
       if (now - atEnd < HOLD_NANOS) return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
       return new SimWindow.Event(SimWindow.UP, x2, y2, 0);
     }
@@ -1757,19 +1765,12 @@ public class Host {
         float y1 = Float.parseFloat(a[2]);
         float x2 = Float.parseFloat(a[3]);
         float y2 = Float.parseFloat(a[4]);
-        // swipe X1 Y1 X2 Y2 [MS]: with a duration, a drag over that much real time that holds still before lifting,
-        // so it does not fling (Drag); without, 12 moves a loop turn apart, which flings.
-        if (a.length > 5) {
-          drags.add(new Drag(x1, y1, x2, y2, Long.parseLong(a[5])));
-          pendingScript.add(new SimWindow.Event(DRAG, x1, y1, 0));
-          return "ok";
-        }
-        int steps = 12;
-        pendingScript.add(new SimWindow.Event(SimWindow.DOWN, x1, y1, 0));
-        for (int i = 1; i <= steps; i++) {
-          pendingScript.add(new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps, 0));
-        }
-        pendingScript.add(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
+        // swipe X1 Y1 X2 Y2 [MS]: a drag over that much real time (300 ms by default, as `input swipe`), lifting at
+        // the end point as a device does, so the release velocity flings in proportion (Drag).
+        long ms = a.length > 5 ? Long.parseLong(a[5]) : 300;
+        drags.add(new Drag(x1, y1, x2, y2, ms));
+        pendingScript.add(new SimWindow.Event(DRAG, x1, y1, 0));
+        return "ok";
       }
       case "touch" -> {
         // touch down|move|up|cancel X Y: one finger's event, for input that arrives as separate events

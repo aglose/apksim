@@ -398,7 +398,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `video-check.py` (recorded
   video over `--control`: selftest on the H.264 fixture clip, `apksim://video`, no HEVC decoder listed; `--hevc` for an
   image built with it: the HEVC clip and the Settings clip; CI runs it in both Linux
-  images from `ci-smoke.sh`), `timer-check.py` (app timers
+  images from `ci-smoke.sh`), `swipe-check.py` (a timed swipe flings, a held press does not scroll; `ci-smoke.sh`), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `bundle-check.py` (failure
   bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
   `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
@@ -480,8 +480,9 @@ Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
-Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (with ms: a drag over ms of real time that holds 120 ms before
-lifting, no fling; Host's `Drag` follows the clock, not a count of queued events),
+Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (a drag over ms of real time, 300 by default as `input swipe`, lifting at the end point so the release
+velocity flings as on a device; a press within touch slop, `swipe X Y X Y 1500`, holds 120 ms then lifts; Host's `Drag` follows the
+clock, not a count of queued events; before 2026-11-13 it held 120 ms before every lift, so a timed swipe never flung),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `shot --skin file.png` (in the skin's frame), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
 (each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.

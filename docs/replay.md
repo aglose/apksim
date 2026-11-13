@@ -244,8 +244,7 @@ device and stack, no input; `--input none` is new) or, with `--start launch --ap
 empties a normal launch's `default` slot). Options after
 `--` go to that launch. Each step: a tap or long press at the centre of its node, waited for up to `--timeout` (10 s);
 a long press and a double tap as `touch down|up` at their recorded times, each hold timed from when the Host dispatched
-the finger down (`settle` says "input queued" until then), not from its answer (a timed `swipe` would hold 120 ms
-longer before lifting); the other steps as the control commands of their names (typed text as `type64 BASE64`, new, which
+the finger down (`settle` says "input queued" until then), not from its answer; the other steps as the control commands of their names (typed text as `type64 BASE64`, new, which
 keeps every space; a swipe under 250 ms as an untimed `swipe`, so a fling still flings); then `settle`, which waits as
 long as the step's own input takes (a swipe's `ms`, 7 ms a typed character) plus `--timeout` while the input is still
 being dispatched, then each expected text waited for. `nodes` escapes `\`, `"` and line breaks in its values (`\\`, `\"`, `\n`), which journey.py decodes, so a
