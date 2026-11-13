@@ -379,6 +379,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
   an APK: time per pass and a hash per class, to profile the translator and check a change leaves output identical),
+  `api-refs.py` (which framework classes, methods and fields apksim.jar uses that another level's android-all jar lacks,
+  and which shadow methods stop binding there; docs/api-levels.md),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
@@ -393,6 +395,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   image), `plan.md` (remaining work, in order), `startup-gate.md` (CI's
   launch-time budget: what it measures, why against a fixed anchor, moving the anchor), `conformance.md` (libraries'
   documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left),
+  `api-levels.md` (a spike that ran the API 30 framework: how far it got, what broke, what `--api 30` would cost),
   `uiautomator-engine.md` (`--uia engine`: UiAutomator's idle waits, gesture time and accessibility events decided
   in-process; a prototype).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
