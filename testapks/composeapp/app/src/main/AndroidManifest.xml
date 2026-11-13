@@ -21,6 +21,18 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <!-- BleActivity, BleTest: BLE scans. Not neverForLocation: a device then delivers results only with fine location. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- HealthActivity, HealthConnectTest: Health Connect. READ_BODY_FAT is asked for and never granted. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.WRITE_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.WRITE_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.WRITE_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
 
     <application
         android:name=".ComposeApp"
@@ -92,6 +104,20 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="apksim" android:host="ble" />
+            </intent-filter>
+        </activity>
+        <!-- apksim://health: Health Connect's permission state, today's steps, the latest heart rate, an insert button. The
+             second filter is the rationale screen Health Connect asks a requesting app to have (API 34+). -->
+        <activity android:name=".HealthActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="health" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
             </intent-filter>
         </activity>
         <!-- apksim://board: a message board on the compiled-in backend, for scenes of several instances (scripts/scene.py). -->

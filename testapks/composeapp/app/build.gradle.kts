@@ -74,6 +74,8 @@ dependencies {
   implementation(libs.androidx.camera.camera2)
   implementation(libs.androidx.camera.lifecycle)
   implementation(libs.androidx.camera.view)
+  // apksim://health, HealthConnectTest: Health Connect through AndroidX's client (apksim's stand-in, docs/health-connect.md)
+  implementation(libs.androidx.health.connect.client)
   // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
   implementation(libs.okhttp)
   // Time zones: Joda-Time up to 2.10 reads user.timezone before the JDK's default (apksim://timezone, WallClockTest;

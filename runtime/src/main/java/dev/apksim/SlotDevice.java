@@ -55,6 +55,11 @@ final class SlotDevice {
 
   private SlotDevice() {}
 
+  /** The device folder of the slot this instance holds, or null (a test run, a standby's warm-up). */
+  static Path currentDir() {
+    return dir;
+  }
+
   /** The device folder of a data slot. */
   static Path dirFor(Path slot) {
     return slot.resolveSibling(slot.getFileName() + ".device");
@@ -256,6 +261,7 @@ final class SlotDevice {
    * close() has run (before Robolectric's reset after Host.run, which puts the defaults back).
    */
   static synchronized void flush() {
+    dev.apksim.health.Health.flush();  // Health Connect's records, kept beside these (health.store)
     if (dir == null) return;
     Map<String, String> now;
     try {

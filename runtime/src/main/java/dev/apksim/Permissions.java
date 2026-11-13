@@ -168,6 +168,7 @@ final class Permissions {
   }
 
   private static String fullName(String name) {
+    if (name.toLowerCase(Locale.ROOT).startsWith("health.")) return "android.permission.health." + name.substring(7).toUpperCase(Locale.ROOT);
     return name.contains(".") ? name : "android.permission." + name.toUpperCase(Locale.ROOT);
   }
 

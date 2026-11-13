@@ -119,6 +119,36 @@ drive back 'wait 1000' >/dev/null
 
 # Scripted BLE peripherals (docs/ble.md): apksim://ble scans, connects and shows a heart-rate preset's notifications.
 python3 "$ROOT/scripts/ble-check.py" "$PORT" > "$OUT/ble.log" 2>&1 && tail -1 "$OUT/ble.log" || { cat "$OUT/ble.log"; exit 1; }
+# Health Connect (docs/health-connect.md): a seeded week, the permissions granted, and apksim://health reads the week's
+# steps, the latest heart rate and last night's sleep through AndroidX's client; its insert adds 100 to today's steps.
+health() { drive nodes | grep -oE 'text="(health|permissions|steps today|steps this week|heart rate|sleep|inserted): [^"]*"' | tr '\n' ' '; }
+drive 'health add week' 'permission grant health.READ_STEPS health.WRITE_STEPS health.READ_HEART_RATE health.WRITE_HEART_RATE health.READ_SLEEP' >/dev/null
+drive 'open apksim://health' 'wait 4000' >/dev/null
+seen="$(health)"
+drive 'tap-text INSERT 100 STEPS' 'wait 3000' >/dev/null
+inserted="$(health)"
+echo "Health Connect: $seen-> $inserted"
+num() { echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+$'; }
+[[ "$seen" == *'health: available'* && "$seen" == *'permissions: 5 of 5 granted'* && "$seen" =~ 'heart rate: '[0-9]+' bpm at' \
+   && "$seen" =~ 'sleep: '[0-9]+' h' && "$(num "$seen" 'steps this week')" -gt 20000 \
+   && "$(num "$inserted" 'steps today')" == "$(( $(num "$seen" 'steps today') + 100 ))" ]] \
+  || { drive health; echo "apksim://health did not read the seeded week or its insert" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
+# The week preset is the same for the same days: seeded at two clocks a day apart, the records of the days both cover
+# have the same ids (a seed's id comes from its content).
+python3 - "$ROOT/scripts/drive.py" "$PORT" <<'EOF'
+import subprocess, sys
+drive, port = sys.argv[1], sys.argv[2]
+def run(*cmds):
+    return subprocess.run(["python3", drive, port, *cmds], capture_output=True, text=True).stdout
+def ids(clock):
+    out = run("health clear", f"clock {clock}", "health add week", "health list steps").splitlines()[-1]
+    return {e.split()[1] for e in out.split(" -> ", 1)[1].split("; ")[1:] if "2026-01-06" <= e[:10] <= "2026-01-08"}
+a, b = ids("2026-01-10T12:00:00Z"), ids("2026-01-11T12:00:00Z")
+run("health clear", "clock real")
+print(f"Health week preset: {len(a)} steps records on 6-8 Jan (UTC) at both clocks, {len(a ^ b)} differing")
+assert a and a == b, f"the week preset changed between launches: {sorted(a ^ b)[:5]}"
+EOF
 # Every zone source an app reads follows --timezone, Joda-Time's (it reads user.timezone) included, and `timezone ZONE`
 # changes them all and broadcasts ACTION_TIMEZONE_CHANGED, which the screen hears as joda-time-android does (the test
 # app's apksim://timezone, issue 91).

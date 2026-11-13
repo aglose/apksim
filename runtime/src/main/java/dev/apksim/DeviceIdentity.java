@@ -53,6 +53,21 @@ final class DeviceIdentity {
     } catch (RuntimeException e) {
       System.err.println("[apksim] device identity: " + e);
     }
+    // Health Connect's service and its records (the slot's in a running instance, the seeds alone in a test): a step
+    // of its own, so a failure above never leaves the last test's records in place. A --health that does not load is
+    // a bad launch option: exit 2 for a running instance; in a test run each test's setup fails.
+    try {
+      dev.apksim.health.Health.reset(app, TestActivities.testRun() ? null : SlotDevice.currentDir(), Storage::tmpTag);
+    } catch (IllegalArgumentException e) {
+      System.err.println("[apksim] " + e.getMessage());
+      if (!TestActivities.testRun() && System.getProperty("apksim.package") != null) {
+        Exits.log(2, "bad --health");
+        Standby.halt(2);
+      }
+      throw e;
+    } catch (RuntimeException e) {
+      System.err.println("[apksim] health connect: " + e);
+    }
   }
 
   /** The serial: --serial, else one derived from the data slot this instance holds. */

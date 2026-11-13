@@ -543,6 +543,10 @@ final class DeviceControls {
         // ble [add|remove|rssi|notify|set|disconnect ...]: scripted BLE peripherals (dev.apksim.ble.Ble, docs/ble.md).
         return dev.apksim.ble.Ble.command(a);
       }
+      case "health" -> {
+        // health [add FILE|PRESET|JSON | clear [TYPE] | types]: Health Connect's records (dev.apksim.health.Health).
+        return dev.apksim.health.Health.command(a);
+      }
       case "ambient" -> {
         // ambient [on|off]: Wear OS ambient mode (the stand-in com.google.android.wearable library): the activities that
         // enabled it get onEnterAmbient/onExitAmbient. Never entered otherwise.

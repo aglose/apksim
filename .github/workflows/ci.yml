@@ -227,6 +227,13 @@ jobs:
           python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
             --xml tests/junit-start.xml -e startActivities true \
             -e class dev.apksim.composeapp.StartActivityTest,dev.apksim.composeapp.StackWindowsTest -- --start-activities
+      # Health Connect (docs/health-connect.md): with --health week every HealthConnectTest runs, the seeded week's too.
+      - name: Test run with Health Connect seeded
+        if: matrix.leg == 'tests'
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-health.xml -e class dev.apksim.composeapp.HealthConnectTest -e healthSeed week -- --health week
+          python3 scripts/ci-no-skips.py tests/junit-health.xml 18
       # The simulated camera: --camera fake declares the camera features, lists a back and a front camera, and delivers
       # frames (Camera2 into an ImageReader, CameraX's Preview and ImageAnalysis); off (the default) neither.
       - name: Test run with a simulated camera
