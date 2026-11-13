@@ -30,8 +30,14 @@ public final class FastNativeLoader extends DefaultNativeRuntimeLoader {
     Path dir = Path.of(System.getProperty("apksim.runtime"));
     System.setProperty("robolectric.nativeruntime.fontdir", dir.resolve("fonts") + "/");
     String keepIcuPath = System.getProperty("icu.data.path");
-    System.setProperty("icu.data.path", dir.resolve("icu/icudt.dat").toString());
+    System.setProperty("icu.data.path", dir.resolve(Api.OWN_RUNTIME ? "icu/icudt.dat" : "icu/icudt68l.dat").toString());
     System.setProperty("icu.locale.default", java.util.Locale.getDefault().toLanguageTag());
+    if (!Api.OWN_RUNTIME) {
+      System.load(dir.resolve("librobolectric-nativeruntime.dylib").toString());
+      System.setProperty("hyphen.data.dir", dir.resolve("hyphen-data").toString());
+      android.text.Hyphenator.init();
+      return;
+    }
     System.setProperty("use_base_native_hostruntime", "true");
     System.setProperty("core_native_classes", String.join(",", getCoreClassNatives()));
     System.setProperty("graphics_native_classes", String.join(",", getGraphicsNatives()));

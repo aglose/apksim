@@ -42,7 +42,7 @@ import org.robolectric.util.reflector.Reflector;
 final class AppCallbacks {
   private AppCallbacks() {}
 
-  private static final boolean ON = Boolean.parseBoolean(System.getProperty("apksim.keepAppCallbacks", "true"));
+  private static final boolean ON = Api.LEVEL >= 31 /* SPIKE: Application.mCallbacksController is API 31 */ && Boolean.parseBoolean(System.getProperty("apksim.keepAppCallbacks", "true"));
 
   /** The process's one callback list and controller (the first Application's). */
   private static List<Application.ActivityLifecycleCallbacks> processActivity;

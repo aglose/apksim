@@ -34,7 +34,7 @@ final class SoftKeyboard {
 
   /** Follows what the app asked for: InputMethodManager.showSoftInput, or WindowInsetsController.show(ime()). */
   void tick(List<View> roots, int w, int h) {
-    if (roots.isEmpty()) return;
+    if (roots.isEmpty() || Api.LEVEL < 34) return;  // SPIKE: InsetsController/InsetsSource's API changed in 34
     InsetsController c = controller(roots);
     boolean requested = shadowOf(app.getSystemService(InputMethodManager.class)).isSoftInputVisible()
         || (c != null && (c.getRequestedVisibleTypes() & WindowInsets.Type.ime()) != 0);

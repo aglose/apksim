@@ -462,6 +462,16 @@ TMP="${TMPDIR:-/tmp}"
 LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
 [[ -e "$LIBS" ]] || ln -sfn "$ROOT/work/lib" "$LIBS"
 CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
+# SPIKE (docs/api-levels.md): APKSIM_API=30 swaps the framework jar for work/lib30's and tells the runtime.
+API="${APKSIM_API:-36}"
+if [[ "$API" != 36 ]]; then
+  LIBS="$ROOT/work/lib$API"
+  CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
+  # Classes this level lacks resolve from the level apksim is built against, last on the class path: shadows' (ours
+  # and Robolectric's) signatures name them, as a Robolectric test's class path has the compile SDK's android.jar.
+  [[ -z "${APKSIM_API_NOFALLBACK:-}" ]] && CP="$CP$(ls "$ROOT"/work/lib/android-all-instrumented-*.jar | tail -1)"
+  EXTRA+=("-Dapksim.api=$API")
+fi
 # `exec` keeps this PID, which is how a later launch knows whether this scratch dir is still in use.
 mkdir -p "$STATE/tmp/$$"
 # An APK runs as ordinary code in this process, with no VM around it, so confine it: it can only
@@ -579,7 +589,8 @@ if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}
 JIT=()
 [[ -n "${TEST_RUN:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
 AOT=()
-if [[ "$AOT_ROOT" == "$ROOT" ]]; then
+if [[ "${APKSIM_API:-36}" != 36 && -z "${APKSIM_API_AOT:-}" ]]; then :
+elif [[ "$AOT_ROOT" == "$ROOT" ]]; then
   AOT=("-XX:AOTCache=$STATE/app.aot")
 elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
   echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
@@ -598,7 +609,7 @@ exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE
   --add-exports=java.base/jdk.internal.access=ALL-UNNAMED --add-opens=java.base/jdk.internal.access=ALL-UNNAMED \
   --add-opens=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --enable-native-access=ALL-UNNAMED \
-  -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
+  -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks="${APKSIM_API:-36}" -Drobolectric.pixelCopyRenderMode=hardware \
   -Djava.io.tmpdir="$STATE/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$STATE/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" "${JIT[@]+"${JIT[@]}"}" \
   "${EXTRA[@]+"${EXTRA[@]}"}" \
   -cp "$CP" dev.apksim.Main "$APK"

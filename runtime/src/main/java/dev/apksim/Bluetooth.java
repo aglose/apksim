@@ -39,6 +39,7 @@ public final class Bluetooth {
   /** At the application's (a test's) start: the launch's state. */
   static void beforeApplicationOnCreate(Application app) {
     apply(app, launchState());
+    if (Api.LEVEL < 33) return;  // SPIKE: IBluetoothScan, AttributionSource: no BLE stand-in below 33
     dev.apksim.ble.Ble.reset(app);  // the launch's BLE peripherals (--ble), nothing connected or scanning
   }
 

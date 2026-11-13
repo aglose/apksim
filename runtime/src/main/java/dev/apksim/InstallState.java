@@ -128,6 +128,7 @@ final class InstallState {
       NetConnectivity.networksReplaced();
     } catch (Exception e) {
       System.err.println("[apksim] host networks: " + e);
+      if (Api.LEVEL != 36) e.printStackTrace();
     }
   }
 

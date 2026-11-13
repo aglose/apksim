@@ -58,7 +58,6 @@ import org.robolectric.shadows.ShadowLooper;
  * tests. No app code is involved. The annotations must match Host's, or Host gets a sandbox of its own.
  */
 @RunWith(SimRunner.class)
-@Config(sdk = 36)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @LooperMode(LooperMode.Mode.PAUSED)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)

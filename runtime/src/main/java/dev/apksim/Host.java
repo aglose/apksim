@@ -47,7 +47,7 @@ import org.robolectric.util.ReflectionHelpers;
 
 /** The Android "main thread": launches the APK's start activity (launcher or --activity) and pumps looper, input and frames. */
 @RunWith(SimRunner.class)
-@Config(sdk = 36) // Fixed, whatever the APK targets: it is the framework this runtime ships.
+// Fixed, whatever the APK targets: it is the framework this runtime ships.
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @LooperMode(LooperMode.Mode.PAUSED)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
@@ -1115,7 +1115,7 @@ public class Host {
   /** Apps with predictive back never see the key: ViewRootImpl hands it to their top callback. */
   private boolean dispatchPredictiveBack() {
     List<View> roots = rootViews();
-    if (roots.isEmpty()) return false;
+    if (roots.isEmpty() || Api.LEVEL < 33) return false;  // SPIKE: no OnBackInvokedDispatcher before 33
     ViewRootImpl root = roots.get(roots.size() - 1).getViewRootImpl();
     if (root == null) return false;
     Object dispatcher = root.getOnBackInvokedDispatcher();
@@ -1523,7 +1523,7 @@ public class Host {
       b.append(" safe=").append(wi.getInsets(android.view.WindowInsets.Type.displayCutout()));
     }
     StringBuilder corners = new StringBuilder();
-    for (int p = 0; p < 4; p++) {
+    for (int p = 0; p < 4 && Api.LEVEL >= 31; p++) {  // SPIKE: RoundedCorner is API 31
       android.view.RoundedCorner rc = wi.getRoundedCorner(p);
       corners.append(p > 0 ? "," : "").append(rc == null ? 0 : rc.getRadius());
     }

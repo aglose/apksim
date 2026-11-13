@@ -428,7 +428,7 @@ public final class TestActivities {
     protected boolean dispatchKeyEvent(android.view.KeyEvent e) {
       if (testRun() && e.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
         Activity a = activityOf(realDecor);
-        if (a != null && android.window.WindowOnBackInvokedDispatcher.isOnBackInvokedCallbackEnabled(a)) {
+        if (Api.LEVEL >= 33 && a != null && android.window.WindowOnBackInvokedDispatcher.isOnBackInvokedCallbackEnabled(a)) {
           if (e.getAction() == android.view.KeyEvent.ACTION_UP && !e.isCanceled()) {
             android.view.ViewRootImpl root = realDecor.getViewRootImpl();
             Object d = root == null ? null : root.getOnBackInvokedDispatcher();

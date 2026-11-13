@@ -12,6 +12,7 @@ import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiSsid;
+import org.robolectric.util.ReflectionHelpers;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
@@ -91,7 +92,8 @@ final class SimWifi {
     info.setRxLinkSpeedMbps(LINK_SPEED);
     info.setWifiStandard(5);  // ScanResult.WIFI_STANDARD_11AC
     if (located) {
-      info.setSSID(WifiSsid.fromBytes(SSID.getBytes(StandardCharsets.UTF_8)));
+      if (Api.LEVEL >= 33) info.setSSID(WifiSsid.fromBytes(SSID.getBytes(StandardCharsets.UTF_8)));
+      else info.setSSID(ReflectionHelpers.callStaticMethod(WifiSsid.class, "createFromAsciiEncoded", ReflectionHelpers.ClassParameter.from(String.class, SSID)));  // SPIKE
       info.setBSSID(BSSID);
       info.setNetworkId(0);
     } else {

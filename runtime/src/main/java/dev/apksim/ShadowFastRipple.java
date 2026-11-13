@@ -27,7 +27,7 @@ public class ShadowFastRipple extends ShadowDrawable {
     if (forced) return;
     forced = true;
     Object state = ReflectionHelpers.getField(real, "mState");
-    ReflectionHelpers.setField(state, "mRippleStyle", RippleDrawable.STYLE_SOLID);
+    if (Api.LEVEL >= 31) ReflectionHelpers.setField(state, "mRippleStyle", 0 /* STYLE_SOLID */);  // SPIKE: no patterned ripple before 31
     real.setForceSoftware(true);
   }
 

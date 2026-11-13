@@ -61,7 +61,7 @@ final class HostNetworks {
       for (int c : new int[] {NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED, NetworkCapabilities.NET_CAPABILITY_TRUSTED,
           NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING, NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED,
           NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED, NetworkCapabilities.NET_CAPABILITY_FOREGROUND,
-          NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED}) {
+          /* SPIKE: NOT_VCN_MANAGED, API 31 */ Api.LEVEL >= 31 ? 28 : NetworkCapabilities.NET_CAPABILITY_TRUSTED}) {
         capsShadow.addCapability(c);
       }
       if (!tunnel) {
@@ -71,7 +71,7 @@ final class HostNetworks {
         for (InterfaceAddress a : ni.getInterfaceAddresses()) {
           if (a.getAddress() instanceof Inet4Address && !a.getAddress().isLinkLocalAddress()) v4 = a.getAddress();
         }
-        caps.setTransportInfo(SimWifi.connected(false, v4));
+        if (Api.LEVEL >= 31) caps.setTransportInfo(SimWifi.connected(false, v4));  // SPIKE: WifiInfo is a TransportInfo from 31
         caps.setSignalStrength(SimWifi.RSSI);
       }
       shadow.setNetworkCapabilities(network, caps);

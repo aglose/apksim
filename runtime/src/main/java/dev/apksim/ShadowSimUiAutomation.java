@@ -136,7 +136,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     giveWindowId(w.root);
     AccessibilityNodeInfo info = w.view.createAccessibilityNodeInfo();
     if (info == null) return null;
-    info.setQueryFromAppProcessEnabled(w.view, true);
+    if (Api.LEVEL >= 34) info.setQueryFromAppProcessEnabled(w.view, true);  // SPIKE: below 34 a root has no way to its children
     return info;
   }
 
@@ -196,7 +196,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       info.setRegionInScreen(new android.graphics.Region(at[0], at[1], at[0] + w.view.getWidth(), at[1] + w.view.getHeight()));
       info.setTitle(w.params.getTitle());
       rootNode(w);  // links the root's direct connection
-      info.setConnectionId(w.root.getDirectAccessibilityConnectionId());
+      if (Api.LEVEL >= 34) info.setConnectionId(w.root.getDirectAccessibilityConnectionId());  // SPIKE
       out.add(info);
     }
     return out;
@@ -399,6 +399,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
       }
     }
     if (root != null && root.getView() != null) {
+      if (Api.LEVEL < 34) return e;  // SPIKE: no direct connection below 34
       e.setConnectionId(root.getDirectAccessibilityConnectionId());
       e.setSealed(true);
       try {
@@ -448,6 +449,7 @@ public class ShadowSimUiAutomation extends ShadowUiAutomation {
     if (root == null) return e;
     giveWindowId(root);
     e.setSource(v);
+    if (Api.LEVEL < 34) return e;  // SPIKE
     e.setConnectionId(root.getDirectAccessibilityConnectionId());
     e.setSealed(true);
     // Robolectric's AccessibilityRecord shadow answers getSource() only with a node given to it (setSourceNode),

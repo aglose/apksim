@@ -25,7 +25,7 @@ import org.robolectric.annotation.Config;
  * probe's), the run keeps the manifest's Application and says so.
  */
 @RunWith(SimRunner.class)
-@Config(sdk = 36, application = Application.class)
+@Config(application = Application.class)
 public class RunnerApplication {
   /** What the probe found, when it differs from the manifest's; read by SimRunner for every test after it. */
   static volatile Class<? extends Application> chosen;

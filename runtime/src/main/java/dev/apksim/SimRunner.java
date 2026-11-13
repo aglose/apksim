@@ -72,7 +72,7 @@ public class SimRunner extends RobolectricTestRunner {
 
     @Override
     public List<Sdk> selectSdks(ConfigurationStrategy.Configuration configuration, UsesSdk usesSdk) {
-      return List.of(sdks.getSdk(36));
+      return List.of(sdks.getSdk(Api.LEVEL));
     }
   }
 
@@ -419,8 +419,28 @@ public class SimRunner extends RobolectricTestRunner {
       if (REPEAT_FOREVER) shadows.add(ShadowRepeatingAnimator.class);  // Host's paused Choreographer: INFINITE repeats
     }
     if (Snapshot.ON) shadows.add(Snapshot.ShadowSteadyCaret.class);  // --snapshot: carets that do not blink
+    if (Api.LEVEL != 36) {  // SPIKE: a shadow of a class this framework lacks cannot even be read
+      shadows.removeIf(c -> {
+        try {
+          c.getAnnotation(org.robolectric.annotation.Implements.class).value();
+          c.getDeclaredMethods();  // a signature naming a class this framework lacks
+          c.getDeclaredFields();
+          // Below 35 natives are reached through Robolectric's ShadowNative* classes, not bound on the framework:
+          // a shadow of ours that replaces one of them without extending it loses its natives.
+          if (!Api.OWN_RUNTIME && (c == dev.apksim.gpu.ShadowGpuRecordingCanvas.Recording.class || c == dev.apksim.gpu.ShadowGpuRecordingCanvas.class)) return true;
+          return SPIKE_SKIP.contains(c.getSimpleName());
+        } catch (Throwable t) {
+          if (SPIKE_SAID.add(c.getName())) System.err.println("[apksim] api " + Api.LEVEL + ": shadow " + c.getName() + " skipped: " + t);
+          return true;
+        }
+      });
+    }
     return shadows.toArray(new Class<?>[0]);
   }
+
+  static final java.util.Set<String> SPIKE_SAID = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  static final java.util.Set<String> SPIKE_SKIP = new java.util.HashSet<>(java.util.Arrays.asList(
+      System.getProperty("apksim.skipShadows", "").split(",")));
 
   private static Class<?>[] baseShadows() {
     return new Class<?>[] {ShadowFastRipple.class, ShadowDeviceKeyCharacterMap.class, ShadowNoBiometrics.class, ShadowSimBiometricPrompt.class, ShadowSimUiAutomation.class, TestActivities.ShadowSimActivityClient.class, TestActivities.ShadowSimActivity.class, TestActivities.ShadowSimContextImpl.class, dev.apksim.gl.ShadowSimGLES20.class, dev.apksim.gl.ShadowSimGLES30.class, dev.apksim.gl.ShadowSimEGL14.class, TestActivities.ShadowSimDecorView.class, TestActivities.ShadowSimInstrumentation.class, AppCallbacks.ShadowSimApplication.class, dev.apksim.video.ShadowSimTextureView.class, dev.apksim.video.ShadowSimSurfaceView.class, dev.apksim.video.ShadowSimMediaCodec.class, dev.apksim.video.ShadowSimAudioTrack.class, LocalSockets.ShadowSimLocalServerSocket.class, LocalSockets.ShadowSimLocalSocket.class, LocalSockets.ShadowSimLinux.class, ShadowSimSSLSockets.class, Bluetooth.ShadowSimBluetoothAdapter.class, dev.apksim.ble.Devices.ShadowSimBluetoothLeScanner.class, dev.apksim.ble.Devices.ShadowSimBluetoothGatt.class, dev.apksim.ble.Devices.ShadowSimBluetoothDevice.class, ShadowSimViewRootImpl.class, ShadowSimWindowManagerImpl.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.class, dev.apksim.gpu.ShadowGpuRecordingCanvas.Recording.class, ShadowSimUiAutomation.ShadowSimAccessibilityManager.class, ShadowSimConnectivityManager.class, SystemBroadcasts.ShadowSimAudioManager.class, SimWifi.ShadowSimWifiManager.class, TimeZones.ShadowSimAlarmManager.class, Thermal.ShadowSimPowerManager.class, dev.apksim.camera.ShadowSimCameraCaptureSession.class, dev.apksim.camera.ShadowSimImageReader.class, dev.apksim.camera.ShadowSimCameraManager.class, dev.apksim.camera.ShadowSimCameraDevice.class, dev.apksim.video.ShadowSimSurface.class, SkinShape.ShadowSimDisplay.class, SkinShape.ShadowSimInsetsController.class};
@@ -428,7 +448,7 @@ public class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected Config buildGlobalConfig() {
-    return new Config.Builder().setSdk(36).build();
+    return new Config.Builder().setSdk(Api.LEVEL).build();
   }
 
   @Override
