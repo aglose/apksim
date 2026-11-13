@@ -75,6 +75,13 @@ final class SystemFeatures {
     robolectric.clear();
     apply(app, d);
     Bluetooth.featuresChanged(app);
+    Sensors.deviceChanged(app, d);
+    apply(app, d);  // again, for the new kind's sensor features
+  }
+
+  /** The device's sensors changed (`sensor NAME off|on`): their android.hardware.sensor.* features follow. */
+  static void sensorsChanged(Application app) {
+    apply(app, Device.peek());
   }
 
   private static void apply(Application app, Device d) {
@@ -91,6 +98,8 @@ final class SystemFeatures {
       for (String f : HANDHELD) want.put(f, true);
       if (d.kind().equals("desktop")) want.put("android.hardware.type.pc", true);
     }
+    for (String f : Sensors.ALL_FEATURES) want.put(f, false);
+    for (String f : Sensors.features()) want.put(f, true);
     if (Cameras.fake()) for (String f : Cameras.FEATURES) want.put(f, true);  // --camera fake
     want.putAll(launchOptions());
     Map<String, Boolean> list = list();

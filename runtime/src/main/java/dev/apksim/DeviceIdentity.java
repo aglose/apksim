@@ -42,6 +42,7 @@ final class DeviceIdentity {
       String serial = serial();
       ShadowBuild.setSerial(serial);
       ReflectionHelpers.setStaticField(Build.class, "SERIAL", serial);
+      Sensors.beforeApplicationOnCreate(app);  // first: SystemFeatures lists its features
       SystemFeatures.beforeApplicationOnCreate(app);
       Bluetooth.beforeApplicationOnCreate(app);
       Cameras.install(app);

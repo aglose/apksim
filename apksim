@@ -220,6 +220,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
+    # A sensor's value before the app starts (repeatable): NAME=VALUE, e.g. light=300, proximity=near, accel=0:0:9.81, tilt=-45:0.
+    --sensor)
+      [[ "$2" =~ ^[a-z-]+=.+$ ]] || { echo "--sensor takes NAME=VALUE (light=300, accel=0:9.8:0)" >&2; exit 2; }
+      SENSORS="${SENSORS:+$SENSORS,}$2"; shift 2 ;;
     # Scripted BLE peripherals (dev.apksim.ble, docs/ble.md): a JSON file or a preset (heart-rate, battery). Repeatable.
     --ble) EXTRA+=("-Dapksim.ble.${BLE_N:-0}=$2"); BLE_N=$((${BLE_N:-0} + 1)); shift 2 ;;
     # Simulated cameras (Cameras.java): off (default), fake (camera features, a back and a front camera in CameraManager,
@@ -319,6 +323,7 @@ done
 [[ -n "${RECORD_MODE:-}" && -z "${RECORD_DIR:-}" ]] && { echo "--record needs --record-dir DIR" >&2; exit 2; }
 [[ -n "${NET_HOSTS:-}" ]] && EXTRA+=("-Dapksim.networkHost=$NET_HOSTS")
 [[ -n "${FEATURES:-}" ]] && EXTRA+=("-Dapksim.features=$FEATURES")
+[[ -n "${SENSORS:-}" ]] && EXTRA+=("-Dapksim.sensors=$SENSORS")
 [[ -n "${SKIP_LIBS:-}" ]] && EXTRA+=("-Dapksim.skipLibraries=$SKIP_LIBS")
 # The skin store's folders (docs/skins.md), for --skin and the `skin` command: an instance from a standby has the
 # standby's environment, not this one's.
@@ -351,7 +356,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.ble.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;

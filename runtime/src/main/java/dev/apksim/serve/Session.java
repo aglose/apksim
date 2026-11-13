@@ -1478,6 +1478,9 @@ final class Session {
     if (t.matches("animscale (0|0\\.5|1|1\\.5|2|5|10|toggle)")) return t;
     // What the fake camera sees (--camera fake), never `camera image PATH`: a tab names no host file.
     if (t.matches("camera (pattern|off)")) return t;
+    // The simulated sensors' values (Sensors): numbers only, no sensor taken away.
+    if (t.matches("sensor (shake( [0-9]{1,5})?|tilt " + NUM + " " + NUM + "|(accel|gyro) " + NUM + " " + NUM + " " + NUM
+        + "|(light|pressure|humidity|temperature) " + NUM + "|proximity (near|far|" + NUM + ")|steps \\+?" + NUM + "|heart-rate (" + NUM + "|off)|reset)")) return t;
     if (t.matches("open [a-zA-Z][a-zA-Z0-9+.-]*:[^\\s\\p{Cntrl}]{1,2000}")) return t;
     if (t.startsWith("type ")) {
       // Control commands are one line, split on spaces: runs of white space become one space.

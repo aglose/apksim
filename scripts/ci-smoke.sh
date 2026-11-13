@@ -148,6 +148,28 @@ echo "Time ticks: $before -> $crossed -> $same"
   || { echo "the app did not hear one ACTION_TIME_TICK at the minute boundary" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 
+# Sensors (Sensors.java, the test app's apksim://sensors): the device lists an emulator's sensors, each registered
+# listener gets a first event at once (an app awaiting one must not hang), at rest the accelerometer reads gravity on the
+# axis the rotation gives, and `sensor ...` changes what the listeners hear: light and proximity (on-change), the pose.
+sensor_line() { drive nodes | grep -oE "text=\"$1 \(type [0-9]+[^\"]*\"" | grep -oE ': [-0-9. ]+, n=[0-9]+' | head -1; }
+drive 'open apksim://sensors' 'wait 2500' >/dev/null
+count="$(drive nodes | grep -oE 'text="sensors: [0-9]+"')"
+rest="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+light0="$(sensor_line 'Goldfish Light sensor')"
+drive 'sensor light 300' 'sensor proximity near' 'wait 600' >/dev/null
+light1="$(sensor_line 'Goldfish Light sensor')"
+prox="$(sensor_line 'Goldfish Proximity sensor')"
+drive 'rotate right' 'wait 800' >/dev/null
+turned="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+drive 'rotate left' 'sensor tilt 0 0' 'wait 800' >/dev/null
+flat="$(sensor_line 'Goldfish 3-axis Accelerometer')"
+drive 'sensor light off' 'sensor' | grep -q 'removed: light' || { echo "sensor light off did not take the light sensor away" >&2; exit 1; }
+echo "Sensors: $count; at rest$rest; light$light0 -> $light1; proximity$prox; rotated$turned; flat$flat"
+[[ "$count" == 'text="sensors: 20"' && "$rest" == ': 0.00 9.81 0.00, n='* && "$light0" == ': 0.00, n=1' && "$light1" == ': 300.00, n=2' \
+   && "$prox" == ': 0.00, n=2' && "$turned" == ': 9.81 0.00 0.00, n='* && "$flat" == ': 0.00 0.00 9.81, n='* ]] \
+  || { echo "the sensors did not deliver, follow the rotation or follow the sensor command" >&2; exit 1; }
+drive 'sensor reset' 'back' 'wait 1000' >/dev/null
+
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
 # to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
 # (the test app's apksim://install, issues 76 and 81).

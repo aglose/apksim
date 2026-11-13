@@ -73,7 +73,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Software keyboard | Cmd+K toggles | None | Draw a simple on-screen keyboard as an overlay that posts the same key events, and report IME insets (`WindowInsets.ime`) so layouts move as on a device. Needed to catch "keyboard hides the field" bugs | L |
 | Clipboard sync | Both directions, automatic | Mac → app as typed text (Cmd+V) | Make `ClipboardManager` real: shadow it onto `NSPasteboard` both ways, so the app's own paste menus and `copy` work | S |
 | Hardware buttons | Home, Lock, Side, Volume, Siri, Apple Pay | Back only | Home: pause/stop the activity, show a home screen (see Lifecycle), click to resume. Lock: screen off (`onPause/onStop`, `Display.STATE_OFF`). Volume: `KEYCODE_VOLUME_*` + `AudioManager` stream volume. Power long-press: ignore | S |
-| Shake | Ctrl+Cmd+Z | None | Feed an accelerometer burst through Robolectric's `ShadowSensorManager` (see Sensors) | S |
+| Shake | Ctrl+Cmd+Z | `sensor shake [MS]` (control channel, adb shell, a test's `executeShellCommand`): a decaying 8 Hz burst on the accelerometer and linear acceleration | Device > Shake in the Mac menu (a native menu item that sends the command) | S |
 | Game controller | Yes | No | `GCController` → `InputDevice` with `SOURCE_GAMEPAD` + `KEYCODE_BUTTON_*`/axis `MotionEvent`s. Low priority | M |
 | Drag and drop onto the device | APK/app install, photos, URLs | None | Drop an `.apk`: launch it in a new instance. Drop images/videos: add to the app-visible MediaStore (see Files). Drop a URL: deep link (see Lifecycle) | M |
 
@@ -82,7 +82,7 @@ Most rows below depend on four pieces. Building them once makes the rest mostly 
 | Feature | iOS Simulator | apksim today | Plan | Size |
 |---|---|---|---|---|
 | Location | Custom, City Run, Freeway Drive, GPX | None | `ShadowLocationManager.simulateLocation`; Fused Location (Play Services) is absent, so also shadow `FusedLocationProviderClient` when the APK has it. Menu: custom lat/long, and GPX/route playback on the simulated clock | M |
-| Motion sensors | Shake only | None | `ShadowSensorManager` events for accelerometer/gyro/rotation vector; a small "device tilt" panel; tie to rotation | M |
+| Motion and environment sensors | Shake only | Done (`Sensors`): the sensors of an emulator of the device kind (accelerometer, gyroscope, magnetometer, light, proximity, pressure, humidity, temperature, gravity, linear acceleration, rotation vectors, orientation, plus step counter and detector, and heart rate on a watch; none on a TV), delivered to each listener on its handler at the rate it asked for, on-change ones at registration and on each change; at rest gravity follows `rotate`; `sensor accel\|gyro\|tilt\|light\|proximity\|steps\|heart-rate\|NAME off`, `--sensor NAME=VALUE`, in test runs too (docs: AGENTS.md "Sensors") | A tilt panel in the Mac window; serve tabs sending `sensor`; trigger sensors, direct channels | - |
 | Memory warning | Debug → Simulate Memory Warning | None | `memory` command: call `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)` and `onLowMemory()` on the Application and activities | S |
 | Locale, region, 24-hour time | Settings, scheme options | Host defaults | `locale` qualifier + `Locale.setDefault` + config change; `--locale fr-FR`; RTL pseudo-locale (`ar-XB`) for layout testing | S |
 | Time zone and clock | Scheme options | Host zone | `TimeZone.setDefault` + `ACTION_TIMEZONE_CHANGED`; the clock is already simulated, so "jump the clock" is cheap | S |
