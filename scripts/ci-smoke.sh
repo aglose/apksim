@@ -76,6 +76,9 @@ drive 'open apksim://popup-trace' 'wait 2000' 'tap 168 152' 'wait 500' 'tap 168 
 shown="$(popup)"
 drive 'tap 143 632' 'wait 1000' >/dev/null
 tapped="$(popup)"
+# A full-screen FLAG_NOT_TOUCHABLE overlay above the activity takes no touch (issue 323): a tap on Settings lands.
+drive 'open apksim://composeapp/trips?overlay=full' 'wait 2500' 'tap 550 1690' 'wait 1000' >/dev/null
+drive nodes | grep -q 'text="Notifications"' || { echo "a tap did not pass an untouchable overlay" >&2; exit 1; }
 echo "Popup and Trace: $shown-> $tapped"
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" ' \
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" ' ]] \

@@ -63,8 +63,6 @@ class MainActivity : ComponentActivity() {
     setContent {
       MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) { Root(db, startTab) }
     }
-    // apksim://composeapp/trips?overlay=1 adds an empty overlay window after this activity's window, as some apps do
-    // (issue 123): hidden, 0x0, not focusable. Typing must still reach the focused field below it.
     // overlay=full is a full-screen one that is FLAG_NOT_TOUCHABLE (issue 323): taps must go to the activity below.
     if (intent?.data?.getQueryParameter("overlay") == "full") {
       window.decorView.post {
@@ -77,6 +75,8 @@ class MainActivity : ComponentActivity() {
         Log.i("ComposeApp", "full-screen untouchable overlay added")
       }
     }
+    // apksim://composeapp/trips?overlay=1 adds an empty overlay window after this activity's window, as some apps do
+    // (issue 123): hidden, 0x0, not focusable. Typing must still reach the focused field below it.
     if (intent?.data?.getQueryParameter("overlay") == "1") {
       window.decorView.post {
         val params = android.view.WindowManager.LayoutParams(
