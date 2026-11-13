@@ -1481,6 +1481,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   throw, as on a device. A device test calling a blocking DAO method from its body failed here (`RoomConformanceTest`). Work an Espresso action runs inline from the
   body passes where a device would throw. Only an unminified `RoomDatabase` is matched (a test calling an R8 app's Room
   keeps Room's own check); `-Dapksim.roomTestBody=false` turns it off.
+- StrictMode's incorrect-context check (`detectIncorrectContextUse`) passes for a context whose wrapper chain holds an Activity or a DecorContext (`TestActivities.ShadowSimStrictMode`, running instances too): a device's activity base is an activity-type ContextImpl, Robolectric's is the application's, so every View logged a violation (issue 341). Only the two StrictMode checks: `Context.isUiContext()` on an activity still answers false, and shadowing `ContextWrapper` for it throws ClassCastException (a superclass shadow must be the base of ShadowActivity's chain). `UiContextTest`.
 - `getInstrumentation().getContext()` is the test APK's own context (its package and assets: JSON fixtures), through
   the translator (`TestActivities.instrumentationContext`).
 - JUnit's `@RunWith(Parameterized)` runs inside the test environment, each parameter set as a SimRunner child

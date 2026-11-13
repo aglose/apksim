@@ -685,7 +685,7 @@ public final class TestActivities {
   public static class ShadowSimStrictMode {
     @Implementation
     protected static void assertConfigurationContext(Context context, String methodName) {
-      if (!activityBacked(context)) {
+      if (android.os.StrictMode.vmIncorrectContextUseEnabled() && !activityBacked(context)) {
         org.robolectric.shadow.api.Shadow.directlyOn(android.os.StrictMode.class, "assertConfigurationContext",
             org.robolectric.util.ReflectionHelpers.ClassParameter.from(Context.class, context),
             org.robolectric.util.ReflectionHelpers.ClassParameter.from(String.class, methodName));
@@ -694,7 +694,7 @@ public final class TestActivities {
 
     @Implementation
     protected static void assertUiContext(Context context, String methodName) {
-      if (!activityBacked(context)) {
+      if (android.os.StrictMode.vmIncorrectContextUseEnabled() && !activityBacked(context)) {
         org.robolectric.shadow.api.Shadow.directlyOn(android.os.StrictMode.class, "assertUiContext",
             org.robolectric.util.ReflectionHelpers.ClassParameter.from(Context.class, context),
             org.robolectric.util.ReflectionHelpers.ClassParameter.from(String.class, methodName));

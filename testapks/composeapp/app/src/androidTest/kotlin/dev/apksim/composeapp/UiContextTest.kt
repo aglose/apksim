@@ -30,6 +30,20 @@ class UiContextTest {
   }
 
   @Test
+  fun aViewMadeWithTheApplicationStillIsReported() {
+    val seen = java.util.concurrent.atomic.AtomicInteger()
+    val old = StrictMode.getVmPolicy()
+    try {
+      StrictMode.setVmPolicy(
+        StrictMode.VmPolicy.Builder().detectIncorrectContextUse().penaltyListener({ it.run() }) { seen.incrementAndGet() }.build())
+      ViewConfiguration.get(InstrumentationRegistry.getInstrumentation().targetContext.applicationContext)
+    } finally {
+      StrictMode.setVmPolicy(old)
+    }
+    assertTrue("violations: ${seen.get()}", seen.get() > 0)
+  }
+
+  @Test
   fun viewsMadeWithAnActivityPassStrictModeWithPenaltyDeath() {
     ActivityScenario.launch(MainActivity::class.java).use { scenario ->
       scenario.onActivity { activity ->
