@@ -31,7 +31,7 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter;
  * of them: gravity, linear acceleration, rotation vectors, orientation) and delivers events as a device does.
  *
  * <p>State is one physical pose: the gravity vector in the device's frame, which at rest follows the display rotation
- * (portrait upright: 0, 9.81, 0; `rotate left` turns it onto x, as turning a phone does), a rotation rate (gyroscope),
+ * (portrait upright: 0, 9.81, 0; `rotate right` turns it onto x, as turning a phone does), a rotation rate (gyroscope),
  * a shake in progress, and the ambient light, proximity, pressure, humidity, temperature, step count and heart rate.
  * Every sensor's values are computed from that, so the accelerometer, gravity, magnetometer, orientation and rotation
  * vectors agree with each other.
@@ -155,7 +155,8 @@ public final class Sensors {
   private static final Map<Spec, Sensor> SENSORS = new LinkedHashMap<>();
   private static final Set<String> REMOVED = new LinkedHashSet<>();  // keys switched off with `sensor NAME off`
   private static final Map<String, java.util.concurrent.atomic.AtomicLong> SENT = new java.util.concurrent.ConcurrentHashMap<>();
-  private static final Map<String, float[]> LAST = new java.util.concurrent.ConcurrentHashMap<>();
+  /** One Sensor object per spec for the life of the device, so an app that kept one can register it after `on`. */
+  private static final Map<Spec, Sensor> OBJECTS = new java.util.concurrent.ConcurrentHashMap<>();
   private static volatile Device device;
 
   private static volatile float[] gravity;  // null: at rest, from the display rotation
@@ -200,7 +201,7 @@ public final class Sensors {
   static void deviceChanged(Application app, Device d) {
     device = d;
     rebuild();
-    for (Reg r : REGS) if (specOf(r.sensor) == null) r.stop();  // a sensor the new kind lacks stops delivering
+    dropMissing();  // a sensor the new kind lacks loses its registrations
   }
 
   /** Between tests (SimTestEnvironment.resetState): nothing registered, the launch's state follows at the next setup. */
@@ -212,7 +213,7 @@ public final class Sensors {
       REMOVED.clear();
     }
     SENT.clear();
-    LAST.clear();
+    OBJECTS.clear();
     defaults();
   }
 
@@ -237,14 +238,16 @@ public final class Sensors {
 
   private static void rebuild() {
     synchronized (LOCK) {
-      Map<Spec, Sensor> old = new LinkedHashMap<>(SENSORS);
       SENSORS.clear();
-      int handle = 1;
-      for (Spec s : kindSpecs(device == null ? Device.peek() : device)) {
-        int h = handle++;
-        if (REMOVED.contains(s.key())) continue;
-        Sensor prev = old.get(s);
-        SENSORS.put(s, prev != null ? prev : create(s, h));
+      for (Spec sp : kindSpecs(device == null ? Device.peek() : device)) {
+        if (REMOVED.contains(sp.key())) continue;
+        int h = 1;
+        for (Spec x : ALL_SPECS) {
+          if (x == sp) break;
+          h++;
+        }
+        final int handle = h;
+        SENSORS.put(sp, OBJECTS.computeIfAbsent(sp, k -> create(k, handle)));
       }
     }
   }
@@ -268,6 +271,15 @@ public final class Sensors {
     ReflectionHelpers.setField(o, "mFifoReservedEventCount", 0);
     ReflectionHelpers.setField(o, "mFifoMaxEventCount", 0);
     return o;
+  }
+
+  private static void dropMissing() {
+    for (Reg r : REGS) {
+      if (specOf(r.sensor) == null) {
+        r.stop();
+        REGS.remove(r);
+      }
+    }
   }
 
   private static Spec specOf(Sensor sensor) {
@@ -467,7 +479,7 @@ public final class Sensors {
     public void run() {
       if (!active) return;
       long now = SystemClock.elapsedRealtimeNanos();
-      if (spec.continuous()) {
+      if (spec.continuous() && !Snapshot.ON) {  // --snapshot: one event only, so the screen can settle
         // Next first: a listener that throws must not end the stream, and one that unregisters removes it.
         nextNs += periodNs;
         if (nextNs < now) nextNs = now;  // late (a busy looper, a clock that jumped): drop events, as a device does
@@ -487,7 +499,6 @@ public final class Sensors {
     e.accuracy = SensorManager.SENSOR_STATUS_ACCURACY_HIGH;
     e.timestamp = ns;
     SENT.computeIfAbsent(spec.key(), k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
-    LAST.put(spec.key(), v);
     l.onSensorChanged(e);
   }
 
@@ -694,13 +705,13 @@ public final class Sensors {
     if (a.length < 2 || a[1].equals("list")) return describe();
     String cmd = a[1].toLowerCase(Locale.ROOT);
     String key = ALIASES.get(cmd);
-    if (key != null && a.length == 3 && (a[2].equals("on") || a[2].equals("off"))) {
+    if (key != null && a.length == 3 && (a[2].equals("on") || a[2].equals("off")) && !key.equals("heart-rate") || key != null && a.length == 3 && key.equals("heart-rate") && a[2].equals("on")) {
       synchronized (LOCK) {
         if (a[2].equals("off")) REMOVED.add(key); else REMOVED.remove(key);
       }
       // A sensor taken away stops its listeners' events (they stay registered, as on hot-unplug).
       rebuild();
-      for (Reg r : REGS) if (specOf(r.sensor) == null) r.active = false;
+      dropMissing();
       refreshFeatures();
       return key + " " + a[2];
     }
@@ -758,7 +769,7 @@ public final class Sensors {
             float n = num(rel ? a[2].substring(1) : a[2]);
             float now = rel ? old + n : n;
             steps = now;
-            changed(STEPS);
+            if (now != old) changed(STEPS);
             Spec det = byType(Sensor.TYPE_STEP_DETECTOR);
             if (det != null && now > old) stepEvents(det, (int) Math.min(100, now - old));
             return "steps " + (long) now;
@@ -766,8 +777,9 @@ public final class Sensors {
         }
         case "heart-rate", "heartrate" -> {
           if (a.length == 3) {
+            float before = heartRate;
             heartRate = a[2].equals("off") ? Float.NaN : num(a[2]);
-            if (!Float.isNaN(heartRate)) changed(HEART);
+            if (!Float.isNaN(heartRate) && heartRate != before) changed(HEART);
             return "heart-rate " + (Float.isNaN(heartRate) ? "off" : fmt(new float[] {heartRate}));
           }
         }

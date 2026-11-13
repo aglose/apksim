@@ -550,8 +550,7 @@ refuses. `sensor NAME off` makes getDefaultSensor return null and stops that sen
 each setup, `executeShellCommand("apksim sensor ...")` as `thermal`; events follow the handler looper's clock, which in
 a default test run is simulated, so a test that does not move it sees each registration's first event only; waiting on
 the main thread with a `CountDownLatch` (clock following real time) or `idleFor` delivers them, and
-`ShadowLooper.runToEndOfTasks` never returns while a continuous listener is registered. A device switch removes the new
-kind's missing sensors' registrations. The control channel's `sensor` is also allowed from a serve tab, values only
+`ShadowLooper.runToEndOfTasks` never returns while a continuous listener is registered. A device switch (and `NAME off`) drops the registrations of sensors the device no longer has; one `Sensor` object per sensor lives as long as the device, so `on` restores it. `heart-rate off` clears the reading (the sensor stays). Under `--snapshot` a continuous sensor delivers its first event only, so `settle` still settles. Robolectric's own test hooks (`shadowOf(sm).sendSensorEventToListeners`, `addSensor`, `getListeners`, `setForceListenersToFail`) do not see these registrations. The control channel's `sensor` is also allowed from a serve tab, values only
 (`Session.check`). Not done: Device > Shake in the Mac menu, a tilt panel, `SensorDirectChannel`, trigger sensors
 (`requestTriggerSensor` returns false), batching, dynamic sensors, data injection, the emulator's two debug sensors, the
 flight recorder (only the commands are kept). The test app's `apksim://sensors[?rate=fastest|game|ui|normal]`
