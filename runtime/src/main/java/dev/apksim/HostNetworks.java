@@ -22,7 +22,8 @@ import org.robolectric.shadows.ShadowNetworkInfo;
  * Shows the app the host's real network interfaces as Android networks. Robolectric's stand-ins have no
  * interface names or addresses, and libwebrtc ignores every interface that ConnectivityManager does not
  * name, so without this a WebRTC call only ever offered loopback candidates. The interface with the
- * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (WireGuard-style VPNs) become VPNs.
+ * default route becomes Wi-Fi; tunnel interfaces with an IPv4 address (WireGuard-style VPNs) become VPNs that also carry the
+ * underlying Wi-Fi's transport, WifiInfo and signal, as a device's VPN network does (issue 347); VPN-only without one.
  */
 final class HostNetworks {
   private HostNetworks() {}
@@ -35,13 +36,14 @@ final class HostNetworks {
     // A device's VPN network carries the underlying network's transports too (WIFI|VPN), and an app classifying the
     // last callback's transports must see Wi-Fi there (issue 347). The underlying one is the first non-tunnel network.
     NetworkInterface underlying = null;
-    for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+    var interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+    for (NetworkInterface ni : interfaces) {
       if (isDirect(ni)) { underlying = ni; break; }
     }
     NetworkInfo active = null;
     NetworkCapabilities activeCaps = null;
     LinkProperties activeLinks = null;
-    for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+    for (NetworkInterface ni : interfaces) {
       if (!ni.isUp() || ni.isLoopback() || !hasIpv4(ni)) continue;
       boolean tunnel = isTunnel(ni);
       // Bridges and virtual adapters are not the way out.
