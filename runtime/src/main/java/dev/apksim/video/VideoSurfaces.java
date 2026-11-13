@@ -19,6 +19,11 @@ public final class VideoSurfaces {
   private static final class Entry {
     final View view;
     volatile Bitmap picture;
+    /** Pictures published to this surface so far (the totals below are process-wide, this one is the view's own). */
+    final java.util.concurrent.atomic.AtomicLong pictures = new java.util.concurrent.atomic.AtomicLong();
+    /** A codec was configured with this surface, or something published to it (camera, WebRTC). */
+    volatile boolean producer;
+    volatile boolean codec;
 
     Entry(View view) {
       this.view = view;
@@ -30,10 +35,46 @@ public final class VideoSurfaces {
   /** libwebrtc frames dropped for --video blank (here: SimEglRenderer references org.webrtc, which not every app has). */
   static final java.util.concurrent.atomic.AtomicLong webrtcBlank = new java.util.concurrent.atomic.AtomicLong();
 
+  /** Video codecs configured so far, live or released (the report's `codecs` lists only live ones). */
+  private static final java.util.concurrent.atomic.AtomicLong configured = new java.util.concurrent.atomic.AtomicLong();
+  /** How long a laid-out view may hold its surface with nothing attached before one stderr line says so. */
+  private static final long NO_CODEC_WARN_MS = 3000;
+  private static java.util.concurrent.ScheduledExecutorService watch;
+
+  /** A video codec was configured with [surface] (null: no surface). */
+  static void codecConfigured(android.view.Surface surface) {
+    configured.incrementAndGet();
+    SurfaceTexture t = textureOf(surface);
+    Entry e = t == null ? null : ENTRIES.get(t);
+    if (e != null) e.codec = e.producer = true;
+  }
+
+  private static synchronized void watchFor(SurfaceTexture surface, Entry e) {
+    if (watch == null) {
+      watch = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "apksim-video-watch");
+        t.setDaemon(true);
+        return t;
+      });
+    }
+    watch.schedule(() -> {
+      try {
+        if (ENTRIES.get(surface) != e || e.producer) return;
+        int w = e.view.getWidth(), h = e.view.getHeight();
+        if (w <= 0 || h <= 0) return;
+        System.err.println("[apksim] " + e.view.getClass().getSimpleName() + " " + w + "x" + h + " has had its surface for "
+            + NO_CODEC_WARN_MS / 1000 + " s with no codec attached (nothing has been decoded for it)");
+      } catch (Throwable ignored) {
+        // Diagnostics only.
+      }
+    }, NO_CODEC_WARN_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+  }
+
   /** For the `video` control command. */
   public static String report() {
     StringBuilder b = new StringBuilder("decoded=" + VideoToolbox.decoded.get() + " decodeErrors=" + VideoToolbox.failed.get()
-        + " drawn=" + published.get() + " blank=" + webrtcBlank.get() + " surfaces=" + ENTRIES.size());
+        + " drawn=" + published.get() + " blank=" + webrtcBlank.get() + " surfaces=" + ENTRIES.size()
+        + " codecsConfigured=" + configured.get());
     b.append(" | mediacodec");
     for (int i = 0; i < ShadowSimMediaCodec.STAT_NAMES.length; i++) {
       b.append(' ').append(ShadowSimMediaCodec.STAT_NAMES[i]).append('=').append(ShadowSimMediaCodec.STATS.get(i));
@@ -45,13 +86,16 @@ public final class VideoSurfaces {
     for (Entry e : ENTRIES.values()) {
       Bitmap p = e.picture;
       b.append(" [").append(e.view.getWidth()).append('x').append(e.view.getHeight())
-          .append(p == null ? " empty" : " " + p.getWidth() + "x" + p.getHeight()).append(']');
+          .append(p == null ? " empty" : " " + p.getWidth() + "x" + p.getHeight())
+          .append(", pictures=").append(e.pictures.get()).append(e.producer ? "" : ", no codec attached").append(']');
     }
     return b.toString();
   }
 
   static void attach(SurfaceTexture surface, View view) {
-    ENTRIES.put(surface, new Entry(view));
+    Entry e = new Entry(view);
+    ENTRIES.put(surface, e);
+    watchFor(surface, e);
   }
 
   static void detach(SurfaceTexture surface) {
@@ -93,7 +137,11 @@ public final class VideoSurfaces {
   public static void publish(SurfaceTexture surface, Bitmap picture) {
     Entry e = ENTRIES.get(surface);
     if (e == null) return;
-    if (picture != null) published.incrementAndGet();
+    if (picture != null) {
+      published.incrementAndGet();
+      e.pictures.incrementAndGet();
+      e.producer = true;
+    }
     e.picture = picture;
     e.view.post(() -> {
       if (ENTRIES.get(surface) != e) return;
