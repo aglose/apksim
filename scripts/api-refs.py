@@ -10,7 +10,10 @@ class links against, member tables for what the framework has (inherited members
 Reported per apksim source file, most references first:
   class    a framework class that is not there
   method   a method that is not there under that name and descriptor (the class is)
-  field    likewise a field
+  field    likewise a field (an enum constant included)
+  unjudged a method the framework class would inherit from a JDK class, when no JDK was found to look in
+  super    (--base BASE.jar) a framework class apksim uses that had a supertype in BASE.jar and does not have it
+           here: a cast or an argument of that type fails at run time though every member exists
   sig      a shadow (@Implements) whose own method or field signatures name a missing class: Robolectric reads a
            shadow's methods with getDeclaredMethods, which then throws for the whole shadow
   shadows  an @Implements(value = X.class) whose X is missing: the shadow cannot even be registered
@@ -20,26 +23,21 @@ Reported per apksim source file, most references first:
   string   a string constant that looks like a missing android.* class (reflection, @Implements(className = ...),
            a translator rewrite's owner): advisory
 
-Not seen: members reached by reflection through names built at run time, behaviour differences behind a signature
-that exists at both levels, and what Robolectric's own shadows do at that level. docs/api-levels.md has a run's result.
+Not seen: members reached by reflection (ReflectionHelpers, java.lang.reflect: names in strings), behaviour
+differences behind a signature that exists at both levels, a changed constant value, and what Robolectric's own
+shadows do at that level. docs/api-levels.md has a run's result.
 """
 import collections
 import json
+import os
 import re
 import struct
 import sys
 import zipfile
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAMEWORK = re.compile(r"^(android|com/android|libcore|dalvik|com/google/android|org/apache/harmony|org/ccil|"
-                       r"com/ibm/icu/|android/icu)(/|$)")
-
-
-JDK_INTERFACES = {
-    "java/lang/Runnable": {"run"}, "java/lang/Comparable": {"compareTo"}, "java/lang/AutoCloseable": {"close"},
-    "java/io/Closeable": {"close"}, "java/lang/Iterable": {"iterator", "forEach", "spliterator"},
-    "java/io/Serializable": set(), "java/lang/Cloneable": set(), "java/lang/CharSequence": {
-        "length", "charAt", "subSequence", "chars", "codePoints", "isEmpty"},
-}
+                       r"com/ibm/icu)(/|$)")
 
 
 class Cls:
@@ -192,6 +190,16 @@ def parse(data, members=True, refs=False):
     return c
 
 
+def jdk_path():
+    """The JDK scripts/build.sh recorded (work/jdk.path, relative to the checkout when inside it)."""
+    try:
+        with open(os.path.join(ROOT, "work", "jdk.path")) as f:
+            path = f.read().strip()
+        return path if os.path.isabs(path) else os.path.join(ROOT, path)
+    except OSError:
+        return None
+
+
 def element_class(name):
     """[[Landroid/x/Y; -> android/x/Y; a primitive array -> None."""
     if name.startswith("["):
@@ -209,7 +217,9 @@ def main():
     ap = argparse.ArgumentParser(usage="api-refs.py FRAMEWORK.jar [APKSIM.jar] [--json FILE] [--level N]",
                                  description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("framework")
-    ap.add_argument("apksim", nargs="?", default="work/apksim.jar")
+    ap.add_argument("apksim", nargs="?", default=os.path.join(ROOT, "work", "apksim.jar"))
+    ap.add_argument("--base", help="the framework jar apksim.jar was built against: adds the `super` kind")
+    ap.add_argument("--jdk", help="a JDK home with jmods/, for members inherited from JDK classes")
     ap.add_argument("--json")
     ap.add_argument("--level", type=int, help="the jar's API level, when it has no build.prop to say so")
     opts = ap.parse_args()
@@ -227,6 +237,27 @@ def main():
                 if c:
                     fw[c.name] = c
 
+    jdk_zip, jdk_cache = None, {}
+    for home in (opts.jdk, jdk_path(), os.environ.get("JAVA_HOME")):
+        jmod = os.path.join(home, "jmods", "java.base.jmod") if home else None
+        if jmod and os.path.isfile(jmod):
+            jdk_zip = zipfile.ZipFile(jmod)
+            break
+    if jdk_zip is None:
+        print("api-refs.py: no JDK with jmods found (work/jdk.path, JAVA_HOME, --jdk): methods inherited from JDK "
+              "classes are listed as unjudged", file=sys.stderr)
+
+    def jdk_class(name):
+        """A java.base class, for members a framework class inherits from it (an enum's, a collection's)."""
+        if jdk_zip is None or not name.startswith(("java/", "javax/", "jdk/", "sun/")):
+            return None
+        if name not in jdk_cache:
+            try:
+                jdk_cache[name] = parse(jdk_zip.read("classes/" + name + ".class"))
+            except KeyError:
+                jdk_cache[name] = None
+        return jdk_cache[name]
+
     if level is None:
         sys.exit("api-refs.py: %s has no build.prop with its API level: pass --level N" % args[0])
 
@@ -234,31 +265,24 @@ def main():
         """True/False, or None when the hierarchy leaves the jar (a JDK class: not judged)."""
         if kind == "method" and member[0] == "<init>":  # constructors are not inherited
             return owner not in fw or member in fw[owner].methods
-        seen, todo, left = set(), [owner], False
+        seen, todo, unknown = set(), [owner], False
         while todo:
             o = todo.pop()
             if o in seen:
                 continue
             seen.add(o)
-            c = fw.get(o)
+            c = fw.get(o) or jdk_class(o)
             if c is None:
-                left = True
+                # Robolectric's marker interfaces declare nothing the framework calls; a JDK ancestor that could
+                # not be read (no JDK found) leaves a method unjudged. Fields are taken as not inherited from it.
+                unknown = unknown or (kind == "method" and o.startswith(("java/", "javax/", "jdk/", "sun/")))
                 continue
             if member in (c.fields if kind == "field" else c.methods):
                 return True
             if c.super:
                 todo.append(c.super)
             todo.extend(c.ifaces)
-        # Ancestors outside the jar: Robolectric's marker interfaces declare nothing the framework calls; a JDK
-        # interface is judged by its few method names; any other JDK ancestor (a collection, a stream) is not judged.
-        for o in seen - set(fw):
-            if o == "java/lang/Object" or not o.startswith(("java/", "javax/", "kotlin/")):
-                continue
-            if o not in JDK_INTERFACES:
-                return None
-            if kind == "method" and member[0] in JDK_INTERFACES[o]:
-                return True
-        return False
+        return None if unknown else False
 
     def params(desc):
         return re.findall(r"\[*(?:L[^;]+;|[BCDFIJSZ])", desc[1:desc.index(")")])
@@ -283,6 +307,26 @@ def main():
             todo.append(c.super)
             todo.extend(c.ifaces)
         return False
+
+    base = None
+    if opts.base:
+        base = {}
+        with zipfile.ZipFile(opts.base) as z:
+            for n in z.namelist():
+                if n.endswith(".class"):
+                    c = parse(z.read(n), members=False)
+                    if c:
+                        base[c.name] = c
+
+    def supers(jar, name):
+        seen, todo = set(), [name]
+        while todo:
+            c = jar.get(todo.pop())
+            for o in ([c.super] if c and c.super else []) + (c.ifaces if c else []):
+                if o not in seen:
+                    seen.add(o)
+                    todo.append(o)
+        return seen
 
     object_methods = {"getClass", "hashCode", "equals", "toString", "clone", "notify", "notifyAll", "wait", "finalize"}
     by_file = collections.defaultdict(lambda: collections.defaultdict(set))
@@ -310,11 +354,18 @@ def main():
                     continue  # a missing owner is already under "class"
                 if name in object_methods:
                     continue
-                if has(owner, (name, desc), "method") is False:
-                    found["method"].add("%s.%s%s" % (owner, name, desc))
+                judged = has(owner, (name, desc), "method")
+                if judged is not True:
+                    found["method" if judged is False else "unjudged"].add("%s.%s%s" % (owner, name, desc))
             for owner, name, desc in c.frefs:
                 if FRAMEWORK.match(owner) and owner in fw and has(owner, (name, desc), "field") is False:
                     found["field"].add("%s.%s:%s" % (owner, name, desc))
+            for k in c.classes if base else ():
+                k = element_class(k)
+                if k in fw and k in base:
+                    for lost in sorted(supers(base, k) - supers(fw, k)):
+                        if not lost.startswith("org/robolectric/"):
+                            found["super"].add("%s is not a %s" % (k, lost))
             for s in c.strings:
                 t = s.replace(".", "/")
                 if (re.fullmatch(r"android/[a-z][\w/]*/[A-Z]\w*(\$[A-Z]\w*)*", t) and len(t.split("/")) > 2
@@ -343,7 +394,7 @@ def main():
                         found["unbound"].add("%s.%s%s on %s" % (
                             c.name.rsplit("/", 1)[1], name, desc.rsplit(")", 1)[0] + ")", c.implements))
 
-    kinds = ["shadows", "sig", "unbound", "gated", "class", "method", "field", "string"]
+    kinds = ["shadows", "sig", "unbound", "gated", "class", "super", "method", "unjudged", "field", "string"]
     rows = [(sum(len(v[k]) for k in kinds), f, v) for f, v in by_file.items() if any(v[k] for k in kinds)]
     rows.sort(key=lambda r: (-r[0], r[1]))
     total = collections.Counter()
