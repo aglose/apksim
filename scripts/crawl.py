@@ -345,7 +345,7 @@ def scroll_cmd(recs):
         return None
     l, t, rr, b = best[1].box
     x = (l + rr) // 2
-    return f"swipe {x} {t + (b - t) * 3 // 4} {x} {t + (b - t) // 4} 300"
+    return f"drag {x} {t + (b - t) * 3 // 4} {x} {t + (b - t) // 4} 300"  # no fling: the same scroll every run
 
 
 class Explorer:

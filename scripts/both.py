@@ -32,7 +32,7 @@ for cmd in sys.argv[3:]:
         sim(cmd)
     elif a[0] == "swipe":
         emu("input", "swipe", *a[1:5], "120")
-        sim(cmd)
+        sim("swipe %s %s %s %s 120" % tuple(a[1:5]))
     elif a[0] == "drag":
         # A slow drag that stops before lifting, so neither side flings and both land on the same offset.
         x1, y1, x2, y2 = map(int, a[1:5])
@@ -40,7 +40,7 @@ for cmd in sys.argv[3:]:
         steps += ["input motionevent MOVE %d %d" % (x1 + (x2 - x1) * i // 20, y1 + (y2 - y1) * i // 20) for i in range(1, 21)]
         steps += ["sleep 0.15", "input motionevent UP %d %d" % (x2, y2)]
         emu("; ".join(steps))
-        sim("swipe %d %d %d %d 600" % (x1, y1, x2, y2))
+        sim("drag %d %d %d %d 600" % (x1, y1, x2, y2))
     elif a[0] == "back":
         emu("input", "keyevent", "KEYCODE_BACK")
         sim(cmd)

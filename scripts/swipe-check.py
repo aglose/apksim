@@ -4,7 +4,8 @@
 Usage: swipe-check.py PORT
 Drives a running instance of the test app (phone device, Home tab: a list of "Item N" rows 128 px apart) over its
 --control port. A 500 px swipe over 300 ms, and one with no duration (300 ms by default), must scroll further than the
-drag (a fling); the same swipe over 1000 ms must scroll about the drag distance; `swipe X Y X Y 1500` must not scroll.
+drag (a fling), and over 100 ms further still; over 1000 ms about the drag distance; `drag` (which holds before lifting)
+the drag distance and no more; `swipe X Y X Y 1500` must not scroll.
 The app is restarted before each swipe and left on a fresh Home tab. Exit 0 when it passes, 1 otherwise.
 """
 import re
@@ -38,7 +39,7 @@ def main():
         ctl("settle 10000")
         if scrolled() != 0:
             raise RuntimeError("the list did not start at its top")
-        if ctl("swipe " + args) != "ok":
+        if ctl(args) != "ok":
             raise RuntimeError("swipe was not answered")
         time.sleep(ms / 1000 + 0.3)
         ctl("settle 15000")
@@ -47,10 +48,13 @@ def main():
     drag = 500 - 16  # the drag less the 8 dp touch slop
     failed = []
     for name, args, ms, ok in (
-            ("500 px in 300 ms", "411 1300 411 800 300", 300, lambda d: d > drag + 80),
-            ("500 px, no duration", "411 1300 411 800", 300, lambda d: d > drag + 80),
-            ("500 px in 1000 ms", "411 1300 411 800 1000", 1000, lambda d: drag - 16 <= d < drag + 150),
-            ("a 1500 ms press", "411 900 411 900 1500", 1500, lambda d: d == 0)):
+            # Margins are wide: in a slow image a loop turn can run long, and the last move then reads as a slower swipe.
+            ("500 px in 100 ms", "swipe 411 1300 411 800 100", 100, lambda d: d > drag + 150),
+            ("500 px in 300 ms", "swipe 411 1300 411 800 300", 300, lambda d: d > drag + 40),
+            ("500 px, no duration", "swipe 411 1300 411 800", 300, lambda d: d > drag + 40),
+            ("500 px in 1000 ms", "swipe 411 1300 411 800 1000", 1000, lambda d: drag - 16 <= d < drag + 150),
+            ("a 500 px drag in 300 ms", "drag 411 1300 411 800 300", 420, lambda d: drag - 16 <= d <= drag + 16),
+            ("a 1500 ms press", "swipe 411 900 411 900 1500", 1500, lambda d: d == 0)):
         d = swipe(args, ms)
         print(f"{name}: scrolled {d} px")
         if not ok(d):

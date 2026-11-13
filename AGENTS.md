@@ -480,9 +480,10 @@ Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
-Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (a drag over ms of real time, 300 by default as `input swipe`, lifting at the end point so the release
-velocity flings as on a device; a press within touch slop, `swipe X Y X Y 1500`, holds 120 ms then lifts; Host's `Drag` follows the
-clock, not a count of queued events; before 2026-11-13 it held 120 ms before every lift, so a timed swipe never flung),
+Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (a finger moving over ms of real time, 300 by default as `input swipe`, lifting at the end point so the release
+velocity flings as on a device; Host's `Drag` follows the clock, not a count of queued events; before 2026-11-13 it held
+120 ms before every lift, so a timed swipe never flung), `drag x1 y1 x2 y2 [ms]` (the same, still for 120 ms before lifting:
+no fling, so a scroll by the same distance every time; what screenshot specs, crawl.py and the MCP swipe tool send),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `shot --skin file.png` (in the skin's frame), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
 (each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.

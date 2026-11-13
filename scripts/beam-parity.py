@@ -136,8 +136,8 @@ def scenario_input(ctl, name, seconds):
     elif name == "drag":
         up = True
         while time.time() < end:
-            # A timed swipe is answered at once and runs on the instance's clock: wait it out (1.2 s, a 120 ms hold).
-            ctl("swipe 411 1300 411 500 1200" if up else "swipe 411 500 411 1300 1200")
+            # A drag is answered at once and runs on the instance's clock: wait it out (1.2 s, a 120 ms hold).
+            ctl("drag 411 1300 411 500 1200" if up else "drag 411 500 411 1300 1200")
             up = not up
             time.sleep(1.4)
 
