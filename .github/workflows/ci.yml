@@ -294,6 +294,24 @@ jobs:
           assert len(cases) == 11 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity and setting tests")
           EOF
+      # A folding device open and closed, as Jetpack WindowManager reports it (FoldTest).
+      - name: Test run on a folding device
+        if: matrix.leg == 'tests'
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-fold-open.xml -e class dev.apksim.composeapp.FoldTest -e fold open \
+            -- --device pixel-10-pro-fold
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-fold-closed.xml -e class dev.apksim.composeapp.FoldTest -e fold closed \
+            -- --device pixel-10-pro-fold --fold closed
+          python3 - tests/junit-fold-open.xml tests/junit-fold-closed.xml <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          for f, want in zip(sys.argv[1:], (2, 1)):
+              cases = list(ET.parse(f).iter("testcase"))
+              ran = [c for c in cases if c.find("skipped") is None]
+              assert len(ran) == want, f"{f}: {len(ran)} tests ran, expected {want}"
+          print("fold tests ran open and closed")
+          EOF
       # --anim-scale given at launch is the animator scale every test starts with (AnimScaleOptionTest).
       - name: Test run with animations off
         if: matrix.leg == 'tests'

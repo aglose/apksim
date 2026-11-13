@@ -23,13 +23,14 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     new Device("watch", "watch", 227, 227, 2f),  // 454 px round, a Wear OS watch
     new Device("watch-small", "watch", 192, 192, 2f),
     new Device("watch-large", "watch", 240, 240, 2f),
+    Fold.devices().get(0),  // pixel-10-pro-fold, open: `fold` and --fold switch to its cover display
   };
 
   /** The device the app runs on now: --device at launch, then the `device` command or the Device Type menu. */
   private static volatile Device current;
 
   static Device current() {
-    if (current == null) current = named(System.getProperty("apksim.device", "phone"));
+    if (current == null) current = Fold.initial(named(System.getProperty("apksim.device", "phone")));
     return current;
   }
 
@@ -39,7 +40,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
    */
   static Device peek() {
     Device d = current;
-    return d != null ? d : named(System.getProperty("apksim.device", "phone"));
+    return d != null ? d : Fold.initial(named(System.getProperty("apksim.device", "phone")));
   }
 
   static void setCurrent(Device d) {

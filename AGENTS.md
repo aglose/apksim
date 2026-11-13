@@ -74,6 +74,41 @@ Read README.md for results and limits; this file covers how to work on the code.
     and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
     up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
     (Robolectric's instrumentation recreates ActivityScenario's activities itself on `setQualifiers`).
+  - `Fold`, `FoldExtensions`, `androidx/window/extensions/` (in apksim.jar): folding devices (`--device
+    pixel-10-pro-fold`, `--fold open|half|closed`, `fold [open|half|closed|toggle|angle DEGREES]`, Device > Fold / Unfold). `Fold` has
+    each device's two displays (inner 2076x2152, cover 1080x2364 px at 390 dpi, the Pixel 9 Pro Fold emulator's density:
+    not read from a device; whole dp make the cover 1079 px wide) and the posture; closed ↔ open is `reshape` to the other
+    display (rotation kept), so the app gets a size change as on a device. Apps read the fold through Jetpack
+    WindowManager, which loads `androidx.window.extensions.WindowExtensionsProvider` by name and checks its shape by
+    reflection (window 1.5.0's `SafeWindowLayoutComponentProvider`); the framework jar has no such library, so apksim.jar
+    carries a stand-in at vendor API level 2 (layout component only: no activity embedding or window areas) for every
+    device, as phones have it. `FoldExtensions` tells each listener its window's layout as it registers and after every
+    posture, rotation or display change (`Fold.changed()`): one FoldingFeature, a line across the middle of the inner
+    display, flat or half-opened, none when closed or on other devices. `-Dapksim.windowExtensions=false` reports level
+    0 (no extensions). The hinge has an angle (`Fold.angle()`: 0 closed, 90 half, 180 open, or `fold angle N`, which is
+    a posture by the emulator's ranges: under 30 closed, under 150 half-open, else open), which a folding device's
+    hinge-angle sensor reports on change (`Sensors` HINGE: TYPE_HINGE_ANGLE, wake-up, feature
+    `android.hardware.sensor.hinge_angle`; other devices have neither). Half-open and turned a quarter, the fold is
+    horizontal: tabletop. Test runs: `--device`/`--fold` set the display, `executeShellCommand("apksim fold half|open")`
+    (or `angle N`) changes the state until the next setup (not across closed: nothing resizes a test run's display). `apksim://fold`
+    (`FoldActivity`), `FoldTest`, `ci-smoke.sh`. The Mac window plays the fold (`simwindow.m` "fold animation",
+    `SimWindow.foldBegin`/`foldRun` around the fold's reshape) as a book closing: the device's picture (its skin's frame
+    around the screen, status bar included; `deviceImage`) goes on a transparent overlay window and the window itself
+    is hidden (alpha 0); once the new display has drawn two frames the left half turns half a turn about the hinge
+    towards the viewer with perspective, the inner display's left half on its front and the closed device on its back
+    (a `CATransformLayer`, the rail's thickness at its outer edge), and comes down on the right half, which slides to
+    where the closed device is; opening is the same backwards (900 ms, `-Dapksim.foldAnimationMs`). The window is
+    resized about its centre meanwhile (`sizeWindow` while `foldWindow` is set), each display at actual size, so the
+    device folds in place. The app sees none of it, only the switch. Not played headless, with the window hidden or
+    minimized, while rotated, or when a fold follows another before a frame is drawn; `-Dapksim.foldAnimation=false`
+    turns it off; `APKSIM_FOLD_DEBUG=1` logs its steps, and `APKSIM_FOLD_FRAMES=DIR` renders 13 frames of each fold
+    off screen (`CARenderer`) into DIR as PNGs, which is how it was looked at (`wshot` cannot see the overlay); the
+    owner has not yet judged it in the window. The built-in skin `pixel-10-pro-fold` (`--skin pixel-10-pro-fold`,
+    which implies the device; docs/skins.md "Built-in skins") is a pair: `frame.png` around the inner display and
+    `cover.png` around the cover display (skin.json's `cover`), drawn by `scripts/gen-fold-skin.java` from the
+    device's published sizes; `Skinning.part` picks the cover frame, corners and camera cutout while the device is
+    closed, so the skin stays on through a fold. Not done: the posture in flight-recorder checkpoints (a replayed
+    shape has one frame), a fold while rotated, an R8 app checked.
   - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
@@ -466,7 +501,8 @@ than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall c
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
 launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),
-`device [phone|foldable|tablet|desktop|tv|WxH[@density]]` (switch devices while the app runs: size, density, system
+`fold [open|half|closed|toggle|angle DEGREES]` (a folding device's posture and hinge angle, see `Fold`),
+`device [phone|foldable|tablet|desktop|tv|pixel-10-pro-fold|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH [MS]` (the Mac window's content in points, as dragging its corner would: checks the drag path; with MS a
 live drag over that much real time, 120 steps a second: `scripts/window-resize-check.py PORT`, run by hand on the Mac),

@@ -105,14 +105,17 @@ public final class Sensors {
   private static final Spec STEP_DET = new Spec("step-detector", "Step Detector", "apksim", 1, Sensor.TYPE_STEP_DETECTOR, Sensor.STRING_TYPE_STEP_DETECTOR, 1f, 1f, 0.001f, 0, 0, 3 /* special */, false, "android.permission.ACTIVITY_RECOGNITION", "android.hardware.sensor.stepdetector", 0);
   private static final Spec HEART = new Spec("heart-rate", "Heart Rate", "apksim", 1, Sensor.TYPE_HEART_RATE, Sensor.STRING_TYPE_HEART_RATE, 300f, 1f, 0.001f, 0, 0, ON_CHANGE, false, "android.permission.BODY_SENSORS", "android.hardware.sensor.heartrate", 0);
 
+  // A folding device's hinge (Fold): degrees between the two halves, 0 closed and 180 flat, on change, as a Pixel fold's.
+  private static final Spec HINGE = new Spec("hinge-angle", "Hinge Angle", "apksim", 1, Sensor.TYPE_HINGE_ANGLE, Sensor.STRING_TYPE_HINGE_ANGLE, 360f, 1f, 0.001f, 0, 0, ON_CHANGE, true, null, "android.hardware.sensor.hinge_angle", 0);
   private static final Spec[] ALL_SPECS = {ACCEL, GYRO, MAG, ORIENT_HW, TEMP, PROX, LIGHT, PRESSURE, HUMIDITY, MAG_U, GYRO_U, ACCEL_U,
-      GAME_ROT, GEO_ROT, GRAVITY, LINEAR, ROT, ORIENT, STEPS, STEP_DET, HEART};
+      GAME_ROT, GEO_ROT, GRAVITY, LINEAR, ROT, ORIENT, STEPS, STEP_DET, HEART, HINGE};
 
   /** Every sensor feature a device might list: a switch of device kind turns the ones it lacks off. */
   static final List<String> ALL_FEATURES = List.of("android.hardware.sensor.accelerometer", "android.hardware.sensor.gyroscope",
       "android.hardware.sensor.compass", "android.hardware.sensor.ambient_temperature", "android.hardware.sensor.proximity",
       "android.hardware.sensor.light", "android.hardware.sensor.barometer", "android.hardware.sensor.relative_humidity",
-      "android.hardware.sensor.stepcounter", "android.hardware.sensor.stepdetector", "android.hardware.sensor.heartrate");
+      "android.hardware.sensor.stepcounter", "android.hardware.sensor.stepdetector", "android.hardware.sensor.heartrate",
+      "android.hardware.sensor.hinge_angle");
 
   /** The sensors a device of this kind has (before any `sensor NAME off`). */
   private static List<Spec> kindSpecs(Device d) {
@@ -145,6 +148,7 @@ public final class Sensors {
       l.add(STEP_DET);
     }
     if (watch) l.add(HEART);
+    if (Fold.spec(d) != null) l.add(HINGE);
     return l;
   }
 
@@ -471,6 +475,8 @@ public final class Sensors {
         return new float[] {steps};
       case 18: /* STEP_DETECTOR */
         return new float[] {1};
+      case 36: /* HINGE_ANGLE */
+        return new float[] {Fold.angle()};
       case 21: /* HEART_RATE */
         return Float.isNaN(heartRate) ? null : new float[] {heartRate};
       default:
@@ -585,6 +591,11 @@ public final class Sensors {
   /** The sensors with this value changed (on-change ones tell their listeners now). */
   private static void changed(Spec spec) {
     for (Reg r : REGS) if (r.spec == spec && r.active && spec.mode() != CONTINUOUS) r.post();
+  }
+
+  /** The hinge moved (`fold`): its listeners hear the new angle. */
+  static void hingeChanged() {
+    changed(HINGE);
   }
 
   private static Spec byType(int type) {
@@ -753,6 +764,7 @@ public final class Sensors {
         {"step-detector", "step-detector"}, {"heart-rate", "heart-rate"}, {"heartrate", "heart-rate"}, {"gravity", "gravity"},
         {"linear-accel", "linear-acceleration"}, {"linear-acceleration", "linear-acceleration"}, {"rotation", "rotation"},
         {"rotation-vector", "rotation"}, {"game-rotation", "game-rotation"}, {"orientation", "orientation"},
+        {"hinge", "hinge-angle"}, {"hinge-angle", "hinge-angle"},
     };
     for (String[] p : al) ALIASES.put(p[0], p[1]);
   }

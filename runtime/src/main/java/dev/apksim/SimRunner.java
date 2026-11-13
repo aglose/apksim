@@ -379,6 +379,7 @@ public class SimRunner extends RobolectricTestRunner {
       RealTimeClock.endTest();
       Thermal.reset();
       Sensors.reset();
+      Fold.set(null);  // the launch's --fold again
       CompatTable.resetCounts();
       dev.apksim.camera.FakeCamera.reset();  // a camera a test left streaming stops before the next test
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();

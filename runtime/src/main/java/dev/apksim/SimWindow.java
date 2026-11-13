@@ -347,6 +347,24 @@ final class SimWindow {
 
   private static native void nativeResize(int w, int h, boolean actualSize);
 
+  /**
+   * A folding device is about to switch displays: the device's picture (in its skin's frame) goes on an overlay and the
+   * window is hidden until the fold has played. True when
+   * a fold animation will play ({@link #foldRun} after the switch); false without a visible window.
+   */
+  static boolean foldBegin() {
+    return !headless && Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true")) && nativeFoldBegin();
+  }
+
+  /** The displays switched: once the new one has drawn, the overlay folds the device shut or open, as a book, over ms. */
+  static void foldRun(boolean closing, int ms) {
+    if (!headless) nativeFoldRun(closing, ms);
+  }
+
+  private static native boolean nativeFoldBegin();
+
+  private static native void nativeFoldRun(boolean closing, int ms);
+
   static void setTitle(String title) {
     if (!headless) nativeSetTitle(title);
   }

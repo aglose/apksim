@@ -77,12 +77,17 @@ final class DeviceControls {
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
     "bars status toggle", "bars nav toggle", "rec save", "camera off", "camera pattern", "camera image {file}",
-    "screenshot skin",
+    "screenshot skin", "device pixel-10-pro-fold", "fold toggle",
   };
   /** Device > Skin's skins, by menu position (SimWindow.TAG_SKIN_FIRST + 1 + index); None is TAG_SKIN_FIRST. */
   private static volatile List<String> skinMenu = List.of();
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
+  private static final int TAG_DEVICE_PIXEL_FOLD = 47;
+  /** How long the Mac window's fold animation runs once the new display has drawn. */
+  private static final int FOLD_ANIMATION_MS = 900;
+  /** The next reshape puts the window at actual size though the device is the same: a fold's other display. */
+  private boolean actualSizeNext;
   private static final int TAG_SOFT_KEYBOARD = 30;
   private static final int TAG_STATUS_BAR = 40;
   private static final int TAG_NAV_BAR = 41;
@@ -658,6 +663,8 @@ final class DeviceControls {
         // device: what the app runs on; device phone|foldable|tablet|desktop|tv|watch|watch-small|watch-large|WxH[@density]: switch to another.
         if (a.length < 2) return Device.current().describe() + " (" + w + "x" + h + " px); presets: " + Device.names();
         Device to = Device.named(a[1]);
+        Fold.Spec folds = Fold.spec(to);
+        if (folds != null) to = folds.display(Fold.state());  // in the posture it is in: closed, the cover display
         return reshape(to, to.widthPx(), to.heightPx(), true, before);
       }
       case "skin" -> {
@@ -696,6 +703,40 @@ final class DeviceControls {
         }
         skinChanged();
         return "skin " + Skinning.describe(w, h, rotation);
+      }
+      case "fold" -> {
+        // fold: the posture and where the fold is; fold open|half|closed|toggle|angle DEGREES: another (a folding
+        // device only). An angle is a posture by the emulator's ranges (under 30 closed, under 150 half, else open).
+        // Closed, the app has the cover display; open or half, the inner one: the switch is a display size change.
+        if (a.length < 2) return Fold.describe(w, h, rotation);
+        Fold.Spec spec = Fold.spec(Device.current());
+        if (spec == null) return "error: " + Fold.describe(w, h, rotation);
+        Fold.State was = Fold.state();
+        Object[] target = Fold.target(a, was);
+        if (target == null) return "usage: fold [open|half|closed|toggle|angle 0-180]";
+        Fold.State to = (Fold.State) target[0];
+        Float degrees = (Float) target[1];
+        if (to == was && (degrees == null ? Fold.angle() == (to == Fold.State.OPEN ? 180f : to == Fold.State.HALF ? 90f : 0f)
+            : degrees == Fold.angle())) return "unchanged: " + Fold.describe(w, h, rotation);
+        Fold.set(to, degrees);
+        String r = "";
+        if ((to == Fold.State.CLOSED) != (was == Fold.State.CLOSED)) {
+          // The other display, turned as this one is: a device keeps its rotation through a fold.
+          // The Mac window plays the fold over the switch (simwindow.m "fold animation"); the app sees only the switch.
+          Device d = spec.display(to);
+          boolean turned = rotation % 2 == 1;
+          boolean animate = !turned && SimWindow.foldBegin();
+          actualSizeNext = true;  // each display at actual size (or fitted), not at the other's zoom
+          try {
+            r = reshape(d, turned ? d.heightPx() : d.widthPx(), turned ? d.widthPx() : d.heightPx(), false, before) + "; ";
+          } finally {
+            actualSizeNext = false;
+            if (animate) SimWindow.foldRun(to == Fold.State.CLOSED, Integer.getInteger("apksim.foldAnimationMs", FOLD_ANIMATION_MS));
+          }
+        } else {
+          Fold.changed();
+        }
+        return r + Fold.describe(w, h, rotation);
       }
       case "size" -> {
         // size WxH: the display's size in dp, keeping the device's kind (as dragging the window's edge does).
@@ -849,6 +890,7 @@ final class DeviceControls {
     String r = configurationChanged(before);
     windowsResized();
     showTitle();
+    Fold.changed();
     return r + " (" + (nw > nh ? "landscape" : "portrait") + ", rotation " + rotation * 90 + ")";
   }
 
@@ -919,17 +961,19 @@ final class DeviceControls {
       Skinning.off();
       skinOff = "; skin " + skin.name + " off: it does not frame " + now.widthPx() + "x" + now.heightPx() + " px";
     }
-    if (!now.kind().equals(was.kind())) SystemFeatures.deviceChanged(app, now);  // a TV has no touchscreen, has leanback...
+    // A folding device has a hinge-angle sensor: to or from one is another set of sensors and features too.
+    if (!now.kind().equals(was.kind()) || Fold.spec(now) != Fold.spec(was)) SystemFeatures.deviceChanged(app, now);  // a TV has no touchscreen, has leanback...
     applySystemUi(now);
     android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
     w = m.widthPixels;
     h = m.heightPixels;
-    resizer.resize(w, h, newDevice);
+    resizer.resize(w, h, newDevice || actualSizeNext);
     if (skin != null || Skinning.current() != null) skinChanged();
     String r = configurationChanged(before);
     windowsResized();
     showTitle();
     updateSystemBars();
+    Fold.changed();
     return r + " (" + now.describe() + ", " + w + "x" + h + " px)" + skinOff;
   }
 
@@ -947,6 +991,7 @@ final class DeviceControls {
     SimWindow.setTitle(System.getProperty("apksim.windowTitle", "apksim") + " - " + d.name()
         + " " + d.widthDp() + "\u00d7" + d.heightDp() + " dp");
     for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
+    SimWindow.setMenuState(TAG_DEVICE_PIXEL_FOLD, Fold.spec(d) != null);
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
     SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, ValueAnimator.getDurationScale() > 1f);  // --anim-scale 10

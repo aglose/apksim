@@ -33,6 +33,12 @@ public final class Skin {
   public Map<String, Object> source;
   /** The folder it was read from. */
   public Path dir;
+  /**
+   * A folding device's other frame: the device closed, around its cover display (skin.json's "cover": frame, screen,
+   * cutout). The same name and device; drawn, and told to the app, while the device is closed (Skinning).
+   */
+  public Skin cover;
+
   /** "local" (the skin store) or "shared" (a folder named by APKSIM_SKINS). */
   public String origin = "local";
 
@@ -68,6 +74,25 @@ public final class Skin {
     s.kind = m.get("kind") instanceof String k ? k : null;
     s.cutout = m.get("cutout") instanceof Map ? (Map<String, Object>) m.get("cutout") : null;
     s.source = m.get("source") instanceof Map ? (Map<String, Object>) m.get("source") : null;
+    if (m.get("cover") instanceof Map) {
+      Map<String, Object> cm = (Map<String, Object>) m.get("cover");
+      if (!(cm.get("frame") instanceof String) || !(cm.get("screen") instanceof Map)) throw new IOException("skin.json's \"cover\" needs \"frame\" and \"screen\"");
+      Map<String, Object> cs = (Map<String, Object>) cm.get("screen");
+      Skin c = new Skin();
+      c.dir = dir;
+      c.name = s.name;
+      c.title = s.title;
+      c.device = s.device;
+      c.kind = s.kind;
+      c.frame = (String) cm.get("frame");
+      c.x = num(cs, "x", "cover.screen");
+      c.y = num(cs, "y", "cover.screen");
+      c.width = num(cs, "width", "cover.screen");
+      c.height = num(cs, "height", "cover.screen");
+      c.cornerRadius = cs.get("cornerRadius") == null ? 0 : num(cs, "cornerRadius", "cover.screen");
+      c.cutout = cm.get("cutout") instanceof Map ? (Map<String, Object>) cm.get("cutout") : null;
+      s.cover = c;
+    }
     return s;
   }
 
@@ -152,7 +177,10 @@ public final class Skin {
       return null;
     }
     try {
-      BufferedImage img = ImageIO.read(f.toFile());
+      BufferedImage img;
+      try (java.io.InputStream in = Files.newInputStream(f)) {
+        img = ImageIO.read(in);
+      }
       if (img == null) problems.add(what + " image " + file + " is not a PNG, JPEG or GIF");
       return img;
     } catch (IOException e) {
