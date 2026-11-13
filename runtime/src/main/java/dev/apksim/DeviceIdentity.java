@@ -42,7 +42,11 @@ final class DeviceIdentity {
       String serial = serial();
       ShadowBuild.setSerial(serial);
       ReflectionHelpers.setStaticField(Build.class, "SERIAL", serial);
-      Sensors.beforeApplicationOnCreate(app);  // first: SystemFeatures lists its features
+      try {
+        Sensors.beforeApplicationOnCreate(app);  // before SystemFeatures, which lists its features; a failure here skips only the sensors
+      } catch (RuntimeException e) {
+        System.err.println("[apksim] sensors: " + e);
+      }
       SystemFeatures.beforeApplicationOnCreate(app);
       Bluetooth.beforeApplicationOnCreate(app);
       Cameras.install(app);

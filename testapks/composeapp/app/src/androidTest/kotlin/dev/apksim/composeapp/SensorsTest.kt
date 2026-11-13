@@ -36,7 +36,13 @@ import org.junit.runner.RunWith
  * device. Passes on the API 36 emulator as well.
  */
 @RunWith(AndroidJUnit4::class)
+@org.junit.FixMethodOrder(org.junit.runners.MethodSorters.NAME_ASCENDING)
 class SensorsTest {
+  companion object {
+    /** A Sensor kept in a static across tests, as an app singleton does (see kept1/kept2). */
+    @Volatile var kept: Sensor? = null
+  }
+
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val context = instrumentation.targetContext
   private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -258,10 +264,10 @@ class SensorsTest {
   @Test
   fun stepsCountAndTheHeartRateWatchNeedsAPermission() {
     assumeTrue("the sensor shell command is apksim's", onApksim)
+    // ACTIVITY_RECOGNITION is a runtime permission: without it the step sensors are hidden
+    instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
     val steps = sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
     assertNotNull(steps)
-    // ACTIVITY_RECOGNITION is a runtime permission; a test run starts without it granted
-    instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
     val c = Collector(steps!!, SensorManager.SENSOR_DELAY_NORMAL)
     assertTrue(c.ok)
     assertTrue(c.await())
@@ -296,5 +302,165 @@ class SensorsTest {
       val c = Collector(sm.getDefaultSensor(t)!!, SensorManager.SENSOR_DELAY_NORMAL)
       assertTrue("type $t", c.await(3000))
     }
+  }
+
+  @Test
+  fun kept1_aSensorIsKeptInAStatic() {
+    kept = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    assertNotNull(kept)
+  }
+
+  @Test
+  fun kept2_aSensorKeptFromAnEarlierTestStillRegisters() {
+    val k = kept
+    assumeTrue("kept1 runs first, in this process", k != null)
+    val c = Collector(k!!)
+    assertTrue("registerListener with a Sensor kept from before", c.ok)
+    assertTrue(c.await())
+    assertTrue("the same sensor is listed", sm.getSensorList(Sensor.TYPE_ACCELEROMETER).any { it.name == k.name })
+  }
+
+  @Test
+  fun anAppResettingItsHandlerDoesNotEndTheStream() {
+    val s = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+    val n = java.util.concurrent.atomic.AtomicInteger()
+    val l = object : SensorEventListener {
+      override fun onSensorChanged(event: SensorEvent) {
+        n.incrementAndGet()
+        handler.removeCallbacksAndMessages(null)  // an inactivity timer reset
+      }
+      override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }
+    assertTrue(sm.registerListener(l, s, SensorManager.SENSOR_DELAY_GAME, handler))
+    registered += l
+    pause(700)
+    assertTrue("${n.get()} events", n.get() > 5)
+  }
+
+  @Test
+  fun accuracyIsToldBeforeTheFirstEvent() {
+    val s = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+    val order = CopyOnWriteArrayList<String>()
+    val first = CountDownLatch(1)
+    val l = object : SensorEventListener {
+      override fun onSensorChanged(event: SensorEvent) {
+        order += "event"
+        first.countDown()
+      }
+      override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
+        order += "accuracy $accuracy"
+      }
+    }
+    assertTrue(sm.registerListener(l, s, SensorManager.SENSOR_DELAY_GAME, handler))
+    registered += l
+    assertTrue(first.await(5, TimeUnit.SECONDS))
+    assertTrue("$order", order[0].startsWith("accuracy ") && order.indexOf("event") == 1)
+    assertEquals("accuracy goes once", 1, order.count { it.startsWith("accuracy") })
+  }
+
+  @Test
+  fun flushAndBadRates() {
+    val s = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+    val plain = Collector(s)
+    assertTrue(plain.await())
+    assertTrue("flush of a registered listener", sm.flush(plain))
+    assertFalse("flush of one not registered", sm.flush(object : SensorEventListener {
+      override fun onSensorChanged(event: SensorEvent) {}
+      override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }))
+    val l = object : SensorEventListener {
+      override fun onSensorChanged(event: SensorEvent) {}
+      override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }
+    assertFalse("a negative rate", sm.registerListener(l, s, -1, handler))
+  }
+
+  @Test
+  fun aSensorTakenAwayStopsItsEventsAndComesBackWithItsListener() {
+    assumeTrue("the sensor shell command is apksim's", onApksim)
+    val c = Collector(sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!, SensorManager.SENSOR_DELAY_GAME)
+    assertTrue(c.await())
+    shell("apksim sensor accelerometer off")
+    pause(200)
+    val n = c.events.size
+    pause(300)
+    assertEquals("no events while it is away", n, c.events.size)
+    shell("apksim sensor accelerometer on")
+    pause(400)
+    assertTrue("the listener hears it again", c.events.size > n)
+  }
+
+  @Test
+  fun permissionGatedSensorsAreHiddenWithoutThePermission() {
+    assumeTrue("a device with no step counter has nothing to hide", onApksim)
+    instrumentation.uiAutomation.revokeRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
+    assertNull("hidden without ACTIVITY_RECOGNITION", sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER))
+    assertTrue(sm.getSensorList(Sensor.TYPE_ALL).none { it.type == Sensor.TYPE_STEP_COUNTER || it.type == Sensor.TYPE_STEP_DETECTOR })
+    instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
+    assertNotNull(sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER))
+  }
+
+  @Test
+  fun theStepDetectorFiresOncePerStepWithRisingTimestamps() {
+    assumeTrue("the sensor shell command is apksim's", onApksim)
+    instrumentation.uiAutomation.grantRuntimePermission(context.packageName, "android.permission.ACTIVITY_RECOGNITION")
+    val c = Collector(sm.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)!!, SensorManager.SENSOR_DELAY_NORMAL)
+    assertTrue(c.ok)
+    pause(100)
+    assertEquals("nothing until a step", 0, c.events.size)
+    shell("apksim sensor steps +3")
+    assertTrue("3 steps", c.until { c.events.size >= 3 })
+    pause(100)
+    assertEquals(3, c.events.size)
+    val t = c.timestamps.toList()
+    assertTrue("rising: $t", t[0] < t[1] && t[1] < t[2])
+  }
+
+  /** The hang: a main-looper FASTEST listener that updates a view on every event, then an Espresso check (default test clock). */
+  @Test
+  fun zz_aFastMainLooperListenerThatRedrawsDoesNotHangEspresso() {
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("apksim://sensors"))
+      .setClassName(context.packageName, "dev.apksim.composeapp.SensorsActivity")
+    val events = java.util.concurrent.atomic.AtomicInteger()
+    var listener: SensorEventListener? = null
+    androidx.test.core.app.ActivityScenario.launch<android.app.Activity>(intent).use { scenario ->
+      scenario.onActivity { activity ->
+        val tv = android.widget.TextView(activity)
+        activity.addContentView(tv, android.view.ViewGroup.LayoutParams(300, 100))
+        listener = object : SensorEventListener {
+          override fun onSensorChanged(event: SensorEvent) {
+            tv.text = "event ${events.incrementAndGet()}"  // a layout and a frame per event
+          }
+          override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+        }
+        sm.registerListener(listener, sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER), SensorManager.SENSOR_DELAY_FASTEST)
+      }
+      try {
+        androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.withText(org.hamcrest.Matchers.startsWith("sensors: ")))
+          .check(androidx.test.espresso.assertion.ViewAssertions.matches(androidx.test.espresso.matcher.ViewMatchers.isDisplayed()))
+      } finally {
+        sm.unregisterListener(listener)
+      }
+    }
+  }
+
+  /** What a continuous main-looper listener costs a UiAutomator query: its time against the same query on a screen with none. */
+  @Test
+  fun zy_aUiAutomatorQueryWithSensorListenersTakesAboutAsLongAsWithout() {
+    // On a device the screen's constant redraws keep UiAutomator waiting for idle (41 s measured): this is apksim's settle only.
+    assumeTrue("apksim's idle wait", onApksim)
+    val device = androidx.test.uiautomator.UiDevice.getInstance(instrumentation)
+    fun query(uri: String, text: String): Long {
+      val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri)).setPackage(context.packageName)
+      val t0 = System.nanoTime()
+      androidx.test.core.app.ActivityScenario.launch<android.app.Activity>(intent).use {
+        assertNotNull(text, device.wait(androidx.test.uiautomator.Until.findObject(androidx.test.uiautomator.By.textStartsWith(text)), 10_000))
+        repeat(3) { device.findObject(androidx.test.uiautomator.By.textStartsWith(text)) }
+      }
+      return (System.nanoTime() - t0) / 1_000_000
+    }
+    val without = query("apksim://timezone", "jdk zone")
+    val with = query("apksim://sensors", "sensors: ")
+    assertTrue("with listeners $with ms, without $without ms", with < without + 5000)
   }
 }

@@ -39,13 +39,14 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter;
  * <p>Delivery: each registration (listener, sensor) is a delayed message on its Handler's looper (the main looper
  * without a Handler, as SystemSensorManager does), re-posted after each event at the rate the app asked for
  * (SENSOR_DELAY_* or microseconds, clamped to the sensor's minimum and maximum delay). A continuous sensor delivers
- * once at registration and then every period; an on-change one (light, proximity, pressure, humidity, temperature,
+ * once at registration and then every period; an on-change one (light, proximity, humidity, temperature,
  * step counter, heart rate) delivers its value at registration if it has one and again on each change. Timestamps are
  * SystemClock.elapsedRealtimeNanos at delivery. Nothing is posted while nothing is registered, so there is no thread and
  * no idle cost, and nothing here moves the clock. In a running instance the looper's clock follows real time, so
  * events come at real rates; in a test run it is the simulated clock, which the test (idleFor, Espresso's idle waits,
  * the main looper being run) moves, so events come per unit of simulated time and a test that does not advance the
- * clock sees the first event of each registration (and each on-change event) only. As with any self-repeating message,
+ * clock sees the first event of each registration (and each on-change event) only; in a default test run a continuous
+ * sensor also delivers at most one event per period of real time ({@link #realTimeGate}). As with any self-repeating message,
  * a test that runs the main queue to its end (ShadowLooper.runToEndOfTasks) while a continuous listener is registered
  * never finishes, so unregister first.
  *
@@ -189,19 +190,21 @@ public final class Sensors {
 
   // ---- device set up ---------------------------------------------------------------------------------------------
 
-  /** Before Application.onCreate (DeviceIdentity): the launch device's sensors and the --sensor values. */
+  /** The sensors have been built for the current device (lazily: SystemFeatures asks, or the first SensorManager call). */
+  private static boolean built;
+
+  /** Before Application.onCreate (DeviceIdentity): the launch device's kind and the --sensor values; sensors build on first use. */
   static void beforeApplicationOnCreate(Application app) {
     reset();
     device = Device.peek();
-    rebuild();
     launchOptions();
   }
 
-  /** The `device` command switched kinds. */
+  /** The `device` command switched kinds: a sensor the new kind lacks stops (its listeners stay, and resume if it comes back). */
   static void deviceChanged(Application app, Device d) {
     device = d;
     rebuild();
-    dropMissing();  // a sensor the new kind lacks loses its registrations
+    syncRegs();
   }
 
   /** Between tests (SimTestEnvironment.resetState): nothing registered, the launch's state follows at the next setup. */
@@ -211,27 +214,23 @@ public final class Sensors {
     synchronized (LOCK) {
       SENSORS.clear();
       REMOVED.clear();
+      built = false;
     }
     SENT.clear();
-    OBJECTS.clear();
     defaults();
+    // OBJECTS stays: an app's static may hold a Sensor from an earlier test, which must still register.
   }
 
   /** The features of the sensors the device has now (SystemFeatures). */
   static Set<String> features() {
     Set<String> out = new LinkedHashSet<>();
-    synchronized (LOCK) {
-      for (Spec s : specs()) if (s.feature() != null) out.add(s.feature());
-    }
+    for (Spec s : specs()) if (s.feature() != null) out.add(s.feature());
     return out;
   }
 
   private static List<Spec> specs() {
     synchronized (LOCK) {
-      if (SENSORS.isEmpty() && device == null) {
-        device = Device.peek();
-        rebuild();
-      }
+      if (!built) rebuild();
       return new ArrayList<>(SENSORS.keySet());
     }
   }
@@ -239,16 +238,26 @@ public final class Sensors {
   private static void rebuild() {
     synchronized (LOCK) {
       SENSORS.clear();
-      for (Spec sp : kindSpecs(device == null ? Device.peek() : device)) {
+      if (device == null) device = Device.peek();
+      for (Spec sp : kindSpecs(device)) {
         if (REMOVED.contains(sp.key())) continue;
-        int h = 1;
-        for (Spec x : ALL_SPECS) {
-          if (x == sp) break;
-          h++;
-        }
-        final int handle = h;
-        SENSORS.put(sp, OBJECTS.computeIfAbsent(sp, k -> create(k, handle)));
+        SENSORS.put(sp, OBJECTS.computeIfAbsent(sp, k -> create(k, handleOf(k))));
       }
+      built = true;
+    }
+  }
+
+  /** Handles are stable per spec (its place in ALL_SPECS), whatever the device kind lists. */
+  private static int handleOf(Spec sp) {
+    for (int i = 0; i < ALL_SPECS.length; i++) if (ALL_SPECS[i] == sp) return i + 1;
+    return 0;
+  }
+
+  /** Registrations of sensors the device lacks stop; those whose sensor is (back) on the device run again. */
+  private static void syncRegs() {
+    Set<Spec> have = new java.util.HashSet<>(specs());
+    for (Reg r : REGS) {
+      if (have.contains(r.spec)) r.resume(); else r.suspend();
     }
   }
 
@@ -273,38 +282,62 @@ public final class Sensors {
     return o;
   }
 
-  private static void dropMissing() {
-    for (Reg r : REGS) {
-      if (specOf(r.sensor) == null) {
-        r.stop();
-        REGS.remove(r);
-      }
+  /** The spec a Sensor object is, present on this device or not (null: not one of ours). */
+  private static Spec specOf(Sensor sensor) {
+    if (sensor == null) return null;
+    for (Map.Entry<Spec, Sensor> e : OBJECTS.entrySet()) if (e.getValue() == sensor) return e.getKey();
+    int h = sensor.getHandle();
+    if (h >= 1 && h <= ALL_SPECS.length && ALL_SPECS[h - 1].type() == sensor.getType()) return ALL_SPECS[h - 1];
+    return null;
+  }
+
+  private static boolean present(Spec spec) {
+    synchronized (LOCK) {
+      if (!built) rebuild();
+      return SENSORS.containsKey(spec);
     }
   }
 
-  private static Spec specOf(Sensor sensor) {
-    synchronized (LOCK) {
-      for (Map.Entry<Spec, Sensor> e : SENSORS.entrySet()) if (e.getValue() == sensor || e.getValue().equals(sensor)) return e.getKey();
-    }
-    return null;
+  /** The runtime permission a sensor needs (heart rate: BODY_SENSORS, or the health permission on an app targeting 36+). */
+  private static boolean permitted(Spec spec) {
+    String permission = spec.permission();
+    if (permission == null) return true;
+    Application app = app();
+    int target = app.getApplicationInfo().targetSdkVersion;
+    if (permission.equals("android.permission.ACTIVITY_RECOGNITION") && target < 29) return true;
+    java.util.function.Predicate<String> has = p -> app.checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    if (spec.type() == Sensor.TYPE_HEART_RATE && target >= 36 && has.test("android.permission.health.READ_HEART_RATE")) return true;
+    return has.test(permission);
   }
 
   // ---- values ----------------------------------------------------------------------------------------------------
 
   /** At rest: gravity on the axis the display rotation gives (a phone upright in portrait: +y). */
   private static float[] restGravity() {
-    int rot = 0;
-    try {
-      rot = app().getSystemService(android.view.WindowManager.class).getDefaultDisplay().getRotation();
-    } catch (RuntimeException e) {
-      // no display yet: portrait
-    }
+    int rot = rotation();
     return switch (rot) {
       case 1 -> new float[] {G, 0, 0};
       case 2 -> new float[] {0, -G, 0};
       case 3 -> new float[] {-G, 0, 0};
       default -> new float[] {0, G, 0};
     };
+  }
+
+  private static volatile int rotationCached;
+  private static volatile long rotationAtNs;
+
+  /** The display rotation, read at most every 20 ms (every event of every sensor asks, on any thread). */
+  private static int rotation() {
+    long now = System.nanoTime();
+    if (now - rotationAtNs > 20_000_000L) {
+      try {
+        rotationCached = app().getSystemService(android.view.WindowManager.class).getDefaultDisplay().getRotation();
+      } catch (RuntimeException e) {
+        rotationCached = 0;  // no display yet: portrait
+      }
+      rotationAtNs = now;
+    }
+    return rotationCached;
   }
 
   private static float[] gravityNow() {
@@ -447,20 +480,38 @@ public final class Sensors {
 
   // ---- delivery --------------------------------------------------------------------------------------------------
 
-  private static final class Reg implements Runnable {
+  /**
+   * Whether periodic delivery is held to real time as well. A default test run has Robolectric's unpaused Choreographer,
+   * which moves the simulated clock 15 ms per frame: a main-looper listener that updates a view per event made each
+   * frame bring the next event due inside the same ShadowLooper.idle(), which never returned (the first Espresso check or
+   * waitForIdle hung). So there a continuous sensor delivers at most one event per period of real time; the message still
+   * repeats on simulated time (so idle() ends once nothing is due), it just does not call the listener early.
+   */
+  private static boolean realTimeGate() {
+    return TestActivities.testRun() && !RealTimeClock.requested();
+  }
+
+  /** One (listener, sensor) registration: a delayed message on a Handler of its own on the app's looper. */
+  static final class Reg implements Runnable {
     final SensorEventListener listener;
     final Sensor sensor;
     final Spec spec;
+    final Looper looper;
+    /** Not the app's Handler: an app that clears its handler's messages (a timer reset in onSensorChanged) must not end the stream. */
     final Handler handler;
     final long periodNs;
-    volatile boolean active = true;
-    long nextNs;
+    volatile boolean active;
+    volatile boolean away;  // its sensor is not on the device now
+    volatile long nextNs;
+    private boolean told;  // onAccuracyChanged goes once, before the first event
+    private long lastTs, lastReal;
 
-    Reg(SensorEventListener l, Sensor sensor, Spec spec, Handler h, long periodNs) {
+    Reg(SensorEventListener l, Sensor sensor, Spec spec, Looper looper, long periodNs) {
       this.listener = l;
       this.sensor = sensor;
       this.spec = spec;
-      this.handler = h;
+      this.looper = looper;
+      this.handler = new Handler(looper);
       this.periodNs = periodNs;
     }
 
@@ -469,7 +520,19 @@ public final class Sensors {
       handler.removeCallbacksAndMessages(this);
     }
 
+    void suspend() {
+      away = true;
+      stop();
+    }
+
+    void resume() {
+      if (!away) return;
+      away = false;
+      start();
+    }
+
     void start() {
+      active = true;
       nextNs = SystemClock.elapsedRealtimeNanos();
       handler.postDelayed(this, this, 0);
     }
@@ -479,38 +542,49 @@ public final class Sensors {
     public void run() {
       if (!active) return;
       long now = SystemClock.elapsedRealtimeNanos();
+      boolean skip = false;
       if (spec.continuous() && !Snapshot.ON) {  // --snapshot: one event only, so the screen can settle
         // Next first: a listener that throws must not end the stream, and one that unregisters removes it.
         nextNs += periodNs;
         if (nextNs < now) nextNs = now;  // late (a busy looper, a clock that jumped): drop events, as a device does
         long delayMs = Math.max(1, (nextNs - now) / 1_000_000L);
         handler.postDelayed(this, this, delayMs);
+        skip = lastReal != 0 && realTimeGate() && System.nanoTime() - lastReal < periodNs;
       }
-      deliver(listener, sensor, spec, now);
+      if (!skip) deliver(this, now);
+    }
+
+    void post() {
+      handler.post(() -> {
+        if (active) deliver(this, SystemClock.elapsedRealtimeNanos());
+      });
     }
   }
 
-  private static void deliver(SensorEventListener l, Sensor sensor, Spec spec, long ns) {
-    float[] v = read(spec, ns);
+  private static void deliver(Reg r, long ns) {
+    float[] v = read(r.spec, ns);
     if (v == null) return;
+    synchronized (r) {
+      ns = Math.max(ns, r.lastTs + 1);  // strictly rising, as a device's are
+      r.lastTs = ns;
+      r.lastReal = System.nanoTime();
+    }
     SensorEvent e = ReflectionHelpers.callConstructor(SensorEvent.class, ClassParameter.from(int.class, v.length));
     System.arraycopy(v, 0, e.values, 0, v.length);
-    e.sensor = sensor;
+    e.sensor = r.sensor;
     e.accuracy = SensorManager.SENSOR_STATUS_ACCURACY_HIGH;
     e.timestamp = ns;
-    SENT.computeIfAbsent(spec.key(), k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
-    l.onSensorChanged(e);
+    SENT.computeIfAbsent(r.spec.key(), k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
+    if (!r.told) {  // SensorEventQueue.dispatchSensorEvent: the accuracy differs from its stored 0
+      r.told = true;
+      r.listener.onAccuracyChanged(r.sensor, SensorManager.SENSOR_STATUS_ACCURACY_HIGH);
+    }
+    r.listener.onSensorChanged(e);
   }
 
-  /** The sensors with this type's value changed (on-change ones tell their listeners now). */
+  /** The sensors with this value changed (on-change ones tell their listeners now). */
   private static void changed(Spec spec) {
-    for (Reg r : REGS) {
-      if (r.spec == spec && r.active && spec.mode() != CONTINUOUS) {
-        r.handler.post(() -> {
-          if (r.active) deliver(r.listener, r.sensor, r.spec, SystemClock.elapsedRealtimeNanos());
-        });
-      }
-    }
+    for (Reg r : REGS) if (r.spec == spec && r.active && spec.mode() != CONTINUOUS) r.post();
   }
 
   private static Spec byType(int type) {
@@ -518,42 +592,59 @@ public final class Sensors {
     return null;
   }
 
+  /**
+   * How long until the next event of a registration on a looper other than the main one, in ms (Long.MAX_VALUE when none):
+   * such a looper runs a delayed message only when the simulated clock reaches it, and Host's idle sleep looked only at
+   * the main queue, so a GAME listener on a HandlerThread got ~32 events a second instead of 50 while the screen was still.
+   */
+  static long nextOtherLooperMs() {
+    long best = Long.MAX_VALUE;
+    Looper main = Looper.getMainLooper();
+    long now = SystemClock.elapsedRealtimeNanos();
+    for (Reg r : REGS) {
+      if (r.active && r.spec.continuous() && r.looper != main) best = Math.min(best, Math.max(0, (r.nextNs - now) / 1_000_000L));
+    }
+    return best;
+  }
+
   static boolean register(SensorEventListener l, Sensor sensor, int rate, Handler handler) {
     if (l == null || sensor == null) return false;
     Spec spec = specOf(sensor);
-    if (spec == null) return false;  // not this device's (removed with `sensor NAME off`)
-    if (spec.permission() != null && !permitted(spec.permission())) return false;  // the sensor service refuses it
+    if (spec == null || !present(spec)) return false;  // not this device's (removed with `sensor NAME off`)
+    if (!permitted(spec)) return false;  // the sensor service refuses it
     // SENSOR_DELAY_FASTEST 0, GAME 1 (20 ms), UI 2 (66.7 ms), NORMAL 3 (200 ms), else microseconds.
     long us = switch (rate) {
       case 0 -> 0;
       case 1 -> 20_000;
       case 2 -> 66_667;
       case 3 -> 200_000;
-      default -> Math.max(0, rate);
+      default -> rate;
     };
+    if (rate < 0) return false;  // not a rate: refused, as on the emulator
+    // An app targeting 31+ needs HIGH_SAMPLING_RATE_SENSORS for more than 200 Hz (FASTEST is 0 us): the emulator throws.
+    if (spec.continuous() && us < 5000 && app().getApplicationInfo().targetSdkVersion >= 31
+        && app().checkSelfPermission("android.permission.HIGH_SAMPLING_RATE_SENSORS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      throw new SecurityException("To use the sampling rate of " + us + " microseconds, app needs to declare the normal permission HIGH_SAMPLING_RATE_SENSORS.");
+    }
     int min = spec.minDelayUs() > 0 ? spec.minDelayUs() : 10_000;
     long period = Math.max(min, us);
     if (spec.maxDelayUs() > 0) period = Math.min(period, spec.maxDelayUs());
-    if (handler == null) handler = new Handler(Looper.getMainLooper());
+    Looper looper = handler != null ? handler.getLooper() : Looper.getMainLooper();
     // As SensorEventQueue.addSensor: a listener already registered for the sensor is refused, and keeps its first rate.
     for (Reg r : REGS) if (r.listener == l && r.spec == spec) return false;
-    Reg r = new Reg(l, sensor, spec, handler, period * 1000L);
+    Reg r = new Reg(l, sensor, spec, looper, period * 1000L);
     REGS.add(r);
-    if (spec.mode() == 3) return true;  // step detector: events only when a step happens
+    if (spec.mode() == 3) {  // step detector: events only when a step happens
+      r.active = true;
+      return true;
+    }
     r.start();
     return true;
   }
 
-  /** A runtime permission the sensor needs; ACTIVITY_RECOGNITION only binds apps targeting 29 and up. */
-  private static boolean permitted(String permission) {
-    Application app = app();
-    if (permission.equals("android.permission.ACTIVITY_RECOGNITION") && app.getApplicationInfo().targetSdkVersion < 29) return true;
-    return app.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED;
-  }
-
   static void unregister(SensorEventListener l, Sensor sensor) {
     for (Reg r : REGS) {
-      if (r.listener == l && (sensor == null || r.sensor == sensor || r.sensor.equals(sensor))) {
+      if (r.listener == l && (sensor == null || r.sensor == sensor)) {
         r.stop();
         REGS.remove(r);
       }
@@ -568,7 +659,7 @@ public final class Sensors {
     @Override
     protected Sensor getDefaultSensor(int type) {
       for (Spec s : specs()) {
-        if (s.type() == type) return sensorOf(s);
+        if (s.type() == type && permitted(s)) return OBJECTS.get(s);  // a sensor the app may not use is not listed
       }
       return null;
     }
@@ -577,7 +668,7 @@ public final class Sensors {
     @Override
     public List<Sensor> getSensorList(int type) {
       List<Sensor> out = new ArrayList<>();
-      for (Spec s : specs()) if (type == Sensor.TYPE_ALL || s.type() == type) out.add(sensorOf(s));
+      for (Spec s : specs()) if ((type == Sensor.TYPE_ALL || s.type() == type) && permitted(s)) out.add(OBJECTS.get(s));
       return out;
     }
 
@@ -631,25 +722,21 @@ public final class Sensors {
       return false;
     }
 
+    /** True for any registered listener; a SensorEventListener2 is told its flush completed, for each sensor. */
     @Implementation
     @Override
     protected boolean flush(SensorEventListener l) {
-      if (!(l instanceof SensorEventListener2 l2)) return false;
       boolean any = false;
       for (Reg r : REGS) {
         if (r.listener == l) {
           any = true;
-          Sensor s = r.sensor;
-          r.handler.post(() -> l2.onFlushCompleted(s));
+          if (l instanceof SensorEventListener2 l2) {
+            Sensor sensor = r.sensor;
+            r.handler.post(() -> l2.onFlushCompleted(sensor));
+          }
         }
       }
       return any;
-    }
-  }
-
-  private static Sensor sensorOf(Spec s) {
-    synchronized (LOCK) {
-      return SENSORS.get(s);
     }
   }
 
@@ -709,9 +796,9 @@ public final class Sensors {
       synchronized (LOCK) {
         if (a[2].equals("off")) REMOVED.add(key); else REMOVED.remove(key);
       }
-      // A sensor taken away stops its listeners' events (they stay registered, as on hot-unplug).
+      // A sensor taken away stops its listeners' events; they stay registered and hear it again once it is back.
       rebuild();
-      dropMissing();
+      syncRegs();
       refreshFeatures();
       return key + " " + a[2];
     }
@@ -789,6 +876,9 @@ public final class Sensors {
             REMOVED.clear();
           }
           rebuild();
+          syncRegs();
+          launchOptions();  // the launch's --sensor values again
+          for (Spec sp : specs()) if (sp.mode() == ON_CHANGE) changed(sp);  // on-change listeners hear their values back
           refreshFeatures();
           return "sensors reset";
         }
@@ -818,9 +908,7 @@ public final class Sensors {
   private static void stepEvents(Spec det, int n) {
     for (Reg r : REGS) {
       if (r.spec == det && r.active) {
-        for (int i = 0; i < n; i++) r.handler.post(() -> {
-          if (r.active) deliver(r.listener, r.sensor, r.spec, SystemClock.elapsedRealtimeNanos());
-        });
+        for (int i = 0; i < n; i++) r.post();
       }
     }
   }
@@ -844,7 +932,7 @@ public final class Sensors {
     List<Spec> specs = specs();
     long sentAll = 0;
     for (var c : SENT.values()) sentAll += c.get();
-    b.append("sensors: ").append(specs.size()).append(", listeners: ").append(REGS.size()).append(", events: ").append(sentAll);
+    b.append("sensors: ").append(specs.size()).append(", listeners: ").append(REGS.stream().filter(x -> !x.away).count()).append(", events: ").append(sentAll);
     long now = SystemClock.elapsedRealtimeNanos();
     for (Spec s : specs) {
       float[] v = read(s, now);

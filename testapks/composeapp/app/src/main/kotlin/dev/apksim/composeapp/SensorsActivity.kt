@@ -8,6 +8,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -15,7 +16,7 @@ import android.widget.TextView
 import java.util.Locale
 
 /**
- * apksim://sensors[?rate=fastest|game|ui|normal]: every sensor SensorManager lists, one line each with its type, name,
+ * apksim://sensors[?rate=fastest|game|ui|normal][&thread=bg][&redraw=0]: every sensor SensorManager lists, one line each with its type, name,
  * range, resolution and minimum delay, the number of events it has delivered and its last values; a registration that
  * is refused (a sensor that needs a permission) says so. "sensors: N" is the count, "default accelerometer: ..." what
  * getDefaultSensor(TYPE_ACCELEROMETER) returns ("none" when the device has none). `scripts/ci-smoke.sh` drives it and
@@ -23,8 +24,8 @@ import java.util.Locale
  */
 class SensorsActivity : Activity(), SensorEventListener {
   private val handler = Handler(Looper.getMainLooper())
-  private val counts = HashMap<Int, Int>()
-  private val last = HashMap<Int, String>()
+  private val counts = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+  private val last = java.util.concurrent.ConcurrentHashMap<Int, String>()
   private val refused = HashSet<Int>()
   private lateinit var sm: SensorManager
   private lateinit var list: List<Sensor>
@@ -36,6 +37,7 @@ class SensorsActivity : Activity(), SensorEventListener {
     super.onCreate(savedInstanceState)
     sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
     list = sm.getSensorList(Sensor.TYPE_ALL)
+    redraw = intent?.data?.getQueryParameter("redraw") != "0"
     val rate = when (intent?.data?.getQueryParameter("rate")) {
       "fastest" -> SensorManager.SENSOR_DELAY_FASTEST
       "game" -> SensorManager.SENSOR_DELAY_GAME
@@ -49,9 +51,10 @@ class SensorsActivity : Activity(), SensorEventListener {
     column.addView(default)
     for (s in list) column.addView(TextView(this).apply { textSize = 10f }.also { views += it })
     setContentView(ScrollView(this).apply { addView(column) })
+    // ?thread=bg: events on a HandlerThread's looper, not the main one (the screen then stays still between redraws).
+    val bg = if (intent?.data?.getQueryParameter("thread") == "bg") Handler(HandlerThread("sensors-bg").also { it.start() }.looper) else null
     for ((i, s) in list.withIndex()) {
-      // A sensor with a handle of its own: the same type may be listed twice (hardware and software orientation).
-      if (!sm.registerListener(this, s, rate)) refused += i
+      if (!sm.registerListener(this, s, rate, bg)) refused += i
     }
     show()
   }
@@ -68,14 +71,16 @@ class SensorsActivity : Activity(), SensorEventListener {
     val i = index(event.sensor)
     counts[i] = (counts[i] ?: 0) + 1
     last[i] = event.values.joinToString(" ") { String.format(Locale.ROOT, "%.2f", if (it == 0f) 0f else it) }
+    if (!redraw) return  // ?redraw=0: listeners only, the screen stays still (settle checks)
     if (!pending) {  // one redraw per 100 ms: a pending one is not postponed by the events that follow
       pending = true
-      handler.postDelayed(refresh, 100)
+      handler.postDelayed(refresh, 100)  // the main looper's, whichever thread the event came on
     }
   }
 
   override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
 
+  private var redraw = true
   private var pending = false
   private val refresh = Runnable {
     pending = false
