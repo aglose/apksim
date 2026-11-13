@@ -228,9 +228,11 @@ Matters for short clips and thumbnails.
 later), Opus and Vorbis (AudioToolbox has Opus; Vorbis needs a bundled decoder). Add when an app's media needs them;
 phase 1 says whether the owner's app does.
 
-**10. Health Connect stand-in.** The owner's app hides a card and its heart rate without it. A fake Health Connect service
-(the SDK's `HealthConnectClient` talks to a provider app that does not exist here) with sample records would show
-them. Needs the SDK's binder interface; medium effort.
+**10. Health Connect stand-in.** Done (2026-11-12, docs/health-connect.md). On API 34+ AndroidX's client uses the
+platform's HealthConnectManager, found with `getSystemService("healthconnect")`, not a provider app: apksim publishes an
+in-process IHealthConnectService (`dev.apksim.health`) with records from `--health FILE|PRESET` and the `health` command.
+The owner's app shows its fitness card and heart-rate chip with `--health week`. Left: data-origin priorities, the
+30-day history and background-read limits, Health Connect's own screens.
 
 **11. Native GLES and audio.** GLES via ANGLE-on-Metal and OpenSL ES/AAudio on CoreAudio would let games and
 native audio apps run. Large; only if a target app needs it. Java's GLES20/30/EGL14 already reach ANGLE in test runs
@@ -415,7 +417,7 @@ Safari and Firefox.
 | 7 Remaining CPU effects | medium | - |
 | 8 End-of-stream frames | small | - |
 | 9 More codecs | small each | an app that needs them |
-| 10 Health Connect | medium | - |
+| 10 Health Connect | medium | done |
 | 11 GLES/native audio | large | an app that needs them |
 | 12 Failure bundles | built; the owner's suites' cost check left | - |
 | Phase 6 features | done: three in 0.9.0, network in the release after it | - |

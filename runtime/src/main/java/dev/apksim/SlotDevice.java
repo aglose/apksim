@@ -55,6 +55,11 @@ final class SlotDevice {
 
   private SlotDevice() {}
 
+  /** The device folder of the slot this instance holds, or null (a test run, a standby's warm-up). */
+  static Path currentDir() {
+    return dir;
+  }
+
   /** The device folder of a data slot. */
   static Path dirFor(Path slot) {
     return slot.resolveSibling(slot.getFileName() + ".device");

@@ -169,6 +169,8 @@ final class InstallState {
       Integer level = frameworkProtection().get(permission);
       if (level != null) return grantedAt(level & android.content.pm.PermissionInfo.PROTECTION_MASK_BASE, runtime, false);
       if (RUNTIME_PERMISSIONS.contains(permission)) return runtime;
+      // Health Connect's (READ_STEPS, WRITE_HEART_RATE...): runtime permissions its controller app defines on a device.
+      if (permission.startsWith("android.permission.health.")) return runtime;
       return !permission.startsWith("android.permission.");
     }
     return grantedAt(info.getProtection(), runtime, pkg.equals(info.packageName));

@@ -50,6 +50,8 @@ final class DeviceIdentity {
       SystemFeatures.beforeApplicationOnCreate(app);
       Bluetooth.beforeApplicationOnCreate(app);
       Cameras.install(app);
+      // Health Connect's service, and its records: the slot's in a running instance, the seeds alone in a test.
+      dev.apksim.health.Health.reset(app, TestActivities.testRun() ? null : SlotDevice.currentDir());
     } catch (RuntimeException e) {
       System.err.println("[apksim] device identity: " + e);
     }

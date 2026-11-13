@@ -84,7 +84,7 @@ That trade is where both the speed and the limits come from.
 | **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
 | **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
-| **System services** | Stand-ins: no Play Services or Health Connect; simulated sensors (an emulator's list, events at the requested rate, set with `sensor`) and a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
+| **System services** | Stand-ins: no Play Services; Health Connect with scripted records (`--health week`), simulated sensors (an emulator's list, events at the requested rate, set with `sensor`) and a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
 
@@ -617,6 +617,7 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
 ```bash
 apksim mcp --apps builds/                               # an MCP server over stdio; agents may launch APKs from builds/
 apksim --ble heart-rate app.apk                         # a scripted peripheral the app can scan for and connect to
+apksim --health week app.apk                            # Health Connect with a week of steps, heart rate and sleep
 scripts/scene.py testapks/composeapp/scenes/board.json  # several instances, one script, one shared backend
 ```
 
@@ -627,6 +628,10 @@ scripts/scene.py testapks/composeapp/scenes/board.json  # several instances, one
   stack against scripted peripherals: advertisements the app's scanner finds, GATT services it discovers, reads,
   writes, notifications, bonding, MTU and PHY, in a running instance and in a test run. An emulator has no Bluetooth
   LE at all. See [docs/ble.md](docs/ble.md).
+- **Health Connect:** `--health FILE|PRESET` (repeatable) and the `health` command give the platform's Health Connect
+  service records to answer with: AndroidX's `HealthConnectClient` finds it available, asks for its permissions as
+  runtime permissions, and reads, writes, aggregates and follows changes of every record type, in a running instance
+  (kept with the data slot) and in a test run. See [docs/health-connect.md](docs/health-connect.md).
 - **Scenes:** `scripts/scene.py` runs different roles, each its own instance with its own APK, device and options,
   through one ordered script whose steps wait on one another's state, against one shared server. See
   [docs/scenes.md](docs/scenes.md).
@@ -819,7 +824,7 @@ What is still open is under [Limitations](#limitations) and in [AGENTS.md](AGENT
 ## Limitations
 
 - **It isn't a device.**
-  - **System services** are stand-ins: no Play Services or Health Connect; sensors are simulated (`sensor`: the accelerometer follows the rotation, light, proximity, steps, shake); the camera (`--camera fake`) shows
+  - **System services** are stand-ins: no Play Services; Health Connect holds scripted records (`--health`), not a phone's or a watch's; sensors are simulated (`sensor`: the accelerometer follows the rotation, light, proximity, steps, shake); the camera (`--camera fake`) shows
     a test pattern or a still image, not the Mac's webcam.
   - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere. A stand-in
     browser is installed so that SDKs that look for one before signing in (OAuth) find it.

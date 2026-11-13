@@ -518,6 +518,20 @@ only to a registered binder). Checked with the owner's app: its messaging servic
 (`dev.apksim.ble`, docs/ble.md): scripted BLE peripherals that the framework's own BluetoothLeScanner and BluetoothGatt
 find and talk to (apksim answers their IBluetoothScan/IBluetoothGatt binders), in running instances and test runs
 (`BleTest`; `scripts/ble-check.py` drives `apksim://ble`).
+`health [add FILE|PRESET|JSON|clear [TYPE]|types]` and `--health FILE|PRESET` (repeatable; `dev.apksim.health`,
+docs/health-connect.md): Health Connect. On API 34+ AndroidX's HealthConnectClient asks `getSystemService("healthconnect")`
+(null before: no such service in Robolectric's ServiceManager, so SDK_UNAVAILABLE) and uses the framework's own
+HealthConnectManager; `Health.reset` (from DeviceIdentity, before every Application.onCreate) publishes an
+IHealthConnectService (`HealthService`, a Proxy: methods it lacks answer ERROR_UNSUPPORTED_OPERATION through their
+callback) over a store of the framework's RecordInternal objects (`Store`, copied through their parcels, so every
+record type), kept in `<slot>.device/health.store` in running instances, seeds alone per test in test runs; seeds
+(`Seeds`, origin `dev.apksim.health`, preset `week`) replace the last launch's. Insert, read (a filter takes an
+interval by its start, as an emulator does), update, delete, change tokens and aggregates (`Aggregates`: every
+AggregationType by reflection, sums split by overlap; no priority lists) with the platform's permission checks
+(`HealthConnectMappings`: the type's permission category). Health permissions are runtime permissions (InstallState,
+`permission grant health.X`), and `ShadowSimPackageManager` keeps the app's PackageInfo GRANTED flags for them in step
+with its grants, which AndroidX's getGrantedPermissions reads. `HealthConnectTest` (passes on an API 36 emulator but
+for two apksim-only tests), `apksim://health` (`HealthActivity`, ci-smoke.sh).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
 open and streaming devices, frames, images, drops, outputs).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
@@ -1751,7 +1765,6 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   tried: one frame behind (it would not help much: the render thread, not the main thread, is the limit), one
   renderer for all layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay
   on the CPU.
-- No Health Connect service, so apps hide what they would show from it.
 - Network record/replay (docs/network.md) covers OkHttp (minified too) and HttpURLConnection; Cronet's native stack,
   Ktor CIO (NIO) and WebSocket replay are not covered.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").

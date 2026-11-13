@@ -119,6 +119,20 @@ drive back 'wait 1000' >/dev/null
 
 # Scripted BLE peripherals (docs/ble.md): apksim://ble scans, connects and shows a heart-rate preset's notifications.
 python3 "$ROOT/scripts/ble-check.py" "$PORT" > "$OUT/ble.log" 2>&1 && tail -1 "$OUT/ble.log" || { cat "$OUT/ble.log"; exit 1; }
+# Health Connect (docs/health-connect.md): a seeded week, the permissions granted, and apksim://health reads today's steps,
+# the latest heart rate and last night's sleep through AndroidX's client; its insert adds 100 steps to today's.
+health() { drive nodes | grep -oE 'text="(health|permissions|steps today|heart rate|sleep|inserted): [^"]*"' | tr '\n' ' '; }
+drive 'health add week' 'permission grant health.READ_STEPS health.WRITE_STEPS health.READ_HEART_RATE health.WRITE_HEART_RATE health.READ_SLEEP' >/dev/null
+drive 'open apksim://health' 'wait 4000' >/dev/null
+seen="$(health)"
+drive 'tap-text INSERT 100 STEPS' 'wait 3000' >/dev/null
+inserted="$(health)"
+echo "Health Connect: $seen-> $inserted"
+steps() { echo "$1" | grep -oE 'steps today: [0-9]+' | grep -oE '[0-9]+'; }
+[[ "$seen" == *'health: available'* && "$seen" == *'permissions: 5 of 5 granted'* && "$seen" =~ 'heart rate: '[0-9]+' bpm at' \
+   && "$seen" =~ 'sleep: '[0-9]+' h' && -n "$(steps "$seen")" && "$(steps "$inserted")" == "$(( $(steps "$seen") + 100 ))" ]] \
+  || { drive health; echo "apksim://health did not read the seeded week or its insert" >&2; exit 1; }
+drive 'health clear' back 'wait 1000' >/dev/null
 # Every zone source an app reads follows --timezone, Joda-Time's (it reads user.timezone) included, and `timezone ZONE`
 # changes them all and broadcasts ACTION_TIMEZONE_CHANGED, which the screen hears as joda-time-android does (the test
 # app's apksim://timezone, issue 91).
