@@ -221,6 +221,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   @Implementation
   protected void native_setSurface(Surface surface) {
     if (decoder != null) decoder.surface = surface;
+    VideoSurfaces.codecMoved(surface);
   }
 
   @Implementation

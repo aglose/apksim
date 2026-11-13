@@ -61,6 +61,13 @@ if rendered < args.min_rendered:
     fail(f"only {rendered} pictures drawn in {args.seconds:g} s (want {args.min_rendered}): {out_a}\n{out_b}")
 if b["decodeErrors"] != 0:
     fail(f"decodeErrors={b['decodeErrors']}: {out_b}")
+cm = re.search(r"codecsConfigured=(\d+)", out_b)
+if not cm or int(cm.group(1)) < 1:
+    fail(f"no codecsConfigured>=1 after playing: {out_b}")
+pics = [int(n) for n in re.findall(r"pictures=(\d+)", out_b.split("| views", 1)[-1])]
+if not pics or max(pics) == 0:
+    fail(f"no view with pictures>0 while playing: {out_b}")
+print(f"codecsConfigured {cm.group(1)}, view pictures {pics}")
 cmd("back")
 time.sleep(1)
 

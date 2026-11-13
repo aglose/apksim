@@ -48,6 +48,17 @@ public final class VideoSurfaces {
     if (e != null) e.producer = true;
   }
 
+  /** A codec's output moved to [surface] (MediaCodec.setOutputSurface): it is that view's producer now. */
+  static void codecMoved(android.view.Surface surface) {
+    SurfaceTexture t = textureOf(surface);
+    Entry e = t == null ? null : ENTRIES.get(t);
+    if (e != null) e.producer = true;
+  }
+
+  /** Views already warned about, so a SurfaceView whose surface is recreated is named once. */
+  private static final java.util.Set<View> warned =
+      java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
   private static synchronized void watchFor(SurfaceTexture surface, Entry e) {
     if (watch == null) {
       watch = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
@@ -61,6 +72,11 @@ public final class VideoSurfaces {
         if (ENTRIES.get(surface) != e || e.producer) return;
         int w = e.view.getWidth(), h = e.view.getHeight();
         if (w <= 0 || h <= 0) return;
+        // Only while video is in use somewhere: a map or game view in an app that never configures a codec says nothing.
+        if (configured.get() == 0) return;
+        synchronized (warned) {
+          if (!warned.add(e.view)) return;
+        }
         System.err.println("[apksim] " + e.view.getClass().getSimpleName() + " " + w + "x" + h + " has had its surface for "
             + NO_CODEC_WARN_MS / 1000 + " s with no codec attached and no picture published (expected for a map, game or camera view; a player that starts later is fine)");
       } catch (Throwable ignored) {
