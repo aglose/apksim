@@ -555,12 +555,14 @@ class BleTest {
 
   @Test
   fun e_aScanningWithoutBluetoothScanThrows() {
-    shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_SCAN}")
+    // An app targeting below 31 needs the legacy BLUETOOTH_ADMIN instead (Target28Test; docs/ble.md).
+    val needed = if (context.applicationInfo.targetSdkVersion >= 31) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.BLUETOOTH_ADMIN
+    shell("pm revoke ${context.packageName} $needed")
     try {
       scanner.startScan(Scan())
-      fail("startScan without BLUETOOTH_SCAN")
+      fail("startScan without ${needed.substringAfterLast('.')}")
     } catch (e: SecurityException) {
-      assertTrue(e.message, e.message!!.contains("BLUETOOTH_SCAN"))
+      assertTrue(e.message, e.message!!.contains(needed.substringAfterLast('.')))
     }
   }
 
@@ -593,12 +595,13 @@ class BleTest {
   @Test
   fun e_cConnectingWithoutBluetoothConnectThrows() {
     shell("apksim ble add heart-rate")
-    shell("pm revoke ${context.packageName} ${Manifest.permission.BLUETOOTH_CONNECT}")
+    val needed = if (context.applicationInfo.targetSdkVersion >= 31) Manifest.permission.BLUETOOTH_CONNECT else Manifest.permission.BLUETOOTH
+    shell("pm revoke ${context.packageName} $needed")
     try {
       adapter.getRemoteDevice("C0:FF:EE:00:18:0D").connectGatt(context, false, Recorder())
-      fail("connectGatt without BLUETOOTH_CONNECT")
+      fail("connectGatt without ${needed.substringAfterLast('.')}")
     } catch (e: SecurityException) {
-      assertTrue(e.message, e.message!!.contains("BLUETOOTH_CONNECT"))
+      assertTrue(e.message, e.message!!.contains(needed.substringAfterLast('.')))
     }
   }
 

@@ -231,3 +231,81 @@ Found and fixed in the tests themselves, while checking them on the emulator fir
 
 Not yet: blocked on the permission to build AndroidX's playground projects (`work/androidx`, never committed). Once
 allowed, each library's androidTest APK goes through the same script and its table is added here.
+
+## An app that targets 28: API 30, API 36 and apksim (2026-11-12)
+
+A consumer's app has `targetSdk 28` and its CI emulators run API 30 (Android 11); apksim runs the API 36 framework. Two
+layers differ: **target-gated behaviour** (what the platform does for an app of an older target) and **ungated changes**
+between Android 11 and 16. Both are measured with the test app built for target 28 on three: `ApksimCmp30` (AGENTS.md
+"Comparing with the emulator"), the shared `ApksimCmp36` (`emulator-5580`) and apksim.
+
+```bash
+cd testapks/composeapp && ./gradlew -Papksim.targetSdk=28 :app:assembleDebug :app:assembleDebugAndroidTest
+B=testapks/composeapp/app/build-t28/outputs/apk
+python3 scripts/conformance.py $B/androidTest/debug/app-t28-debug-androidTest.apk --app $B/debug/app-t28-debug.apk \
+  --name full-api30 --emulator emulator-5582 --util test-services-1.6.0.apk     # then --name full-api36 --emulator emulator-5580
+```
+
+The property (`-Papksim.targetSdk=N`) sets `targetSdk` and builds into `app/build-N/` as `app-tN-debug.apk` and
+`app-tN-debug-androidTest.apk`; without it nothing changes (`app/build/outputs/apk/debug/app-debug.apk`). The target-28 build
+also merges `src/t28/AndroidManifest.xml`: the legacy `BLUETOOTH` and `BLUETOOTH_ADMIN` with no `maxSdkVersion`, and not the
+API 31 `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, as an app of that target declares them. Nothing else needed fixing (lint is not
+part of `assemble`).
+
+### The suite (425 tests; skipped ones are assumptions that need a switch or the other side)
+
+| | API 30 emulator | API 36 emulator |
+|---|---|---|
+| apksim agrees (both pass) | 267 | 273 |
+| apksim differs | 0 passing tests (see below) | 0 passing tests |
+| passes only on apksim | 18 | 6 |
+
+Every test that passes on an emulator passes on apksim, so the suite finds no ungated difference apksim lacks a fix
+for. The tests the three do not agree on, by layer:
+
+| Test(s) | API 30 | API 36 | apksim | Layer |
+|---|---|---|---|---|
+| `BluetoothTest` (9) | fails: `Unknown permission: android.permission.BLUETOOTH_CONNECT` | pass (3), skipped | pass | Android's: the test grants an API 31 permission, unknown on 30 |
+| `NativeBitmapTest#rgba1010102IsOnePackedWordPerPixel` | fails: no `Bitmap.Config.RGBA_1010102` | pass | pass | Android's (API 33 enum) |
+| `UiaEngineTest#looksAtAScreenThatNeverStopsAnimating` | fails: no `RuntimeShader` | pass | pass | Android's (API 33 class) |
+| `UiaEngineTest#aFilter…` (2) | process crash | pass | skipped (`--uia engine` only) | Android's (30) |
+| `NullBindingTest#aConnectionWithoutAutoCreateHearsTheServiceGoAndCome` | fails: the disconnect callbacks differ | pass | pass | Android's (callbacks differ between 30 and 36; not traced) |
+| `ShellCommandTest#logcatHoldsTheProcessLog` | fails: `logcat -c` leaves the line | pass | pass | Android's (not traced) |
+| `CoveredWindowsTest#aNonModalDialogLeavesTheActivityReported` | pass | fails: "the tap reached the activity" | pass | Android's (not traced); apksim agrees with API 30 here |
+| `ValueAnimatorConformanceTest#anInfiniteAnimatorKeepsRepeating` | pass | fails: only 0 repeats | skipped (`-e repeatForever`) | Android's (not traced) |
+| `ComposeUiConformanceTest#systemBarInsetsMatchTheView`, `DialogFocusTest`, `RunnerListenersTest#testStorageAnswersTheRunsArguments`, `StackWindowsTest` (2) | fail | fail | pass | neither emulator: their premises are apksim's (a test run's window stack, runner arguments through Test Storage, bar insets of 48) |
+| `RealTimeSwipeTest#aSwipeOverAPostFromEachFrameReturns`, `FailureBundleParameterizedTest` (2) | fail | fail | skipped | a switch of apksim's (`--realtime-clock`, `-e failOnPurpose`) |
+
+### Target-gated behaviour: `Target28Test#probe`
+
+`Target28Test` (androidTest) prints one `t28.KEY=VALUE` line per observation as instrumentation status and asserts only
+in its other tests, which both emulators and apksim pass (`targetsTwentyEight`, `notificationsPostWithTheRuntimePermissionWhereOneExists`,
+`legacyBluetoothPermissionsAllowScansAndNames`, `runtimePermissionsStayDenied`, `pendingIntentNeedsNoMutabilityFlag`);
+in the default build (target 36) they are skipped by an assumption. `BleTest`'s two permission tests now revoke
+`BLUETOOTH_ADMIN`/`BLUETOOTH` for a target below 31, and pass in the target-28 build (before they failed there:
+`ble/Ble.java`'s legacy path was not under a test).
+
+| Observation (target 28) | API 30 | API 36 | apksim | Layer |
+|---|---|---|---|---|
+| `checkSelfPermission` BLUETOOTH, BLUETOOTH_ADMIN, VIBRATE | granted | granted | granted | |
+| `BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN` | denied (no such permission) | **granted** (the split permissions of a legacy BLUETOOTH/BLUETOOTH_ADMIN) | denied | target gate: apksim has no split permissions; `Ble.java` enforces the legacy ones itself, so scans and names behave alike |
+| Adapter name, `startScan` | allowed | allowed | allowed | |
+| `areNotificationsEnabled` / notification posted | true / listed | **false / not listed** until POST_NOTIFICATIONS is granted (the prompt a channel raises) | true / listed (`Notifications.allowed()`: `targetSdkVersion < 33`) | apksim follows API 30 for a target below 33; API 33+ blocks a fresh install |
+| `canScheduleExactAlarms` | n/a (API 31) | true | **false** | target gate: Robolectric's default; a target below 33 is allowed exact alarms on API 31+ |
+| `getLastKnownLocation("gps")` without the permission | SecurityException | SecurityException | **ok** | ungated: apksim does not enforce location permissions |
+| `getInstalledPackages`, `getPackageInfo("com.android.settings")` | the system's packages | the system's packages | **none** | ungated: apksim has no system apps (visibility filtering starts at target 30, so a target-28 app is meant to see them) |
+| `NetworkSecurityPolicy.isCleartextTrafficPermitted`, `Environment.isExternalStorageLegacy`, `PendingIntent` without a mutability flag, `ACCESS_FINE_LOCATION`/`CAMERA` denied | same on all three | | | |
+
+Left for later, with their mechanisms: split permissions (`InstallState` grants only the permissions an APK lists), exact
+alarms (`ShadowAlarmManager`'s `canScheduleExactAlarms` flag is never set from the target), location enforcement and the
+system package list (a `PackageManager` with the emulator's apps). None is a regression; each is a gap a target-28 app
+could meet.
+
+### With the compatibility table (#326)
+
+The apksim column was run again on the branch of the target-SDK compatibility table (`claude/compat-table-71833e`, built
+and run from a separate worktree, nothing merged or rebased): the same 267 / 1 / 18 / 136 / 3 against the API 30 emulator, the
+same status for each of the 422 tests that ran, and the same 24 probe lines. This suite and probe read none of the gates
+the table changes (the probe's gates are permissions and notifications, which `CompatChanges` does not decide), so the
+table's effect needs a probe on the gates themselves: a `Target28Test` observation per compat change is the next step once
+it has landed.

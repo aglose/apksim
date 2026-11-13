@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged over the main manifest only in a -Papksim.targetSdk=28 build (build.gradle.kts): the legacy Bluetooth
+     permissions without maxSdkVersion and without the API 31 ones, as an app targeting 28 declares them. On API 31+ the platform then adds
+     BLUETOOTH_SCAN and BLUETOOTH_CONNECT for it (the split permissions), which is the path Target28Test and apksim's
+     ble/Ble.java check; with maxSdkVersion=30 such a device never saw the app ask for them. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH" tools:node="replace" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" tools:node="replace" />
+</manifest>
