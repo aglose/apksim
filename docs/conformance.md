@@ -246,7 +246,7 @@ python3 scripts/conformance.py $B/androidTest/debug/app-t28-debug-androidTest.ap
   --name full-api30 --emulator emulator-5582 --util test-services-1.6.0.apk     # then --name full-api36 --emulator emulator-5580
 ```
 
-The property (`-Papksim.targetSdk=N`) sets `targetSdk` and builds into `app/build-N/` as `app-tN-debug.apk` and
+The property (`-Papksim.targetSdk=N`) sets `targetSdk` and builds into `app/build-tN/` as `app-tN-debug.apk` and
 `app-tN-debug-androidTest.apk`; without it nothing changes (`app/build/outputs/apk/debug/app-debug.apk`). The target-28 build
 also merges `src/t28/AndroidManifest.xml`: the legacy `BLUETOOTH` and `BLUETOOTH_ADMIN` with no `maxSdkVersion`, and not the
 API 31 `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT`, as an app of that target declares them. Nothing else needed fixing (lint is not
@@ -257,11 +257,11 @@ part of `assemble`).
 | | API 30 emulator | API 36 emulator |
 |---|---|---|
 | apksim agrees (both pass) | 267 | 273 |
-| apksim differs | 0 passing tests (see below) | 0 passing tests |
+| fails on apksim only | 1 (`Target28Test#otherPackagesAreVisible`, since removed: see the probe table) | 0 |
 | passes only on apksim | 18 | 6 |
 
-Every test that passes on an emulator passes on apksim, so the suite finds no ungated difference apksim lacks a fix
-for. The tests the three do not agree on, by layer:
+Among the tests that ran on apksim, every one that passes on an emulator passes there too (the 136 skipped ones, assumptions
+that need a switch or the other side, are not compared). The tests the three do not agree on, by layer:
 
 | Test(s) | API 30 | API 36 | apksim | Layer |
 |---|---|---|---|---|
@@ -280,10 +280,10 @@ for. The tests the three do not agree on, by layer:
 
 `Target28Test` (androidTest) prints one `t28.KEY=VALUE` line per observation as instrumentation status and asserts only
 in its other tests, which both emulators and apksim pass (`targetsTwentyEight`, `notificationsPostWithTheRuntimePermissionWhereOneExists`,
-`legacyBluetoothPermissionsAllowScansAndNames`, `runtimePermissionsStayDenied`, `pendingIntentNeedsNoMutabilityFlag`);
+`legacyBluetoothPermissionsAllowScansAndNames`, `runtimePermissionsStayDeniedUntilGranted`, `pendingIntentNeedsNoMutabilityFlag`);
 in the default build (target 36) they are skipped by an assumption. `BleTest`'s two permission tests now revoke
 `BLUETOOTH_ADMIN`/`BLUETOOTH` for a target below 31, and pass in the target-28 build (before they failed there:
-`ble/Ble.java`'s legacy path was not under a test).
+`ble/Ble.java`'s legacy path was not under a test). CI builds only the default pair, so the target-28 path is checked by hand (a CI leg running `Target28Test` and `BleTest` from a target-28 build is the cheap next step).
 
 | Observation (target 28) | API 30 | API 36 | apksim | Layer |
 |---|---|---|---|---|
@@ -304,7 +304,7 @@ could meet.
 ### With the compatibility table (#326)
 
 The apksim column was run again on the branch of the target-SDK compatibility table (`claude/compat-table-71833e`, built
-and run from a separate worktree, nothing merged or rebased): the same 267 / 1 / 18 / 136 / 3 against the API 30 emulator, the
+and run from a separate worktree, nothing merged or rebased): the same 267 / 1 / 18 / 136 / 3 (agree / fails here only / passes here only / skipped / one side only) against the API 30 emulator, the
 same status for each of the 422 tests that ran, and the same 24 probe lines. This suite and probe read none of the gates
 the table changes (the probe's gates are permissions and notifications, which `CompatChanges` does not decide), so the
 table's effect needs a probe on the gates themselves: a `Target28Test` observation per compat change is the next step once

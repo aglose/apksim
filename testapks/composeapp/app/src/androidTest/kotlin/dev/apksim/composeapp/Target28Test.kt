@@ -51,6 +51,7 @@ class Target28Test {
 
   @Test
   fun probe() {
+    assumeTrue("observes an older target only (posts a notification, scans)", target < 33)
     val out = Bundle()
     fun put(k: String, v: Any?) = out.putString("t28.$k", v.toString())
     put("targetSdk", target)
@@ -89,7 +90,6 @@ class Target28Test {
       context.getSystemService(android.location.LocationManager::class.java).getLastKnownLocation("gps")
       "ok"
     })
-    put("backgroundStart", seen { context.packageManager.getApplicationInfo(context.packageName, 0).targetSdkVersion })
     instrumentation.sendStatus(0, out)
     for (k in out.keySet().sorted()) println("$k=${out.getString(k)}")
   }
