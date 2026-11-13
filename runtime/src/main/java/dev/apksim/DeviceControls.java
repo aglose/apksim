@@ -286,7 +286,7 @@ final class DeviceControls {
     String rs = redirect.getScheme().toLowerCase(Locale.ROOT);
     boolean web = rs.equals("http") || rs.equals("https");
     if (web && (redirect.getHost() == null || !rs.equals("https"))) return false;
-    if (SimWindow.webAuth(uri.toString(), web ? null : rs, web ? redirect.getHost() : null, web ? redirect.getPath() : null)) {
+    if (SimWindow.webAuth(uri.toString(), web ? null : rs, web ? redirect.getHost() : null, web ? (redirect.getPath() == null || redirect.getPath().isEmpty() ? "/" : redirect.getPath()) : null)) {
       System.err.println("[apksim] sign-in in the Mac's browser, waiting for a redirect to " + (web ? redirect.getHost() + redirect.getPath() : rs + "://"));
       signingIn = true;
       return true;

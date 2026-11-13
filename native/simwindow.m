@@ -1573,8 +1573,10 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, 
     return JNI_FALSE;
   }
   onMain(^{
+    __block ASWebAuthenticationSession *me = nil;
     void (^done)(NSURL *, NSError *) = ^(NSURL *callback, NSError *error) {
       @synchronized([WebAuthAnchor class]) {
+        if (webAuthSession != me) return;  // a session already replaced: its late cancel is not the new one's result
         webAuthResult = callback ? callback.absoluteString : @"";
         webAuthSession = nil;
       }
@@ -1583,23 +1585,26 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, 
     if (host) {
       if (@available(macOS 14.4, *)) {
         session = [[ASWebAuthenticationSession alloc] initWithURL:url
-                                                         callback:[ASWebAuthenticationSessionCallback callbackWithHTTPSHost:host path:path ?: @"/"]
+                                                         callback:[ASWebAuthenticationSessionCallback callbackWithHTTPSHost:host path:(path.length ? path : @"/")]
                                                 completionHandler:done];
       }
     } else {
       session = [[ASWebAuthenticationSession alloc] initWithURL:url callbackURLScheme:scheme completionHandler:done];
     }
     if (!session) {
-      done(nil, nil);
+      @synchronized([WebAuthAnchor class]) { webAuthResult = @""; }
       return;
     }
+    me = session;
     if (!webAuthAnchor) webAuthAnchor = [WebAuthAnchor new];
     session.presentationContextProvider = webAuthAnchor;
+    ASWebAuthenticationSession *old;
     @synchronized([WebAuthAnchor class]) {
-      [webAuthSession cancel];  // one sign-in at a time
-      webAuthSession = session;
+      old = webAuthSession;
+      webAuthSession = session;  // before the cancel, so the old session's completion is ignored
       webAuthResult = nil;
     }
+    [old cancel];  // one sign-in at a time
     if (![session start]) {
       NSLog(@"[apksim] the sign-in session did not start");
       done(nil, nil);
