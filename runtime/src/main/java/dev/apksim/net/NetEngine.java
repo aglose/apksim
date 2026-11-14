@@ -694,9 +694,10 @@ final class NetEngine {
         }
         ruleId = 0;
         addedMs = 0;
+        forwarded = false;
         boolean keep;
         Inspector.Rule rule = Inspector.on ? Inspector.match(req.method, req.url) : null;
-        if (deferred != null && (rule == null || rule.status <= 0)) {
+        if (deferred != null && (rule == null || !rule.answers())) {
           // The server is not there (inspected()) and no rule answers this request: the connect's failure, as a proxy says it.
           cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + deferred.trim() + "\r\n\r\n")
               .getBytes(StandardCharsets.ISO_8859_1));
@@ -708,7 +709,7 @@ final class NetEngine {
           ruleId = rule.id;
           addedMs = rule.latencyMs;
           Conditions.sleep(rule.latencyMs);
-          keep = rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+          keep = rule.forward != null ? answerForward(req, rule) : rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
         } else {
           keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
         }
@@ -1002,6 +1003,115 @@ final class NetEngine {
     /** The inspector rule that slowed or answered the exchange being handled (0: none), and the latency it added. */
     int ruleId;
     long addedMs;
+    /** Whether that rule is a forward rule: the exchange's row says so. */
+    boolean forwarded;
+
+    /**
+     * A forward rule's answer (issue 363): the request goes, as it came, to the rule's URL and that server's status, headers
+     * and body go back to the app; nothing reaches the app's own server. The target gets the method, the headers (not the
+     * ones recordings redact, nor the connection's own: Host, Content-Length, Connection...) and the whole body, with
+     * `X-Apksim-Original-Url` naming where the app sent it. A target that cannot be reached or does not answer in 30 s
+     * is a 502 to the app, with the reason in `X-Apksim-Error` and the body. Redirects are the app's to follow.
+     */
+    boolean answerForward(Request req, Inspector.Rule rule) throws IOException {
+      long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
+      forwarded = true;
+      if ("100-continue".equalsIgnoreCase(req.header("Expect"))) {
+        cout.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+        cout.flush();
+      }
+      ByteArrayOutputStream whole = new ByteArrayOutputStream();
+      boolean[] over = {false};
+      streamRequestBody(req, new OutputStream() {
+        @Override
+        public void write(int b) {
+          write(new byte[] {(byte) b}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+          if (over[0] || whole.size() + len > Inspector.FORWARD_BODY_MAX) {
+            over[0] = true;
+            whole.reset();
+          } else {
+            whole.write(b, off, len);
+          }
+        }
+      });
+      inFlight.incrementAndGet();
+      try {
+        int status;
+        List<String[]> headers = new ArrayList<>();
+        byte[] body;
+        String error = null;
+        try {
+          if (over[0]) throw new IOException("a request body over " + Inspector.FORWARD_BODY_MAX + " bytes is not forwarded");
+          java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(rule.forward))
+              .version(java.net.http.HttpClient.Version.HTTP_1_1).timeout(java.time.Duration.ofSeconds(30))
+              .method(req.method, req.hasBody ? java.net.http.HttpRequest.BodyPublishers.ofByteArray(whole.toByteArray())
+                  : java.net.http.HttpRequest.BodyPublishers.noBody());
+          for (String[] h : req.headers) {
+            String n = h[0].toLowerCase(Locale.ROOT);
+            if (HOP_HEADERS.contains(n) || n.startsWith("proxy-") || n.startsWith("x-apksim-") || Net.redact.contains(n)) continue;
+            try {
+              b.header(h[0], h[1]);
+            } catch (IllegalArgumentException e) {
+              // a name or value the client will not send: left out
+            }
+          }
+          b.header("X-Apksim-Original-Url", req.url);
+          java.net.http.HttpResponse<byte[]> r = forwardClient().send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+          status = r.statusCode();
+          body = r.body();
+          r.headers().map().forEach((name, values) -> {
+            String n = name.toLowerCase(Locale.ROOT);
+            if (HOP_HEADERS.contains(n) || n.startsWith(":") || n.startsWith("proxy-") || n.equals("x-apksim-rule")) return;
+            for (String v : values) headers.add(new String[] {name, v});
+          });
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IOException("interrupted while forwarding");
+        } catch (IOException | RuntimeException e) {
+          error = ("forward to " + rule.forward + " failed: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()))
+              .replaceAll("[^\\x20-\\x7e]", " ");
+          status = 502;
+          body = (error + "\n").getBytes(StandardCharsets.UTF_8);
+          headers.add(new String[] {"Content-Type", "text/plain; charset=utf-8"});
+          headers.add(new String[] {"X-Apksim-Error", error});
+          Net.log("network inspector: rule " + rule.id + ": " + error);
+        }
+        headers.add(new String[] {"X-Apksim-Rule", String.valueOf(rule.id)});
+        boolean none = status == 204 || status == 304 || status < 200;
+        StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(' ').append(Net.statusText(status)).append("\r\n");
+        for (String[] h : headers) head.append(h[0]).append(": ").append(h[1].replaceAll("[\\r\\n]", " ")).append("\r\n");
+        if (!none) head.append("Content-Length: ").append(body.length).append("\r\n");
+        head.append("\r\n");
+        Conditions.sleep(Net.conditions.rtt());
+        cout.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+        if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(body, 0, body.length);
+        cout.flush();
+        Recording.Entry e = new Recording.Entry();
+        e.wallMs = startWall;
+        e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+        e.method = req.method;
+        e.url = req.url;
+        e.httpVersion = req.version;
+        e.reqHeaders = redacted(req.headers);
+        e.reqBody = !req.hasBody ? null : req.bodyTruncated ? new byte[0] : req.body;
+        e.reqSha = req.bodySha;
+        e.reqTruncated = req.bodyTruncated;
+        e.status = status;
+        e.statusText = Net.statusText(status);
+        e.respHeaders = redacted(headers);
+        e.respBody = body;
+        e.timeMs = (System.nanoTime() - t0) / 1_000_000;
+        add(e);
+        return !"close".equalsIgnoreCase(req.header("Connection"));
+      } finally {
+        if (inFlight.decrementAndGet() == 0) synchronized (inFlight) { inFlight.notifyAll(); }
+      }
+    }
 
     /** An inspector rule's answer: the request is read and dropped, the rule's status and body go back; nothing reaches the server. */
     boolean answerRule(Request req, Inspector.Rule rule) throws IOException {
@@ -1050,7 +1160,7 @@ final class NetEngine {
     }
 
     void add(Recording.Entry e) {
-      Inspector.exchange(e, ruleId, addedMs);
+      Inspector.exchange(e, ruleId, addedMs, forwarded);
       // Replaying, the recording is the fixture the app is answered from: a rule's answer is shown, never added to it.
       if (Net.mode == Net.Mode.REPLAY) return;
       Net.recording.add(e);
@@ -1200,6 +1310,26 @@ final class NetEngine {
       r.head = head.toByteArray();
       return r;
     }
+  }
+
+  /** Headers that belong to one connection, not to the request or answer a forward rule passes on. */
+  private static final java.util.Set<String> HOP_HEADERS = java.util.Set.of("host", "content-length", "connection", "keep-alive",
+      "transfer-encoding", "te", "trailer", "upgrade", "expect", "http2-settings");
+  private static java.net.http.HttpClient forwardClient;
+
+  /** The client forward rules send with: no redirects followed, its threads apksim's (daemons, named so). */
+  private static synchronized java.net.http.HttpClient forwardClient() {
+    if (forwardClient == null) {
+      java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+      forwardClient = java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+          .connectTimeout(java.time.Duration.ofSeconds(10))
+          .executor(java.util.concurrent.Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "apksim-net-forward-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+          })).build();
+    }
+    return forwardClient;
   }
 
   static final class Request {

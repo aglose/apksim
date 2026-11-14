@@ -63,6 +63,46 @@ public final class InspectorRuleCheck {
     }
     check(Inspector.detailBytesForCheck() <= Inspector.DETAILS_BYTES, "detail bodies stay under the byte cap");
     check(!Inspector.detail(new String[] {"network", "detail", "201"}).startsWith("error"), "the newest exchange keeps its detail");
+    // Forward rules (issue 363): a target is an http(s) URL; the list says "forward"; a forward answers requests itself.
+    java.util.function.Function<String, String> fwd = url -> Inspector.rule(("network rule add POST /items* forward 0 - "
+        + java.util.Base64.getEncoder().encodeToString(url.getBytes(java.nio.charset.StandardCharsets.UTF_8))).split(" "));
+    Inspector.rule("network rule clear".split(" "));
+    check(!Inspector.hasAnswerRules(), "no rules: nothing answers");
+    String added = fwd.apply("https://mocks.example.test/answer?x=1");
+    check(added.startsWith("{") && added.contains("\"forward\":\"https://mocks.example.test/answer?x=1\"") && added.contains("\"status\":0"), "a forward rule is added: " + added);
+    check(Inspector.hasAnswerRules(), "a forward rule answers requests itself");
+    for (String bad : new String[] {"ftp://mocks.example.test/x", "mocks.example.test/x", "https://user:pw@mocks.example.test/x", "https://mocks.example.test/x#frag",
+        "https:///x", "file:///etc/passwd", "https://mocks.example.test/a b"}) {
+      check(fwd.apply(bad).startsWith("error"), "refused as a forward target: " + bad);
+    }
+    check(Inspector.rule("network rule add GET /x forward 0 text/plain aHR0cDovL3gv".split(" ")).startsWith("error"), "a forward rule takes no content type");
+    check(Inspector.rule("network rule add GET /x forward 0 - -".split(" ")).startsWith("error"), "a forward rule needs a target");
+    Inspector.rule("network rule clear".split(" "));
+    // Which targets a server lets a tab name (serve --inspect-forward-allow).
+    dev.apksim.serve.ForwardAllow none = new dev.apksim.serve.ForwardAllow();
+    check(!none.allows("https://mocks.example.test/api"), "no prefix: no target is allowed");
+    dev.apksim.serve.ForwardAllow allow = new dev.apksim.serve.ForwardAllow();
+    allow.add("https://mocks.example.test/api");
+    allow.add("http://127.0.0.1:8099");
+    for (String ok : new String[] {"https://mocks.example.test/api", "https://MOCKS.example.test:443/api/answer?x=1", "https://mocks.example.test/api/", "http://127.0.0.1:8099",
+        "http://127.0.0.1:8099/anything/at/all?q=//x"}) {
+      check(allow.allows(ok), "allowed: " + ok);
+    }
+    for (String no : new String[] {"https://mocks.example.test/apix", "https://mocks.example.test/", "http://mocks.example.test/api", "https://mocks.example.test:8443/api",
+        "https://mocks.example.test.evil.example/api", "https://mocks.example.test@evil.example/api", "https://evil.example/?https://mocks.example.test/api",
+        "https://mocks.example.test/api/../admin", "https://mocks.example.test/api/%2e%2e/admin", "https://mocks.example.test/api/..%2fadmin", "https://mocks.example.test//api",
+        "https://mocks.example.test/api\\x", "http://127.0.0.1:80990/", "http://127.0.0.1/", "http://127.0.0.1:8099#x", "", "http://[::1]:8099/", "HTTPS://mocks.example.test/API"}) {
+      check(!allow.allows(no), "not allowed: " + no);
+    }
+    for (String bad : new String[] {"mocks.example.test", "ftp://mocks.example.test/", "https://u@mocks.example.test/", "https://mocks.example.test/?q", "https://mocks.example.test/a/../b"}) {
+      boolean threw = false;
+      try {
+        new dev.apksim.serve.ForwardAllow().add(bad);
+      } catch (IllegalArgumentException ex) {
+        threw = true;
+      }
+      check(threw, "not a prefix: " + bad);
+    }
     if (failures > 0) {
       System.out.println(failures + " rule check(s) failed");
       System.exit(1);

@@ -834,7 +834,7 @@ and `.github/actions/preview` put a pull request's build on a serve (with `ttl`,
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
 Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
-capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`); `scripts/inspector-check.py`.
+capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`); `scripts/inspector-check.py` (`--forward-port N` for the forward round trip).
 
 ## MCP server
 `apksim mcp --apps DIR [--out DIR]` (`scripts/mcp.py`, stdlib Python, protocol 2026-07-28 and the handshake revisions): tools to launch and drive instances over `--control`; each action answers with the node changes since the last answer. Allow-listed launch options, output folder only, `--no-autofill`. docs/mcp.md; `scripts/mcp-check.py` checks it.

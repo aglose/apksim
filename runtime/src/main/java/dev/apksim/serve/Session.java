@@ -624,6 +624,8 @@ final class Session {
    * `inspect rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 | remove ID | clear | list` and `inspect detail ID` from
    * the tab, when the server runs with `--inspect-network`: checked here, passed on as the instance's `network rule ...` and
    * `network detail ID`, answered as `n r VERB {json}`. Nothing names a file; a body is base64 text, a pattern a few URL characters.
+   * A STATUS of `forward` (TYPE `-`, the body field the target URL in base64) makes a forward rule, only to a target under one of
+   * the server's `--inspect-forward-allow` prefixes: answered `n r rule error: ...` otherwise, and nothing reaches the instance.
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
@@ -639,6 +641,23 @@ final class Session {
     else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
         && w[5].matches("0|[2-5][0-9]{2}") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|[A-Za-z0-9.+/;=_-]{1,100}")
         && w[8].matches("-|[A-Za-z0-9+/]{1,699052}={0,2}")) {
+      cmd = "network " + t.strip().substring(8);
+      verb = "rule";
+    }
+    else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
+        && w[5].equals("forward") && w[6].matches("[0-9]{1,5}") && w[7].equals("-") && w[8].matches("[A-Za-z0-9+/]{1,2668}={0,2}")) {
+      String target;
+      try {
+        target = new String(java.util.Base64.getDecoder().decode(w[8]), java.nio.charset.StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException e) {
+        target = "";
+      }
+      if (!serve.inspectForwardAllow.allows(target)) {
+        // The reason, never the target back: what the tab sent is the tab's, and the line stays short.
+        ws.sendText("n r rule error: forward target not allowed (" + (serve.beam ? "apksim beam has no forward rules"
+            : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")");
+        return;
+      }
       cmd = "network " + t.strip().substring(8);
       verb = "rule";
     }

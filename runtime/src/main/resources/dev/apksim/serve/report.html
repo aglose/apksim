@@ -267,7 +267,7 @@ function drawRules(list) {
   box.replaceChildren(...list.map(r => {
     const row = document.createElement("div"); row.className = "rl";
     const s = document.createElement("span");
-    s.textContent = r.method + " " + r.pattern + " → " + (r.status ? r.status + (r.bytes ? " (" + fmtBytes(r.bytes) + ")" : "") : "real answer") + (r.latencyMs ? " +" + r.latencyMs + " ms" : "") + " · " + r.hits + " hit" + (r.hits === 1 ? "" : "s");
+    s.textContent = r.method + " " + r.pattern + " → " + (r.forward ? "forward to " + r.forward : r.status ? r.status + (r.bytes ? " (" + fmtBytes(r.bytes) + ")" : "") : "real answer") + (r.latencyMs ? " +" + r.latencyMs + " ms" : "") + " · " + r.hits + " hit" + (r.hits === 1 ? "" : "s");
     s.title = s.textContent;
     const b = document.createElement("button"); b.textContent = "Remove";
     b.onclick = () => send("inspect rule remove " + r.id);

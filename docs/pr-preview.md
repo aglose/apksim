@@ -128,12 +128,28 @@ that opens a panel:
   and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
   While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
   Rules are per session, 32 at most, applied in the order added.
+- **Forward rules** (no panel form yet: the tab's `inspect rule add` only): instead of a fixed status and body, a matched request is
+  sent to an upstream http(s) URL and that server's answer (status, headers, body) goes back to the app, so a page can run a
+  stateful mock per request. The upstream gets the request at the rule's URL exactly, with the app's method, body (16 MB at most) and
+  headers, less the ones recordings redact (`Authorization`, `Cookie`, ...) and the connection's own (`Host`, `Content-Length`, ...),
+  plus `X-Apksim-Original-Url` with the address the app asked for (path and query included). Redirects are not followed (the app gets
+  the 3xx). An upstream that cannot be reached, or does not answer within 30 s, is a 502 to the app whose body and
+  `X-Apksim-Error` header say why. The row has `"forwarded":true` beside `rule`. The instance sends the request itself, so the
+  target must be reachable from where instances run, and the server must allow it: `serve --inspect-forward-allow URL_PREFIX`
+  (repeatable; none by default, so a tab cannot use the server as a proxy into its network). A prefix is an http(s) URL; a target
+  needs its scheme, host and port exactly and its path or one below it (`https://mocks.internal/api` allows `/api/answer?x=1`, not
+  `/apix`); targets with user info, a fragment, `..`, `//` or an encoded dot or slash in the path are refused. Not allowed: `n r
+  rule error: forward target not allowed (...)`. Not done: the opt-in to send redacted headers on, forward rules for `apksim
+  beam` sessions (always refused there), and replaying: under `--network replay` an upstream's name resolves to a placeholder, so
+  only an IP address or localhost target works.
 
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
 STATUS LATENCY_MS TYPE BODY64`, `inspect rule remove ID|clear|list` and `inspect detail ID`, which the server checks (a
 pattern is 1-300 URL characters, a status 0 or 200-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
-answers are `n r rule|detail ...`. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
+answers are `n r rule|detail ...`. A forward rule is `inspect rule add METHOD PATTERN forward LATENCY_MS - URL64` (the target URL in
+base64 where a body would be; the instance's own `network rule add` takes the same and checks only that it is an http(s) URL: the
+allow-list is the server's). Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
 
 ## Sample workflow
@@ -195,7 +211,8 @@ protocol) it checks the page's own count, for JPEG and for H.264:
 The count costs ~17-26 ms on a phone-sized screen, at most every 100 ms and only when a frame arrived.
 
 `scripts/inspector-check.py URL` checks the report and the inspector against a server started with `--allow-rec --inspect-network
---issue-url ...` (and, against one without, that the tab's commands are refused). On the test app's network screen (its server does
+--issue-url ...` (and, against one without, that the tab's commands are refused; with `--forward-port N` and a server on the same
+machine started with `--inspect-forward-allow http://127.0.0.1:N/mock`, it is also the upstream of a forward rule). On the test app's network screen (its server does
 not exist): Fetch gives a `DNS` row with status 0; a rule that answers `POST /v1/greeting` with 200, a JSON body and 600 ms makes the
 same tap an exchange the rule answered (27 bytes, 600 ms, all of it the rule's latency, nothing sent), whose detail has the request's
 `Authorization` as `REDACTED` and the bodies; a rule count of hits; status 999, a space in a pattern, bad base64, a path and a
