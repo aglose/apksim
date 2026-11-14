@@ -129,6 +129,8 @@ jobs:
         run: scripts/check-ttl.sh
       - name: inspector rule patterns (no regex backtracking)
         run: scripts/check-inspector-rules.sh
+      - name: h2 tunnel check (a client offering h2 gets the server's ALPN choice while the engine captures)
+        run: scripts/check-h2-tunnel.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
       - name: Subsystem audit (what the test app refers to, against apksim's status table)

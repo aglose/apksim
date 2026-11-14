@@ -82,6 +82,9 @@ public final class Net {
   private static final Map<String, SSLSocketFactory> lentTls = new java.util.concurrent.ConcurrentHashMap<>();
   private static final java.util.concurrent.atomic.AtomicLong tlsTokens = new java.util.concurrent.atomic.AtomicLong();
 
+  /** The raw socket a tunnelling FakeTlsSocket is layering real TLS on (this thread): not wrapped again. */
+  static final ThreadLocal<Socket> tunnelling = new ThreadLocal<>();
+
   static String lendTls(SSLSocketFactory f) {
     String token = "t" + tlsTokens.incrementAndGet();
     lentTls.put(token, f);
@@ -631,7 +634,7 @@ public final class Net {
       if (rs.isRelay()) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
       if (!rs.isEngineLink()) s = rs.real();
     }
-    if (active && mode != Mode.SHAPE && redirected.contains(s)) return new FakeTlsSocket(s, host, port, autoClose, f);
+    if (active && mode != Mode.SHAPE && redirected.contains(s) && tunnelling.get() != s) return new FakeTlsSocket(s, host, port, autoClose, f);
     return f.createSocket(s, host, port, autoClose);
   }
 

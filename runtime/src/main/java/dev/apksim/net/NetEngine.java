@@ -370,6 +370,18 @@ final class NetEngine {
           appTls = Net.takeTls(p.length > 2 && !p[2].equals("-") ? p[2] : null);
           appProtocols = p.length > 3 && !p[3].isEmpty() && !p[3].equals("-") ? p[3].split(",") : null;
           appSuites = p.length > 4 && !p[4].isEmpty() && !p[4].equals("-") ? p[4].split(",") : null;
+          if (p.length > 5 && p[5].equals("tunnel") && Net.mode != Net.Mode.REPLAY && deferred == null && up != null) {
+            // The client offered h2, which this engine does not speak: the real TLS handshake runs over the relayed
+            // bytes, so the client gets the protocol the server picks. Not captured, listed as a tunnel.
+            Net.log("network: " + tlsHost + ":" + port + " offers h2: relayed as an opaque tunnel, not captured");
+            if (Inspector.on) Inspector.tunnel(tlsHost, port);
+            relayed.incrementAndGet();
+            cout.write("TUNNEL\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            cout.flush();
+            watching = false;
+            relay(cin, cout, uin, uout, client, up);
+            return;
+          }
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
