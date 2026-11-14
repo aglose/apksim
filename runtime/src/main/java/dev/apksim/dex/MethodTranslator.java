@@ -2749,6 +2749,11 @@ final class MethodTranslator implements Opcodes {
         return;
       }
     }
+    if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && "(Ljava/lang/String;)V".equals(m.descriptor())
+        && ("java/io/File".equals(ownerName) || "java/io/FileInputStream".equals(ownerName) || "java/io/FileReader".equals(ownerName))) {
+      // A path the host lacks, given contents with --sysfs / `sysfs` (dev.apksim.SysFiles): the path String is on top.
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/SysFiles", "map", "(Ljava/lang/String;)Ljava/lang/String;", false);
+    }
     if (opcode == INVOKESPECIAL && "<init>".equals(m.name()) && SUBSTITUTES.containsKey(ownerName)) {
       mv.visitMethodInsn(opcode, instantiated(ownerName), m.name(), m.descriptor(), false);
       return;

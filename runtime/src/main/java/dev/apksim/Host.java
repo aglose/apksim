@@ -800,6 +800,7 @@ public class Host {
     if (Boolean.getBoolean("apksim.fresh")) Storage.clearDataDir(data);
     // The slot's /sdcard and Settings values (SlotDevice), before onCreate reads them, as a device has them at app start.
     SlotDevice.take(data, Boolean.getBoolean("apksim.fresh"), app);
+    SysFiles.seed();
     dataDir = data;
     // apksim serve learns the slot from here (not from `stats`, which waits for the activity to start): it empties the
     // slot when the session ends, even if the app never got that far.

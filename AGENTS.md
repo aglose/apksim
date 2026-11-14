@@ -308,6 +308,14 @@ Read README.md for results and limits; this file covers how to work on the code.
     so the test's activities get it too). Test runs otherwise start each test from a clean device.
     `scripts/slot-check.sh` checks it (CI: `ci-smoke.sh`). Files written beside their final name and renamed into place get `Storage.tmpTag()`, PID plus a random part:
     containers sharing a cache volume repeat PIDs (the image's JVM is PID 1).
+  - `SysFiles`: hardware state files under `/sys` an app reads itself (a camera privacy cover's `cam_privacy_state`;
+    issue 376). `--sysfs /sys/PATH=VALUE` (repeatable, `-Dapksim.sysfs.N`, warm launches too) and the `sysfs` command
+    (`sysfs`, `sysfs PATH`, `sysfs PATH VALUE...`, `sysfs clear PATH|all`; chain `key CAMERA` for the app to re-read) back a path with a file in the
+    process's scratch folder (value plus a newline). The translator sends the path String of `new File(String)`,
+    `new FileInputStream(String)` and `new FileReader(String)` through `SysFiles.map`, so File.exists, FileReader and
+    `File.toPath()` reads see it; `Paths.get`/`Path.of` and `File(parent, child)` are not mapped. Only `/sys/` paths.
+    Running instances only (seeded in `Host` after `SlotDevice.take`). The test app's `apksim://slot` shows
+    `/sys/devices/apksim-test/state` ("sysfs: 1") with a Reread button.
   - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
   - `Cameras`, `camera/` (`FakeCamera`, `Scene`, `ShadowSimCameraCaptureSession`, `ShadowSimImageReader`,
     `ShadowSimCameraManager`): the simulated cameras (`--camera fake`, see "Camera").

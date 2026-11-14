@@ -612,6 +612,10 @@ final class DeviceControls {
         // camera [pattern|image PATH|off]: what the fake camera sees (--camera fake), or its state.
         return Cameras.command(a);
       }
+      case "sysfs" -> {
+        // sysfs [PATH [VALUE...]|clear PATH|all]: files under /sys the app reads (SysFiles), e.g. a hardware state node.
+        return SysFiles.command(a);
+      }
       case "bluetooth" -> {
         // bluetooth [on|off|toggle]: the adapter's state, with ACTION_STATE_CHANGED broadcasts (Bluetooth).
         return Bluetooth.command(a);

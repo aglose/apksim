@@ -38,12 +38,16 @@ class SlotStateActivity : ComponentActivity() {
   private fun Screen() {
     var now by remember { mutableStateOf(describe(this)) }
     var typed by remember { mutableStateOf(typed(this)) }
+    var sysfs by remember { mutableStateOf(sysfs()) }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
       Text("Slot state", style = MaterialTheme.typography.titleLarge)
       Text("at app start: ${ComposeApp.slotAtCreate}")
       Text("now: $now")
       Text("typed: $typed")
       Text("storage: ${storage()}")
+      // A hardware state node read straight from /sys, as a camera privacy cover's app does (--sysfs, `sysfs` command).
+      Text("sysfs: $sysfs")
+      Button(onClick = { sysfs = sysfs() }, Modifier.testTag("reread")) { Text("Reread") }
       Text("font scale: ${resources.configuration.fontScale}")
       Button(onClick = {
         // A device refuses an ordinary app WRITE_SECURE_SETTINGS (SecurityException); apksim allows it.
@@ -65,6 +69,13 @@ class SlotStateActivity : ComponentActivity() {
         now = describe(this@SlotStateActivity)
       }, Modifier.padding(top = 24.dp).testTag("write")) { Text("Write") }
     }
+  }
+
+  /** The first line of /sys/devices/apksim-test/state through FileReader, "missing" without it. */
+  private fun sysfs(): String = try {
+    java.io.FileReader("/sys/devices/apksim-test/state").useLines { it.firstOrNull() ?: "empty" }
+  } catch (e: java.io.FileNotFoundException) {
+    "missing"
   }
 
   /**
