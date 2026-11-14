@@ -258,6 +258,10 @@ final class InstallState {
     }
   }
 
+  /** Provider classes whose onCreate succeeded in this process, and how many installs it has made. */
+  private static final java.util.Set<String> cameUp = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.concurrent.atomic.AtomicInteger installs = new java.util.concurrent.atomic.AtomicInteger();
+
   /**
    * The app's content providers, as ActivityThread installs them before Application.onCreate: each one in the app's
    * process, highest initOrder first, created, attached (its onCreate runs) and registered for its authorities.
@@ -269,8 +273,12 @@ final class InstallState {
    * behaviour, for a suite that must run past a provider apksim cannot start). A running instance logs by default
    * (`-Dapksim.providerFailures=fail` to stop there): before, its providers were made only when first used, and an
    * app that ran then keeps running, its failing provider left to Robolectric's on-first-use creation.
+   * A test process creates the app's providers again for every test, which a device's process never does: a provider
+   * that came up earlier in this process and refuses a second onCreate (LeakCanary's installer checks a static) is
+   * logged and the run goes on; only a provider's first failure in the process fails (issue 353).
    */
   private static void installProviders(Application app) {
+    installs.incrementAndGet();
     android.content.pm.ProviderInfo[] providers;
     try {
       providers = app.getPackageManager()
@@ -292,14 +300,21 @@ final class InstallState {
         for (String authority : info.authority.split(";")) {
           org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
         }
+        cameUp.add(info.name);
       } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
         String failures = System.getProperty("apksim.providerFailures", TestActivities.testRun() ? "fail" : "log");
+        boolean again = installs.get() > 1 && cameUp.contains(info.name);
+        if (again) {
+          System.err.println("[apksim] content provider " + info.name + " came up in an earlier install of this process and"
+              + " refused install " + installs.get() + " (a device creates providers once); going on: " + e);
+          continue;
+        }
         if ("log".equals(failures)) {
           System.err.println("[apksim] content provider " + info.name + ": " + e);
         } else {
           Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ite && ite.getCause() != null ? ite.getCause() : e;
-          throw new IllegalStateException("content provider " + info.name + " failed at the app's start, as it would crash it on a "
-              + "device (-Dapksim.providerFailures=log to go on)", cause);
+          throw new IllegalStateException("content provider " + info.name + " failed at the app's start (install " + installs.get()
+              + " in this process), as it would crash it on a device (-Dapksim.providerFailures=log to go on)", cause);
         }
       }
     }
