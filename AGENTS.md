@@ -313,7 +313,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`sysfs`, `sysfs PATH`, `sysfs PATH VALUE...`, `sysfs clear PATH|all`; chain `key CAMERA` for the app to re-read) back a path with a file in the
     process's scratch folder (value plus a newline). The translator sends the path String of `new File(String)`,
     `new FileInputStream(String)` and `new FileReader(String)` through `SysFiles.map`, so File.exists, FileReader and
-    `File.toPath()` reads see it; `Paths.get`/`Path.of` and `File(parent, child)` are not mapped. Only `/sys/` paths.
+    `File.toPath()` reads see it; `Paths.get`/`Path.of` and `File(parent, child)` are not mapped. Only `/sys/` paths; the app sees the backing file's path from `File.getPath`. Seeded just before Application.onCreate, so the constructor and attachBaseContext read nothing. The translator's output for every class calling those three constructors changed on purpose.
     Running instances only (seeded in `Host` after `SlotDevice.take`). The test app's `apksim://slot` shows
     `/sys/devices/apksim-test/state` ("sysfs: 1") with a Reread button.
   - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").

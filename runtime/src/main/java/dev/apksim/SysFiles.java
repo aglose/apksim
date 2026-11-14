@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * scratch folder; the translator sends the path an app hands to {@code new File(String)}, {@code new FileInputStream(String)}
  * and {@code new FileReader(String)} through {@link #map}, so FileReader, FileInputStream, File.exists, Files.* on
  * {@code File.toPath()} and the rest see it. A value gets a trailing newline, as a sysfs node has. Only paths under
- * /sys/ are taken. Not covered: {@code Paths.get}/{@code Path.of} and {@code File(parent, child)}.
+ * /sys/ are taken. The app sees the backing file's path (File.getPath, error texts), not the /sys one. Not covered: {@code Paths.get}/{@code Path.of} and {@code File(parent, child)}.
  */
 public final class SysFiles {
   private static final Map<String, Path> FILES = new ConcurrentHashMap<>();
@@ -29,23 +29,27 @@ public final class SysFiles {
     if (!any || path == null || !path.startsWith("/sys/")) return path;
     Path p = FILES.get(path);
     if (p == null) {
-      String n = Path.of(path).normalize().toString();
-      p = FILES.get(n);
+      try {
+        p = FILES.get(Path.of(path).normalize().toString());
+      } catch (java.nio.file.InvalidPathException e) {
+        return path;  // File(String) never throws on a device
+      }
     }
     return p == null ? path : p.toString();
   }
 
   /** `--sysfs PATH=VALUE` seeds of the launch (-Dapksim.sysfs.N), put in place before Application.onCreate. */
   static void seed() {
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; ; i++) {
       String s = System.getProperty("apksim.sysfs." + i);
-      if (s == null) continue;
+      if (s == null) break;
       int eq = s.indexOf('=');
       if (eq <= 0) throw new IllegalArgumentException("--sysfs " + s + ": expected PATH=VALUE");
       try {
         set(s.substring(0, eq), s.substring(eq + 1));
-      } catch (IOException e) {
-        throw new IllegalArgumentException("--sysfs " + s.substring(0, eq) + ": " + e);
+      } catch (IOException | IllegalArgumentException e) {
+        System.err.println("--sysfs " + s.substring(0, eq) + ": " + e.getMessage());
+        System.exit(2);
       }
     }
   }
@@ -78,8 +82,14 @@ public final class SysFiles {
       }
       if (a[1].equals("clear")) {
         if (a.length != 3) return "error: usage: sysfs clear PATH|all";
-        if (a[2].equals("all")) FILES.clear();
-        else if (FILES.remove(Path.of(a[2]).normalize().toString()) == null) return "error: sysfs: " + a[2] + " is not set";
+        if (a[2].equals("all")) {
+          for (Path f : FILES.values()) Files.deleteIfExists(f);  // a File the app built earlier then finds nothing too
+          FILES.clear();
+        } else {
+          Path f = FILES.remove(Path.of(a[2]).normalize().toString());
+          if (f == null) return "error: sysfs: " + a[2] + " is not set";
+          Files.deleteIfExists(f);
+        }
         any = !FILES.isEmpty();
         return "ok";
       }

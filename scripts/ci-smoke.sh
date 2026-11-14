@@ -326,6 +326,16 @@ echo "--activity: started and kept $started of 3 times, running after back: $run
 [[ "$started" == 3 && "$running" == false && "$code" == 2 ]] && grep -q 'no activity .*NoSuchActivity' "$OUT/activity-missing.log" \
   || { echo "--activity did not start, keep or refuse the activity asked for" >&2; cat "$OUT/activity-missing.log" >&2; exit 1; }
 
+# A hardware state file under /sys (issue 376): missing, set by the `sysfs` command and read by the app's FileReader,
+# changed, cleared, and a path outside /sys refused. (The running instance; --sysfs is checked by hand on the Mac.)
+sysfs_out="$(drive 'open apksim://slot' 'wait 1500' 'nodes' 'sysfs /sys/devices/apksim-test/state 1' 'tap-text Reread' 'wait 800' 'nodes' \
+  'sysfs /sys/devices/apksim-test/state 0' 'tap-text Reread' 'wait 800' 'nodes' 'sysfs clear all' 'tap-text Reread' 'wait 800' 'nodes' \
+  'sysfs /etc/passwd 1' 2>&1 || true)"
+echo "sysfs: $(grep -o 'sysfs: [a-z0-9]*' <<<"$sysfs_out" | tr '\n' ' ')"
+[[ "$(grep -o 'sysfs: [a-z0-9]*' <<<"$sysfs_out" | tr '\n' ' ')" == "sysfs: missing sysfs: 1 sysfs: 0 sysfs: missing " ]] \
+  && grep -q 'sysfs /etc/passwd 1 -> error' <<<"$sysfs_out" \
+  || { echo "the sysfs command did not reach the app's FileReader" >&2; echo "$sysfs_out" >&2; exit 1; }
+
 # The simulated cameras (issue 219): with --camera fake CameraX binds the test app's apksim://camera (a Preview in a
 # SurfaceView and an ImageAnalysis on the front camera), and both get the test pattern's frames.
 CAM_PORT=7405 CAM_NAME=$NAME-camera
