@@ -1576,8 +1576,11 @@ public final class Serve {
     }
     // Issue 371: the network inspector for this session alone, where the server allows it (`--inspect-network optional`).
     // The agent's sessions ask in `/beam/start` instead (the grant's launch), never here.
+    // The page's own query carries inspect=1 to the agent too: said only when the start did not get it.
     if ("1".equals(r.param("inspect")) && beam) {
-      ws.sendText("r inspect: this Mac's agent takes the ask in /beam/start (\"inspect\": true), not here: it starts without");
+      if (!store.config.inspectNetwork().equals("on") && !app.launch().contains("--network-inspect")) {
+        ws.sendText("r inspect: this Mac's agent takes the ask in /beam/start (\"inspect\": true) where its owner allows it, not here: it starts without");
+      }
     } else if ("1".equals(r.param("inspect"))) {
       if (inspectOptional || inspectNetwork) options.put("inspect", "1");
       else ws.sendText("r inspect: this server does not allow the network inspector (--inspect-network optional): it starts without");

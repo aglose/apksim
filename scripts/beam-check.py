@@ -1339,6 +1339,7 @@ def main():
             check(any(t.startswith("n r rule ") for t in si.texts) is ask and any(t.startswith("r refused: inspect") for t in si.texts) is not ask,
                   "inspect: and its inspect commands are answered or refused to match")
             check(close_session(si), "inspect: that session ends")
+        until(lambda: not os.path.exists(build_file(sha)), 15)  # its end's sweep (keep-days 0), before the agent stops: the next check wants the build gone
         stop(g)
         r = beam(apksim, "config", "inspect-network", "off")
         check("inspect-network off" in r.stdout, "inspect: and off again after optional")
