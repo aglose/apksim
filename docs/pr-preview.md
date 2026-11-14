@@ -159,7 +159,16 @@ order, in one step, and answers the new list (new ids, hit counts from 0): the i
 a request is matched against the old rules or the new ones, never some of each, and a set with a rule that is refused (`n r rule
 error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. A forward rule is `inspect rule add METHOD PATTERN forward LATENCY_MS - URL64` (the target URL in
 base64 where a body would be), or in a set `{"pattern", "forward": URL}` with an optional method and latencyMs and nothing else; the instance's own
-`network rule add|set` takes the same and checks only that it is an http(s) URL: the allow-list is the server's. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
+`network rule add|set` takes the same and checks only that it is an http(s) URL: the allow-list is the server's. A patch rule (issue 373) is `inspect rule add METHOD PATTERN patch LATENCY_MS - BODY64` (BODY64: base64 of a JSON merge patch, RFC 7386), or in
+a set `{"pattern", "patch": "JSON text"}` with an optional method and latencyMs and nothing else. The request goes to the real server; when the
+answer is 2xx with a JSON content type (`application/json`, `+json`), whole or gzip-encoded, it is parsed, merged with the patch (an object merges into
+an object, `null` removes a member, anything else replaces, arrays whole), written back compact with a `Content-Length` of its own, no
+`Content-Encoding` (and no `Content-MD5`/`Digest`) and `X-Apksim-Rule`, and the app gets that; numbers are written as they came (64-bit ids
+survive). Anything else is relayed as it came: a non-2xx or non-JSON answer, a brotli or other encoding, a body that does not parse, a body
+over 8 MB (held in memory to be patched); the exchange's row says why in `patchSkipped`, and has `"patched":true` when it was patched. The detail and a
+recording hold what the app got. A chunked answer is relayed with a `Content-Length` once read whole (a skipped one too, unless over the limit,
+which goes on chunk for chunk). It works where the server's answer is real: not replaying (the row says the answer came from the recording), and the
+rule needs no allow-list since it reaches only the app's own server. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
 
 ## Sample workflow
@@ -233,5 +242,5 @@ button downloads one zip whose every CRC tests sound, with the note, a PNG, the 
 network list, and opens the filled-in issue address with the note as its title.
 
 Not done: more than two apps, a slider or onion-skin view, perceptual (not pixel) differences, resynchronising screens that
-drifted apart, the viewer credential above, rules that match a request's headers or body, rewriting a response of a real server (a rule replaces it whole), WebSocket and non-HTTP traffic in the inspector (as in recordings), and a compare mode for sessions on a visitor's Mac (`apksim beam`): both run on the
+drifted apart, the viewer credential above, rules that match a request's headers or body, rewriting a real server's answer other than a JSON merge patch (below; a status rule replaces it whole), WebSocket and non-HTTP traffic in the inspector (as in recordings), and a compare mode for sessions on a visitor's Mac (`apksim beam`): both run on the
 server.

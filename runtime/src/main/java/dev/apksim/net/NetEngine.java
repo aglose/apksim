@@ -707,6 +707,8 @@ final class NetEngine {
         ruleId = 0;
         addedMs = 0;
         forwarded = false;
+        patchRule = null;
+        patchNote = null;
         boolean keep;
         Inspector.Rule rule = Inspector.on ? Inspector.match(req.method, req.url) : null;
         if (deferred != null && (rule == null || !rule.answers())) {
@@ -721,6 +723,7 @@ final class NetEngine {
           ruleId = rule.id;
           addedMs = rule.latencyMs;
           Conditions.sleep(rule.latencyMs);
+          if (rule.patching) patchRule = rule;
           keep = rule.forward != null ? answerForward(req, rule) : rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
         } else {
           keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
@@ -942,6 +945,15 @@ final class NetEngine {
       }
       long waited = System.nanoTime();
       Conditions.sleep(Net.conditions.rtt());
+      InputStream src = uin;
+      if (patchRule != null && resp.status != 101) {
+        // A patch rule (issue 373): the answer is read whole, merged with the rule's patch and relayed from memory (or, when it
+        // cannot be patched, as it came; the row says why).
+        ResponsePatch.Outcome o = ResponsePatch.apply(req.method, resp, uin, patchRule.patch, patchRule.id);
+        resp = o.resp;
+        src = o.src;
+        patchNote = o.patched ? "" : o.note;
+      }
       cout.write(resp.head);
       cout.flush();
 
@@ -977,11 +989,11 @@ final class NetEngine {
       if (none) {
         // nothing
       } else if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
-        copyChunked(uin, new Paced(cout, true), body);
+        copyChunked(src, new Paced(cout, true), body);
       } else if (cl != null) {
-        copy(uin, new Paced(cout, true), body, Long.parseLong(cl.trim()), true);
+        copy(src, new Paced(cout, true), body, Long.parseLong(cl.trim()), true);
       } else {
-        copy(uin, new Paced(cout, true), body, Long.MAX_VALUE, false);
+        copy(src, new Paced(cout, true), body, Long.MAX_VALUE, false);
         keep = false;
       }
       cout.flush();
@@ -1017,6 +1029,9 @@ final class NetEngine {
     long addedMs;
     /** Whether that rule is a forward rule: the exchange's row says so. */
     boolean forwarded;
+    /** The patch rule that applies to the exchange being handled, and its outcome: "" patched, else why not (null: none yet). */
+    Inspector.Rule patchRule;
+    String patchNote;
 
     /**
      * A forward rule's answer (issue 363): the request goes, as it came, to the rule's URL and that server's status, headers
@@ -1220,7 +1235,7 @@ final class NetEngine {
     }
 
     void add(Recording.Entry e) {
-      Inspector.exchange(e, ruleId, addedMs, forwarded);
+      Inspector.exchange(e, ruleId, addedMs, forwarded, patchRule == null ? null : patchNote == null ? "the answer came from a recording, not a server" : patchNote);
       // Replaying, the recording is the fixture the app is answered from: a rule's answer is shown, never added to it.
       if (Net.mode == Net.Mode.REPLAY) return;
       Net.recording.add(e);

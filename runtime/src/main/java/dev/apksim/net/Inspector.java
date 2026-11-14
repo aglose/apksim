@@ -91,6 +91,9 @@ public final class Inspector {
     final String method, pattern, type;
     /** Where a forward rule sends its requests, or null. */
     final String forward;
+    /** A patch rule (issue 373): the real server's JSON answer is merged with this (RFC 7386, from `body`) on its way to the app. */
+    final boolean patching;
+    final Object patch;
     final int status, latencyMs;
     final byte[] body;
     /** Response headers the answer carries beside its content type (name, value), in the order given. */
@@ -107,6 +110,12 @@ public final class Inspector {
     }
 
     Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers, String forward) {
+      this(id, method, pattern, status, latencyMs, type, body, headers, forward, false, null);
+    }
+
+    Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers, String forward, boolean patching, Object patch) {
+      this.patching = patching;
+      this.patch = patch;
       this.forward = forward;
       this.headers = headers;
       this.id = id;
@@ -143,7 +152,7 @@ public final class Inspector {
 
     String json() {
       return "{\"id\":" + id + ",\"method\":" + q(method) + ",\"pattern\":" + q(pattern) + ",\"status\":" + status + ",\"latencyMs\":" + latencyMs
-          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward)) + (headers.isEmpty() ? "" : ",\"headers\":" + headers(headers)) + ",\"hits\":" + hits.get() + "}";
+          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward)) + (patching ? ",\"patch\":true" : "") + (headers.isEmpty() ? "" : ",\"headers\":" + headers(headers)) + ",\"hits\":" + hits.get() + "}";
     }
   }
 
@@ -194,6 +203,11 @@ public final class Inspector {
 
   /** As above; `forwarded`: the answer (or the 502) came from a forward rule's target, not the app's server. */
   static void exchange(Recording.Entry e, int rule, long addedMs, boolean forwarded) {
+    exchange(e, rule, addedMs, forwarded, null);
+  }
+
+  /** As above; `patch`: a patch rule's outcome, "" when it patched the answer, else why it left it as it was (null: no patch rule). */
+  static void exchange(Recording.Entry e, int rule, long addedMs, boolean forwarded, String patch) {
     if (!on) return;
     long id = ids.incrementAndGet();
     String type = e.header(e.respHeaders, "Content-Type");
@@ -208,7 +222,8 @@ public final class Inspector {
     String url = longUrl ? e.url.substring(0, URL_SHOWN) + "…" : e.url;
     String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(url) + (longUrl ? ",\"urlCut\":true" : "") + ",\"status\":" + e.status
         + ",\"ms\":" + (e.timeMs + addedMs) + ",\"reqBytes\":" + reqBytes + ",\"respBytes\":" + respBytes
-        + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (forwarded ? ",\"forwarded\":true" : "") + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";
+        + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (forwarded ? ",\"forwarded\":true" : "")
+        + (patch == null ? "" : patch.isEmpty() ? ",\"patched\":true" : ",\"patchSkipped\":" + q(patch)) + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";
     Detail d = new Detail(e.method, e.url, e.status, List.copyOf(e.reqHeaders), List.copyOf(e.respHeaders), cut(e.reqBody), e.reqTruncated || big(e.reqBody),
         cut(e.respBody), e.truncated || big(e.respBody));
     // History and each viewer's queue change together, under one lock, so a viewer that joins gets every event once and in
@@ -347,6 +362,7 @@ public final class Inspector {
   /** One rule from `METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 [HEADERS64]` at a[at]; an IllegalArgumentException says what is wrong. */
   private static Rule parseRule(String[] a, int at, boolean headers) {
     if (a[at + 2].equals("forward")) return parseForward(a, at, headers);
+    if (a[at + 2].equals("patch")) return parsePatch(a, at, headers);
     int status, latency;
     try {
       status = Integer.parseInt(a[at + 2]);
@@ -384,7 +400,8 @@ public final class Inspector {
    * TYPE BODY64 HEADERS64)... | remove ID | clear | list | max`; one line back. `set` replaces every rule with the ones given,
    * in that order, at once (new ids, hits from 0), and answers the new list; nothing changes when one of them is refused.
    * A STATUS of `forward` makes a forward rule: BODY64 is then the target URL (base64), TYPE and HEADERS64 `-`. Which targets
-   * a tab may name is the server's to decide (serve --inspect-forward-allow): this command is the owner's.
+   * a tab may name is the server's to decide (serve --inspect-forward-allow): this command is the owner's. A STATUS of `patch`
+   * (issue 373) makes a patch rule: BODY64 is the JSON merge patch, TYPE and HEADERS64 `-`.
    */
   static String rule(String[] a) {
     if (!on) return "error: the network inspector is off";
@@ -413,7 +430,7 @@ public final class Inspector {
         return "ok";
       }
       case "add" -> {
-        if (a.length != 9 && a.length != 10) return "error: network rule add METHOD PATTERN STATUS|forward LATENCY_MS TYPE BODY64|URL64 [HEADERS64]";
+        if (a.length != 9 && a.length != 10) return "error: network rule add METHOD PATTERN STATUS|forward|patch LATENCY_MS TYPE BODY64|URL64 [HEADERS64]";
         try {
           Rule r;
           synchronized (rulesLock) {
@@ -481,6 +498,34 @@ public final class Inspector {
     String why = forwardProblem(url);
     if (why != null) throw new IllegalArgumentException(why);
     return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "-", new byte[0], List.of(), url);
+  }
+
+  /**
+   * A patch rule from the same words (issue 373): STATUS `patch`, TYPE `-` (or any type, unused), BODY64 the JSON merge patch (RFC 7386),
+   * HEADERS64 `-`. The request goes to the real server; its 2xx JSON answer is merged with the patch before the app gets it.
+   */
+  private static Rule parsePatch(String[] a, int at, boolean headers) {
+    int latency;
+    try {
+      latency = Integer.parseInt(a[at + 3]);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("a latency is a number");
+    }
+    if (latency < 0 || latency > 60_000) throw new IllegalArgumentException("latency is 0-60000 ms");
+    if (a[at + 1].length() > 300 || a[at + 1].isEmpty()) throw new IllegalArgumentException("the pattern is 1-300 characters");
+    if (!(a[at].equals("*") || a[at].matches("[A-Za-z]{3,10}"))) throw new IllegalArgumentException("the method is * or a name such as GET");
+    if (!a[at + 4].equals("-") && !a[at + 4].matches("[A-Za-z0-9.+/;=_-]{1,100}")) throw new IllegalArgumentException("a content type is letters, digits and . + / ; = _ -");
+    if (headers && !a[at + 6].equals("-")) throw new IllegalArgumentException("a patch rule has no headers (-): the server's answer has its own");
+    if (a[at + 5].equals("-")) throw new IllegalArgumentException("a patch rule needs a patch (BODY64)");
+    byte[] body = Base64.getDecoder().decode(a[at + 5]);
+    if (body.length > RULE_BODY_MAX) throw new IllegalArgumentException("a body is at most " + RULE_BODY_MAX + " bytes");
+    Object doc;
+    try {
+      doc = JsonMerge.parse(new String(body, StandardCharsets.UTF_8));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("the patch is " + e.getMessage());
+    }
+    return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "application/merge-patch+json", body, List.of(), null, true, doc);
   }
 
   /** Why a URL cannot be a forward rule's target, or null: an absolute http(s) URL with a host, no user info, no fragment. */

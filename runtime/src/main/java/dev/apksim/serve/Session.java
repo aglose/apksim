@@ -621,7 +621,7 @@ final class Session {
 
   private static final String URL_CHARS = "[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]";
 
-  private static final String RULE_METHOD = "\\*|[A-Za-z]{3,10}", RULE_STATUS = "0|[2-5][0-9]{2}", RULE_LATENCY = "[0-9]{1,5}",
+  private static final String RULE_METHOD = "\\*|[A-Za-z]{3,10}", RULE_STATUS = "0|[2-5][0-9]{2}|patch", RULE_LATENCY = "[0-9]{1,5}",
       RULE_TYPE = "-|[A-Za-z0-9.+/;=_-]{1,100}", RULE_BODY = "-|[A-Za-z0-9+/]{1,699052}={0,2}", RULE_HEADERS = "-|[A-Za-z0-9+/]{1,4096}={0,2}";
 
   /**
@@ -633,7 +633,9 @@ final class Session {
    * replaces every rule with those, in that order, at once; the answer is the new list.
    * A STATUS of `forward` (TYPE `-`, the body field the target URL in base64; in a set, a `"forward": URL` field) makes a forward
    * rule, only to a target under one of the server's `--inspect-forward-allow` prefixes: answered `n r rule error: ...` otherwise,
-   * and nothing reaches the instance.
+   * and nothing reaches the instance. A STATUS of `patch` (issue 373; TYPE `-`, BODY64 a JSON merge patch; in a set, a
+   * `"patch": "JSON text"` field) merges the real server's JSON answer with that patch; it reaches only the app's own server,
+   * so it needs no allow-list.
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
@@ -705,13 +707,23 @@ final class Session {
       for (Map.Entry<?, ?> f : r.entrySet()) {
         String k = String.valueOf(f.getKey());
         if (!RULE_FIELDS.contains(k)) throw new IOException(at + "no field \"" + (k.length() > 30 ? k.substring(0, 30) + "..." : k) + "\" (" + String.join(", ", RULE_FIELDS) + ")");
-        if (List.of("method", "pattern", "type", "body", "forward").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
+        if (List.of("method", "pattern", "type", "body", "forward", "patch").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
       }
       String method = r.get("method") instanceof String s ? s : "*", pattern = r.get("pattern") instanceof String s ? s : "",
           type = r.get("type") instanceof String s && !s.isEmpty() ? s : "-", body = r.get("body") instanceof String s && !s.isEmpty() ? s : "-";
       String status = ruleInt(r.get("status")), latency = ruleInt(r.get("latencyMs"));
       if (!method.matches(RULE_METHOD)) throw new IOException(at + "the method is * or a name such as GET");
       if (!pattern.matches(URL_CHARS + "{1,300}")) throw new IOException(at + "the pattern is 1-300 URL characters");
+      if (r.get("patch") instanceof String patch) {
+        // A patch rule (issue 373): the server's answer is the one patched, so it has no status, type, body or headers of its own.
+        for (String k : List.of("status", "type", "body", "headers", "forward")) if (r.containsKey(k)) throw new IOException(at + "a patch rule has no " + k);
+        if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
+        byte[] bytes = patch.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length == 0 || bytes.length > 512 * 1024) throw new IOException(at + "a patch is JSON text of at most 512 KB");
+        b.append(' ').append(method).append(' ').append(pattern).append(" patch ").append(latency).append(" - ")
+            .append(java.util.Base64.getEncoder().encodeToString(bytes)).append(" -");
+        continue;
+      }
       if (r.get("forward") instanceof String target) {
         // A forward rule (issue 363): the upstream's answer is the answer, so it has no status, type, body or headers of its own.
         for (String k : List.of("status", "type", "body", "headers")) if (r.containsKey(k)) throw new IOException(at + "a forward rule has no " + k);
@@ -745,7 +757,7 @@ final class Session {
     return b.toString();
   }
 
-  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward");
+  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward", "patch");
 
   /** A rule's whole number (JSON numbers are doubles here), 0 when left out; null when it is anything else. */
   private static String ruleInt(Object v) {
