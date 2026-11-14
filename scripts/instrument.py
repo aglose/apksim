@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Runs an app's androidTest APK on apksim, as `am instrument` (with the AndroidX Test Orchestrator, --isolate).
 
-Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored] [--prewarm on|off|N]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
+Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored] [--prewarm on|off|N]
+                      [--group-size N [--group-seconds T] [--isolate-classes REGEX]... [--retry-isolated N]]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
                      [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
@@ -35,7 +36,22 @@ from the hand-over. A pooled process that dies or hangs is handled as a cold one
 --reap-early SEC: the slot is free once a process has printed its result and exit status (apksim prints the status
 ahead of its teardown: class cache save, scratch removal), and the process ends in the background, killed after SEC s;
 nothing it writes after that counts, so it is for outputs written before the result (bundles, recordings, test outputs).
---exit-marks shows where a process's exit time went. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn, or a
+--exit-marks shows where a process's exit time went.
+Groups (--isolate only; a mode between a process per test and one per shard): `--group-size N` runs up to N tests of one class in a
+process, then it exits (`-j` of them at a time, from the pool as before), and `--group-seconds T` also ends a group once its
+tests' measured times (--timings; a test with none counts as the median) reach T s. Groups are cut from each class's tests in the
+suite's order, and --shards N --shard I split the tests over machines first, as for one process per test. A group's starts follow
+--order by the group's total time. `--isolate-classes REGEX` (repeatable; Python re.search on the class name) keeps those classes
+on a process per test in the same run. `--retry-isolated N`: a test that failed in a group (or in a process that died) runs again
+in a process of its own, up to N times, and the last attempt wins (a group's tests that never started because its process died
+always get a process each: that is their first run, not a retry); the JUnit entry has `apksim.retried` (attempts) and
+`apksim.shared_failure` (the first failure's message), and a retry that passes removes the first attempt's bundle and movie. A
+test that fails in a process of its own is not retried. Each process's CPU seconds (user + system, this process alone: a
+`--apksim` container's are its client's) are in the JUnit XML as `apksim.cpu_seconds`, a group's divided over its tests
+with `apksim.group_tests` (its size) beside it, a retried test's attempts added up. A group's process that dies, hangs or
+fails at exit after its tests all reported gets a failed "(run)" entry, and a class-level failure beside them (@AfterClass)
+a Class#null entry; neither is retried. A grouped test's time in the XML is the test's own; a test alone in its process
+has the whole process's (start-up and exit included), so take --timings from a run of the same mode. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn, or a
 pooled process's hand-over, to the test's start, `apksim.exit_seconds`: its end to the process exiting;
 `apksim.pooled` when a pre-warmed process ran it), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
@@ -106,6 +122,9 @@ RECORDED = []  # --record-deps: each process's dependency lines, taken out of it
 
 MARKS = {}  # --exit-marks: (class, method) -> what apksim reported of its exit
 PHASES = {}  # --isolate: (class, method) -> (start-up, test, exit) seconds of its process, for the report
+CPU = {}  # --isolate: (class, method) -> [(a process's CPU cell, how many tests shared that process)], one per attempt
+GROUPED = {}  # --isolate --group-size: (class, method) -> how many tests ran in its process
+RETRIED = {}  # --retry-isolated: (class, method) -> (attempts, the first failure's message)
 POOLED = set()  # --isolate: (class, method) of the tests a pre-warmed process (--prewarm) ran
 EXIT_MARKS = False  # --exit-marks: apksim reports where its exit time goes (stderr, shown per test)
 REAP_EARLY = 0  # --reap-early SEC (--isolate): a process counts as done once it has reported its exit status; its teardown gets SEC s
@@ -441,8 +460,9 @@ def apksim(app, test, extra_args, apksim_opts, pool=None, handed=()):
             block = {}
     dumped.set()
     early = bool(exit_code) and REAP_EARLY > 0 and not timed_out
+    cpu = [None]  # the process's CPU seconds: set when it has been reaped (a reaped-early one's, in the background)
     if not early:
-        p.wait()
+        cpu[0] = wait_cpu(p)
     exited = time.time()
     done.set()
     if dog:
@@ -454,7 +474,7 @@ def apksim(app, test, extra_args, apksim_opts, pool=None, handed=()):
         drain = threading.Thread(target=lambda: p.stdout.read(), daemon=True)  # (a full pipe must not block its teardown)
         drain.start()
         try:
-            p.wait(timeout=REAP_EARLY)
+            cpu[0] = wait_cpu(p, REAP_EARLY)
         except subprocess.TimeoutExpired:
             warn(f"instrument.py: a process still tearing down {REAP_EARLY:g} s after its result was killed")
             kill()
@@ -501,8 +521,28 @@ def apksim(app, test, extra_args, apksim_opts, pool=None, handed=()):
     r.phases = {t: (m[0] - spawned, m[1] - m[0], exited - m[1]) for t, m in marks.items() if m[1] is not None}
     r.timed_out = timed_out[0] if timed_out else None
     r.threads = thread_dump_tests(dump) if dump else ""
+    r.cpu = cpu  # a one-item list: filled in after the fact for a process reaped early
     r.pooled = proc.pooled  # (not when the pool had none left and a cold process ran it)
     return r
+
+
+def wait_cpu(p, timeout=None):
+    """Waits for [p] and reaps it with os.wait4, which gives its CPU time (user + system seconds, or None when something
+    else reaped it first: the watchdog's send_signal polls). Sets p.returncode as Popen.wait would, and raises
+    subprocess.TimeoutExpired past [timeout] seconds."""
+    end = None if timeout is None else time.monotonic() + timeout
+    while True:
+        try:
+            pid, status, ru = os.wait4(p.pid, 0 if end is None else os.WNOHANG)
+        except ChildProcessError:
+            p.wait()
+            return None
+        if pid:
+            p.returncode = os.waitstatus_to_exitcode(status)
+            return ru.ru_utime + ru.ru_stime
+        if time.monotonic() >= end:
+            raise subprocess.TimeoutExpired(p.args, timeout)
+        time.sleep(0.02)
 
 
 def interrupted(signum, frame):
@@ -1150,6 +1190,92 @@ def isolated_args(a):
     return [kv for kv in a.e if kv[0] not in ("class", "package")]
 
 
+def plan_units(tests, timings, size, seconds, alone):
+    """[tests] (in the suite's order) as the lists of tests each process runs: every test by itself with [size] < 2 or
+    when its class matches one of [alone] (compiled regexes), else runs of a class's tests in order, a run ending at
+    [size] tests or, given [seconds], before the measured times in it ([timings]; a test without one counts as the
+    median) would pass that; a test longer than that by itself is a run of one."""
+    known = sorted(timings.values())
+    default = known[len(known) // 2] if known else 1.0
+    units, by_class = [], {}
+    for t in tests:
+        if size < 2 or any(rx.search(t[0] or "") for rx in alone):
+            units.append([t])
+            continue
+        cost = timings.get(t, default)
+        cur = by_class.get(t[0])
+        if cur is None or len(cur[0]) >= size or (seconds and cur[1] + cost > seconds):
+            cur = by_class[t[0]] = [[], 0.0]
+            units.append(cur[0])
+        cur[0].append(t)
+        cur[1] += cost
+    return units
+
+
+def order_units(units, timings, order):
+    """[units] in the order their processes start (--order), by each one's measured time in all."""
+    if order == "suite":
+        return units
+    known = sorted(timings.values())
+    default = known[len(known) // 2] if known else 1.0
+    ordered = sorted(units, key=lambda u: -sum(timings.get(t, default) for t in u))  # (stable: ties in suite order)
+    if order == "longest-first":
+        return ordered
+    out, lo, hi = [], 0, len(ordered) - 1
+    while lo <= hi:
+        out.append(ordered[lo]); lo += 1
+        if lo <= hi:
+            out.append(ordered[hi]); hi -= 1
+    return out
+
+
+def unit_results(unit, r, elapsed):
+    """The result of each test of [unit] (the tests one process was started for), from that process's output: its own,
+    else its class's class-level failure, else a failure saying the process gave it none (the test running when it
+    ended named as such). (class, method, status, stack, seconds)."""
+    got, running = parse_run(r.stdout)
+    why = incomplete(r, got)
+    if len(unit) == 1:  # a process of its own: its first result is the test's, and its time the process's
+        t = unit[0]
+        if not got or why:
+            return [(t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r), elapsed)]
+        c, m, s, st = got[0]
+        return [(c, m, s, st, elapsed)]
+    by_test = {(c, m): (s, st) for c, m, s, st in got}
+    class_level = {c: (s, st) for c, m, s, st in got if m in (None, "null")}
+    stuck = set(unfinished(r.stdout))
+    out, text, blamed, stood_in = [], None, False, set()
+    for t in unit:
+        sec = r.seconds.get(t, 0.0)
+        if t in by_test and not (t in stuck and why):
+            out.append((t[0], t[1], *by_test[t], sec))
+        elif t[0] in class_level:
+            out.append((t[0], t[1], *class_level[t[0]], sec))
+            stood_in.add(t[0])
+        else:
+            blamed = True
+            text = text or tail(r)
+            if t in stuck:
+                head = (f"timed out after {r.timed_out:g} s while this test was running: no test started or ended for "
+                        "that long (--test-timeout), so instrument.py killed the apksim process" if r.timed_out and t == running
+                        else f"apksim exited ({r.returncode}) while this test was running" if t == running
+                        else "apksim reported no end for this test: it started, and the run went on to other tests")
+            else:
+                head = (f"not run: the apksim process started for {len(unit)} tests of this class gave this one no result "
+                        f"({why or f'exit {r.returncode}'})")
+            out.append((t[0], t[1], "failed", head + ":\n" + text, sec))
+    # A class-level failure beside results for every test (@AfterClass): an entry of its own, as one process reports it.
+    for c, (s, st) in class_level.items():
+        if c not in stood_in:
+            out.append((c, "null", s, st, 0.0))
+    # The process did not account for itself (it died, hung or failed at exit) and no test is there to put that on:
+    # the run must still fail, as a process per test fails its test and one process gets a "(run)" entry.
+    if why and not blamed:
+        out.append(("(run)", f"incomplete (the group starting at {unit[0][0]}#{unit[0][1]})", "failed",
+                    why + ":\n" + tail(r), 0.0))
+    return out
+
+
 def start_pool(a, passthrough):
     """--isolate's pool of pre-warmed processes (--prewarm on), or None."""
     # Twice -j: a pool of -j often had its next process still booting when a short test ended (docs/test-pool.md).
@@ -1212,7 +1338,30 @@ def main():
     p.add_argument("--prewarm", default="on", metavar="on|off|N",
                    help="--isolate: keep test processes booted ahead (2 x -j of them with on, the default, else N), each "
                         "booting what no test decides and then taking one test (docs/test-pool.md)")
+    p.add_argument("--group-size", type=int, default=1, metavar="N",
+                   help="--isolate: a process runs up to N tests of one class, then exits (default 1: a process per test)")
+    p.add_argument("--group-seconds", type=float, default=0, metavar="T",
+                   help="--group-size with --timings: a group also ends before its tests' measured times pass T s")
+    p.add_argument("--isolate-classes", action="append", default=[], metavar="REGEX",
+                   help="--group-size: classes (re.search on the name) that keep a process per test; repeatable")
+    p.add_argument("--retry-isolated", type=int, default=0, metavar="N",
+                   help="--group-size: a test that failed in a shared process runs again in one of its own, up to N "
+                        "times; the last attempt wins and the JUnit XML marks it")
     a = p.parse_args(argv)
+    if a.group_size < 1:
+        p.error("--group-size N: at least 1 (a process per test)")
+    if not a.isolate and (a.group_size > 1 or a.group_seconds or a.isolate_classes or a.retry_isolated):
+        p.error("--group-size, --group-seconds, --isolate-classes and --retry-isolated need --isolate")
+    if a.group_size < 2 and (a.group_seconds or a.isolate_classes or a.retry_isolated):
+        p.error("--group-seconds, --isolate-classes and --retry-isolated need --group-size N, N > 1")
+    if a.group_seconds < 0 or a.retry_isolated < 0:
+        p.error("--group-seconds T and --retry-isolated N: not negative")
+    if a.group_seconds and not a.timings:
+        p.error("--group-seconds T needs --timings XML (an earlier run's --xml): it adds up measured times")
+    try:
+        alone = [re.compile(rx) for rx in a.isolate_classes]
+    except re.error as e:
+        p.error(f"--isolate-classes: {e}")
     if a.prewarm not in ("on", "off") and not (a.prewarm.isdigit() and int(a.prewarm) >= 0):
         p.error("--prewarm on|off|N: N processes kept booted ahead (on: twice -j)")
     if a.test_timeout < 0:
@@ -1371,47 +1520,118 @@ def main():
             for t in skipped:
                 results.append((t[0], t[1], "ignored", "", 0.0))
         order = a.order if timings else "suite"
-        if order == "longest-first":
-            tests = affected.longest_first(tests, timings)
-        elif order == "interleave":
-            tests = affected.interleaved(tests, timings)
-        print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}"), file=sys.stderr)
+        units = order_units(plan_units(tests, timings, a.group_size, a.group_seconds, alone), timings, order)
+        shared = sum(1 for u in units if len(u) > 1)
+        print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}")
+              + (f", in {len(units)} processes ({shared} of them groups of up to {a.group_size} tests of a class"
+                 + (f" or {a.group_seconds:g} s" if a.group_seconds else "") + ")" if a.group_size > 1 else ""),
+              file=sys.stderr)
 
         if pool is None:
             pool = start_pool(a, passthrough)
         if pool:
-            pool.set_total(len(tests))
+            pool.set_total(len(units))
 
-        def one(t):
+        def one(unit):
             start = time.time()
             r = apksim(a.app, a.test, isolated_args(a), passthrough, pool,
-                       [("class", f"{escape_selector(t[0])}#{escape_selector(t[1])}")])
-            got = parse(r.stdout)
-            why = incomplete(r, got)
+                       [("class", ",".join(f"{escape_selector(c)}#{escape_selector(m)}" for c, m in unit))])
+            got = unit_results(unit, r, time.time() - start)
+            # A group's start-up and exit are its process's: shown with the tests that began and ended it.
+            keys = sorted((t for t in unit if t in r.phases), key=lambda t: r.phases[t][0]) if len(unit) > 1 else []
             if r.exit_marks:
-                MARKS[t] = r.exit_marks
-            if t in r.phases:  # (kept even when the process then died or hung at exit: that is when it matters)
-                PHASES[t] = r.phases[t]
-            if r.pooled:
-                POOLED.add(t)
-            if not got or why:
-                return (t[0], t[1], "failed", (why or "apksim exited without a result") + ":\n" + tail(r),
-                        time.time() - start)
-            c, m, s, st = got[0]
-            return (c, m, s, st, time.time() - start)
+                MARKS[unit[-1]] = r.exit_marks
+            for t in unit:
+                CPU.setdefault(t, []).append((r.cpu, len(unit)))  # (a retry's process adds to the first attempt's share)
+                if len(unit) > 1:
+                    GROUPED[t] = len(unit)
+                if r.pooled:
+                    POOLED.add(t)
+            if len(unit) == 1:
+                if unit[0] in r.phases:  # (kept even when the process then died or hung at exit)
+                    PHASES[unit[0]] = r.phases[unit[0]]
+            elif keys:  # a group: the first test's start-up, the last one's exit, each test's own time
+                for t in keys:
+                    PHASES[t] = (r.phases[keys[0]][0] if t == keys[0] else 0.0, r.phases[t][1],
+                                 r.phases[keys[-1]][2] if t == keys[-1] else 0.0)
+            return got
+
+        def report(res):
+            ph = PHASES.get((res[0], res[1]))
+            print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
+                  + (f" (start-up {ph[0]:.1f} s, test {ph[1]:.1f} s, exit {ph[2]:.1f} s)" if ph else ""),
+                  file=sys.stderr)
+            if EXIT_MARKS and MARKS.get((res[0], res[1])):
+                print(f"      exit: {MARKS[(res[0], res[1])]}", file=sys.stderr)
 
         with concurrent.futures.ThreadPoolExecutor(a.j) as threads:
-            for res in threads.map(one, tests):
-                results.append(res)
-                ph = PHASES.get((res[0], res[1]))
-                print(f"  {res[2]:8} {res[0]}#{res[1]}  {res[4]:.1f} s"
-                      + (f" (start-up {ph[0]:.1f} s, test {ph[1]:.1f} s, exit {ph[2]:.1f} s)" if ph else ""),
-                      file=sys.stderr)
-                if EXIT_MARKS and MARKS.get((res[0], res[1])):
-                    print(f"      exit: {MARKS[(res[0], res[1])]}", file=sys.stderr)
+            for got in threads.map(one, units):
+                for res in got:
+                    results.append(res)
+                    report(res)
+        if pool:
+            pool.close()
+            pool = None
+        # A group's tests that never started because its process died have no result of their own: each gets a process
+        # (as one process's tests left without a result do), whatever --retry-isolated says. It is their first attempt.
+        unrun = [i for i, res in enumerate(results) if res[2] == "failed" and GROUPED.get((res[0], res[1]), 1) > 1
+                 and (res[3] or "").startswith("not run:")]
+        if unrun:
+            print(f"{len(unrun)} tests of groups whose process ended early never started: each runs in a process of its own",
+                  file=sys.stderr)
+
+            def first_run(i):
+                t = (results[i][0], results[i][1])
+                PHASES.pop(t, None)
+                GROUPED.pop(t, None)
+                res = one([t])[0]
+                return i, (t[0], t[1]) + tuple(res[2:])
+
+            with concurrent.futures.ThreadPoolExecutor(a.j) as threads:
+                for i, res in threads.map(first_run, unrun):
+                    results[i] = res
+                    report(res)
+        if a.retry_isolated:
+            # A test that failed beside others (or whose shared process died) gets a process of its own: a neighbour's
+            # state does not fail the run, and a real failure fails again in a clean process. The last attempt wins.
+            again = [i for i, res in enumerate(results) if res[2] == "failed" and GROUPED.get((res[0], res[1]), 1) > 1]
+            if again:
+                print(f"{len(again)} tests failed in a shared process: each runs again in a process of its own"
+                      + (f", up to {a.retry_isolated} times" if a.retry_isolated > 1 else ""), file=sys.stderr)
+            out_dirs = [d for d in (a.bundles_local or a.bundles, a.record_local or a.record_dir) if d]
+
+            def retry(i):
+                t = (results[i][0], results[i][1])
+                first = (results[i][3] or "").strip().splitlines()
+                res, attempts = results[i], 0
+                while res[2] == "failed" and attempts < a.retry_isolated:
+                    attempts += 1
+                    PHASES.pop(t, None)
+                    res = one([t])[0]
+                    res = (t[0], t[1]) + tuple(res[2:])
+                if res[2] != "failed":  # the failed attempt's bundle and movie go only now: a retry that fails keeps
+                    for d in out_dirs:  # them until apksim writes its own over them (a retry that dies writes none)
+                        shutil.rmtree(os.path.join(d, bundle_folder(*t)), ignore_errors=True)
+                        try:
+                            os.remove(os.path.join(d, bundle_folder(*t) + ".avi"))
+                        except OSError:
+                            pass
+                RETRIED[t] = (attempts, first[0] if first else "")
+                GROUPED.pop(t, None)
+                return i, res
+
+            if again:
+                with concurrent.futures.ThreadPoolExecutor(a.j) as threads:
+                    for i, res in threads.map(retry, again):
+                        results[i] = res
+                        report(res)
+                still = sum(1 for i in again if results[i][2] == "failed")
+                print(f"  of those {len(again)}, {len(again) - still} passed alone and {still} failed again", file=sys.stderr)
         results.sort(key=lambda r: suite_order.get((r[0], r[1]), len(suite_order)))  # (reported in the suite's order)
         if pool:
             pool.close()
+        for t in list(REAPERS):  # (--reap-early: their processes' CPU times are known once they have ended)
+            t.join()
 
     failed = [r for r in results if r[2] == "failed"]
     for c, m, s, st, _ in failed:
@@ -1440,9 +1660,16 @@ def main():
                 mrel = os.path.relpath(movie, xml_dir) if movie else None
                 ph = PHASES.get((c, m))
                 pooled = (c, m) in POOLED
-                if rel or mrel or ph or pooled:
+                shares = [cell[0] / n for cell, n in CPU.get((c, m), ()) if cell[0] is not None]
+                group = GROUPED.get((c, m))
+                tried = RETRIED.get((c, m))
+                if rel or mrel or ph or pooled or shares or group or tried:
                     f.write("<properties>"
                             + ('<property name="apksim.pooled" value="true"/>' if pooled else "")
+                            + (f'<property name="apksim.cpu_seconds" value="{sum(shares):.3f}"/>' if shares else "")
+                            + (f'<property name="apksim.group_tests" value="{group}"/>' if group else "")
+                            + (f'<property name="apksim.retried" value="{tried[0]}"/>'
+                               f'<property name="apksim.shared_failure" value={quoteattr(tried[1])}/>' if tried else "")
                             + (f'<property name="apksim.startup_seconds" value="{ph[0]:.3f}"/>'
                                f'<property name="apksim.exit_seconds" value="{ph[2]:.3f}"/>' if ph else "")
                             + (f'<property name="apksim.bundle" value={quoteattr(rel)}/>' if rel else "")

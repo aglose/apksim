@@ -1281,7 +1281,11 @@ push one another past a `Timeout`; `longest-first` was the old order; docs/affec
 class cache, scratch removal, the non-daemon threads left; `halt marks` from `Standby.halt`: net flush, next standby,
 cache sweep), and makes apksim print `APKSIM_EXIT: STATUS` right after `INSTRUMENTATION_CODE`; `--isolate --reap-early
 SEC` takes that line as the process's end, frees its `-j` slot and finishes the teardown in the background, killing the
-process group after SEC s (off by default; everything a test leaves, bundles, recordings, outputs, listeners, is
+process group after SEC s; `--isolate --group-size N [--group-seconds T] [--isolate-classes REGEX] [--retry-isolated N]`
+runs up to N tests of a class per process (a group also ends at T s of `--timings` time), keeps classes matching REGEX on a
+process per test, runs a test that failed in a shared process again alone (last attempt wins, `apksim.retried` in the XML),
+always gives a group's never-started tests a process each, and every entry gets its process's CPU seconds
+(`apksim.cpu_seconds`, from `os.wait4`; docs/parallel.md "Groups"; `instrument-check.py`'s `group*` scenarios) (reap-early is off by default; everything a test leaves, bundles, recordings, outputs, listeners, is
 written before it; only the class cache save, scratch removal and cache sweep come after). `--isolate` keeps `--prewarm`
 (2 x `-j`, or N) processes booted ahead (`TestPool`, launcher `--pooled`: boots the sandbox through a probe with no runner, then reads its test's
 `-e` pairs on stdin), one test each as before; `--prewarm off` starts each cold (docs/test-pool.md).
