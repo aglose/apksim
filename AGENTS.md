@@ -834,7 +834,7 @@ and `.github/actions/preview` put a pull request's build on a serve (with `ttl`,
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
 Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
-capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
+capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, patch rules (issue 373: the real JSON answer merged with an RFC 7386 patch in `recordExchange`, through `ResponsePatch` and `JsonMerge`), forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
 swapped whole, so `inspect rule set JSON` replaces them atomically; a rule may carry response headers; `serve --inspect-max-rules N` →
 `--network-inspect-rules N`); `scripts/inspector-check.py` (`--forward-port N` for the forward round trip), `scripts/check-inspector-rules.sh` (CI: patterns, set, headers, the limit, a swap under matching threads).
 

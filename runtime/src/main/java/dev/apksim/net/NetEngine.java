@@ -1258,7 +1258,7 @@ final class NetEngine {
       s.respHeaders = new ArrayList<>(respHeaders);
       s.respBody = body;
       s.timeMs = System.currentTimeMillis() - startWall;
-      Inspector.exchange(s, ruleId, addedMs);
+      Inspector.exchange(s, ruleId, addedMs, false, patchRule == null ? null : "the answer came from a recording, not a server");
     }
 
     boolean replay(Request req) throws IOException {

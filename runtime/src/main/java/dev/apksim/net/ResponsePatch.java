@@ -41,6 +41,7 @@ final class ResponsePatch {
     String type = r.header("Content-Type");
     String media = type == null ? "" : type.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
     if (!(media.equals("application/json") || media.endsWith("+json"))) return "content type " + (type == null ? "none" : media) + " is not JSON";
+    if (type.toLowerCase(Locale.ROOT).matches(".*charset\\s*=\\s*\"?(?!utf-8).*")) return "the declared charset is not UTF-8";
     String enc = r.header("Content-Encoding");
     if (enc != null && !enc.equalsIgnoreCase("identity") && !enc.equalsIgnoreCase("gzip") && !enc.equalsIgnoreCase("x-gzip")) {
       return "content encoding " + enc.trim() + " is not decoded";
