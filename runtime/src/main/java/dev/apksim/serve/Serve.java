@@ -34,7 +34,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-                          [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
+                          [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
@@ -80,6 +80,11 @@ public final class Serve {
    * exchanges and may set rules that answer or slow a URL (docs/pr-preview.md). Off by default: it shows the app's traffic.
    */
   boolean inspectNetwork;
+  /**
+   * `--inspect-forward-allow URL_PREFIX` (repeatable): where a tab's forward rule may send the app's requests (issue 363).
+   * Empty by default: no forward rules.
+   */
+  final ForwardAllow inspectForwardAllow = new ForwardAllow();
   /** `--inspect-max-rules N`: the most rules a session's inspector takes (32 by default, 1 to 256); told to the tab as `inspectMaxRules`. */
   int inspectMaxRules = dev.apksim.net.Inspector.MAX_RULES;
   /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
@@ -228,6 +233,14 @@ public final class Serve {
         case "--inspect-network" -> {
           s.inspectNetwork = true;
           continue;  // no value
+        }
+        case "--inspect-forward-allow" -> {
+          try {
+            s.inspectForwardAllow.add(need(a, v));
+          } catch (IllegalArgumentException e) {
+            System.err.println("[serve] " + e.getMessage());
+            System.exit(2);
+          }
         }
         case "--inspect-max-rules" -> {
           String n = need(a, v);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The report button's server side and the network inspector against a running `apksim serve` (docs/pr-preview.md).
 
-    scripts/inspector-check.py URL [--token FILE] [--app ID] [--chrome [PATH]]
+    scripts/inspector-check.py URL [--token FILE] [--app ID] [--chrome [PATH]] [--forward-port N]
 
 URL is a server started with the test app listed and `--allow-rec --inspect-network --issue-url
 'https://tracker.example/new?title={title}&body={body}'`; against one started without them it checks that the tab's commands are
@@ -15,6 +15,11 @@ refused and the session announces neither. Standard library only. As a tab does 
     hit; its detail has the request's headers with Authorization redacted as recordings redact it, and the body the rule gave;
   - removing and clearing rules work, and a rule the server does not accept (status 999, a space in a pattern, a body that is not
     base64, a command that names a file) is refused before it reaches the instance;
+  - a forward rule (`inspect rule add POST PATTERN forward 0 - URL64`) is refused for a target the server does not allow; with
+    --forward-port N (the server on this machine, started with `--inspect-forward-allow http://127.0.0.1:N/mock`) this script is
+    the upstream: Fetch's POST and the URL button's GET reach it with their method, headers and body and `X-Apksim-Original-Url`, its answers
+    (status, a header of its own, body) reach the app, the rows say `forwarded`, a status rule placed first still wins and a
+    pass-through one keeps going to the real server, and a target that is gone is a 502 row;
   - `rec on input logcat` then `rec save` gives a recording the server serves.
 
 With --chrome (a Mac with Chrome): the page's report button downloads one zip holding the note, the settings, a screenshot, the
@@ -30,7 +35,9 @@ import os
 import sys
 import tempfile
 import time
+import threading
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("sc", os.path.join(HERE, "serve-check.py"))
@@ -38,6 +45,7 @@ sc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sc)
 check = sc.check
 FETCH = (130, 175)  # the Fetch button on apksim://network, in a phone's pixels
+URL_BUTTON = (564, 175)  # "URL": GET /v1/plain through HttpsURLConnection
 GREETING = b'{"greeting":"Hello, rule!"}'
 
 
@@ -70,12 +78,148 @@ class Tab(sc.Session):
         self.ws.send(f"touch up {x} {y}")
 
 
+class Upstream:
+    """The mock server forward rules send to: remembers each request, answers with the method and a counter (so it has state)."""
+
+    def __init__(self, port):
+        self.seen = []
+        up = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def answer(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n) if n else b""
+                up.seen.append({"method": self.command, "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
+                out = json.dumps({"greeting": f"forwarded {self.command} #{len(up.seen)}"}).encode()
+                self.send_response(201 if self.command == "POST" else 200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("X-Mock-State", str(len(up.seen)))
+                self.send_header("Content-Length", str(len(out)))
+                self.send_header("Connection", "close")  # so no connection outlives close(), for the "upstream gone" check
+                self.end_headers()
+                self.wfile.write(out)
+
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = answer
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", port), H)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def forward_checks(t, port):
+    """Forward rules (issue 363): refusals always, the round trip when this script may be the upstream."""
+    def add(method, pattern, target, latency=0):
+        k = len(t.texts)
+        t.ws.send(f"inspect rule add {method} {pattern} forward {latency} - {base64.b64encode(target.encode()).decode()}")
+        t.pump(5, until=lambda: any(x.startswith("n r rule ") or x.startswith("r refused") for x in t.texts[k:]))
+        return [x for x in t.texts[k:] if x.startswith("n r rule ") or x.startswith("r refused")]
+
+    t.ws.send("inspect rule clear")
+    t.pump(1.5)
+    for bad in ("http://127.0.0.1:9/elsewhere", "https://example.com/", f"http://127.0.0.1:{port or 1}/mockx", f"http://127.0.0.1:{port or 1}/mock/../x",
+                f"http://user@127.0.0.1:{port or 1}/mock", "file:///etc/passwd"):
+        got = add("POST", "/v1/greeting", bad)
+        check(any(x.startswith("n r rule error: forward target not allowed") for x in got), f"a forward target the server does not allow is refused: {bad}")
+    k = len(t.texts)
+    t.ws.send("inspect rule add POST /v1/greeting forward 0 text/plain aHR0cDovL3gv")
+    t.pump(1.5)
+    check(any(x.startswith("r refused") for x in t.texts[k:]), "a forward rule with a content type is refused")
+    t.ws.send("inspect rule list")
+    check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "none of them became a rule")
+    if not port:
+        print("     (no --forward-port: the forward round trip is not checked)")
+        return
+    up = Upstream(port)
+    try:
+        target = f"http://127.0.0.1:{port}/mock/answer?from=check"
+        got = add("*", "*api.apksim.test/v1/*", target, 300)
+        check(any(x.startswith("n r rule {") and '"forward":"' + target + '"' in x for x in got), f"a forward rule to an allowed target is added ({got})")
+        time.sleep(1)
+        before = len(t.events())
+        t.tap(*FETCH)
+        t.tap(*URL_BUTTON)
+        check(t.pump(30, until=lambda: len([e for e in t.events()[before:] if e.get("forwarded")]) >= 2), "Fetch and URL: the POST and the GET are forwarded")
+        rows = [e for e in t.events()[before:] if e.get("forwarded")]
+        methods = sorted(e["method"] for e in rows)
+        check(methods[:2] == ["GET", "POST"], f"rows for both, marked forwarded, with the rule's id ({[(e['method'], e['status'], e.get('rule')) for e in rows]})")
+        check(all(e.get("rule") and e.get("addedMs") == 300 and e["ms"] >= 300 for e in rows), "each with the rule's latency")
+        post = next((r for r in up.seen if r["method"] == "POST"), None)
+        get = next((r for r in up.seen if r["method"] == "GET"), None)
+        check(post is not None and get is not None, f"the upstream saw a POST and a GET ({[r['method'] for r in up.seen]})")
+        if post and get:
+            check(post["path"] == "/mock/answer?from=check" and post["body"].startswith(b'{"name"'), f"the POST came to the rule's URL with the app's body ({post['body'][:40]!r})")
+            check(post["headers"].get("x-apksim-original-url") == "https://api.apksim.test/v1/greeting", f"naming where the app sent it ({post['headers'].get('x-apksim-original-url')})")
+            check(get["headers"].get("x-apksim-original-url") == "https://api.apksim.test/v1/plain" and get["body"] == b"",
+                  f"the GET's original URL, no body ({get['headers'].get('x-apksim-original-url')})")
+            check("content-type" in post["headers"] and "user-agent" in post["headers"], f"with the app's headers ({sorted(post['headers'])})")
+            check("authorization" not in post["headers"], "but not the ones recordings redact (Authorization)")
+        prow = next((e for e in rows if e["method"] == "POST"), None)
+        if prow:
+            check(prow["status"] == 201, f"the upstream's status reaches the app's row ({prow['status']})")
+            t.ws.send(f"inspect detail {prow['id']}")
+            n = len(t.replies("detail"))
+            check(t.pump(10, until=lambda: len(t.replies("detail")) > n), "its detail comes back")
+            d = json.loads(t.replies("detail")[-1])
+            hs = {h[0].lower(): h[1] for h in d["respHeaders"]}
+            check(hs.get("x-mock-state") and hs.get("x-apksim-rule") and b"forwarded POST" in base64.b64decode(d["respBody"]),
+                  f"with the upstream's own header and body ({hs.get('x-mock-state')}, {base64.b64decode(d['respBody'])[:50]!r})")
+        # In a set (issue 364's command): a forward rule beside a status rule; a target that is not allowed refuses the whole set.
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule set " + json.dumps([{"pattern": "/a", "status": 200}, {"method": "POST", "pattern": "/b", "forward": target, "latencyMs": 5}]))
+        check(t.pump(10, until=lambda: any(x.startswith("[") and '"forward"' in x for x in t.replies("rule")[k:])), "a set with a forward rule is taken")
+        for wrong in ([{"pattern": "/b", "forward": "http://127.0.0.1:9/elsewhere"}], [{"pattern": "/b", "forward": target, "status": 200}]):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps(wrong))
+            check(t.pump(5, until=lambda: any(x.startswith("error: rule 1") for x in t.replies("rule")[k:])), f"a set with {json.dumps(wrong)[:70]} is refused")
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule list")
+        check(t.pump(5, until=lambda: len(t.replies("rule")) > k) and [r["pattern"] for r in json.loads(t.replies("rule")[-1])] == ["/a", "/b"], "the refused sets changed nothing")
+        # Ordering: a status rule added first wins; then a pass-through rule first lets the request go on to the (absent) server.
+        t.ws.send("inspect rule clear")
+        t.ws.send(f"inspect rule add POST /v1/greeting 200 0 application/json {base64.b64encode(GREETING).decode()}")
+        t.pump(1.5)
+        add("*", "*api.apksim.test/v1/*", target)
+        time.sleep(1)
+        before, seen = len(t.events()), len(up.seen)
+        t.tap(*FETCH)
+        t.tap(*URL_BUTTON)
+        t.pump(30, until=lambda: len([e for e in t.events()[before:] if e.get("rule")]) >= 2)
+        rows = [e for e in t.events()[before:] if e.get("rule")]
+        check(any(e["method"] == "POST" and not e.get("forwarded") and e["status"] == 200 for e in rows)
+              and any(e["method"] == "GET" and e.get("forwarded") for e in rows) and all(r["method"] != "POST" for r in up.seen[seen:]),
+              f"an earlier status rule answers the POST, the forward rule the GET ({[(e['method'], e['status'], e.get('forwarded')) for e in rows]})")
+        # The upstream gone: a 502 row that says why.
+        up.close()
+        up = None
+        t.ws.send("inspect rule clear")
+        t.pump(1.5)
+        add("POST", "/v1/greeting", target)
+        time.sleep(1)
+        before = len(t.events())
+        t.tap(*FETCH)
+        check(t.pump(40, until=lambda: any(e.get("forwarded") and e["status"] == 502 for e in t.events()[before:])), "the upstream gone: a 502 row, marked forwarded")
+    finally:
+        if up:
+            up.close()
+        t.ws.send("inspect rule clear")
+        t.pump(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("url")
     ap.add_argument("--token")
     ap.add_argument("--app")
     ap.add_argument("--chrome", nargs="?", const="", default=None)
+    ap.add_argument("--forward-port", type=int, default=0)
     a = ap.parse_args()
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
@@ -223,6 +367,8 @@ def main():
         t.ws.send("inspect rule set []")
         t.ws.send("inspect rule list")
         check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "an empty set removes the rules")
+
+        forward_checks(t, a.forward_port)
 
         if rec:
             t.ws.send("rec on input logcat")

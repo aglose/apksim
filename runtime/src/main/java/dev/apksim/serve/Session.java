@@ -631,6 +631,9 @@ final class Session {
    * pattern a few URL characters. HEADERS64 is base64 of `Name: value` lines. `set` takes an array of `{"method", "pattern",
    * "status", "latencyMs", "type", "body" (base64), "headers": [[name, value]...]}` (all but the pattern optional) and
    * replaces every rule with those, in that order, at once; the answer is the new list.
+   * A STATUS of `forward` (TYPE `-`, the body field the target URL in base64; in a set, a `"forward": URL` field) makes a forward
+   * rule, only to a target under one of the server's `--inspect-forward-allow` prefixes: answered `n r rule error: ...` otherwise,
+   * and nothing reaches the instance.
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
@@ -658,6 +661,21 @@ final class Session {
       }
       verb = "rule";
     }
+    else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
+        && w[5].equals("forward") && w[6].matches("[0-9]{1,5}") && w[7].equals("-") && w[8].matches("[A-Za-z0-9+/]{1,2668}={0,2}")) {
+      String target;
+      try {
+        target = new String(java.util.Base64.getDecoder().decode(w[8]), java.nio.charset.StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException e) {
+        target = "";
+      }
+      if (!serve.inspectForwardAllow.allows(target)) {
+        ws.sendText("n r rule error: " + forwardRefusal());
+        return;
+      }
+      cmd = "network " + t.strip().substring(8);
+      verb = "rule";
+    }
     if (cmd == null) {
       ws.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
       return;
@@ -668,6 +686,12 @@ final class Session {
   }
 
   /** `inspect rule set JSON` as the instance's `network rule set COUNT ...`: every field checked as `add` checks it. */
+  /** Why a forward target is refused: the reason, never the target back (what the tab sent is the tab's, and the line stays short). */
+  private String forwardRefusal() {
+    return "forward target not allowed (" + (serve.beam ? "apksim beam has no forward rules"
+        : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")";
+  }
+
   private String ruleSet(String json) throws IOException {
     if (!(Json.parse(json) instanceof List<?> rules)) throw new IOException("rule set takes a JSON array of rules");
     if (rules.size() > serve.inspectMaxRules) throw new IOException("at most " + serve.inspectMaxRules + " rules");
@@ -681,13 +705,22 @@ final class Session {
       for (Map.Entry<?, ?> f : r.entrySet()) {
         String k = String.valueOf(f.getKey());
         if (!RULE_FIELDS.contains(k)) throw new IOException(at + "no field \"" + (k.length() > 30 ? k.substring(0, 30) + "..." : k) + "\" (" + String.join(", ", RULE_FIELDS) + ")");
-        if (List.of("method", "pattern", "type", "body").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
+        if (List.of("method", "pattern", "type", "body", "forward").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
       }
       String method = r.get("method") instanceof String s ? s : "*", pattern = r.get("pattern") instanceof String s ? s : "",
           type = r.get("type") instanceof String s && !s.isEmpty() ? s : "-", body = r.get("body") instanceof String s && !s.isEmpty() ? s : "-";
       String status = ruleInt(r.get("status")), latency = ruleInt(r.get("latencyMs"));
       if (!method.matches(RULE_METHOD)) throw new IOException(at + "the method is * or a name such as GET");
       if (!pattern.matches(URL_CHARS + "{1,300}")) throw new IOException(at + "the pattern is 1-300 URL characters");
+      if (r.get("forward") instanceof String target) {
+        // A forward rule (issue 363): the upstream's answer is the answer, so it has no status, type, body or headers of its own.
+        for (String k : List.of("status", "type", "body", "headers")) if (r.containsKey(k)) throw new IOException(at + "a forward rule has no " + k);
+        if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
+        if (!serve.inspectForwardAllow.allows(target)) throw new IOException(at + forwardRefusal());
+        b.append(' ').append(method).append(' ').append(pattern).append(" forward ").append(latency).append(" - ")
+            .append(java.util.Base64.getEncoder().encodeToString(target.getBytes(StandardCharsets.UTF_8))).append(" -");
+        continue;
+      }
       if (status == null || !status.matches(RULE_STATUS)) throw new IOException(at + "a status is 200-599, or 0 to keep the server's answer");
       if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
       if (!type.matches(RULE_TYPE)) throw new IOException(at + "a content type is letters, digits and . + / ; = _ -");
@@ -712,7 +745,7 @@ final class Session {
     return b.toString();
   }
 
-  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers");
+  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward");
 
   /** A rule's whole number (JSON numbers are doubles here), 0 when left out; null when it is anything else. */
   private static String ruleInt(Object v) {

@@ -132,6 +132,21 @@ that opens a panel:
   beside its content type (`ETag`, `Retry-After`, a pagination or debug header: 20 at most, 2 KB together, printable ASCII); the
   names the engine writes itself are refused (`Content-Length`, `Transfer-Encoding`, `Content-Type`, `Connection`, `Keep-Alive`,
   `Upgrade`, `Trailer`, `TE`, `Proxy-*`, `X-Apksim-Rule`). In recordings and details a rule's `Set-Cookie` is redacted as a server's is.
+- **Forward rules** (no panel form yet: the tab's `inspect rule add` and `inspect rule set` only): instead of a fixed status and body, a matched request is
+  sent to an upstream http(s) URL and that server's answer (status, headers, body) goes back to the app, so a page can run a
+  stateful mock per request. The upstream gets the request at the rule's URL exactly, with the app's method, body (16 MB at most) and
+  headers, less the ones recordings redact (`Authorization`, `Cookie`, ...) and the connection's own (`Host`, `Content-Length`, ...),
+  plus `X-Apksim-Original-Url` with the address the app asked for (path and query included). Redirects are not followed (the app gets
+  the 3xx). An upstream that cannot be reached, does not answer within 30 s, or whose answer is over 16 MB or takes over 60 s to arrive, is a 502 to the app whose body and
+  `X-Apksim-Error` header say why. The row has `"forwarded":true` beside `rule`. The instance sends the request itself, so the
+  target must be reachable from where instances run, and the server must allow it: `serve --inspect-forward-allow URL_PREFIX`
+  (repeatable; none by default, so a tab cannot use the server as a proxy into its network). A prefix is an http(s) URL; a target
+  needs its scheme, host and port exactly and its path or one below it (`https://mocks.internal/api` allows `/api/answer?x=1`, not
+  `/apix`); targets with user info, a fragment, `..`, `//`, `;` or an encoded dot or slash in the path are refused. Not allowed: `n r
+  rule error: forward target not allowed (...)`. Not done: the opt-in to send redacted headers on, forward rules for `apksim
+  beam` sessions (always refused there), and upstreams by name while replaying or for a host `--network-host` maps: such a name resolves to a placeholder here, so the
+  rule answers 502 at once (as for a name that does not resolve); an IP address or localhost target works. CI does not run the
+  forward round trip (its image check runs a server without the inspector): `inspector-check.py --forward-port` is run by hand.
 
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
@@ -142,7 +157,9 @@ answers are `n r rule|detail ...`. `inspect rule set [{"method", "pattern", "sta
 "headers": [[name, value], ...]}, ...]` (all but the pattern optional; a field of the wrong kind or an unknown name is refused) replaces every rule of the session with those, in that
 order, in one step, and answers the new list (new ids, hit counts from 0): the instance swaps one immutable list for another, so
 a request is matched against the old rules or the new ones, never some of each, and a set with a rule that is refused (`n r rule
-error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
+error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. A forward rule is `inspect rule add METHOD PATTERN forward LATENCY_MS - URL64` (the target URL in
+base64 where a body would be), or in a set `{"pattern", "forward": URL}` with an optional method and latencyMs and nothing else; the instance's own
+`network rule add|set` takes the same and checks only that it is an http(s) URL: the allow-list is the server's. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
 
 ## Sample workflow
@@ -204,7 +221,8 @@ protocol) it checks the page's own count, for JPEG and for H.264:
 The count costs ~17-26 ms on a phone-sized screen, at most every 100 ms and only when a frame arrived.
 
 `scripts/inspector-check.py URL` checks the report and the inspector against a server started with `--allow-rec --inspect-network
---issue-url ...` (and, against one without, that the tab's commands are refused). On the test app's network screen (its server does
+--issue-url ...` (and, against one without, that the tab's commands are refused; with `--forward-port N` and a server on the same
+machine started with `--inspect-forward-allow http://127.0.0.1:N/mock`, it is also the upstream of a forward rule). On the test app's network screen (its server does
 not exist): Fetch gives a `DNS` row with status 0; a rule that answers `POST /v1/greeting` with 200, a JSON body and 600 ms makes the
 same tap an exchange the rule answered (27 bytes, 600 ms, all of it the rule's latency, nothing sent), whose detail has the request's
 `Authorization` as `REDACTED` and the bodies; a rule count of hits; status 999, a space in a pattern, bad base64, a path and a
