@@ -45,27 +45,28 @@ final class BeamStore {
   /**
    * `keep-days`, `save-sessions`, `keep-saved-days` (negative: never), and `rec`: the flight recorder channels a beam
    * session starts with (`input` by default, `all`, a list such as `input,logcat`, or `off`), and `inspect-network`
-   * (off by default): sessions run the network inspector, which shows the page that started one the app's traffic.
+   * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
+   * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, boolean inspectNetwork) {
-    static final Config DEFAULT = new Config(2, false, -1, "input", false);
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork) {
+    static final Config DEFAULT = new Config(2, false, -1, "input", "off");
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, false);
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off");
     }
 
     Config withRec(String r) {
       return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork);
     }
 
-    Config withInspect(boolean on) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, on);
+    Config withInspect(String mode) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode);
     }
 
     String describe() {
       return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
-          + ", inspect-network " + (inspectNetwork ? "on" : "off");
+          + ", inspect-network " + inspectNetwork;
     }
   }
 
@@ -120,7 +121,7 @@ final class BeamStore {
         boolean save = m.get("save-sessions") instanceof Boolean b ? b : c.saveSessions();
         double saved = m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
-        c = new Config(keep, save, saved, rec, m.get("inspect-network") instanceof Boolean b2 ? b2 : c.inspectNetwork());
+        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()));
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] cannot read " + configFile + " (using the defaults): " + e.getMessage());
@@ -130,7 +131,7 @@ final class BeamStore {
 
   void writeConfig(Config c) throws IOException {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
-        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": " + c.inspectNetwork() + "\n}\n";
+        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\"\n}\n";
     writeAtomically(configFile, json);
     config = c;
   }
@@ -148,6 +149,12 @@ final class BeamStore {
   }
 
   /** `on|off` (true/false accepted), or null. */
+  /** A config file's `inspect-network`: a mode, or an older file's true/false. */
+  static String inspectMode(Object v, String dflt) {
+    if (v instanceof Boolean b) return b ? "on" : "off";
+    return v instanceof String m && List.of("on", "off", "optional").contains(m) ? m : dflt;
+  }
+
   static Boolean onOff(String v) {
     if (v == null) return null;
     return switch (v) {
@@ -920,9 +927,14 @@ final class BeamStore {
               changed = true;
             }
             case "inspect-network" -> {
-              Boolean b = onOff(v);
-              if (b == null) return usage();
-              c = c.withInspect(b);
+              String mode = v == null ? null : switch (v) {
+                case "on", "true" -> "on";
+                case "off", "false" -> "off";
+                case "optional" -> "optional";
+                default -> null;
+              };
+              if (mode == null) return usage();
+              c = c.withInspect(mode);
               changed = true;
             }
             case "rec" -> {
@@ -1036,7 +1048,7 @@ final class BeamStore {
                                                 moves one onto an attached adb device (docs/beam.md "Moving a session to a device")
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
-                                [inspect-network on|off]   (a trusted page sees the app's HTTP(S) traffic)
+                                [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
              apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)

@@ -169,7 +169,9 @@ over 8 MB (held in memory to be patched); the exchange's row says why in `patchS
 recording hold what the app got. A chunked answer is relayed with a `Content-Length` once read whole (a skipped one too, unless over the limit,
 which goes on chunk for chunk). It works where the server's answer is real: not replaying (the row says the answer came from the recording), and the
 rule needs no allow-list since it reaches only the app's own server. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
-messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
+messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`), as it is in a session that did not ask when the server runs
+with `--inspect-network optional` (issue 371: `/ws?...&inspect=1` asks; the beam agent's `inspect-network optional` and a start's `"inspect": true` do the
+same there, and `/beam/hello` says `"inspect": "off|optional|on"` for an agent that has it). The `i` message's `"inspectAllowed"` says whether a session could have it.
 
 ## Sample workflow
 

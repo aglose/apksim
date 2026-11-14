@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -49,7 +49,11 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
 - `--issue-url TEMPLATE` (with `--allow-rec`) and `--inspect-network`: the page's report button opens a prefilled new-issue page, and a
   tab sees the app's HTTP(S) exchanges and may answer or slow a URL (docs/pr-preview.md "Report button and network inspector").
-  Off by default: the second shows the app's traffic. `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
+  Off by default: the second shows the app's traffic. `--inspect-network optional` allows it per session instead: only a tab
+  that starts with `/ws?...&inspect=1` runs the inspector (and its network engine; the others run none, as with the flag left out), so
+  a site that embeds serve can offer it to the one person looking at traffic. A session's `i` message says `"inspect"` (this session has
+  it) and `"inspectAllowed"` (the server would give it one), so a page offers the switch only where it works; a session started
+  without it stays without it, and the page starts a new one to switch. `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
   `--inspect-forward-allow URL_PREFIX` (repeatable) lets a tab's rule forward matched requests to an upstream under that prefix.
 - `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
   in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).
