@@ -1534,7 +1534,9 @@ def main():
                 all_units = plan_units(runnable, timings, a.group_size, a.group_seconds, alone)
                 ulists, totals = balance_units(all_units, timings, a.shards)
                 planned = ulists[a.shard]
-                tests = [t for u in planned for t in u] + [t for t in tests if t in IGNORED]
+                # each @Ignore'd test is reported by one shard only: round-robin in suite order
+                mine = [t for i, t in enumerate(t for t in tests if t in IGNORED) if i % a.shards == a.shard]
+                tests = [t for u in planned for t in u] + mine
                 tests.sort(key=lambda t: suite_pos[t])
                 print(f"{a.shards} shards of whole groups by " + ("measured time" if timings else "count")
                       + ", predicted " + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}",
@@ -1555,10 +1557,8 @@ def main():
             for t in skipped:
                 results.append((t[0], t[1], "ignored", "", 0.0))
         order = a.order if timings else "suite"
-        if planned is None:
+        if planned is None:  # (with shards, the groups were planned above, without the @Ignore'd tests)
             planned = plan_units(tests, timings, a.group_size, a.group_seconds, alone)
-        else:  # (the planned groups, minus nothing: @Ignore'd tests were left out of them)
-            planned = [u for u in planned if u]
         units = order_units(planned, timings, order)
         shared = sum(1 for u in units if len(u) > 1)
         print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}")
