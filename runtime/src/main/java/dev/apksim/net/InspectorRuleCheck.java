@@ -69,6 +69,107 @@ public final class InspectorRuleCheck {
     }
   }
 
+  private static NetEngine.Response resp(int status, String... headers) {
+    NetEngine.Response r = new NetEngine.Response();
+    r.status = status;
+    r.text = "OK";
+    for (int i = 0; i < headers.length; i += 2) r.headers.add(new String[] {headers[i], headers[i + 1]});
+    return r;
+  }
+
+  private static byte[] gz(String s) throws java.io.IOException {
+    java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+    try (java.util.zip.GZIPOutputStream g = new java.util.zip.GZIPOutputStream(o)) {
+      g.write(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    return o.toByteArray();
+  }
+
+  private static String run(NetEngine.Response r, byte[] wire, Object patch, ResponsePatch.Outcome[] out) throws java.io.IOException {
+    ResponsePatch.Outcome o = ResponsePatch.apply("GET", r, new java.io.ByteArrayInputStream(wire), patch, 7);
+    out[0] = o;
+    return new String(o.src.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  /** Patch rules (issue 373): RFC 7386 merging, numbers kept as written, what is patched and what passes through. */
+  private static void patchChecks() throws java.io.IOException {
+    Object patch = JsonMerge.parse("{\"banner\":{\"title\":\"New\",\"cta\":{\"x\":1}},\"old\":null,\"list\":[1]}");
+    ResponsePatch.Outcome[] o = new ResponsePatch.Outcome[1];
+    String json = "{\"id\":9007199254740993,\"old\":1,\"banner\":{\"title\":\"A\",\"keep\":true},\"f\":1.50e2,\"list\":[1,2,3]}";
+    byte[] wire = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    String body = run(resp(200, "Content-Type", "application/json; charset=utf-8", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(o[0].patched, "a 2xx JSON answer is patched");
+    check(body.equals("{\"id\":9007199254740993,\"banner\":{\"title\":\"New\",\"keep\":true,\"cta\":{\"x\":1}},\"f\":1.50e2,\"list\":[1]}"),
+        "a key added, one removed with null, nested objects merged, arrays replaced, numbers as written: " + body);
+    String head = new String(o[0].resp.head, java.nio.charset.StandardCharsets.ISO_8859_1);
+    check(o[0].resp.header("Content-Length").equals(String.valueOf(body.length())) && head.contains("Content-Length: " + body.length() + "\r\n"), "a Content-Length that fits the patched body");
+    // gzip: decoded, patched, sent unencoded.
+    byte[] z = gz(json);
+    body = run(resp(200, "Content-Type", "application/json", "Content-Encoding", "gzip", "Content-Length", String.valueOf(z.length)), z, patch, o);
+    check(o[0].patched && body.contains("\"title\":\"New\"") && o[0].resp.header("Content-Encoding") == null, "a gzip answer is decoded, patched and sent unencoded");
+    // chunked: framing removed, a Content-Length put in its place.
+    String chunked = Integer.toHexString(10) + "\r\n" + json.substring(0, 10) + "\r\n" + Integer.toHexString(json.length() - 10) + "\r\n" + json.substring(10) + "\r\n0\r\n\r\n";
+    body = run(resp(200, "Content-Type", "application/vnd.api+json", "Transfer-Encoding", "chunked"), chunked.getBytes(java.nio.charset.StandardCharsets.UTF_8), patch, o);
+    check(o[0].patched && o[0].resp.header("Transfer-Encoding") == null && o[0].resp.header("Content-Length") != null && body.contains("\"title\":\"New\""),
+        "a chunked answer is patched and gets a Content-Length");
+    // passed through unchanged
+    byte[] text = "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    body = run(resp(200, "Content-Type", "text/plain", "Content-Length", "5"), text, patch, o);
+    check(!o[0].patched && body.equals("hello") && o[0].note.contains("not JSON"), "a non-JSON answer passes through: " + o[0].note);
+    body = run(resp(500, "Content-Type", "application/json", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(!o[0].patched && body.equals(json) && o[0].note.contains("not 2xx"), "an error answer passes through: " + o[0].note);
+    body = run(resp(200, "Content-Type", "application/json", "Content-Length", "5"), text, patch, o);
+    check(!o[0].patched && body.equals("hello") && o[0].note.contains("not JSON"), "a JSON type with a body that is not: " + o[0].note);
+    body = run(resp(200, "Content-Type", "application/json", "Content-Encoding", "br", "Content-Length", "5"), text, patch, o);
+    check(!o[0].patched && body.equals("hello") && o[0].note.contains("br"), "a brotli answer passes through: " + o[0].note);
+    for (String ct : new String[] {"application/json; charset=\"utf-8\"", "application/json;charset=UTF-8", "application/json; charset=utf8"}) {
+      run(resp(200, "Content-Type", ct, "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+      check(o[0].patched, "patched with content type " + ct);
+    }
+    body = run(resp(200, "Content-Type", "application/json; charset=ISO-8859-1", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(!o[0].patched && body.equals(json) && o[0].note.contains("ISO-8859-1"), "another declared charset passes through: " + o[0].note);
+    body = run(resp(206, "Content-Type", "application/json", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(!o[0].patched && body.equals(json), "a partial answer passes through: " + o[0].note);
+    String big = "{\"a\":\"" + "x".repeat(ResponsePatch.LIMIT) + "\"}";
+    byte[] bigWire = big.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    body = run(resp(200, "Content-Type", "application/json", "Content-Length", String.valueOf(bigWire.length)), bigWire, patch, o);
+    check(!o[0].patched && body.length() == big.length() && o[0].note.contains("over"), "a body over the limit passes through: " + o[0].note);
+    String bigChunked = Integer.toHexString(5) + "\r\nhello\r\n" + Integer.toHexString(ResponsePatch.LIMIT) + "\r\n" + "x".repeat(ResponsePatch.LIMIT) + "\r\n0\r\n\r\n";
+    ResponsePatch.Outcome oc = ResponsePatch.apply("GET", resp(200, "Content-Type", "application/json", "Transfer-Encoding", "chunked"),
+        new java.io.ByteArrayInputStream(bigChunked.getBytes(java.nio.charset.StandardCharsets.UTF_8)), patch, 7);
+    java.io.ByteArrayOutputStream relayed = new java.io.ByteArrayOutputStream();
+    NetEngine.copyChunked(oc.src, relayed, new NetEngine.Capture(1 << 20));
+    check(!oc.patched && relayed.toString(java.nio.charset.StandardCharsets.ISO_8859_1).equals(bigChunked), "a chunked body over the limit is relayed chunk for chunk");
+    // RFC 7386 appendix A: a few of its cases.
+    String[][] rfc = {{"{\"a\":\"b\"}", "{\"a\":\"c\"}", "{\"a\":\"c\"}"}, {"{\"a\":\"b\"}", "{\"b\":\"c\"}", "{\"a\":\"b\",\"b\":\"c\"}"},
+        {"{\"a\":\"b\"}", "{\"a\":null}", "{}"}, {"{\"a\":[\"b\"]}", "{\"a\":\"c\"}", "{\"a\":\"c\"}"}, {"{\"a\":\"c\"}", "{\"a\":[\"b\"]}", "{\"a\":[\"b\"]}"},
+        {"{\"a\":{\"b\":\"c\"}}", "{\"a\":{\"b\":\"d\",\"c\":null}}", "{\"a\":{\"b\":\"d\"}}"}, {"[\"a\",\"b\"]", "[\"c\",\"d\"]", "[\"c\",\"d\"]"},
+        {"{\"a\":\"foo\"}", "null", "null"}, {"{\"e\":null}", "{\"a\":1}", "{\"e\":null,\"a\":1}"}, {"[1,2]", "{\"a\":\"b\",\"c\":null}", "{\"a\":\"b\"}"},
+        {"{}", "{\"a\":{\"bb\":{\"ccc\":null}}}", "{\"a\":{\"bb\":{}}}"}};
+    for (String[] c : rfc) check(JsonMerge.write(JsonMerge.merge(JsonMerge.parse(c[0]), JsonMerge.parse(c[1]))).equals(c[2]), "RFC 7386: " + c[0] + " + " + c[1]);
+    for (String bad : new String[] {"", "{", "{\"a\":}", "[1,]", "01", "{\"a\":1} x", "\"\\q\""}) {
+      boolean threw = false;
+      try {
+        JsonMerge.parse(bad);
+      } catch (IllegalArgumentException e) {
+        threw = true;
+      }
+      check(threw, "not JSON: " + bad);
+    }
+    // The command: a patch rule is added (it does not answer by itself), listed, and a bad patch is refused.
+    Inspector.rule("network rule clear".split(" "));
+    String p64 = java.util.Base64.getEncoder().encodeToString("{\"banner\":{\"title\":\"x\"}}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    String added = Inspector.rule(("network rule add GET https://api.example.test/v3/schedule* patch 0 application/merge-patch+json " + p64).split(" "));
+    check(added.startsWith("{") && added.contains("\"patch\":true") && added.contains("\"status\":0"), "a patch rule is added: " + added);
+    check(!Inspector.hasAnswerRules(), "a patch rule does not answer by itself");
+    check(Inspector.match("GET", "https://api.example.test/v3/schedule?x=1").patching, "a patch rule matches its URL");
+    check(Inspector.rule(("network rule add GET /x patch 0 - " + java.util.Base64.getEncoder().encodeToString("{nope".getBytes()) ).split(" ")).startsWith("error"), "a patch that is not JSON is refused");
+    check(Inspector.rule("network rule add GET /x patch 0 - -".split(" ")).startsWith("error"), "a patch rule needs a patch");
+    String set = Inspector.rule(("network rule set 1 GET /s patch 5 - " + p64 + " -").split(" "));
+    check(set.startsWith("[") && set.contains("\"patch\":true"), "a set with a patch rule: " + set);
+    Inspector.rule("network rule clear".split(" "));
+  }
+
   public static void main(String[] args) {
     String u = "https://api.example.com/v1/greeting?name=x";
     check(m("/v1/greeting", u), "no star: matches anywhere in the URL");
@@ -177,6 +278,11 @@ public final class InspectorRuleCheck {
     check(Inspector.detailBytesForCheck() <= Inspector.DETAILS_BYTES, "detail bodies stay under the byte cap");
     check(!Inspector.detail(new String[] {"network", "detail", "201"}).startsWith("error"), "the newest exchange keeps its detail");
     forwardChecks();
+    try {
+      patchChecks();
+    } catch (Exception ex) {
+      check(false, "patch checks threw " + ex);
+    }
     if (failures > 0) {
       System.out.println(failures + " rule check(s) failed");
       System.exit(1);

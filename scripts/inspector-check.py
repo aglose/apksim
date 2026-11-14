@@ -20,6 +20,8 @@ refused and the session announces neither. Standard library only. As a tab does 
     the upstream: Fetch's POST and the URL button's GET reach it with their method, headers and body and `X-Apksim-Original-Url`, its answers
     (status, a header of its own, body) reach the app, the rows say `forwarded`, a status rule placed first still wins and a
     pass-through one keeps going to the real server, and a target that is gone is a 502 row;
+  - a patch rule (`inspect rule add GET PATTERN patch 0 - BODY64`, or `"patch": "JSON text"` in a set) is accepted and listed, and
+    one that is not JSON or has a status or body of its own is refused;
   - `rec on input logcat` then `rec save` gives a recording the server serves.
 
 With --chrome (a Mac with Chrome): the page's report button downloads one zip holding the note, the settings, a screenshot, the
@@ -213,6 +215,35 @@ def forward_checks(t, port):
         t.pump(1)
 
 
+def patch_checks(t):
+    """Patch rules (issue 373): what the server accepts and passes on. The merge itself is check-inspector-rules.sh's: this
+    server's app has no real server to answer."""
+    def send(text):
+        k = len(t.texts)
+        t.ws.send(text)
+        t.pump(5, until=lambda: any(x.startswith("n r rule ") or x.startswith("r refused") for x in t.texts[k:]))
+        return [x for x in t.texts[k:] if x.startswith("n r rule ") or x.startswith("r refused")]
+
+    patch = json.dumps({"banner": {"title": "New"}, "old": None})
+    b64 = base64.b64encode(patch.encode()).decode()
+    t.ws.send("inspect rule clear")
+    t.pump(1.5)
+    got = send(f"inspect rule add GET /v1/schedule* patch 0 - {b64}")
+    check(any(x.startswith("n r rule {") and '"patch":true' in x and '"status":0' in x for x in got), f"a patch rule is added: {got}")
+    got = send("inspect rule add GET /x patch 0 - " + base64.b64encode(b"{nope").decode())
+    check(any(x.startswith("n r rule error") for x in got), f"a patch that is not JSON is refused: {got}")
+    got = send("inspect rule set " + json.dumps([{"pattern": "/a", "status": 200}, {"method": "GET", "pattern": "/b", "patch": patch, "latencyMs": 5}]))
+    check(any(x.startswith("n r rule [") and '"patch":true' in x and x.index("/a") < x.index("/b") for x in got), f"a set with a patch rule: {got}")
+    for wrong in ([{"pattern": "/b", "patch": patch, "status": 200}], [{"pattern": "/b", "patch": patch, "body": "eA=="}],
+                  [{"pattern": "/b", "patch": {"a": 1}}], [{"pattern": "/b", "patch": "{nope"}], [{"pattern": "/b", "patch": ""}]):
+        got = send("inspect rule set " + json.dumps(wrong))
+        check(any(x.startswith("n r rule error") for x in got), f"a set with a wrong patch rule is refused: {json.dumps(wrong)[:60]}")
+    got = send("inspect rule list")
+    check(any(x.count('"id"') == 2 for x in got), "a refused set changed nothing")
+    t.ws.send("inspect rule clear")
+    t.pump(1.5)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("url")
@@ -369,6 +400,7 @@ def main():
         check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "an empty set removes the rules")
 
         forward_checks(t, a.forward_port)
+        patch_checks(t)
 
         if rec:
             t.ws.send("rec on input logcat")
