@@ -37,7 +37,7 @@ import javax.net.ssl.SSLSocketFactory;
  * relays the bytes, as it does when it only shapes the network) and the real TLS handshake runs over it, so the
  * client gets the protocol the server picks. Not while replaying, where there is no server.
  */
-final class FakeTlsSocket extends SSLSocket {
+public final class FakeTlsSocket extends SSLSocket {
   private static String[] defaultSuites;
   private static final String[] PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
 
@@ -105,7 +105,8 @@ final class FakeTlsSocket extends SSLSocket {
     if (session != null) return;
     if (closed) throw new SocketException("Socket is closed");
     OutputStream out = raw.getOutputStream();
-    boolean offersH2 = Net.mode != Net.Mode.REPLAY && java.util.Arrays.asList(appProtocols).contains("h2");
+    boolean offersH2 = Net.mode != Net.Mode.REPLAY && java.util.Arrays.asList(appProtocols).contains("h2")
+        && !java.util.Arrays.asList(appProtocols).contains("http/1.1");
     // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server, and
     // the protocols and cipher suites the app enabled on this socket go along, to hold there too.
     String token = appTls == null || offersH2 ? "-" : Net.lendTls(appTls);
@@ -151,7 +152,24 @@ final class FakeTlsSocket extends SSLSocket {
   /** The real handshake with the server, over the bytes the engine relays untouched. */
   private void tunnelHandshake() throws IOException {
     SSLSocketFactory f = appTls != null ? appTls : (SSLSocketFactory) SSLSocketFactory.getDefault();
-    SSLSocket s = (SSLSocket) f.createSocket(raw, host, port, autoClose);
+    SSLSocket s;
+    // A factory of the app's that wraps another reaches Net.createSocket again with this raw socket: it must get a real one.
+    Net.tunnelling.set(raw);
+    try {
+      s = (SSLSocket) f.createSocket(raw, host, port, autoClose);
+    } finally {
+      Net.tunnelling.remove();
+    }
+    try {
+      tunnelHandshake(s);
+    } catch (IOException | RuntimeException e) {
+      closed = true;
+      try { s.close(); } catch (IOException ignored) {}
+      throw e;
+    }
+  }
+
+  private void tunnelHandshake(SSLSocket s) throws IOException {
     javax.net.ssl.SSLParameters params = s.getSSLParameters();
     if (protocolsSet) params.setProtocols(protocols);
     if (suitesSet) params.setCipherSuites(suites);

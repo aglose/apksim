@@ -855,7 +855,9 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `NetEngine` on a loopback port instead (a first line says where it was going; the engine answers with the real
   connect's result). Recording or replaying, TLS on such a socket is a `FakeTlsSocket`: its handshake gets the
   server's certificates from the engine (the real chain, so hostname checks and pins pass) and the bytes stay plain
-  text, so HTTP/1.1 is readable. The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
+  text, so HTTP/1.1 is readable (a client offering h2 without http/1.1, as gRPC does, is relayed as an opaque tunnel
+  instead: hello field `tunnel`, reply `TUNNEL`, real TLS over the relayed bytes, `Inspector.tunnel`; no recording,
+  rules, mocks or `--network-trust` apply inside it; `scripts/check-h2-tunnel.sh`). The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
   `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
   placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched.
 - Code that runs for every app references only JDK types (no OkHttp), as for org.webrtc ("Video").

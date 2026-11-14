@@ -96,12 +96,17 @@ public final class H2TunnelCheck {
     Net.configure();
     check(Net.active && Inspector.on, "the engine captures with the inspector on");
     int port = ss.getLocalPort();
-    for (boolean h2 : new boolean[] {true, false}) {
+    for (int mode = 0; mode < 3; mode++) {
+      boolean h2 = mode == 0;
       Socket plain = new Socket();
       Net.connect(plain, new InetSocketAddress(lan, port), 5000);
       SSLSocket s = (SSLSocket) Net.createSocket(client.getSocketFactory(), plain, "fixture.test", port, true);
       check(s instanceof FakeTlsSocket, "TLS over the engine's socket is the capturing one");
       if (h2) {
+        SSLParameters p = s.getSSLParameters();
+        p.setApplicationProtocols(new String[] {"h2"});
+        s.setSSLParameters(p);
+      } else if (mode == 1) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2", "http/1.1"});
         s.setSSLParameters(p);
@@ -109,7 +114,7 @@ public final class H2TunnelCheck {
       s.startHandshake();
       String proto = s.getApplicationProtocol();
       if (h2) {
-        check("h2".equals(proto), "offering h2: the server's choice, h2 (got '" + proto + "')");
+        check("h2".equals(proto), "offering only h2: the server's choice, h2 (got '" + proto + "')");
         InputStream in = s.getInputStream();
         StringBuilder line = new StringBuilder();
         int ch;
@@ -120,7 +125,7 @@ public final class H2TunnelCheck {
         check(in.read() == 'k', "bytes flow both ways through the tunnel");
         check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("CONNECT") && e.contains(":" + port)), "the inspector lists a tunnel row");
       } else {
-        check("".equals(proto), "offering nothing: no ALPN, HTTP/1.1 as before (got '" + proto + "')");
+        check("".equals(proto), (mode == 1 ? "offering h2 and http/1.1 (OkHttp's default)" : "offering nothing") + ": captured, no ALPN, HTTP/1.1 as before (got '" + proto + "')");
       }
       s.close();
     }

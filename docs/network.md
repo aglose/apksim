@@ -115,7 +115,7 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
     the certificates (`APKSIM-TLS host`; recording, the engine does the real TLS handshake with the server then, so a
     bad certificate fails the app's handshake), its session reports TLS 1.3 with that chain, and its bytes reach the
     engine in plain text. ALPN reports none, so clients speak HTTP/1.1 (OkHttp does with any server that offers no
-    ALPN). A client that offers `h2` (gRPC, HTTP/2-only servers) is not given that: while recording or capturing (not
+    ALPN). A client that offers `h2` and not `http/1.1` (gRPC, HTTP/2-only servers; OkHttp's default offers both and stays captured) is not given that: while recording or capturing (not
     replaying, which has no server) its connection becomes an opaque tunnel, the engine relaying the bytes untouched and
     the real TLS handshake running over them with the app's own factory (`APKSIM-TLS ... tunnel`, answered `TUNNEL`), so
     the client gets the server's ALPN choice. Not recorded or captured; the inspector lists it as a `CONNECT` row.
