@@ -295,6 +295,8 @@
         <!-- For apksim's activity option (.SecondAlias): an alias keeps its own name as the intent's component (no filter: nothing else reaches it). -->
         <activity-alias android:name=".SecondAlias" android:targetActivity=".SecondActivity" android:exported="false" />
         <provider android:name=".StartupProvider" android:authorities="${applicationId}.startup" android:exported="false" />
+        <!-- Refuses a second onCreate in one process, as LeakCanary's installer does (issue 353). -->
+        <provider android:name=".OnceOnlyProvider" android:authorities="${applicationId}.onceonly" android:exported="false" />
         <service android:name=".UploadService" android:exported="false" />
         <service android:name=".NullBindingService" android:exported="false" />
         <service android:name=".BinderService" android:exported="false" />

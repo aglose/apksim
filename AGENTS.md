@@ -1494,7 +1494,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   the framework's levels read from its own manifest, which Robolectric's package manager lacks), and the app's content
   providers are created, highest initOrder first (AndroidX Startup's initializers run; not for the runner probe's
   plain Application; a provider that fails fails the test's setup, as it crashes a device's app start, unless
-  `-Dapksim.providerFailures=log`). `--network-profile offline` still holds through it (`NetConnectivity.networksReplaced`). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
+  `-Dapksim.providerFailures=log`). A provider that came up earlier in the process and refuses a later install (LeakCanary's
+  installer checks a static; a device's process creates providers once) is only logged, once per class
+  (a RuntimeException only; an explicit `-Dapksim.providerFailures=fail` fails it; issue 353; the test app's
+  `OnceOnlyProvider`, `OnceOnlyProviderTest`). `--network-profile offline` still holds through it (`NetConnectivity.networksReplaced`). The host's network is connected and VALIDATED (`HostNetworks`), as an app checks.
 - Room's "Cannot access database on the main thread" check counts the test body as the instrumentation thread it is
   on a device: the translator sends `RoomDatabase`'s `Looper.getThread()` (Room 2.6+) or `ArchTaskExecutor.isMainThread()`
   (older) to `TestActivities.roomMainThread`/`roomIsMainThread`, which answer "not main" only for the test's own code
