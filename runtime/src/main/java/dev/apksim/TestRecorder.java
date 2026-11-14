@@ -54,6 +54,13 @@ final class TestRecorder {
   private static long lastNanos;  // when the last capture ended
   private static long lastTookNanos;  // how long it took
   private static final int BUSY_FACTOR = 4;
+  /**
+   * For scripts/record-check.py (issue 360): each capture sleeps this long, as a screen that is slow to draw, and each
+   * test's end prints how many captures it took and how much of the test's time they were.
+   */
+  private static final long TEST_DELAY_MS = Long.getLong("apksim.record.captureDelayMs", 0);
+  private static int captures;
+  private static long busyNanos, testStartNanos;
   private static int w, h;
   private static Bitmap scaled;
   private static Paint filter;  // made at the first frame: android.graphics needs the sandbox
@@ -81,6 +88,9 @@ final class TestRecorder {
     started = false;
     lastNanos = 0;
     lastTookNanos = 0;
+    captures = 0;
+    busyNanos = 0;
+    testStartNanos = System.nanoTime();
     active = true;
     pending = false;
     failed = false;
@@ -195,6 +205,7 @@ final class TestRecorder {
     Bitmap screen = null;
     try {
       screen = Bundles.screenBitmap(true);
+      if (TEST_DELAY_MS > 0) Thread.sleep(TEST_DELAY_MS);
       if (!started) {
         double k = Math.min(1.0, Math.min(MAX[0] / (double) screen.getWidth(), MAX[1] / (double) screen.getHeight()));
         w = Math.max(16, (int) (screen.getWidth() * k) & ~1);
@@ -238,6 +249,8 @@ final class TestRecorder {
       capturing = false;
       long end = System.nanoTime();
       lastNanos = end;
+      captures++;
+      busyNanos += end - now;
       lastTookNanos = first ? 0 : Math.min(end - now, 2_000_000_000L);
       // Slow, whether the frame made it or the draw threw after a while: the movie ends here.
       long took = (end - now) / 1_000_000;
@@ -274,6 +287,11 @@ final class TestRecorder {
     // recordingOf().
     active = false;
     pending = false;
+    if (TEST_DELAY_MS > 0) {
+      System.err.println("[apksim] recording " + d.getClassName() + "#" + d.getMethodName() + ": " + captures
+          + " captures, busy " + busyNanos / 1_000_000 + " ms of " + (System.nanoTime() - testStartNanos) / 1_000_000
+          + " ms");
+    }
     finish(failed || ALL);
   }
 
