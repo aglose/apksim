@@ -225,6 +225,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
+    # A file under /sys the app reads, with contents (repeatable): PATH=VALUE (SysFiles.java; `sysfs PATH VALUE` changes it).
+    --sysfs)
+      [[ "$2" =~ ^/sys/[^=]+=.* ]] || { echo "--sysfs takes /sys/PATH=VALUE" >&2; exit 2; }
+      EXTRA+=("-Dapksim.sysfs.${SYSFS_N:-0}=$2"); SYSFS_N=$((${SYSFS_N:-0} + 1)); shift 2 ;;
     # A sensor's value before the app starts (repeatable): NAME=VALUE, e.g. light=300, proximity=near, accel=0:0:9.81, tilt=-45:0.
     --sensor)
       [[ "$2" =~ ^[a-z-]+=.+$ ]] || { echo "--sensor takes NAME=VALUE (light=300, accel=0:9.8:0)" >&2; exit 2; }
@@ -370,7 +374,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
