@@ -1075,13 +1075,29 @@ final class NetEngine {
           // The answer is held in memory: at most FORWARD_BODY_MAX of it, read within 60 s in all, else a 502.
           ByteArrayOutputStream got = new ByteArrayOutputStream();
           long deadline = System.nanoTime() + 60_000_000_000L;
-          try (InputStream in = r.body()) {
+          // The client's own timeout ends with the headers: a body that stalls would block the read below for good, so a
+          // watchdog closes it at the deadline (the read then throws, and the answer is a 502).
+          InputStream rbody = r.body();
+          java.util.Timer watchdog = new java.util.Timer("apksim-net-forward-watchdog", true);
+          watchdog.schedule(new java.util.TimerTask() {
+            @Override
+            public void run() {
+              try {
+                rbody.close();
+              } catch (IOException ignored) {
+                // closing is the point
+              }
+            }
+          }, 60_000L);
+          try (InputStream in = rbody) {
             byte[] buf = new byte[64 * 1024];
             for (int n; (n = in.read(buf)) > 0; ) {
               if (got.size() + n > Inspector.FORWARD_BODY_MAX) throw new IOException("the upstream's answer is over " + Inspector.FORWARD_BODY_MAX + " bytes");
               if (System.nanoTime() > deadline) throw new IOException("the upstream's answer took over 60 s");
               got.write(buf, 0, n);
             }
+          } finally {
+            watchdog.cancel();
           }
           body = got.toByteArray();
           boolean head = req.method.equals("HEAD");
