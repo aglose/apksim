@@ -127,13 +127,22 @@ that opens a panel:
   (512 KB at most), a latency in ms, or both. A request a rule takes is answered by the engine with that status and body, after the latency,
   and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
   While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
-  Rules are per session, 32 at most, applied in the order added.
+  Rules are per session, 32 at most (`serve --inspect-max-rules N`, 1 to 256; the session's `i` message says it as
+  `inspectMaxRules`, and the panel shows "3 of 32"), applied in the order added. A rule that answers may carry response headers
+  beside its content type (`ETag`, `Retry-After`, a pagination or debug header: 20 at most, 2 KB together, printable ASCII); the
+  names the engine writes itself are refused (`Content-Length`, `Transfer-Encoding`, `Content-Type`, `Connection`, `Keep-Alive`,
+  `Upgrade`, `Trailer`, `TE`, `Proxy-*`, `X-Apksim-Rule`). In recordings and details a rule's `Set-Cookie` is redacted as a server's is.
 
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
-STATUS LATENCY_MS TYPE BODY64`, `inspect rule remove ID|clear|list` and `inspect detail ID`, which the server checks (a
+STATUS LATENCY_MS TYPE BODY64 [HEADERS64]` (HEADERS64: base64 of `Name: value` lines), `inspect rule set JSON`, `inspect rule
+remove ID|clear|list` and `inspect detail ID`, which the server checks (a
 pattern is 1-300 URL characters, a status 0 or 200-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
-answers are `n r rule|detail ...`. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
+answers are `n r rule|detail ...`. `inspect rule set [{"method", "pattern", "status", "latencyMs", "type", "body" (base64),
+"headers": [[name, value], ...]}, ...]` (all but the pattern optional) replaces every rule of the session with those, in that
+order, in one step, and answers the new list (new ids, hit counts from 0): the instance swaps one immutable list for another, so
+a request is matched against the old rules or the new ones, never some of each, and a set with a rule that is refused (`n r rule
+error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`).
 
 ## Sample workflow
@@ -199,7 +208,8 @@ The count costs ~17-26 ms on a phone-sized screen, at most every 100 ms and only
 not exist): Fetch gives a `DNS` row with status 0; a rule that answers `POST /v1/greeting` with 200, a JSON body and 600 ms makes the
 same tap an exchange the rule answered (27 bytes, 600 ms, all of it the rule's latency, nothing sent), whose detail has the request's
 `Authorization` as `REDACTED` and the bodies; a rule count of hits; status 999, a space in a pattern, bad base64, a path and a
-command naming a file are refused; `rec save` gives a recording the server serves (3.8 KB for a minute of the test app's input and
+command naming a file are refused; a `rule set` leaves exactly its rules in order, its rule's headers reach the answer,
+`Content-Length` and `Transfer-Encoding` are refused, and the limit the `i` message gives holds for `set` and `add`; `rec save` gives a recording the server serves (3.8 KB for a minute of the test app's input and
 log). With `--chrome` the page: the cards show, a rule typed into the panel is listed and answers the app's request, and the report
 button downloads one zip whose every CRC tests sound, with the note, a PNG, the recording (itself a zip), the settings and the
 network list, and opens the filled-in issue address with the note as its title.
