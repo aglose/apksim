@@ -99,7 +99,7 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-13, release 0.34.0. This table says where each item stands. What changes by the hour (check
+As of 2026-11-14, release 0.35.0. This table says where each item stands. What changes by the hour (check
 results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |
@@ -127,3 +127,5 @@ API 30 framework (#329, docs/api-levels.md) and `scripts/subsystem-audit.py` (#3
 redirects delivered back to the app (#337), a beamed session detached into apksim's own window (#335), ACTION_OUTSIDE
 for watch-outside-touch windows (#343), and swipes that fling as a device's do, with `drag` keeping the fixed scroll the
 crawler (item 11), the MCP server (item 13) and screenshot specs use (#349).
+0.35.0 added groups for isolated test runs (`--group-size`, retries alone, CPU seconds per test: #356) and logs, rather than fails, a
+content provider that refuses a second install in one test process (#355).
