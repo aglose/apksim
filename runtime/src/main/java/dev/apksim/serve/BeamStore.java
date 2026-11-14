@@ -148,13 +148,13 @@ final class BeamStore {
     }
   }
 
-  /** `on|off` (true/false accepted), or null. */
   /** A config file's `inspect-network`: a mode, or an older file's true/false. */
   static String inspectMode(Object v, String dflt) {
     if (v instanceof Boolean b) return b ? "on" : "off";
     return v instanceof String m && List.of("on", "off", "optional").contains(m) ? m : dflt;
   }
 
+  /** `on|off` (true/false accepted), or null. */
   static Boolean onOff(String v) {
     if (v == null) return null;
     return switch (v) {

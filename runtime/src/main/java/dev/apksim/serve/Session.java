@@ -582,7 +582,8 @@ final class Session {
 
   /** Whether this session runs the network inspector: the server's `--inspect-network`, on the agent its owner's `inspect-network on`. */
   boolean inspecting() {
-    if (serve.beam) return serve.store != null && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
+    if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off")
+          && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
     return serve.inspectNetwork || "1".equals(options.get("inspect"));
   }
 
