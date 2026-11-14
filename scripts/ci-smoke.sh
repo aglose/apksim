@@ -340,7 +340,7 @@ sys quit >/dev/null 2>&1 || true
 docker logs "$SYS_NAME" > "$OUT/sysfs.log" 2>&1 || true
 docker rm -f "$SYS_NAME" >/dev/null 2>&1 || true
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
-sysfs_seen="$(grep -o 'sysfs: [a-z0-9]*' <<<"$sysfs_out" | tr '\n' ' ')"
+sysfs_seen="$(grep -o 'text="sysfs: [a-z0-9]*"' <<<"$sysfs_out" | tr -d '"' | sed 's/^text=//' | tr '\n' ' ')"
 echo "sysfs: $sysfs_seen"
 [[ "$sysfs_seen" == "sysfs: 1 sysfs: 0 sysfs: missing " ]] && grep -q 'sysfs /etc/passwd 1 -> error' <<<"$sysfs_out" \
   || { echo "--sysfs or the sysfs command did not reach the app's FileReader" >&2; echo "$sysfs_out" >&2; cat "$OUT/sysfs.log" >&2; exit 1; }
