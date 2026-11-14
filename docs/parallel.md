@@ -111,6 +111,45 @@ FAB three times and checked the count, opened Trips and checked a trip, then ran
 Throughput levels off between 16 and 24 instances on 12 cores (about 38 scripts a minute); 32 still all pass, each
 more slowly. Memory is not the limit: ~220-340 MB resident each.
 
+## Groups: between a process per test and a process per shard
+
+`--isolate` gives every test a JVM that has never run the app's code; a shard's process is warm but shares everything.
+`instrument.py --isolate --group-size N` is in between: a process runs up to N tests of one class, in the suite's
+order, then exits; `-j` processes at a time, taken from the pool (`--prewarm`) as before.
+
+- `--group-seconds T` (with `--timings XML`): a group also ends before its tests' measured times pass T s (a test with
+  no time counts as the median), so one long group does not keep a machine waiting.
+- `--shards N --shard I --timings` split the tests over machines first, by measured time as without groups; groups
+  are cut from each machine's share. `--order` orders the groups' starts by each group's total time.
+- `--isolate-classes REGEX` (repeatable, Python `re.search` on the class name): those classes keep a process per test
+  in the same run, for tests that rely on a fresh process.
+- `--retry-isolated N`: a test that failed in a shared process (or was running when it died) runs again in a process
+  of its own, up to N times; the last attempt wins. Its JUnit entry gets `apksim.retried` (attempts) and
+  `apksim.shared_failure` (the first failure's first line), and a retry that passes removes the first attempt's
+  bundle and movie. A test that fails in a process of its own is not retried, so a real failure still fails.
+- A group's tests that never started because its process died always get a process each (their first run, no retry).
+- Every test's JUnit entry has `apksim.cpu_seconds`: its process's CPU time (user + system, from `wait4`), a group's
+  divided evenly over its tests, with `apksim.group_tests` (the group's size). With `--apksim "docker run ..."` it is
+  the client's CPU time, not the container's.
+
+What a group shares is what a shard shares: the app's statics carry over from test to test (Robolectric resets the
+framework and app data). Retries and never-started tests run in cold processes, after the pool has closed.
+
+Measured on the test app's suite (471 tests, M-series Mac, `-j 4`, same APKs, one run each):
+
+| | wall | CPU (user + sys) | result |
+|---|---|---|---|
+| one process | 60 s | 22 CPU-s | 387 passed, 82 skipped, 2 ignored |
+| `--isolate` | 196 s | 1,866 CPU-s | 381 passed, 88 skipped, 2 ignored |
+| `--isolate --group-size 10 --retry-isolated 1` | 60 s | 461 CPU-s | 386 passed, 83 skipped, 2 ignored |
+
+No test failed in any of them (the skips are tests whose assumptions depend on what ran before in their process).
+The sum of `apksim.cpu_seconds` agrees with `time`'s user + sys (1,866 against 1,870; 461 against 464).
+`scripts/instrument-check.py`'s `group*` scenarios check the modes against a stand-in apksim.
+
+Not done: an annotation on a test class as the opt-out, retries from the pool, and a warm process copied per test
+(a per-APK start-up cache or a checkpoint), which would give warmth without sharing.
+
 ## Spending less per instance
 
 Launch options for what a journey does not need (AGENTS.md, "Per-instance costs"): `--max-fps N`, `--video

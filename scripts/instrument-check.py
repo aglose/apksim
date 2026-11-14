@@ -149,6 +149,14 @@ def fake():
             print("dies between tests", file=sys.stderr)
             sys.exit(134)
         block(c, m, n + 1, 1)
+        if sc in ("group-retry", "group-retry-fails", "group-fails") and (c, m) == ("p.C001", "m1") and (len(tests) > 1 or sc.endswith("fails")):
+            with open(os.path.join(state, "failed-shared" if len(tests) > 1 else "failed-alone"), "a") as f:
+                f.write(f"{c}#{m}\n")  # fails beside its class's other tests (group-retry: only there)
+            block(c, m, n + 1, -2, "java.lang.AssertionError: a neighbour's state")
+            continue
+        if sc in ("group-retry-dies", "group-dies", "group-dies-rest") and (c, m) == ("p.C000", "m1") and len(tests) > 1:
+            print("dies in a shared process", file=sys.stderr)
+            sys.exit(134)
         if (c, m) in IGNORED_TESTS.get(sc, ()):
             with open(os.path.join(state, "ignored-ran"), "a") as f:
                 f.write(f"{c}#{m}\n")
@@ -421,6 +429,23 @@ SCENARIOS = {
     "init-error-balanced-keep": (0, 4, 9, []),  # p.Empty is named in a shard's -e class, and runs nothing there
     "init-error-only-balanced": (0, 1, 0, []),
     "init-error-incomplete-balanced": (1, 1, 0, []),  # "listing the suite failed", and no report
+    # --isolate --group-size 2: a listing, then each class's 3 tests in two processes (m0 and m1, then m2).
+    "group": (0, 7, 9, []),
+    # --group-size 3 --group-seconds 2 with every test timed at 1 s: a group ends at 2 s, so the same seven.
+    "group-seconds": (0, 7, 9, []),
+    # --isolate-classes 'C001$': C001's tests get a process each, the others' classes stay grouped.
+    "group-alone": (0, 8, 9, []),
+    # --retry-isolated 1: C001#m1 fails beside m0 and passes in a process of its own: the run passes, the entry is marked.
+    "group-retry": (0, 8, 9, []),
+    # The same, and it fails alone too: the run fails, with the second attempt's failure.
+    "group-retry-fails": (1, 8, 9, ["p.C001#m1"]),
+    # The shared process dies in C000#m1: m0 keeps its result, m1 runs again alone and passes.
+    "group-retry-dies": (0, 8, 9, []),
+    # Without --retry-isolated a failure in a group stands, and a test whose shared process died fails.
+    "group-fails": (1, 7, 9, ["p.C001#m1"]),
+    "group-dies": (1, 7, 9, ["p.C000#m1"]),
+    # --group-size 3: C000's process dies in m1, so m2 never starts: it gets a process of its own, and is no retry.
+    "group-dies-rest": (1, 5, 9, ["p.C000#m1"]),
 }
 IGNORED_TESTS = {sc: {("p.C001", "m1"), ("p.C002", "m0"), ("p.C002", "m1"), ("p.C002", "m2")}
                  for sc in ("isolate-ignored", "isolate-ignored-run")}
@@ -459,6 +484,19 @@ def extra_args(sc, d):
         return ["--isolate", "-j", "3", "--prewarm", "off" if sc == "pool-off" else "5"]
     if sc == "isolate-phases":
         return ["--isolate", "-j", "3"]
+    if sc.startswith("group"):
+        out = ["--isolate", "-j", "2", "--group-size", "3" if sc in ("group-seconds", "group-dies-rest") else "2"]
+        if sc == "group-seconds":
+            xml = os.path.join(d, "timings.xml")
+            with open(xml, "w") as f:
+                f.write("<testsuite>" + "".join(f'<testcase classname="p.C{c:03d}" name="m{m}" time="1.0"/>'
+                                                for c in range(3) for m in range(3)) + "</testsuite>")
+            out += ["--group-seconds", "2", "--timings", xml, "--order", "suite"]
+        if sc == "group-alone":
+            out += ["--isolate-classes", "C001$"]
+        if sc.startswith("group-retry"):
+            out += ["--retry-isolated", "1"]
+        return out
     if sc.startswith("isolate-ignored"):
         return ["--isolate", "-j", "3"] + (["--run-ignored"] if sc.endswith("-run") else [])
     if sc == "reap-early-hang":
@@ -551,6 +589,8 @@ def main():
             texts = {f"{c}#{m}": t for c, m, _, t in cases}
             props = {f"{c.get('classname')}#{c.get('name')}": {q.get("name") for q in c.iter("property")}
                      for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
+            values = {f"{c.get('classname')}#{c.get('name')}": {q.get("name"): q.get("value") for q in c.iter("property")}
+                      for c in ET.parse(xml).iter("testcase")} if os.path.exists(xml) else {}
             cases = [(c, m, f) for c, m, f, _ in cases]
             got_failed = sorted(f"{c}#{m}" for c, m, f in cases if f)
             if failed == ["*"] and len(got_failed) == 1 and not got_failed[0].startswith("("):
@@ -651,7 +691,25 @@ def main():
                 ("a pooled process with --prewarm off", sc == "pool-off" and bool(pooled)),
                 (f"{len(pooled) - len(unused)} pooled processes given a test, expected one a test",
                  isolated and not sc.startswith(("interrupt", "pool-dies-waiting", "pool-hangs-waiting", "init-error-incomplete"))
-                 and len(pooled) - len(unused) != max(0, len(calls) // 2 - 1)),
+                 and len(pooled) - len(unused) != max(0, len(calls) // 2 - 1 - (1 if sc.startswith("group-retry") or sc == "group-dies-rest" else 0))),  # (a retry starts cold)
+                (f"group sizes {[(t, v.get('apksim.group_tests')) for t, v in sorted(values.items())]}", sc in ("group", "group-seconds", "group-alone")
+                 and any(v.get("apksim.group_tests") != (None if t.endswith("#m2") or (sc == "group-alone" and "C001" in t) else "2")
+                         for t, v in values.items())),
+                ("CPU seconds missing", sc.startswith("group") and any("apksim.cpu_seconds" not in v for v in values.values())),
+                (f"retry marks {[(t, v) for t, v in sorted(values.items()) if 'apksim.retried' in v]}", sc.startswith("group")
+                 and {t: (v.get("apksim.retried"), v.get("apksim.shared_failure")) for t, v in values.items() if "apksim.retried" in v}
+                 != ({"p.C001#m1": ("1", "java.lang.AssertionError: a neighbour's state")} if sc in ("group-retry", "group-retry-fails")
+                     else {"p.C000#m1": ("1", "apksim exited (134) while this test was running:")} if sc == "group-retry-dies" else {})),
+                ("the retried test did not fail in a shared process first", sc in ("group-retry", "group-retry-fails")
+                 and read(os.path.join(d, "failed-shared")).split() != ["p.C001#m1"]),
+                ("the second failure is not the one reported", sc == "group-retry-fails"
+                 and (read(os.path.join(d, "failed-alone")).split() != ["p.C001#m1"] or values["p.C001#m1"].get("apksim.group_tests"))),
+                ("a group's other test lost its result", sc in ("group-retry-dies", "group-dies") and ("p.C000", "m0", False) not in cases),
+                ("the test that never started has no passing entry of its own", sc == "group-dies-rest"
+                 and (("p.C000", "m2", False) not in cases or values["p.C000#m2"].get("apksim.group_tests")
+                      or ran.count("p.C000#m2") != 1)),
+                ("the failure does not say the process died", sc.startswith("group-dies")
+                 and "apksim exited (134) while this test was running" not in texts.get("p.C000#m1", "")),
                 ("no pooled process", isolated and sc != "init-error-incomplete-isolate" and not pooled),
                 (f"{len(unused)} pooled processes closed unused, expected 6", sc == "init-error-only-isolate" and len(unused) != 6),
                 ("the failure text lacks the dying process's stderr", sc == "pool-dies-waiting"
