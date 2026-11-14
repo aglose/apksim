@@ -44,12 +44,13 @@ public final class SysFiles {
       String s = System.getProperty("apksim.sysfs." + i);
       if (s == null) break;
       int eq = s.indexOf('=');
-      if (eq <= 0) throw new IllegalArgumentException("--sysfs " + s + ": expected PATH=VALUE");
       try {
+        if (eq <= 0) throw new IllegalArgumentException("expected PATH=VALUE");
         set(s.substring(0, eq), s.substring(eq + 1));
       } catch (IOException | IllegalArgumentException e) {
-        System.err.println("--sysfs " + s.substring(0, eq) + ": " + e.getMessage());
-        System.exit(2);
+        System.err.println("--sysfs " + (eq <= 0 ? s : s.substring(0, eq)) + ": " + e.getMessage());
+        Exits.log(2, "bad --sysfs");
+        Standby.halt(2);
       }
     }
   }
