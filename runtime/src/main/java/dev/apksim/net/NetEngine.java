@@ -370,6 +370,18 @@ final class NetEngine {
           appTls = Net.takeTls(p.length > 2 && !p[2].equals("-") ? p[2] : null);
           appProtocols = p.length > 3 && !p[3].isEmpty() && !p[3].equals("-") ? p[3].split(",") : null;
           appSuites = p.length > 4 && !p[4].isEmpty() && !p[4].equals("-") ? p[4].split(",") : null;
+          if (p.length > 5 && p[5].equals("tunnel") && Net.mode != Net.Mode.REPLAY && deferred == null && up != null) {
+            // The client offered h2, which this engine does not speak: the real TLS handshake runs over the relayed
+            // bytes, so the client gets the protocol the server picks. Not captured, listed as a tunnel.
+            Net.log("network: " + tlsHost + ":" + port + " offers h2: relayed as an opaque tunnel, not captured");
+            if (Inspector.on) Inspector.tunnel(tlsHost, port);
+            relayed.incrementAndGet();
+            cout.write("TUNNEL\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            cout.flush();
+            watching = false;
+            relay(cin, cout, uin, uout, client, up);
+            return;
+          }
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();
@@ -1169,6 +1181,7 @@ final class NetEngine {
       boolean none = rule.status == 204 || rule.status == 304;
       StringBuilder h = new StringBuilder("HTTP/1.1 ").append(rule.status).append(' ').append(Net.statusText(rule.status)).append("\r\n");
       if (!none) h.append("Content-Type: ").append(rule.type).append("\r\nContent-Length: ").append(rule.body.length).append("\r\n");
+      for (String[] x : rule.headers) h.append(x[0]).append(": ").append(x[1]).append("\r\n");
       h.append("X-Apksim-Rule: ").append(rule.id).append("\r\n\r\n");
       // The app may have the answer before it is recorded: saving on the way out (a crash, an exit) waits for it, as for record().
       inFlight.incrementAndGet();
@@ -1196,7 +1209,10 @@ final class NetEngine {
       e.reqTruncated = req.bodyTruncated;
       e.status = rule.status;
       e.statusText = Net.statusText(rule.status);
-      e.respHeaders = new ArrayList<>(List.of(new String[] {"Content-Type", rule.type}, new String[] {"X-Apksim-Rule", String.valueOf(rule.id)}));
+      e.respHeaders = new ArrayList<>();
+      e.respHeaders.add(new String[] {"Content-Type", rule.type});
+      e.respHeaders.addAll(redacted(rule.headers));  // a Set-Cookie a rule sets is kept out of recordings as a server's is
+      e.respHeaders.add(new String[] {"X-Apksim-Rule", String.valueOf(rule.id)});
       e.respBody = rule.body;
       e.timeMs = (System.nanoTime() - t0) / 1_000_000;
       add(e);

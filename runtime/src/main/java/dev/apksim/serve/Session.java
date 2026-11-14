@@ -375,6 +375,7 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (inspecting()) cmd.add("--network-inspect");
+    if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
     // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
     if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
     if (serve.moveSharedData) cmd.add("--move-shared-data");
@@ -620,12 +621,19 @@ final class Session {
 
   private static final String URL_CHARS = "[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]";
 
+  private static final String RULE_METHOD = "\\*|[A-Za-z]{3,10}", RULE_STATUS = "0|[2-5][0-9]{2}", RULE_LATENCY = "[0-9]{1,5}",
+      RULE_TYPE = "-|[A-Za-z0-9.+/;=_-]{1,100}", RULE_BODY = "-|[A-Za-z0-9+/]{1,699052}={0,2}", RULE_HEADERS = "-|[A-Za-z0-9+/]{1,4096}={0,2}";
+
   /**
-   * `inspect rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 | remove ID | clear | list` and `inspect detail ID` from
-   * the tab, when the server runs with `--inspect-network`: checked here, passed on as the instance's `network rule ...` and
-   * `network detail ID`, answered as `n r VERB {json}`. Nothing names a file; a body is base64 text, a pattern a few URL characters.
-   * A STATUS of `forward` (TYPE `-`, the body field the target URL in base64) makes a forward rule, only to a target under one of
-   * the server's `--inspect-forward-allow` prefixes: answered `n r rule error: ...` otherwise, and nothing reaches the instance.
+   * `inspect rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 [HEADERS64] | set JSON | remove ID | clear | list` and
+   * `inspect detail ID` from the tab, when the server runs with `--inspect-network`: checked here, passed on as the instance's
+   * `network rule ...` and `network detail ID`, answered as `n r VERB {json}`. Nothing names a file; a body is base64 text, a
+   * pattern a few URL characters. HEADERS64 is base64 of `Name: value` lines. `set` takes an array of `{"method", "pattern",
+   * "status", "latencyMs", "type", "body" (base64), "headers": [[name, value]...]}` (all but the pattern optional) and
+   * replaces every rule with those, in that order, at once; the answer is the new list.
+   * A STATUS of `forward` (TYPE `-`, the body field the target URL in base64; in a set, a `"forward": URL` field) makes a forward
+   * rule, only to a target under one of the server's `--inspect-forward-allow` prefixes: answered `n r rule error: ...` otherwise,
+   * and nothing reaches the instance.
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
@@ -638,10 +646,19 @@ final class Session {
     if (t.length() > 800_000) cmd = null;
     else if (t.strip().matches("inspect rule (clear|list)") || t.strip().matches("inspect rule remove [0-9]{1,9}")) cmd = "network " + t.strip().substring(8);
     else if (t.strip().matches("inspect detail [0-9]{1,18}")) cmd = "network " + t.strip().substring(8);
-    else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
-        && w[5].matches("0|[2-5][0-9]{2}") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|[A-Za-z0-9.+/;=_-]{1,100}")
-        && w[8].matches("-|[A-Za-z0-9+/]{1,699052}={0,2}")) {
+    else if ((w.length == 9 || w.length == 10) && w[1].equals("rule") && w[2].equals("add") && w[3].matches(RULE_METHOD) && w[4].matches(URL_CHARS + "{1,300}")
+        && w[5].matches(RULE_STATUS) && w[6].matches(RULE_LATENCY) && w[7].matches(RULE_TYPE) && w[8].matches(RULE_BODY)
+        && (w.length == 9 || w[9].matches(RULE_HEADERS))) {
       cmd = "network " + t.strip().substring(8);
+      verb = "rule";
+    } else if (t.strip().startsWith("inspect rule set ")) {
+      try {
+        cmd = ruleSet(t.strip().substring("inspect rule set ".length()));
+      } catch (IOException | RuntimeException e) {
+        // What is wrong with the set, as the instance would say it of one rule: the tab shows it, and no rule changed.
+        ws.sendText("n r rule error: " + e.getMessage());
+        return;
+      }
       verb = "rule";
     }
     else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
@@ -653,9 +670,7 @@ final class Session {
         target = "";
       }
       if (!serve.inspectForwardAllow.allows(target)) {
-        // The reason, never the target back: what the tab sent is the tab's, and the line stays short.
-        ws.sendText("n r rule error: forward target not allowed (" + (serve.beam ? "apksim beam has no forward rules"
-            : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")");
+        ws.sendText("n r rule error: " + forwardRefusal());
         return;
       }
       cmd = "network " + t.strip().substring(8);
@@ -668,6 +683,75 @@ final class Session {
     lastInput = System.currentTimeMillis();
     String kind = verb.equals("detail") ? "detail" : "rule";
     send(cmd, r -> ws.sendText("n r " + kind + " " + r));
+  }
+
+  /** `inspect rule set JSON` as the instance's `network rule set COUNT ...`: every field checked as `add` checks it. */
+  /** Why a forward target is refused: the reason, never the target back (what the tab sent is the tab's, and the line stays short). */
+  private String forwardRefusal() {
+    return "forward target not allowed (" + (serve.beam ? "apksim beam has no forward rules"
+        : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")";
+  }
+
+  private String ruleSet(String json) throws IOException {
+    if (!(Json.parse(json) instanceof List<?> rules)) throw new IOException("rule set takes a JSON array of rules");
+    if (rules.size() > serve.inspectMaxRules) throw new IOException("at most " + serve.inspectMaxRules + " rules");
+    StringBuilder b = new StringBuilder("network rule set ").append(rules.size());
+    int n = 0;
+    for (Object o : rules) {
+      String at = "rule " + ++n + ": ";
+      if (!(o instanceof Map<?, ?> r)) throw new IOException(at + "not an object");
+      // A field of the wrong kind or a name that is not a rule's (latency for latencyMs) is refused, not read as left out:
+      // a rule that silently lost its method would answer every method.
+      for (Map.Entry<?, ?> f : r.entrySet()) {
+        String k = String.valueOf(f.getKey());
+        if (!RULE_FIELDS.contains(k)) throw new IOException(at + "no field \"" + (k.length() > 30 ? k.substring(0, 30) + "..." : k) + "\" (" + String.join(", ", RULE_FIELDS) + ")");
+        if (List.of("method", "pattern", "type", "body", "forward").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
+      }
+      String method = r.get("method") instanceof String s ? s : "*", pattern = r.get("pattern") instanceof String s ? s : "",
+          type = r.get("type") instanceof String s && !s.isEmpty() ? s : "-", body = r.get("body") instanceof String s && !s.isEmpty() ? s : "-";
+      String status = ruleInt(r.get("status")), latency = ruleInt(r.get("latencyMs"));
+      if (!method.matches(RULE_METHOD)) throw new IOException(at + "the method is * or a name such as GET");
+      if (!pattern.matches(URL_CHARS + "{1,300}")) throw new IOException(at + "the pattern is 1-300 URL characters");
+      if (r.get("forward") instanceof String target) {
+        // A forward rule (issue 363): the upstream's answer is the answer, so it has no status, type, body or headers of its own.
+        for (String k : List.of("status", "type", "body", "headers")) if (r.containsKey(k)) throw new IOException(at + "a forward rule has no " + k);
+        if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
+        if (!serve.inspectForwardAllow.allows(target)) throw new IOException(at + forwardRefusal());
+        b.append(' ').append(method).append(' ').append(pattern).append(" forward ").append(latency).append(" - ")
+            .append(java.util.Base64.getEncoder().encodeToString(target.getBytes(StandardCharsets.UTF_8))).append(" -");
+        continue;
+      }
+      if (status == null || !status.matches(RULE_STATUS)) throw new IOException(at + "a status is 200-599, or 0 to keep the server's answer");
+      if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
+      if (!type.matches(RULE_TYPE)) throw new IOException(at + "a content type is letters, digits and . + / ; = _ -");
+      if (!body.matches(RULE_BODY)) throw new IOException(at + "a body is base64, at most 512 KB");
+      StringBuilder hs = new StringBuilder();
+      if (r.get("headers") instanceof List<?> list) {
+        for (Object h : list) {
+          if (!(h instanceof List<?> pair) || pair.size() != 2 || !(pair.get(0) instanceof String name) || !(pair.get(1) instanceof String value)) {
+            throw new IOException(at + "headers are [name, value] pairs");
+          }
+          String why = dev.apksim.net.Inspector.headerProblem(name, value);
+          if (why != null) throw new IOException(at + why);
+          hs.append(name).append(": ").append(value).append('\n');
+        }
+        if (list.size() > dev.apksim.net.Inspector.RULE_HEADERS_MAX) throw new IOException(at + "at most " + dev.apksim.net.Inspector.RULE_HEADERS_MAX + " headers");
+      } else if (r.get("headers") != null) {
+        throw new IOException(at + "headers are [name, value] pairs");
+      }
+      b.append(' ').append(method).append(' ').append(pattern).append(' ').append(status).append(' ').append(latency).append(' ').append(type).append(' ').append(body)
+          .append(' ').append(hs.isEmpty() ? "-" : java.util.Base64.getEncoder().encodeToString(hs.toString().getBytes(StandardCharsets.ISO_8859_1)));
+    }
+    return b.toString();
+  }
+
+  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward");
+
+  /** A rule's whole number (JSON numbers are doubles here), 0 when left out; null when it is anything else. */
+  private static String ruleInt(Object v) {
+    if (v == null) return "0";
+    if (!(v instanceof Double d) || d < 0 || d > 100_000 || d != Math.rint(d)) return null;
+    return String.valueOf(d.intValue());
   }
 
   /** The instance ended by itself: why, from its log (the whole of it is read first) and the JVM's crash report. */

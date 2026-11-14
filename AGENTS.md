@@ -834,7 +834,9 @@ and `.github/actions/preview` put a pull request's build on a serve (with `ttl`,
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
 Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
-capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`); `scripts/inspector-check.py` (`--forward-port N` for the forward round trip).
+capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
+swapped whole, so `inspect rule set JSON` replaces them atomically; a rule may carry response headers; `serve --inspect-max-rules N` →
+`--network-inspect-rules N`); `scripts/inspector-check.py` (`--forward-port N` for the forward round trip), `scripts/check-inspector-rules.sh` (CI: patterns, set, headers, the limit, a swap under matching threads).
 
 ## MCP server
 `apksim mcp --apps DIR [--out DIR]` (`scripts/mcp.py`, stdlib Python, protocol 2026-07-28 and the handshake revisions): tools to launch and drive instances over `--control`; each action answers with the node changes since the last answer. Allow-listed launch options, output folder only, `--no-autofill`. docs/mcp.md; `scripts/mcp-check.py` checks it.
@@ -855,7 +857,9 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `NetEngine` on a loopback port instead (a first line says where it was going; the engine answers with the real
   connect's result). Recording or replaying, TLS on such a socket is a `FakeTlsSocket`: its handshake gets the
   server's certificates from the engine (the real chain, so hostname checks and pins pass) and the bytes stay plain
-  text, so HTTP/1.1 is readable. The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
+  text, so HTTP/1.1 is readable (a client offering h2 without http/1.1, as gRPC does, is relayed as an opaque tunnel
+  instead: hello field `tunnel`, reply `TUNNEL`, real TLS over the relayed bytes, `Inspector.tunnel`; no recording,
+  rules, mocks or `--network-trust` apply inside it; `scripts/check-h2-tunnel.sh`). The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
   `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
   placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched.
 - Code that runs for every app references only JDK types (no OkHttp), as for org.webrtc ("Video").
@@ -1356,7 +1360,7 @@ links them from the JUnit XML like bundles; `TestRecorder`, `scripts/record-chec
 `DIR/<class>/<method>-<hash>.avi` (`MjpegRecorder`, so headless and in the Linux image too), kept for a failed test (all
 with `all`) and deleted otherwise. A test run has no display loop, so `ShadowSimViewRootImpl` offers a frame after each
 window traversal and `TestRecorder` draws the screen (`Bundles.screenBitmap`) at most N (default 15) times a second of
-real time (each frame due an interval after the last capture ended and at least 4x its cost later, so a slow draw never starves the main looper: issue 360), fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
+real time (each frame due an interval after the last capture ended and at least 4x its cost later, so a slow draw never starves the main looper: issue 360; `scripts/record-check.py` checks it with `-Dapksim.record.captureDelayMs`), fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
 (the simulated clock's idle jumps do not show), and a test that never shows a window has none. A recording must never
 fail a test (issue 144: a capture taken inside `ViewRootImpl.performDraw` through HWUI's `HardwareRenderingScreenshot`
 never returned from `nSyncAndDrawFrame`), so a frame is taken from a main-thread message posted after the window's draw

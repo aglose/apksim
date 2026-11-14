@@ -171,6 +171,17 @@ def forward_checks(t, port):
             hs = {h[0].lower(): h[1] for h in d["respHeaders"]}
             check(hs.get("x-mock-state") and hs.get("x-apksim-rule") and b"forwarded POST" in base64.b64decode(d["respBody"]),
                   f"with the upstream's own header and body ({hs.get('x-mock-state')}, {base64.b64decode(d['respBody'])[:50]!r})")
+        # In a set (issue 364's command): a forward rule beside a status rule; a target that is not allowed refuses the whole set.
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule set " + json.dumps([{"pattern": "/a", "status": 200}, {"method": "POST", "pattern": "/b", "forward": target, "latencyMs": 5}]))
+        check(t.pump(10, until=lambda: any(x.startswith("[") and '"forward"' in x for x in t.replies("rule")[k:])), "a set with a forward rule is taken")
+        for wrong in ([{"pattern": "/b", "forward": "http://127.0.0.1:9/elsewhere"}], [{"pattern": "/b", "forward": target, "status": 200}]):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps(wrong))
+            check(t.pump(5, until=lambda: any(x.startswith("error: rule 1") for x in t.replies("rule")[k:])), f"a set with {json.dumps(wrong)[:70]} is refused")
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule list")
+        check(t.pump(5, until=lambda: len(t.replies("rule")) > k) and [r["pattern"] for r in json.loads(t.replies("rule")[-1])] == ["/a", "/b"], "the refused sets changed nothing")
         # Ordering: a status rule added first wins; then a pass-through rule first lets the request go on to the (absent) server.
         t.ws.send("inspect rule clear")
         t.ws.send(f"inspect rule add POST /v1/greeting 200 0 application/json {base64.b64encode(GREETING).decode()}")
@@ -303,6 +314,59 @@ def main():
         t.ws.send("inspect rule clear")
         t.ws.send("inspect rule list")
         check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "clear removes the rules")
+
+        # Issue 364: a whole set in one command, in order; response headers on a rule; the session's rule limit.
+        limit = i.get("inspectMaxRules")
+        check(isinstance(limit, int) and limit >= 1, f"the session's i message gives the rule limit ({limit})")
+        t.ws.send("inspect rule add GET /one 200 0 - -")
+        rules = [{"method": "GET", "pattern": "/never", "status": 404},
+                 {"method": "POST", "pattern": "/v1/greeting", "status": 200, "type": "application/json", "body": base64.b64encode(GREETING).decode(),
+                  "headers": [["ETag", '"v7"'], ["Retry-After", "3"], ["X-Mock", "set by a rule"]]},
+                 {"pattern": "*", "latencyMs": 5}]
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule set " + json.dumps(rules))
+        check(t.pump(10, until=lambda: any(x.startswith("[") for x in t.replies("rule")[k:])), "rule set answers with a list")
+        got = next((json.loads(x) for x in t.replies("rule")[k:] if x.startswith("[")), [])
+        check([r["pattern"] for r in got] == ["/never", "/v1/greeting", "*"], f"exactly the three rules, in order ({[r['pattern'] for r in got]})")
+        check(len(got) == 3 and got[1].get("headers") == rules[1]["headers"], "the list shows a rule's headers")
+        before = len(t.events())
+        t.tap(*FETCH)
+        check(t.pump(30, until=lambda: any(e.get("rule") and e["status"] == 200 for e in t.events()[before:])), "Fetch: the set's rule answers")
+        exs = [e for e in t.events()[before:] if e.get("rule") and e["status"] == 200]
+        if exs:
+            kd = len(t.replies("detail"))
+            t.ws.send(f"inspect detail {exs[0]['id']}")
+            check(t.pump(10, until=lambda: len(t.replies("detail")) > kd), "its detail comes back")
+            rh = {h[0]: h[1] for h in json.loads(t.replies("detail")[-1])["respHeaders"]}
+            check(rh.get("ETag") == '"v7"' and rh.get("Retry-After") == "3" and rh.get("X-Mock") == "set by a rule", f"the answer carried the rule's headers ({rh})")
+        for name in ("Content-Length", "Transfer-Encoding"):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps([{"pattern": "/h", "status": 200, "headers": [[name, "1"]]}]))
+            check(t.pump(5, until=lambda: any(x.startswith("error") and name in x for x in t.replies("rule")[k:])), f"a set with a {name} header is refused")
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule add GET /h 200 0 - - " + base64.b64encode(f"{name}: 1".encode()).decode())
+            check(t.pump(5, until=lambda: any(x.startswith("error") and name in x for x in t.replies("rule")[k:])), f"and an add with it")
+        k = len(t.replies("rule"))
+        t.ws.send("inspect rule list")
+        check(t.pump(5, until=lambda: len(t.replies("rule")) > k) and [r["pattern"] for r in json.loads(t.replies("rule")[-1])] == ["/never", "/v1/greeting", "*"],
+              "the refused sets changed nothing")
+        for wrong in ({"pattern": "/h", "status": 200, "method": 5}, {"pattern": "/h", "latency": 100}):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps([wrong]))
+            check(t.pump(5, until=lambda: any(x.startswith("error: rule 1") for x in t.replies("rule")[k:])), f"a set with {json.dumps(wrong)} is refused")
+        if isinstance(limit, int):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps([{"pattern": f"/r{n}", "status": 200} for n in range(limit + 1)]))
+            check(t.pump(5, until=lambda: any(x.startswith("error: at most") for x in t.replies("rule")[k:])), f"a set of {limit + 1} rules is over the limit")
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps([{"pattern": f"/r{n}", "status": 200} for n in range(limit)]))
+            check(t.pump(10, until=lambda: any(x.startswith("[") and len(json.loads(x)) == limit for x in t.replies("rule")[k:])), f"a set of {limit} is taken")
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule add GET /more 200 0 - -")
+            check(t.pump(5, until=lambda: any(x.startswith("error: at most") for x in t.replies("rule")[k:])), "and one more add is refused")
+        t.ws.send("inspect rule set []")
+        t.ws.send("inspect rule list")
+        check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "an empty set removes the rules")
 
         forward_checks(t, a.forward_port)
 

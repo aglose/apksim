@@ -48,7 +48,7 @@ body.embed #reportCard, body.embed #inspectCard, body.embed #insp { display: non
     <div id="inspRows"></div>
   </div>
   <div class="col">
-    <h2>Rules</h2>
+    <h2>Rules <span id="inspBudget"></span></h2>
     <div id="inspRules"></div>
     <form id="inspAdd" autocomplete="off">
       <select id="ruleMethod" aria-label="Method"><option value="*">any</option><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select>
@@ -57,6 +57,7 @@ body.embed #reportCard, body.embed #inspectCard, body.embed #insp { display: non
       <input id="ruleLatency" type="text" placeholder="+ ms" aria-label="Latency to add, ms" style="grid-column: span 2">
       <input id="ruleType" type="text" placeholder="Content type (application/json)" aria-label="Content type" style="grid-column: span 4">
       <textarea id="ruleBody" placeholder="Response body (when a status is given)" aria-label="Response body"></textarea>
+      <textarea id="ruleHeaders" rows="2" placeholder="Response headers, one Name: value a line (optional)" aria-label="Response headers"></textarea>
       <button class="primary c2" type="submit">Add rule</button><button class="c2" type="button" id="inspClear">Remove all rules</button>
     </form>
     <div class="hint" id="inspHint"></div>
@@ -264,10 +265,11 @@ function showDetail(d) {
 function drawRules(list) {
   if (!list) return;
   const box = $r("inspRules");
+  $r("inspBudget").textContent = info && info.inspectMaxRules ? "(" + list.length + " of " + info.inspectMaxRules + ")" : "";
   box.replaceChildren(...list.map(r => {
     const row = document.createElement("div"); row.className = "rl";
     const s = document.createElement("span");
-    s.textContent = r.method + " " + r.pattern + " → " + (r.forward ? "forward to " + r.forward : r.status ? r.status + (r.bytes ? " (" + fmtBytes(r.bytes) + ")" : "") : "real answer") + (r.latencyMs ? " +" + r.latencyMs + " ms" : "") + " · " + r.hits + " hit" + (r.hits === 1 ? "" : "s");
+    s.textContent = r.method + " " + r.pattern + " → " + (r.forward ? "forward to " + r.forward : r.status ? r.status + (r.bytes ? " (" + fmtBytes(r.bytes) + ")" : "") : "real answer") + (r.latencyMs ? " +" + r.latencyMs + " ms" : "") + (r.headers ? " · " + r.headers.length + " header" + (r.headers.length === 1 ? "" : "s") : "") + " · " + r.hits + " hit" + (r.hits === 1 ? "" : "s");
     s.title = s.textContent;
     const b = document.createElement("button"); b.textContent = "Remove";
     b.onclick = () => send("inspect rule remove " + r.id);
@@ -283,14 +285,17 @@ function b64(text) {
 $r("inspAdd").onsubmit = e => {
   e.preventDefault();
   const method = $r("ruleMethod").value, pattern = $r("rulePattern").value.trim(), status = $r("ruleStatus").value.trim() || "0",
-    latency = $r("ruleLatency").value.trim() || "0", type = $r("ruleType").value.trim() || "-", body = $r("ruleBody").value;
+    latency = $r("ruleLatency").value.trim() || "0", type = $r("ruleType").value.trim() || "-", body = $r("ruleBody").value,
+    headers = $r("ruleHeaders").value.split("\n").map(l => l.trim()).filter(l => l).join("\n");
   $r("inspHint").textContent = "";
   if (!/^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,300}$/.test(pattern)) { $r("inspHint").textContent = "a URL pattern: part of the address, * for anything, no spaces"; return; }
   if (!/^(0|[2-5][0-9]{2})$/.test(status) || !/^[0-9]{1,5}$/.test(latency)) { $r("inspHint").textContent = "status 200-599 (or empty), latency in ms"; return; }
   if (status === "0" && latency === "0") { $r("inspHint").textContent = "give a status, a latency, or both"; return; }
   if (!/^(-|[A-Za-z0-9.+\/;=_-]{1,100})$/.test(type)) { $r("inspHint").textContent = "content type such as application/json"; return; }
   if (new TextEncoder().encode(body).length > 524288) { $r("inspHint").textContent = "a body is at most 512 KB"; return; }
-  send("inspect rule add " + method + " " + pattern + " " + status + " " + latency + " " + type + " " + (body ? b64(body) : "-"));
+  if (headers && !headers.split("\n").every(l => /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}:[\t\x20-\x7e]*$/.test(l))) { $r("inspHint").textContent = "headers are Name: value lines (printable ASCII)"; return; }
+  if (headers.length > 3000) { $r("inspHint").textContent = "a rule's headers are at most 2 KB"; return; }
+  send("inspect rule add " + method + " " + pattern + " " + status + " " + latency + " " + type + " " + (body ? b64(body) : "-") + (headers ? " " + b64(headers) : ""));
   $r("rulePattern").value = "";
 };
 $r("inspClear").onclick = () => send("inspect rule clear");

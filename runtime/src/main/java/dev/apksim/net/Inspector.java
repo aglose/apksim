@@ -41,8 +41,16 @@ public final class Inspector {
   static final long DETAILS_BYTES = 32L << 20;
   /** The most of a URL an event carries (`detail` has all of it). */
   static final int URL_SHOWN = 1500;
-  /** Rules at most; each costs a pattern match per request. */
-  static final int MAX_RULES = 32;
+  /** Rules at most by default; each costs a pattern match per request. */
+  public static final int MAX_RULES = 32;
+  /** All the rules' bodies together: what 32 rules of {@link #RULE_BODY_MAX} came to before the limit could be raised. */
+  static final long RULE_BODIES_MAX = 16L << 20;
+  /** The most `--network-inspect-rules N` (serve --inspect-max-rules) may ask for. */
+  public static final int MAX_RULES_LIMIT = 256;
+  /** Rules at most in this instance: {@link #MAX_RULES}, or the launch's `-Dapksim.networkInspectRules` (1 to {@link #MAX_RULES_LIMIT}). */
+  static volatile int maxRules = MAX_RULES;
+  /** A rule's extra response headers: this many at most, and this many bytes of names and values together. */
+  public static final int RULE_HEADERS_MAX = 20, RULE_HEADER_BYTES = 2048;
 
   private static final List<Viewer> viewers = new CopyOnWriteArrayList<>();
   private static final AtomicLong ids = new AtomicLong();
@@ -62,7 +70,12 @@ public final class Inspector {
   private static long detailBytes;  // guarded by details
 
   private static final Map<Long, Detail> details = new LinkedHashMap<>();
-  private static final List<Rule> rules = new CopyOnWriteArrayList<>();
+  /**
+   * The rules, in order: an immutable list replaced whole under {@link #rulesLock}, so a request (which reads the field
+   * once) is matched against the list as it was before a change or after it, never a `rule set` half applied.
+   */
+  private static volatile List<Rule> rules = List.of();
+  private static final Object rulesLock = new Object();
   private static final AtomicInteger ruleIds = new AtomicInteger();
 
   /** A forward rule's target is at most this long, and a request body it sends on at most this big (it is held in memory). */
@@ -80,15 +93,22 @@ public final class Inspector {
     final String forward;
     final int status, latencyMs;
     final byte[] body;
+    /** Response headers the answer carries beside its content type (name, value), in the order given. */
+    final List<String[]> headers;
     final String[] parts;
     final AtomicInteger hits = new AtomicInteger();
 
     Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body) {
-      this(id, method, pattern, status, latencyMs, type, body, null);
+      this(id, method, pattern, status, latencyMs, type, body, List.of());
     }
 
-    Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, String forward) {
+    Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers) {
+      this(id, method, pattern, status, latencyMs, type, body, headers, null);
+    }
+
+    Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers, String forward) {
       this.forward = forward;
+      this.headers = headers;
       this.id = id;
       this.method = method;
       this.pattern = pattern;
@@ -123,7 +143,7 @@ public final class Inspector {
 
     String json() {
       return "{\"id\":" + id + ",\"method\":" + q(method) + ",\"pattern\":" + q(pattern) + ",\"status\":" + status + ",\"latencyMs\":" + latencyMs
-          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward)) + ",\"hits\":" + hits.get() + "}";
+          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward)) + (headers.isEmpty() ? "" : ",\"headers\":" + headers(headers)) + ",\"hits\":" + hits.get() + "}";
     }
   }
 
@@ -140,6 +160,16 @@ public final class Inspector {
     e.url = port > 0 ? host + ":" + port : host;
     e.status = 0;
     e.respBody = err.replaceAll("[\\r\\n]+$", "").getBytes(StandardCharsets.UTF_8);
+    exchange(e, 0, 0);
+  }
+
+  /** A connection relayed as an opaque tunnel (the client offered h2): a row, status 200, whose detail says it was not read. */
+  static void tunnel(String host, int port) {
+    Recording.Entry e = new Recording.Entry();
+    e.method = "CONNECT";
+    e.url = host + ":" + port;
+    e.status = 200;
+    e.respBody = "opaque tunnel: the client offered h2, so its TLS is end to end and not captured".getBytes(StandardCharsets.UTF_8);
     exchange(e, 0, 0);
   }
 
@@ -277,71 +307,180 @@ public final class Inspector {
   }
 
   /**
-   * `network rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 | remove ID | clear | list`; one line back. A STATUS of
-   * `forward` makes a forward rule: BODY64 is then the target URL (base64) and TYPE `-`. Which targets a tab may name is
-   * the server's to decide (serve --inspect-forward-allow): this command is the owner's.
+   * Why a rule may not set this response header, or null. The name is an HTTP token; the engine writes the answer's framing
+   * (length, connection) and its content type itself, so those names are refused, and a value is one line of printable ASCII.
+   */
+  public static String headerProblem(String name, String value) {
+    if (!name.matches("[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}")) return "a header name is 1-64 letters, digits and !#$%&'*+.^_`|~-";
+    String n = name.toLowerCase(Locale.ROOT);
+    if (FRAMING_HEADERS.contains(n) || n.startsWith("proxy-")) {
+      return "a rule cannot set " + name + (n.equals("content-type") ? " (the rule's content type is its own field)" : " (the engine frames the answer)");
+    }
+    if (!value.matches("[\\t\\x20-\\x7e]{0,1024}")) return "a header value is at most 1024 printable ASCII characters on one line";
+    return null;
+  }
+
+  private static final java.util.Set<String> FRAMING_HEADERS = java.util.Set.of("content-length", "transfer-encoding", "content-type", "connection",
+      "keep-alive", "upgrade", "trailer", "te", "x-apksim-rule");
+
+  /** A rule's headers as the command carries them: `-`, or base64 of `Name: value` lines. */
+  private static List<String[]> parseHeaders(String token) {
+    if (token.equals("-")) return List.of();
+    String text = new String(Base64.getDecoder().decode(token), StandardCharsets.ISO_8859_1);
+    List<String[]> out = new java.util.ArrayList<>();
+    int bytes = 0;
+    for (String line : text.split("\n")) {
+      if (line.isBlank()) continue;
+      int colon = line.indexOf(':');
+      if (colon < 1) throw new IllegalArgumentException("a header is Name: value");
+      String name = line.substring(0, colon), value = line.substring(colon + 1).strip();
+      String why = headerProblem(name, value);
+      if (why != null) throw new IllegalArgumentException(why);
+      bytes += name.length() + value.length();
+      out.add(new String[] {name, value});
+    }
+    if (out.size() > RULE_HEADERS_MAX) throw new IllegalArgumentException("a rule has at most " + RULE_HEADERS_MAX + " headers");
+    if (bytes > RULE_HEADER_BYTES) throw new IllegalArgumentException("a rule's headers are at most " + RULE_HEADER_BYTES + " bytes together");
+    return List.copyOf(out);
+  }
+
+  /** One rule from `METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 [HEADERS64]` at a[at]; an IllegalArgumentException says what is wrong. */
+  private static Rule parseRule(String[] a, int at, boolean headers) {
+    if (a[at + 2].equals("forward")) return parseForward(a, at, headers);
+    int status, latency;
+    try {
+      status = Integer.parseInt(a[at + 2]);
+      latency = Integer.parseInt(a[at + 3]);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("a status and a latency are numbers");
+    }
+    if (status != 0 && (status < 200 || status > 599)) throw new IllegalArgumentException("a status is 200-599, or 0 to keep the server's answer");
+    if (latency < 0 || latency > 60_000) throw new IllegalArgumentException("latency is 0-60000 ms");
+    if (status == 0 && latency == 0) throw new IllegalArgumentException("a rule needs a status or a latency");
+    if (a[at + 1].length() > 300 || a[at + 1].isEmpty()) throw new IllegalArgumentException("the pattern is 1-300 characters");
+    String type = a[at + 4].equals("-") ? "application/octet-stream" : a[at + 4];
+    if (!type.matches("[A-Za-z0-9.+/;=_-]{1,100}")) throw new IllegalArgumentException("a content type is letters, digits and . + / ; = _ -");
+    byte[] body = a[at + 5].equals("-") ? new byte[0] : Base64.getDecoder().decode(a[at + 5]);
+    if (body.length > RULE_BODY_MAX) throw new IllegalArgumentException("a body is at most " + RULE_BODY_MAX + " bytes");
+    if (!(a[at].equals("*") || a[at].matches("[A-Za-z]{3,10}"))) throw new IllegalArgumentException("the method is * or a name such as GET");
+    List<String[]> hs = headers ? parseHeaders(a[at + 6]) : List.of();
+    return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], status, latency, type, body, hs);
+  }
+
+  private static long bodies(List<Rule> rs) {
+    long n = 0;
+    for (Rule r : rs) n += r.body.length;
+    return n;
+  }
+
+  private static String list(List<Rule> rs) {
+    StringBuilder b = new StringBuilder("[");
+    for (Rule r : rs) b.append(b.length() > 1 ? "," : "").append(r.json());
+    return b.append(']').toString();
+  }
+
+  /**
+   * `network rule add METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 [HEADERS64] | set COUNT (METHOD PATTERN STATUS LATENCY_MS
+   * TYPE BODY64 HEADERS64)... | remove ID | clear | list | max`; one line back. `set` replaces every rule with the ones given,
+   * in that order, at once (new ids, hits from 0), and answers the new list; nothing changes when one of them is refused.
+   * A STATUS of `forward` makes a forward rule: BODY64 is then the target URL (base64), TYPE and HEADERS64 `-`. Which targets
+   * a tab may name is the server's to decide (serve --inspect-forward-allow): this command is the owner's.
    */
   static String rule(String[] a) {
     if (!on) return "error: the network inspector is off";
     String sub = a.length > 2 ? a[2] : "list";
     switch (sub) {
       case "list" -> {
-        StringBuilder b = new StringBuilder("[");
-        for (Rule r : rules) b.append(b.length() > 1 ? "," : "").append(r.json());
-        return b.append(']').toString();
+        return list(rules);
+      }
+      case "max" -> {
+        return String.valueOf(maxRules);
       }
       case "clear" -> {
-        rules.clear();
+        synchronized (rulesLock) {
+          rules = List.of();
+        }
         return "ok";
       }
       case "remove" -> {
         if (a.length != 4 || !a[3].matches("[0-9]{1,9}")) return "error: network rule remove ID";
         int id = Integer.parseInt(a[3]);
-        return rules.removeIf(r -> r.id == id) ? "ok" : "error: no rule " + id;
+        synchronized (rulesLock) {
+          List<Rule> next = new java.util.ArrayList<>(rules);
+          if (!next.removeIf(r -> r.id == id)) return "error: no rule " + id;
+          rules = List.copyOf(next);
+        }
+        return "ok";
       }
       case "add" -> {
-        if (a.length != 9) return "error: network rule add METHOD PATTERN STATUS|forward LATENCY_MS TYPE BODY64|URL64";
-        if (rules.size() >= MAX_RULES) return "error: at most " + MAX_RULES + " rules";
+        if (a.length != 9 && a.length != 10) return "error: network rule add METHOD PATTERN STATUS|forward LATENCY_MS TYPE BODY64|URL64 [HEADERS64]";
         try {
-          if (a[5].equals("forward")) return addForward(a);
-          int status = Integer.parseInt(a[5]), latency = Integer.parseInt(a[6]);
-          if (status != 0 && (status < 200 || status > 599)) return "error: a status is 200-599, or 0 to keep the server's answer";
-          if (latency < 0 || latency > 60_000) return "error: latency is 0-60000 ms";
-          if (status == 0 && latency == 0) return "error: a rule needs a status or a latency";
-          if (a[4].length() > 300 || a[4].isEmpty()) return "error: the pattern is 1-300 characters";
-          String type = a[7].equals("-") ? "application/octet-stream" : a[7];
-          if (!type.matches("[A-Za-z0-9.+/;=_-]{1,100}")) return "error: a content type is letters, digits and . + / ; = _ -";
-          byte[] body = a[8].equals("-") ? new byte[0] : Base64.getDecoder().decode(a[8]);
-          if (body.length > RULE_BODY_MAX) return "error: a body is at most " + RULE_BODY_MAX + " bytes";
-          if (!(a[3].equals("*") || a[3].matches("[A-Za-z]{3,10}"))) return "error: the method is * or a name such as GET";
-          Rule r = new Rule(ruleIds.incrementAndGet(), a[3].toUpperCase(Locale.ROOT), a[4], status, latency, type, body);
-          rules.add(r);
+          Rule r;
+          synchronized (rulesLock) {
+            if (rules.size() >= maxRules) return "error: at most " + maxRules + " rules";
+            r = parseRule(a, 3, a.length == 10);
+            List<Rule> next = new java.util.ArrayList<>(rules);
+            next.add(r);
+            if (bodies(next) > RULE_BODIES_MAX) return "error: the rules' bodies are at most " + RULE_BODIES_MAX + " bytes together";
+            rules = List.copyOf(next);
+          }
           // A lookup that failed a moment ago is remembered by the JDK (10 s): forgotten, so the rule is met at the next try.
-          if (status > 0) Net.flushDnsCache();
+          if (r.answers()) Net.flushDnsCache();
           return r.json();
         } catch (IllegalArgumentException e) {
           return "error: " + e.getMessage();
         }
       }
+      case "set" -> {
+        if (a.length < 4 || !a[3].matches("[0-9]{1,4}")) return "error: network rule set COUNT (METHOD PATTERN STATUS LATENCY_MS TYPE BODY64 HEADERS64)...";
+        int n = Integer.parseInt(a[3]);
+        if (a.length != 4 + 7 * n) return "error: network rule set: " + n + " rules are " + 7 * n + " words, got " + (a.length - 4);
+        if (n > maxRules) return "error: at most " + maxRules + " rules";
+        List<Rule> next = new java.util.ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+          try {
+            next.add(parseRule(a, 4 + 7 * i, true));
+          } catch (IllegalArgumentException e) {
+            return "error: rule " + (i + 1) + ": " + e.getMessage();
+          }
+        }
+        if (bodies(next) > RULE_BODIES_MAX) return "error: the rules' bodies are at most " + RULE_BODIES_MAX + " bytes together";
+        List<Rule> now = List.copyOf(next);
+        synchronized (rulesLock) {
+          rules = now;
+        }
+        for (Rule r : now) {
+          if (r.answers()) {
+            Net.flushDnsCache();
+            break;
+          }
+        }
+        return list(now);
+      }
       default -> {
-        return "error: network rule add|remove|clear|list";
+        return "error: network rule add|set|remove|clear|list|max";
       }
     }
   }
 
-  private static String addForward(String[] a) {
-    int latency = Integer.parseInt(a[6]);
-    if (latency < 0 || latency > 60_000) return "error: latency is 0-60000 ms";
-    if (a[4].length() > 300 || a[4].isEmpty()) return "error: the pattern is 1-300 characters";
-    if (!(a[3].equals("*") || a[3].matches("[A-Za-z]{3,10}"))) return "error: the method is * or a name such as GET";
-    if (!a[7].equals("-")) return "error: a forward rule has no content type (-): its target's answer has its own";
-    String url = a[8].equals("-") ? "" : new String(Base64.getDecoder().decode(a[8]), StandardCharsets.UTF_8);
+  /** A forward rule from the same words: STATUS `forward`, TYPE `-`, the target URL (base64) where a body would be, no headers. */
+  private static Rule parseForward(String[] a, int at, boolean headers) {
+    int latency;
+    try {
+      latency = Integer.parseInt(a[at + 3]);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("a latency is a number");
+    }
+    if (latency < 0 || latency > 60_000) throw new IllegalArgumentException("latency is 0-60000 ms");
+    if (a[at + 1].length() > 300 || a[at + 1].isEmpty()) throw new IllegalArgumentException("the pattern is 1-300 characters");
+    if (!(a[at].equals("*") || a[at].matches("[A-Za-z]{3,10}"))) throw new IllegalArgumentException("the method is * or a name such as GET");
+    if (!a[at + 4].equals("-") || headers && !a[at + 6].equals("-")) {
+      throw new IllegalArgumentException("a forward rule has no content type or headers (-): its target's answer has its own");
+    }
+    String url = a[at + 5].equals("-") ? "" : new String(Base64.getDecoder().decode(a[at + 5]), StandardCharsets.UTF_8);
     String why = forwardProblem(url);
-    if (why != null) return "error: " + why;
-    Rule r = new Rule(ruleIds.incrementAndGet(), a[3].toUpperCase(Locale.ROOT), a[4], 0, latency, "-", new byte[0], url);
-    rules.add(r);
-    Net.flushDnsCache();
-    return r.json();
+    if (why != null) throw new IllegalArgumentException(why);
+    return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "-", new byte[0], List.of(), url);
   }
 
   /** Why a URL cannot be a forward rule's target, or null: an absolute http(s) URL with a host, no user info, no fragment. */

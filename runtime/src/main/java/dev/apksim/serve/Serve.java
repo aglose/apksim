@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -85,6 +85,8 @@ public final class Serve {
    * Empty by default: no forward rules.
    */
   final ForwardAllow inspectForwardAllow = new ForwardAllow();
+  /** `--inspect-max-rules N`: the most rules a session's inspector takes (32 by default, 1 to 256); told to the tab as `inspectMaxRules`. */
+  int inspectMaxRules = dev.apksim.net.Inspector.MAX_RULES;
   /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
   String issueUrl;
   /** Issue 221: `--keep-max N` kept sessions in all (0: none kept, the default), and the store (null on the agent). */
@@ -239,6 +241,13 @@ public final class Serve {
             System.err.println("[serve] " + e.getMessage());
             System.exit(2);
           }
+        }
+        case "--inspect-max-rules" -> {
+          String n = need(a, v);
+          if (!n.matches("[0-9]{1,3}") || Integer.parseInt(n) < 1 || Integer.parseInt(n) > dev.apksim.net.Inspector.MAX_RULES_LIMIT) {
+            throw new IllegalArgumentException("--inspect-max-rules is 1 to " + dev.apksim.net.Inspector.MAX_RULES_LIMIT);
+          }
+          s.inspectMaxRules = Integer.parseInt(n);
         }
         case "--issue-url" -> s.issueUrl = checkIssueUrl(need(a, v));
         case "--keep-max" -> s.keepMax = Math.max(0, Math.min(100_000, Integer.parseInt(need(a, v))));
@@ -1650,7 +1659,8 @@ public final class Serve {
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
         + (beam ? ",\"rec\":" + (session.recChannels() != null) + (session.recChannels() != null ? ",\"recChannels\":" + Http.q(session.recChannels()) : "")
             + ",\"inspect\":" + session.inspecting()
-            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork) + "}");
+            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork)
+        + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
     session.run();
   }
 

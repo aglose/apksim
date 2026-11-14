@@ -32,9 +32,12 @@ import javax.net.ssl.SSLSocketFactory;
  * A TLS socket that does no TLS, over a connection to apksim's network engine (record and replay). Its handshake asks
  * the engine for the server's certificates (recorded, or fetched from the real server while recording) and reports
  * a TLS 1.3 session with them, so the client's hostname check and certificate pins see the real chain; its bytes
- * then reach the engine in plain text, where HTTP is readable. No ALPN protocol, so clients speak HTTP/1.1.
+ * then reach the engine in plain text, where HTTP is readable. No ALPN protocol, so clients speak HTTP/1.1. A client that
+ * offers h2 (gRPC, HTTP/2-only servers) cannot be served that way: its connection becomes an opaque tunnel (the engine
+ * relays the bytes, as it does when it only shapes the network) and the real TLS handshake runs over it, so the
+ * client gets the protocol the server picks. Not while replaying, where there is no server.
  */
-final class FakeTlsSocket extends SSLSocket {
+public final class FakeTlsSocket extends SSLSocket {
   private static String[] defaultSuites;
   private static final String[] PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
 
@@ -49,7 +52,10 @@ final class FakeTlsSocket extends SSLSocket {
   private boolean suitesSet, protocolsSet;
   private boolean clientMode = true;
   private boolean need, want, create = true;
-  private volatile Session session;
+  private volatile SSLSession session;
+  /** The real TLS socket over the tunnel, when the client offered h2. */
+  private volatile SSLSocket real;
+  private volatile String[] appProtocols = new String[0];
   private volatile boolean closed;
 
   /** The app's own TLS (its factory: its trust manager, pins in it, client certificates), for the real handshake. */
@@ -99,14 +105,20 @@ final class FakeTlsSocket extends SSLSocket {
     if (session != null) return;
     if (closed) throw new SocketException("Socket is closed");
     OutputStream out = raw.getOutputStream();
+    boolean offersH2 = Net.mode != Net.Mode.REPLAY && java.util.Arrays.asList(appProtocols).contains("h2")
+        && !java.util.Arrays.asList(appProtocols).contains("http/1.1");
     // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server, and
     // the protocols and cipher suites the app enabled on this socket go along, to hold there too.
-    String token = appTls == null ? "-" : Net.lendTls(appTls);
+    String token = appTls == null || offersH2 ? "-" : Net.lendTls(appTls);
     out.write(("APKSIM-TLS " + host + " " + token + " " + (protocolsSet ? String.join(",", protocols) : "-") + " "
-        + (suitesSet ? String.join(",", suites) : "-") + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        + (suitesSet ? String.join(",", suites) : "-") + (offersH2 ? " tunnel" : "") + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
     out.flush();
     String reply = Net.readLine(raw.getInputStream());
     if (reply == null) throw new SSLHandshakeException("Connection closed by peer");
+    if (reply.equals("TUNNEL")) {
+      tunnelHandshake();
+      return;
+    }
     if (reply.startsWith("ERR ")) {
       IOException e = Net.exception(reply.substring(4), true);
       throw e instanceof javax.net.ssl.SSLException ? e : new SSLHandshakeException(e.getMessage());
@@ -137,15 +149,85 @@ final class FakeTlsSocket extends SSLSocket {
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
   }
 
+  /** The real handshake with the server, over the bytes the engine relays untouched. */
+  private void tunnelHandshake() throws IOException {
+    SSLSocketFactory f = appTls != null ? appTls : (SSLSocketFactory) SSLSocketFactory.getDefault();
+    SSLSocket s;
+    // A factory of the app's that wraps another reaches Net.createSocket again with this raw socket: it must get a real one.
+    Net.tunnelling.set(raw);
+    try {
+      s = (SSLSocket) f.createSocket(raw, host, port, autoClose);
+    } finally {
+      Net.tunnelling.remove();
+    }
+    try {
+      tunnelHandshake(s);
+    } catch (IOException | RuntimeException e) {
+      closed = true;
+      try { s.close(); } catch (IOException ignored) {}
+      throw e;
+    }
+  }
+
+  private void tunnelHandshake(SSLSocket s) throws IOException {
+    javax.net.ssl.SSLParameters params = s.getSSLParameters();
+    if (protocolsSet) params.setProtocols(protocols);
+    if (suitesSet) params.setCipherSuites(suites);
+    params.setApplicationProtocols(appProtocols);
+    s.setSSLParameters(params);
+    s.startHandshake();
+    real = s;
+    session = s.getSession();
+    HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
+    for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
+  }
+
+  @Override
+  public javax.net.ssl.SSLParameters getSSLParameters() {
+    javax.net.ssl.SSLParameters p = super.getSSLParameters();
+    p.setApplicationProtocols(appProtocols);
+    return p;
+  }
+
+  @Override
+  public void setSSLParameters(javax.net.ssl.SSLParameters p) {
+    super.setSSLParameters(p);
+    String[] a = p.getApplicationProtocols();
+    appProtocols = a == null ? new String[0] : a.clone();
+  }
+
+  // What Conscrypt's sockets have and gRPC's Android negotiator looks for by reflection.
+  public void setAlpnProtocols(byte[] list) {
+    List<String> out = new ArrayList<>();
+    for (int i = 0; i < list.length; ) {
+      int n = list[i++] & 0xff;
+      if (i + n > list.length) break;
+      out.add(new String(list, i, n, StandardCharsets.ISO_8859_1));
+      i += n;
+    }
+    appProtocols = out.toArray(new String[0]);
+  }
+
+  public byte[] getAlpnSelectedProtocol() {
+    String p = getApplicationProtocol();
+    return p.isEmpty() ? null : p.getBytes(StandardCharsets.ISO_8859_1);
+  }
+
+  public void setUseSessionTickets(boolean on) {}
+
+  public void setHostname(String name) {}
+
   @Override
   public InputStream getInputStream() throws IOException {
     startHandshake();
+    if (real != null) return real.getInputStream();
     return raw.getInputStream();
   }
 
   @Override
   public OutputStream getOutputStream() throws IOException {
     startHandshake();
+    if (real != null) return real.getOutputStream();
     return raw.getOutputStream();
   }
 
@@ -168,7 +250,10 @@ final class FakeTlsSocket extends SSLSocket {
 
   @Override
   public String getApplicationProtocol() {
-    return "";
+    SSLSocket r = real;
+    if (r == null) return "";
+    String p = r.getApplicationProtocol();
+    return p == null ? "" : p;
   }
 
   @Override
@@ -225,7 +310,9 @@ final class FakeTlsSocket extends SSLSocket {
   @Override
   public void close() throws IOException {
     closed = true;
-    if (autoClose) raw.close();
+    SSLSocket r = real;
+    if (r != null) r.close();
+    else if (autoClose) raw.close();
   }
 
   @Override
