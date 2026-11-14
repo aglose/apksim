@@ -107,6 +107,14 @@ def api_checks(url, catalog_skin=True):
     check(st == 200 and png[:4] == b"\x89PNG" and h.get("Content-Type", "").startswith("image/png") and etag, f"frame.png served with an ETag ({st}, {etag})")
     check(get(url + "/api/skins/fixture/frame.png", {"If-None-Match": etag})[0] == 304, "  304 when the ETag matches")
     check(get(url + "/api/skins/fixture/mask.png")[0] == 404, "  a skin without a mask: mask.png is a 404")
+    check(k is not None and "cover" not in k and get(url + "/api/skins/fixture/cover.png")[0] == 404, "  a skin without a cover: no cover block, cover.png is a 404")
+    fold = next((x for x in sk if x["name"] == "pixel-10-pro-fold"), None)
+    if fold:
+        check(bool(fold.get("cover", {}).get("screen")) and fold["cover"]["frameSize"]["width"] > 0, "  the folding skin lists its cover geometry")
+        st, h, cpng = get(url + "/api/skins/pixel-10-pro-fold/cover.png")
+        check(st == 200 and cpng[:4] == b"\x89PNG", "  its cover.png is served")
+        ce = {k2.lower(): v for k2, v in h.items()}.get("etag")
+        check(ce and get(url + "/api/skins/pixel-10-pro-fold/cover.png", {"If-None-Match": ce})[0] == 304, "  cover.png: 304 when the ETag matches")
     check(get(url + "/api/skins/nope/frame.png")[0] == 404 and get(url + "/api/skins/fixture/skin.json")[0] == 404,
           "  an unknown skin or file is a 404")
     st, _, body = get(url + "/api/devices")
