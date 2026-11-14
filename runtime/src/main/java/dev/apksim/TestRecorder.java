@@ -191,6 +191,7 @@ final class TestRecorder {
   private static void capture(long now) {
     capturing = true;
     pending = false;
+    final boolean first = !started;  // its time includes one-off setup (files, encoder): not a measure of a draw
     Bitmap screen = null;
     try {
       screen = Bundles.screenBitmap(true);
@@ -237,7 +238,7 @@ final class TestRecorder {
       capturing = false;
       long end = System.nanoTime();
       lastNanos = end;
-      lastTookNanos = end - now;
+      lastTookNanos = first ? 0 : Math.min(end - now, 2_000_000_000L);
       // Slow, whether the frame made it or the draw threw after a while: the movie ends here.
       long took = (end - now) / 1_000_000;
       if (took > SLOW_MS && !failed) cutOff(took);
