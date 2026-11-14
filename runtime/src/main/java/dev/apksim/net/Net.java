@@ -104,6 +104,7 @@ public final class Net {
     // `--network-inspect` (serve --inspect-network): the engine captures in memory and the inspector reports (docs/pr-preview.md).
     if (Boolean.getBoolean("apksim.networkInspect")) {
       Inspector.on = true;
+      Inspector.maxRules = Math.max(1, Math.min(Inspector.MAX_RULES_LIMIT, Integer.getInteger("apksim.networkInspectRules", Inspector.MAX_RULES)));
       log("network inspector: " + capture(true, true));
     }
   }
