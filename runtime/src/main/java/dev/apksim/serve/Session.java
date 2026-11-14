@@ -374,7 +374,7 @@ final class Session {
     String perms = options.getOrDefault("permissions", "ask");
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
-    if (inspecting()) cmd.add("--network-inspect");
+    if (inspecting() && !app.launch().contains("--network-inspect")) cmd.add("--network-inspect");
     if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
     // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
     if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
@@ -582,7 +582,15 @@ final class Session {
 
   /** Whether this session runs the network inspector: the server's `--inspect-network`, on the agent its owner's `inspect-network on`. */
   boolean inspecting() {
-    return serve.beam ? serve.store != null && serve.store.config.inspectNetwork() : serve.inspectNetwork;
+    if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off")
+          && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
+    return serve.inspectNetwork || "1".equals(options.get("inspect"));
+  }
+
+  /** Whether a session could have the inspector (issue 371): the page offers the switch only where it works. */
+  boolean inspectAllowed() {
+    if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off");
+    return serve.inspectNetwork || serve.inspectOptional;
   }
 
   /**
@@ -639,8 +647,8 @@ final class Session {
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
-      ws.sendText("r refused: inspect (" + (serve.beam ? "this Mac's agent does not run the network inspector: apksim beam config inspect-network on"
-          : "the server does not run the network inspector: --inspect-network") + ")");
+      ws.sendText("r refused: inspect (" + (serve.beam ? "this session did not ask for the network inspector (/beam/start \"inspect\": true; this Mac's owner allows it with apksim beam config inspect-network optional)"
+          : "this session did not ask for the network inspector (/ws?inspect=1; the server allows it with --inspect-network optional)") + ")");
       return;
     }
     String[] w = t.strip().split(" ");
@@ -2287,7 +2295,7 @@ final class Session {
       } catch (IOException | RuntimeException e) {
         signers = null;  // a newer build then needs this one still here to start on its data
       }
-      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x)).toList(),
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
           options.get("permissions"), site, signers, launchKind));
       if (id != null) {

@@ -244,6 +244,31 @@ def patch_checks(t):
     t.pump(1.5)
 
 
+def optional_checks(url, token, app):
+    """Issue 371, a server started with `--inspect-network optional`: only a session that asks for the inspector has it."""
+    for ask in (False, True):
+        t = Tab(url, token, app, "codec=jpeg&open=apksim%3A%2F%2Fnetwork" + ("&inspect=1" if ask else ""))
+        try:
+            check(t.wait_text(lambda x: x.startswith("i "), 60), f"a session starts (inspect={'1' if ask else 'not asked'})")
+            i = json.loads(next(x for x in t.texts if x.startswith("i "))[2:])
+            check(i.get("inspectAllowed") is True, "it says the server would allow the inspector")
+            check(i.get("inspect") is ask, f"and has it only when it asked ({i.get('inspect')})")
+            check(("inspectMaxRules" in i) is ask, "inspectMaxRules is told only to a session that has it")
+            t.ws.send("inspect rule list")
+            if ask:
+                check(t.wait_text(lambda x: x == "n r rule []", 10), "its inspect commands are answered")
+                check(t.pump(90, until=lambda: len(t.frames) >= 1), "the app shows a frame")
+                t.pump(4)
+                t.tap(*FETCH)
+                check(t.pump(30, until=lambda: any(e["method"] == "DNS" for e in t.events())), "Fetch: the failed lookup is a row")
+            else:
+                t.pump(2)
+                check(any(x.startswith("r refused: inspect") for x in t.texts), "without asking, its inspect commands are refused")
+        finally:
+            t.ws.s.close()
+    sc.finish()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("url")
@@ -251,6 +276,7 @@ def main():
     ap.add_argument("--app")
     ap.add_argument("--chrome", nargs="?", const="", default=None)
     ap.add_argument("--forward-port", type=int, default=0)
+    ap.add_argument("--optional", action="store_true", help="the server runs with --inspect-network optional: check per-session opt-in")
     a = ap.parse_args()
     url = a.url.rstrip("/")
     token = open(a.token).readline().strip() if a.token else None
@@ -259,6 +285,10 @@ def main():
     app = a.app or (apps[0]["id"] if apps else None)
     if not app:
         sys.exit("inspector-check.py: the server lists no app")
+
+    if a.optional:
+        optional_checks(url, token, app)
+        return
 
     t = Tab(url, token, app, "codec=jpeg&open=apksim%3A%2F%2Fnetwork")
     try:

@@ -405,7 +405,7 @@ function sessionQuery() {
   for (const k of ["locale", "fontscale", "open", "orientation"]) if (state[k]) q.set(k, state[k]);
   if (h264Ok) q.set("codec", "h264");
   // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).
-  for (const k of ["keep", "keepBusy"]) if (params.get(k)) q.set(k, params.get(k));
+  for (const k of ["keep", "keepBusy", "inspect"]) if (params.get(k)) q.set(k, params.get(k));
   return q;
 }
 function openSocket(url, onMac, fallback) {
@@ -1331,7 +1331,7 @@ async function beamHello(asked) {
         + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
       return null;
     }
-    beam.protocol = common; beam.ok = true;
+    beam.protocol = common; beam.ok = true; beam.inspect = h.inspect === "optional" || h.inspect === "on";
     if (h.trusted) loadMacSkins();  // found (now, or again after the browser's prompt): its skins, if it trusts this site
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
@@ -1404,7 +1404,8 @@ async function macGrant(q, gen, say, data) {
   try {
     g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
-        url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}) }) }));
+        url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}),
+        ...(beam.inspect && new URLSearchParams(location.search).get("inspect") === "1" ? { inspect: true } : {}) }) }));
   } finally { waiting = false; }
   if (asked && gen === startGen) say("Allowed, starting…");  // never over a Stop's overlay or a newer session
   if (g.via === "download") log("this Mac downloaded the app from this server");

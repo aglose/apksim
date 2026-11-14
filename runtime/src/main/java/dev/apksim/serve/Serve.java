@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -78,8 +78,10 @@ public final class Serve {
   /**
    * `--inspect-network`: instances run with the network inspector (`--network-inspect`) and a tab sees the app's HTTP(S)
    * exchanges and may set rules that answer or slow a URL (docs/pr-preview.md). Off by default: it shows the app's traffic.
+   * `--inspect-network optional` (issue 371): only a session that asks for it (`/ws?inspect=1`) runs it.
    */
   boolean inspectNetwork;
+  boolean inspectOptional;
   /**
    * `--inspect-forward-allow URL_PREFIX` (repeatable): where a tab's forward rule may send the app's requests (issue 363).
    * Empty by default: no forward rules.
@@ -231,8 +233,12 @@ public final class Serve {
           continue;  // no value: the next argument is an option of its own
         }
         case "--inspect-network" -> {
-          s.inspectNetwork = true;
-          continue;  // no value
+          if ("optional".equals(v)) {
+            s.inspectOptional = true;  // the value is taken
+          } else {
+            s.inspectNetwork = true;
+            continue;  // no value
+          }
         }
         case "--inspect-forward-allow" -> {
           try {
@@ -1568,6 +1574,17 @@ public final class Serve {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }
+    // Issue 371: the network inspector for this session alone, where the server allows it (`--inspect-network optional`).
+    // The agent's sessions ask in `/beam/start` instead (the grant's launch), never here.
+    // The page's own query carries inspect=1 to the agent too: said only when the start did not get it.
+    if ("1".equals(r.param("inspect")) && beam) {
+      if (!store.config.inspectNetwork().equals("on") && !app.launch().contains("--network-inspect")) {
+        ws.sendText("r inspect: this Mac's agent takes the ask in /beam/start (\"inspect\": true) where its owner allows it, not here: it starts without");
+      }
+    } else if ("1".equals(r.param("inspect"))) {
+      if (inspectOptional || inspectNetwork) options.put("inspect", "1");
+      else ws.sendText("r inspect: this server does not allow the network inspector (--inspect-network optional): it starts without");
+    }
     // A skin (issue 246): one of this server's (the agent's: the visitor's), never a path; its device unless the page
     // names one. `off` starts without the app's own --skin.
     // The device's kind the page's skin gives (a custom-size watch), for a device this server does not have a skin for.
@@ -1658,8 +1675,9 @@ public final class Serve {
         + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
         + (beam ? ",\"rec\":" + (session.recChannels() != null) + (session.recChannels() != null ? ",\"recChannels\":" + Http.q(session.recChannels()) : "")
-            + ",\"inspect\":" + session.inspecting()
-            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : "") + ",\"inspect\":" + inspectNetwork)
+            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
+        // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
+        + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
         + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
     session.run();
   }
@@ -2049,7 +2067,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2286,7 +2304,9 @@ public final class Serve {
       boolean fromSaved = body.get("options") == null && rec != null && local.startsWith("@saved ");
       Object opts = fromSaved ? rec.get("launch") : body.get("options");
       // Issue 276: the tab relay is the start's own opt-in, never carried over from a saved session's options.
-      if (fromSaved && opts instanceof List<?> ol && ol.contains("--tab-relay")) opts = ol.stream().filter(x -> !"--tab-relay".equals(x)).toList();
+      if (fromSaved && opts instanceof List<?> ol && (ol.contains("--tab-relay") || ol.contains("--network-inspect"))) {
+        opts = ol.stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x)).toList();
+      }
       if (opts instanceof List<?> l) {
         for (Object x : l) {
           if (!(x instanceof String str)) throw new IOException("\"options\" takes strings");
@@ -2294,6 +2314,13 @@ public final class Serve {
         }
       }
       launch = Catalog.launchOptions(given);
+      // Issue 371: the network inspector for this session, if this Mac's owner allows it (`inspect-network optional|on`).
+      Object inspect = body.get("inspect");
+      if (inspect != null && !(inspect instanceof Boolean)) throw new IOException("\"inspect\" takes true or false");
+      if (Boolean.TRUE.equals(inspect) && store.config.inspectNetwork().equals("off")) {
+        Http.text(out, 409, "this Mac's owner has not allowed the network inspector (GET /beam/hello says \"inspect\": \"optional\" or \"on\" when it may be asked for: apksim beam config inspect-network optional)");
+        return;
+      }
       Object relay = body.get("relay");
       if (relay != null && !(relay instanceof Boolean)) throw new IOException("\"relay\" takes true or false");
       if (Boolean.TRUE.equals(relay)) {
@@ -2303,6 +2330,10 @@ public final class Serve {
         }
         launch = new ArrayList<>(launch);
         launch.add("--tab-relay");  // the agent's own: Catalog.launchOptions does not let a page name it
+      }
+      if (Boolean.TRUE.equals(inspect)) {
+        launch = new ArrayList<>(launch);
+        launch.add("--network-inspect");  // likewise the agent's own: the session's instance runs the inspector
       }
     } catch (IOException | RuntimeException e) {
       Http.text(out, 400, String.valueOf(e.getMessage()));

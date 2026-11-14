@@ -1313,6 +1313,36 @@ def main():
         stop(g)
         r = beam(apksim, "config", "inspect-network", "off", "rec", "input")
         check("inspect-network off" in r.stdout, "inspect: and off again")
+
+        # Issue 371: `optional`: only a start that asks (`"inspect": true`) runs the inspector; off refuses the ask.
+        g = agent(apksim, gp, "allow")
+        hello = json.loads(req(gp, "GET", "/beam/hello", B)[2])
+        check(hello.get("inspect") == "off", f"inspect: /beam/hello names the owner's setting ({hello.get('inspect')})")
+        st, _, body = req(gp, "POST", "/beam/start", B, dict(start, inspect=True))
+        check(st == 409 and b"inspect" in body, f"inspect: with it off a start that asks is refused ({st})")
+        stop(g)
+        r = beam(apksim, "config", "inspect-network", "optional")
+        check("inspect-network optional" in r.stdout, f"inspect: config inspect-network optional ({r.stdout.strip()!r})")
+        g = agent(apksim, gp, "allow")
+        hello = json.loads(req(gp, "GET", "/beam/hello", B)[2])
+        check(hello.get("inspect") == "optional", f"inspect: /beam/hello says it may be asked for ({hello.get('inspect')})")
+        st, _, _ = req(gp, "POST", "/beam/start", B, dict(start, inspect="yes"))
+        check(st == 400, f"inspect: a start's inspect takes true or false ({st})")
+        for ask in (False, True):
+            gi, _ = begin(gp, B, dict(start, inspect=True) if ask else start, apk)
+            si = open_session(gp, gi, B)
+            ii = session_info(si)
+            check(ii.get("inspect") is ask and ii.get("inspectAllowed") is True,
+                  f"inspect: optional, a start that {'asks' if ask else 'does not ask'} has it {'on' if ask else 'off'}, and the page is told it is allowed ({ii})")
+            si.ws.send("inspect rule list")
+            si.pump(5, until=lambda: any(t.startswith("n r ") or t.startswith("r refused") for t in si.texts))
+            check(any(t.startswith("n r rule ") for t in si.texts) is ask and any(t.startswith("r refused: inspect") for t in si.texts) is not ask,
+                  "inspect: and its inspect commands are answered or refused to match")
+            check(close_session(si), "inspect: that session ends")
+        until(lambda: not os.path.exists(build_file(sha)), 15)  # its end's sweep (keep-days 0), before the agent stops: the next check wants the build gone
+        stop(g)
+        r = beam(apksim, "config", "inspect-network", "off")
+        check("inspect-network off" in r.stdout, "inspect: and off again after optional")
         g = agent(apksim, gp, "allow", "--keep-days", "1")
         g3, sent = begin(gp, B, start, apk)
         check(sent and "token" in g3, "keep: a deleted build is asked for again")
