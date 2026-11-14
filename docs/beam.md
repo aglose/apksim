@@ -911,7 +911,7 @@ readable by any origin. Requests to the server carry its token as everything els
 ## Skins (2026-11-12, issue 246)
 
 The agent lists the visitor's own skins (docs/skins.md: `~/.apksim/skins`, `APKSIM_SKINS`) as serve does (docs/serve.md
-"Skins"): `GET /beam/skins` and `GET /beam/skins/NAME/frame.png` (`frame-land.png`, `mask.png`), with an ETag. Only a
+"Skins"): `GET /beam/skins` and `GET /beam/skins/NAME/frame.png` (`frame-land.png`, `mask.png`, and a folding skin's `cover.png` with its `cover` block in the list), with an ETag. Only a
 site the agent trusts gets them (`403` otherwise): they may be private frames, and they never leave the Mac. The page
 lists them in its Skin menu as "(this Mac)" after the server's, and draws them around a session's canvas the same way.
 A start on this Mac takes `skin=NAME` (the agent's skins) and the launch option `--skin` as serve does, for the session's

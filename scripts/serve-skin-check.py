@@ -109,6 +109,7 @@ def api_checks(url, catalog_skin=True):
     check(get(url + "/api/skins/fixture/mask.png")[0] == 404, "  a skin without a mask: mask.png is a 404")
     check(k is not None and "cover" not in k and get(url + "/api/skins/fixture/cover.png")[0] == 404, "  a skin without a cover: no cover block, cover.png is a 404")
     fold = next((x for x in sk if x["name"] == "pixel-10-pro-fold"), None)
+    check(fold is not None, "the built-in folding skin is listed")
     if fold:
         check(bool(fold.get("cover", {}).get("screen")) and fold["cover"]["frameSize"]["width"] > 0, "  the folding skin lists its cover geometry")
         st, h, cpng = get(url + "/api/skins/pixel-10-pro-fold/cover.png")
