@@ -435,6 +435,9 @@ SCENARIOS = {
     "group-seconds": (0, 7, 9, []),
     # --isolate-classes 'C001$': C001's tests get a process each, the others' classes stay grouped.
     "group-alone": (0, 8, 9, []),
+    # --group-size 3 --shards 2 --shard 0: groups are cut first and go whole to machines (issue 358): shard 0 has the
+    # groups of C000 and C002 (a listing, then two processes), where a split of tests first gave each class's tests to both.
+    "sharded-group": (0, 3, 6, []),
     # --retry-isolated 1: C001#m1 fails beside m0 and passes in a process of its own: the run passes, the entry is marked.
     "group-retry": (0, 8, 9, []),
     # The same, and it fails alone too: the run fails, with the second attempt's failure.
@@ -500,6 +503,8 @@ def extra_args(sc, d):
         if sc.startswith("group-retry") or sc == "group-at-exit":
             out += ["--retry-isolated", "1"]
         return out
+    if sc == "sharded-group":
+        return ["--isolate", "-j", "2", "--group-size", "3", "--shards", "2", "--shard", "0", "--prewarm", "off"]
     if sc.startswith("isolate-ignored"):
         return ["--isolate", "-j", "3"] + (["--run-ignored"] if sc.endswith("-run") else [])
     if sc == "reap-early-hang":
