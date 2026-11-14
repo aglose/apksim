@@ -51,7 +51,9 @@ final class TestRecorder {
   private static java.util.concurrent.ScheduledExecutorService timer;
   private static java.util.concurrent.ScheduledFuture<?> timerTask;
   private static int generation;  // bumped at each test boundary: a callback from an earlier test does nothing
-  private static long lastNanos;
+  private static long lastNanos;  // when the last capture ended
+  private static long lastTookNanos;  // how long it took
+  private static final int BUSY_FACTOR = 4;
   private static int w, h;
   private static Bitmap scaled;
   private static Paint filter;  // made at the first frame: android.graphics needs the sandbox
@@ -78,6 +80,7 @@ final class TestRecorder {
     file = Paths.get(DIR, d.getClassName(), Bundles.folder(d.getClassName(), d.getMethodName()) + ".avi");
     started = false;
     lastNanos = 0;
+    lastTookNanos = 0;
     active = true;
     pending = false;
     failed = false;
@@ -112,7 +115,11 @@ final class TestRecorder {
   static void onDraw() {
     if (!ON || !active || failed || capturing || Looper.myLooper() != Looper.getMainLooper()) return;
     long now = System.nanoTime();
-    long interval = 1_000_000_000L / FPS;
+    // The next frame is due an interval after the last capture ENDED, and at least BUSY_FACTOR times as long as that
+    // capture took: a screen whose draw costs more than 1/fps would otherwise be due again at once, and the main
+    // looper (idle() in beforeUiThreadAction) never ran anything else (issue 360). Recording takes at most ~1/BUSY_FACTOR
+    // of the main thread's time; the movie repeats frames at its own rate meanwhile.
+    long interval = Math.max(1_000_000_000L / FPS, lastTookNanos * BUSY_FACTOR);
     if (started && now - lastNanos < interval) {
       // Too soon: keep the update and capture it at the next allowed time, so a screen that then goes idle still
       // reaches the movie. A timer thread only posts to the main looper (no clock advance; the capture runs when the
@@ -184,6 +191,7 @@ final class TestRecorder {
   private static void capture(long now) {
     capturing = true;
     pending = false;
+    final boolean first = !started;  // its time includes one-off setup (files, encoder): not a measure of a draw
     Bitmap screen = null;
     try {
       screen = Bundles.screenBitmap(true);
@@ -220,18 +228,19 @@ final class TestRecorder {
       scaled.copyPixelsToBuffer(pixels);
       pixels.flip();
       MjpegRecorder.frame(pixels);
-      lastNanos = now;
     } catch (VirtualMachineError e) {
       throw e;  // out of memory and the like: not the recorder's to hide
     } catch (Throwable e) {
       // No window yet (or any more), or a view that cannot draw on a CPU canvas (an AssertionError): the movie keeps
       // its last frame. A failing frame never fails the test.
-      lastNanos = now;
     } finally {
       if (screen != null) screen.recycle();
       capturing = false;
+      long end = System.nanoTime();
+      lastNanos = end;
+      lastTookNanos = first ? 0 : Math.min(end - now, 2_000_000_000L);
       // Slow, whether the frame made it or the draw threw after a while: the movie ends here.
-      long took = (System.nanoTime() - now) / 1_000_000;
+      long took = (end - now) / 1_000_000;
       if (took > SLOW_MS && !failed) cutOff(took);
     }
   }
