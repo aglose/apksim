@@ -133,15 +133,16 @@ that opens a panel:
   stateful mock per request. The upstream gets the request at the rule's URL exactly, with the app's method, body (16 MB at most) and
   headers, less the ones recordings redact (`Authorization`, `Cookie`, ...) and the connection's own (`Host`, `Content-Length`, ...),
   plus `X-Apksim-Original-Url` with the address the app asked for (path and query included). Redirects are not followed (the app gets
-  the 3xx). An upstream that cannot be reached, or does not answer within 30 s, is a 502 to the app whose body and
+  the 3xx). An upstream that cannot be reached, does not answer within 30 s, or whose answer is over 16 MB or takes over 60 s to arrive, is a 502 to the app whose body and
   `X-Apksim-Error` header say why. The row has `"forwarded":true` beside `rule`. The instance sends the request itself, so the
   target must be reachable from where instances run, and the server must allow it: `serve --inspect-forward-allow URL_PREFIX`
   (repeatable; none by default, so a tab cannot use the server as a proxy into its network). A prefix is an http(s) URL; a target
   needs its scheme, host and port exactly and its path or one below it (`https://mocks.internal/api` allows `/api/answer?x=1`, not
-  `/apix`); targets with user info, a fragment, `..`, `//` or an encoded dot or slash in the path are refused. Not allowed: `n r
+  `/apix`); targets with user info, a fragment, `..`, `//`, `;` or an encoded dot or slash in the path are refused. Not allowed: `n r
   rule error: forward target not allowed (...)`. Not done: the opt-in to send redacted headers on, forward rules for `apksim
-  beam` sessions (always refused there), and replaying: under `--network replay` an upstream's name resolves to a placeholder, so
-  only an IP address or localhost target works.
+  beam` sessions (always refused there), and upstreams by name while replaying or for a host `--network-host` maps: such a name resolves to a placeholder here, so the
+  rule answers 502 at once (as for a name that does not resolve); an IP address or localhost target works. CI does not run the
+  forward round trip (its image check runs a server without the inspector): `inspector-check.py --forward-port` is run by hand.
 
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN

@@ -1047,6 +1047,15 @@ final class NetEngine {
         String error = null;
         try {
           if (over[0]) throw new IOException("a request body over " + Inspector.FORWARD_BODY_MAX + " bytes is not forwarded");
+          // A name that did not resolve, or that stands for a recorded or mapped host, has a placeholder address here
+          // (NetResolver): no server is there, and the client would wait out its connect timeout.
+          String fh = java.net.URI.create(rule.forward).getHost();
+          if (fh.startsWith("[") && fh.endsWith("]")) fh = fh.substring(1, fh.length() - 1);
+          try {
+            if (NetResolver.hostFor(java.net.InetAddress.getByName(fh).getHostAddress()) != null) throw new java.net.UnknownHostException(fh);
+          } catch (java.net.UnknownHostException e) {
+            throw new IOException("unable to resolve host " + fh + " (replaying or with --network-host, name the upstream by address)");
+          }
           java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(rule.forward))
               .version(java.net.http.HttpClient.Version.HTTP_1_1).timeout(java.time.Duration.ofSeconds(30))
               .method(req.method, req.hasBody ? java.net.http.HttpRequest.BodyPublishers.ofByteArray(whole.toByteArray())
@@ -1061,11 +1070,28 @@ final class NetEngine {
             }
           }
           b.header("X-Apksim-Original-Url", req.url);
-          java.net.http.HttpResponse<byte[]> r = forwardClient().send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+          java.net.http.HttpResponse<InputStream> r = forwardClient().send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofInputStream());
           status = r.statusCode();
-          body = r.body();
+          // The answer is held in memory: at most FORWARD_BODY_MAX of it, read within 60 s in all, else a 502.
+          ByteArrayOutputStream got = new ByteArrayOutputStream();
+          long deadline = System.nanoTime() + 60_000_000_000L;
+          try (InputStream in = r.body()) {
+            byte[] buf = new byte[64 * 1024];
+            for (int n; (n = in.read(buf)) > 0; ) {
+              if (got.size() + n > Inspector.FORWARD_BODY_MAX) throw new IOException("the upstream's answer is over " + Inspector.FORWARD_BODY_MAX + " bytes");
+              if (System.nanoTime() > deadline) throw new IOException("the upstream's answer took over 60 s");
+              got.write(buf, 0, n);
+            }
+          }
+          body = got.toByteArray();
+          boolean head = req.method.equals("HEAD");
           r.headers().map().forEach((name, values) -> {
             String n = name.toLowerCase(Locale.ROOT);
+            // A HEAD's Content-Length is the size a GET would have: passed on (no body follows either way).
+            if (head && n.equals("content-length") && values.size() == 1 && values.get(0).matches("[0-9]{1,18}")) {
+              headers.add(new String[] {"Content-Length", values.get(0)});
+              return;
+            }
             if (HOP_HEADERS.contains(n) || n.startsWith(":") || n.startsWith("proxy-") || n.equals("x-apksim-rule")) return;
             for (String v : values) headers.add(new String[] {name, v});
           });
@@ -1085,7 +1111,9 @@ final class NetEngine {
         boolean none = status == 204 || status == 304 || status < 200;
         StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(' ').append(Net.statusText(status)).append("\r\n");
         for (String[] h : headers) head.append(h[0]).append(": ").append(h[1].replaceAll("[\\r\\n]", " ")).append("\r\n");
-        if (!none) head.append("Content-Length: ").append(body.length).append("\r\n");
+        boolean sized = false;
+        for (String[] h : headers) sized |= h[0].equals("Content-Length");
+        if (!none && !sized) head.append("Content-Length: ").append(body.length).append("\r\n");
         head.append("\r\n");
         Conditions.sleep(Net.conditions.rtt());
         cout.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));

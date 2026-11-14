@@ -11,7 +11,7 @@ import java.util.Locale;
  * the operator lists them, so a tab cannot use the server's instances as an open proxy into its network. A prefix is an
  * http(s) URL: its scheme, host and port must be the target's exactly, and its path the target's or a folder above it
  * (`https://mocks.internal/api` allows `/api` and `/api/x`, not `/apix` and not `mocks.internal.example.com`). A target
- * with user info, a fragment, dot segments, an empty segment, a backslash or an encoded `.`, `/` or `\` in its path is
+ * with user info, a fragment, dot segments, an empty segment, a `;` (a path parameter: some servers read `..;` as `..`), a backslash or an encoded `.`, `/` or `\` in its path is
  * refused, as a server may read those as another path. Plain Java: checked by InspectorRuleCheck.
  */
 public final class ForwardAllow {
@@ -62,7 +62,7 @@ public final class ForwardAllow {
     if (u.getRawUserInfo() != null || u.getRawFragment() != null) return null;
     String path = u.getRawPath() == null ? "" : u.getRawPath();
     String lower = path.toLowerCase(Locale.ROOT);
-    if (path.contains("\\") || path.contains("//") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")) return null;
+    if (path.contains("\\") || path.contains(";") || path.contains("//") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")) return null;
     for (String seg : path.split("/", -1)) if (seg.equals(".") || seg.equals("..")) return null;
     return u;
   }

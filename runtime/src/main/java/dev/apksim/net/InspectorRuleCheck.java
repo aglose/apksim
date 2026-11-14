@@ -90,7 +90,7 @@ public final class InspectorRuleCheck {
     }
     for (String no : new String[] {"https://mocks.example.test/apix", "https://mocks.example.test/", "http://mocks.example.test/api", "https://mocks.example.test:8443/api",
         "https://mocks.example.test.evil.example/api", "https://mocks.example.test@evil.example/api", "https://evil.example/?https://mocks.example.test/api",
-        "https://mocks.example.test/api/../admin", "https://mocks.example.test/api/%2e%2e/admin", "https://mocks.example.test/api/..%2fadmin", "https://mocks.example.test//api",
+        "https://mocks.example.test/api/../admin", "https://mocks.example.test/api/%2e%2e/admin", "https://mocks.example.test/api/..%2fadmin", "https://mocks.example.test//api", "https://mocks.example.test/api/..;/admin", "https://mocks.example.test/api/x;v=1",
         "https://mocks.example.test/api\\x", "http://127.0.0.1:80990/", "http://127.0.0.1/", "http://127.0.0.1:8099#x", "", "http://[::1]:8099/", "HTTPS://mocks.example.test/API"}) {
       check(!allow.allows(no), "not allowed: " + no);
     }
