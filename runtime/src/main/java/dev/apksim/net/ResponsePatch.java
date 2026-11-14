@@ -37,11 +37,14 @@ final class ResponsePatch {
   /** Why an answer's head rules patching out, or null. */
   static String headProblem(String method, NetEngine.Response r) {
     if (r.status < 200 || r.status > 299) return "status " + r.status + " is not 2xx";
+    if (r.status == 206) return "a partial answer (206) is not patched";
     if (method.equals("HEAD") || r.status == 204 || r.status == 205) return "the answer has no body";
     String type = r.header("Content-Type");
     String media = type == null ? "" : type.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
     if (!(media.equals("application/json") || media.endsWith("+json"))) return "content type " + (type == null ? "none" : media) + " is not JSON";
-    if (type.toLowerCase(Locale.ROOT).matches(".*charset\\s*=\\s*\"?(?!utf-8).*")) return "the declared charset is not UTF-8";
+    java.util.regex.Matcher cs = java.util.regex.Pattern.compile("charset\\s*=\\s*\"?([^\";\\s]*)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(type);
+    // The patched body is written as UTF-8 (JSON's own encoding): an answer that declares another charset is left alone.
+    if (cs.find() && !cs.group(1).equalsIgnoreCase("utf-8") && !cs.group(1).equalsIgnoreCase("utf8")) return "the declared charset " + cs.group(1) + " is not UTF-8";
     String enc = r.header("Content-Encoding");
     if (enc != null && !enc.equalsIgnoreCase("identity") && !enc.equalsIgnoreCase("gzip") && !enc.equalsIgnoreCase("x-gzip")) {
       return "content encoding " + enc.trim() + " is not decoded";
@@ -71,6 +74,7 @@ final class ResponsePatch {
         String sz = NetEngine.trimEol(sizeLine);
         int semi = sz.indexOf(';');
         long size = Long.parseLong((semi < 0 ? sz : sz.substring(0, semi)).trim(), 16);
+        if (size < 0) throw new IOException("a chunk of negative size");
         if (size == 0) {
           while (true) {  // trailers are dropped, up to the blank line
             byte[] t = NetEngine.readLineBytes(uin);

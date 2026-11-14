@@ -122,6 +122,14 @@ public final class InspectorRuleCheck {
     check(!o[0].patched && body.equals("hello") && o[0].note.contains("not JSON"), "a JSON type with a body that is not: " + o[0].note);
     body = run(resp(200, "Content-Type", "application/json", "Content-Encoding", "br", "Content-Length", "5"), text, patch, o);
     check(!o[0].patched && body.equals("hello") && o[0].note.contains("br"), "a brotli answer passes through: " + o[0].note);
+    for (String ct : new String[] {"application/json; charset=\"utf-8\"", "application/json;charset=UTF-8", "application/json; charset=utf8"}) {
+      run(resp(200, "Content-Type", ct, "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+      check(o[0].patched, "patched with content type " + ct);
+    }
+    body = run(resp(200, "Content-Type", "application/json; charset=ISO-8859-1", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(!o[0].patched && body.equals(json) && o[0].note.contains("ISO-8859-1"), "another declared charset passes through: " + o[0].note);
+    body = run(resp(206, "Content-Type", "application/json", "Content-Length", String.valueOf(wire.length)), wire, patch, o);
+    check(!o[0].patched && body.equals(json), "a partial answer passes through: " + o[0].note);
     String big = "{\"a\":\"" + "x".repeat(ResponsePatch.LIMIT) + "\"}";
     byte[] bigWire = big.getBytes(java.nio.charset.StandardCharsets.UTF_8);
     body = run(resp(200, "Content-Type", "application/json", "Content-Length", String.valueOf(bigWire.length)), bigWire, patch, o);
