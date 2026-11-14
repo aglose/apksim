@@ -260,6 +260,7 @@ final class InstallState {
 
   /** Provider classes whose onCreate succeeded in this process, and how many installs it has made. */
   private static final java.util.Set<String> cameUp = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private static final java.util.Set<String> refusalsLogged = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private static final java.util.concurrent.atomic.AtomicInteger installs = new java.util.concurrent.atomic.AtomicInteger();
 
   /**
@@ -275,7 +276,9 @@ final class InstallState {
    * app that ran then keeps running, its failing provider left to Robolectric's on-first-use creation.
    * A test process creates the app's providers again for every test, which a device's process never does: a provider
    * that came up earlier in this process and refuses a second onCreate (LeakCanary's installer checks a static) is
-   * logged and the run goes on; only a provider's first failure in the process fails (issue 353).
+   * logged (once per class) and the run goes on, for a RuntimeException only; a provider's first failure in the process
+   * fails, as does any with an explicit `-Dapksim.providerFailures=fail` (issue 353). That provider is not registered
+   * for its authorities in such a test.
    */
   private static void installProviders(Application app) {
     installs.incrementAndGet();
@@ -303,10 +306,16 @@ final class InstallState {
         cameUp.add(info.name);
       } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
         String failures = System.getProperty("apksim.providerFailures", TestActivities.testRun() ? "fail" : "log");
-        boolean again = installs.get() > 1 && cameUp.contains(info.name);
+        // Only what a guard against a second install throws: a RuntimeException from the provider's own code, not a
+        // class that no longer loads; and not when the run asked for failures by name.
+        boolean again = installs.get() > 1 && cameUp.contains(info.name) && e instanceof RuntimeException
+            && !"fail".equals(System.getProperty("apksim.providerFailures"));
         if (again) {
-          System.err.println("[apksim] content provider " + info.name + " came up in an earlier install of this process and"
-              + " refused install " + installs.get() + " (a device creates providers once); going on: " + e);
+          if (refusalsLogged.add(info.name)) {
+            System.err.println("[apksim] content provider " + info.name + " came up in an earlier install of this process and"
+                + " refused install " + installs.get() + " (a device creates providers once); going on, here and in later"
+                + " installs (-Dapksim.providerFailures=fail to fail): " + e);
+          }
           continue;
         }
         if ("log".equals(failures)) {
