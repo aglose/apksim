@@ -71,6 +71,12 @@ public final class InspectorRuleCheck {
     String many = java.util.Base64.getEncoder().encodeToString("X-A: 1\n".repeat(21).getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
     check(Inspector.rule(("network rule add GET /h 200 0 - - " + many).split(" ")).contains("at most 20 headers"), "21 headers are refused");
     check(Inspector.rule("network rule set 0".split(" ")).equals("[]"), "set with no rules clears them");
+    // Bodies together: 32 rules of 512 KB fit (as before the limit could be raised), a 33rd of that size does not.
+    Inspector.maxRules = 40;
+    for (int i = 0; i < 32; i++) Inspector.rule(("network rule add GET /big" + i + " 200 0 text/plain " + big).split(" "));
+    check(Inspector.rule("network rule list".split(" ")).split("\"id\"").length == 33, "32 rules with 512 KB bodies are taken");
+    check(Inspector.rule(("network rule add GET /big32 200 0 text/plain " + big).split(" ")).contains("bytes together"), "a 33rd is over the bodies' total");
+    Inspector.rule("network rule clear".split(" "));
     Inspector.maxRules = 40;
     StringBuilder forty = new StringBuilder("network rule set 40");
     for (int i = 0; i < 40; i++) forty.append(" GET /r").append(i).append(" 200 0 - - -");

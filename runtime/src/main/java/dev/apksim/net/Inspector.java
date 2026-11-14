@@ -42,7 +42,9 @@ public final class Inspector {
   /** The most of a URL an event carries (`detail` has all of it). */
   static final int URL_SHOWN = 1500;
   /** Rules at most by default; each costs a pattern match per request. */
-  static final int MAX_RULES = 32;
+  public static final int MAX_RULES = 32;
+  /** All the rules' bodies together: what 32 rules of {@link #RULE_BODY_MAX} came to before the limit could be raised. */
+  static final long RULE_BODIES_MAX = 16L << 20;
   /** The most `--network-inspect-rules N` (serve --inspect-max-rules) may ask for. */
   public static final int MAX_RULES_LIMIT = 256;
   /** Rules at most in this instance: {@link #MAX_RULES}, or the launch's `-Dapksim.networkInspectRules` (1 to {@link #MAX_RULES_LIMIT}). */
@@ -330,6 +332,12 @@ public final class Inspector {
     return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], status, latency, type, body, hs);
   }
 
+  private static long bodies(List<Rule> rs) {
+    long n = 0;
+    for (Rule r : rs) n += r.body.length;
+    return n;
+  }
+
   private static String list(List<Rule> rs) {
     StringBuilder b = new StringBuilder("[");
     for (Rule r : rs) b.append(b.length() > 1 ? "," : "").append(r.json());
@@ -376,6 +384,7 @@ public final class Inspector {
             r = parseRule(a, 3, a.length == 10);
             List<Rule> next = new java.util.ArrayList<>(rules);
             next.add(r);
+            if (bodies(next) > RULE_BODIES_MAX) return "error: the rules' bodies are at most " + RULE_BODIES_MAX + " bytes together";
             rules = List.copyOf(next);
           }
           // A lookup that failed a moment ago is remembered by the JDK (10 s): forgotten, so the rule is met at the next try.
@@ -398,6 +407,7 @@ public final class Inspector {
             return "error: rule " + (i + 1) + ": " + e.getMessage();
           }
         }
+        if (bodies(next) > RULE_BODIES_MAX) return "error: the rules' bodies are at most " + RULE_BODIES_MAX + " bytes together";
         List<Rule> now = List.copyOf(next);
         synchronized (rulesLock) {
           rules = now;

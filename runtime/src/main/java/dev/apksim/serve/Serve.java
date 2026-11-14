@@ -81,7 +81,7 @@ public final class Serve {
    */
   boolean inspectNetwork;
   /** `--inspect-max-rules N`: the most rules a session's inspector takes (32 by default, 1 to 256); told to the tab as `inspectMaxRules`. */
-  int inspectMaxRules = 32;
+  int inspectMaxRules = dev.apksim.net.Inspector.MAX_RULES;
   /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
   String issueUrl;
   /** Issue 221: `--keep-max N` kept sessions in all (0: none kept, the default), and the store (null on the agent). */

@@ -128,7 +128,7 @@ that opens a panel:
   and never reaches the server: the app sees the rule's answer, and the row says which rule. A latency alone slows the real exchange.
   While a rule with a status exists, a host that does not resolve or answer (a backend not deployed yet) is still answered by it.
   Rules are per session, 32 at most (`serve --inspect-max-rules N`, 1 to 256; the session's `i` message says it as
-  `inspectMaxRules`, and the panel shows "3 of 32"), applied in the order added. A rule that answers may carry response headers
+  `inspectMaxRules`, and the panel shows "3 of 32"; the rules' bodies are 16 MB together at most, whatever the limit), applied in the order added. A rule that answers may carry response headers
   beside its content type (`ETag`, `Retry-After`, a pagination or debug header: 20 at most, 2 KB together, printable ASCII); the
   names the engine writes itself are refused (`Content-Length`, `Transfer-Encoding`, `Content-Type`, `Connection`, `Keep-Alive`,
   `Upgrade`, `Trailer`, `TE`, `Proxy-*`, `X-Apksim-Rule`). In recordings and details a rule's `Set-Cookie` is redacted as a server's is.
@@ -139,7 +139,7 @@ STATUS LATENCY_MS TYPE BODY64 [HEADERS64]` (HEADERS64: base64 of `Name: value` l
 remove ID|clear|list` and `inspect detail ID`, which the server checks (a
 pattern is 1-300 URL characters, a status 0 or 200-599, a body base64) and passes on as `network rule ...` / `network detail ID`;
 answers are `n r rule|detail ...`. `inspect rule set [{"method", "pattern", "status", "latencyMs", "type", "body" (base64),
-"headers": [[name, value], ...]}, ...]` (all but the pattern optional) replaces every rule of the session with those, in that
+"headers": [[name, value], ...]}, ...]` (all but the pattern optional; a field of the wrong kind or an unknown name is refused) replaces every rule of the session with those, in that
 order, in one step, and answers the new list (new ids, hit counts from 0): the instance swaps one immutable list for another, so
 a request is matched against the old rules or the new ones, never some of each, and a set with a rule that is refused (`n r rule
 error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own

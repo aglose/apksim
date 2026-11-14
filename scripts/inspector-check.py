@@ -206,6 +206,10 @@ def main():
         t.ws.send("inspect rule list")
         check(t.pump(5, until=lambda: len(t.replies("rule")) > k) and [r["pattern"] for r in json.loads(t.replies("rule")[-1])] == ["/never", "/v1/greeting", "*"],
               "the refused sets changed nothing")
+        for wrong in ({"pattern": "/h", "status": 200, "method": 5}, {"pattern": "/h", "latency": 100}):
+            k = len(t.replies("rule"))
+            t.ws.send("inspect rule set " + json.dumps([wrong]))
+            check(t.pump(5, until=lambda: any(x.startswith("error: rule 1") for x in t.replies("rule")[k:])), f"a set with {json.dumps(wrong)} is refused")
         if isinstance(limit, int):
             k = len(t.replies("rule"))
             t.ws.send("inspect rule set " + json.dumps([{"pattern": f"/r{n}", "status": 200} for n in range(limit + 1)]))

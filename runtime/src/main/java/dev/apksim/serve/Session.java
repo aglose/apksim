@@ -375,7 +375,7 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (inspecting()) cmd.add("--network-inspect");
-    if (inspecting() && serve.inspectMaxRules != 32) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
+    if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
     // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
     if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
     if (serve.moveSharedData) cmd.add("--move-shared-data");
@@ -676,6 +676,13 @@ final class Session {
     for (Object o : rules) {
       String at = "rule " + ++n + ": ";
       if (!(o instanceof Map<?, ?> r)) throw new IOException(at + "not an object");
+      // A field of the wrong kind or a name that is not a rule's (latency for latencyMs) is refused, not read as left out:
+      // a rule that silently lost its method would answer every method.
+      for (Map.Entry<?, ?> f : r.entrySet()) {
+        String k = String.valueOf(f.getKey());
+        if (!RULE_FIELDS.contains(k)) throw new IOException(at + "no field \"" + (k.length() > 30 ? k.substring(0, 30) + "..." : k) + "\" (" + String.join(", ", RULE_FIELDS) + ")");
+        if (List.of("method", "pattern", "type", "body").contains(k) && !(f.getValue() instanceof String)) throw new IOException(at + k + " is a string");
+      }
       String method = r.get("method") instanceof String s ? s : "*", pattern = r.get("pattern") instanceof String s ? s : "",
           type = r.get("type") instanceof String s && !s.isEmpty() ? s : "-", body = r.get("body") instanceof String s && !s.isEmpty() ? s : "-";
       String status = ruleInt(r.get("status")), latency = ruleInt(r.get("latencyMs"));
@@ -704,6 +711,8 @@ final class Session {
     }
     return b.toString();
   }
+
+  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers");
 
   /** A rule's whole number (JSON numbers are doubles here), 0 when left out; null when it is anything else. */
   private static String ruleInt(Object v) {
