@@ -376,6 +376,9 @@ SCENARIOS = {
     "isolate-ignored": (0, 6, 9, []),
     # --run-ignored: each gets its process, as before (a listing and 9 processes), and is reported ignored by it.
     "isolate-ignored-run": (0, 10, 9, []),
+    # --group-size 3 --shards 2 --shard 1: the groups are C000's three tests (shard 0) and C001's two (shard 1), and the
+    # @Ignore'd tests go round the shards in suite order, each to one: shard 1 reports C002#m0 and C002#m2 (issue 358).
+    "isolate-ignored-sharded-group": (0, 2, 4, []),
     # --reap-early 2: every process reports its status and then hangs in its teardown. The slots free at once, the
     # processes (and their children) are killed after 2 s, and the script waits for that before it ends.
     "reap-early-hang": (0, 10, 9, []),
@@ -454,7 +457,7 @@ SCENARIOS = {
     "group-at-exit": (1, 7, 12, [f"(run)#incomplete (the group starting at p.C00{c}#m0)" for c in range(3)]),
 }
 IGNORED_TESTS = {sc: {("p.C001", "m1"), ("p.C002", "m0"), ("p.C002", "m1"), ("p.C002", "m2")}
-                 for sc in ("isolate-ignored", "isolate-ignored-run")}
+                 for sc in ("isolate-ignored", "isolate-ignored-run", "isolate-ignored-sharded-group")}
 SHARDS = {"sharded": 3, "sharded-crash": 3, "balanced": 3, "balanced-big": 2, "hang-sharded": 3, "interrupt-parallel": 3,
           "cidfile-sharded": 2, "init-error-balanced": 3, "init-error-balanced-keep": 3, "init-error-only-balanced": 3,
           "init-error-incomplete-balanced": 3}
@@ -506,7 +509,8 @@ def extra_args(sc, d):
     if sc == "sharded-group":
         return ["--isolate", "-j", "2", "--group-size", "3", "--shards", "2", "--shard", "0", "--prewarm", "off"]
     if sc.startswith("isolate-ignored"):
-        return ["--isolate", "-j", "3"] + (["--run-ignored"] if sc.endswith("-run") else [])
+        return (["--isolate", "-j", "3"] + (["--run-ignored"] if sc.endswith("-run") else [])
+                + (["--group-size", "3", "--shards", "2", "--shard", "1", "--prewarm", "off"] if sc.endswith("-sharded-group") else []))
     if sc == "reap-early-hang":
         return ["--isolate", "-j", "3", "--reap-early", "2", "--exit-marks"]
     if sc.startswith("init-error") and "isolate" in sc:
@@ -689,7 +693,8 @@ def main():
                 ("start-up and exit seconds missing", sc == "isolate-phases" and any(
                     {"apksim.startup_seconds", "apksim.exit_seconds"} - v for v in props.values())),
                 (f"skipped {skipped}, expected the 4 @Ignore'd tests", sc.startswith("isolate-ignored")
-                 and skipped != sorted(f"{c}#{m}" for c, m in IGNORED_TESTS[sc])),
+                 and skipped != (["p.C002#m0", "p.C002#m2"] if sc.endswith("-sharded-group")
+                                 else sorted(f"{c}#{m}" for c, m in IGNORED_TESTS[sc]))),
                 ("an @Ignore'd test given a process", sc == "isolate-ignored"
                  and os.path.exists(os.path.join(d, "ignored-ran"))),
                 ("no process for each @Ignore'd test", sc == "isolate-ignored-run"
