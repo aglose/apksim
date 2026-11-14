@@ -279,15 +279,28 @@ public final class Skin {
     b.append(",\"mask\":").append(mask != null && Files.isRegularFile(dir.resolve(mask)));
     b.append(",\"cutout\":").append(cutout == null ? "null" : json(cutout));
     b.append(",\"source\":").append(source == null || source.isEmpty() ? "null" : json(source));
+    // A folding device's cover display: its frame is `cover.png`; left out when the skin has none or its image is not a PNG.
+    if (cover != null) {
+      try {
+        int[] cs = pngSize(dir.resolve(cover.frame));
+        b.append(",\"cover\":{\"screen\":{\"x\":").append(cover.x).append(",\"y\":").append(cover.y).append(",\"width\":")
+            .append(cover.width).append(",\"height\":").append(cover.height).append(",\"cornerRadius\":").append(cover.cornerRadius)
+            .append("},\"frameSize\":{\"width\":").append(cs[0]).append(",\"height\":").append(cs[1]).append("},\"cutout\":")
+            .append(cover.cutout == null ? "null" : json(cover.cutout)).append("}");
+      } catch (IOException e) {
+        // no usable cover frame: the entry has no cover block
+      }
+    }
     return b.append("}").toString();
   }
 
-  /** The file behind a published image name, or null: frame.png, frame-land.png or mask.png, if the skin has it. */
+  /** The file behind a published image name, or null: frame.png, frame-land.png, mask.png or cover.png (a folding skin's cover frame), if the skin has it. */
   public Path image(String published) {
     String f = switch (published) {
       case "frame.png" -> frame;
       case "frame-land.png" -> frameLand;
       case "mask.png" -> mask;
+      case "cover.png" -> cover == null ? null : cover.frame;
       default -> null;
     };
     if (f == null || f.contains("..") || f.startsWith("/") || f.contains("\\")) return null;

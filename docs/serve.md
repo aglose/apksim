@@ -308,10 +308,12 @@ serve hands out the device skins it has (docs/skins.md: `~/.apksim/skins`, `APKS
 embeds apksim needs no frames or table of device sizes of its own (issue 246).
 
 - `GET /api/skins`: `[{name, title, device, kind, deviceResolved: {widthDp, heightDp, density, widthPx, heightPx},
-  screen: {x, y, width, height, cornerRadius}, frameSize: {width, height}, frameLand, mask, cutout, source}]`. `screen`
-  and `cutout` are in the frame image's pixels; `frameLand` and `mask` say whether those images exist. No path on the
+  screen: {x, y, width, height, cornerRadius}, frameSize: {width, height}, frameLand, mask, cutout, source, cover?}]`. `screen`
+  and `cutout` are in the frame image's pixels; `frameLand` and `mask` say whether those images exist. A folding skin
+  also has `cover: {screen: {x, y, width, height, cornerRadius}, frameSize: {width, height}, cutout}`, the frame around
+  the cover display (the device closed), in the pixels of its image, `cover.png`; other skins have no `cover`. No path on the
   server is given. A skin whose device does not resolve or whose frame is not a PNG is left out.
-- `GET /api/skins/NAME/frame.png` (`frame-land.png`, `mask.png`): the image, `image/png`, with an `ETag` from its
+- `GET /api/skins/NAME/frame.png` (`frame-land.png`, `mask.png`, and a folding skin's `cover.png`): the image, `image/png`, with an `ETag` from its
   contents (`Cache-Control: private, no-cache`: a page revalidates, and gets `304` while it is unchanged). An unknown
   skin or image is a `404`. Same token rules as the rest of `/api/*`.
 - `GET /api/devices` lists each skin beside the `--device-size` names: `{name: DEVICE, size: "WxH@D", skin: NAME,

@@ -1241,11 +1241,11 @@ public final class Serve {
   }
 
   /**
-   * `GET /api/skins/NAME/frame.png` (frame-land.png, mask.png): a skin's image, revalidated by an ETag of its contents
+   * `GET /api/skins/NAME/frame.png` (frame-land.png, mask.png, cover.png): a skin's image, revalidated by an ETag of its contents
    * (a page caches it; a changed skin is fetched again).
    */
   static void skinImage(Http.Request r, String rest, OutputStream out) throws IOException {
-    java.util.regex.Matcher m = java.util.regex.Pattern.compile("([a-z0-9-]+)/(frame\\.png|frame-land\\.png|mask\\.png)").matcher(rest);
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("([a-z0-9-]+)/(frame\\.png|frame-land\\.png|mask\\.png|cover\\.png)").matcher(rest);
     dev.apksim.skin.Skin k = m.matches() ? skin(m.group(1)) : null;
     Path f = k == null ? null : k.image(m.group(2));
     if (f == null) {
