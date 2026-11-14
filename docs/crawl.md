@@ -58,10 +58,10 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
    where it led. A control leads to a screen (new or known), to the end of the app (the last activity finished: an
    `exit` edge), or to a crash. The merge of a level is in screen order then control order, so the graph does not
    depend on which instance was quicker.
-3. Controls below the fold: it swipes up on the biggest scrollable node, reads again, up to `--max-scrolls` times while
+3. Controls below the fold: it drags up on the biggest scrollable node (`drag`: no fling), reads again, up to `--max-scrolls` times while
    new controls show; those are tried after the same swipes. The screen scrolled is the same screen (its id after
    each scroll is an alias).
-4. A path is a start and a list of control commands (`tap-text Trips`, `tap 158 1110`, `swipe ...`), what `drive.py`
+4. A path is a start and a list of control commands (`tap-text Trips`, `tap 158 1110`, `drag ...`), what `drive.py`
    takes: `crawl.json` has it as `path`, the report prints it on the card. It is the shortest the walk found (breadth
    first), not the shortest possible.
 5. Captures: for each screen and each combination of the matrix the instance replays the path under the default

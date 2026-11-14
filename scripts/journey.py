@@ -145,7 +145,7 @@ def sleep_until(t):
 
 def touches(c, x, y, times):
     """Fingers down and up at (x, y) at the recorded times ([ms from the first down, ms down] each), touch by touch: the
-    `tap` and `swipe` commands have timing of their own (a timed swipe holds 120 ms more before lifting)."""
+    `tap` and `swipe` commands have timing of their own (a `swipe` moves, and a `drag` holds 120 ms more before lifting)."""
     t0 = time.time()
     r = ""
     for at, down in times:
@@ -202,13 +202,10 @@ def run_step(c, step, timeout, by_coordinates=False):
             time.sleep(delay)
         r = c("touch up {} {}".format(path[-1][1], path[-1][2])) if not r.startswith("error") else r
     elif d == "swipe":
-        # An older journey (no path): a fling as an untimed swipe, else a timed drag.
-        if step.get("fling", step["ms"] < 250):
-            # A fling (its speed at lifting, as recorded; older journeys: under 250 ms): queued moves that lift at once,
-            # so it flings as it did; a timed drag would hold its end point and stop dead.
-            r = c("swipe {} {} {} {}".format(*step["from"], *step["to"]))
-        else:
-            r = c("swipe {} {} {} {} {}".format(*step["from"], *step["to"], step["ms"]))
+        # An older journey (no path): a fling (its speed at lifting, as recorded; older journeys: under 250 ms) as a
+        # `swipe` of its duration, which lifts at speed; else a `drag`, which holds its end point and does not fling.
+        how = "swipe" if step.get("fling", step["ms"] < 250) else "drag"
+        r = c("{} {} {} {} {} {}".format(how, *step["from"], *step["to"], step["ms"]))
     elif d == "type":
         # As Base64: the control channel splits a command on whitespace, which would change "a  b" or a leading space.
         r = c("type64 " + base64.b64encode(step["text"].encode()).decode())

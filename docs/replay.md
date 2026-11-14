@@ -217,7 +217,7 @@ which (in `nodes` order). A tap with no labelled node under it keeps its coordin
 the touch slop is a `swipe` with its end points and duration (coordinates: a scroll is a distance, not an element), and
 `fling` when it was moving faster than the framework's minimum fling velocity (50 dp/s) in its last 50-100 ms before
 lifting; it keeps its path with timings, which journey.py plays back as `touch down|move|up` at the recorded times
-(older journeys: an untimed `swipe` for a fling, a timed drag otherwise). A fling step gets no expectations: where a
+(older journeys: a `swipe` of the recorded duration for a fling, a `drag`, which does not fling, otherwise). A fling step gets no expectations: where a
 fling ends varies from run to run (above), so what it scrolls into view is not something a test can expect;
 held 500 ms or more, a `longpress` on its node, with how long it was held (`ms`). Taps on the same node (or, with none, the
 same point) that follow one another as a double tap does (each within 300 ms of the last one's lift and 100 dp of the
@@ -244,9 +244,8 @@ device and stack, no input; `--input none` is new) or, with `--start launch --ap
 empties a normal launch's `default` slot). Options after
 `--` go to that launch. Each step: a tap or long press at the centre of its node, waited for up to `--timeout` (10 s);
 a long press and a double tap as `touch down|up` at their recorded times, each hold timed from when the Host dispatched
-the finger down (`settle` says "input queued" until then), not from its answer (a timed `swipe` would hold 120 ms
-longer before lifting); the other steps as the control commands of their names (typed text as `type64 BASE64`, new, which
-keeps every space; a swipe under 250 ms as an untimed `swipe`, so a fling still flings); then `settle`, which waits as
+the finger down (`settle` says "input queued" until then), not from its answer; the other steps as the control commands of their names (typed text as `type64 BASE64`, new, which
+keeps every space; a path-less swipe that flung, or took under 250 ms, as `swipe`, which flings, else as `drag`); then `settle`, which waits as
 long as the step's own input takes (a swipe's `ms`, 7 ms a typed character) plus `--timeout` while the input is still
 being dispatched, then each expected text waited for. `nodes` escapes `\`, `"` and line breaks in its values (`\\`, `\"`, `\n`), which journey.py decodes, so a
 label with quotes or a semicolon matches whole. A rotary step keeps the `rotary` command's sign. JUnit XML

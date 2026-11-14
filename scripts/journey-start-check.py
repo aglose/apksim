@@ -10,7 +10,7 @@ is this script (`--fake`), which plays `apksim replay ... --control auto`: it pr
           writes no results and ends the app (before, it polled for two minutes, then ran the steps against it anyway)
   silent  `replay` is never answered: the same, by --start-timeout (not the control channel's 90 s read timeout)
   starts  `replay` answers "starting" twice, then its result: journey.py runs the step and passes (exit 0)
-  steps   a long press is a finger down and up as long apart as recorded (not a timed `swipe`, which holds 120 ms more),
+  steps   a long press is a finger down and up as long apart as recorded (not a `swipe` or `drag`, which have timing of their own),
           timed from when the Host dispatched the finger down, not when it queued it (the stand-in dispatches it
           200 ms late, as a stalled main loop would),
           a double tap (`times`) its four touches at their recorded times with no settle between, and a `type` step's

@@ -48,6 +48,10 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 120); do drive ping 2>/dev/null | grep -q pong && break; sleep 1; done
 drive ping | grep -q pong || { echo "the app never answered on the control channel" >&2; exit 1; }
 
+# A timed swipe flings in proportion to its speed and a press held in place does not scroll (issue 346).
+drive 'wait 3000' >/dev/null
+python3 "$ROOT/scripts/swipe-check.py" "$PORT"
+
 trip() { drive nodes | grep -oE 'text="(Italian|Roman) vacation"' | head -1; }
 drive 'tap 350 1690' 'wait 1500' >/dev/null
 before="$(trip)"

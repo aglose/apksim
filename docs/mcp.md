@@ -40,7 +40,7 @@ first request. Only tools are offered.
 | `launch` | Start an APK (`apk`, `options`, `window`, `fresh` (default), `record`). Answers with the first screen. |
 | `instances`, `quit` | List, stop. `instance` is optional while only one runs. |
 | `tap` | By `ref` (`e3`), by `text` (exact, else substring; several matches answer with their refs), or `x`,`y`. |
-| `type`, `key`, `swipe`, `back`, `open_url` | `type` may tap a `ref`/`tap_text` first. `swipe` by `direction` or coordinates. |
+| `type`, `key`, `swipe`, `back`, `open_url` | `type` may tap a `ref`/`tap_text` first. `swipe` by `direction` or coordinates (sent as `drag`: it scrolls the distance, no fling). |
 | `device` | `appearance`, `locale`, `fontscale`, `rotate`, `network`, `permission`, plus `timezone`, `animscale`, `bluetooth`, `device`, `lock`, `unlock`, `home`, `resume`, `recreate`. Values are matched against a pattern per setting. |
 | `nodes` | The screen, filtered by `text`; `bounds` adds coordinates. |
 | `screenshot` | An image, long side 640 px unless `max_size` says otherwise (0: full size). Only when called. |

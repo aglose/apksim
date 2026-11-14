@@ -629,7 +629,8 @@ class Server:
                 x1, y1, x2, y2 = (int(a[k]) for k in ("x1", "y1", "x2", "y2"))
             except (KeyError, ValueError):
                 raise Fail("give direction, or x1 y1 x2 y2")
-        r = self.act(i, "swipe %d %d %d %d %d" % (x1, y1, x2, y2, max(50, min(int(a.get("ms", 300)), 3000))))
+        # `drag`: no fling, so the scroll is the distance asked for.
+        r = self.act(i, "drag %d %d %d %d %d" % (x1, y1, x2, y2, max(50, min(int(a.get("ms", 300)), 3000))))
         return self.answer(i, "swipe %d,%d>%d,%d %s" % (x1, y1, x2, y2, r), before)
 
     def t_back(self, a):

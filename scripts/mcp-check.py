@@ -104,8 +104,9 @@ check(json.loads(p.stdout.readline()).get("error", {}).get("code") == -32602, "p
 t = c.ok("launch", apk=apk)
 print("launch answer:", len(t), "bytes")
 check("MainActivity" in t and "FAB clicks: 0" in t, "launch answers with the screen")
-fab = [l.split()[0] for l in t.splitlines() if l.endswith(" click") and '"' not in l]
-check(len(fab) == 1, "the FAB is the one unlabelled clickable")
+# The FAB's box folds into its icon's label ("Add"); a test app built before the icon had one has it unlabelled.
+fab = [l.split()[0] for l in t.splitlines() if l.endswith(" click") and ('"' not in l or l.split(" ", 1)[1] == '"Add" click')]
+check(len(fab) == 1, "the FAB is one clickable entry: " + " ".join(fab))
 c.ok("record", action="start")
 c.ok("tap", text="Trips")
 t = c.ok("type", tap_text="Trip note", text="a  b ")

@@ -60,7 +60,8 @@ scripts/snapshot.py SPEC.json [--apk APK] [--update] [-j N] [--out DIR] [--scree
   combinations are the cross product, minus each `exclude` entry (an entry matches a combination when every key it
   names matches).
 - A screen is `name` plus `open` (a deep link the app's activity is started with) and/or `steps` (control commands
-  run in order after it starts: `tap`, `tap-text`, `swipe X1 Y1 X2 Y2 MS`, `type`, `key`, `back`...). A default
+  run in order after it starts: `tap`, `tap-text`, `drag X1 Y1 X2 Y2 MS` (a scroll by that distance: `swipe` flings, and where a
+  fling ends varies from run to run), `type`, `key`, `back`...). A default
   `settle` follows the restart and every step; a step that is itself `settle ...` (a longer limit for a slow screen,
   `settle 30000 1000`) replaces the one before it. `only` limits a screen to some values of an axis.
 - `tolerance`: a pixel differs when any channel differs by more than `delta` (0-255); a capture matches when the
