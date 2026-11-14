@@ -115,7 +115,11 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
     the certificates (`APKSIM-TLS host`; recording, the engine does the real TLS handshake with the server then, so a
     bad certificate fails the app's handshake), its session reports TLS 1.3 with that chain, and its bytes reach the
     engine in plain text. ALPN reports none, so clients speak HTTP/1.1 (OkHttp does with any server that offers no
-    ALPN). A socket that is an `SSLSocket` from the start (`SSLSocketFactory.createSocket()` then `connect`) connects
+    ALPN). A client that offers `h2` (gRPC, HTTP/2-only servers) is not given that: while recording or capturing (not
+    replaying, which has no server) its connection becomes an opaque tunnel, the engine relaying the bytes untouched and
+    the real TLS handshake running over them with the app's own factory (`APKSIM-TLS ... tunnel`, answered `TUNNEL`), so
+    the client gets the server's ALPN choice. Not recorded or captured; the inspector lists it as a `CONNECT` row.
+    `scripts/check-h2-tunnel.sh` (`H2TunnelCheck`). A socket that is an `SSLSocket` from the start (`SSLSocketFactory.createSocket()` then `connect`) connects
     directly: through the engine it would lose the host name its TLS checks need. Net turns
     `SSLSocketFactory.createSocket(host, port)` into a plain socket plus layered TLS, so that common form is covered.
   - `URL.openConnection()`, `openConnection(Proxy)`, `openStream()` → the JDK's own `HttpURLConnection` through the

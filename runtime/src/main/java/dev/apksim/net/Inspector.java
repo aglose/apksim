@@ -124,6 +124,16 @@ public final class Inspector {
     exchange(e, 0, 0);
   }
 
+  /** A connection relayed as an opaque tunnel (the client offered h2): a row, status 200, whose detail says it was not read. */
+  static void tunnel(String host, int port) {
+    Recording.Entry e = new Recording.Entry();
+    e.method = "CONNECT";
+    e.url = host + ":" + port;
+    e.status = 200;
+    e.respBody = "opaque tunnel: the client offered h2, so its TLS is end to end and not captured".getBytes(StandardCharsets.UTF_8);
+    exchange(e, 0, 0);
+  }
+
   /** The first rule that takes this request, or null. */
   static Rule match(String method, String url) {
     for (Rule r : rules) {
