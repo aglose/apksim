@@ -119,8 +119,10 @@ order, then exits; `-j` processes at a time, taken from the pool (`--prewarm`) a
 
 - `--group-seconds T` (with `--timings XML`): a group also ends before its tests' measured times pass T s (a test with
   no time counts as the median), so one long group does not keep a machine waiting.
-- `--shards N --shard I --timings` split the tests over machines first, by measured time as without groups; groups
-  are cut from each machine's share. `--order` orders the groups' starts by each group's total time.
+- `--shards N --shard I` cut the groups first and give whole groups to machines, longest first by the groups'
+  measured time (by count without `--timings`), so a class's group stays on one machine. Before, the tests were
+  split over machines first and groups cut from each share, which left most groups with one test (issue 358).
+  `--order` orders the groups' starts by each group's total time.
 - `--isolate-classes REGEX` (repeatable, Python `re.search` on the class name): those classes keep a process per test
   in the same run, for tests that rely on a fresh process.
 - `--retry-isolated N`: a test that failed in a shared process (or was running when it died) runs again in a process

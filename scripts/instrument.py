@@ -40,7 +40,8 @@ nothing it writes after that counts, so it is for outputs written before the res
 Groups (--isolate only; a mode between a process per test and one per shard): `--group-size N` runs up to N tests of one class in a
 process, then it exits (`-j` of them at a time, from the pool as before), and `--group-seconds T` also ends a group once its
 tests' measured times (--timings; a test with none counts as the median) reach T s. Groups are cut from each class's tests in the
-suite's order, and --shards N --shard I split the tests over machines first, as for one process per test. A group's starts follow
+suite's order, and --shards N --shard I then give whole groups to machines, longest first by the groups' measured time (by
+count without --timings), so a class's group stays on one machine. A group's starts follow
 --order by the group's total time. `--isolate-classes REGEX` (repeatable; Python re.search on the class name) keeps those classes
 on a process per test in the same run. `--retry-isolated N`: a test that failed in a group (or in a process that died) runs again
 in a process of its own, up to N times, and the last attempt wins (a group's tests that never started because its process died
@@ -1212,6 +1213,24 @@ def plan_units(tests, timings, size, seconds, alone):
     return units
 
 
+def balance_units(units, timings, shards):
+    """[units] (lists of tests, each run in one process) in [shards] lists of nearly equal measured time: longest
+    first, each to the shard with the least so far (a test without a time counts as the median). Whole units only, so
+    a class's group stays on one machine; each shard keeps its units in the order given. (lists, predicted seconds)."""
+    known = sorted(timings.values())
+    default = known[len(known) // 2] if known else 1.0
+    cost = [max(sum(timings.get(t, default) if timings else 1.0 for t in u), 0.001) for u in units]
+    lists, totals = [[] for _ in range(shards)], [0.0] * shards
+    place = []
+    for n in sorted(range(len(units)), key=lambda n: (-cost[n], n)):
+        i = min(range(shards), key=lambda k: (totals[k], k))
+        place.append((n, i))
+        totals[i] += cost[n]
+    for n, i in sorted(place):
+        lists[i].append(units[n])
+    return lists, totals
+
+
 def order_units(units, timings, order):
     """[units] in the order their processes start (--order), by each one's measured time in all."""
     if order == "suite":
@@ -1502,13 +1521,31 @@ def main():
         print(f"{len(tests)} tests, {a.j} at a time, each in its own process", file=sys.stderr)
 
     if a.isolate:
+        planned = None  # the groups, cut before the shards when --group-size is on
         if a.shards > 1:  # this machine's share: balanced by measured time (by count without timings)
             if any(k in ("numShards", "shardIndex") for k, _ in a.e):
                 p.error("--shards sets which tests each shard runs itself")
-            lists, totals = affected.balance(tests, timings, a.shards)
-            print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
-                  + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
-            tests = lists[a.shard]
+            if a.group_size > 1:
+                # Groups first, then whole groups to machines: splitting the tests first leaves a class's tests on
+                # different machines, most groups with one test (issue 358). @Ignore'd tests need no process.
+                alone = [re.compile(rx) for rx in a.isolate_classes]
+                suite_pos = {t: i for i, t in enumerate(tests)}
+                runnable = [t for t in tests if t not in IGNORED]
+                all_units = plan_units(runnable, timings, a.group_size, a.group_seconds, alone)
+                ulists, totals = balance_units(all_units, timings, a.shards)
+                planned = ulists[a.shard]
+                # each @Ignore'd test is reported by one shard only: round-robin in suite order
+                mine = [t for i, t in enumerate(t for t in tests if t in IGNORED) if i % a.shards == a.shard]
+                tests = [t for u in planned for t in u] + mine
+                tests.sort(key=lambda t: suite_pos[t])
+                print(f"{a.shards} shards of whole groups by " + ("measured time" if timings else "count")
+                      + ", predicted " + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}",
+                      file=sys.stderr)
+            else:
+                lists, totals = affected.balance(tests, timings, a.shards)
+                print(f"{a.shards} shards by " + ("measured time" if timings else "count") + ", predicted "
+                      + ", ".join(f"{t:.0f} s" for t in totals) + f"; running shard {a.shard}", file=sys.stderr)
+                tests = lists[a.shard]
         suite_order = {t: i for i, t in enumerate(tests)}
         # @Ignore'd tests (as the listing reported them) are reported ignored without a process: one would only start
         # up, report the test ignored and exit. (Its runner listeners would not hear of it either: apksim sets none up
@@ -1520,7 +1557,9 @@ def main():
             for t in skipped:
                 results.append((t[0], t[1], "ignored", "", 0.0))
         order = a.order if timings else "suite"
-        units = order_units(plan_units(tests, timings, a.group_size, a.group_seconds, alone), timings, order)
+        if planned is None:  # (with shards, the groups were planned above, without the @Ignore'd tests)
+            planned = plan_units(tests, timings, a.group_size, a.group_seconds, alone)
+        units = order_units(planned, timings, order)
         shared = sum(1 for u in units if len(u) > 1)
         print(f"{len(tests)} tests to run" + ("" if order == "suite" else f", {order.replace('-', ' ')}")
               + (f", in {len(units)} processes ({shared} of them groups of up to {a.group_size} tests of a class"
