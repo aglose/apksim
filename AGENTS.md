@@ -1356,7 +1356,7 @@ links them from the JUnit XML like bundles; `TestRecorder`, `scripts/record-chec
 `DIR/<class>/<method>-<hash>.avi` (`MjpegRecorder`, so headless and in the Linux image too), kept for a failed test (all
 with `all`) and deleted otherwise. A test run has no display loop, so `ShadowSimViewRootImpl` offers a frame after each
 window traversal and `TestRecorder` draws the screen (`Bundles.screenBitmap`) at most N (default 15) times a second of
-real time, fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
+real time (each frame due an interval after the last capture ended and at least 4x its cost later, so a slow draw never starves the main looper: issue 360), fitted into WxH (default 1280x720, never up); the writer repeats the last frame, so a movie runs in real time
 (the simulated clock's idle jumps do not show), and a test that never shows a window has none. A recording must never
 fail a test (issue 144: a capture taken inside `ViewRootImpl.performDraw` through HWUI's `HardwareRenderingScreenshot`
 never returned from `nSyncAndDrawFrame`), so a frame is taken from a main-thread message posted after the window's draw
