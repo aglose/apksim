@@ -8,9 +8,10 @@ Runs FailureBundleTest (three tests that fail on purpose with `-e failOnPurpose 
 the passing one (failed), one for every test that showed a window (all), each a well-formed Motion-JPEG AVI (RIFF
 header, MJPG, an index with as many entries as the header's frame count, at least one frame) no bigger than
 --record-size and at the --record-fps rate in its header, the JUnit XML's property and attachment, and that a movie
-left by an earlier run is removed first. OUT (default work/record-check) is emptied first.
+left by an earlier run is removed first. Then one camera test with every capture slowed to 150 ms (issue 360):
+it must pass and the captures must leave the main thread most of its time. OUT (default work/record-check) is emptied first.
 """
-import argparse, os, re, shutil, struct, subprocess, sys, xml.etree.ElementTree as ET
+import argparse, os, re, shutil, signal, struct, subprocess, sys, xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 CLS = "dev.apksim.composeapp.FailureBundleTest"
@@ -106,6 +107,29 @@ def main():
     r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts/instrument.py"), a.app, a.test, "--record", "all"],
                        capture_output=True, text=True)
     check(r.returncode == 2, f"exit {r.returncode}")
+
+    # Issue 360: a capture that takes longer than 1/fps (here 150 ms at 15 fps, through the test-only property) while the
+    # screen keeps changing in real time (the fake camera's preview) must not keep the main looper busy for good: the
+    # next frame is due after the last capture ended, and 4x its cost later. Before, this run never ended.
+    print("a slow capture on a live camera preview:")
+    rec = os.path.join(a.out, "slow")
+    cmd = [os.path.join(ROOT, "apksim"), "--instrument", a.test, "-e", "camera", "fake", "-e", "class",
+           "dev.apksim.composeapp.CameraTest#cameraXBindsAPreviewAndAnAnalysisAndGetsFrames", "--record", "all",
+           "--record-dir", rec, "--camera", "fake", "--jvm", "-Dapksim.record.captureDelayMs=150", a.app]
+    p_ = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        text = p_.communicate(timeout=120)[0]
+        check("\nOK (1 test)" in text, "the test passes with recording on")
+        m = re.search(r"\[apksim\] recording \S+: (\d+) captures, busy (\d+) ms of (\d+) ms", text)
+        check(bool(m), "the recorder reports its captures")
+        if m:
+            n, busy, total = map(int, m.groups())
+            check(n >= 2 and busy < 0.7 * total, f"{n} captures, busy {busy} ms of {total} ms (under 70%)")
+        check(len(movies(rec)) == 1, "its movie is kept")
+    except subprocess.TimeoutExpired:
+        os.killpg(p_.pid, signal.SIGKILL)
+        p_.communicate()
+        check(False, "the test ends within 120 s (captures starved the main looper)")
 
     print("FAILED: " + "; ".join(problems) if problems else "all checks passed")
     sys.exit(1 if problems else 0)
