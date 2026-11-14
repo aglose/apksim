@@ -126,9 +126,14 @@ order, then exits; `-j` processes at a time, taken from the pool (`--prewarm`) a
 - `--retry-isolated N`: a test that failed in a shared process (or was running when it died) runs again in a process
   of its own, up to N times; the last attempt wins. Its JUnit entry gets `apksim.retried` (attempts) and
   `apksim.shared_failure` (the first failure's first line), and a retry that passes removes the first attempt's
-  bundle and movie. A test that fails in a process of its own is not retried, so a real failure still fails.
+  bundle and movie (one that fails keeps them until apksim writes its own). A test that fails in a process of its own is not retried, so a real failure still fails.
 - A group's tests that never started because its process died always get a process each (their first run, no retry).
-- Every test's JUnit entry has `apksim.cpu_seconds`: its process's CPU time (user + system, from `wait4`), a group's
+- A group's process that dies, hangs or fails at exit after its tests all reported gets a failed `(run)` entry, and
+  a class-level failure beside them (`@AfterClass`) a `Class#null` entry, as a one-process run reports them; neither
+  is retried.
+- A grouped test's `time` is the test's own; a test alone in its process has the whole process's (start-up and exit
+  included). Take `--timings` from a run of the same mode.
+- Every test's JUnit entry has `apksim.cpu_seconds` (a retried test's attempts added up): its process's CPU time (user + system, from `wait4`), a group's
   divided evenly over its tests, with `apksim.group_tests` (the group's size). With `--apksim "docker run ..."` it is
   the client's CPU time, not the container's.
 

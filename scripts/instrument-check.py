@@ -192,7 +192,7 @@ def fake():
         with open(os.path.join(state, "pids"), "a") as f:
             f.write(f"{os.getpid()}\n{child.pid}\n")
         time.sleep(300)
-    if sc == "at-exit":
+    if sc == "at-exit" or (sc == "group-at-exit" and len(tests) > 1):
         sys.exit(134)
 
 
@@ -446,6 +446,9 @@ SCENARIOS = {
     "group-dies": (1, 7, 9, ["p.C000#m1"]),
     # --group-size 3: C000's process dies in m1, so m2 never starts: it gets a process of its own, and is no retry.
     "group-dies-rest": (1, 5, 9, ["p.C000#m1"]),
+    # Each group of two exits with 134 after its tests passed: nothing to put it on, so a failed "(run)" entry a group,
+    # even with --retry-isolated (no test failed, so none is retried).
+    "group-at-exit": (1, 7, 12, [f"(run)#incomplete (the group starting at p.C00{c}#m0)" for c in range(3)]),
 }
 IGNORED_TESTS = {sc: {("p.C001", "m1"), ("p.C002", "m0"), ("p.C002", "m1"), ("p.C002", "m2")}
                  for sc in ("isolate-ignored", "isolate-ignored-run")}
@@ -494,7 +497,7 @@ def extra_args(sc, d):
             out += ["--group-seconds", "2", "--timings", xml, "--order", "suite"]
         if sc == "group-alone":
             out += ["--isolate-classes", "C001$"]
-        if sc.startswith("group-retry"):
+        if sc.startswith("group-retry") or sc == "group-at-exit":
             out += ["--retry-isolated", "1"]
         return out
     if sc.startswith("isolate-ignored"):
@@ -695,7 +698,8 @@ def main():
                 (f"group sizes {[(t, v.get('apksim.group_tests')) for t, v in sorted(values.items())]}", sc in ("group", "group-seconds", "group-alone")
                  and any(v.get("apksim.group_tests") != (None if t.endswith("#m2") or (sc == "group-alone" and "C001" in t) else "2")
                          for t, v in values.items())),
-                ("CPU seconds missing", sc.startswith("group") and any("apksim.cpu_seconds" not in v for v in values.values())),
+                ("CPU seconds missing", sc.startswith("group") and any("apksim.cpu_seconds" not in v for t, v in values.items()
+                                                                       if not t.startswith("(run)"))),
                 (f"retry marks {[(t, v) for t, v in sorted(values.items()) if 'apksim.retried' in v]}", sc.startswith("group")
                  and {t: (v.get("apksim.retried"), v.get("apksim.shared_failure")) for t, v in values.items() if "apksim.retried" in v}
                  != ({"p.C001#m1": ("1", "java.lang.AssertionError: a neighbour's state")} if sc in ("group-retry", "group-retry-fails")

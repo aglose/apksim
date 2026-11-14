@@ -48,7 +48,10 @@ always get a process each: that is their first run, not a retry); the JUnit entr
 `apksim.shared_failure` (the first failure's message), and a retry that passes removes the first attempt's bundle and movie. A
 test that fails in a process of its own is not retried. Each process's CPU seconds (user + system, this process alone: a
 `--apksim` container's are its client's) are in the JUnit XML as `apksim.cpu_seconds`, a group's divided over its tests
-with `apksim.group_tests` (its size) beside it. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn, or a
+with `apksim.group_tests` (its size) beside it, a retried test's attempts added up. A group's process that dies, hangs or
+fails at exit after its tests all reported gets a failed "(run)" entry, and a class-level failure beside them (@AfterClass)
+a Class#null entry; neither is retried. A grouped test's time in the XML is the test's own; a test alone in its process
+has the whole process's (start-up and exit included), so take --timings from a run of the same mode. Each test's line on stderr, and its JUnit entry (properties `apksim.startup_seconds`: spawn, or a
 pooled process's hand-over, to the test's start, `apksim.exit_seconds`: its end to the process exiting;
 `apksim.pooled` when a pre-warmed process ran it), show where its process's time went.
 With --shards N the suite is split over N processes running at once, each given AndroidJUnitRunner's
@@ -119,7 +122,7 @@ RECORDED = []  # --record-deps: each process's dependency lines, taken out of it
 
 MARKS = {}  # --exit-marks: (class, method) -> what apksim reported of its exit
 PHASES = {}  # --isolate: (class, method) -> (start-up, test, exit) seconds of its process, for the report
-CPU = {}  # --isolate: (class, method) -> (the process's CPU cell, how many tests shared that process)
+CPU = {}  # --isolate: (class, method) -> [(a process's CPU cell, how many tests shared that process)], one per attempt
 GROUPED = {}  # --isolate --group-size: (class, method) -> how many tests ran in its process
 RETRIED = {}  # --retry-isolated: (class, method) -> (attempts, the first failure's message)
 POOLED = set()  # --isolate: (class, method) of the tests a pre-warmed process (--prewarm) ran
@@ -1241,14 +1244,16 @@ def unit_results(unit, r, elapsed):
     by_test = {(c, m): (s, st) for c, m, s, st in got}
     class_level = {c: (s, st) for c, m, s, st in got if m in (None, "null")}
     stuck = set(unfinished(r.stdout))
-    out, text = [], None
+    out, text, blamed, stood_in = [], None, False, set()
     for t in unit:
         sec = r.seconds.get(t, 0.0)
         if t in by_test and not (t in stuck and why):
             out.append((t[0], t[1], *by_test[t], sec))
         elif t[0] in class_level:
             out.append((t[0], t[1], *class_level[t[0]], sec))
+            stood_in.add(t[0])
         else:
+            blamed = True
             text = text or tail(r)
             if t in stuck:
                 head = (f"timed out after {r.timed_out:g} s while this test was running: no test started or ended for "
@@ -1259,6 +1264,15 @@ def unit_results(unit, r, elapsed):
                 head = (f"not run: the apksim process started for {len(unit)} tests of this class gave this one no result "
                         f"({why or f'exit {r.returncode}'})")
             out.append((t[0], t[1], "failed", head + ":\n" + text, sec))
+    # A class-level failure beside results for every test (@AfterClass): an entry of its own, as one process reports it.
+    for c, (s, st) in class_level.items():
+        if c not in stood_in:
+            out.append((c, "null", s, st, 0.0))
+    # The process did not account for itself (it died, hung or failed at exit) and no test is there to put that on:
+    # the run must still fail, as a process per test fails its test and one process gets a "(run)" entry.
+    if why and not blamed:
+        out.append(("(run)", f"incomplete (the group starting at {unit[0][0]}#{unit[0][1]})", "failed",
+                    why + ":\n" + tail(r), 0.0))
     return out
 
 
@@ -1528,7 +1542,7 @@ def main():
             if r.exit_marks:
                 MARKS[unit[-1]] = r.exit_marks
             for t in unit:
-                CPU[t] = (r.cpu, len(unit))
+                CPU.setdefault(t, []).append((r.cpu, len(unit)))  # (a retry's process adds to the first attempt's share)
                 if len(unit) > 1:
                     GROUPED[t] = len(unit)
                 if r.pooled:
@@ -1592,15 +1606,16 @@ def main():
                 res, attempts = results[i], 0
                 while res[2] == "failed" and attempts < a.retry_isolated:
                     attempts += 1
-                    for d in out_dirs:  # the earlier attempt's bundle and movie: this attempt writes its own, if any
+                    PHASES.pop(t, None)
+                    res = one([t])[0]
+                    res = (t[0], t[1]) + tuple(res[2:])
+                if res[2] != "failed":  # the failed attempt's bundle and movie go only now: a retry that fails keeps
+                    for d in out_dirs:  # them until apksim writes its own over them (a retry that dies writes none)
                         shutil.rmtree(os.path.join(d, bundle_folder(*t)), ignore_errors=True)
                         try:
                             os.remove(os.path.join(d, bundle_folder(*t) + ".avi"))
                         except OSError:
                             pass
-                    PHASES.pop(t, None)
-                    res = one([t])[0]
-                    res = (t[0], t[1]) + tuple(res[2:])
                 RETRIED[t] = (attempts, first[0] if first else "")
                 GROUPED.pop(t, None)
                 return i, res
@@ -1645,14 +1660,13 @@ def main():
                 mrel = os.path.relpath(movie, xml_dir) if movie else None
                 ph = PHASES.get((c, m))
                 pooled = (c, m) in POOLED
-                cell, shared_by = CPU.get((c, m), ([None], 1))
+                shares = [cell[0] / n for cell, n in CPU.get((c, m), ()) if cell[0] is not None]
                 group = GROUPED.get((c, m))
                 tried = RETRIED.get((c, m))
-                if rel or mrel or ph or pooled or cell[0] is not None or group or tried:
+                if rel or mrel or ph or pooled or shares or group or tried:
                     f.write("<properties>"
                             + ('<property name="apksim.pooled" value="true"/>' if pooled else "")
-                            + (f'<property name="apksim.cpu_seconds" value="{cell[0] / shared_by:.3f}"/>'
-                               if cell[0] is not None else "")
+                            + (f'<property name="apksim.cpu_seconds" value="{sum(shares):.3f}"/>' if shares else "")
                             + (f'<property name="apksim.group_tests" value="{group}"/>' if group else "")
                             + (f'<property name="apksim.retried" value="{tried[0]}"/>'
                                f'<property name="apksim.shared_failure" value={quoteattr(tried[1])}/>' if tried else "")
