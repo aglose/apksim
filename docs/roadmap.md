@@ -99,7 +99,7 @@ current. Subagents for PR text, labels and thread replies use Haiku.
 
 ## Status
 
-As of 2026-11-13, release 0.33.0. This table says where each item stands. What changes by the hour (check
+As of 2026-11-13, release 0.34.0. This table says where each item stands. What changes by the hour (check
 results, draft state, the base branch) is on each pull request's page. "In review" means open and not merged.
 
 | Item | Lane | Label | Pull request | State |
@@ -123,3 +123,7 @@ Outside these items, 0.33.0 added device subsystems and target-SDK behaviour: si
 Connect stand-in (#328, docs/health-connect.md), platform compat changes that follow the app's targetSdk (#326), a
 target-28 build of the test app compared with API 30 and API 36 emulators (#330, docs/conformance.md), a spike of the
 API 30 framework (#329, docs/api-levels.md) and `scripts/subsystem-audit.py` (#325).
+0.34.0 added a VP9 decoder (#344), a foldable device with fold postures and a built-in skin (#339), browser sign-in
+redirects delivered back to the app (#337), a beamed session detached into apksim's own window (#335), ACTION_OUTSIDE
+for watch-outside-touch windows (#343), and swipes that fling as a device's do, with `drag` keeping the fixed scroll the
+crawler (item 11), the MCP server (item 13) and screenshot specs use (#349).
