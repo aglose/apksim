@@ -133,6 +133,91 @@ What the 94 MB of live heap is (class histogram and a heap dump):
 loaded ~470 (dlopen 47, deferred static initializers 52, fonts 33), framework ready ~830, first frame ~1,115.
 `bench.py 4 --mem`: cold 1,146 ms, warm 198 ms, instance 350 MB cold and 386 MB warm, standby 350 MB.
 
+## Memory, 2026-11-14: an idle instance 332 → 191 MB
+
+Asked from first principles: of what an instance holds, what holds nothing? Measured on the test app, cold, headless,
+idle (`footprint`, `vmmap`, NMT, `heap`, a heap dump), M4 Pro, JDK 24.0.1:
+
+| Part of 332 MB | MB | Holds |
+|---|---|---|
+| AOT cache pages, private | 71 | 33 the process writes as it links classes; **38 only because the cache was moved** |
+| Java heap, young | 64 | **nothing between collections**: written once, dirty for good |
+| Java heap, old | 80 | live (framework `resources.arsc` 16.7, jar indexes 9.2, strings, `Method`s) |
+| malloc | 70-100 | 43 live (JVM 25, a surface buffer 7.5, zlib 3.5); **the rest freed and kept** |
+| Metaspace, JIT code, stacks, the rest | ~50 | live |
+
+Three changes, each for one of the bold rows:
+
+- **The AOT cache mapped where it was built for.** The JDK moves the cache to a random address in every process
+  (`ArchiveRelocationMode=1`) and rewrites each pointer, which makes all 96 MB of it private. With
+  `-XX:ArchiveRelocationMode=0` it is mapped at the address it was built for and its 60 MB read-only region stays
+  clean file pages, shared by every instance and standby. The earlier try of that flag (below, "the 69 MB did not
+  move") failed for a reason not seen then: the default address, 32 GB, lies where macOS spreads malloc's regions and
+  where the heap goes, so the mapping failed in most launches (`-Xlog:cds`: "Failed to reserve spaces", 2 of 3) and
+  the JVM moved the cache anyway. `train.sh` now builds it for 16 TB on macOS (`-XX:SharedBaseAddress`), where nothing
+  else is placed: 64 of 64 launches (headless, `--no-network`, `--no-sandbox`, a window; macOS 26.1) mapped it there.
+  332 → 288 MB (4 interleaved pairs), and the ~12 ms of rewriting goes. The price is the random placement of the JVM's
+  class metadata, so beamed instances (a site's APK) keep the JDK's default, and so does Linux until it is measured.
+- **The heap's unused pages given back while idle** (`HeapTrim`, `native/heaptrim.c`; AGENTS.md has how). After 3 s
+  of a still screen, and in a standby once warmed up, the end of a collection replaces the free part of every heap
+  space with fresh pages. 288 → 226 MB (the median of four; malloc's swing put single runs between 223 and 270). The young generation's size is unchanged while the app runs, so collections
+  are as rare and short as before; what it costs is a page fault per 16 KB as eden is written again.
+- **macOS's malloc in its space-efficient mode** (`MallocSpaceEfficient=1`, the launcher). By default it keeps freed
+  memory dirty and counted against the process for good: a C program that allocates and frees 100 MB keeps 98 MB of
+  footprint (macOS 26.1; blocks of 16 KB and more; half of it for small ones), 40 s later too, and
+  `malloc_zone_pressure_relief` returns none of it (so an
+  idle-time call to it, tried first, did nothing). For an instance that is the JIT's compile arenas (37 MB pooled 2 s
+  after a launch) and every buffer a busy screen frees. In the space-efficient mode the same program keeps 1 MB.
+  The variable is not in malloc's man page; an OS that stopped honouring it would behave as before.
+  226 → 192 MB idle (four interleaved runs each), and the run-to-run swing of malloc's share (47-100 MB) is gone.
+
+`bench.py 4 --mem`, test app, in two sessions (the Mac quiet, then busy: absolute figures move ~25 MB with its
+state, the differences do not):
+
+| | Before (2026-11-09) | Quiet | Busy: trim and malloc mode off | Busy: on |
+|---|---|---|---|---|
+| Cold instance, 5 s after its first frame | 350 MB | 191 MB | | 214 MB |
+| Warm instance | 386 MB | 244 MB | 371 MB | 270 MB |
+| Standby | 350 MB | 189 MB | 296 MB | 226 MB |
+| One app open (warm instance and its standby) | ~740 MB | ~430 MB | | ~500 MB |
+
+The "off" column still has the cache mapped in place (a standby takes no JVM option): the three changes off together,
+cold, in that busy session were 355 MB against 214 (three interleaved pairs).
+
+A large R8 app idle at its first screen, three interleaved pairs with the three changes switched off and on in one
+build: 357 → 208 MB. While screens draw, the malloc mode alone (`--device tablet`, three interleaved runs):
+`apksim://bitmaps` 432 → 354 MB, with the video 481 → 397, `apksim://video` 592 → 497.
+
+What it costs, measured the same way (medians of three interleaved runs; default malloc against space-efficient):
+
+| | Default | Space-efficient |
+|---|---|---|
+| Cold first frame | 1,082 ms | 1,098 ms |
+| Fling: looper / record / raster per frame | 0.51 / 0.11 / 1.17 ms | 0.49 / 0.11 / 1.22 ms |
+| Shader tab: raster, fps, CPU | 1.80 ms, 120.0, 38.6% | 1.80 ms, 120.1, 39.6% |
+| Tablet bitmaps: raster, fps, CPU | 2.74 ms, 120, 42.0% | 2.69 ms, 120, 41.3% |
+| 1080p60 video: raster, fps, CPU | 1.98 ms, 60.0, 37.2% | 2.02 ms, 59.9, 37.3% |
+
+Warm first frame, headless, interleaved rounds: 296 ms with both the trim and the malloc mode, 288 without the trim,
+288 with the default malloc, 294 with neither (24 launches each); the trim alone again, 316 against 313 ms (36 each).
+No difference at this noise: a trimmed standby's eden costs its page faults again, a few ms at most. The test app's
+suite passes (389 of 389 that run); `scripts/check-heap-trim.sh` (CI) holds it to checksums on a small heap; 90 s of random input with the trim after 0.3 s of stillness (54 trims, 155
+collections, 92 of them full) left the app running and its heap intact.
+
+Not done, with what was found:
+- **The framework's `resources.arsc` off the heap (16.7 MB, C1/E4 below)** is nearer than it looked: of Robolectric's
+  resource classes only `ResourceString.decodeString` asks a `ByteBuffer` for its array, and the table becomes a
+  buffer in one place (`CppApkAssets.LoadImpl`: `ByteBuffer.wrap` of the asset's bytes). Copies of those two classes
+  ahead on the class path, and the table extracted once and mapped, would do it; it touches every app's resources, so
+  it wants the snapshot specs compared before and after.
+- **Linux:** the heap trim is built there (`madvise`; `scripts/check-heap-trim.sh` runs it in CI) but not measured in
+  the image; the cache is still moved there; glibc's malloc keeps freed memory too (`-XX:TrimNativeHeapInterval` is
+  the JDK's answer), not measured.
+- **A full collection when idle after use:** after the Shader tab and `apksim://bitmaps`, back on a still screen, one
+  frees 17 MB (Bitmap pixels whose objects reached the old generation). The 256 MB threshold stands.
+- **The AOT cache's 33 MB written region** is dirty from the start because JDK 24 loads every archived class at
+  startup; nearly all of them are ones a launch uses.
+
 ## Found not to work as planned
 
 - **C1 (map `resources.arsc`):** Robolectric's binary resources code holds the table as a `byte[]` from end to end
@@ -311,7 +396,8 @@ not keep. B2 would remove most of the call sites they serve.
   cache (6 interleaved runs; 2.39 and 2.75 with none). The launch's cache already holds the framework, Robolectric and
   JUnit; what a test run adds is the app's and test APK's own classes, which come from DEX through `AppClasses` and
   cannot be archived. Not done.
-- `-XX:ArchiveRelocationMode=0`: the 69 MB of written AOT cache pages and the launch time did not move.
+- `-XX:ArchiveRelocationMode=0`: the 69 MB of written AOT cache pages and the launch time did not move. (Because the
+  cache could not be mapped at its default address and was moved all the same: see "Memory, 2026-11-14".)
 - A smaller initial heap with tight free ratios (`-Xms96m`, `MaxHeapFreeRatio=25`): same launch time, same
   footprint. The old generation is all live, so there is nothing to give back; shrink the live set instead (C1, C2).
 - A full GC after start-up: frees nothing (91 MB before and after).
@@ -333,7 +419,8 @@ not keep. B2 would remove most of the call sites they serve.
 | B2 Jar rewrite | large | the rest of linking | B1 | not started: weeks; B1 took most of linking's cost |
 | E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | not started: spikes of weeks each |
 | A5 Install state in test runs | small | - | - | done: Conscrypt ahead, -115 ms cold, a test process 0.90 s |
-| E4 Native resources mode | large | -17.5 MB | a native runtime rebuild | not started |
+| E4 Native resources mode | large | -17.5 MB | a native runtime rebuild | not started; a mapped table through two class copies is the shorter way ("Memory, 2026-11-14") |
+| Memory: cache in place, idle heap trim, malloc mode | medium | - | - | done: idle instance 350 → 191-214 MB, standby 350 → 189-226 MB |
 
 A1, C3 and D1 are done; C1 is blocked (E4). B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process

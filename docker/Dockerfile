@@ -31,6 +31,9 @@ COPY lib /opt/apksim/work/lib
 RUN mkdir -p /opt/apksim/work/runtime/icu && \
     gcc -O2 -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libelfloader.so native/elfloader.c native/linux/bionic_linux.c native/linux/jnibridge_linux.c native/jnigraphics.c -ldl -lpthread && \
+    # Unused heap pages given back while idle (HeapTrim.java).
+    gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+      -o /opt/apksim/work/runtime/libheaptrim.so native/heaptrim.c -ldl && \
     # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl

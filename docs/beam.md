@@ -579,6 +579,10 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   so only loopback can be kept out, and the consent prompt says the app reaches what the Mac reaches;
   `--no-sandbox` is refused for beamed instances.
 
+A beamed instance's JVM also keeps the JDK's random placement of its startup cache (the launcher's
+`-XX:ArchiveRelocationMode=0`, which ordinary launches use to save ~45 MB each, is left out for it): a site's native
+code runs in this process, and a fixed address for the JVM's class metadata would be one thing less for it to find.
+
 ## Review fixes (2026-11-08)
 
 Sixth review (its summary): the beam profile refuses signals beyond its own sandbox and the pasteboard service; the

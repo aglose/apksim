@@ -605,9 +605,16 @@ if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}
 # three suites at once took 135 s against 312 s, and a third of the CPU. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
 JIT=()
 [[ -n "${TEST_RUN:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
+# ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
+# so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
+# moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.
+# A cache that cannot go there (an older one, a taken address) is moved as before. It gives up the random placement
+# of the JVM's class metadata, so not for a beamed instance, which runs a site's APK (docs/beam.md), and not on
+# Linux, where neither the address nor the gain has been measured.
 AOT=()
 if [[ "$AOT_ROOT" == "$ROOT" ]]; then
   AOT=("-XX:AOTCache=$STATE/app.aot")
+  if [[ "$OS" == Darwin && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then AOT+=(-XX:ArchiveRelocationMode=0); fi
 elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
   echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
 fi
@@ -617,6 +624,12 @@ fi
 NOCORE=()
 # The core-size limit too: a native abort (libc abort() from an app's library) never reaches HotSpot's crash handling.
 if [[ -n "${APKSIM_NO_CORE:-}" ]]; then NOCORE=(-XX:-CreateCoredumpOnCrash); ulimit -c 0 2>/dev/null || true; fi
+# macOS's malloc keeps freed memory mapped, dirty and counted against the process (after 100 MB allocated and freed, 98
+# MB of footprint stay, for good; malloc_zone_pressure_relief returns none of it). The JIT's arenas alone leave 20-50 MB
+# so after a launch, and a busy screen's buffers more. In its space-efficient mode (iOS's default) freed pages go back
+# at once: -34 MB idle, -80 to -95 MB on bitmap and video screens, the same frame costs and launch time (A/B in
+# docs/perf-plan.md). MallocSpaceEfficient=0 in the environment keeps the default.
+if [[ "$OS" == Darwin ]]; then export MallocSpaceEfficient="${MallocSpaceEfficient:-1}"; fi
 exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \

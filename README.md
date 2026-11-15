@@ -76,7 +76,7 @@ That trade is where both the speed and the limits come from.
 |---|---|---|
 | **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its native libraries for the host's ABI loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
 | **To first frame** | ~0.2-0.5 s warm, ~1.1-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
-| **Memory** | ~550-780 MB per instance | 3-4 GB |
+| **Memory** | ~190-270 MB for an idle instance, 350-500 MB while bitmap-heavy or video screens draw; a ~190-225 MB standby waits for the next launch | 3-4 GB |
 | **Install step** | None: `apksim app.apk` | `adb install` onto a booted device |
 | **Many at once** | 32 headless instances of the test app ran at once in about 7 GB on a 12-core Mac ([docs/parallel.md](docs/parallel.md)) | A few, each with its own multi-GB VM |
 | **Frame rate** | Up to 120 fps, paced to the display's vsync | Depends on the host's GPU emulation |

@@ -50,7 +50,9 @@ final class Standby {
     // Launch work that needs no APK: sweeping dead instances' scratch, and the window's library (Cocoa).
     Storage.initScratch();
     SimWindow.preload();
-    System.gc();
+    // A full collection whose end gives the heap's unused pages back to the system, as do any while it waits: a
+    // standby is idle until its launch (the hand-off below ends that).
+    HeapTrim.trim(true);
     System.load(HostOs.runtimeLib("libstandby").toString());
     int listen = nativeListen(sock);
     if (listen < 0) {
@@ -89,6 +91,7 @@ final class Standby {
       if (nativeChdir(parts.get(1))) System.setProperty("user.dir", parts.get(1));
       System.clearProperty("apksim.standby");
       Timing.restart(Long.parseLong(parts.get(0)));
+      HeapTrim.busy();
       List<String> args = new ArrayList<>();
       for (String a : parts.subList(2, parts.size())) {
         int eq = a.indexOf('=');

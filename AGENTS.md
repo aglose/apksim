@@ -22,7 +22,15 @@ Read README.md for results and limits; this file covers how to work on the code.
 ## Layout
 - `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
   builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs `dev.apksim.Main`. Builtins only up
-  to that hand-off: each fork there cost a few ms.
+  to that hand-off: each fork there cost a few ms. Two of its settings are for memory (docs/perf-plan.md, "Memory,
+  2026-11-14"): `-XX:ArchiveRelocationMode=0` maps the AOT cache at the address `train.sh` built it for (16 TB on
+  macOS, where nothing else is placed: the JDK's 32 GB default sits among malloc's regions and the heap, and was taken
+  in most launches), so its 60 MB of read-only metadata stay shared file pages rather than ~45 MB rewritten in every
+  process (macOS only, and not for a beamed instance: it gives up the random placement of the JVM's class metadata,
+  which stays for a site's APK; Linux is not measured); and `MallocSpaceEfficient=1` in the JVM's environment (macOS;
+  `MallocSpaceEfficient=0` keeps the default), without which macOS's malloc keeps freed memory dirty and counted for
+  good (the JIT's arenas after a launch, a busy screen's buffers; `malloc_zone_pressure_relief` returns none of it;
+  seen on macOS 26.1, and the variable is not in malloc's man page: an OS that ignores it behaves as before).
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
@@ -33,6 +41,25 @@ Read README.md for results and limits; this file covers how to work on the code.
     is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
     sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
+  - `HeapTrim`, `native/heaptrim.c` (`libheaptrim`): the Java heap's unused pages given back while an instance or a
+    standby is idle (docs/perf-plan.md, "Memory, 2026-11-14"). The serial collector keeps every page it has touched:
+    the 64 MB young generation is dirty for good after its first fill, and the old generation keeps what it held
+    before a full collection. `HeapTrim.idle()` (Host.Memory; a young collection, made by filling eden with garbage,
+    as the JVM has no call for one) and `trim(true)` (a full one: a standby once warmed up, memory pressure) arm the
+    native side; while armed, JVMTI's GarbageCollectionFinish callback, which runs inside the collection's pause with
+    every Java thread stopped, replaces the free part of eden, both survivor spaces and the old generation with fresh
+    pages (`mmap` MAP_FIXED over the range, what HotSpot's own commit does; `madvise` MADV_DONTNEED on Linux), only
+    above each space's top and only whole pages. `busy()` (Host's next frame or input, a standby's hand-off) disarms
+    it, so a running app's collections cost what they did. The spaces are found through libjvm's own structure table
+    (`gHotSpotVMStructs`, by name: Universe::_collectedHeap, SerialHeap's generations, their ContiguousSpaces' bottom,
+    end and top), and Java arms only if what was read adds up to `Runtime.totalMemory()` and UseSerialGC is on: any
+    other JDK layout or collector leaves it off. Never discard at any other time: outside a collection's pause a
+    thread may be allocating there. `-Dapksim.heapTrim=false` (cold launches) or `APKSIM_HEAP_TRIM=0` (a standby
+    boots before a launch's options exist) turn it off; `-Dapksim.heapTrim.log=true` prints each trim.
+    `scripts/check-heap-trim.sh` (CI, `HeapTrimCheck`) runs it on a plain JVM with a small heap, twice (roomy and
+    tight): the spaces must be found on the JDK in use (an unknown layout otherwise turns it off silently), a trim
+    must return eden's pages, and checksummed objects must survive trims at every young and full collection while
+    three threads allocate. Run it after any change to heaptrim.c and before moving to another JDK.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every
@@ -47,7 +74,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     keeps the old 2 ms poll. `Host.Memory`: once the screen has been still for 2 s and the footprint has grown by
     `-Dapksim.idleGcMB` (256) since the last check, a full collection runs then (HotSpot does not count native memory);
     under the Mac's memory pressure GpuBitmaps' caches go and a collection runs at once, and a standby quits
-    (`Footprint.pressure`). Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
+    (`Footprint.pressure`). Once the screen has been still for 3 s (`-Dapksim.idleTrimMs`, 0 for never) the heap's
+    unused pages go back to the system (`HeapTrim`, below), again whenever the footprint has grown 16 MB past what
+    the last trim left, at most every 10 s; the next frame or input ends it. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
     (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
     twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without
     one. The first frame waits for the bottom window that is
@@ -374,6 +403,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `jnigraphics.c` (Mac and Linux): libjnigraphics' `AndroidBitmap_*` for ELF code, through `NativeBitmaps` (see "Video").
   - `gpushader.m`: Metal pipelines for translated AGSL.
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.
+  - `heaptrim.c` (Mac and Linux): `HeapTrim`'s native side, see above.
   - `loopback.c`: under `--no-network` only (`DYLD_INSERT_LIBRARIES`, set through `/usr/bin/env` after
     `sandbox-exec`, since dyld drops DYLD_* variables for system binaries). The sandbox can allow only
     `localhost` (127.0.0.1 over IPv4, ::1 over IPv6), and the JDK reaches 127.0.0.1 on a dual-stack socket as
@@ -1098,7 +1128,8 @@ client's. If the client is killed (Ctrl-C, closed terminal, `kill`), the instanc
 then three rounds of a framework-only activity (views, text, a RenderNode drawn through `GpuCanvas`, HWUI frames
 through `HwRenderer`, touches), so call sites Robolectric links through invokedynamic and framework classes are
 done, plus the codec list, networks, XML parser and runtime hash; Robolectric then resets as between tests. No app
-code runs before the launch. It then waits for the JIT queue to drain (~2.2 s from start to ready, ~410 MB idle).
+code runs before the launch. It then waits for the JIT queue to drain, collects, and gives the heap's unused pages back (`HeapTrim`): ~2.5 s
+from start to ready, ~190-225 MB while it waits (~350 MB before 2026-11-14).
 - One standby per apksim folder and sandbox flags (`--no-network`, `--no-sandbox`, and `b` for `apksim beam`'s
   instances, which the agent starts itself: docs/beam.md "The beam sandbox"), not per working directory.
   Instances start the next one 1 s after their first frame (`--spawn-standby`, inside their own sandbox) or on exit.
@@ -1761,6 +1792,10 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - **Launch benchmarks after a build:** the first launch of each APK other than the test app is cold (no class
   cache). Run each APK once before `bench.py`, or compare against a baseline with the same cache state. Warm-launch
   timings swing with machine load (another VM, an emulator): compare interleaved A/B runs.
+- **Memory figures need the machine's state beside them.** `footprint` counts compressed pages, malloc's share swung
+  between 47 and 100 MB from run to run before `MallocSpaceEfficient`, and under memory pressure (`sysctl
+  kern.memorystatus_vm_pressure_level` above 1) standbys quit and instances collect at once. Compare interleaved runs
+  (`bench.py --mem`), and read an idle footprint after the 3 s idle trim, not at the first frame.
 - Keep the young generation small (`-Xmn64m` in the launcher). 256 MB gave 12-50 ms GC pauses mid-scroll; 32-64 MB
   gives about 1 ms. Measured with `--jvm -Xlog:gc:file=...` while flinging and on the Shader tab.
 - The path has no spaces now, but Robolectric breaks on spaces in its dependency dir, so the launcher links
