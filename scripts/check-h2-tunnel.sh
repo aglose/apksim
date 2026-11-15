@@ -11,7 +11,10 @@ CONSCRYPT="$(ls "$ROOT"/work/lib/conscrypt-openjdk-uber-*.jar 2>/dev/null | head
 for mem in false true; do
   echo "== in memory: $mem, JDK TLS"
   "$JDK/bin/java" -Dapksim.netInMemory=$mem -cp "$ROOT/work/apksim.jar" dev.apksim.net.H2TunnelCheck
-  if [ -n "$CONSCRYPT" ]; then
+  if [ -z "$CONSCRYPT" ]; then
+    echo "no Conscrypt jar in work/lib: its passes cannot run" >&2
+    [ -z "${CI:-}" ] || exit 1
+  else
     echo "== in memory: $mem, Conscrypt"
     "$JDK/bin/java" --enable-native-access=ALL-UNNAMED -Dapksim.check.conscrypt=true -Dapksim.netInMemory=$mem \
       -cp "$ROOT/work/apksim.jar:$CONSCRYPT" dev.apksim.net.H2TunnelCheck

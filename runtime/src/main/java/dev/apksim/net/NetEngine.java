@@ -75,6 +75,8 @@ final class NetEngine {
   }
 
   /** An in-memory connection (the beam sandbox denies loopback): served on a thread of its own, as an accepted one. */
+  private static final java.util.Set<String> NOT_TUNNELLED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
   void serveInMemory(TabRelay.Pipe fromApp, TabRelay.Pipe toApp) {
     Thread.ofVirtual().name("apksim-net-conn").start(() -> serve(new PipeSocket(fromApp, toApp)));
   }
@@ -382,10 +384,10 @@ final class NetEngine {
             relay(cin, cout, uin, uout, client, up);
             return;
           }
-          if (p.length > 5 && p[5].equals("tunnel")) {
-            // Said once per host: the client then gets no ALPN, and a server that speaks only h2 closes on it.
+          if (p.length > 5 && p[5].equals("tunnel") && NOT_TUNNELLED.add(tlsHost + ":" + port)) {
+            // Said once per host and port: the client then gets no ALPN, and a server that speaks only h2 closes on it.
             Net.log("network: " + tlsHost + ":" + port + " offers h2 but cannot be tunnelled ("
-                + (Net.mode == Net.Mode.REPLAY ? "replaying" : deferred != null ? "its connect failed" : "no upstream connection")
+                + (deferred != null ? "its connect failed" : "no upstream connection")
                 + "): answered without ALPN, so an HTTP/2-only server will refuse it");
           }
           String reply = handshake();

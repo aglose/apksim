@@ -106,7 +106,7 @@ public final class H2TunnelCheck {
       Net.connect(plain, new InetSocketAddress(lan, port), 5000);
       SSLSocket s = (SSLSocket) Net.createSocket(client.getSocketFactory(), plain, "fixture.test", port, true);
       check(s instanceof FakeTlsSocket, "TLS over the engine's socket is the capturing one");
-      if (h2) {
+      if (mode == 0) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2"});
         s.setSSLParameters(p);

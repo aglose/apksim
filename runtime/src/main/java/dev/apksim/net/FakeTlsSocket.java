@@ -185,10 +185,14 @@ public final class FakeTlsSocket extends SSLSocket {
     // do), and a provider's socket such as Conscrypt's throws on a suite it lacks (issue 387). None left: its own defaults.
     if (protocolsSet) {
       String[] ok = keepSupported(protocols, s.getSupportedProtocols());
+      if (ok.length != protocols.length) Net.log("network: " + host + ":" + port + " h2 tunnel: protocols the real socket lacks dropped"
+          + (ok.length == 0 ? " (its defaults used)" : ""));
       if (ok.length > 0) params.setProtocols(ok);
     }
     if (suitesSet) {
       String[] ok = keepSupported(suites, s.getSupportedCipherSuites());
+      if (ok.length != suites.length) Net.log("network: " + host + ":" + port + " h2 tunnel: cipher suites the real socket lacks dropped"
+          + (ok.length == 0 ? " (its defaults used)" : ""));
       if (ok.length > 0) params.setCipherSuites(ok);
     }
     params.setApplicationProtocols(appProtocols);
