@@ -82,7 +82,7 @@ final class Beam {
    * otherwise. `protocol`: the one the start that made it named (an upload's answer depends on it).
    */
   record Grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, long expires, String extra,
-               int protocol) {}
+               int protocol, String label) {}
 
   private final Path trustFile;
   /** URL prefixes the agent may download a build from when a page names one (`source`, issue 177). */
@@ -415,12 +415,17 @@ final class Beam {
   }
 
   String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra, int protocol) {
+    return grant(kind, origin, app, sha256, name, launch, extra, protocol, null);
+  }
+
+  /** `label`: the page's own tag for the session this grant leads to (a start's `label`, issue 380), or null. */
+  String grant(Kind kind, String origin, String app, String sha256, String name, List<String> launch, String extra, int protocol, String label) {
     expire();
     long now = System.currentTimeMillis();
     byte[] b = new byte[24];
     RANDOM.nextBytes(b);
     String token = HexFormat.of().formatHex(b);
-    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra, protocol));
+    grants.put(token, new Grant(kind, origin, app, sha256, name, launch, now + GRANT_MS, extra, protocol, label));
     if (kind == Kind.SESSION && extra != null) importing.remove(extra);  // the grant owns it now
     return token;
   }

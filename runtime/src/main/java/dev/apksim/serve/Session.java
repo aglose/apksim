@@ -89,6 +89,8 @@ final class Session {
   volatile String seedSlot;
   /** `apksim beam`: the page's origin, and whether the data slot is kept when the session ends ("Keep on this Mac"). */
   volatile String site;
+  /** `apksim beam`: the page's own tag for this setup (a start's `label`, issue 380), saved with the session. */
+  volatile String label;
   volatile boolean keep;
   /** Issue 334: the agent's own window owns this session now; the tab's socket closing no longer ends it. */
   volatile boolean detached;
@@ -2297,7 +2299,7 @@ final class Session {
       }
       String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
-          options.get("permissions"), site, signers, launchKind));
+          options.get("permissions"), site, signers, launchKind, label));
       if (id != null) {
         logLine("[beam] kept on this Mac as " + id + " (apksim beam run " + id + ")");
         System.err.printf("[beam] session %s kept as %s: %s from %s%n", this.id, id, app.name(), site);

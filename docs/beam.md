@@ -903,8 +903,8 @@ readable by any origin. Requests to the server carry its token as everything els
    `h {"error"}` (with no data slot yet the session runs on; any other error ends it). Then step 4 with `data`. If
    the Mac does not take it, open the server's session again with `&restore=TICKET`: an `r` line says whether the data
    came back (the pack is kept until the ticket expires, 5 minutes, and used once).
-8. **Saved data** (issue 181): `GET AGENT/beam/saved` → `[{"id", "app", "package", "sha256", "build", "open", "saved",
-   "lastUsed"}]`, this origin's saved sessions (404 from an agent before this). Step 4 with `"saved": ID` reopens one
+8. **Saved data** (issue 181): `GET AGENT/beam/saved[?label=L]` → `[{"id", "app", "package", "sha256", "build", "open", "saved",
+   "lastUsed", "label"}]`, this origin's saved sessions (404 from an agent before this). Step 4 with `"saved": ID` reopens one
    (what the app writes is kept in it), with `"dataFrom": ID` starts a newer build of the same app, signed by the same
    key, on a copy of it ("Saved data from the tab").
 
@@ -1041,9 +1041,13 @@ Some apps are useful only after a one-time setup (a sign-in, a device enrolled w
 page that runs a new build per pull request made the visitor repeat it for every build. A saved session (keep on, or
 `save-sessions on`) can now be used from the page that saved it.
 
-- **`GET /beam/saved`** → `[{"id", "app", "package", "sha256", "build", "open", "saved", "lastUsed"}]`: the saved
+- **`GET /beam/saved[?label=L]`** → `[{"id", "app", "package", "sha256", "build", "open", "saved", "lastUsed", "label"}]`: the saved
   sessions that came from the calling origin (none for a site the owner refused), newest use first. `build`: its own
-  build is still on this Mac; `open`: a tab has it open now.
+  build is still on this Mac; `open`: a tab has it open now. `label` (issue 380): the page's own tag for the setup the
+  session ran under, from the `label` of the start that made it (up to 100 printable ASCII characters, saved with the
+  session; left out when none; a reopened session keeps its own unless the start names another), so a page can offer only
+  data saved under the same setup without the agent exposing launch options; `?label=` lists only those saved with
+  exactly that label.
 - **Reopening one**: `POST /beam/start {"protocol", "saved": ID}`, from its own site only (any other gets the 404 an
   unknown id gets). `sha256` may be left out (its own build is used); one naming another build is refused (400: that is
   `dataFrom`). Its own build may be gone: with `sha256`, `ticket` and `url` as in any start it comes back the usual way.

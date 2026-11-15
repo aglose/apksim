@@ -859,6 +859,12 @@ def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
         mine = [x for x in listed if x.get("id") == sid]
         check(len(mine) == 1 and mine[0].get("package") == PKG and mine[0].get("build") is True and mine[0].get("open") is False
               and mine[0].get("sha256") == sha, f"saved: GET /beam/saved lists it to its site ({listed})")
+        check(mine and mine[0].get("label") == "env=test", f"saved: with the label its start named ({mine[0].get('label') if mine else None!r})")
+        st, _, body = req(gp, "GET", "/beam/saved?label=env%3Dtest", B)
+        check(st == 200 and [x.get("id") for x in json.loads(body)] == [sid], f"saved: ?label= lists the sessions saved under it ({body[:100]!r})")
+        st, _, body = req(gp, "GET", "/beam/saved?label=env%3Dprod", B)
+        check(st == 200 and json.loads(body) == [], f"saved: and none for another label ({body[:100]!r})")
+        check(req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": sid, "label": "x" * 101})[0] == 400, "saved: a label over 100 characters is refused")
         st, _, body = req(gp, "GET", "/beam/saved", A)
         check(st == 200 and sid not in body.decode(), "saved: and not to another site")
         st, _, body = req(gp, "POST", "/beam/start", A, {"protocol": 2, "saved": sid})
@@ -1402,7 +1408,7 @@ def main():
 
         # A saved session: "keep on" from the tab, with keep-days 0 (from the config) for its build.
         g = agent(apksim, gp, "allow")
-        slot_start = dict(start, options=["--activity", "SlotStateActivity"])
+        slot_start = dict(start, options=["--activity", "SlotStateActivity"], label="env=test")
         g5, _ = begin(gp, B, slot_start, apk)
         s5 = open_session(gp, g5, B)
         s5.ws.send("keep on")
@@ -1419,6 +1425,7 @@ def main():
         sid = ids[0] if ids else "none"
         check(os.path.isdir(os.path.join(STATE, "cache", "data", PKG, f"k{sid}-0")), f"keep: its slot is renamed to k{sid}-0")
         rec = json.load(open(os.path.join(STATE, "beam", "saved", sid + ".json"))) if ids else {}
+        check(rec.get("label") == "env=test", f"keep: the record has the start's label ({rec.get('label')!r})")
         check(rec.get("appearance") == "dark", f"keep: the record has the appearance the tab last set ({rec.get('appearance')})")
         time.sleep(2)
         check(os.path.exists(build_file(sha)), "keep: a saved session's build survives the sweep (keep-days 0)")

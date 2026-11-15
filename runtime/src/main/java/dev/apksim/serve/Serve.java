@@ -1328,7 +1328,7 @@ public final class Serve {
   }
 
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
-    websocket(r, s, in, out, null, null);
+    websocket(r, s, in, out, null, null, null);
   }
 
   /**
@@ -1479,7 +1479,7 @@ public final class Serve {
   }
 
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
-  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed) throws IOException {
+  private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String beamLabel) throws IOException {
     String key = r.header("sec-websocket-key");
     if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
       Http.text(out, 400, "expected a WebSocket upgrade");
@@ -1529,7 +1529,7 @@ public final class Serve {
     }
     boolean[] handed = {false};
     try {
-      upgraded(r, s, in, out, site, seed, key, keepKey, keepId, took, handed);
+      upgraded(r, s, in, out, site, seed, beamLabel, key, keepKey, keepId, took, handed);
     } finally {
       if (took && !handed[0]) kept.release(keepId);
     }
@@ -1541,7 +1541,7 @@ public final class Serve {
   }
 
   /** The rest of a session's start, once its key (if any) is reserved; `handed[0]` set once a session holds it. */
-  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String key,
+  private void upgraded(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String beamLabel, String key,
       String keepKey, String keepId, boolean took, boolean[] handed) throws IOException {
     out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
         + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
@@ -1658,6 +1658,7 @@ public final class Serve {
       }
       if (beam) {
         session.site = site;
+        session.label = beamLabel != null ? beamLabel : reopenedRec != null && reopenedRec.get("label") instanceof String rl ? rl : null;
         session.keep = store.config.saveSessions();
         if (reopenSid != null) {
           // Issue 181: a reopened saved session, held (shared, as `run` holds it) until it ends.
@@ -1964,13 +1965,13 @@ public final class Serve {
    * page, which would read that as a session grant, the 502 it always got. `via`: how the build came, if it did.
    */
   private void dataNeeded(OutputStream out, String o, int protocol, Catalog.App a, String sha, List<String> launch, String via,
-      IOException e) throws IOException {
+      String label, IOException e) throws IOException {
     if (protocol < 2) {
       Http.text(out, 502, "the session's data did not reach this Mac: " + e.getMessage());
       return;
     }
     System.err.println("[beam] could not download " + a.name() + "'s moved data from " + o + ": " + e.getMessage() + " (the tab is asked)");
-    Http.json(out, 200, "{\"need\":\"data\",\"dataUpload\":" + Http.q(agent.grant(Beam.Kind.DATA, o, a.id(), sha, a.name(), launch, null, protocol))
+    Http.json(out, 200, "{\"need\":\"data\",\"dataUpload\":" + Http.q(agent.grant(Beam.Kind.DATA, o, a.id(), sha, a.name(), launch, null, protocol, label))
         + (via == null ? "" : ",\"via\":" + Http.q(via)) + ",\"dataWhy\":" + Http.q(e.getMessage()) + "}");
   }
 
@@ -2142,13 +2143,15 @@ public final class Serve {
         // Issue 181: what this site may start on (its own saved sessions only), so a page can offer "start signed in".
         StringBuilder b = new StringBuilder("[");
         if (!"never".equals(agent.trust().get(o))) {
-          for (Map<String, Object> rec : store.savedFrom(o)) {
+          String want = r.param("label");
+          for (Map<String, Object> rec : store.savedFrom(o, want)) {
             if (b.length() > 1) b.append(',');
             String sha = rec.get("sha256") instanceof String h ? h : "";
             b.append("{\"id\":").append(Http.q(String.valueOf(rec.get("id")))).append(",\"app\":").append(Http.q(String.valueOf(rec.get("app"))))
                 .append(",\"package\":").append(Http.q(String.valueOf(rec.get("package")))).append(",\"sha256\":").append(Http.q(sha))
                 .append(",\"build\":").append(catalog.hasBuild(sha)).append(",\"open\":").append(savedOpen(String.valueOf(rec.get("id"))))
                 .append(",\"saved\":").append(BeamStore.whole(rec.get("saved"))).append(",\"lastUsed\":").append(BeamStore.whole(rec.get("lastUsed")))
+                .append(rec.get("label") instanceof String lb ? ",\"label\":" + Http.q(lb) : "")
                 .append('}');
           }
         }
@@ -2187,11 +2190,11 @@ public final class Serve {
           try {
             seed = beamSeed(o, g.extra(), a.path());
           } catch (IOException e) {
-            dataNeeded(out, o, g.protocol(), a, got, a.launch(), null, e);
+            dataNeeded(out, o, g.protocol(), a, got, a.launch(), null, g.label(), e);
             return;
           }
         }
-        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed))
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), a.launch(), seed, 1, g.label()))
             + (seed == null ? "" : ",\"data\":true") + (g.extra() != null && g.extra().startsWith("@") ? localAnswer(g.extra()) : "") + "}");
       }
       case "POST /beam/upload-data" -> {
@@ -2218,7 +2221,7 @@ public final class Serve {
           Http.text(out, 400, "the session's data was refused: " + e.getMessage());
           return;
         }
-        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), g.sha256(), a.name(), g.launch(), seed))
+        Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), g.sha256(), a.name(), g.launch(), seed, 1, g.label()))
             + ",\"data\":true}");
       }
       case "GET /ws" -> {
@@ -2232,7 +2235,7 @@ public final class Serve {
           Http.text(out, 403, "this session was not started by this page (start it again)");
           return;
         }
-        websocket(r, s, in, out, o, g.extra());
+        websocket(r, s, in, out, o, g.extra(), g.label());
       }
       default -> Http.text(out, 404, "not found");
     }
@@ -2253,7 +2256,7 @@ public final class Serve {
       Http.text(out, 413, "the request body is limited to " + BODY_MAX / 1024 + " KB");
       return;
     }
-    String sha, name, ticket, from, data, source, local = null;
+    String sha, name, ticket, from, data, source, pageLabel, local = null;
     long size;
     int protocol;
     List<String> launch;
@@ -2321,6 +2324,13 @@ public final class Serve {
         Http.text(out, 409, "this Mac's owner has not allowed the network inspector (GET /beam/hello says \"inspect\": \"optional\" or \"on\" when it may be asked for: apksim beam config inspect-network optional)");
         return;
       }
+      // Issue 380: the page's own tag for this setup, saved with the session and listed in GET /beam/saved. A reopened
+      // session keeps the one it was saved with unless the page names another.
+      Object lb = body.get("label");
+      if (lb != null && !(lb instanceof String ls && ls.length() <= 100 && ls.matches("[\\x20-\\x7e]*"))) {
+        throw new IOException("\"label\" takes up to 100 printable ASCII characters");
+      }
+      pageLabel = lb instanceof String ls && !ls.isEmpty() ? ls : null;
       Object relay = body.get("relay");
       if (relay != null && !(relay instanceof Boolean)) throw new IOException("\"relay\" takes true or false");
       if (Boolean.TRUE.equals(relay)) {
@@ -2395,17 +2405,17 @@ public final class Serve {
         try {
           seed = beamSeed(o, data, a.path());
         } catch (IOException e) {
-          dataNeeded(out, o, protocol, a, sha, launch, via, e);
+          dataNeeded(out, o, protocol, a, sha, launch, via, pageLabel, e);
           sweepBeam();  // after the answer, with its data grant holding the build
           return;
         }
       }
-      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed))
+      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), launch, seed, 1, pageLabel))
           + ",\"via\":" + Http.q(via) + (seed == null ? "" : ",\"data\":true") + localAnswer(local) + "}");
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol))
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, pageLabel))
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 
