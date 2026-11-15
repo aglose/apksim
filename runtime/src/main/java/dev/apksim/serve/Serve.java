@@ -1811,8 +1811,8 @@ public final class Serve {
     for (int k = 0; k < f.erased().size(); k++) b.append(k > 0 ? "," : "").append(Http.q(String.valueOf(f.erased().get(k).get("id"))));
     b.append("],\"skipped\":[");
     for (int k = 0; k < f.skipped().size(); k++) {
-      String sk = f.skipped().get(k);
-      b.append(k > 0 ? "," : "").append("{\"id\":").append(Http.q(sk.substring(0, 12))).append(",\"why\":").append(Http.q(sk.substring(sk.indexOf("): ") + 3))).append('}');
+      String[] sk = f.skipped().get(k);
+      b.append(k > 0 ? "," : "").append("{\"id\":").append(Http.q(sk[0])).append(",\"why\":").append(Http.q(sk[2])).append('}');
     }
     Http.json(out, 200, b.append("]}").toString());
   }
@@ -2198,7 +2198,7 @@ public final class Serve {
         Http.json(out, 200, b.append(']').toString());
       }
       case "DELETE /beam/saved" -> deleteSaved(o, null, out);
-            case "POST /beam/upload" -> {
+      case "POST /beam/upload" -> {
         Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
         if (g == null) {
           Http.text(out, 403, "no such upload (each start's lasts two minutes and is used once): start again");

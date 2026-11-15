@@ -42,15 +42,15 @@ final class BeamStore {
   static final long GRACE_MS = 3 * 60_000L;
   private static final SecureRandom RANDOM = new SecureRandom();
 
+  /** `keep-saved-days` when the config does not say (issue 382): a session unused for a week is erased. */
+  static final double DEFAULT_KEEP_SAVED_DAYS = 7;
+
   /**
    * `keep-days`, `save-sessions`, `keep-saved-days` (negative: never), and `rec`: the flight recorder channels a beam
    * session starts with (`input` by default, `all`, a list such as `input,logcat`, or `off`), and `inspect-network`
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  /** `keep-saved-days` when the config does not say (issue 382): a session unused for a week is erased. */
-  static final double DEFAULT_KEEP_SAVED_DAYS = 7;
-
   record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork) {
     static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off");
 
@@ -653,7 +653,7 @@ final class BeamStore {
   }
 
   /** The result of {@link #forgetAll}: what was erased and what was skipped, each with the reason. */
-  record Forgotten(List<Map<String, Object>> erased, List<String> skipped) {}
+  record Forgotten(List<Map<String, Object>> erased, List<String[]> skipped) {}
 
   /**
    * Erases every saved session `match` accepts (issue 382), skipping those that are open, and tells the catalog each
@@ -661,7 +661,7 @@ final class BeamStore {
    */
   Forgotten forgetAll(Predicate<Map<String, Object>> match, Catalog catalog) {
     List<Map<String, Object>> erased = new ArrayList<>();
-    List<String> skipped = new ArrayList<>();
+    List<String[]> skipped = new ArrayList<>();
     for (Map<String, Object> r : saved()) {
       if (!match.test(r)) continue;
       String why = forget(r);
@@ -669,7 +669,7 @@ final class BeamStore {
         erased.add(r);
         if (r.get("sha256") instanceof String h) catalog.released(h);
       } else {
-        skipped.add(r.get("id") + " (" + r.getOrDefault("app", "?") + "): " + why);
+        skipped.add(new String[] {String.valueOf(r.get("id")), String.valueOf(r.getOrDefault("app", "?")), why});
       }
     }
     return new Forgotten(erased, skipped);
@@ -1112,7 +1112,8 @@ final class BeamStore {
     Forgotten f = store.forgetAll(r -> (fs == null || fs.equals(r.get("site")))
         && (fa == null || String.valueOf(r.getOrDefault("app", "")).startsWith(fa)), catalog);
     for (Map<String, Object> r : f.erased()) System.out.println("forgot " + r.get("id") + " (" + r.getOrDefault("app", "?") + ")");
-    for (String s : f.skipped()) System.out.println("skipped " + s);
+    for (String[] s : f.skipped()) System.out.println("skipped " + s[0] + " (" + s[1] + "): " + s[2]);
+    if (f.erased().isEmpty() && f.skipped().isEmpty()) System.out.println("nothing matched (--site takes the origin as `apksim beam saved` shows it)");
     System.out.println(f.erased().size() + " erased, " + f.skipped().size() + " skipped"
         + (!builds && !f.erased().isEmpty() ? "; their builds are kept " + num(store.config.keepDays()) + " days from now unless another session uses them" : ""));
     if (builds) {

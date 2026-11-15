@@ -102,6 +102,8 @@ final class Beam {
   /** Moved-data slots whose grant was just used (name -> when): its session is being set up. */
   private final Map<String, Long> seedsTaken = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
+  /** origin -> when a refused (or unanswered) deletion may be asked again (issue 382). */
+  private final java.util.Map<String, Long> deniedDeleteUntil = new java.util.concurrent.ConcurrentHashMap<>();
   /** The origin whose consent dialog is up now, else null (`/beam/hello`'s `asking`, issue 178). */
   private volatile String askingFor;
 
@@ -315,6 +317,8 @@ final class Beam {
     if ("always".equals(saved)) return true;
     if ("never".equals(saved)) return false;
     synchronized (prompting) {
+      Long until = deniedDeleteUntil.get(origin);
+      if (until != null && until > System.currentTimeMillis()) return false;  // refused lately: not asked again yet
       boolean ok;
       askingFor = origin;
       try {
@@ -326,6 +330,7 @@ final class Beam {
       } finally {
         askingFor = null;
       }
+      if (!ok) deniedDeleteUntil.put(origin, System.currentTimeMillis() + DENIED_MS);
       System.err.printf("[beam] %s asked to delete %d saved session%s: %s%n", origin, count, count == 1 ? "" : "s", ok ? "Delete" : "refused");
       return ok;
     }
