@@ -15,7 +15,7 @@ import java.util.zip.ZipFile;
 /**
  * A `resources.arsc` as a mapped file, not a `byte[]`: the table's pages stay in the system's file cache, shared by
  * every instance and standby, where Robolectric inflates (or reads) it into the Java heap of each. The framework's is
- * 16.7 MB, the largest object of an idle instance's heap; an app's own is 0.7 MB (the test app) to several MB.
+ * 16.7 MB, the largest object of an idle instance's heap; an app's own is far smaller (0.6-1 MB for the test app and a large R8 app).
  *
  * <p>Called by apksim's copy of Robolectric's {@code CppApkAssets.LoadImpl}, the one place a table becomes a buffer.
  * A stored table (an APK's, since targetSdk 30 requires it) is mapped where it lies in the APK, as AppClasses maps DEX
