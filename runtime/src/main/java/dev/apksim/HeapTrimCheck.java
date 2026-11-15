@@ -176,8 +176,13 @@ public final class HeapTrimCheck {
     long young = collections("Copy") - young0;
     long full = collections("MarkSweepCompact") - full0;
     if (young == 0 || full == 0) fail("no collections of both kinds while armed (" + young + " young, " + full + " full)");
-    if (HeapTrim.collections() - seen0 < young + full) {
-      fail("the native side saw " + (HeapTrim.collections() - seen0) + " collections of " + (young + full));
+    // A young collection whose promotion fails goes on to a full one in the same pause: the collectors' counters count
+    // two, JVMTI one (one GarbageCollectionStart/Finish per VM operation). Such full collections are the ones nobody
+    // asked for (each trim(true) asks for one, and the last one above), so that many may be missing, and no more.
+    long merged = Math.max(0, full - (fulls + 1));
+    if (HeapTrim.collections() - seen0 < young + full - merged) {
+      fail("the native side saw " + (HeapTrim.collections() - seen0) + " collections of " + (young + full)
+          + " (" + merged + " may have shared a pause with a young one)");
     }
     if (failure.get() != null) {
       System.err.println("FAIL: " + failure.get());
