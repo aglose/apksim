@@ -498,7 +498,11 @@ that no deep link names, data entered).
   server with `--keep-max` (kept sessions, above): then it is kept, under that key and the server's token, until
   `--keep-days` unused, `--keep-max` or a `DELETE`. Apps run in apksim's sandbox on the Mac
   (`sandbox-exec`: no writes outside apksim's state folder, no reads of credentials), and the container is the
-  sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
+  sandbox on Linux. A session's JVM maps its startup cache at a fixed address (the launcher's
+  `-XX:ArchiveRelocationMode=0`: ~38 MB of each session shared rather than private, docs/perf-plan.md), which gives up
+  the random placement of its class metadata; a server that runs APKs with native code it does not trust can keep the
+  JDK's relocation with `APKSIM_AOT_RELOCATE=1` in serve's environment (`docker run -e`), which its sessions inherit.
+  This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
   by different people on one machine, which can read the state folder: give each trust boundary its own serve (its
   own container).
 
@@ -592,7 +596,7 @@ under Rosetta), the client on the Mac through the published port.
 | Frame size | 40 KB (list), 74 KB median over a session, 99 KB (Shader tab) | the same |
 | Stream rate, endless animation (Shader tab) | 118-120 fps | 1-2 fps: the shader runs on the CPU there, the app's own rate |
 | Stream rate while dragging (one move every ~11 ms) | 85-89 fps | 70-79 fps |
-| Memory per session (resident) | 370-620 MB | 680-770 MB |
+| Memory per session (resident) | 370-620 MB | 680-770 MB (2026-11-15, at the end of the check: 679-686 MB; the arm64 image, native: 499-519 MB; idle: docs/linux-docker.md "Memory") |
 | The server itself, idle | 86 MB | 92 MB (the container) |
 
 - Each frame is sent only when the screen changed: a still screen costs nothing after its first frame.

@@ -209,13 +209,142 @@ Not done, with what was found:
   resource classes only `ResourceString.decodeString` asks a `ByteBuffer` for its array, and the table becomes a
   buffer in one place (`CppApkAssets.LoadImpl`: `ByteBuffer.wrap` of the asset's bytes). Done since: "Resources
   mapped" below.
-- **Linux:** the heap trim is built there (`madvise`; `scripts/check-heap-trim.sh` runs it in CI) but not measured in
-  the image; the cache is still moved there; glibc's malloc keeps freed memory too (`-XX:TrimNativeHeapInterval` is
-  the JDK's answer), not measured.
 - **A full collection when idle after use:** after the Shader tab and `apksim://bitmaps`, back on a still screen, one
   frees 17 MB (Bitmap pixels whose objects reached the old generation). The 256 MB threshold stands.
 - **The AOT cache's 33 MB written region** is dirty from the start because JDK 24 loads every archived class at
   startup; nearly all of them are ones a launch uses.
+
+### Memory in the Linux image
+
+The same three questions in the image (2026-11-15; Colima, 4 CPUs, 8 GB, kernel 6.8, glibc 2.39, Temurin 24.0.2; the
+arm64 image native, the amd64 one under Rosetta, whose translator adds 160-180 MB to every figure; a real x86-64
+host is not measured). The test app headless with `--control`, a warm class cache on a volume, read from
+`/proc/PID/smaps` 40 s after the first frame (settling work, the class cache's save among it, refills eden once after
+the first trim). All of it was measured before the resource tables were mapped ("Resources mapped", below), which
+takes ~17 MB more off each heap. Linux has no single footprint figure: resident memory (RSS, what `stats` shows there) counts file
+pages that are shared and reclaimable, so each row also has the private anonymous part, which is the process's alone.
+
+Idle, by part (arm64, MB resident):
+
+| Part | Before | Now | |
+|---|---|---|---|
+| Java heap | 136 | 86 | the heap trim (`madvise`); the old generation is ~85 either way |
+| AOT cache | 92: 67 anonymous, 26 file | 92: 28 anonymous, 64 file | mapped in place: the read-only region is no longer rewritten |
+| malloc (glibc's arenas) | 72 | 40 | `-XX:TrimNativeHeapInterval=5000`; NMT's count of the JVM's own malloc is 24-28 |
+| Metaspace, JIT code, stacks | 47 | 47 | |
+| DEX files and fonts (mapped), libraries | 65 | 65 | file pages |
+
+Medians of three interleaved runs each (two on amd64), RSS with the private anonymous part in brackets:
+
+| MB | Before #384 | With #384's heap trim | Now: cache in place, malloc trimmed |
+|---|---|---|---|
+| arm64, idle | 413 (324) | 365 (276) | 330 (203) |
+| arm64, Shader tab running | 475 (385) | 460 (370) | 412 (284) |
+| arm64, idle again 30 s later | 476 (386) | 410 (320) | 361 (233) |
+| amd64 (Rosetta), idle | 595 (501) | 544 (452) | 492 (362) |
+| amd64, Shader tab running | 680 (572) | 633 (540) | 572 (441) |
+| amd64, idle again 30 s later | 689 (577) | 583 (490) | 535 (404) |
+
+- **The heap trim** works there as built: an idle instance is 48-51 MB smaller for it on either architecture (one
+  trim's own line: `young, 29 ms, footprint 465 -> 412 MB`), and `scripts/check-heap-trim.sh` passes in a Linux JDK
+  container on both (objects checksummed through 220-420 young and 115-420 full collections).
+- **The cache in place.** The JDK's default address, 32 GB, is free on Linux (the JVM puts the Java heap below it,
+  here below 4 GB, and the kernel everything else near the top of the address space): with
+  `-XX:ArchiveRelocationMode=0`, 40 of 40 launches of the arm64 image and 20 of 20 of the amd64 one mapped it there
+  (`-Xlog:cds`: no "alternative address"), so `train.sh` keeps the default there; so did CI's real runners (x86-64
+  `ubuntu-26.04` and `ubuntu-24.04-arm`; `ci-smoke.sh` prints where each run's first launch mapped it). A machine
+  with a large heap was the open question, and what it found was worse and older than the address: the JVM's default
+  maximum heap is a quarter of the machine's memory, and past ~30 GB (128 GB of memory and up) it turns compressed
+  pointers off, which the cache was built with, so it refused the cache altogether ("CDS will be disabled"), on the
+  Mac as on Linux, before this change as after: a cold first frame of 3.6 s on a simulated 128 GB Mac
+  (`-XX:MaxRAM=128g`), 2.3 s in the arm64 image at 256 GB. The launcher now passes `-XX:+UseCompressedOops`, which
+  makes the JVM cap that default at ~30 GB instead; then the cache maps (in place, in the image: the heap ends below
+  32 GB) and the first frame is 1.7 s on that Mac and 1.19 s in the image. Smaller machines keep their heap (2 GB of
+  8, 6 GB of 24). An `--jvm -Xmx` of 32 GB or more still turns compressed pointers off (with the JVM's warning "Max
+  heap size too large for Compressed Oops") and loses the cache; 31 GB keeps it.
+  Mapping the cache in place does not make an instance's RSS smaller, as on the Mac it made the footprint smaller: 38-40 MB
+  move from private anonymous memory to clean file pages (arm64 idle: 244 → 206 MB anonymous at 332 MB resident
+  both ways). What that buys shows with several processes: four instances in one container hold 957 MB in all (PSS)
+  against 1,085 MB with the cache moved, 32 MB less each, and under memory pressure the file pages can be dropped,
+  the rewritten ones only swapped. The launch time is the same (below). The launcher now sets the flag on Linux
+  too, `apksim serve`'s sessions included (as on the Mac); it gives up the random placement of the JVM's class
+  metadata, and `APKSIM_AOT_RELOCATE=1` keeps the JDK's relocation where that matters more than the memory (a server
+  whose sessions run uploaded APKs with native code).
+- **glibc's malloc** keeps freed memory as macOS's does, in each thread's arena: 52-84 MB resident in arenas after a
+  launch against 24-28 MB the JVM counts as its own, and `jcmd System.trim_native_heap` (`malloc_trim`) returned 17
+  and 33 MB of it. `-XX:TrimNativeHeapInterval` has the JVM make that call on a thread of its own:
+
+  | arm64, RSS MB (medians of 3) | No trim | Idle-only `malloc_trim` | Every 1 s | Every 5 s | Every 30 s |
+  |---|---|---|---|---|---|
+  | Idle | 370 | 356 | 333 | 333 | 336 |
+  | Shader tab running | 456 | 456 | 412 | 412 | 427 |
+  | Idle again 30 s later | 407 | 372 | 360 | 368 | 372 |
+  | Fling: frames drawn, p95 / p99 interval | 2,151, 13.5 / 16.5 ms | 2,165, 13.5 / 16.2 | 2,104, 12.8 / 15.7 | 2,157, 13.3 / 16.1 | 2,124, 13.3 / 15.9 |
+  | One trim | | 1-3 ms | 0.7-1 ms, at most 15 | 1-2 ms, at most 8 | 6-20 ms |
+
+  The launcher passes 5 s on Linux: the memory of 1 s with a fifth of its calls, and trims short enough not to show
+  (30 s returns 25 MB and more in one call of up to 20 ms). No interval cost frames beyond the noise (a run draws
+  2,070-2,170 frames whatever the setting). "Idle-only" was a `malloc_trim` in `HeapTrim` beside the heap's, tried
+  and dropped: it misses what is freed after the screen went still (the JIT's last compiles) and everything a busy
+  screen frees. `MALLOC_ARENA_MAX=2` changed nothing (365 MB against 367). On amd64 the periodic trim is worth more,
+  544 → 492 MB idle with the cache in place (three runs each): Rosetta's translator allocates too.
+
+What it costs, arm64 unless said (medians; fling: 20 swipes on the Home list, ~2,150 frames a run):
+
+| | Before #384 | With #384's heap trim | Now |
+|---|---|---|---|
+| Fling: fps, p95 / p99 frame interval | 118.9, 14.9 / 17.7 ms | 118.8, 14.7 / 17.6 ms | 118.7, 14.9 / 18.1 ms |
+| Fling: looper / raster per frame | 1.39 / 1.94 ms | 1.39 / 2.01 ms | 1.35 / 1.99 ms |
+| amd64 fling: fps, p95 / p99 | 117.6, 15.0 / 20.0 ms | 117.6, 14.9 / 18.6 ms | 117.2, 15.0 / 19.3 ms |
+
+Cold first frame, arm64, medians of 14 interleaved launches each in one container (warm class cache): the cache in
+place and no trim, measured twice, 1,188 and 1,191 ms; the cache in place and the 5 s trim, 1,140 ms; the cache moved
+and no trim, 1,132 ms. Single launches ran from about 1,050 to 1,300-1,440 ms in each, so the medians' 50 ms is
+run-to-run drift (a trim that first runs after 5 s cannot speed up a 1.1 s launch): neither setting makes a launch
+slower, and the ~10 ms the Mac saves by not rewriting the cache does not show here. The Shader tab says
+nothing about frames in the image: its shader runs on the CPU, 3 frames a second.
+
+The test app's suite passes in both images built from this (392 of the 392 that run; 61 s on arm64, 82 s on amd64),
+and so do `scripts/ci-smoke.sh`'s `app`, `device` and `serve` parts on arm64 and `app` and `serve` on amd64. A serve
+session at the end of `serve-check.py`, on the Shader tab with its stream encoding: 499-519 MB resident on arm64,
+679-686 MB on amd64 under Rosetta (680-770 MB there on 2026-11-05, with a smaller test app).
+
+CI's own runs of this change, on real hosts (Linux `ubuntu-26.04` x86-64 and `ubuntu-24.04-arm` runners): the cache
+mapped at its requested address on both; the serve session at the end of `serve-check.py` held 545 and 523 MB on
+x86-64 (main the same day: 593 and 619) and 544 and 546 MB on arm64 (main: 596 and 606); the suite took 62.5 s on
+x86-64 (main: 64.2) and 69.8 s on arm64 (main: 69.5). The macOS startup gate passed with this launcher.
+
+What the periodic malloc trim costs where memory churns, the test app on arm64, three interleaved runs each, trim
+against `--jvm -XX:TrimNativeHeapInterval=0` (CPU from `stats` cpuMs, 20-30 s windows):
+
+| | Resident MB, trim / none | CPU, trim / none | Frames, trim / none |
+|---|---|---|---|
+| Idle | 343 / 379 | 2.3-2.9% / 2.3-2.8% | |
+| `apksim://video` (1080p60 H.264, libavcodec) | 534 / 540 | 47-50% / 48-49% | 59.8 fps, 1 dropped / 59.9, 0-1 dropped |
+| `apksim://bitmaps` (a bitmap redrawn every frame) | 546 / 573 | 103-105% / 102-103% | 73.5-74.5 / 73.6-77.4 fps |
+
+The bitmaps screen is CPU-bound in the image (13 ms of raster a frame), and its frame rate varies run to run as much
+with the trim as without. Four idle instances in one container: 961-962 MB in all (PSS) with
+the trim, 1,067 MB without it (the arenas 164-169 MB against 274).
+
+A large R8 app (the owner's: SQLite, WebRTC, 28 AGSL shaders), at its sign-in screen and the screens that open
+without signing in, medians of three interleaved runs on arm64 (two on amd64), RSS with the private part in brackets:
+
+| MB | Before #384 | With #384's heap trim | Now |
+|---|---|---|---|
+| arm64, idle at its first screen | 432 (352) | 379 (299) | 351 (233) |
+| arm64, its weather screen open (CPU shaders) | 485 (404) | 464 (382) | 440 (320) |
+| arm64, a list screen after five flings | 505 (423) | 490 (408) | 462 (342) |
+| arm64, idle 30 s after closing the weather screen | 491 (409) | 447 (366) | 401 (281) |
+| amd64 (Rosetta), idle at its first screen | 605 (524) | 562 (480) | 507 (387) |
+| amd64, its weather screen open | 688 (598) | 657 (571) | 590 (467) |
+| amd64, idle 30 s after closing it | 679 (593) | 624 (540) | 556 (434) |
+
+Its screens draw at ~3 fps in the image (their shaders run on the CPU), so frames say nothing there; it ran through
+every step in all 15 runs.
+
+Both flags this adds exist, with the same meaning, on JDK 24, 25, 26 and 27 (early access): a JDK upgrade does not
+turn either into an unknown option, which would stop every launch.
 
 ## Resources mapped, 2026-11-14: the resource tables off the heap
 
@@ -514,7 +643,7 @@ not keep. B2 would remove most of the call sites they serve.
 | E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | not started: spikes of weeks each |
 | A5 Install state in test runs | small | - | - | done: Conscrypt ahead, -115 ms cold, a test process 0.90 s |
 | E4 Native resources mode | large | the table's parse at a cold start | a native runtime rebuild | not started; its memory came from C1 instead |
-| Memory: cache in place, idle heap trim, malloc mode | medium | - | - | done: idle instance 350 → 191-214 MB, standby 350 → 189-226 MB |
+| Memory: cache in place, idle heap trim, malloc mode | medium | - | - | done: idle instance 350 → 191-214 MB, standby 350 → 189-226 MB; the Linux image idle 413 → 330 MB resident, 324 → 203 MB private (arm64) |
 
 A1, C3, D1 and C1 are done. B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process

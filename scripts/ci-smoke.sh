@@ -23,9 +23,15 @@ part() { [[ " ${SMOKE_PARTS:-all} " == *" all "* || " ${SMOKE_PARTS:-all} " == *
 if part app; then
 # scripts/conformance.py reads `am instrument` output and tables two runs (docs/conformance.md); no device needed.
 python3 "$ROOT/scripts/conformance-check.py"
-docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-first-frame --shot first.png app.apk \
+docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-first-frame --shot first.png --jvm -Xlog:cds app.apk \
   > "$OUT/first.log" 2>&1 || { cat "$OUT/first.log"; exit 1; }
 grep first-frame "$OUT/first.log"
+# Where the startup cache was mapped (the launcher's ArchiveRelocationMode=0 asks for the address it was built for, so
+# its pages stay shared file pages). Reported, not required: a cache that cannot go there is moved, as before.
+if ! grep -q "Opened archive .*app\.aot" "$OUT/first.log"; then echo "startup cache: not used"
+elif grep -q "alternative address" "$OUT/first.log"; then echo "startup cache: moved to another address"
+elif grep -q "Mapped static  *region #0" "$OUT/first.log"; then echo "startup cache: mapped at its requested address"
+else echo "startup cache: not mapped"; fi
 test -s "$OUT/first.png" || { echo "no screenshot after the first frame" >&2; exit 1; }
 # An overlay window the app adds before its activity and never sizes (0x0) is the bottom window: the first frame must
 # not wait for it (issue 83, the screen stayed black). The test app adds one with this feature. Without the fix the run

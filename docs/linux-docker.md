@@ -178,6 +178,44 @@ Checked in the container: test app taps, navigation and SQLite (Trips list); the
 sheet with CPU-rendered AGSL backgrounds. The device controls work headless too (checked in the container): `--appearance dark`,
 `rotate`, `locale`, `fontscale`, `open URL`, `permission allow`, `notifications`, `location`, `clipboard`.
 
+## Memory
+
+An idle instance of the test app, 40 s after its first frame, with a warm class cache (2026-11-15, the same Colima
+VM; `/proc/PID/smaps`). RSS is what `stats` reports on Linux (`footprintMb`); the private anonymous part is what the
+process alone holds, the rest file pages (the startup cache, DEX files, libraries) that processes of one image share
+and the kernel can drop:
+
+| RSS, MB (private anonymous) | Before | Now |
+|---|---|---|
+| arm64 image, idle | 413 (324) | 330 (203) |
+| arm64, an animation running (the Shader tab) | 475 (385) | 412 (284) |
+| arm64, idle again 30 s later | 476 (386) | 361 (233) |
+| amd64 image under Rosetta, idle | 595 (501) | 492 (362) |
+| amd64 under Rosetta, the animation running | 680 (572) | 572 (441) |
+| Four arm64 instances in one container, in all (PSS) | | 957 (1,085 with the cache moved) |
+| A large R8 app, arm64, idle at its first screen | 432 (352) | 351 (233) |
+| CI's x86-64 runner, a serve session at the end of its check | 593-619 | 523-545 |
+
+Rosetta's translator adds 160-180 MB to an instance; on a real x86-64 host (CI's runner) a session is near the arm64
+figures. Three things changed (docs/perf-plan.md, "Memory in the Linux image", has the A/B runs and what each costs,
+which is nothing measurable in frames or launch time):
+
+- The Java heap's unused pages go back to the kernel 3 s after the screen goes still (`HeapTrim`, `madvise`;
+  `--jvm -Dapksim.heapTrim=false` turns it off).
+- The startup cache is mapped where it was built for (`-XX:ArchiveRelocationMode=0`; the JDK's default address is
+  free on Linux), so ~38 MB of it stay file pages shared between instances instead of a private copy in each. It
+  gives up the random placement of the JVM's class metadata: `-e APKSIM_AOT_RELOCATE=1` keeps the JDK's relocation,
+  for a server whose sessions run APKs you do not trust.
+- glibc's malloc is trimmed every 5 s (`-XX:TrimNativeHeapInterval=5000`; `--jvm -XX:TrimNativeHeapInterval=0` turns
+  it off): it keeps what was freed in each thread's arena otherwise, about 35 MB after a launch and more after a busy
+  screen.
+
+Test processes (`--instrument`) get the last two; the heap trim is the running instance's.
+
+On a machine with 128 GB of memory or more, the JVM's default heap (a quarter of it) would turn compressed pointers
+off, and with them the startup cache; the launcher's `-XX:+UseCompressedOops` caps that default at ~30 GB instead.
+An `--jvm -Xmx` of 32 GB or more still turns the cache off (31 GB keeps it).
+
 ## CI (GitHub Actions)
 
 `.github/workflows/ci.yml` runs on every push to `main` and on pull requests, on `ubuntu-latest`: it fetches the

@@ -108,8 +108,8 @@ for apk in args[1:]:
                 w = re.search(r"window-open\s+(\d+) ms", p.stderr)
                 f = re.search(r"first-frame\s+(\d+) ms", p.stderr)
                 w, f = w and int(w[1]), f and int(f[1])
-            # Headless (--mem) has no window-open mark.
-            if f is not None and (w is not None or mem):
+            # Headless (--mem, and Linux, which has no window) has no window-open mark.
+            if f is not None and (w is not None or mem or sys.platform != "darwin"):
                 frame.append(f)
                 if w is not None: window.append(w)
             time.sleep(0.5)
