@@ -382,6 +382,12 @@ final class NetEngine {
             relay(cin, cout, uin, uout, client, up);
             return;
           }
+          if (p.length > 5 && p[5].equals("tunnel")) {
+            // Said once per host: the client then gets no ALPN, and a server that speaks only h2 closes on it.
+            Net.log("network: " + tlsHost + ":" + port + " offers h2 but cannot be tunnelled ("
+                + (Net.mode == Net.Mode.REPLAY ? "replaying" : deferred != null ? "its connect failed" : "no upstream connection")
+                + "): answered without ALPN, so an HTTP/2-only server will refuse it");
+          }
           String reply = handshake();
           cout.write(reply.getBytes(StandardCharsets.ISO_8859_1));
           cout.flush();

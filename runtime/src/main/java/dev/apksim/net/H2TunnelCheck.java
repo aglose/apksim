@@ -85,7 +85,10 @@ public final class H2TunnelCheck {
     });
     t.setDaemon(true);
     t.start();
-    SSLContext client = SSLContext.getInstance("TLS");
+    // -Dapksim.check.conscrypt=true: the client's factory is Conscrypt's, as a gRPC app's is (its provider's), not the JDK's.
+    SSLContext client = Boolean.getBoolean("apksim.check.conscrypt")
+        ? SSLContext.getInstance("TLS", (java.security.Provider) Class.forName("org.conscrypt.Conscrypt").getMethod("newProvider").invoke(null))
+        : SSLContext.getInstance("TLS");
     client.init(null, new TrustManager[] {new X509TrustManager() {
       public void checkClientTrusted(X509Certificate[] c, String a) {}
       public void checkServerTrusted(X509Certificate[] c, String a) {}
@@ -94,11 +97,12 @@ public final class H2TunnelCheck {
 
     System.setProperty("apksim.networkInspect", "true");
     Net.configure();
-    check(Net.active && Inspector.on, "the engine captures with the inspector on");
+    check(Net.active && Inspector.on, "the engine captures with the inspector on" + (Net.inMemory ? " (in memory)" : ""));
     int port = ss.getLocalPort();
-    for (int mode = 0; mode < 3; mode++) {
-      boolean h2 = mode == 0;
-      Socket plain = new Socket();
+    for (int mode = 0; mode < 4; mode++) {
+      boolean h2 = mode == 0 || mode == 3;
+      // In memory (-Dapksim.netInMemory=true, the beam sandbox's path) the app's plain socket is a RelaySocket joined to the engine by pipes.
+      Socket plain = Net.inMemory ? Net.createSocket(javax.net.SocketFactory.getDefault()) : new Socket();
       Net.connect(plain, new InetSocketAddress(lan, port), 5000);
       SSLSocket s = (SSLSocket) Net.createSocket(client.getSocketFactory(), plain, "fixture.test", port, true);
       check(s instanceof FakeTlsSocket, "TLS over the engine's socket is the capturing one");
@@ -106,6 +110,11 @@ public final class H2TunnelCheck {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2"});
         s.setSSLParameters(p);
+      } else if (mode == 3) {
+        // gRPC's Android negotiator (io.grpc.okhttp Platform) finds these by reflection on the socket's class: a length-prefixed list.
+        s.getClass().getMethod("setUseSessionTickets", boolean.class).invoke(s, true);
+        s.getClass().getMethod("setHostname", String.class).invoke(s, "fixture.test");
+        s.getClass().getMethod("setAlpnProtocols", byte[].class).invoke(s, (Object) new byte[] {2, 'h', '2'});
       } else if (mode == 1) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2", "http/1.1"});
@@ -123,6 +132,10 @@ public final class H2TunnelCheck {
         s.getOutputStream().write('x');
         s.getOutputStream().flush();
         check(in.read() == 'k', "bytes flow both ways through the tunnel");
+        if (mode == 3) {
+          byte[] sel = (byte[]) s.getClass().getMethod("getAlpnSelectedProtocol").invoke(s);
+          check(sel != null && new String(sel).equals("h2"), "reflection (gRPC's negotiator): getAlpnSelectedProtocol is h2");
+        }
         check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("CONNECT") && e.contains(":" + port)), "the inspector lists a tunnel row");
       } else {
         check("".equals(proto), (mode == 1 ? "offering h2 and http/1.1 (OkHttp's default)" : "offering nothing") + ": captured, no ALPN, HTTP/1.1 as before (got '" + proto + "')");
