@@ -215,6 +215,8 @@ final class TapHttp2 implements Tap.Decoder {
     if (s.out) {
       Stream st = streams.get(id);
       if (st == null) {
+        // Trailers of a request whose answer is already whole (the stream is over here) are not a new request.
+        if (Tap.header(fields, ":method") == null) return;
         st = new Stream();
         request(st, fields, now);
         streams.put(id, st);
