@@ -531,7 +531,7 @@ store), which the agent uses only for addresses its owner allowed (`apksim beam 
 ### Not in scope (yet)
 
 - Audio, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
-  send `camera pattern` or `camera off`; never `camera image`, which names a host file), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
+  send `camera pattern` or `camera off`; never `camera image`, which names a host file), `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH` (a hardware state file under `/sys`: a plain path, a value of at most 128 characters), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
   gestures from the browser, file pickers (`pick`), multiple tabs sharing one session.
 - A pool of more than one warm standby (one per apksim folder today, refilled ~2 s after each launch: a second
   session within that time launches cold).
