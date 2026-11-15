@@ -26,9 +26,11 @@ Read README.md for results and limits; this file covers how to work on the code.
   2026-11-14"): `-XX:ArchiveRelocationMode=0` maps the AOT cache at the address `train.sh` built it for (16 TB on
   macOS, where nothing else is placed: the JDK's 32 GB default sits among malloc's regions and the heap, and was taken
   in most launches), so its 60 MB of read-only metadata stay shared file pages rather than ~45 MB rewritten in every
-  process; and `MallocSpaceEfficient=1` in the JVM's environment (macOS; `MallocSpaceEfficient=0` keeps the default),
-  without which macOS's malloc keeps freed memory dirty and counted for good (the JIT's arenas after a launch, a
-  busy screen's buffers; `malloc_zone_pressure_relief` returns none of it).
+  process (macOS only, and not for a beamed instance: it gives up the random placement of the JVM's class metadata,
+  which stays for a site's APK; Linux is not measured); and `MallocSpaceEfficient=1` in the JVM's environment (macOS;
+  `MallocSpaceEfficient=0` keeps the default), without which macOS's malloc keeps freed memory dirty and counted for
+  good (the JIT's arenas after a launch, a busy screen's buffers; `malloc_zone_pressure_relief` returns none of it;
+  seen on macOS 26.1, and the variable is not in malloc's man page: an OS that ignores it behaves as before).
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
@@ -54,6 +56,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     other JDK layout or collector leaves it off. Never discard at any other time: outside a collection's pause a
     thread may be allocating there. `-Dapksim.heapTrim=false` (cold launches) or `APKSIM_HEAP_TRIM=0` (a standby
     boots before a launch's options exist) turn it off; `-Dapksim.heapTrim.log=true` prints each trim.
+    `scripts/check-heap-trim.sh` (CI, `HeapTrimCheck`) runs it on a plain JVM with a small heap, twice (roomy and
+    tight): the spaces must be found on the JDK in use (an unknown layout otherwise turns it off silently), a trim
+    must return eden's pages, and checksummed objects must survive trims at every young and full collection while
+    three threads allocate. Run it after any change to heaptrim.c and before moving to another JDK.
   - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
     commands (`runCommand`). A frame is drawn when a shown window is dirty or the shown windows changed (`needsFrame`);
     hidden windows (an activity below the top one) never count, as nothing draws them clean: one left dirty made every

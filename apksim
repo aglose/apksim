@@ -608,10 +608,13 @@ JIT=()
 # ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
 # so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
 # moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.
-# A cache that cannot go there (an older one, a taken address) is moved as before.
+# A cache that cannot go there (an older one, a taken address) is moved as before. It gives up the random placement
+# of the JVM's class metadata, so not for a beamed instance, which runs a site's APK (docs/beam.md), and not on
+# Linux, where neither the address nor the gain has been measured.
 AOT=()
 if [[ "$AOT_ROOT" == "$ROOT" ]]; then
-  AOT=("-XX:AOTCache=$STATE/app.aot" -XX:ArchiveRelocationMode=0)
+  AOT=("-XX:AOTCache=$STATE/app.aot")
+  if [[ "$OS" == Darwin && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then AOT+=(-XX:ArchiveRelocationMode=0); fi
 elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
   echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
 fi

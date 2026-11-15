@@ -24,8 +24,8 @@ final class HeapTrim {
   /** The environment variable is for A/B runs of warm launches: a standby boots before any launch's options exist. */
   private static final boolean ON = !"false".equals(System.getProperty("apksim.heapTrim")) && !"0".equals(System.getenv("APKSIM_HEAP_TRIM"));
   private static final boolean LOG = Boolean.getBoolean("apksim.heapTrim.log");
-  /** 0 not tried, 1 the heap's spaces were found, -1 unavailable. */
-  private static int state;
+  /** 0 not tried, 1 the heap's spaces were found, -1 unavailable. Written under the class lock, read by busy() without it. */
+  private static volatile int state;
   private static final AtomicBoolean running = new AtomicBoolean();
   /** Keeps the JIT from dropping the allocations that fill eden. */
   @SuppressWarnings("unused")
@@ -60,19 +60,43 @@ final class HeapTrim {
   /** Whether the instance is idle, as its owner last said: the trim thread arms only while it still is. */
   private static volatile boolean wanted;
 
+  /** Counts idle() calls, so the trim thread can tell that one came while it was at work. */
+  private static final java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
+
   /** The instance has gone idle: trims on a thread of its own, at most one at a time. */
   static void idle() {
     wanted = true;
+    requests.incrementAndGet();
     if (!running.compareAndSet(false, true)) return;
     Thread t = new Thread(() -> {
-      try {
-        trim(false);
-      } finally {
+      int seen;
+      do {
+        // A request that arrives during a trim (busy, then idle again) found this thread running and left: it is
+        // served by another round, here or, if it came after the last look, by taking the flag back.
+        do {
+          seen = requests.get();
+          try {
+            trim(false);
+          } catch (Throwable e) {
+            running.set(false);
+            return;
+          }
+        } while (requests.get() != seen);
         running.set(false);
-      }
+      } while (requests.get() != seen && running.compareAndSet(false, true));
     }, "apksim-heap-trim");
     t.setDaemon(true);
     t.start();
+  }
+
+  /** Whether the heap's spaces were found, so trims do something (the check's first question). */
+  static boolean available() {
+    return ready();
+  }
+
+  /** Collections the native side has seen end, 0 before the first trim (for the check). */
+  static long collections() {
+    return state > 0 ? nativeCollections() : 0;
   }
 
   /**

@@ -18,6 +18,7 @@
 #include <dlfcn.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -65,8 +66,17 @@ static void discard(uintptr_t lo, uintptr_t hi) {
   hi &= ~(page - 1);
   if (hi <= lo) return;
 #ifdef __APPLE__
-  // What HotSpot's own commit does: fresh anonymous pages over the range, same protection.
-  mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_ANON, -1, 0);
+  // What HotSpot's own commit does: fresh anonymous pages over the range, same protection. Should it fail, the old
+  // pages may be gone already (the kernel removes what is there before it maps): try again, and if the range is then
+  // left unmapped say so and stop, as HotSpot does for a failed commit, rather than fault at some later allocation.
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED | MAP_ANON, -1, 0) != MAP_FAILED) return;
+  }
+  if (msync((void *)lo, page, MS_ASYNC) != 0 || msync((void *)(hi - page), page, MS_ASYNC) != 0) {
+    static const char message[] = "[apksim] heap trim: could not map fresh pages over part of the Java heap; stopping\n";
+    (void)!write(2, message, sizeof message - 1);
+    abort();
+  }
 #else
   madvise((void *)lo, hi - lo, MADV_DONTNEED);
 #endif

@@ -155,18 +155,20 @@ Three changes, each for one of the bold rows:
   move") failed for a reason not seen then: the default address, 32 GB, lies where macOS spreads malloc's regions and
   where the heap goes, so the mapping failed in most launches (`-Xlog:cds`: "Failed to reserve spaces", 2 of 3) and
   the JVM moved the cache anyway. `train.sh` now builds it for 16 TB on macOS (`-XX:SharedBaseAddress`), where nothing
-  else is placed: 64 of 64 launches (headless, `--no-network`, `--no-sandbox`, a window) mapped it there. 332 → 288 MB
-  (4 interleaved pairs), and the ~12 ms of rewriting goes.
+  else is placed: 64 of 64 launches (headless, `--no-network`, `--no-sandbox`, a window; macOS 26.1) mapped it there.
+  332 → 288 MB (4 interleaved pairs), and the ~12 ms of rewriting goes. The price is the random placement of the JVM's
+  class metadata, so beamed instances (a site's APK) keep the JDK's default, and so does Linux until it is measured.
 - **The heap's unused pages given back while idle** (`HeapTrim`, `native/heaptrim.c`; AGENTS.md has how). After 3 s
   of a still screen, and in a standby once warmed up, the end of a collection replaces the free part of every heap
   space with fresh pages. 288 → 226 MB (the median of four; malloc's swing put single runs between 223 and 270). The young generation's size is unchanged while the app runs, so collections
   are as rare and short as before; what it costs is a page fault per 16 KB as eden is written again.
 - **macOS's malloc in its space-efficient mode** (`MallocSpaceEfficient=1`, the launcher). By default it keeps freed
   memory dirty and counted against the process for good: a C program that allocates and frees 100 MB keeps 98 MB of
-  footprint (blocks of 16 KB and more; half of it for small ones), 40 s later too, and
+  footprint (macOS 26.1; blocks of 16 KB and more; half of it for small ones), 40 s later too, and
   `malloc_zone_pressure_relief` returns none of it (so an
   idle-time call to it, tried first, did nothing). For an instance that is the JIT's compile arenas (37 MB pooled 2 s
   after a launch) and every buffer a busy screen frees. In the space-efficient mode the same program keeps 1 MB.
+  The variable is not in malloc's man page; an OS that stopped honouring it would behave as before.
   226 → 192 MB idle (four interleaved runs each), and the run-to-run swing of malloc's share (47-100 MB) is gone.
 
 `bench.py 4 --mem`, test app, in two sessions (the Mac quiet, then busy: absolute figures move ~25 MB with its
@@ -199,7 +201,7 @@ What it costs, measured the same way (medians of three interleaved runs; default
 Warm first frame, headless, interleaved rounds: 296 ms with both the trim and the malloc mode, 288 without the trim,
 288 with the default malloc, 294 with neither (24 launches each); the trim alone again, 316 against 313 ms (36 each).
 No difference at this noise: a trimmed standby's eden costs its page faults again, a few ms at most. The test app's
-suite passes (389 of 389 that run); 90 s of random input with the trim after 0.3 s of stillness (54 trims, 155
+suite passes (389 of 389 that run); `scripts/check-heap-trim.sh` (CI) holds it to checksums on a small heap; 90 s of random input with the trim after 0.3 s of stillness (54 trims, 155
 collections, 92 of them full) left the app running and its heap intact.
 
 Not done, with what was found:
@@ -208,8 +210,9 @@ Not done, with what was found:
   buffer in one place (`CppApkAssets.LoadImpl`: `ByteBuffer.wrap` of the asset's bytes). Copies of those two classes
   ahead on the class path, and the table extracted once and mapped, would do it; it touches every app's resources, so
   it wants the snapshot specs compared before and after.
-- **Linux:** the heap trim is built there (`madvise`) and the cache flag is set, with the JDK's default address; glibc's
-  malloc keeps freed memory too (`-XX:TrimNativeHeapInterval` is the JDK's answer), not measured.
+- **Linux:** the heap trim is built there (`madvise`; `scripts/check-heap-trim.sh` runs it in CI) but not measured in
+  the image; the cache is still moved there; glibc's malloc keeps freed memory too (`-XX:TrimNativeHeapInterval` is
+  the JDK's answer), not measured.
 - **A full collection when idle after use:** after the Shader tab and `apksim://bitmaps`, back on a still screen, one
   frees 17 MB (Bitmap pixels whose objects reached the old generation). The 256 MB threshold stands.
 - **The AOT cache's 33 MB written region** is dirty from the start because JDK 24 loads every archived class at
