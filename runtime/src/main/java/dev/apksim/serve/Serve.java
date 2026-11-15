@@ -1658,7 +1658,7 @@ public final class Serve {
       }
       if (beam) {
         session.site = site;
-        session.label = beamLabel != null ? beamLabel : reopenedRec != null && reopenedRec.get("label") instanceof String rl ? rl : null;
+        session.label = reopenedRec != null ? (reopenedRec.get("label") instanceof String rl ? rl : null) : beamLabel;  // a reopened session keeps its record's own
         session.keep = store.config.saveSessions();
         if (reopenSid != null) {
           // Issue 181: a reopened saved session, held (shared, as `run` holds it) until it ends.
@@ -2144,6 +2144,7 @@ public final class Serve {
         StringBuilder b = new StringBuilder("[");
         if (!"never".equals(agent.trust().get(o))) {
           String want = r.param("label");
+          if (want != null && want.isEmpty()) want = null;
           for (Map<String, Object> rec : store.savedFrom(o, want)) {
             if (b.length() > 1) b.append(',');
             String sha = rec.get("sha256") instanceof String h ? h : "";
@@ -2325,7 +2326,7 @@ public final class Serve {
         return;
       }
       // Issue 380: the page's own tag for this setup, saved with the session and listed in GET /beam/saved. A reopened
-      // session keeps the one it was saved with unless the page names another.
+      // session keeps the one it was saved with (a label named on that start is ignored).
       Object lb = body.get("label");
       if (lb != null && !(lb instanceof String ls && ls.length() <= 100 && ls.matches("[\\x20-\\x7e]*"))) {
         throw new IOException("\"label\" takes up to 100 printable ASCII characters");

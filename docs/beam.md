@@ -1045,7 +1045,7 @@ page that runs a new build per pull request made the visitor repeat it for every
   sessions that came from the calling origin (none for a site the owner refused), newest use first. `build`: its own
   build is still on this Mac; `open`: a tab has it open now. `label` (issue 380): the page's own tag for the setup the
   session ran under, from the `label` of the start that made it (up to 100 printable ASCII characters, saved with the
-  session; left out when none; a reopened session keeps its own unless the start names another), so a page can offer only
+  session; left out when none; a reopened session keeps its own and ignores one the start names; an empty `?label=` filters nothing), so a page can offer only
   data saved under the same setup without the agent exposing launch options; `?label=` lists only those saved with
   exactly that label.
 - **Reopening one**: `POST /beam/start {"protocol", "saved": ID}`, from its own site only (any other gets the 404 an
