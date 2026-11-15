@@ -99,8 +99,8 @@ public final class H2TunnelCheck {
     Net.configure();
     check(Net.active && Inspector.on, "the engine captures with the inspector on" + (Net.inMemory ? " (in memory)" : ""));
     int port = ss.getLocalPort();
-    for (int mode = 0; mode < 4; mode++) {
-      boolean h2 = mode == 0 || mode == 3;
+    for (int mode = 0; mode < 5; mode++) {
+      boolean h2 = mode == 0 || mode == 3 || mode == 4;
       // In memory (-Dapksim.netInMemory=true, the beam sandbox's path) the app's plain socket is a RelaySocket joined to the engine by pipes.
       Socket plain = Net.inMemory ? Net.createSocket(javax.net.SocketFactory.getDefault()) : new Socket();
       Net.connect(plain, new InetSocketAddress(lan, port), 5000);
@@ -115,6 +115,9 @@ public final class H2TunnelCheck {
         s.getClass().getMethod("setUseSessionTickets", boolean.class).invoke(s, true);
         s.getClass().getMethod("setHostname", String.class).invoke(s, "fixture.test");
         s.getClass().getMethod("setAlpnProtocols", byte[].class).invoke(s, (Object) new byte[] {2, 'h', '2'});
+      } else if (mode == 4) {
+        // Conscrypt's socket classes' own setter, which OkHttp's Android adapters find by reflection.
+        s.getClass().getMethod("setApplicationProtocols", String[].class).invoke(s, (Object) new String[] {"h2"});
       } else if (mode == 1) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2", "http/1.1"});
