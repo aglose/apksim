@@ -42,7 +42,7 @@ final class AdbServer {
   }
 
   /** Holds a shell/exec request until the framework is ready (Host.run, or SimRunner for test runs). */
-  private static boolean awaitFramework() {
+  static boolean awaitFramework() {
     try {
       return FRAMEWORK_READY.await(60, java.util.concurrent.TimeUnit.SECONDS);
     } catch (InterruptedException e) {
@@ -125,6 +125,9 @@ final class AdbServer {
           int arg0 = h.getInt();
           int arg1 = h.getInt();
           int len = h.getInt();
+          // The header ends with a checksum and the command's complement: bytes that are not adb's (a browser's HTTP
+          // request to this port) end the connection before anything is read as a command.
+          if (h.getInt(20) != ~cmd) throw new IOException("not an adb packet");
           if (len < 0 || len > 16 * 1024 * 1024) throw new IOException("bad adb packet length " + len);
           byte[] data = new byte[len];
           in.readFully(data);

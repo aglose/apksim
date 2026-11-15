@@ -494,6 +494,8 @@ python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$
   --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
 # Issue 336: a web link the app opens (a browser sign-in) reaches the tab, and its final address comes back as `open URL`.
 python3 "$ROOT/scripts/serve-link-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" | tee "$OUT/serve-link-check.log"
+# Issue 397: a tab's `shell` message: am start, am broadcast and settings in its own session, everything else refused.
+python3 "$ROOT/scripts/tabshell-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" | tee "$OUT/tabshell-check.log"
 # Issue 307: a --broadcast launch option is validated on serve's own JVM (no framework classes there): accepted, and a bad one is a 400.
 tok="$(cat "$OUT/serve.token")"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \

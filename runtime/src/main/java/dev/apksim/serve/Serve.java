@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -75,6 +75,8 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /** `--no-shell` (issue 397): tabs may not send `shell` (am start, am broadcast, settings get|put in their own session). */
+  boolean noShell;
   /**
    * `--inspect-network`: instances run with the network inspector (`--network-inspect`) and a tab sees the app's HTTP(S)
    * exchanges and may set rules that answer or slow a URL (docs/pr-preview.md). Off by default: it shows the app's traffic.
@@ -232,6 +234,10 @@ public final class Serve {
         case "--allow-rec" -> {
           s.allowRec = true;
           continue;  // no value: the next argument is an option of its own
+        }
+        case "--no-shell" -> {
+          s.noShell = true;
+          continue;  // no value
         }
         case "--inspect-network" -> {
           if ("optional".equals(v)) {
@@ -460,7 +466,7 @@ public final class Serve {
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb());
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
@@ -1681,6 +1687,8 @@ public final class Serve {
         + (beam ? ",\"rec\":" + (session.recChannels() != null) + (session.recChannels() != null ? ",\"recChannels\":" + Http.q(session.recChannels()) : "")
             : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
         // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
+        // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
+        + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
         + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
         + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
     session.run();
@@ -2111,7 +2119,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.config.allowAdb() + ",\"shell\":" + Http.q(store.config.allowAdb() ? "full" : "limited") + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2358,8 +2366,8 @@ public final class Serve {
       boolean fromSaved = body.get("options") == null && rec != null && local.startsWith("@saved ");
       Object opts = fromSaved ? rec.get("launch") : body.get("options");
       // Issue 276: the tab relay is the start's own opt-in, never carried over from a saved session's options.
-      if (fromSaved && opts instanceof List<?> ol && (ol.contains("--tab-relay") || ol.contains("--network-inspect") || ol.contains("--no-network-inspect"))) {
-        opts = ol.stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x)).toList();
+      if (fromSaved && opts instanceof List<?> ol && (ol.contains("--tab-relay") || ol.contains("--network-inspect") || ol.contains("--no-network-inspect") || ol.contains(Session.ADB_MARKER))) {
+        opts = ol.stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x) && !Session.ADB_MARKER.equals(x)).toList();
       }
       if (opts instanceof List<?> l) {
         for (Object x : l) {
@@ -2382,6 +2390,17 @@ public final class Serve {
         throw new IOException("\"label\" takes up to 100 printable ASCII characters");
       }
       pageLabel = lb instanceof String ls && !ls.isEmpty() ? ls : null;
+      // Issue 397: an adb device for this session on this Mac's loopback, if its owner allows it (`allow-adb on`).
+      Object adb = body.get("adb");
+      if (adb != null && !(adb instanceof Boolean)) throw new IOException("\"adb\" takes true or false");
+      if (Boolean.TRUE.equals(adb)) {
+        if (!store.config.allowAdb()) {
+          Http.text(out, 409, "this Mac's owner has not allowed an adb device (GET /beam/hello says \"adb\": true when a start may ask for one: apksim beam config allow-adb on)");
+          return;
+        }
+        launch = new ArrayList<>(launch);
+        launch.add(Session.ADB_MARKER);  // the agent's own: Catalog.launchOptions does not let a page name it
+      }
       Object relay = body.get("relay");
       if (relay != null && !(relay instanceof Boolean)) throw new IOException("\"relay\" takes true or false");
       if (Boolean.TRUE.equals(relay)) {

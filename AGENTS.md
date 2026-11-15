@@ -317,6 +317,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     `apksim replay --journey` writes journey.json (taps resolved to nodes: `Journey`), run by `scripts/journey.py` (JUnit XML; `journey-start-check.py`: its start and steps' timing, against a stand-in apksim; `check-journey.sh`: `JourneyCheck`, which texts it may expect and how taps and presses become steps, on a stand-in screen).
   - `serve/TraceView`, `resources/dev/apksim/serve/trace-viewer.html`: `apksim rec view [FILE]`, the static trace viewer for
     `.apkrec` and zipped failure bundles (docs/trace-viewer.md; `scripts/trace-viewer-check.py`, `--update-csp` after editing its script).
+  - `TabShell`: `tabshell limited|full BASE64`, an `adb shell` line a browser tab sent (`apksim serve` and `beam`,
+    issue 397; docs/serve.md "Shell commands", docs/beam.md "adb commands in a session"), run by `AdbShell.runForTab` on
+    the control connection's own thread (the shell's commands wait for Host's loop) and answered `ok STATUS BASE64`.
+    `limited`: one command, only `am start`, `am broadcast` and `settings get|put` for the app's own package
+    (`TabShell.refusal`; anything else is status 126); `full` (a beamed session whose Mac's owner set `allow-adb on`): the
+    whole shell, nothing streaming. Only the server sends it: it is not a command a tab may type.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
@@ -1287,6 +1293,17 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 /api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
+Shell commands (issue 397, docs/serve.md "Shell commands"): a tab's `shell ID LINE` runs an adb shell line in its
+session without an adb device (`Session.shellCommand` → the instance's `tabshell`, on a control connection of its own, at
+most four at once), answered `a {"id","status","out"}`: `am start`, `am broadcast` and `settings get|put` for the app's own
+package, anything else status 126; `--no-shell` turns it off; the `i` message says `"shell": "off|limited|full"`. On
+`apksim beam` with the owner's `apksim beam config allow-adb on` it is the whole adb shell, and a start with
+`"adb": true` gets an adb device on loopback (`--adb auto`, through the agent's `--beam-adb` launch marker, never saved
+with a kept session) whose port the tab hears as `d {"adb": PORT}`. The page has an "adb shell" card and
+`window.apksimShell(LINE)`. `scripts/tabshell-check.py URL [--token FILE] [--off]` (CI: `ci-smoke.sh`),
+`scripts/shell-page-check.py URL` (the card, in Chrome), `scripts/beam-check.py APK --only adb` (the beam side, with the
+`adb` client when there is one). AdbServer now closes a connection whose packet header is not adb's (the command's
+complement in its last word), so a browser's request to the port is never read as a command.
 Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
 (14), `/ws?keep=KEY` runs the app in a seed slot (`ks<hex>-0`, which beam's sweep never takes) of the server's naming and, when the session ends, packs
 it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with

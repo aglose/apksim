@@ -81,6 +81,11 @@ final class Control {
           HostLinks.serve(in, out);
           return;
         }
+        if (args[0].equals("tabshell")) {
+          // tabshell: an adb shell line from a browser tab (TabShell), run here: its commands wait for Host's loop.
+          out.println(oneLine(TabShell.run(args)));
+          continue;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(oneLine(p.await()));

@@ -70,7 +70,7 @@ final class AdbShell {
   // ---------------------------------------------------------------- entry points
 
   /** Runs one command line, as `adb shell CMD` does. */
-  void run(String line) throws Exception {
+  int run(String line) throws Exception {
     int status = 0;
     for (Command c : parse(line)) {
       if (c.after.equals("&&") && status != 0 || c.after.equals("||") && status == 0) continue;
@@ -103,8 +103,9 @@ final class AdbShell {
         }
       }
       out.flush();
-      if (status == EXIT) return;
+      if (status == EXIT) return status;
     }
+    return status;
   }
 
   /**
@@ -129,6 +130,42 @@ final class AdbShell {
       }
     }
     return out.toByteArray();
+  }
+
+  /**
+   * A command line a browser tab sent (TabShell, issue 397), from a thread that is not the main one. Returns the last
+   * command's exit status. Not `full`: one allowlisted command (TabShell.refusal), a broadcast kept to the app's own
+   * package. Nothing streams (as for runInProcess), and a command that waits for a client (`am instrument -w`) gives up
+   * after a minute.
+   */
+  static int runForTab(String line, boolean full, OutputStream out) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+    AdbShell shell = new AdbShell(out, InputStream.nullInputStream(), () -> System.nanoTime() > deadline);
+    shell.inProcess = true;
+    if (full) {
+      int status = shell.run(line);
+      return status == EXIT ? 0 : status;
+    }
+    List<Command> cmds = parse(line);
+    cmds.removeIf(c -> c.args.isEmpty() && c.redirect == null);
+    String why;
+    if (cmds.isEmpty()) why = "empty command";
+    else if (cmds.size() > 1 || cmds.get(0).redirect != null || cmds.get(0).args.contains("|")) {
+      why = "one command, without ; && || | or >";
+    } else why = TabShell.refusal(cmds.get(0).args, pkg());
+    if (why != null) {
+      shell.print("apksim: not allowed from a page: " + why + "\n");
+      return 126;
+    }
+    List<String> args = new ArrayList<>(cmds.get(0).args);
+    // A broadcast naming no component or package goes to this app alone, never to whatever else is installed (the
+    // instrumentation an adb client put here).
+    if (args.get(0).equals("am") && args.get(1).equals("broadcast") && !args.contains("-n") && !args.contains("-p")) {
+      args.addAll(2, List.of("-p", pkg()));
+    }
+    int status = shell.exec(args);
+    out.flush();
+    return status;
   }
 
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */

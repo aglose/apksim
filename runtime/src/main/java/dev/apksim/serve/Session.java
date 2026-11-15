@@ -41,6 +41,7 @@ import java.util.stream.Stream;
  */
 final class Session {
   static final Pattern CONTROL_PORT = Pattern.compile("\\[apksim\\] control port (\\d+)");
+  private static final Pattern ADB_PORT = Pattern.compile("^\\[apksim\\] adb device on localhost:(\\d{1,5}) ");
   private static final Pattern DATA_SLOT = Pattern.compile("\\[apksim\\] data slot (.+) pid (\\d+)$");
   private static final Pattern PERMISSION = Pattern.compile("\\[apksim\\] permission request waiting: (.*?) \\(answer");
   private static final Pattern TRANSLATED = Pattern.compile("\\[apksim\\] translated (\\d+) classes");
@@ -406,6 +407,11 @@ final class Session {
       // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
       // app's own defaults, as `apksim beam run` puts them.
       else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
+      // The agent's own marker for a start with "adb": true (issue 397): an adb device on loopback, as `apksim --adb auto`
+      // by hand, only while this Mac's owner allows it; the launcher never sees the marker.
+      else if (own.get(i).equals(ADB_MARKER)) {
+        if (wantsAdb()) cmd.addAll(List.of("--adb", "auto"));
+      }
       else if (own.get(i).equals("--rec") && i + 1 < own.size() && own.get(i + 1).equals("off")) i++;  // off: no recorder
       else cmd.add(own.get(i));
     }
@@ -1079,6 +1085,13 @@ final class Session {
         }
         m = CONTROL_PORT.matcher(line);
         if (m.find()) port.complete(Integer.parseInt(m.group(1)));
+        // A beamed session's adb device (issue 397): the first such line, and only before the data slot's, so before any
+        // app code runs (what the app prints later is never taken for it).
+        if (wantsAdb() && adbPort == 0 && dataDir == null && (m = ADB_PORT.matcher(line)).find()) {
+          int ap = Integer.parseInt(m.group(1));
+          adbPort = ap;
+          Thread.ofVirtual().start(() -> ws.sendText("d {\"adb\":" + ap + "}"));
+        }
         m = DATA_SLOT.matcher(line);
         if (m.find() && dataDir == null) {  // the first only: later lines may be the app's own output
           dataDir = Path.of(m.group(1));
@@ -1367,6 +1380,10 @@ final class Session {
       inspectCommand(text);
       return;
     }
+    if (text.startsWith("shell ")) {
+      shellCommand(text);
+      return;
+    }
     if (text.startsWith("rec ")) {
       // Issue 187: the recorder from a tab, where the server allows it (--allow-rec; always on a visitor's own Mac).
       recCommand(text.strip());
@@ -1638,6 +1655,81 @@ final class Session {
 
   Kept kept() {
     return recordings.isEmpty() ? null : new Kept(fileKey, site, new java.util.HashSet<>(recordings), keptRecDir());
+  }
+
+  /**
+   * What a tab's `shell` message may run (issue 397): `off` (serve --no-shell), `limited` (am start, am broadcast and
+   * settings get|put for the app's own package: TabShell in the instance checks the line), or `full`, the whole adb
+   * shell, only in a beamed session whose Mac's owner allowed adb (`apksim beam config allow-adb on`).
+   */
+  static final String ADB_MARKER = "--beam-adb";
+
+  /** Whether this session's instance gets an adb device: a beamed one that asked, on a Mac whose owner allows it. */
+  boolean wantsAdb() {
+    return serve.beam && serve.store != null && serve.store.config.allowAdb() && app.launch().contains(ADB_MARKER);
+  }
+
+  String shellMode() {
+    if (serve.beam) return serve.store != null && serve.store.config.allowAdb() ? "full" : "limited";
+    return serve.noShell ? "off" : "limited";
+  }
+
+  /** The adb device's port of a beamed session that asked for one and may have it (`"adb": true`), else 0. */
+  volatile int adbPort;
+  private final java.util.concurrent.Semaphore shells = new java.util.concurrent.Semaphore(4);
+
+  /**
+   * `shell ID LINE` from the tab: an `adb shell` command line run in the session's instance without an adb device, and
+   * answered `a {"id", "status", "out"}` (what it printed, at most 256 KB) or `a {"id", "error"}`. The line goes to the
+   * instance as base64 (`tabshell`), which decides what a limited one may be; at most four run at once, each on a
+   * control connection of its own so that one that waits holds up no input.
+   */
+  private void shellCommand(String text) {
+    java.util.regex.Matcher m = Pattern.compile("shell ([A-Za-z0-9_-]{1,24}) ([^\\p{Cntrl}]{1,4000})").matcher(text.strip());
+    if (!m.matches()) {
+      ws.sendText("r refused: shell (shell ID LINE: an id of letters, digits, _ and -, then one line of at most 4000 characters)");
+      return;
+    }
+    String sid = m.group(1), line = m.group(2), mode = shellMode();
+    String head = "a {\"id\":" + Http.q(sid);
+    if (mode.equals("off")) {
+      ws.sendText(head + ",\"error\":\"this server does not allow shell commands (--no-shell)\"}");
+      return;
+    }
+    Integer p = port.getNow(null);
+    if (p == null || ended) {
+      ws.sendText(head + ",\"error\":\"the app is not up yet\"}");
+      return;
+    }
+    if (!shells.tryAcquire()) {
+      ws.sendText(head + ",\"error\":\"four shell commands are already running in this session\"}");
+      return;
+    }
+    lastInput = System.currentTimeMillis();
+    Thread.ofVirtual().name("serve-shell-" + id).start(() -> {
+      String answer;
+      try (Socket s = connect(p)) {
+        s.setSoTimeout(75_000);
+        PrintWriter w = new PrintWriter(new java.io.OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8), false);
+        w.print("tabshell " + mode + " " + java.util.Base64.getEncoder().encodeToString(line.getBytes(StandardCharsets.UTF_8)) + "\n");
+        w.flush();
+        String r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8)).readLine();
+        String[] f = r == null ? new String[0] : r.split(" ", -1);
+        if (f.length == 3 && f[0].equals("ok") && f[1].matches("-?[0-9]{1,10}")) {
+          String out = new String(java.util.Base64.getDecoder().decode(f[2]), StandardCharsets.UTF_8);
+          answer = head + ",\"status\":" + f[1] + ",\"out\":" + Http.q(out) + "}";
+        } else {
+          answer = head + ",\"error\":" + Http.q(r == null ? "the app ended" : r.startsWith("error: ") ? r.substring(7) : r) + "}";
+        }
+      } catch (java.net.SocketTimeoutException e) {
+        answer = head + ",\"error\":\"no answer in 75 s\"}";
+      } catch (IOException | RuntimeException e) {
+        answer = head + ",\"error\":" + Http.q("the app ended (" + e.getMessage() + ")") + "}";
+      } finally {
+        shells.release();
+      }
+      ws.sendText(answer);
+    });
   }
 
   /** `rec on|off CHANNEL...` by tokens (a repeated regex group would recurse once per word and overflow the stack). */
@@ -2302,7 +2394,7 @@ final class Session {
       } catch (IOException | RuntimeException e) {
         signers = null;  // a newer build then needs this one still here to start on its data
       }
-      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x)).toList(),
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x) && !ADB_MARKER.equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
           options.get("permissions"), site, signers, launchKind, label));
       if (id != null) {

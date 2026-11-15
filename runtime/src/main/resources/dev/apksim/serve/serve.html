@@ -67,6 +67,8 @@ dt { color: var(--muted); }
 dd { margin: 0; text-align: right; }
 #log { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); max-height: 140px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-all; }
+#shellOut { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 180px; overflow-y: auto; white-space: pre-wrap;
+  word-break: break-all; margin: 6px 0 0; }
 #permission { border-color: var(--accent); }
 #permission[hidden] { display: none; }
 #linkbox[hidden] { display: none; }
@@ -156,6 +158,12 @@ body.embed.bare aside { width: auto; }
       <div class="row" id="fitRow" hidden><button id="fitTab" title="The simulator window set the size: take it back to this page's">Fit to tab</button></div>
       <div class="row" id="copyRow"><button id="copy">Copy link to this state</button></div>
       <div class="row" id="linkbox" hidden><input id="link" type="text" readonly aria-label="Link"></div>
+    </div>
+    <div class="card" id="shellCard" hidden>
+      <h2>adb shell</h2>
+      <div class="row"><input id="shellLine" type="text" placeholder="am start -n PKG/.Activity" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="adb shell command"><button id="shellRun" style="flex:0">Run</button></div>
+      <div class="hint" id="shellHint"></div>
+      <pre id="shellOut" hidden></pre>
     </div>
     <div class="card stats">
       <h2>Stream</h2>
@@ -554,6 +562,35 @@ function stop() {
 $("start").onclick = start;
 $("stop").onclick = stop;
 function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
+// Issue 397: `shell ID LINE` runs an adb shell command line in the session's instance, answered `a {id, status, out}`
+// or `a {id, error}`. window.apksimShell(line) is the same for a host page's own script: a promise of that answer.
+const shellWaiting = new Map();
+let shellSeq = 0, adbPort = 0;
+function shell(line) {
+  return new Promise((resolve, reject) => {
+    if (!(ws && ws.readyState === 1 && !ended)) { reject(new Error("no session")); return; }
+    const id = "s" + ++shellSeq;
+    shellWaiting.set(id, resolve);
+    ws.send("shell " + id + " " + String(line).replace(/[\u0000-\u001f\u007f]+/g, " ").trim());
+  });
+}
+window.apksimShell = shell;
+window.apksimAdbPort = () => adbPort;
+async function runShell() {
+  let line = $("shellLine").value.trim().replace(/^adb\s+(-s\s+\S+\s+)?shell\s+/, "");
+  if (!line) return;
+  const out = $("shellOut");
+  out.hidden = false;
+  out.textContent += "$ " + line + "\n";
+  try {
+    const a = await shell(line);
+    out.textContent += a.error !== undefined ? "error: " + a.error + "\n" : a.out + (a.out && !a.out.endsWith("\n") ? "\n" : "") + (a.status ? "(exit " + a.status + ")\n" : "");
+  } catch (e) { out.textContent += "error: " + e.message + "\n"; }
+  if (out.textContent.length > 100000) out.textContent = out.textContent.slice(-80000);
+  out.scrollTop = out.scrollHeight;
+}
+$("shellRun").onclick = runShell;
+$("shellLine").onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") runShell(); };
 function onText(t) {
   const kind = t[0], body = t.slice(2);
   if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
@@ -564,6 +601,15 @@ function onText(t) {
     $("moveDataBox").hidden = typeof i.keep === "boolean" || $("runOn").hidden;  // a server session's move to this Mac
     $("macRow").hidden = typeof i.keep !== "boolean";
     if (typeof i.keep === "boolean" && prefFit() === "fill") setFill(true);
+    // Issue 397: adb shell commands in this session ("limited": am start, am broadcast, settings; "full": any).
+    $("shellCard").hidden = !(i.shell === "limited" || i.shell === "full");
+    $("shellHint").textContent = i.shell === "full" ? "Any adb shell command, run in this session's app on this Mac."
+      : "am start, am broadcast and settings get|put, for this app.";
+  }
+  else if (kind === "a") {
+    const a = JSON.parse(body), f = shellWaiting.get(a.id);
+    shellWaiting.delete(a.id);
+    if (f) f(a);
   }
   else if (kind === "k") {
     $("keep").checked = body === "on";
@@ -582,6 +628,7 @@ function onText(t) {
       return;
     }
     if ("link" in d) { appLink(d); return; }
+    if ("adb" in d) { log("adb device on this Mac: adb connect localhost:" + d.adb); adbPort = d.adb; return; }
     const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
       new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
       busy: "another session has this key: it starts without the kept data, and keeps nothing",
@@ -1331,7 +1378,7 @@ async function beamHello(asked) {
         + (older ? "update it (brew upgrade apksim)" : "this site's apksim is older than this Mac's") + "; it runs on the server");
       return null;
     }
-    beam.protocol = common; beam.ok = true; beam.inspect = h.inspect === "optional" || h.inspect === "on";
+    beam.protocol = common; beam.ok = true; beam.inspect = h.inspect === "optional" || h.inspect === "on"; beam.adb = h.adb === true;
     if (h.trusted) loadMacSkins();  // found (now, or again after the browser's prompt): its skins, if it trusts this site
     log("apksim " + h.apksim + " on this Mac" + (h.trusted ? "" : ": it asks before this site runs its first app there"));
     return h;
@@ -1406,7 +1453,9 @@ async function macGrant(q, gen, say, data) {
       body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
         url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}),
         ...(beam.inspect && new URLSearchParams(location.search).get("inspect") === "1" ? { inspect: true } : {}),
-        ...(new URLSearchParams(location.search).get("inspect") === "0" ? { inspect: false } : {}) }) }));
+        ...(new URLSearchParams(location.search).get("inspect") === "0" ? { inspect: false } : {}),
+        // Issue 397: an adb device on this Mac's loopback, where its owner allows one (apksim beam config allow-adb on).
+        ...(beam.adb && new URLSearchParams(location.search).get("adb") !== "0" ? { adb: true } : {}) }) }));
   } finally { waiting = false; }
   if (asked && gen === startGen) say("Allowed, starting…");  // never over a Stop's overlay or a newer session
   if (g.via === "download") log("this Mac downloaded the app from this server");
