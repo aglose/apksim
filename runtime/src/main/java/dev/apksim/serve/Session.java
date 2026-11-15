@@ -1731,6 +1731,12 @@ final class Session {
     // The simulated sensors' values (Sensors): numbers only, no sensor taken away.
     if (t.matches("sensor (shake( [0-9]{1,5})?|tilt " + NUM + " " + NUM + "|(accel|gyro) " + NUM + " " + NUM + " " + NUM
         + "|(light|pressure|humidity|temperature) " + NUM + "|proximity (near|far|" + NUM + ")|steps \\+?" + NUM + "|heart-rate (" + NUM + "|off)|reset)")) return t;
+    // A hardware state file under /sys (SysFiles, in the instance's own scratch folder): set or clear one, never read.
+    if (t.startsWith("sysfs ")) {
+      String u = t.replaceAll(" +", " ");  // the command splits on spaces: a run of them is one
+      return u.matches("sysfs " + dev.apksim.SysFiles.PATH_RE + " [^\\p{Cntrl}]{1,128}")
+          || u.matches("sysfs clear " + dev.apksim.SysFiles.PATH_RE) ? u : null;
+    }
     if (t.matches("open [a-zA-Z][a-zA-Z0-9+.-]*:[^\\s\\p{Cntrl}]{1,2000}")) return t;
     if (t.startsWith("type ")) {
       // Control commands are one line, split on spaces: runs of white space become one space.
