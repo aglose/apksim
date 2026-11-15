@@ -119,7 +119,7 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
     replaying, which has no server) its connection becomes an opaque tunnel, the engine relaying the bytes untouched and
     the real TLS handshake running over them with the app's own factory (`APKSIM-TLS ... tunnel`, answered `TUNNEL`), so
     the client gets the server's ALPN choice. Not recorded or captured; the inspector lists it as a `CONNECT` row.
-    `scripts/check-h2-tunnel.sh` (`H2TunnelCheck`). A socket that is an `SSLSocket` from the start (`SSLSocketFactory.createSocket()` then `connect`) connects
+    `scripts/check-h2-tunnel.sh` (`H2TunnelCheck`: loopback and in memory, the JDK's TLS and Conscrypt, gRPC's reflective ALPN; the real handshake gets only the cipher suites and protocols its socket supports, and an h2 offer that is not tunnelled is logged). A socket that is an `SSLSocket` from the start (`SSLSocketFactory.createSocket()` then `connect`) connects
     directly: through the engine it would lose the host name its TLS checks need. Net turns
     `SSLSocketFactory.createSocket(host, port)` into a plain socket plus layered TLS, so that common form is covered.
   - `URL.openConnection()`, `openConnection(Proxy)`, `openStream()` → the JDK's own `HttpURLConnection` through the
