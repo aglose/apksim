@@ -1168,7 +1168,7 @@ def main():
         st, _, body = req(gp, "GET", "/beam/hello", A)
         check(json.loads(body).get("trusted") is True, "agent: hello says the allowed site is trusted")
         check(hello.get("minProtocol") == 1, f"agent: hello says the range of protocols it speaks (1-{hello.get('protocol')})")
-        check(isinstance(hello.get("apksim"), str) and "--broadcast" in hello.get("options", []) and "--skin" in hello.get("options", [])
+        check(isinstance(hello.get("apksim"), str) and "--broadcast" in hello.get("options", []) and "--sysfs" in hello.get("options", []) and "--skin" in hello.get("options", [])
               and "--jvm" not in hello.get("options", []), f"agent: hello lists the launch options it accepts ({hello.get('options')})")
         # `apksim beam stop` (issue 309): the agent ends by itself (a local tool only: a page's POST is refused).
         st, _, _ = req(gp, "POST", "/beam/stop", A, {})

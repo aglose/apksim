@@ -38,6 +38,11 @@ public final class SysFiles {
     return p == null ? path : p.toString();
   }
 
+  /** A path a page may name (serve and beam: `Catalog`, `Session.check`): under /sys/, plain characters, no `.` or `..` segment. */
+  public static final String PATH_RE = "/sys/(?!(?:[^/]*/)*\\.\\.?(?:/|=|$))[A-Za-z0-9_.:@+,-]+(?:/[A-Za-z0-9_.:@+,-]+){0,15}";
+  /** Seeds a page may give a launch. */
+  public static final int SEED_MAX = 8;
+
   /** `--sysfs PATH=VALUE` seeds of the launch (-Dapksim.sysfs.N), put in place before Application.onCreate. */
   static void seed() {
     for (int i = 0; ; i++) {

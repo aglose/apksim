@@ -47,7 +47,7 @@ final class Catalog {
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
       "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
-      "--device-kind", "--fold");
+      "--device-kind", "--fold", "--sysfs");
   /**
    * This process is `apksim beam`'s agent: a --skin it does not have is dropped, not refused, since a site's start may
    * name its server's skin (which the page draws) and the error would list the visitor's own skins to any page.
@@ -173,7 +173,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
-    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0, broadcasts = 0;
+    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0, broadcasts = 0, sysfsSeeds = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -239,6 +239,13 @@ final class Catalog {
         if (++broadcasts > dev.apksim.BroadcastSpec.COUNT_MAX) {
           throw new IOException("--broadcast: at most " + dev.apksim.BroadcastSpec.COUNT_MAX);
         }
+      }
+      if (o.equals("--sysfs")) {
+        // A file under /sys in the instance's own scratch folder (SysFiles): the path as the sysfs command takes it, a short value.
+        if (!v.matches(dev.apksim.SysFiles.PATH_RE + "=[^\\p{Cntrl}]{0,128}")) {
+          throw new IOException("--sysfs takes /sys/PATH=VALUE (a plain path, a value of at most 128 characters)");
+        }
+        if (++sysfsSeeds > dev.apksim.SysFiles.SEED_MAX) throw new IOException("--sysfs: at most " + dev.apksim.SysFiles.SEED_MAX);
       }
       if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
         throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");
