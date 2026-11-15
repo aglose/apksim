@@ -28,7 +28,8 @@ docker run --rm --platform "$PLATFORM" -v "$OUT:/work" "$IMAGE" --exit-after-fir
 grep first-frame "$OUT/first.log"
 # Where the startup cache was mapped (the launcher's ArchiveRelocationMode=0 asks for the address it was built for, so
 # its pages stay shared file pages). Reported, not required: a cache that cannot go there is moved, as before.
-if grep -q "alternative address" "$OUT/first.log"; then echo "startup cache: moved to another address"
+if ! grep -q "Opened archive .*app\.aot" "$OUT/first.log"; then echo "startup cache: not used"
+elif grep -q "alternative address" "$OUT/first.log"; then echo "startup cache: moved to another address"
 elif grep -q "Mapped static  *region #0" "$OUT/first.log"; then echo "startup cache: mapped at its requested address"
 else echo "startup cache: not mapped"; fi
 test -s "$OUT/first.png" || { echo "no screenshot after the first frame" >&2; exit 1; }

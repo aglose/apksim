@@ -245,9 +245,9 @@ Medians of three interleaved runs each (two on amd64), RSS with the private anon
 | amd64, Shader tab running | 680 (572) | 633 (540) | 572 (441) |
 | amd64, idle again 30 s later | 689 (577) | 583 (490) | 535 (404) |
 
-- **The heap trim** works there as built: each trim logs `young, 29 ms, footprint 465 -> 412 MB`, 48-51 MB of an
-  idle instance on either architecture, and `scripts/check-heap-trim.sh` passes in a Linux JDK container on both
-  (objects checksummed through 220-420 young and 115-420 full collections).
+- **The heap trim** works there as built: an idle instance is 48-51 MB smaller for it on either architecture (one
+  trim's own line: `young, 29 ms, footprint 465 -> 412 MB`), and `scripts/check-heap-trim.sh` passes in a Linux JDK
+  container on both (objects checksummed through 220-420 young and 115-420 full collections).
 - **The cache in place.** The JDK's default address, 32 GB, is free on Linux (the JVM puts the Java heap below it,
   here below 4 GB, and the kernel everything else near the top of the address space): with
   `-XX:ArchiveRelocationMode=0`, 40 of 40 launches of the arm64 image and 20 of 20 of the amd64 one mapped it there
@@ -258,8 +258,9 @@ Medians of three interleaved runs each (two on amd64), RSS with the private anon
   both ways). What that buys shows with several processes: four instances in one container hold 957 MB in all (PSS)
   against 1,085 MB with the cache moved, 32 MB less each, and under memory pressure the file pages can be dropped,
   the rewritten ones only swapped. The launch time is the same (below). The launcher now sets the flag on Linux
-  too; it gives up the random placement of the JVM's class metadata, and `APKSIM_AOT_RELOCATE=1` keeps the JDK's
-  relocation where that matters more than the memory (a server whose sessions run uploaded APKs with native code).
+  too, `apksim serve`'s sessions included (as on the Mac); it gives up the random placement of the JVM's class
+  metadata, and `APKSIM_AOT_RELOCATE=1` keeps the JDK's relocation where that matters more than the memory (a server
+  whose sessions run uploaded APKs with native code).
 - **glibc's malloc** keeps freed memory as macOS's does, in each thread's arena: 52-84 MB resident in arenas after a
   launch against 24-28 MB the JVM counts as its own, and `jcmd System.trim_native_heap` (`malloc_trim`) returned 17
   and 33 MB of it. `-XX:TrimNativeHeapInterval` has the JVM make that call on a thread of its own:
@@ -287,10 +288,11 @@ What it costs, arm64 unless said (medians; fling: 20 swipes on the Home list, ~2
 | Fling: looper / raster per frame | 1.39 / 1.94 ms | 1.39 / 2.01 ms | 1.35 / 1.99 ms |
 | amd64 fling: fps, p95 / p99 | 117.6, 15.0 / 20.0 ms | 117.6, 14.9 / 18.6 ms | 117.2, 15.0 / 19.3 ms |
 
-Cold first frame, arm64, 14 interleaved launches each in one container (warm class cache): 1,188 and 1,191 ms with
-the cache in place and no trim (the same configuration twice: the noise), 1,140 ms with the periodic trim added,
-1,132 ms with the cache moved instead. No
-difference at this noise; the ~10 ms the Mac saves by not rewriting the cache does not show here. The Shader tab says
+Cold first frame, arm64, medians of 14 interleaved launches each in one container (warm class cache): the cache in
+place and no trim, measured twice, 1,188 and 1,191 ms; the cache in place and the 5 s trim, 1,140 ms; the cache moved
+and no trim, 1,132 ms. Single launches ran from about 1,050 to 1,300-1,440 ms in each, so the medians' 50 ms is
+run-to-run drift (a trim that first runs after 5 s cannot speed up a 1.1 s launch): neither setting makes a launch
+slower, and the ~10 ms the Mac saves by not rewriting the cache does not show here. The Shader tab says
 nothing about frames in the image: its shader runs on the CPU, 3 frames a second.
 
 The test app's suite passes in both images built from this (392 of the 392 that run; 61 s on arm64, 82 s on amd64),

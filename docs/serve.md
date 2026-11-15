@@ -497,7 +497,11 @@ that no deep link names, data entered).
   server with `--keep-max` (kept sessions, above): then it is kept, under that key and the server's token, until
   `--keep-days` unused, `--keep-max` or a `DELETE`. Apps run in apksim's sandbox on the Mac
   (`sandbox-exec`: no writes outside apksim's state folder, no reads of credentials), and the container is the
-  sandbox on Linux. This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
+  sandbox on Linux. A session's JVM maps its startup cache at a fixed address (the launcher's
+  `-XX:ArchiveRelocationMode=0`: ~38 MB of each session shared rather than private, docs/perf-plan.md), which gives up
+  the random placement of its class metadata; a server that runs APKs with native code it does not trust can keep the
+  JDK's relocation with `APKSIM_AOT_RELOCATE=1` in serve's environment (`docker run -e`), which its sessions inherit.
+  This keeps sessions' data apart for ordinary apps; it is not a boundary between hostile APKs run
   by different people on one machine, which can read the state folder: give each trust boundary its own serve (its
   own container).
 
