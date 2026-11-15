@@ -305,6 +305,66 @@ final class Beam {
     }
   }
 
+  /**
+   * Whether this origin may delete `count` of its saved sessions now (issue 382): a trusted ("always") site may, "never"
+   * may not, any other is asked on the Mac, each time (a deletion is not something "Allow Once" or a recent answer
+   * to a start covers). One prompt at a time, shared with starts'. No answer is no.
+   */
+  boolean allowedToDelete(String origin, int count) {
+    String saved = trust().get(origin);
+    if ("always".equals(saved)) return true;
+    if ("never".equals(saved)) return false;
+    synchronized (prompting) {
+      boolean ok;
+      askingFor = origin;
+      try {
+        ok = switch (consentMode) {
+          case "allow", "allow-after-2s" -> true;
+          case "deny" -> false;
+          default -> promptDelete(origin, count);
+        };
+      } finally {
+        askingFor = null;
+      }
+      System.err.printf("[beam] %s asked to delete %d saved session%s: %s%n", origin, count, count == 1 ? "" : "s", ok ? "Delete" : "refused");
+      return ok;
+    }
+  }
+
+  private static boolean promptDelete(String origin, int count) {
+    notifyOwner(origin);
+    String text = origin + " wants to delete " + (count == 1 ? "1 saved session" : count + " saved sessions") + " it kept on this Mac, with the data "
+        + (count == 1 ? "it holds" : "they hold") + ". This cannot be undone.";
+    String script = "tell current application to activate\ndisplay dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Delete\", \"Delete\"} "
+        + "default button \"Don't Delete\" cancel button \"Don't Delete\" with icon caution giving up after 120";
+    try {
+      Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true).start();
+      var output = new java.util.concurrent.CompletableFuture<String>();
+      Thread.ofVirtual().name("apksim-beam-prompt").start(() -> {
+        try {
+          output.complete(new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+          output.complete("");
+        }
+      });
+      if (!p.waitFor(PROMPT_MS, TimeUnit.MILLISECONDS)) {
+        p.descendants().forEach(ProcessHandle::destroyForcibly);
+        p.destroyForcibly();
+        return false;
+      }
+      String out;
+      try {
+        out = output.get(5, TimeUnit.SECONDS);
+      } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+        out = "";
+      }
+      return out.contains("button returned:Delete") && !out.contains("gave up:true");
+    } catch (IOException | InterruptedException e) {
+      System.err.println("[beam] no prompt: " + e);
+      return false;
+    }
+  }
+
   private static String appleScriptString(String s) {
     return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
   }

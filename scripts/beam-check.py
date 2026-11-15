@@ -1467,8 +1467,52 @@ def main():
         check(session_info(s6).get("keep") is True, "keep: with save-sessions on the tab is told it is kept")
         check(close_session(s6), "keep: that session ends")
         check(until(lambda: len(saved_ids(apksim)) == 1, 10), "keep: and is saved without asking")
-        for i in saved_ids(apksim):
-            beam(apksim, "forget", i)
+        # Issue 382: deleting saved sessions from a page, and `forget --all`.
+        sid7 = saved_ids(apksim)[0] if saved_ids(apksim) else "none"
+        stop(g)
+        trust(apksim, "revoke", B)  # untrusted: the owner is asked, and this one says no
+        g = agent(apksim, gp, "deny")
+        st, _, body = req(gp, "DELETE", "/beam/saved", B)
+        check(st == 403 and saved_ids(apksim) == [sid7], f"delete: the owner refusing keeps it ({st}, {body[:80]!r})")
+        stop(g)
+        g = agent(apksim, gp, "allow")
+        # A is set to never here (an earlier check): refused outright, and it could not name this one anyway.
+        st, _, body = req(gp, "DELETE", "/beam/saved", A)
+        check(st == 403 and saved_ids(apksim) == [sid7], f"delete: a site the owner refused cannot ({st}, {body[:80]!r})")
+        trust(apksim, "allow", A)
+        st, _, body = req(gp, "DELETE", "/beam/saved", A)
+        check(st == 200 and json.loads(body) == {"erased": [], "skipped": []} and saved_ids(apksim) == [sid7],
+              f"delete: another site's DELETE erases nothing of this one's ({st}, {body[:80]!r})")
+        st, _, body = req(gp, "DELETE", f"/beam/saved/{sid7}", A)
+        check(st == 404 and saved_ids(apksim) == [sid7], f"delete: nor can it name one ({st})")
+        trust(apksim, "revoke", A)
+        check(req(gp, "DELETE", "/beam/saved/zz", B)[0] == 404, "delete: an id that is not one is 404")
+        st, h, _ = req(gp, "OPTIONS", "/beam/saved", B)
+        check(st == 204 and "DELETE" in h.get("access-control-allow-methods", ""), f"delete: the preflight allows DELETE ({st})")
+        st, _, body = req(gp, "DELETE", f"/beam/saved/{sid7}", B)
+        check(st == 200 and json.loads(body).get("erased") == [sid7] and saved_ids(apksim) == [] and not slots(f"k{sid7}"),
+              f"delete: its own site erases one by id, slot and all ({st}, {body[:80]!r})")
+        g7, _ = begin(gp, B, start, apk)
+        s7 = open_session(gp, g7, B)
+        check(close_session(s7), "delete: another kept session ends")
+        check(until(lambda: len(saved_ids(apksim)) == 1, 10), "delete: and is saved")
+        st, _, body = req(gp, "DELETE", "/beam/saved", B)
+        check(st == 200 and len(json.loads(body).get("erased", [])) == 1 and saved_ids(apksim) == [],
+              f"delete: DELETE /beam/saved erases all of the site's ({st}, {body[:80]!r})")
+        g8, _ = begin(gp, B, start, apk)
+        s8 = open_session(gp, g8, B)
+        check(close_session(s8), "forget --all: a kept session ends")
+        check(until(lambda: len(saved_ids(apksim)) == 1, 10), "forget --all: and is saved")
+        stop(g)
+        g = None
+        r = beam(apksim, "forget", "--all", "--site", A)
+        check(r.returncode == 0 and "0 erased" in r.stdout and len(saved_ids(apksim)) == 1, f"forget --all --site: another site's leaves it ({r.stdout.strip()!r})")
+        r = beam(apksim, "forget", "--all", "--app", "zzz-no-such-app")
+        check(r.returncode == 0 and "0 erased" in r.stdout and len(saved_ids(apksim)) == 1, f"forget --all --app: another app's leaves it ({r.stdout.strip()!r})")
+        r = beam(apksim, "forget", "--all", "--site", B)
+        check(r.returncode == 0 and "1 erased" in r.stdout and saved_ids(apksim) == [], f"forget --all --site: this site's goes ({r.stdout.strip()!r})")
+        check(beam(apksim, "forget", "--all", "--bogus").returncode == 2, "forget --all: an unknown option is usage")
+        g = agent(apksim, gp, "allow")
 
         # ---- the tab relay (docs/beam.md "The tab relay", issue 276)
         stop(g)

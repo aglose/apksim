@@ -1780,6 +1780,43 @@ public final class Serve {
     return local.startsWith("@saved ") ? ",\"saved\":" + Http.q(id) : ",\"dataFrom\":" + Http.q(id);
   }
 
+  /**
+   * `DELETE /beam/saved` (all of this site's saved sessions) and `DELETE /beam/saved/ID` (one): issue 382. Only the
+   * asking origin's own, as `GET /beam/saved` lists; the Mac's owner is asked first unless the site is trusted. A
+   * session a tab has open is skipped. Answers `{"erased":[ids],"skipped":[{"id","why"}]}`.
+   */
+  private void deleteSaved(String o, String id, OutputStream out) throws IOException {
+    if ("never".equals(agent.trust().get(o))) {
+      Http.text(out, 403, "this Mac does not let " + o + " use it (apksim beam trust)");
+      return;
+    }
+    List<Map<String, Object>> mine = store.savedFrom(o);
+    if (id != null) mine.removeIf(rec -> !id.equals(String.valueOf(rec.get("id"))));
+    if (id != null && mine.isEmpty()) {
+      Http.text(out, 404, "no saved session " + id + " from " + o + " on this Mac (GET /beam/saved lists them)");
+      return;
+    }
+    if (mine.isEmpty()) {
+      Http.json(out, 200, "{\"erased\":[],\"skipped\":[]}");
+      return;
+    }
+    if (!agent.allowedToDelete(o, mine.size())) {
+      Http.text(out, 403, "this Mac's owner did not allow deleting " + (mine.size() == 1 ? "it" : "them"));
+      return;
+    }
+    java.util.Set<String> ids = new java.util.HashSet<>();
+    for (Map<String, Object> rec : mine) ids.add(String.valueOf(rec.get("id")));
+    BeamStore.Forgotten f = store.forgetAll(rec -> ids.contains(String.valueOf(rec.get("id"))) && o.equals(rec.get("site")), catalog);
+    StringBuilder b = new StringBuilder("{\"erased\":[");
+    for (int k = 0; k < f.erased().size(); k++) b.append(k > 0 ? "," : "").append(Http.q(String.valueOf(f.erased().get(k).get("id"))));
+    b.append("],\"skipped\":[");
+    for (int k = 0; k < f.skipped().size(); k++) {
+      String sk = f.skipped().get(k);
+      b.append(k > 0 ? "," : "").append("{\"id\":").append(Http.q(sk.substring(0, 12))).append(",\"why\":").append(Http.q(sk.substring(sk.indexOf("): ") + 3))).append('}');
+    }
+    Http.json(out, 200, b.append("]}").toString());
+  }
+
   /** Whether a saved session is open in a tab now (its copy held by a grant or a running session). */
   boolean savedOpen(String id) {
     for (var e : List.copyOf(reopened.entrySet())) {
@@ -2059,7 +2096,7 @@ public final class Serve {
     if (o != null && o.equals(sent)) Http.CORS_ORIGIN.set(o);  // only an origin that is already its validated form
     if (r.method().equals("OPTIONS")) {
       // The browser's preflight for the JSON start and the upload; and Private Network Access's, for browsers that send it.
-      Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST",
+      Http.respond(out, 204, "text/plain", new byte[0], "Access-Control-Allow-Methods: GET, POST, DELETE",
           "Access-Control-Allow-Headers: Content-Type, X-Filename", "Access-Control-Allow-Private-Network: true",
           "Access-Control-Max-Age: 600");
       return;
@@ -2136,6 +2173,12 @@ public final class Serve {
       else skinImage(r, r.path().substring("/beam/skins/".length()), out);
       return;
     }
+    if (r.method().equals("DELETE") && r.path().startsWith("/beam/saved/")) {
+      String id = r.path().substring("/beam/saved/".length());
+      if (!id.matches("[0-9a-f]{12}")) Http.text(out, 404, "no such saved session");
+      else deleteSaved(o, id, out);
+      return;
+    }
     switch (r.method() + " " + r.path()) {
       case "POST /beam/start" -> beamStart(r, o, out);
       case "GET /beam/saved" -> {
@@ -2154,7 +2197,8 @@ public final class Serve {
         }
         Http.json(out, 200, b.append(']').toString());
       }
-      case "POST /beam/upload" -> {
+      case "DELETE /beam/saved" -> deleteSaved(o, null, out);
+            case "POST /beam/upload" -> {
         Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
         if (g == null) {
           Http.text(out, 403, "no such upload (each start's lasts two minutes and is used once): start again");
