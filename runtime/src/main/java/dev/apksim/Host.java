@@ -627,14 +627,34 @@ public class Host {
    */
   private static final class Memory {
     private static final long GROWTH = Long.getLong("apksim.idleGcMB", 256) << 20;
+    /** A still screen for this long is idle: the heap's unused pages go back to the system (HeapTrim). 0: never. */
+    private static final long TRIM_AFTER_NANOS = Long.getLong("apksim.idleTrimMs", 3000) * 1_000_000L;
     private long busySince = System.nanoTime();
     private long nextCheck;
     private long baseline = -1;
     private int lastPressure = 1;
+    /** While idle, a footprint this far above what the last trim left is trimmed again, at most every 10 s. */
+    private static final long RETRIM = 16 << 20;
+    /** HeapTrim has been told this still period is idle. */
+    private boolean trimmed;
+    private long trimAt;
+    /** The footprint the last trim left (read a second after it), -1 until then. */
+    private long trimFloor = -1;
 
     void tick(boolean quiet) {
       long now = System.nanoTime();
-      if (!quiet) busySince = now;
+      if (!quiet) {
+        busySince = now;
+        if (trimmed) {
+          trimmed = false;
+          HeapTrim.busy();
+        }
+      } else if (!trimmed && TRIM_AFTER_NANOS > 0 && now - busySince > TRIM_AFTER_NANOS) {
+        trimmed = true;
+        trimAt = now;
+        trimFloor = -1;
+        HeapTrim.idle();
+      }
       if (now - nextCheck < 0) return;
       nextCheck = now + 1_000_000_000L;
       int pressure = Footprint.pressure();
@@ -643,6 +663,19 @@ public class Host {
       long fp = Footprint.bytes();
       if (fp < 0) return;
       if (baseline < 0) baseline = fp;
+      if (trimmed) {
+        // An idle app still allocates a little (timers, its own polling, a cache sweep), so eden's pages fill with
+        // garbage again, slowly.
+        if (trimFloor < 0) {
+          if (now - trimAt > 1_500_000_000L) trimFloor = fp;
+        } else if (fp - trimFloor > RETRIM && now - trimAt > 10_000_000_000L) {
+          trimAt = now;
+          trimFloor = -1;
+          HeapTrim.idle();
+        } else {
+          trimFloor = Math.min(trimFloor, fp);
+        }
+      }
       boolean idleGrowth = GROWTH > 0 && now - busySince > 2_000_000_000L && fp - baseline > GROWTH;
       if (!pressed && !idleGrowth) {
         baseline = Math.min(baseline, fp);
@@ -650,7 +683,9 @@ public class Host {
       }
       if (pressed) dev.apksim.gpu.GpuBitmaps.trim();
       long t0 = System.nanoTime();
-      System.gc();
+      // A full collection whose end gives the heap's unused pages back to the system.
+      HeapTrim.trim(true);
+      if (!trimmed) HeapTrim.busy();  // in use (memory pressure mid-scroll): later collections leave the heap alone
       long after = Footprint.bytes();
       if (!Boolean.getBoolean("apksim.quiet")) {
         System.err.printf("[apksim] %s: collected in %d ms, footprint %d -> %d MB%n", pressed ? "memory pressure" : "idle",

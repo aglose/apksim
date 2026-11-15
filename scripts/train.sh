@@ -75,8 +75,14 @@ stage() {
     exit 1
   fi
 }
+# Where launches map the cache (the launcher's -XX:ArchiveRelocationMode=0: mapped there, its pages need no rewriting
+# and stay shared file pages; anywhere else costs each process ~45 MB). The JDK's default, 32 GB, is inside the range
+# macOS spreads malloc's regions and the Java heap over, and was taken in most launches; nothing is placed near 16 TB
+# (64 of 64 launches mapped there). Linux leaves low addresses free, so the default stands. APKSIM_AOT_BASE overrides.
+AOT_BASE="${APKSIM_AOT_BASE:-}"
+[[ -z "$AOT_BASE" && "$(uname -s)" == Darwin ]] && AOT_BASE=0x100000000000
 stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
-stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
+stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" ${AOT_BASE:+--jvm "-XX:SharedBaseAddress=$AOT_BASE"} "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
 mv -f "$NEW" "$STATE/app.aot"
 printf '%s' "$ROOT" > "$STATE/app.aot.root"

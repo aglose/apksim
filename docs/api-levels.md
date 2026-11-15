@@ -154,7 +154,7 @@ The Mac window, Metal presentation and `wshot` are level-independent code, but w
   same way: `train.sh` worked unchanged against API 30 and gave an 83 MB cache (API 36: 108 MB) and the cold
   first frames above. A release would train two in the background, or only the default until `--api` is first used.
 - A standby boots one framework, so the level has to be part of its key beside the sandbox flags, and the launcher
-  must send a launch only to a standby of its level. Two levels in use means two idle standbys (~410 MB each).
+  must send a launch only to a standby of its level. Two levels in use means two idle standbys (~190-225 MB each).
 - The class cache is keyed by apksim.jar's hash and each entry is checked against the framework's "is X an interface"
   answers, so one cache served both levels in the spike without a wrong class. Once any translator rewrite depends on
   the level, the level belongs in the key (as `-debug` and peephole already have their own).
