@@ -210,9 +210,9 @@ text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helveti
 <text x="628" y="1248" class="p">frame ring, and the H.264 or JPEG stream of <tspan class="m">apksim serve</tspan></text>
 <text x="40" y="1286" class="c">THE REST OF THE SIMULATED DEVICE</text>
 <rect x="40" y="1296" width="257" height="74" rx="8" class="b sim"/>
-<text x="54" y="1320" class="t">Network engine</text>
-<text x="54" y="1340" class="p">records to HAR, replays with</text>
-<text x="54" y="1358" class="p">no backend; offline, 3G, lossy</text>
+<text x="54" y="1320" class="t">Network tap and engine</text>
+<text x="54" y="1340" class="p">records to HAR untouched; replays</text>
+<text x="54" y="1358" class="p">with no backend; offline, 3G, lossy</text>
 <rect x="327" y="1296" width="257" height="74" rx="8" class="b sim"/>
 <text x="341" y="1320" class="t">Flight recorder</text>
 <text x="341" y="1340" class="p">rings of input, logcat, network,</text>

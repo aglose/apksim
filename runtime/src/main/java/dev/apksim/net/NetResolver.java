@@ -53,7 +53,7 @@ public final class NetResolver extends InetAddressResolverProvider {
           // The network inspector (docs/pr-preview.md): the failed lookup is a row, and while a rule answers requests the host
           // gets a placeholder like a replayed one, so a rule can stand in for a server that is not there (yet).
           Inspector.failure(host, 0, "DNS lookup failed: " + e.getMessage());
-          if (!Inspector.hasAnswerRules()) throw e;
+          if (!Inspector.answers(h)) throw e;
           return Stream.of(placeholder(h));
         }
       }

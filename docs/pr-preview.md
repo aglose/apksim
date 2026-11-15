@@ -115,12 +115,18 @@ holds the app's logs and a copy of its data: treat the zip like the token.
 
 ### Network inspector (`--inspect-network`)
 
-Off by default, because it shows the app's traffic. With it, instances run with `--network-inspect`, which keeps the engine's
-in-memory capture on (record mode with no file, as `rec on net`: docs/network.md) and reports; the page shows a **Network** card
-that opens a panel:
+Off by default, because it shows the app's traffic. With it, instances run with `--network-inspect`, which keeps the network
+tap's in-memory capture on (as `rec on net`: docs/network.md "Two mechanisms") and reports; the page shows a **Network** card
+that opens a panel. Looking changes nothing for the app: its connections are its own, over the protocol its servers pick
+(HTTP/2, gRPC), and only read as they pass. A **rule** is the one thing that puts connections through the network engine, and
+only those to the host its pattern names (`https://api.example.com/v1/*` concerns `api.example.com`; a pattern that names no
+host, such as `/v1/items`, concerns every host): those hosts are then spoken to over HTTP/1.1 while the rule exists, and adding
+or removing a rule closes the connections it concerns, so the app reconnects the other way. The panel:
 
 - **Requests**, as they happen: time, method, status, URL, milliseconds (`*`: a rule added some), a hint with sizes and the rule that
-  answered. A connection the engine could not make is a row too (`DNS`/`CONNECT`, status 0). Click one for its headers and
+  answered. A request that failed is a row with status 0 and the reason (a reset stream, a timeout, a connection closed early), as is
+  a connection that could not be made (`DNS`/`CONNECT`, status 0) and one that is not HTTP (`CONNECT`, with its byte counts). Rows over
+  HTTP/2 say so (`"http": "HTTP/2"` in the event; gRPC's trailers are in the detail). Click one for its headers and
   bodies (at most 256 KB of each, binary shown as a size; a row shows 1,500 characters of a long URL, the detail all of it; rows are buttons a keyboard reaches; replayed answers are rows too). Headers are redacted exactly as a recording's are (`Authorization`,
   `Cookie`, ... and `--network-redact`); bodies and URLs are as sent.
 - **Rules**: a method (or any), a URL pattern (part of the address, `*` for anything), and a status (200-599) with a content type and body

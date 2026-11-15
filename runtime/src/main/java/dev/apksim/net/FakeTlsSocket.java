@@ -219,6 +219,8 @@ public final class FakeTlsSocket extends SSLSocket {
     s.startHandshake();
     real = s;
     session = s.getSession();
+    // The real TLS is the app's, end to end: what it carries is read by the tap, as on a connection made directly.
+    if (Tap.on) Tap.connected(this, host, port, -1);
     HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
   }

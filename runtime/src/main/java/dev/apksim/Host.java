@@ -218,7 +218,7 @@ public class Host {
         }
         if (autofill != null) autofill.tick(Host::rootViews);
         controls.tick();
-        recorder.tick(!firstFrame);
+        recorder.tick(!firstFrame, frames);
         SlotDevice.tick();
         TimeTick.tick(app);
         Control.Pending cmd;

@@ -232,7 +232,7 @@ A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--sdcard-file` (a file written to `/sdcard` before the app starts: `PATH=text:TEXT` or `PATH=BASE64`,
-inline, at most 64 KB a file and 72 KB in all, `..` refused), `--broadcast` (`ACTION;es:K=V;ez:K=true`, also `ei`, `el`, `ef`: one broadcast to the app's own package after `Application.onCreate`, before the first activity, for debug flag-override receivers; no `;` or spaces inside a value, 8 at most), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
+inline, at most 64 KB a file and 72 KB in all, `..` refused), `--broadcast` (`ACTION;es:K=V;ez:K=true`, also `ei`, `el`, `ef`: one broadcast to the app's own package after `Application.onCreate`, before the first activity, for debug flag-override receivers; no `;` or spaces inside a value, 8 at most), `--sysfs` (`/sys/PATH=VALUE`: a hardware state file the app reads, in the instance's own scratch folder; a plain path under `/sys/` without `.`/`..` segments, a value of at most 128 characters, 8 at most; a tab changes it with `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH`, then `key CAMERA` for the app to re-read), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
 `--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera` (`off` or `fake`, not
 `fake=IMAGE`: no host files), `--network-profile`, `--device`, `--skin` (a stored skin's name, never a path; an unknown
 one is refused naming the known ones: see "Skins"), and the flags
@@ -531,7 +531,7 @@ store), which the agent uses only for addresses its owner allowed (`apksim beam 
 ### Not in scope (yet)
 
 - Audio, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
-  send `camera pattern` or `camera off`; never `camera image`, which names a host file), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
+  send `camera pattern` or `camera off`; never `camera image`, which names a host file), `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH` (a hardware state file under `/sys`: a plain path, a value of at most 128 characters), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
   gestures from the browser, file pickers (`pick`), multiple tabs sharing one session.
 - A pool of more than one warm standby (one per apksim folder today, refilled ~2 s after each launch: a second
   session within that time launches cold).

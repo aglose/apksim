@@ -301,11 +301,17 @@ Read README.md for results and limits; this file covers how to work on the code.
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.
   - `FlightRecorder`, `rec/` (`Rec`, `Ring`, `Db`): the flight recorder (`--rec CHANNELS`, `rec` command,
     docs/flight-recorder.md). Rings of the last N seconds (input at `Host.dispatch`, device commands at
-    `runCommand`, logcat, net through `Net.capture`, SQLite through translator hooks to `rec.Db`, screen frames from
-    the raster thread), checkpoints (stack intents + saved state, a clone of the data folder), and `rec save` to a
-    `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`). A checkpoint cycles the visible activities
-    through onStop/onStart as a quick Home and back would: the one way recording shows in the app. It ends in
-    `Host.arrange`, as every stack change does (issue 320).
+    `runCommand`, logcat, net through the network tap (`Net.capture`: passive, see "Network"), SQLite through
+    translator hooks to `rec.Db`, screen frames from the raster thread), checkpoints (stack intents + saved state, a
+    clone of the data folder), and `rec save` to a `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`).
+    A checkpoint cycles the visible activities through onStop/onStart as a quick Home and back would: the one way
+    recording shows in the app, so one nobody asked for by name is taken only with the app at rest
+    (`FlightRecorder.atRest`: no input for 1.5 s, fewer than 5 frames drawn in them, no request under way as far as
+    the tap knows: `Net.busy`), however long that takes (`rec` says what a due one waits for; only the first has a
+    limit, 15 s, since without one nothing can be replayed), or just before the first input after the interval
+    (`beforeInput`, from `FlightRecorder.input`); a second after an input, as before, it landed in the middle of
+    what the input started (issue 320: a dropped screen load, a player stuck after its first picture). It ends in
+    `Host.arrange`, as every stack change does. `rec-check.py` checks when they come.
     `scripts/replay-adb.py BUNDLE -s SERIAL --yes` plays a bundle on a device over adb (the checkpoint's data, /sdcard
     and Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192).
     It replaces the app's data, /sdcard files and Settings values there, so it stops without `--yes` and backs the
@@ -343,8 +349,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     stopped after two cycles. Default test runs keep that cap: their unpaused Choreographer would never let the looper
     go idle. `-Dapksim.repeatForever=false` keeps the cap everywhere (docs/conformance.md, cause 4).
   - `ElfLoader`, `Natives`: load the APK's arm64 `.so` files through `native/`.
-  - `net/`: the app's network recorded, replayed and shaped (`Net`, `NetEngine`, `FakeTlsSocket`, `NetResolver`,
-    `Recording`), and `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").
+  - `net/`: the app's network observed (`Tap`, `TapHttp1`, `TapHttp2`, `Hpack`, `TapWebSocket`, `TapSslSocket`:
+    the app's own connections read as they pass) and changed (`NetEngine`, `FakeTlsSocket`: replay, conditions,
+    mapped hosts, inspector rules), `Net` deciding which per connection, `NetResolver`, `Recording`, and
+    `NetConnectivity`: offline as ConnectivityManager shows it (see "Network").
   - `Storage`: per-PID scratch under `work/tmp` (swept on next launch) and persistent app data under
     `work/cache/data/<pkg>/default` (or `instance-N` when several run); `--fresh` empties the slot it takes first.
     `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot
@@ -371,7 +379,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`sysfs`, `sysfs PATH`, `sysfs PATH VALUE...`, `sysfs clear PATH|all`; chain `key CAMERA` for the app to re-read) back a path with a file in the
     process's scratch folder (value plus a newline). The translator sends the path String of `new File(String)`,
     `new FileInputStream(String)` and `new FileReader(String)` through `SysFiles.map`, so File.exists, FileReader and
-    `File.toPath()` reads see it; `Paths.get`/`Path.of` and `File(parent, child)` are not mapped. Only `/sys/` paths; the app sees the backing file's path from `File.getPath`. Seeded just before Application.onCreate, so the constructor and attachBaseContext read nothing. The translator's output for every class calling those three constructors changed on purpose.
+    `File.toPath()` reads see it; `Paths.get`/`Path.of` and `File(parent, child)` are not mapped. Only `/sys/` paths (at most 32 entries); a page may carry `--sysfs` (8 seeds, values to 128 characters) and send `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH` (`SysFiles.validPath`: 1-16 plain segments, no `.`/`..`; a tab's runs of spaces in a value become one); the app sees the backing file's path from `File.getPath`. Seeded just before Application.onCreate, so the constructor and attachBaseContext read nothing. The translator's output for every class calling those three constructors changed on purpose.
     Running instances only (seeded in `Host` after `SlotDevice.take`). The test app's `apksim://slot` shows
     `/sys/devices/apksim-test/state` ("sysfs: 1") with a Reread button.
   - `AdbServer`, `AdbShell`, `AdbLog`, `UiDump`: the adb device (`--adb PORT`, see "adb device").
@@ -414,10 +422,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     zipped by the server (`handoff`) and unpacked by the agent into a `bm<12 hex>-0` slot, docs/beam.md phase 5; the page is
     `resources/dev/apksim/serve/serve.html`). Runs on a plain JVM with only apksim.jar: no Robolectric or Android there.
   - In the beam sandbox (`Net.inMemory`; `-Dapksim.netInMemory=true` elsewhere, for checks) loopback is denied, so the network
-    engine is reached in memory: plain-factory sockets are `RelaySocket`s and `connectEngine` joins them to the engine
-    by pipes (`PipeSocket` is the engine's end; `TabRelay.Pipe` has a blocking mode). `HttpURLConnection` there goes out
-    directly (its engine proxy would be on loopback), as does a socket the app made itself (`new Socket()`): not captured
-    or recorded, one log line each (issue 317). `network-check.sh` has an in-memory pass.
+    engine, when a connection needs it (a rule, a condition, a mapped host, replay), is reached in memory: plain-factory
+    sockets are then `RelaySocket`s and `connectEngine` joins them to the engine by pipes (`PipeSocket` is the engine's
+    end; `TabRelay.Pipe` has a blocking mode). `HttpURLConnection` there goes out directly (its engine proxy would be on
+    loopback), as does a socket the app made itself (`new Socket()`): the tap still reads them, but no rule or condition
+    reaches them, one log line each (issue 317). Observing alone needs none of this there: the tap has no socket of its
+    own. `network-check.sh` has an in-memory pass.
   - `net/TabRelay`, `RelaySocket`, `RelayConnection`: the beam tab relay (issue 276, docs/beam.md "The tab relay"): with
     `--tab-relay` (the agent adds it for a start with `"relay": true`, protocol 3), plain-HTTP requests to
     `page.apksim.invalid` are carried to the browser tab as `y ID {json}` text messages and answered by it. In-JVM (the
@@ -589,7 +599,7 @@ also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `rec
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
-`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
+`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
 launch as an emulator boots, `--bluetooth off` otherwise; each switch, the app's own BluetoothAdapter.enable()/disable()
 included (`ShadowSimBluetoothAdapter`, allowed at any targetSdk as Robolectric allowed it), goes TURNING_ON then ON, or
@@ -836,7 +846,8 @@ binding to .NullBindingService"), and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
-`NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network").
+`NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network";
+`apksim://network?url=URL` adds "Get" and "Get URL" for any address and shows the protocol OkHttp got).
 `apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
 CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
 still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
@@ -917,18 +928,42 @@ in the log, and in a test run fails the test it happened in unless it ran `apksi
 `--network-profile` and the `network` command set conditions (offline, 3g, lossy, latency, bandwidth), and
 `--network-host H=ADDR:PORT` points an address compiled into the app at a fixture server (`--network-trust CERT` for
 its certificate). Any option turns it on; without one, the hooks cost one static read.
+- **Observing and intervening are separate (redesigned 2026-11-15; docs/network.md "Two mechanisms").** Until then
+  every capture (a recording, `--rec net`, the inspector) put all of the app's connections through `NetEngine`, a
+  proxy that ended the app's TLS and spoke only HTTP/1.1: no ALPN, so gRPC never connected (issues 367, 387), a
+  loopback socket the beam sandbox denied (317), HLS players stuttering, every connection closed when the channel
+  came on. Now observing is the **tap** (`Tap`): the app's sockets are its own (direct connect, the TLS its factory
+  makes, the server's ALPN choice, so HTTP/2 and gRPC), and only what passes through their streams is copied (one
+  array copy and a queue node per read or write on the app's thread) for the `apksim-net-tap` thread to decode:
+  `TapHttp1`, `TapHttp2` with `Hpack` (tables written out from the JDK's own implementation), `TapWebSocket`.
+  A decoder that cannot read a connection, or a queue 48 MB behind, drops that connection's capture, never its
+  bytes; nothing the tap does can fail or delay a request. Entries also record failures (`_apksimError`), streams
+  still open at a save (`_apksimUnfinished`), trailers, WebSocket messages and every connection with its TLS and
+  ALPN (`log._apksimConnections`). The engine is for what must stand in the way, per connection (`Net.route`):
+  `MITM` (answered: replay; a host an inspector rule's pattern names, `Inspector.concerns`, every host when it names
+  none; a mapped host while recording), `RELAY` (carried untouched and shaped: conditions, a mapped host; the app's
+  TLS stays end to end and the tap reads it), else `DIRECT`. A rule added or removed closes the connections it
+  changes the route of (`Net.rulesChanged`), as conditions do when they begin; `network reconnect` closes all.
+  `rec on net` in a running app closes nothing: connections already open stay unread (HPACK needs a connection
+  from its first block) and the answer says how many.
 - Where it hooks (measured: the owner's R8 build has no `okhttp3/OkHttpClient$Builder`, R8 renamed OkHttp): the
   translator sends app calls to JDK APIs, which R8 never renames, to `dev.apksim.net.Net` (`MethodTranslator.NET_HOOKS`):
-  `Socket.connect`, `SocketFactory`/`SSLSocketFactory.createSocket(host, port)`, `SSLSocketFactory.createSocket(socket,
-  host, port, autoClose)`, `URL.openConnection`/`openStream` and `HttpsURLConnection.setSSLSocketFactory`. A connection to a non-loopback address goes to
-  `NetEngine` on a loopback port instead (a first line says where it was going; the engine answers with the real
-  connect's result). Recording or replaying, TLS on such a socket is a `FakeTlsSocket`: its handshake gets the
-  server's certificates from the engine (the real chain, so hostname checks and pins pass) and the bytes stay plain
-  text, so HTTP/1.1 is readable (a client offering h2 without http/1.1, as gRPC does, is relayed as an opaque tunnel
-  instead: hello field `tunnel`, reply `TUNNEL`, real TLS over the relayed bytes, `Inspector.tunnel`; no recording,
-  rules, mocks or `--network-trust` apply inside it; `scripts/check-h2-tunnel.sh`). The JDK's HttpURLConnection is not app code; Net hands it the engine as an HTTP proxy.
+  `Socket.connect`, `Socket.getInputStream`/`getOutputStream` (the tap's seam: the stream is wrapped, never the
+  socket, so Conscrypt's and gRPC's own calls on the socket's class are untouched),
+  `SocketFactory`/`SSLSocketFactory.createSocket(host, port)`, `SSLSocketFactory.createSocket(socket,
+  host, port, autoClose)`, `URL.openConnection`/`openStream` and `HttpsURLConnection.setSSLSocketFactory`. A connection
+  routed to the engine goes to its loopback port instead (a first line says where it was going and `answer|relay`;
+  the engine answers with the real connect's result). Answered, TLS on such a socket is a `FakeTlsSocket`: its
+  handshake gets the server's certificates from the engine (the real chain, so hostname checks and pins pass) and the
+  bytes stay plain text, so HTTP/1.1 is readable (a client offering h2 without http/1.1, as gRPC does, is carried as
+  a tunnel instead: hello field `tunnel`, reply `TUNNEL`, real TLS over the relayed bytes, `Inspector.tunnel`; no
+  rule, mock or `--network-trust` applies inside it, and the tap reads it; `scripts/check-h2-tunnel.sh`). The JDK's
+  HttpURLConnection is not app code: its socket factory is wrapped (`Net.TrackingFactory`) and hands the JDK a
+  `TapSslSocket` (the real socket, every call passed on, streams copied); plain http, and anything the engine
+  answers, gets the engine as an HTTP proxy.
   `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
-  placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched.
+  placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched
+  (`-Dapksim.netCheckLoopback=true` lifts that for `scripts/check-net-tap.sh`, whose servers are on this machine).
 - Code that runs for every app references only JDK types (no OkHttp), as for org.webrtc ("Video").
 - Offline also drops the engine's open connections, flushes the JDK's lookup cache (`InetAddress.cache`, as Android
   flushes its resolver's) and takes ConnectivityManager's default network away (`NetConnectivity`). Robolectric finds
@@ -975,9 +1010,13 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
   allow writing the file and `FILE.apksim-tmp`, and only those, not the folder); replay and conditions launch warm.
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
-  (docs/network.md says what it would need), WebSocket replay (relayed while recording). Checks:
-  `scripts/network-check.sh APK OUT [IMAGE]` (CI runs it in the image from `ci-smoke.sh`) and `NetworkReplayTest`
+  (docs/network.md says what it would need), replay of WebSockets and of HTTP/2-only clients such as gRPC (recorded,
+  messages included; the replay engine speaks HTTP/1.1). Checks: `scripts/check-net-tap.sh` (`TapCheck`, CI's quick
+  checks: the hooks driven as translated code drives them, HTTP/2 against the JDK's HPACK encoder, WebSocket,
+  failures, routing, a stalled decoder never blocking a write), `scripts/network-check.sh APK OUT [IMAGE]` (CI runs
+  it in the image from `ci-smoke.sh`) and `NetworkReplayTest`
   (`-e networkReplay true` with `--network replay testapks/composeapp/app/src/androidTest/network/greeting.har`).
+  By hand, with a network: `--rec net`, `open apksim://network?url=https://SERVER/`, "Get" must show `200 h2`.
 
 ## Camera
 `--camera fake` (`Cameras`, issue 219; `fake=IMAGE` for a still image, resolved like any path) declares
@@ -1949,8 +1988,11 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   tried: one frame behind (it would not help much: the render thread, not the main thread, is the limit), one
   renderer for all layers. Effects set with View.setRenderEffect (framework RenderNodes) and chained/blur effects stay
   on the CPU.
-- Network record/replay (docs/network.md) covers OkHttp (minified too) and HttpURLConnection; Cronet's native stack,
-  Ktor CIO (NIO) and WebSocket replay are not covered.
+- Network recording (docs/network.md) covers OkHttp (minified too, HTTP/2, gRPC, WebSockets) and HttpURLConnection;
+  Cronet's native stack and Ktor CIO (NIO) are not covered, nor is replay of WebSockets or gRPC. Not tried: the tap
+  skipping the copy of bodies it will not keep (video segments: the decoder would have to tell the app's thread
+  which bytes of an HTTP/2 stream are DATA), and an engine that speaks HTTP/2 to the app, so a rule or a replay would
+  not cost the mocked host its protocol.
 - GLES and native audio (OpenSL ES/AAudio) libraries are stubs. Java AudioTrack plays (see "Video").
 - Real mouse and keyboard in the window were first used by the owner on 2026-11-02. Scripted input goes through
   `--control` instead.

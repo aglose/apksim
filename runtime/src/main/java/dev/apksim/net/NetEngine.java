@@ -34,10 +34,12 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManagerFactory;
 
 /**
- * apksim's in-process network: the connections Net redirects arrive here on a loopback port, each saying where it
- * was going ("APKSIM host port timeout"), or as an HTTP proxy request (the JDK's HttpURLConnection). Recording, it
- * makes the real connection and relays each HTTP/1.1 exchange while capturing it; replaying, it answers from the
- * recording; otherwise it relays bytes, shaped by Net.conditions (docs/network.md).
+ * apksim's in-process network, for the connections something must stand in the way of (Net.route): they arrive here
+ * on a loopback port, each saying where it was going and how it is to be treated ("APKSIM host port timeout address
+ * answer|relay"), or as an HTTP proxy request (the JDK's HttpURLConnection). A relayed connection is carried
+ * untouched, shaped by Net.conditions: its TLS is the app's, end to end, and the tap reads it on the app's side. An
+ * answered one is read here as HTTP/1.1: replaying, the answer comes from the recording; live, the real connection
+ * is made and each exchange relayed, with the inspector's rules applied and the exchange kept (docs/network.md).
  */
 final class NetEngine {
   /** Bodies bigger than this are relayed but not recorded. */
@@ -48,8 +50,6 @@ final class NetEngine {
   final AtomicInteger recorded = new AtomicInteger(), replayed = new AtomicInteger(), missed = new AtomicInteger(),
       relayed = new AtomicInteger();
   private SSLSocketFactory upstreamTls;
-  private volatile boolean dirty;
-  private volatile boolean flushPending;
 
   void start() throws IOException {
     server = new ServerSocket(0, 128, InetAddress.getLoopbackAddress());
@@ -102,38 +102,23 @@ final class NetEngine {
     for (Conn c : open) c.close();
   }
 
-  String counts() {
-    return switch (Net.mode) {
-      case RECORD -> recorded.get() + " recorded";
-      case REPLAY -> replayed.get() + " replayed, " + missed.get() + " unmatched";
-      case SHAPE -> relayed.get() + " connections relayed";
-    };
-  }
-
-  // ------------------------------------------------------------------ saving
-
-  private void changed() {
-    dirty = true;
-    if (flushPending) return;
-    flushPending = true;
-    Thread.ofVirtual().name("apksim-net-flush").start(() -> {
-      Conditions.sleep(300);
-      flushPending = false;
-      flushNow();
-    });
+  /**
+   * Closes the connections to the hosts `which` accepts; how many. `relayedToo` false: only the ones answered here (a
+   * rule for their host went), so a connection only carried and shaped is left alone.
+   */
+  int close(java.util.function.Predicate<String> which, boolean relayedToo) {
+    int n = 0;
+    for (Conn c : open) {
+      if ((relayedToo || c.answered) && c.host != null && which.test(c.host.toLowerCase(Locale.ROOT))) {
+        c.close();
+        n++;
+      }
+    }
+    return n;
   }
 
   /** Exchanges whose answer is going to the client but not yet recorded. */
   final AtomicInteger inFlight = new AtomicInteger();
-
-  /**
-   * The last save, on the way out: first up to 2 s for exchanges still being written down (the app may already have
-   * read an answer the engine is still decoding), so none is lost when the process ends right after it.
-   */
-  void flushAtExit() {
-    awaitInFlight(2000);
-    flushNow();
-  }
 
   void awaitInFlight(long ms) {
     long until = System.currentTimeMillis() + ms;
@@ -146,19 +131,6 @@ final class NetEngine {
           break;
         }
       }
-    }
-  }
-
-  synchronized void flushNow() {
-    if (Net.mode != Net.Mode.RECORD || Net.recording.path == null) return;  // null: the flight recorder's, in memory
-    try {
-      if (dirty || !Files.exists(Net.recording.path)) {
-        dirty = false;
-        Net.recording.save();
-      }
-    } catch (IOException e) {
-      dirty = true;  // still unsaved: the next save (a later exchange, `network save`, the way out) tries again
-      Net.log("network record: cannot write " + Net.recording.path + ": " + e);
     }
   }
 
@@ -245,6 +217,8 @@ final class NetEngine {
     int exchanges;
     /** The connect error of an upstream that is not there while an inspector rule may still answer (see run()), else null. */
     String deferred;
+    /** Answered here (read as HTTP, TLS ended here) rather than carried untouched: what Net.route said for it. */
+    boolean answered;
 
     Conn(Socket client) {
       this.client = client;
@@ -294,6 +268,7 @@ final class NetEngine {
         port = Integer.parseInt(p[2]);
         if (p.length > 3 && Integer.parseInt(p[3]) > 0) timeout = Integer.parseInt(p[3]);
         if (p.length > 4 && !p[4].equals("-")) address = p[4];
+        answered = Net.mode == Net.Mode.REPLAY || p.length > 5 && p[5].equals("answer");
         String err = inspected(connectUpstream());
         cout.write((err != null ? err : "OK\r\n").getBytes(StandardCharsets.ISO_8859_1));
         cout.flush();
@@ -308,6 +283,8 @@ final class NetEngine {
           String h = Net.readLine(cin);
           if (h == null || h.isEmpty()) break;
         }
+        // What comes next says which: FakeTlsSocket's hello (answered here), or the JDK's own TLS (carried).
+        answered = Net.mode == Net.Mode.REPLAY || Net.route(host) == Net.Route.MITM;
         String err = inspected(connectUpstream());
         cout.write((err != null ? "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n"
             : "HTTP/1.1 200 Connection established\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
@@ -322,6 +299,8 @@ final class NetEngine {
         port = u.getPort() > 0 ? u.getPort() : 80;
         pending = firstBytes;
         proxied = true;
+        // Plain HTTP from the JDK's client: read here whenever exchanges are kept or a rule may concern it.
+        answered = Net.mode == Net.Mode.REPLAY || Net.recording != null || Net.route(host) == Net.Route.MITM;
         Conditions.sleep(Net.conditions.rtt());
         if (Net.mode != Net.Mode.REPLAY || Net.conditions.offline()) {
           String err = inspected(connectUpstream());
@@ -334,11 +313,11 @@ final class NetEngine {
       }
 
       tlsHost = host;
-      if (Net.mode == Net.Mode.SHAPE) {
+      if (!answered) {
         relayed.incrementAndGet();
         if (pending != null) uout.write(originForm(pending));
         watching = false;
-      relay(cin, cout, uin, uout, client, up);
+        relay(cin, cout, uin, uout, client, up);
         return;
       }
 
@@ -353,7 +332,7 @@ final class NetEngine {
     String inspected(String err) {
       if (err == null || !Inspector.on) return err;
       Inspector.failure(host, port, err);
-      if (!Inspector.hasAnswerRules()) return err;
+      if (!answered || !Inspector.answers(host.toLowerCase(Locale.ROOT))) return err;
       deferred = err;
       return null;
     }
@@ -374,9 +353,12 @@ final class NetEngine {
           appProtocols = p.length > 3 && !p[3].isEmpty() && !p[3].equals("-") ? p[3].split(",") : null;
           appSuites = p.length > 4 && !p[4].isEmpty() && !p[4].equals("-") ? p[4].split(",") : null;
           if (p.length > 5 && p[5].equals("tunnel") && Net.mode != Net.Mode.REPLAY && deferred == null && up != null) {
-            // The client offered h2, which this engine does not speak: the real TLS handshake runs over the relayed
-            // bytes, so the client gets the protocol the server picks. Not captured, listed as a tunnel.
-            Net.log("network: " + tlsHost + ":" + port + " offers h2: relayed as an opaque tunnel, not captured");
+            // The client offered h2 alone, which this engine does not speak: the real TLS handshake runs over the
+            // relayed bytes, so the client gets the protocol the server picks. No rule reaches it; the tap reads it
+            // on the app's side, as it reads a direct connection.
+            if (NOT_TUNNELLED.add("tunnel " + tlsHost + ":" + port)) {
+              Net.log("network: " + tlsHost + ":" + port + " offers h2 alone: carried as a tunnel, so no inspector rule applies to it");
+            }
             if (Inspector.on) Inspector.tunnel(tlsHost, port);
             relayed.incrementAndGet();
             cout.write("TUNNEL\r\n".getBytes(StandardCharsets.ISO_8859_1));
@@ -416,7 +398,7 @@ final class NetEngine {
             cin.reset();
             break;
           } catch (SocketTimeoutException e) {
-            if (Net.mode == Net.Mode.RECORD && upstreamPeek() > 0) return new byte[0];
+            if (Net.mode != Net.Mode.REPLAY && upstreamPeek() > 0) return new byte[0];
           }
         }
       } finally {
@@ -584,7 +566,8 @@ final class NetEngine {
       }
       try {
         List<String> chain = upgradeUpstream();
-        Net.recording.certificates(tlsHost, chain);
+        Recording r = Net.recording;
+        if (r != null) r.certificates(tlsHost, chain);
         return "OK p=" + negotiated[0] + " c=" + negotiated[1] + " " + String.join(",", chain) + "\r\n";
       } catch (Exception e) {
         Net.log("network record: TLS to " + tlsHost + ":" + port + " failed: " + e.getMessage());
@@ -733,9 +716,9 @@ final class NetEngine {
           addedMs = rule.latencyMs;
           Conditions.sleep(rule.latencyMs);
           if (rule.patching) patchRule = rule;
-          keep = rule.forward != null ? answerForward(req, rule) : rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+          keep = rule.forward != null ? answerForward(req, rule) : rule.status > 0 ? answerRule(req, rule) : Net.mode == Net.Mode.REPLAY ? replay(req) : record(req);
         } else {
-          keep = Net.mode == Net.Mode.RECORD ? record(req) : replay(req);
+          keep = Net.mode == Net.Mode.REPLAY ? replay(req) : record(req);
         }
         exchanges++;
         if (!keep || "close".equalsIgnoreCase(req.header("Connection"))) return;
@@ -751,7 +734,7 @@ final class NetEngine {
     void tunnel(Request req) throws IOException {
       String hp = req.target;
       int colon = hp.lastIndexOf(':');
-      if (Net.mode == Net.Mode.RECORD) {
+      if (Net.mode != Net.Mode.REPLAY) {
         req.toProxy = true;
         uout.write(requestHead(req, false));
         uout.flush();
@@ -893,7 +876,8 @@ final class NetEngine {
     boolean recordExchange(Request req) throws IOException {
       long t0 = System.nanoTime();
       long startWall = System.currentTimeMillis();
-      boolean keepAtStart = Net.recording.keep;
+      Recording rec = Net.recording;
+      boolean keepAtStart = rec == null || rec.keep;
       long sent = t0;
       boolean expect = "100-continue".equalsIgnoreCase(req.header("Expect"));
       byte[] statusLine = null;
@@ -1246,11 +1230,12 @@ final class NetEngine {
     void add(Recording.Entry e) {
       Inspector.exchange(e, ruleId, addedMs, forwarded, patchRule == null ? null : patchNote == null ? "the answer came from a recording, not a server" : patchNote);
       // Replaying, the recording is the fixture the app is answered from: a rule's answer is shown, never added to it.
-      if (Net.mode == Net.Mode.REPLAY) return;
-      Net.recording.add(e);
+      Recording r = Net.recording;
+      if (Net.mode == Net.Mode.REPLAY || r == null) return;
+      r.add(e);
       recorded.incrementAndGet();
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network record: " + e.status + " " + e.method + " " + e.url);
-      changed();
+      Net.changed();
     }
 
     /** The inspector's row for a replayed answer: a snapshot of this request and answer, never the fixture's entry itself. */
@@ -1360,7 +1345,10 @@ final class NetEngine {
         Net.unmatched.add(msg);
         return;
       }
-      Net.log("network record: " + host + ":" + port + " is not HTTP/1.1: relayed, not recorded");
+      // The JDK's own TLS through the proxy's tunnel (a relayed HttpsURLConnection) is expected, and the tap reads it.
+      boolean tlsHello = consumed.length > 0 && consumed[0] == 0x16;
+      if (!tlsHello && NOT_TUNNELLED.add("raw " + host + ":" + port)) Net.log("network: " + host + ":" + port + " is not HTTP/1.1: carried as it is, so no inspector rule applies to it");
+      if (up == null || uout == null) return;  // no server to carry it to (a rule was to answer it)
       if (consumed.length > 0) uout.write(consumed);
       watching = false;
       relay(cin, cout, uin, uout, client, up);
