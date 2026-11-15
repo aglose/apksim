@@ -582,11 +582,16 @@ final class Session {
 
   private Socket netwatch;
 
-  /** Whether this session runs the network inspector: the server's `--inspect-network`, on the agent its owner's `inspect-network on`. */
+  /**
+   * Whether this session runs the network inspector: the server's `--inspect-network`, on the agent its owner's
+   * `inspect-network on`. Those are the default (issue 389): a session that said no (`/ws?inspect=0`, a start's
+   * `"inspect": false`, kept as `--no-network-inspect` in its launch) runs without it, and so with no network engine.
+   */
   boolean inspecting() {
     if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off")
+          && !app.launch().contains("--no-network-inspect")
           && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
-    return serve.inspectNetwork || "1".equals(options.get("inspect"));
+    return "1".equals(options.get("inspect")) || serve.inspectNetwork && !"0".equals(options.get("inspect"));
   }
 
   /** Whether a session could have the inspector (issue 371): the page offers the switch only where it works. */
@@ -649,8 +654,8 @@ final class Session {
    */
   private void inspectCommand(String t) {
     if (!inspecting()) {
-      ws.sendText("r refused: inspect (" + (serve.beam ? "this session did not ask for the network inspector (/beam/start \"inspect\": true; this Mac's owner allows it with apksim beam config inspect-network optional)"
-          : "this session did not ask for the network inspector (/ws?inspect=1; the server allows it with --inspect-network optional)") + ")");
+      ws.sendText("r refused: inspect (" + (serve.beam ? "this session runs without the network inspector (/beam/start \"inspect\": true asks for it, false declines it; this Mac's owner allows it with apksim beam config inspect-network optional)"
+          : "this session runs without the network inspector (/ws?inspect=1 asks for it, inspect=0 declines it; the server allows it with --inspect-network optional)") + ")");
       return;
     }
     String[] w = t.strip().split(" ");
@@ -2297,7 +2302,7 @@ final class Session {
       } catch (IOException | RuntimeException e) {
         signers = null;  // a newer build then needs this one still here to start on its data
       }
-      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x)).toList(),
+      String id = serve.store.save(new BeamStore.Leaving(dataDir, app.name(), serve.catalog.buildHash(app.path()), app.launch().stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x)).toList(),
           deviceSpec(device), options.get("appearance"), options.get("locale"), options.get("fontscale"),
           options.get("permissions"), site, signers, launchKind, label));
       if (id != null) {

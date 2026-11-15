@@ -308,6 +308,18 @@ def main():
             t.ws.s.close()
             sc.finish()
             return
+        # Issue 389: --inspect-network is the default, and a session may decline it (/ws?inspect=0).
+        d = Tab(url, token, app, "codec=jpeg&open=apksim%3A%2F%2Fnetwork&inspect=0")
+        try:
+            check(d.wait_text(lambda x: x.startswith("i "), 60), "a session that declines the inspector starts (inspect=0)")
+            di = json.loads(next(x for x in d.texts if x.startswith("i "))[2:])
+            check(di.get("inspect") is False and di.get("inspectAllowed") is True and "inspectMaxRules" not in di,
+                  f"it runs without the inspector, which the server would allow ({di.get('inspect')}, {di.get('inspectAllowed')})")
+            d.ws.send("inspect rule list")
+            d.pump(2)
+            check(any(x.startswith("r refused: inspect") for x in d.texts), "and its inspect commands are refused")
+        finally:
+            d.ws.s.close()
         check(rec and i.get("issueUrl", "").startswith("https://") and "{title}" in i["issueUrl"], "it announces rec and the issue template")
         check(t.pump(90, until=lambda: len(t.frames) >= 2), "the app shows its first frames")
         time.sleep(2)
