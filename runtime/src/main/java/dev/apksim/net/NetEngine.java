@@ -74,9 +74,10 @@ final class NetEngine {
     }
   }
 
-  /** An in-memory connection (the beam sandbox denies loopback): served on a thread of its own, as an accepted one. */
+  /** Hosts whose h2 offer could not be tunnelled, each logged once. */
   private static final java.util.Set<String> NOT_TUNNELLED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+  /** An in-memory connection (the beam sandbox denies loopback): served on a thread of its own, as an accepted one. */
   void serveInMemory(TabRelay.Pipe fromApp, TabRelay.Pipe toApp) {
     Thread.ofVirtual().name("apksim-net-conn").start(() -> serve(new PipeSocket(fromApp, toApp)));
   }

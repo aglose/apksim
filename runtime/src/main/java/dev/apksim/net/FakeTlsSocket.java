@@ -185,13 +185,13 @@ public final class FakeTlsSocket extends SSLSocket {
     // do), and a provider's socket such as Conscrypt's throws on a suite it lacks (issue 387). None left: its own defaults.
     if (protocolsSet) {
       String[] ok = keepSupported(protocols, s.getSupportedProtocols());
-      if (ok.length != protocols.length) Net.log("network: " + host + ":" + port + " h2 tunnel: protocols the real socket lacks dropped"
+      if (ok.length != protocols.length && DROPPED.add(host + ":" + port + " protocols")) Net.log("network: " + host + ":" + port + " h2 tunnel: protocols the real socket lacks dropped"
           + (ok.length == 0 ? " (its defaults used)" : ""));
       if (ok.length > 0) params.setProtocols(ok);
     }
     if (suitesSet) {
       String[] ok = keepSupported(suites, s.getSupportedCipherSuites());
-      if (ok.length != suites.length) Net.log("network: " + host + ":" + port + " h2 tunnel: cipher suites the real socket lacks dropped"
+      if (ok.length != suites.length && DROPPED.add(host + ":" + port + " suites")) Net.log("network: " + host + ":" + port + " h2 tunnel: cipher suites the real socket lacks dropped"
           + (ok.length == 0 ? " (its defaults used)" : ""));
       if (ok.length > 0) params.setCipherSuites(ok);
     }
@@ -203,6 +203,9 @@ public final class FakeTlsSocket extends SSLSocket {
     HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
   }
+
+  /** Hosts whose tunnel dropped protocols or suites, each logged once. */
+  private static final java.util.Set<String> DROPPED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   private static String[] keepSupported(String[] wanted, String[] supported) {
     java.util.Set<String> has = new java.util.HashSet<>(java.util.Arrays.asList(supported));
