@@ -245,7 +245,11 @@ final class Beam {
    * the more so right after the browser's own prompt for apps on this device. Not waited for, and nothing if it fails.
    */
   private static void notifyOwner(String origin) {
-    String script = "display notification " + appleScriptString(origin + " asks to run an app on this Mac: choose Allow in apksim's dialog")
+    notifyOwner(origin, "asks to run an app on this Mac: choose Allow in apksim's dialog");
+  }
+
+  private static void notifyOwner(String origin, String asks) {
+    String script = "display notification " + appleScriptString(origin + " " + asks)
         + " with title \"apksim\" sound name \"default\"";
     try {
       Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true)
@@ -337,7 +341,7 @@ final class Beam {
   }
 
   private static boolean promptDelete(String origin, int count) {
-    notifyOwner(origin);
+    notifyOwner(origin, "asks to delete saved sessions on this Mac: see apksim's dialog");
     String text = origin + " wants to delete " + (count == 1 ? "1 saved session" : count + " saved sessions") + " it kept on this Mac, with the data "
         + (count == 1 ? "it holds" : "they hold") + ". This cannot be undone.";
     String script = "tell current application to activate\ndisplay dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Delete\", \"Delete\"} "

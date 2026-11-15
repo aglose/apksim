@@ -1812,7 +1812,10 @@ public final class Serve {
     b.append("],\"skipped\":[");
     for (int k = 0; k < f.skipped().size(); k++) {
       String[] sk = f.skipped().get(k);
-      b.append(k > 0 ? "," : "").append("{\"id\":").append(Http.q(sk[0])).append(",\"why\":").append(Http.q(sk[2])).append('}');
+      // The page gets a fixed reason: an exception's text may name a path on this Mac.
+      String why = sk[2].startsWith("it is open") ? "it is open: quit it first" : "could not be erased";
+      if (!sk[2].startsWith("it is open")) System.err.println("[beam] saved session " + sk[0] + " not erased: " + sk[2]);
+      b.append(k > 0 ? "," : "").append("{\"id\":").append(Http.q(sk[0])).append(",\"why\":").append(Http.q(why)).append('}');
     }
     Http.json(out, 200, b.append("]}").toString());
   }

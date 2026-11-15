@@ -644,6 +644,10 @@ final class BeamStore {
     if (!sid.matches("[0-9a-f]{12}")) return "not a saved session";
     try (SavedHold own = hold(sid, true)) {
       if (own == null) return "it is open (apksim beam run, or a tab): quit it first";
+      if (!Files.exists(savedDir.resolve(sid + ".json"))) {  // erased since the record was read (another delete, the sweep)
+        Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
+        return null;
+      }
       String why = forgetLocked(rec);
       if (why == null) Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
       return why;
