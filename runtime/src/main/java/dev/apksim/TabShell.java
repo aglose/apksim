@@ -17,7 +17,7 @@ import java.util.List;
  *   settings get|put global|secure|system KEY [VALUE]
  * with the extras `--broadcast` takes (--es --ez --ei --el --ef K V) and the app's own package: a component or -p of
  * another package is refused, and a broadcast that names neither is sent to the app's package alone. Nothing here names
- * a file or another process. `full` (a beamed session whose Mac's owner allowed adb) is the whole shell, as
+ * a file or another process. `full` (a beamed session that asked for adb while its Mac's owner allows it) is the whole shell, as
  * `adb shell LINE` on the instance's adb device, except that nothing streams: `logcat` prints what there is.
  *
  * Runs on the control connection's own thread, not Host's loop: the shell's commands wait for the main thread.
@@ -53,6 +53,30 @@ final class TabShell {
       b = cut;
     }
     return "ok " + status + " " + Base64.getEncoder().encodeToString(b);
+  }
+
+  private static boolean inRange(String v, double lo, double hi) {
+    try {
+      double d = Double.parseDouble(v);
+      return Double.isFinite(d) && d >= lo && d <= hi;
+    } catch (NumberFormatException e) {
+      return false;
+    }
+  }
+
+  /** Whether an allowed `am` line names a component or package of its own (`-n`, `-p` as options, not as values). */
+  static boolean pinned(List<String> a) {
+    for (int i = 2; i < a.size(); i++) {
+      switch (a.get(i)) {
+        case "-n", "-p" -> {
+          return true;
+        }
+        case "-a", "-d", "-t", "-c", "-f" -> i++;
+        case "--es", "--ez", "--ei", "--el", "--ef" -> i += 2;
+        default -> { }
+      }
+    }
+    return false;
   }
 
   /** Why a limited line is refused, or null when it may run. `pkg` is the app's package. */
@@ -99,6 +123,11 @@ final class TabShell {
         if (!a.get(2).matches("global|secure|system")) return "namespace " + a.get(2);
         if (!a.get(3).matches("[A-Za-z0-9_.:-]{1,200}")) return "that key";
         if (a.size() != (a.get(1).equals("get") ? 4 : 5)) return a.get(1).equals("get") ? "settings get NAMESPACE KEY" : "settings put NAMESPACE KEY VALUE";
+        // The keys that are device controls take the values a tab's own controls may send (Session.check), no others.
+        if (a.get(1).equals("put") && a.get(3).equals("font_scale") && !inRange(a.get(4), 0.85, 2)) return "font_scale takes 0.85 to 2";
+        if (a.get(1).equals("put") && a.get(3).equals("animator_duration_scale") && !inRange(a.get(4), 0, 10)) {
+          return "animator_duration_scale takes 0 to 10";
+        }
         return null;
       }
       default -> {

@@ -599,12 +599,13 @@ def adb_checks(apksim, apk, sha, size):
     g = run_agent()
     try:
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
-        check(h.get("adb") is False and h.get("shell") == "limited", f"adb: off by default (hello adb {h.get('adb')}, shell {h.get('shell')})")
+        check(h.get("adb") is False, f"adb: off by default (hello adb {h.get('adb')})")
         grant, _ = begin(gp, origin, start, body)
         check("token" in grant, "adb: a session granted")
         st, _, why = req(gp, "POST", "/beam/start", origin, dict(start, adb=True))
         check(st == 409 and b"allow-adb" in why, f"adb: a start asking for an adb device is refused until the owner allows it ({st})")
         check(req(gp, "POST", "/beam/start", origin, dict(start, adb="yes"))[0] == 400, "adb: \"adb\" takes true or false")
+        check(req(gp, "POST", "/beam/start", origin, dict(start, options=["--beam-adb"]))[0] == 400, "adb: a page cannot name the agent's --beam-adb marker")
         s = open_session(gp, grant, origin)
         i = session_info(s)
         check(i.get("shell") == "limited" and i.get("adb") is False, f"adb: the session says shell limited, no adb ({i.get('shell')}, {i.get('adb')})")
@@ -628,24 +629,25 @@ def adb_checks(apksim, apk, sha, size):
               "adb: config allow-adb takes on or off")
         g = run_agent()
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
-        check(h.get("adb") is True and h.get("shell") == "full", f"adb: hello says adb and full shell ({h.get('adb')}, {h.get('shell')})")
-        # A start that does not ask gets no adb device, but the full shell.
+        check(h.get("adb") is True, f"adb: hello says a start may ask for adb ({h.get('adb')})")
+        # A start that does not ask gets neither an adb device nor the full shell.
         grant, _ = begin(gp, origin, start, body)
         s = open_session(gp, grant, origin)
         i = session_info(s)
-        check(i.get("shell") == "full" and i.get("adb") is False and not any(t.startswith('d {"adb"') for t in s.texts),
-              f"adb: a start that does not ask has no adb device ({i.get('shell')}, {i.get('adb')})")
-        r = tab_shell(s, "getprop sys.boot_completed; ls /sdcard > /dev/null && echo listed")
-        check(r.get("status") == 0 and r.get("out", "").startswith("1\n") and "listed" in r.get("out", ""), f"adb: full shell runs any command line ({r})")
-        r = tab_shell(s, "logcat")
-        check("status" in r, f"adb: full shell's logcat ends ({str(r)[:60]})")
+        check(i.get("shell") == "limited" and i.get("adb") is False and not any(t.startswith('d {"adb"') for t in s.texts),
+              f"adb: a start that does not ask has no adb device and the limited shell ({i.get('shell')}, {i.get('adb')})")
+        check(tab_shell(s, "getprop").get("status") == 126, "adb: and its shell refuses getprop")
         check(close_session(s), "adb: that session ends")
         grant, _ = begin(gp, origin, dict(start, adb=True), body)
         check("token" in grant, "adb: a start asking for an adb device is granted")
         s = open_session(gp, grant, origin)
         i = session_info(s)
         told = [json.loads(t[2:])["adb"] for t in s.texts if t.startswith('d {"adb"')]
-        check(i.get("adb") is True and len(told) == 1 and 1024 <= told[0] <= 65535, f"adb: the page hears the adb port ({told})")
+        check(i.get("adb") is True and i.get("shell") == "full" and len(told) == 1 and 1024 <= told[0] <= 65535, f"adb: the page hears the adb port, full shell ({told})")
+        r = tab_shell(s, "getprop sys.boot_completed; ls /sdcard > /dev/null && echo listed")
+        check(r.get("status") == 0 and r.get("out", "").startswith("1\n") and "listed" in r.get("out", ""), f"adb: full shell runs any command line ({r})")
+        r = tab_shell(s, "logcat")
+        check("status" in r, f"adb: full shell's logcat ends ({str(r)[:60]})")
         if told:
             # The adb transport's CNXN, as `adb connect` opens: answered with the device's banner.
             def packet(cmd, a0, a1, data):
@@ -685,6 +687,11 @@ def adb_checks(apksim, apk, sha, size):
             else:
                 print("     (no adb on PATH: the adb client itself was not run)")
         check(alive(s.stats.get("pid", 0)), "adb: the app still runs")
+        # Turned off while the agent runs: the session's next command is the limited shell, the next start is refused.
+        r = subprocess.run([apksim, "beam", "config", "allow-adb", "off"], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0, "adb: config allow-adb off while the agent runs")
+        check(tab_shell(s, "getprop").get("status") == 126, "adb: the running session's shell is limited at once")
+        check(req(gp, "POST", "/beam/start", origin, dict(start, adb=True))[0] == 409, "adb: and the next start asking for adb is refused")
         check(close_session(s), "adb: that session ends")
     finally:
         if g:

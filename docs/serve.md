@@ -463,10 +463,14 @@ redirection, and only these:
 
 Extras are the ones `--broadcast` takes: `--es`, `--ez`, `--ei`, `--el`, `--ef KEY VALUE`. Anything else (`pm`, `input`,
 `ls`, `cat`, `logcat`, `apksim CMD`, `am instrument`, `am startservice`, an `intent:` URI, another package) is answered
-with status 126 and `apksim: not allowed from a page: WHY`, and nothing runs: none of what is allowed names a file or
-another process. The instance checks the line (`TabShell`, the `tabshell` control command, which only the server
+with status 126 and `apksim: not allowed from a page: WHY`, and nothing runs. What is allowed is wider than the launch options
+(any Settings key, any of the app's activities, exported or not, any broadcast action, at any time) but stays inside the
+app: a URI or extra may name a file (`-d file:///...`), which only the app itself then reads.
+`settings put` of `font_scale` and `animator_duration_scale` takes the ranges the page's own controls send (0.85-2,
+0-10). The package pin is decided from the options as parsed: `--es -p x` is an extra and pins nothing. The instance checks the line (`TabShell`, the `tabshell` control command, which only the server
 sends); the server passes it on as base64 on a control connection of its own, at most four at a time per session, so a
-command that waits holds up no input. The `i` message says `"shell": "limited"`; `--no-shell` turns it off (`"off"`,
+command that waits holds up no input. It is on by default on a server (unlike `--allow-rec`), since it reaches nothing the app's own page could not;
+the `i` message says `"shell": "limited"`; `--no-shell` turns it off (`"off"`,
 and every `shell` is answered with an error). The page has an "adb shell" card for it (a leading `adb shell` is
 dropped from what is typed) and `window.apksimShell(LINE)`, a promise of the answer, for a host page's script.
 apksim runs one app: a broadcast aimed at another package, or a setting another app would act on (a screen reader

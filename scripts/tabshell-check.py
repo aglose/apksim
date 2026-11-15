@@ -71,6 +71,10 @@ r = shell("am broadcast -a dev.apksim.testapp.SET_FLAG --es name tab --ez value 
 sc.check(r.get("status") == 0 and "result=7" in r.get("out", "") and "pkg=" + a.package in r.get("out", ""), f"am broadcast reaches the app's receiver, package set: {r}")
 r = shell("am broadcast -a dev.apksim.testapp.NOBODY")
 sc.check(r.get("status") == 0 and "result=0" in r.get("out", ""), f"a broadcast nobody receives completes with result 0: {r}")
+# An extra whose key or value looks like -p or -n pins nothing: the broadcast still goes to the app's package alone.
+for line in ("am broadcast -a dev.apksim.testapp.SET_FLAG --es -p com.other.app", "am broadcast -a dev.apksim.testapp.SET_FLAG --es name -n"):
+    r = shell(line)
+    sc.check(r.get("status") == 0 and "pkg=" + a.package in r.get("out", ""), f"{line[30:]!r}: still pinned to the app ({str(r)[:140]})")
 r = shell(f"am start -W -n {a.package}/.SecondActivity")
 sc.check(r.get("status") == 0 and "Status: ok" in r.get("out", ""), f"am start -n: {r}")
 r = shell("am start -a android.intent.action.VIEW -d apksim://composeapp/trips")
@@ -79,7 +83,8 @@ for bad in ["am start -n com.other.app/.Main", "am broadcast -a X -p com.other.a
             "settings put secure a b; ls /", "settings get secure a && ls", "settings get secure a > /sdcard/x", "settings get secure a | cat",
             "ls /sdcard", "cat /data/data/" + a.package + "/shared_prefs/x.xml", "apksim quit", "apksim shot /tmp/x.png", "pm list packages",
             "am instrument -w x/y", "am force-stop " + a.package, "am startservice -n " + a.package + "/.X", "am start --eu k file:///etc/passwd",
-            "am start intent:#Intent;end", "settings delete secure a", "settings put nowhere a b", "input tap 1 1", "logcat -d"]:
+            "am start intent:#Intent;end", "settings delete secure a", "settings put system font_scale NaN",
+            "settings put system font_scale 9", "settings put global animator_duration_scale -1", "settings put nowhere a b", "input tap 1 1", "logcat -d"]:
     r = shell(bad)
     refused = r.get("status") == 126 and "not allowed from a page" in r.get("out", "")
     sc.check(refused, f"refused {bad!r}: {str(r)[:140]}")

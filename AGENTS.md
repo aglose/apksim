@@ -321,8 +321,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     issue 397; docs/serve.md "Shell commands", docs/beam.md "adb commands in a session"), run by `AdbShell.runForTab` on
     the control connection's own thread (the shell's commands wait for Host's loop) and answered `ok STATUS BASE64`.
     `limited`: one command, only `am start`, `am broadcast` and `settings get|put` for the app's own package
-    (`TabShell.refusal`; anything else is status 126); `full` (a beamed session whose Mac's owner set `allow-adb on`): the
-    whole shell, nothing streaming. Only the server sends it: it is not a command a tab may type.
+    (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
+    it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
@@ -1297,8 +1297,8 @@ Shell commands (issue 397, docs/serve.md "Shell commands"): a tab's `shell ID LI
 session without an adb device (`Session.shellCommand` → the instance's `tabshell`, on a control connection of its own, at
 most four at once), answered `a {"id","status","out"}`: `am start`, `am broadcast` and `settings get|put` for the app's own
 package, anything else status 126; `--no-shell` turns it off; the `i` message says `"shell": "off|limited|full"`. On
-`apksim beam` with the owner's `apksim beam config allow-adb on` it is the whole adb shell, and a start with
-`"adb": true` gets an adb device on loopback (`--adb auto`, through the agent's `--beam-adb` launch marker, never saved
+`apksim beam` with the owner's `apksim beam config allow-adb on` (read again at every start and command), a start with
+`"adb": true` gets the whole adb shell and an adb device on loopback (`--adb auto`, through the agent's `--beam-adb` launch marker, never saved
 with a kept session) whose port the tab hears as `d {"adb": PORT}`. The page has an "adb shell" card and
 `window.apksimShell(LINE)`. `scripts/tabshell-check.py URL [--token FILE] [--off]` (CI: `ci-smoke.sh`),
 `scripts/shell-page-check.py URL` (the card, in Chrome), `scripts/beam-check.py APK --only adb` (the beam side, with the

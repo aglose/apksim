@@ -120,6 +120,15 @@ final class BeamStore {
 
   // ---------------------------------------------------------------- config
 
+  /**
+   * Whether a page may have an adb device and the full shell now (issue 397): read from the config file at each use, so
+   * `apksim beam config allow-adb off` takes them away from the next start and the next shell command of a running
+   * agent, not only after its restart.
+   */
+  boolean allowAdbNow() {
+    return readConfig().allowAdb();
+  }
+
   Config readConfig() {
     Config c = Config.DEFAULT;
     try {
@@ -1156,7 +1165,7 @@ final class BeamStore {
                                                 open is skipped; --builds (agent stopped) also removes, now, the builds nothing keeps
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
-                                [allow-adb on|off]   (a trusted page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
+                                [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
              apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)

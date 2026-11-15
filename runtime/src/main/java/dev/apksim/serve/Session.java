@@ -1660,17 +1660,19 @@ final class Session {
   /**
    * What a tab's `shell` message may run (issue 397): `off` (serve --no-shell), `limited` (am start, am broadcast and
    * settings get|put for the app's own package: TabShell in the instance checks the line), or `full`, the whole adb
-   * shell, only in a beamed session whose Mac's owner allowed adb (`apksim beam config allow-adb on`).
+   * shell, only in a beamed session that asked for adb (`"adb": true`) on a Mac whose owner allows it
+   * (`apksim beam config allow-adb on`, read again at each command).
    */
   static final String ADB_MARKER = "--beam-adb";
 
   /** Whether this session's instance gets an adb device: a beamed one that asked, on a Mac whose owner allows it. */
   boolean wantsAdb() {
-    return serve.beam && serve.store != null && serve.store.config.allowAdb() && app.launch().contains(ADB_MARKER);
+    return serve.beam && serve.store != null && app.launch().contains(ADB_MARKER) && serve.store.allowAdbNow();
   }
 
   String shellMode() {
-    if (serve.beam) return serve.store != null && serve.store.config.allowAdb() ? "full" : "limited";
+    // The full shell only for a session whose start asked for adb, while the owner still allows it (read at each use).
+    if (serve.beam) return wantsAdb() ? "full" : "limited";
     return serve.noShell ? "off" : "limited";
   }
 

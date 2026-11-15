@@ -2119,7 +2119,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.config.allowAdb() + ",\"shell\":" + Http.q(store.config.allowAdb() ? "full" : "limited") + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.allowAdbNow() + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2394,7 +2394,7 @@ public final class Serve {
       Object adb = body.get("adb");
       if (adb != null && !(adb instanceof Boolean)) throw new IOException("\"adb\" takes true or false");
       if (Boolean.TRUE.equals(adb)) {
-        if (!store.config.allowAdb()) {
+        if (!store.allowAdbNow()) {
           Http.text(out, 409, "this Mac's owner has not allowed an adb device (GET /beam/hello says \"adb\": true when a start may ask for one: apksim beam config allow-adb on)");
           return;
         }
