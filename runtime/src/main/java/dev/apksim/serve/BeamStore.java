@@ -276,7 +276,7 @@ final class BeamStore {
 
   /** What a session leaves for its saved record: the slot, what it ran, and where it came from. */
   record Leaving(Path slot, String app, String sha256, List<String> launch, String device, String appearance,
-      String locale, String fontScale, String permissions, String site, List<String> signers, String kind) {}
+      String locale, String fontScale, String permissions, String site, List<String> signers, String kind, String label) {}
 
   /**
    * Keeps a session's data slot (its instance has exited): renamed to `k<id>-0`, its `.device` beside it too, and
@@ -326,6 +326,7 @@ final class BeamStore {
         field(j, "fontscale", s.fontScale());
         field(j, "permissions", s.permissions());
         field(j, "site", s.site());
+        field(j, "label", s.label());  // the page's own tag for this setup (issue 380), listed in GET /beam/saved
         list(j, "launch", s.launch());
         // Who signed its build (issue 181): a newer build may start on this data only if the same key signed it, which
         // is then checked against this even after the saved build itself is gone.
@@ -464,8 +465,13 @@ final class BeamStore {
 
   /** The saved sessions that came from this site (issue 181's `GET /beam/saved`), newest use first. */
   List<Map<String, Object>> savedFrom(String origin) {
+    return savedFrom(origin, null);
+  }
+
+  /** As {@link #savedFrom(String)}, only those saved with this label when one is given (`GET /beam/saved?label=`). */
+  List<Map<String, Object>> savedFrom(String origin, String label) {
     List<Map<String, Object>> out = new ArrayList<>();
-    for (Map<String, Object> r : saved()) if (origin.equals(r.get("site"))) out.add(r);
+    for (Map<String, Object> r : saved()) if (origin.equals(r.get("site")) && (label == null || label.equals(r.get("label")))) out.add(r);
     out.sort(Comparator.comparingLong((Map<String, Object> r) -> r.get("lastUsed") instanceof Number n ? n.longValue() : 0).reversed());
     return out;
   }
