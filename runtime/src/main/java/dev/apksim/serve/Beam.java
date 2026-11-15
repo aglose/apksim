@@ -102,6 +102,8 @@ final class Beam {
   /** Moved-data slots whose grant was just used (name -> when): its session is being set up. */
   private final Map<String, Long> seedsTaken = new ConcurrentHashMap<>();
   private final Object prompting = new Object();
+  /** origin -> when a refused (or unanswered) deletion may be asked again (issue 382). */
+  private final java.util.Map<String, Long> deniedDeleteUntil = new java.util.concurrent.ConcurrentHashMap<>();
   /** The origin whose consent dialog is up now, else null (`/beam/hello`'s `asking`, issue 178). */
   private volatile String askingFor;
 
@@ -243,7 +245,11 @@ final class Beam {
    * the more so right after the browser's own prompt for apps on this device. Not waited for, and nothing if it fails.
    */
   private static void notifyOwner(String origin) {
-    String script = "display notification " + appleScriptString(origin + " asks to run an app on this Mac: choose Allow in apksim's dialog")
+    notifyOwner(origin, "asks to run an app on this Mac: choose Allow in apksim's dialog");
+  }
+
+  private static void notifyOwner(String origin, String asks) {
+    String script = "display notification " + appleScriptString(origin + " " + asks)
         + " with title \"apksim\" sound name \"default\"";
     try {
       Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true)
@@ -302,6 +308,69 @@ final class Beam {
     } catch (IOException | InterruptedException e) {
       System.err.println("[beam] no prompt: " + e);
       return "Don't Allow";
+    }
+  }
+
+  /**
+   * Whether this origin may delete `count` of its saved sessions now (issue 382): a trusted ("always") site may, "never"
+   * may not, any other is asked on the Mac, each time (a deletion is not something "Allow Once" or a recent answer
+   * to a start covers). One prompt at a time, shared with starts'. No answer is no.
+   */
+  boolean allowedToDelete(String origin, int count) {
+    String saved = trust().get(origin);
+    if ("always".equals(saved)) return true;
+    if ("never".equals(saved)) return false;
+    synchronized (prompting) {
+      Long until = deniedDeleteUntil.get(origin);
+      if (until != null && until > System.currentTimeMillis()) return false;  // refused lately: not asked again yet
+      boolean ok;
+      askingFor = origin;
+      try {
+        ok = switch (consentMode) {
+          case "allow", "allow-after-2s" -> true;
+          case "deny" -> false;
+          default -> promptDelete(origin, count);
+        };
+      } finally {
+        askingFor = null;
+      }
+      if (!ok) deniedDeleteUntil.put(origin, System.currentTimeMillis() + DENIED_MS);
+      System.err.printf("[beam] %s asked to delete %d saved session%s: %s%n", origin, count, count == 1 ? "" : "s", ok ? "Delete" : "refused");
+      return ok;
+    }
+  }
+
+  private static boolean promptDelete(String origin, int count) {
+    notifyOwner(origin, "asks to delete saved sessions on this Mac: see apksim's dialog");
+    String text = origin + " wants to delete " + (count == 1 ? "1 saved session" : count + " saved sessions") + " it kept on this Mac, with the data "
+        + (count == 1 ? "it holds" : "they hold") + ". This cannot be undone.";
+    String script = "tell current application to activate\ndisplay dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Delete\", \"Delete\"} "
+        + "default button \"Don't Delete\" cancel button \"Don't Delete\" with icon caution giving up after 120";
+    try {
+      Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true).start();
+      var output = new java.util.concurrent.CompletableFuture<String>();
+      Thread.ofVirtual().name("apksim-beam-prompt").start(() -> {
+        try {
+          output.complete(new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+          output.complete("");
+        }
+      });
+      if (!p.waitFor(PROMPT_MS, TimeUnit.MILLISECONDS)) {
+        p.descendants().forEach(ProcessHandle::destroyForcibly);
+        p.destroyForcibly();
+        return false;
+      }
+      String out;
+      try {
+        out = output.get(5, TimeUnit.SECONDS);
+      } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+        out = "";
+      }
+      return out.contains("button returned:Delete") && !out.contains("gave up:true");
+    } catch (IOException | InterruptedException e) {
+      System.err.println("[beam] no prompt: " + e);
+      return false;
     }
   }
 

@@ -181,7 +181,7 @@ keeping a session to use later is the visitor's choice.
   no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
   appearance, locale, font scale, the site it came from, when, and the package (from the slot's folder).
 - **A saved session holds its build**: the build sweep keeps any build a saved session names, whatever its age, for
-  as long as the session is saved (`keep-saved-days` days after its last use, default: no limit), so it can be
+  as long as the session is saved (`keep-saved-days` days after its last use, default 7; `never` keeps it for good), so it can be
   recovered. A saved session whose build is gone anyway (deleted by hand, or the cache emptied) waits for that build:
   beaming it again (same hash) brings it back, and `run` says so meanwhile.
 - **Recovering it locally**:
@@ -190,6 +190,14 @@ keeping a session to use later is the visitor's choice.
     build: `--data-slots k<id>` (its saved data, no `--fresh`), its launch options and device, `--no-autofill`.
     What it does then is kept in the same slot.
   - `apksim beam forget ID`: erases its data; its build then gets the ordinary `keep-days` hold from now.
+  - `apksim beam forget --all [--site ORIGIN] [--app PREFIX] [--builds]` (issue 382): every saved session, or those of
+    one site, or whose app name starts with PREFIX. It prints what it erased; one a tab or `run` has open is skipped
+    (exit 1). The builds get the `keep-days` hold as with `forget ID`; `--builds` (only while no agent runs, which is
+    what knows the sessions' builds) also removes, now, every build no saved session keeps.
+  - From a page, a site's own saves only (issue 382): `DELETE /beam/saved/ID` erases one and `DELETE /beam/saved` all of
+    them, answering `{"erased":[ids],"skipped":[{"id","why"}]}` (a session open in a tab is skipped; another site's id is
+    404). Like a start, it asks on the Mac unless the site is trusted (a dialog with Delete / Don't Delete, no answer is
+    no; a site set to never is 403). The builds get the `keep-days` hold.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
 - **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off]`, kept in

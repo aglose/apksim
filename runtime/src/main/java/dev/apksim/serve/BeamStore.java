@@ -42,6 +42,9 @@ final class BeamStore {
   static final long GRACE_MS = 3 * 60_000L;
   private static final SecureRandom RANDOM = new SecureRandom();
 
+  /** `keep-saved-days` when the config does not say (issue 382): a session unused for a week is erased. */
+  static final double DEFAULT_KEEP_SAVED_DAYS = 7;
+
   /**
    * `keep-days`, `save-sessions`, `keep-saved-days` (negative: never), and `rec`: the flight recorder channels a beam
    * session starts with (`input` by default, `all`, a list such as `input,logcat`, or `off`), and `inspect-network`
@@ -49,7 +52,7 @@ final class BeamStore {
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
   record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork) {
-    static final Config DEFAULT = new Config(2, false, -1, "input", "off");
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off");
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
       this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off");
@@ -119,7 +122,9 @@ final class BeamStore {
       if (Files.isRegularFile(configFile) && Json.parse(Files.readString(configFile)) instanceof Map<?, ?> m) {
         double keep = m.get("keep-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : c.keepDays();
         boolean save = m.get("save-sessions") instanceof Boolean b ? b : c.saveSessions();
-        double saved = m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
+        // Absent: the default (7 days). "never", or anything else that is not a number of days: never.
+        double saved = !m.containsKey("keep-saved-days") ? c.keepSavedDays()
+            : m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
         c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()));
       }
@@ -645,12 +650,39 @@ final class BeamStore {
     if (!sid.matches("[0-9a-f]{12}")) return "not a saved session";
     try (SavedHold own = hold(sid, true)) {
       if (own == null) return "it is open (apksim beam run, or a tab): quit it first";
+      if (!Files.exists(savedDir.resolve(sid + ".json"))) {  // erased since the record was read (another delete, the sweep)
+        Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
+        return null;
+      }
       String why = forgetLocked(rec);
       if (why == null) Files.deleteIfExists(savedDir.resolve(sid + ".lock"));
       return why;
     } catch (IOException e) {
       return e.toString();
     }
+  }
+
+  /** The result of {@link #forgetAll}: what was erased and what was skipped, each with the reason. */
+  record Forgotten(List<Map<String, Object>> erased, List<String[]> skipped) {}
+
+  /**
+   * Erases every saved session `match` accepts (issue 382), skipping those that are open, and tells the catalog each
+   * one's build is no longer held by it (the `keep-days` hold starts).
+   */
+  Forgotten forgetAll(Predicate<Map<String, Object>> match, Catalog catalog) {
+    List<Map<String, Object>> erased = new ArrayList<>();
+    List<String[]> skipped = new ArrayList<>();
+    for (Map<String, Object> r : saved()) {
+      if (!match.test(r)) continue;
+      String why = forget(r);
+      if (why == null) {
+        erased.add(r);
+        if (r.get("sha256") instanceof String h) catalog.released(h);
+      } else {
+        skipped.add(new String[] {String.valueOf(r.get("id")), String.valueOf(r.getOrDefault("app", "?")), why});
+      }
+    }
+    return new Forgotten(erased, skipped);
   }
 
   private String forgetLocked(Map<String, Object> rec) {
@@ -689,6 +721,11 @@ final class BeamStore {
    * session or a live grant holds. Synchronized: the timer, session ends and starts all call it.
    */
   synchronized void sweep(Catalog catalog, Predicate<String> inUse) {
+    sweep(catalog, inUse, (long) (config.keepDays() * DAY_MS));
+  }
+
+  /** {@link #sweep(Catalog, Predicate)} with builds kept `keepBuildMillis` after their last session (0: none unused). */
+  synchronized void sweep(Catalog catalog, Predicate<String> inUse, long keepBuildMillis) {
     Config c = config;
     long now = System.currentTimeMillis();
     if (c.keepSavedDays() >= 0) {
@@ -703,7 +740,7 @@ final class BeamStore {
       }
     }
     Set<String> saved = savedBuilds();
-    List<String> gone = catalog.sweepBuilds(sha -> saved.contains(sha) || inUse.test(sha), (long) (c.keepDays() * DAY_MS), GRACE_MS);
+    List<String> gone = catalog.sweepBuilds(sha -> saved.contains(sha) || inUse.test(sha), keepBuildMillis, GRACE_MS);
     for (String name : gone) {
       try {
         boolean all = ApkCache.remove(cacheRoot, name);
@@ -880,6 +917,7 @@ final class BeamStore {
         return DeviceHandoff.command(store, catalog, args);
       }
       case "forget" -> {
+        if (!args.isEmpty() && args.get(0).equals("--all")) return forgetAllCommand(store, catalog, args.subList(1, args.size()));
         if (args.size() != 1) return usage();
         Map<String, Object> r = store.saved(args.get(0));
         if (r == null) {
@@ -1047,12 +1085,63 @@ final class BeamStore {
     }
   }
 
+  /** `apksim beam forget --all [--site ORIGIN] [--app PREFIX] [--builds]` (issue 382). */
+  private static int forgetAllCommand(BeamStore store, Catalog catalog, List<String> args) throws IOException {
+    String site = null, app = null;
+    boolean builds = false;
+    for (int i = 0; i < args.size(); i++) {
+      switch (args.get(i)) {
+        case "--site" -> {
+          if (++i >= args.size()) return usage();
+          site = args.get(i);
+        }
+        case "--app" -> {
+          if (++i >= args.size()) return usage();
+          app = args.get(i);
+        }
+        case "--builds" -> builds = true;
+        default -> {
+          return usage();
+        }
+      }
+    }
+    String fs = site, fa = app;
+    if (builds) {
+      // A running agent knows which builds its sessions use; without it nothing does.
+      int port = store.agentPort();
+      if (port >= 0) {
+        System.err.println("apksim beam forget --all --builds: the agent is running" + (port > 0 ? " (port " + port + ")" : "")
+            + " and knows which builds its sessions use: run `apksim beam stop` first, or leave out --builds (its sweep removes them after keep-days)");
+        return 1;
+      }
+      if (!store.lockAgent(0)) {
+        System.err.println("apksim beam forget --all --builds: an agent just started: leave out --builds");
+        return 1;
+      }
+    }
+    Forgotten f = store.forgetAll(r -> (fs == null || fs.equals(r.get("site")))
+        && (fa == null || String.valueOf(r.getOrDefault("app", "")).startsWith(fa)), catalog);
+    for (Map<String, Object> r : f.erased()) System.out.println("forgot " + r.get("id") + " (" + r.getOrDefault("app", "?") + ")");
+    for (String[] s : f.skipped()) System.out.println("skipped " + s[0] + " (" + s[1] + "): " + s[2]);
+    if (f.erased().isEmpty() && f.skipped().isEmpty()) System.out.println("nothing matched (--site takes the origin as `apksim beam saved` shows it)");
+    System.out.println(f.erased().size() + " erased, " + f.skipped().size() + " skipped"
+        + (!builds && !f.erased().isEmpty() ? "; their builds are kept " + num(store.config.keepDays()) + " days from now unless another session uses them" : ""));
+    if (builds) {
+      store.sweep(catalog, sha -> false, 0);
+      System.out.println("builds no saved session keeps were removed");
+    }
+    return f.skipped().isEmpty() ? 0 : 1;
+  }
+
   static final String USAGE = """
       usage: apksim beam saved                  the sessions kept on this Mac
              apksim beam run ID [OPTIONS]       opens one in apksim's window, with the data it left
              apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install replace|skip] [--yes] [--dry-run]
                                                 moves one onto an attached adb device (docs/beam.md "Moving a session to a device")
              apksim beam forget ID              erases one (its build then gets the keep-days hold)
+             apksim beam forget --all [--site ORIGIN] [--app PREFIX] [--builds]
+                                                erases every saved session (of one site, or whose app starts with PREFIX); one a tab has
+                                                open is skipped; --builds (agent stopped) also removes, now, the builds nothing keeps
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
