@@ -58,7 +58,7 @@ public final class FakeTlsSocket extends SSLSocket {
   private volatile String[] appProtocols = new String[0];
   private volatile boolean closed;
   /** How the app configured this socket's TLS extensions (ALPN setters and the Android-platform calls), for the handshake's log line. */
-  private final java.util.Set<String> configured = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+  private final java.util.Set<String> configured = java.util.concurrent.ConcurrentHashMap.newKeySet();
   /** Handshake lines already logged: one per host, port and offer. */
   private static final java.util.Set<String> OFFERS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -165,11 +165,11 @@ public final class FakeTlsSocket extends SSLSocket {
    */
   private void logOffer(boolean tunnelled) {
     String offer = appProtocols.length == 0 ? "none" : String.join(",", appProtocols);
-    if (!OFFERS.add(host + ":" + port + " " + offer)) return;
     String how = Net.mode == Net.Mode.REPLAY ? "answered from the recording"
-        : tunnelled ? "h2 tunnel" : "captured as HTTP/1.1";
-    Net.log("network: " + host + ":" + port + " TLS handshake offers ALPN " + offer + " (" + how + "); socket calls: "
-        + (configured.isEmpty() ? "none" : String.join(", ", configured)));
+        : tunnelled ? "asks for an h2 tunnel" : "captured as HTTP/1.1";
+    String calls = configured.isEmpty() ? "none" : String.join(", ", new java.util.TreeSet<>(configured));
+    if (!OFFERS.add(host + ":" + port + " " + offer + " " + calls)) return;
+    Net.log("network: " + host + ":" + port + " TLS handshake offers ALPN " + offer + " (" + how + "); socket setter calls: " + calls);
   }
 
   /** The real handshake with the server, over the bytes the engine relays untouched. */
@@ -235,7 +235,6 @@ public final class FakeTlsSocket extends SSLSocket {
   public javax.net.ssl.SSLParameters getSSLParameters() {
     javax.net.ssl.SSLParameters p = super.getSSLParameters();
     p.setApplicationProtocols(appProtocols);
-    configured.add("getSSLParameters");
     return p;
   }
 

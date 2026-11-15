@@ -118,6 +118,7 @@ public final class H2TunnelCheck {
       } else if (mode == 4) {
         // Conscrypt's socket classes' own setter, which OkHttp's Android adapters find by reflection.
         s.getClass().getMethod("setApplicationProtocols", String[].class).invoke(s, (Object) new String[] {"h2"});
+        check(java.util.Arrays.equals(new String[] {"h2"}, (String[]) s.getClass().getMethod("getApplicationProtocols").invoke(s)), "getApplicationProtocols returns what was set");
       } else if (mode == 1) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2", "http/1.1"});
