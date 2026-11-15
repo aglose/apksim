@@ -7,6 +7,37 @@ Why: a large app's journeys reached a server address compiled into the app, and 
 allows only localhost) broke the journeys that expected the remote route. On/off is not enough; a team needs the
 remote route answered the same way every run, and its offline and slow paths tested on purpose.
 
+## Two mechanisms: the tap and the engine
+
+Observing the network and changing it are different jobs, and they are done by different things.
+
+**The tap observes.** Recording to a file, the flight recorder's `net` channel and the network inspector all read the
+app's own connections as they pass. The app's socket is the socket it made, connected where it connected it, with the
+TLS its own factory does, the ALPN protocol the server picks (HTTP/2 stays HTTP/2, so gRPC works and is recorded) and
+the timing it would have had. Nothing stands between the app and the server, so turning recording on cannot break a
+request: on each read and write the app's thread pays one array copy and one queue node, and a thread of apksim's own
+(`apksim-net-tap`) turns the copies into exchanges. If that thread meets bytes it cannot read, or falls 48 MB behind,
+the connection stops being captured; its bytes go on as before. With nothing observing, a hooked call is the original
+call after one field read.
+
+**The engine intervenes.** Replaying a recording, network conditions, a host sent to a fixture server and an
+inspector rule that answers or changes a request all need something between the app and the server. That is the
+network engine, an in-process proxy, and only the connections an intervention concerns go through it:
+
+| What is on | Which connections | How |
+|---|---|---|
+| nothing, or only observing (`--network record`, `--rec net`, the inspector with no rule) | all | direct, read by the tap |
+| `--network replay FILE` | all | answered by the engine from the file |
+| conditions (`3g`, `lossy`, `latency`, `bandwidth`) | all | relayed by the engine, shaped; TLS is still the app's, end to end, and the tap still reads it |
+| `--network-host H=ADDR` | to `H` | relayed to `ADDR`; while exchanges are recorded, answered by the engine, which does the TLS to the fixture (`--network-trust`) |
+| an inspector rule | to the host its pattern names (every host, if it names none) | answered by the engine, which reads each request as HTTP/1.1 |
+
+An answered connection is the one case where the app does not get the server's own protocol: the engine reads
+HTTP/1.1, so it offers no ALPN (a client that offers `h2` alone is carried as a tunnel instead, and no rule reaches
+it). That is the price of a mock, paid only by the hosts being mocked and only while the rule exists: adding a rule
+closes the direct connections to its host so the app's next request meets it, and removing it closes the engine's so
+the app is back on its own connections.
+
 ## Options
 
 ```
@@ -48,6 +79,8 @@ network latency MS           extra round-trip time
 network bandwidth KBPS       down and up
 network unmatched [clear]    unmatched replay requests since the test started (or launch), and forget them
 network save                 write the recording now (it is also written 300 ms after each exchange and on exit)
+network reconnect            close the app's open connections, as a change of network does; the app makes them again
+                             (after `rec on net` in a running app: connections opened before it are not read, below)
 ```
 
 Profiles: `3g` = 300 ms RTT, 750 kbps down, 250 kbps up; `lossy` = 150 ms RTT ± 100 ms jitter, 2% of connections
@@ -60,7 +93,23 @@ by hand. Per entry: `startedDateTime`, `time`, `request` (method, url, httpVersi
 with mimeType and text), `response` (status, statusText, headers, `content` with size, mimeType, text and
 `encoding: base64` for binary), `timings` (connect, send, wait, receive). Text bodies are stored as text; gzip bodies
 are stored decoded with `content._apksimGzip: true` and re-encoded on replay (only for a client that accepts gzip).
-Extensions (HAR allows `_` fields):
+An exchange over HTTP/2 has `httpVersion: "HTTP/2"`, its URL and method from the pseudo-headers (which are not
+listed again as headers), and header names in lower case as they were sent. Each entry names its `connection` and
+`serverIPAddress`. Extensions (HAR allows `_` fields):
+
+- `log._apksimConnections`: every connection the tap saw, also the ones that carried no exchange: host, port, the
+  address reached, when it opened and closed, how long the connect took, the protocol (`h2`, `http/1.1`, `opaque`),
+  the TLS version, cipher suite and ALPN choice, bytes each way, how many exchanges, and the error that ended it (a
+  connect that failed is here too: an IPv6 route that does not exist, a refused port).
+- `_apksimError` on an entry: why it has no whole answer (`the server closed the connection before its answer was
+  whole`, `the app reset the stream: CANCEL`, `java.net.SocketTimeoutException: Read timed out`, `closed by the app`).
+  Its status is 0 when no answer began. A failed request is evidence, so it is kept; replay never answers with one.
+- `_apksimUnfinished` on an entry: still going on when the recording was written (a gRPC or event stream that stays
+  open): what there was of it by then.
+- `response._apksimTrailers`: trailers after the body (gRPC's `grpc-status` and `grpc-message`).
+- `_webSocketMessages` on the entry of a `101` upgrade, as Chrome writes them: `{type: send|receive, time, opcode,
+  data}` per message, the app's unmasked, permessage-deflate inflated; text as text, anything else base64. The newest
+  2000 messages, 4 MB in all, 1 MB of each (`_apksimSize` on one that was cut).
 
 - `log._apksimCertificates`: each host's certificate chain as the server sent it (base64 DER), so a replayed TLS
   session presents the real certificates: hostname verification and OkHttp `CertificatePinner` pins pass as they did
@@ -97,49 +146,69 @@ It gets a `599 No Recorded Response` with header `X-Apksim-Replay: unmatched` an
 run the test it happened in then fails with the same text (after its own result: a passing test becomes a failure),
 unless it ran `apksim network unmatched clear` (a test that checks the unmatched path) or the policy is `respond`.
 
-## Where it hooks (measured 2026-11-05)
+## Where it hooks (measured 2026-11-05, the tap 2026-11-15)
 
 - The owner's R8 release build has no `okhttp3/OkHttpClient$Builder` (0 references in its DEX: R8 renamed OkHttp),
   its debug build has OkHttp (plus Ktor's OkHttp engine, OkHttp WebSockets and a `CertificatePinner`). An
   interceptor added at `OkHttpClient.Builder.build` would miss the release build entirely, and Ktor's engines, and any
   other client.
-- What survives R8 is the JDK API: OkHttp 5 connects with `Socket.connect(SocketAddress, int)` and layers TLS with
-  `SSLSocketFactory.createSocket(Socket, String, int, boolean)`, both called from app code, which apksim translates.
-- HTTPS bodies are readable only above TLS. So the translator rewrites, in app code only:
-  - `Socket.connect(...)` and `SocketFactory.createSocket(host, port)` → `dev.apksim.net.Net`: a connection to a
-    non-loopback address goes to apksim's in-process network engine instead, which is told the real destination
-    (`APKSIM host port timeout`) and answers `OK` or the error the real connect gave (`ERR ConnectException ...`), so
-    a refused or unreachable server fails the app's connect as it would have.
-  - `SSLSocketFactory.createSocket(socket, host, port, autoClose)` (and `createSocket(host, port)`) on such a socket,
-    when recording or replaying → a TLS socket that does no TLS (`FakeTlsSocket`): its handshake asks the engine for
-    the certificates (`APKSIM-TLS host`; recording, the engine does the real TLS handshake with the server then, so a
-    bad certificate fails the app's handshake), its session reports TLS 1.3 with that chain, and its bytes reach the
-    engine in plain text. ALPN reports none, so clients speak HTTP/1.1 (OkHttp does with any server that offers no
-    ALPN). A client that offers `h2` and not `http/1.1` (gRPC, HTTP/2-only servers; OkHttp's default offers both and stays captured) is not given that: while recording or capturing (not
-    replaying, which has no server) its connection becomes an opaque tunnel, the engine relaying the bytes untouched and
-    the real TLS handshake running over them with the app's own factory (`APKSIM-TLS ... tunnel`, answered `TUNNEL`), so
-    the client gets the server's ALPN choice. Not recorded or captured; the inspector lists it as a `CONNECT` row. Every handshake logs one `TLS handshake offers ALPN none|h2|...` line per host, port, offer and set of setter calls (issue 395), so a client whose offer never reaches the socket shows `none` and the calls it did make.
-    `scripts/check-h2-tunnel.sh` (`H2TunnelCheck`: loopback and in memory, the JDK's TLS and Conscrypt, gRPC's reflective ALPN, Conscrypt's `setApplicationProtocols(String[])`; the real handshake gets only the cipher suites and protocols its socket supports, and an h2 offer that is not tunnelled is logged). A socket that is an `SSLSocket` from the start (`SSLSocketFactory.createSocket()` then `connect`) connects
-    directly: through the engine it would lose the host name its TLS checks need. Net turns
-    `SSLSocketFactory.createSocket(host, port)` into a plain socket plus layered TLS, so that common form is covered.
-  - `URL.openConnection()`, `openConnection(Proxy)`, `openStream()` → the JDK's own `HttpURLConnection` through the
-    engine as an HTTP proxy (`CONNECT` for https, with `FakeTlsSocket` as its `SSLSocketFactory` when recording or
-    replaying). The JDK's HttpURLConnection is not app code, so its sockets are not rewritten: this is its hook.
-  - `HttpsURLConnection.setSSLSocketFactory(f)` → keeps that fake transport (or the offline tracking) and hands `f`
-    on, so the app's own factory does the real handshake instead of replacing the transport.
-- The engine (`NetEngine`) parses HTTP/1.1 in both directions. Recording: it opens the real connection (real TLS,
-  with the JDK's trust store plus `--network-trust`, for the name the client's TLS gave, not the address it
-  connected to), relays the exchange byte for byte while capturing it, and adds an entry. It never sends a request
-  twice: a kept-alive server connection that closed is replaced before the request goes out, and a failure after that
-  ends the client's connection, whose own retry policy then decides. A body that ends before its Content-Length or
-  last chunk is an error, never a recorded entry. It waits as long as the client stays idle (a connection opened
-  ahead of its first request); a server that speaks first is relayed unrecorded, and a first line that cannot be HTTP
-  (a binary hello with no newline) is handed on at its first impossible byte: relayed recording, unmatched replaying.
-  Bandwidth pacing comes before each write, so even a body of a few bytes is slowed. Replaying: it answers from the file
-  (a HEAD answer keeps the recorded Content-Length; a body stored still encoded, deflate or br, keeps its
-  Content-Encoding). Conditions only (no file): it relays bytes and shapes them (latency
-  as a delay line each way, bandwidth as pacing, loss as refused connections and resets; at most 1 MB queued each
-  way, so a slow profile pushes back on the server instead of filling the heap); TLS stays end to end.
+- What survives R8 is the JDK API: OkHttp connects with `Socket.connect(SocketAddress, int)`, layers TLS with
+  `SSLSocketFactory.createSocket(Socket, String, int, boolean)` and reads and writes through
+  `Socket.getInputStream()` / `getOutputStream()` (Okio's `socket.source()`), all called from app code, which apksim
+  translates. So the translator rewrites, in app code only, these calls to `dev.apksim.net.Net`:
+  - `Socket.connect(...)`, `SocketFactory.createSocket(host, port)` and `createSocket(address, port)`: where the
+    connection goes is decided here (`Net.route`). Directly, it is the app's own call, and the socket is remembered
+    with the host it went to. Through the engine, the socket connects to the engine instead and tells it the real
+    destination and whether to answer or relay (`APKSIM host port timeout address answer|relay`); the engine answers
+    `OK` or the error the real connect gave (`ERR ConnectException ...`), so a refused or unreachable server fails the
+    app's connect as it would have.
+  - `SSLSocketFactory.createSocket(socket, host, port, autoClose)`: on a direct or relayed socket, the app's factory
+    makes its TLS socket as always, and the tap notes it with the name it is for. On a socket the engine answers, a
+    TLS socket that does no TLS (`FakeTlsSocket`): its handshake asks the engine for the certificates (`APKSIM-TLS
+    host`; live, the engine does the real TLS handshake with the server then, so a bad certificate fails the app's
+    handshake), its session reports TLS 1.3 with that chain, and its bytes reach the engine in plain text. A client
+    that offers `h2` and not `http/1.1` (gRPC) cannot be read that way: live, its connection becomes a tunnel, the
+    real TLS handshake running over the relayed bytes with the app's own factory (`APKSIM-TLS ... tunnel`, answered
+    `TUNNEL`), so it gets the server's ALPN choice; no rule reaches it, the tap reads it, and the inspector lists a
+    `CONNECT` row saying so (`scripts/check-h2-tunnel.sh`, `H2TunnelCheck`: loopback and in memory, the JDK's TLS and
+    Conscrypt, gRPC's reflective ALPN, Conscrypt's `setApplicationProtocols(String[])`). Every handshake the engine
+    answers logs one `TLS handshake offers ALPN none|h2|...` line per host, port, offer and set of setter calls (issue
+    395), so a client whose offer never reaches the socket shows `none` and the calls it did make.
+  - `Socket.getInputStream()` and `getOutputStream()` (also called on an `SSLSocket`): while the tap is on, for a
+    socket the hooks saw connect or layer TLS, the stream handed back is the socket's own with each read and write
+    copied to the tap. The socket itself is never wrapped, so everything a client does with it (Conscrypt's own
+    ALPN calls, gRPC's reflection on the socket's class, session reuse) is what it does without apksim. Above TLS the
+    bytes are in the clear; a plain socket under TLS is read by the JDK's TLS, not by app code, so its ciphertext is
+    never copied.
+  - `URL.openConnection()`, `openConnection(Proxy)`, `openStream()`: the JDK's `HttpURLConnection` is not app code
+    (its sockets are made and read inside the JDK), so this is its hook. Its socket factory is wrapped
+    (`Net.TrackingFactory`): the TLS socket the JDK gets passes every call on to the real one and copies what its
+    streams carry (`TapSslSocket`; only the JDK ever holds one). Plain `http://` has no such seam, so while exchanges
+    are kept it goes through the engine as an HTTP proxy, which reads HTTP/1.1 as it stands (what the JDK's client
+    speaks anyway). Where the engine answers (replay, a rule, a mapped host being recorded) the connection gets the
+    engine as its proxy and `FakeTlsSocket` as its factory.
+  - `HttpsURLConnection.setSSLSocketFactory(f)`: keeps the wrapper (or the fake transport) and hands `f` on, so the
+    app's own factory does the real handshake instead of replacing it.
+- The tap's decoders (`TapHttp1`, `TapHttp2` with `Hpack`, `TapWebSocket`) read each direction of a connection on
+  their own and pair requests with answers. A request is queued for them before it is sent, so it is always there
+  before its answer. HTTP/2 needs every header block from the connection's first, since each may refer to fields an
+  earlier one put in the table; that is why a connection opened before `rec on net` cannot be read, and is left alone
+  (`network reconnect` makes the app open new ones). The TLS session (protocol, cipher suite, ALPN, the server's
+  certificates) is read once app data has flowed, so reading it never starts a handshake. A connection whose socket
+  the app closed without a read or write noticing is found closed within two seconds.
+- The engine (`NetEngine`) parses HTTP/1.1 in both directions for the connections it answers. Live, it opens the real
+  connection (real TLS, with the JDK's trust store plus `--network-trust`, for the name the client's TLS gave, not
+  the address it connected to), relays the exchange byte for byte, applies the inspector's rules and keeps the
+  exchange. It never sends a request twice: a kept-alive server connection that closed is replaced before the request
+  goes out, and a failure after that ends the client's connection, whose own retry policy then decides. A body that
+  ends before its Content-Length or last chunk is an error, never a recorded entry. It waits as long as the client
+  stays idle (a connection opened ahead of its first request); a server that speaks first is relayed unread, and a
+  first line that cannot be HTTP (a binary hello with no newline) is handed on at its first impossible byte: relayed
+  live, unmatched replaying. Bandwidth pacing comes before each write, so even a body of a few bytes is slowed.
+  Replaying: it answers from the file (a HEAD answer keeps the recorded Content-Length; a body stored still encoded,
+  deflate or br, keeps its Content-Encoding). A relayed connection (conditions, a mapped host) is carried untouched
+  and shaped (latency as a delay line each way, bandwidth as pacing, loss as refused connections and resets; at most
+  1 MB queued each way, so a slow profile pushes back on the server instead of filling the heap).
 - DNS: a JDK `InetAddressResolverProvider` (`NetResolver`, META-INF/services), so every Java lookup, the JDK's own
   included, sees offline (UnknownHostException, as Android says "Unable to resolve host"), and a replay never needs
   the recorded hosts to resolve (they get a placeholder address in 198.18.0.0/15, the benchmarking range, one per
@@ -148,53 +217,54 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   as do `send`/`sendto`/`sendmsg` to a non-loopback peer or destination (a socket connected before going offline, a
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
-- A redirected connection tells the engine the address the app chose as well as the name (custom DNS, one address
+- A connection through the engine tells it the address the app chose as well as the name (custom DNS, one address
   of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name.
   `SocketFactory.createSocket(InetAddress, port)` keeps the address it is given too (no new lookup).
-- The app's own proxy, reached through a redirected socket (OkHttp with `.proxy(...)`): an absolute-form request is
-  recorded under its URL and forwarded to the proxy as it was; a CONNECT is forwarded too (replaying, the engine
-  answers 200 itself), and the tunnel then starts over (TLS for the name the app gives, then requests, recorded
-  under their own https:// URLs, so they replay as direct requests as well).
-- Uploads: the server's answer is read on its own thread while the body goes up, so one that answers early (401,
-  413, then closes) is heard and relayed; the rest of the body is read from the app and hashed but not sent.
-  `Expect: 100-continue` is passed on: the body waits for the server's 100 or its final answer, or until the app
-  sends it anyway. A final answer before the body is recorded as such (`request._apksimExpectAnswered`) and
-  replayed the same way, without reading a body (several such answers to one request replay in recorded order).
-- Recording, the real TLS handshake with the server uses the app's own socket factory (the one it layered TLS with,
-  handed to the engine), so its trust manager decides as it would have without apksim: a custom one, pinning done in
-  it, client certificates; the protocols and cipher suites the app enabled on its socket hold for that handshake, and
-  the session reports what it negotiated. The JDK's HttpURLConnection uses the app's default factory if it set one
-  (`setDefaultSSLSocketFactory`) or one set on the connection, else the engine's own TLS (the JDK's trust store); a
-  server the app refused gets through only when `--network-trust` vouches for its chain. Replaying, no server is
-  reached: what the app's trust manager accepted when recording is what is replayed, and the session reports what a
-  server would have negotiated within the app's protocols and suites (TLS 1.3 or 1.2), or refuses as one would.
-- `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route: recording or shaping, the
-  request goes through the app's proxy directly (logged: not recorded or shaped); replaying, the engine answers it.
-- An HttpsURLConnection that does not go through the engine (the layer off, the app's own proxy) gets its socket
-  factory wrapped (one wrapper per factory, so the JDK still reuses its kept-alive connections), so the socket under
-  its TLS is remembered, or the socket itself when the JDK makes it unconnected and connects it, and `network
-  offline` closes it, a download in progress included. Plain http through the JDK's own HttpURLConnection is out of
-  reach that way.
+- The app's own proxy, reached through a socket the engine answers (OkHttp with `.proxy(...)`): an absolute-form
+  request is recorded under its URL and forwarded to the proxy as it was; a CONNECT is forwarded too (replaying, the
+  engine answers 200 itself), and the tunnel then starts over (TLS for the name the app gives, then requests,
+  recorded under their own https:// URLs, so they replay as direct requests as well). Direct, the tap records the
+  CONNECT as an exchange of its own and reads the TLS the app layers on the tunnel as any other.
+- Uploads through the engine: the server's answer is read on its own thread while the body goes up, so one that
+  answers early (401, 413, then closes) is heard and relayed; the rest of the body is read from the app and hashed
+  but not sent. `Expect: 100-continue` is passed on: the body waits for the server's 100 or its final answer, or
+  until the app sends it anyway. A final answer before the body is recorded as such
+  (`request._apksimExpectAnswered`, by the tap too) and replayed the same way, without reading a body (several such
+  answers to one request replay in recorded order).
+- Where the engine answers live, the real TLS handshake with the server uses the app's own socket factory (the one
+  it layered TLS with, handed to the engine), so its trust manager decides as it would have without apksim: a custom
+  one, pinning done in it, client certificates; the protocols and cipher suites the app enabled on its socket hold
+  for that handshake, and the session reports what it negotiated. The JDK's HttpURLConnection uses the app's default
+  factory if it set one (`setDefaultSSLSocketFactory`) or one set on the connection, else the engine's own TLS (the
+  JDK's trust store); a server the app refused gets through only when `--network-trust` vouches for its chain.
+  Replaying, no server is reached: what the app's trust manager accepted when recording is what is replayed, and the
+  session reports what a server would have negotiated within the app's protocols and suites (TLS 1.3 or 1.2), or
+  refuses as one would. Direct and relayed connections need none of this: the handshake is the app's.
+- `URL.openConnection(proxy)` with the app's own HTTP or SOCKS proxy keeps that route (no rule or condition reaches
+  it; its HTTPS is still read by the tap); replaying, the engine answers it.
+- Every HttpsURLConnection's socket factory is wrapped (one wrapper per factory, so the JDK still reuses its
+  kept-alive connections), so the socket under its TLS is remembered, or the socket itself when the JDK makes it
+  unconnected and connects it, and `network offline` closes it, a download in progress included.
 - A direct connect that finishes while `network offline` is closing connections is closed as it registers, and so is
-  an unconnected socket the JDK would connect itself. Turning conditions on in a running instance (`network 3g`
-  with no launch options) closes the connections made before it, so the app reconnects through the engine.
+  an unconnected socket the JDK would connect itself. Setting conditions in a running instance (`network 3g`) closes
+  the connections made directly, so the app reconnects through the engine; one whose connect was under way then is
+  closed as it registers.
 - Every read from a server that waits (for the answer to begin, or in the middle of a body) checks every 500 ms
   whether the client is still there: an app that times out and closes its connection ends the server's too, so a
   server that stalls does not keep a worker and both sockets for good. A TLS handshake with the server gets the app's
   connect timeout.
-- The recording is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
+- A recording file is saved 300 ms after each exchange, on the way out (`Standby.halt`) and from a shutdown hook
   (Ctrl-C, the app's `System.exit`). The last save waits up to 2 s for exchanges whose answer has reached the app but
-  is still being written down (a large gzip body decodes after it is relayed). A save that fails is retried.
+  is still being written down (a large gzip body decodes after it has passed). A save that fails is retried.
 - Offline, `URL.openConnection` returns a connection that decides when it is first used: still offline, it fails
   (UnknownHostException for a name, ENETUNREACH for an address) without reaching the JDK, whose cached keep-alive
   sockets could otherwise still carry a request; online again by then, it opens the real connection with everything
   the app set on it (method, headers, timeouts, streaming mode, its TLS factory and hostname verifier) and goes on. A connect's timeout includes the injected round trip (`connect(addr, 100)` under `latency 1500` times
   out after 100 ms). A socket factory that makes only connected sockets cannot go through the engine: replaying, its
-  connect fails and counts as unmatched; recording, it connects directly, unrecorded.
-- Offline also closes the engine's connections on both sides (a worker waiting on a silent server wakes), the
-  connections the hooks made without the engine (before the layer was turned on by a
-  `network` command, TLS-first sockets), and a numeric-address URL (no lookup to fail) still goes to the engine, which
-  refuses it.
+  connect fails and counts as unmatched; otherwise it connects directly (read by the tap; no rule or condition
+  reaches it, and a line says so).
+- Offline also closes the engine's connections on both sides (a worker waiting on a silent server wakes) and every
+  direct one, and a numeric-address URL (no lookup to fail) fails without the JDK.
 - ConnectivityManager (`NetConnectivity`, over Robolectric's shadow, whose state is static): offline removes the
   networks and tells callbacks of the default one. A launch profile of offline is set before the Application is
   created (SimTestEnvironment.setUpApplicationState, for Host and each test), so `Application.onCreate` already
@@ -202,15 +272,18 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   type, so the default network now has netId TYPE_WIFI (apps were handed Robolectric's stand-in, without
   NET_CAPABILITY_INTERNET or VALIDATED); and on Linux a container's `eth0` counts (it had no network at all).
 - Loopback (127.0.0.0/8, ::1, localhost) is never touched: a test's MockWebServer and adb forwards keep working.
-- Code that runs for every app references no optional library: `Net` uses only JDK types, so an APK without OkHttp
-  is unaffected (the org.webrtc lesson in AGENTS.md "Video").
+- Code that runs for every app references no optional library: `Net` and the tap use only JDK types, so an APK
+  without OkHttp is unaffected (the org.webrtc lesson in AGENTS.md "Video").
 
 ## Clients
 
 - OkHttp 3, 4, 5, minified or not, and anything on it (Retrofit, Ktor's OkHttp engine, Coil, Glide's OkHttp
-  integration): recorded and replayed. WebSockets (an upgrade) are relayed while recording but not recorded (the 101
-  is left out of the file too); replaying one is an unmatched request. When the app leaves a relayed TLS connection
-  (a WebSocket closed without a close frame), the server's side is closed too: TLS cannot half-close.
+  integration): recorded over the protocol the server picks (HTTP/2 from most servers) and replayed (over HTTP/1.1,
+  which OkHttp speaks to a server that offers no ALPN). WebSockets: the upgrade and every message are recorded;
+  replaying one is an unmatched request.
+- gRPC on OkHttp (`grpc-okhttp`) and any other HTTP/2-only client: recorded, each call an entry with its messages as
+  the bodies and its status in the trailers; a stream that stays open is in a recording as it stands. Not replayed
+  (the replay engine speaks HTTP/1.1).
 - `HttpURLConnection` / `HttpsURLConnection`, Ktor's Android engine, Volley's HurlStack, `URL.readText()`: recorded and
   replayed.
 - Ktor CIO: uses NIO `SocketChannel` and its own TLS; not hooked (conditions: offline DNS only).
@@ -219,9 +292,29 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   need the translator to substitute Cronet's `CronetEngine.Builder` with one that builds `JavaCronetEngine`
   (`setLibraryLoader` to a no-op and a Java provider), whose requests go through HttpURLConnection and so through here.
 - `new Socket(host, port)` (the connecting constructors) and NIO channels are not hooked.
-- Certificate pinning against the recorded certificates works (the real chain is replayed). A hand-written entry
-  without `_apksim.certificates` presents a placeholder certificate for its host, which passes hostname checks but
-  not pins.
+- Anything that is not HTTP on a socket the hooks saw (a custom protocol, MQTT): passes as it is, counted as one
+  opaque connection in `_apksimConnections` and as a `CONNECT` row in the inspector.
+- Certificate pinning: direct and relayed connections do their own TLS, so pins are checked against the server as
+  always. Replayed, the recorded chain is presented, so pins pass as they did. A hand-written entry without
+  `_apksim.certificates` presents a placeholder certificate for its host, which passes hostname checks but not pins.
+
+## Measured: the tap against the engine it replaced for observing (2026-11-15, Mac)
+
+One HTTPS connection to a server on the same machine's LAN address, made through the hooks as app code makes it
+(a throwaway harness on `work/apksim.jar`; three rounds each, the last shown):
+
+| | a small request and its answer | a 200 MB download | the app's socket and protocol |
+|---|---|---|---|
+| nothing observing | 27 µs | 1,840 MB/s | its own; the server's ALPN choice |
+| observing through the tap | 29 µs | 1,530 MB/s | its own; the server's ALPN choice |
+| observing through the engine (0.38.0) | 1,620 µs | 800 MB/s | `FakeTlsSocket`; no ALPN, HTTP/1.1 only |
+
+The engine's 1.6 ms a request is mostly its look, before each request on a kept-alive connection, at whether the
+server has closed it meanwhile (a read with a 1 ms timeout); it still does that for the connections it answers.
+With the test app (`--rec net`, `open apksim://network?url=https://www.cloudflare.com/cdn-cgi/trace`): "get okhttp:
+200 h2 211 bytes", and the saved recording holds that exchange as HTTP/2 with its timings, the server's certificates,
+the HttpsURLConnection one beside it, and three connections: OkHttp's first try over IPv6 (`connect failed:
+NoRouteToHostException`), its `h2` connection (TLS 1.3, `alpn: h2`) and the JDK's `http/1.1` one.
 
 ## Measured on the test app (2026-11-05, Mac)
 
@@ -244,6 +337,16 @@ fine. Record with one process: parallel processes recording to one file overwrit
 
 ## Checks
 
+- `scripts/check-net-tap.sh` (`TapCheck`; CI's quick checks): the tap as translated app code meets it, against servers
+  on the same machine. The app's TLS socket is the one its factory made and gets the server's ALPN choice while
+  capturing; HTTP/1.1 (keep-alive, a head and body in pieces, 100 Continue, chunked gzip, HEAD); HTTP/2 with header
+  blocks written by the JDK's own HPACK encoder (Huffman, the dynamic table, a CONTINUATION, padded and interleaved
+  DATA, gRPC messages and trailers, an open stream marked unfinished, RST_STREAM); WebSocket messages (masked,
+  permessage-deflate, fragmented); a body cut short, a request never answered, a connect refused; HttpsURLConnection
+  with no proxy in between; bytes that are not HTTP; which hosts a rule sends through the engine; a relayed
+  connection keeping its own TLS; and 80 MB written in 31 ms while the decoder stood still for 4 s.
+- Test app, `apksim://network?url=URL` adds "Get" (OkHttp) and "Get URL" (HttpURLConnection) for any address, and
+  shows the protocol OkHttp got: with `--rec net` on and a server that offers HTTP/2, "get okhttp: 200 h2 ...".
 - Test app, `NetworkActivity` (`open apksim://network`): "Fetch" POSTs to `https://api.apksim.test/v1/greeting`
   with OkHttp (an `Authorization` header, a JSON body) and shows the status, the greeting, `[recorded]` when replayed
   and the time it took; "Fetch other" asks for a path the recording lacks; "URL" GETs `/v1/plain` with

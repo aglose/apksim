@@ -527,10 +527,12 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
   socket (it would run an APK in the ordinary sandbox), nor any other local socket but the resolver's
   (`mDNSResponder`) and `syslog`: not an `ssh-agent`'s (signing with the visitor's keys) or a container engine's.
-  The network engine (the inspector, `rec` net) listens on loopback, so a beamed instance reaches it in memory
+  The inspector and `rec` net read the app's own connections (the network tap: no socket of its own, so nothing here for
+  the sandbox to deny, and the app keeps HTTP/2 and gRPC). The network engine, which only an inspector rule, a network
+  condition or a mapped host brings in, listens on loopback, so a beamed instance reaches it in memory
   (`Net.inMemory`, pipes like the tab relay's: `RelaySocket#connectEngine`, `PipeSocket`) for app sockets made by a plain
-  `SocketFactory`; `HttpURLConnection` (its proxy would be on loopback) goes out directly there, so the inspector and
-  recording do not see it (issue 317).
+  `SocketFactory`; `HttpURLConnection` (its proxy would be on loopback) goes out directly there: the inspector and a
+  recording see it (its HTTPS, through the tap), but no rule or condition reaches it (issue 317).
 - **Clipboard**: the app's clipboard does not follow the Mac's (an ordinary instance's does, both ways): a site's app
   would read whatever the visitor copies, passwords included, and could write to it. The profile also refuses the
   pasteboard service itself, so native code or reflection past apksim's own check reaches nothing; Cmd+V in the shown

@@ -59,12 +59,35 @@ final class Recording {
     long connect = -1, send, wait, receive;
     String key;
     int served;
+    /** The answer's protocol version when it is not the request's (null: the same). */
+    String respVersion;
+    /** The whole sizes of the bodies as they passed (-1: what is kept is all there was). */
+    long reqSize = -1, respSize = -1;
+    /** Trailers after the answer's body (HTTP/2: gRPC's status), or null. */
+    List<String[]> trailers;
+    /** Why the exchange has no whole answer (the connection closed, a stream was reset, a read timed out), or null. */
+    String error;
+    /** Still going on when the recording was written (a stream that stays open): what there was of it by then. */
+    boolean unfinished;
+    /** The tap's connection it went over (0: through the engine) and the server's address. */
+    int conn;
+    String serverIp;
+    /** WebSocket messages after a 101, appended as they pass, or null. */
+    List<WsMessage> ws;
+
+    /** Whether replay can answer with this entry: a whole answer from a server, not an upgrade or a tunnel. */
+    boolean replayable() {
+      return error == null && !unfinished && status >= 200 && !"CONNECT".equals(method);
+    }
 
     String header(List<String[]> hs, String name) {
       for (String[] h : hs) if (h[0].equalsIgnoreCase(name)) return h[1];
       return null;
     }
   }
+
+  /** One WebSocket message: sent by the app or received, when, its opcode, its bytes (at most 1 MB) and its whole size. */
+  record WsMessage(boolean sent, long wallMs, int opcode, byte[] data, long size, boolean cut) {}
 
   final Path path;
   final Match match;
@@ -110,7 +133,13 @@ final class Recording {
 
   /** scheme://host[:port]/path?query with the default port dropped and the query's parameters sorted. */
   static String normalizeUrl(String url, Set<String> ignoreQuery) {
-    URI u = URI.create(url);
+    URI u;
+    try {
+      u = URI.create(url);
+    } catch (IllegalArgumentException e) {
+      return url;  // characters a URI may not hold (an app that does not escape `|` or `{`): matched as written
+    }
+    if (u.getScheme() == null || u.getHost() == null) return url;
     String scheme = u.getScheme().toLowerCase(Locale.ROOT);
     int port = u.getPort();
     boolean defaultPort = port == -1 || (scheme.equals("https") && port == 443) || (scheme.equals("http") && port == 80);
@@ -143,7 +172,7 @@ final class Recording {
   private void index(Entry e) {
     if (e.reqSha == null) e.reqSha = e.reqBody == null ? EMPTY_SHA : sha256(e.reqBody);
     e.key = key(e.method, e.url, e.reqHeaders, e.reqSha);
-    byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
+    if (e.replayable()) byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
   }
 
   /** The answer for a request: entries with its key in recorded order, the last repeating; null if none. */
@@ -181,11 +210,22 @@ final class Recording {
 
   /** The recorded entry most like a request that matched none, and what differs; null if nothing is close. */
   synchronized String closest(String method, String url, List<String[]> headers, String bodySha) {
-    URI want = URI.create(url);
+    URI want;
+    try {
+      want = URI.create(url);
+    } catch (IllegalArgumentException x) {
+      return null;
+    }
     Entry best = null;
     int bestScore = -1;
     for (Entry e : entries) {
-      URI u = URI.create(e.url);
+      URI u;
+      try {
+        u = URI.create(e.url);
+      } catch (IllegalArgumentException x) {
+        continue;
+      }
+      if (u.getHost() == null || want.getHost() == null) continue;
       int score = 0;
       if (e.method.equalsIgnoreCase(method)) score += 4;
       if (u.getHost().equalsIgnoreCase(want.getHost())) score += 2; else continue;
@@ -238,9 +278,10 @@ final class Recording {
   private static long size(Entry e) {
     long n = 512 + (e.reqBody == null ? 0 : e.reqBody.length) + (e.respBody == null ? 0 : e.respBody.length);
     n += 2L * ((e.url == null ? 0 : e.url.length()) + (e.key == null ? 0 : e.key.length()));
-    for (List<String[]> hs : List.of(e.reqHeaders, e.respHeaders)) {
+    for (List<String[]> hs : java.util.Arrays.asList(e.reqHeaders, e.respHeaders, e.trailers)) {
       if (hs != null) for (String[] h : hs) for (String x : h) n += 16 + 2L * (x == null ? 0 : x.length());
     }
+    if (e.ws != null) n += TapWebSocket.MAX_BYTES / 8;  // its messages come later: an allowance, not a count
     return n;
   }
 
@@ -252,9 +293,12 @@ final class Recording {
    * The entries whose start (epoch ms) `keep` accepts, chosen now, as a HAR file written when the result is called
    * (the flight recorder's bundle, on its save thread). Entries do not change once added.
    */
-  synchronized java.util.function.Supplier<String> harLater(java.util.function.LongPredicate keep) {
+  synchronized java.util.function.Supplier<String> harLater(java.util.function.LongPredicate keep, List<Entry> unfinished,
+      List<Object> connections) {
     List<Entry> some = new ArrayList<>();
     for (Entry e : entries) if (keep.test(e.wallMs)) some.add(e);
+    for (Entry e : unfinished) if (keep.test(e.wallMs)) some.add(e);
+    some.sort(java.util.Comparator.comparingLong(e -> e.wallMs));
     // Only the certificates of the hosts these exchanges went to, not every host the app has reached.
     Map<String, List<String>> certs = new LinkedHashMap<>();
     for (Entry e : some) {
@@ -267,7 +311,7 @@ final class Recording {
         // no host to match
       }
     }
-    return () -> Json.write(harRoot(some, certs));
+    return () -> Json.write(harRoot(some, certs, connections));
   }
 
   /** Forgets every entry (the flight recorder's `rec clear`; only for a recording with no file). */
@@ -285,16 +329,25 @@ final class Recording {
     return certificates.get(host.toLowerCase(Locale.ROOT));
   }
 
-  synchronized void save() throws IOException {
-    Map<String, Object> root = harRoot(entries, certificates);
+  void save() throws IOException {
+    // Asked of the tap's thread before this recording is locked: that thread adds entries under the same lock.
+    List<Entry> more = Tap.unfinished();
+    List<Object> connections = Tap.connections(w -> true);
+    String json;
+    synchronized (this) {
+      List<Entry> all = new ArrayList<>(entries);
+      all.addAll(more);
+      all.sort(java.util.Comparator.comparingLong(e -> e.wallMs));
+      json = Json.write(harRoot(all, certificates, connections));
+    }
     // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
     // process per file).
     Path tmp = path.resolveSibling(path.getFileName() + ".apksim-tmp");
-    Files.writeString(tmp, Json.write(root));
+    Files.writeString(tmp, json);
     Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
   }
 
-  private Map<String, Object> harRoot(List<Entry> some, Map<String, List<String>> certificates) {
+  private Map<String, Object> harRoot(List<Entry> some, Map<String, List<String>> certificates, List<Object> connections) {
     List<Object> list = new ArrayList<>();
     for (Entry e : some) list.add(toHar(e));
     Map<String, Object> log = new LinkedHashMap<>();
@@ -302,6 +355,7 @@ final class Recording {
     log.put("creator", Map.of("name", "apksim", "version", "1"));
     log.put("entries", list);
     if (!certificates.isEmpty()) log.put("_apksimCertificates", certificates);
+    if (connections != null && !connections.isEmpty()) log.put("_apksimConnections", connections);
     log.put("_apksimRedacted", new ArrayList<>(new java.util.TreeSet<>(match.redact)));
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("log", log);
@@ -329,12 +383,18 @@ final class Recording {
     req.put("cookies", List.of());
     req.put("headers", headers(e.reqHeaders));
     List<Object> qs = new ArrayList<>();
-    String q = URI.create(e.url).getRawQuery();
+    int mark = e.url.indexOf('?');
+    int frag = e.url.indexOf('#', Math.max(mark, 0));
+    String q = mark < 0 ? null : e.url.substring(mark + 1, frag < 0 ? e.url.length() : frag);
     if (q != null && !q.isEmpty()) {
       for (String p : q.split("&")) {
         int eq = p.indexOf('=');
-        qs.add(nv(URLDecoder.decode(eq < 0 ? p : p.substring(0, eq), StandardCharsets.UTF_8),
-            eq < 0 ? "" : URLDecoder.decode(p.substring(eq + 1), StandardCharsets.UTF_8)));
+        try {
+          qs.add(nv(URLDecoder.decode(eq < 0 ? p : p.substring(0, eq), StandardCharsets.UTF_8),
+              eq < 0 ? "" : URLDecoder.decode(p.substring(eq + 1), StandardCharsets.UTF_8)));
+        } catch (IllegalArgumentException bad) {
+          qs.add(nv(eq < 0 ? p : p.substring(0, eq), eq < 0 ? "" : p.substring(eq + 1)));  // a % that escapes nothing
+        }
       }
     }
     req.put("queryString", qs);
@@ -357,12 +417,12 @@ final class Recording {
     }
     if (e.expectAnswered) req.put("_apksimExpectAnswered", true);
     req.put("headersSize", -1);
-    req.put("bodySize", e.reqBody == null ? 0 : e.reqBody.length);
+    req.put("bodySize", e.reqSize >= 0 ? e.reqSize : e.reqBody == null ? 0 : e.reqBody.length);
 
     Map<String, Object> resp = new LinkedHashMap<>();
     resp.put("status", e.status);
     resp.put("statusText", e.statusText);
-    resp.put("httpVersion", "HTTP/1.1");
+    resp.put("httpVersion", e.respVersion != null ? e.respVersion : e.httpVersion);
     resp.put("cookies", List.of());
     resp.put("headers", headers(e.respHeaders));
     Map<String, Object> content = new LinkedHashMap<>();
@@ -379,10 +439,11 @@ final class Recording {
     if (e.gzip) content.put("_apksimGzip", true);
     if (e.truncated) content.put("_apksimTruncated", true);
     resp.put("content", content);
+    if (e.trailers != null && !e.trailers.isEmpty()) resp.put("_apksimTrailers", headers(e.trailers));
     String location = e.header(e.respHeaders, "Location");
     resp.put("redirectURL", location == null ? "" : location);
     resp.put("headersSize", -1);
-    resp.put("bodySize", e.respBody.length);
+    resp.put("bodySize", e.respSize >= 0 ? e.respSize : e.respBody.length);
 
     Map<String, Object> timings = new LinkedHashMap<>();
     timings.put("blocked", -1);
@@ -400,6 +461,28 @@ final class Recording {
     m.put("response", resp);
     m.put("cache", Map.of());
     m.put("timings", timings);
+    if (e.serverIp != null) m.put("serverIPAddress", e.serverIp);
+    if (e.conn > 0) m.put("connection", String.valueOf(e.conn));
+    if (e.error != null) m.put("_apksimError", e.error);
+    if (e.unfinished) m.put("_apksimUnfinished", true);
+    if (e.ws != null) {
+      List<Object> messages = new ArrayList<>();
+      List<WsMessage> copy;
+      synchronized (e.ws) {
+        copy = new ArrayList<>(e.ws);
+      }
+      for (WsMessage w : copy) {
+        Map<String, Object> wm = new LinkedHashMap<>();
+        wm.put("type", w.sent() ? "send" : "receive");
+        wm.put("time", w.wallMs() / 1000.0);
+        wm.put("opcode", w.opcode());
+        String t = w.opcode() == 1 ? text(w.data()) : null;
+        wm.put("data", t != null ? t : Base64.getEncoder().encodeToString(w.data()));
+        if (w.cut()) wm.put("_apksimSize", w.size());
+        messages.add(wm);
+      }
+      m.put("_webSocketMessages", messages);
+    }
     return m;
   }
 
@@ -454,6 +537,8 @@ final class Recording {
           e.reqTruncated = true;
         }
       }
+      e.error = m.get("_apksimError") instanceof String why ? why : null;
+      e.unfinished = Boolean.TRUE.equals(m.get("_apksimUnfinished"));
       e.status = (int) num(resp.get("status"));
       e.statusText = String.valueOf(resp.getOrDefault("statusText", ""));
       e.respHeaders = readHeaders(resp.get("headers"));

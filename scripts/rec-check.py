@@ -16,7 +16,9 @@ work/rec-check) is emptied first.
 Also: pasted text is left out, the checkpoint holds the databases in a read transaction (no "cloned as a file" note,
 no -shm in data.zip), a rotation keeps the movie's length (one frame per slot, fitted), two saves at once write two
 files, `rec clear` and `rec off logcat` keep what came before out of the next save, and a save followed at once by
-`quit` is still written.
+`quit` is still written. A launch with `--rec input --rec-checkpoint 5` checks when periodic checkpoints are taken:
+none while the screen animates (the Shader tab), one once it is still, and one before the next input after the
+interval rather than after it (issue 320).
 """
 import argparse, json, os, re, shutil, socket, struct, subprocess, sys, time, zipfile, io
 
@@ -212,6 +214,40 @@ def main():
         check(har == [], f"no network exchanges from before the clear ({len(har)})")
         cmds = [json.loads(l).get("cmd") for l in z.read("input.jsonl").decode().splitlines()]
         check(["open", "apksim://network"] not in cmds and "db.jsonl" not in z.namelist(), "no input or db calls from before the clear")
+
+        print("== checkpoints wait until the app is at rest (issue 320)")
+        app = launch(out, "rest.log", "--rec", "input", "--rec-checkpoint", "5")
+        d = Drive(PORT)
+
+        def taken():
+            return re.findall(r"#\d+ \d+s ago \((\w[\w ]*)\)", d("rec"))
+
+        for _ in range(20):
+            time.sleep(0.5)
+            if taken():
+                break
+        check(taken() == ["first"], f"a first checkpoint once the app is up and still: {taken()}")
+        d("tap 720 1690")  # the Shader tab never stops drawing
+        time.sleep(8)
+        check(taken() == ["first"], f"none while the screen is animating, though one is due: {taken()}")
+        d("tap 130 1690")  # Home: still
+        for _ in range(16):
+            time.sleep(0.5)
+            if len(taken()) > 1:
+                break
+        check(taken()[-1:] == ["periodic"], f"taken once the screen has come to rest: {taken()}")
+        n = len(taken())
+        time.sleep(7)
+        check(len(taken()) == n, f"none without input since the last one: {taken()}")
+        d("tap 300 1690")
+        time.sleep(0.5)
+        check(taken()[-1:] == ["before input"], f"the next input after the interval: the checkpoint comes before it, not after: {taken()}")
+        log = open(os.path.join(out, "rest.log")).read()
+        check("(before input" in log, "and the log names it")
+        check('text="Trips"' in d.nodes() or "Trip" in d.nodes(), "the tap still did its work")
+        d("quit")
+        app.wait(60)
+        app = None
 
         print("== crash")
         app = launch(out, "crash.log", "--rec", "input,logcat,screen")

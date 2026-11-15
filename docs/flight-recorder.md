@@ -52,7 +52,7 @@ The `--rec*` options are read after the hand-off, so a recording launch still go
 |---|---|---|
 | `input` | Every touch, two-finger touch, wheel, key, character, Back (also one that only closes the software keyboard) and window resize the app is given, stamped with the app's `SystemClock.uptimeMillis` and the wall clock. Also the device commands a replay must repeat: rotate, appearance, locale, font scale, device, size, open URL, push, permission, location, biometrics, recreate, process-death, home/lock and back, network conditions, clock, and so on. | `Host.dispatch` (one place for the Mac window, `--control`, adb and `drive`) and `Host.runCommand` |
 | `logcat` | The app's `android.util.Log` lines while the channel was on | `AdbLog`'s ring (20k lines), which the channel turns on; each line now carries its wall time. The ring goes on for `adb logcat` with the channel off, so a save keeps only lines from when it was on (`rec.Spans`) |
-| `net` | Every HTTP(S) exchange while the channel was on, as a HAR (bodies kept, `Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network layer in record mode with no file (`Net.capture`). With the layer off, starting it closes the connections made before, so the app reconnects through it, as after a network change. At launch it also takes over a layer that `--network-host` or `--network-profile` turned on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file. An exchange belongs to the channel if the channel was on when its request began. A connection a worker was opening directly as the channel came on is closed when its connect returns, and the app reconnects through the layer |
+| `net` | Every HTTP(S) exchange while the channel was on, as a HAR: HTTP/1.1, HTTP/2 and so gRPC, WebSocket messages, with bodies, the exchanges that failed and why, exchanges still going on at the save (marked unfinished), and every connection with its TLS and ALPN (`Authorization`/`Cookie`/`Set-Cookie` and `--network-redact` names redacted as in `--network record`) | The network tap ([network.md](network.md) "Two mechanisms"): the app's own connections, read as they pass. Nothing stands between the app and the server, so the channel changes nothing the app can see: no connection is closed, proxied or made over another protocol, at launch or when it is turned on later. Turned on in a running app, connections already open are not read (HTTP/2 cannot be read from the middle); the answer says how many, and `network reconnect` closes them for who wants everything from then on. A `--network record FILE` launch is read as it is: `rec off net` does not pause the file. An exchange belongs to the channel if the channel was on when its request began |
 | `db` | Each SQLite call: database file, thread, operation, SQL (placeholders kept, literals written into it left out: `'…'`, `X'…'`, `…` for numbers), the number of bound arguments (for a `SQLiteStatement` too, read when it runs), column names, time in µs (a transaction's begin includes waiting for its lock), rows changed or rowid, or the error | The translator sends app calls to `SQLiteDatabase` (execSQL, rawQuery*, query*, insert*, replace*, update*, delete, transactions) and `SQLiteStatement` (execute*, simpleQueryFor*) to `dev.apksim.rec.Db`. With the channel off, each hook is just the original call after one field read. |
 | `db+values` | As `db`, plus bound values, ContentValues, simpleQuery results, and the SQL as written | the same |
 | `screen` | Turning it on, or `rec clear`, redraws the windows so a still screen has a first frame, and so does a screen that goes still right after a frame the rate limit passed over, so the last state of every change is kept. 5 frames a second, scaled to at most 960 px on the long side, JPEG quality 70 (`-Dapksim.rec.screenFps`, `-Dapksim.rec.screenMax`, read per launch) | The raster thread copies a presented frame at most 5 times a second; a low-priority thread scales and encodes it |
@@ -84,10 +84,19 @@ of the main thread, so no frame shows it. Afterwards the stack is put back as af
 This is the only way a checkpoint shows in the app. A screen that refreshes in onResume refreshes. That is why
 checkpoints are not taken on every input:
 
-- the first comes once the first frame is drawn and the user has been idle for a second;
-- after that, every `--rec-checkpoint` seconds (default 30), only if there was input since the last one, only after a
-  second without input, and never while a finger is down or scripted input is queued;
+- the first comes once the first frame is drawn and the app is at rest;
+- after that, every `--rec-checkpoint` seconds (default 30), only if there was input since the last one, and only
+  with the app at rest;
+- when an input arrives after more than that interval without one, the checkpoint is taken first, then the input is
+  delivered (logged as `before input`): the state a replay starts from is the one the input met;
 - and on `rec checkpoint now`.
+
+**At rest** means: no finger down, no input for 1.5 s, the screen still (fewer than 5 frames drawn in those 1.5 s,
+which a blinking caret stays under and a transition, a spinner or a video does not), and, when the `net` channel or the
+inspector reads the network, no request begun or ended in those 1.5 s and none under 10 s old still unanswered. A
+checkpoint that is due waits for that, however long: while a video plays, none is taken. Before (issue 320) one came
+a second after the first input in 30 s, in the middle of what that input started: an app loading its next screen
+dropped the load, and a player being started stopped after its first picture.
 
 The test app takes 7-13 ms per checkpoint (state 3-7 ms). Checkpoints live in the instance's scratch folder
 (`work/tmp/<pid>/rec/`). The recorder keeps those inside the window plus the newest one before it, so a save of the
@@ -159,8 +168,10 @@ logs. Treat a bundle from a signed-in session like the device itself.
 - Text that reaches the app without passing through input dispatch (an accessibility `setText`, autofill) is not in
   the input journal; its effects are in the checkpoints that follow.
 - Pasted characters are kept only as placeholders, so a replay pastes something else.
-- `net` cannot start over a layer that has been shaping or replaying since before (`network 3g` mid-session,
-  `--network replay`): the answer says so. Launch with `--rec net` instead.
+- `net` cannot start while replaying (`--network replay`): there is no network to read. Network conditions are no
+  obstacle: a shaped connection keeps the app's own TLS and is read as any other.
+- `net` reads what goes through the hooks ([network.md](network.md) "Clients"): not Cronet's native stack, NIO
+  channels or native code's sockets.
 - The rings live in this process. A crash saves them, but a `kill -9` loses them.
 - Not recorded: sensors, camera frames, audio, location fixes (location changes made with the `location` command are
   recorded), notifications posted, WorkManager and alarm timing.

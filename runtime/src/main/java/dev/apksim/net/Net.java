@@ -37,15 +37,26 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
- * The app's network, made controllable (docs/network.md): record, replay and conditions. The translator points app
- * calls to Socket.connect, SocketFactory/SSLSocketFactory.createSocket and URL.openConnection here
- * (MethodTranslator.call); with no --network option all of them do exactly what they did, after one field read.
- * Only JDK types: this runs for every app, and an APK without OkHttp must not meet a reference to it.
+ * The app's network, observed and made controllable (docs/network.md). The translator points app calls to
+ * Socket.connect, Socket.getInputStream/getOutputStream, SocketFactory/SSLSocketFactory.createSocket and
+ * URL.openConnection here (MethodTranslator.call); with no --network option all of them do exactly what they did,
+ * after one field read. Only JDK types: this runs for every app, and an APK without OkHttp must not meet a reference
+ * to it.
+ *
+ * <p>Two things, kept apart. <b>Observing</b> (recording to a file, the flight recorder's net channel, the network
+ * inspector) is the {@link Tap}: the app's own connections, made as the app makes them, read as they pass. It changes
+ * nothing the app can see: not the protocol (HTTP/2 stays HTTP/2), not the TLS, not the route. <b>Intervening</b>
+ * (replaying, network conditions, a host sent elsewhere, an inspector rule that answers or changes a request) needs
+ * something between the app and the server, and that is the {@link NetEngine}: only the connections an intervention
+ * concerns go through it ({@link #route}), and only while it lasts.
  */
 public final class Net {
   private Net() {}
 
-  enum Mode { SHAPE, RECORD, REPLAY }
+  enum Mode { LIVE, REPLAY }
+
+  /** How a connection is made: as the app made it, through the engine untouched but shaped, or answered by the engine. */
+  enum Route { DIRECT, RELAY, MITM }
 
   /**
    * The beam sandbox (docs/beam.md) denies loopback, where the engine listens: app sockets reach it through in-memory
@@ -54,13 +65,17 @@ public final class Net {
    */
   static final boolean inMemory = Boolean.getBoolean("apksim.beamSandbox") || Boolean.getBoolean("apksim.netInMemory");
 
-  /** Any --network option was given: the hooks below act. */
+  /** Something is on: an option, a recording, a condition. The resolver and the status line look at it. */
   static volatile boolean active;
-  static Mode mode = Mode.SHAPE;
+  static volatile Mode mode = Mode.LIVE;
   static volatile Conditions conditions = Conditions.ONLINE;
   static Conditions launchConditions = Conditions.ONLINE;
-  static Recording recording;
-  static NetEngine engine;
+  /** Where exchanges are kept (a file, or the flight recorder's and inspector's memory), or what replay answers from. */
+  static volatile Recording recording;
+  /** Started when the first connection needs it ({@link #engine()}); null until then. */
+  static volatile NetEngine engine;
+  /** Exchanges the tap added to the recording. */
+  static final java.util.concurrent.atomic.AtomicInteger tapped = new java.util.concurrent.atomic.AtomicInteger();
   static Map<String, InetSocketAddress> hostMap = new LinkedHashMap<>();
   static Set<String> redact = new HashSet<>(Set.of("authorization", "proxy-authorization", "cookie", "set-cookie"));
   static boolean failUnmatched = true;
@@ -71,13 +86,13 @@ public final class Net {
    */
   static boolean replayMark = true;
   static Path trust;
-  /** Sockets this redirected to the engine, which FakeTlsSocket may wrap. */
-  private static final Set<Socket> redirected = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+  /** Sockets connected to the engine, and how: answered by it (FakeTlsSocket wraps them) or relayed. */
+  private static final Map<Socket, Route> redirected = Collections.synchronizedMap(new WeakHashMap<>());
   /**
-   * Remote connections the hooks made directly (before the layer was on, or TLS-first sockets), which going offline
-   * must drop as well: the engine never saw them.
+   * Remote connections made directly, by the host they go to: what going offline, new conditions or a new rule for
+   * that host must drop, since the engine never saw them.
    */
-  private static final Set<Socket> direct = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+  private static final Map<Socket, String> direct = Collections.synchronizedMap(new WeakHashMap<>());
   /** App TLS factories on their way to the engine (FakeTlsSocket's hello names one by its token). */
   private static final Map<String, SSLSocketFactory> lentTls = new java.util.concurrent.ConcurrentHashMap<>();
   private static final java.util.concurrent.atomic.AtomicLong tlsTokens = new java.util.concurrent.atomic.AtomicLong();
@@ -151,10 +166,7 @@ public final class Net {
         Recording.Match match = new Recording.Match(fields, names(System.getProperty("apksim.networkIgnoreQuery")),
             list(System.getProperty("apksim.networkIgnoreHeader")), redact);
         switch (m) {
-          case "record" -> {
-            mode = Mode.RECORD;
-            recording = new Recording(file, match);
-          }
+          case "record" -> recording = new Recording(file, match);
           case "replay" -> {
             mode = Mode.REPLAY;
             recording = Recording.load(file, match);
@@ -162,79 +174,84 @@ public final class Net {
           default -> throw new IllegalArgumentException("--network takes record FILE or replay FILE, not " + m);
         }
       }
-      engine = new NetEngine();
-      engine.start();
       active = true;
+      // Started now where every connection will need it, so a port that cannot be had stops the launch, not a request.
+      if (mode == Mode.REPLAY || !hostMap.isEmpty() || conditions.shaped()) engine();
       // Saved on the way out by Standby.halt (Runtime.halt runs no hooks), and here on an ordinary exit too:
       // Ctrl-C, or the app calling System.exit.
-      if (mode == Mode.RECORD) Runtime.getRuntime().addShutdownHook(new Thread(Net::flush, "apksim-net-save"));
+      if (mode == Mode.LIVE && recording != null) Runtime.getRuntime().addShutdownHook(new Thread(Net::flush, "apksim-net-save"));
+      retap();
       log("network " + describe());
     } catch (Exception e) {
       throw new IllegalStateException("[apksim] network setup: " + e.getMessage(), e);
     }
   }
 
+  /** The engine, started at its first use. */
+  static NetEngine engine() throws IOException {
+    NetEngine e = engine;
+    if (e != null) return e;
+    synchronized (Net.class) {
+      if (engine == null) {
+        NetEngine n = new NetEngine();
+        n.start();
+        engine = n;
+      }
+      return engine;
+    }
+  }
+
+  /** The tap is on while something reads what it sees: a recording that is kept, or the inspector. */
+  private static void retap() {
+    Recording r = recording;
+    Tap.set(mode == Mode.LIVE && r != null && (r.path != null || r.keep || Inspector.on));
+  }
+
   /**
    * The flight recorder's net channel (dev.apksim.FlightRecorder, `rec on net`): every exchange kept in memory, as
-   * record mode would write it, from now on. With the network layer off it starts it in record mode with no file;
-   * connections made before then close, and the app reconnects through the engine, as after a change of network. A
-   * launch recording to a file (--network record) is captured as it is. Shaping (`network 3g`...) and replay cannot
-   * change mode underneath their connections: the answer says so.
+   * `--network record` would write it, from now on. It turns the tap on and nothing else: no connection is closed or
+   * made differently, so the app cannot tell. Connections the app already has open were not seen from their start
+   * (HTTP/2 cannot be read from the middle) and stay unread until the app replaces them; `network reconnect` closes
+   * them, for who wants everything from now. A launch recording to a file (--network record) is captured as it is.
+   * Replaying, there is no network to capture: the answer says so.
    */
   public static synchronized String capture(boolean on) {
     return capture(on, false);
   }
 
-  /**
-   * `atLaunch`: from Main, right after configure() and before any app code: a layer shaping or mapping hosts since
-   * launch (--network-profile, --network-host) has no connections yet, so it can change to recording in memory.
-   */
+  /** `atLaunch`: from Main, right after configure() and before any app code: no connection exists yet. */
   public static synchronized String capture(boolean on, boolean atLaunch) {
-    if (atLaunch && on && active && mode == Mode.SHAPE) {
-      mode = Mode.RECORD;
-      recording = new Recording(null, new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact));
-      log("network " + describe());
-      return "net: capturing";
-    }
-    if (!active) {
+    if (mode == Mode.REPLAY) return on ? "error: net: the network layer is replaying; capturing needs a live network (launch with --rec net)" : "net: off";
+    Recording r = recording;
+    if (r == null) {
       if (!on) return "net: off";
-      Recording.Match match = new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact);
-      mode = Mode.RECORD;
-      recording = new Recording(null, match);
-      engine = new NetEngine();
-      try {
-        engine.start();
-      } catch (IOException e) {
-        engine = null;
-        mode = Mode.SHAPE;
-        recording = null;
-        return "error: net: the network layer did not start: " + e;
-      }
+      r = new Recording(null, new Recording.Match(Set.of("method", "url", "body"), Set.of(), Set.of(), redact));
+      recording = r;
       active = true;
-      int n = closeDirect();
-      log("network " + describe() + (n > 0 ? "; " + n + " connection" + (n == 1 ? "" : "s") + " made before closed" : ""));
-      return "net: capturing";
-    }
-    if (mode != Mode.RECORD) {
-      return on ? "error: net: the network layer is " + (mode == Mode.REPLAY ? "replaying" : "shaping (network conditions)")
-          + " since before; capturing needs it off or recording (launch with --rec net)" : "net: off";
-    }
-    if (recording.path != null) {
+      if (!atLaunch) log("network " + describe());
+    } else if (r.path != null) {
       // A --network record file is the user's own recording: it goes on whatever the flight recorder does, which
       // reads it (only the exchanges made while its channel was on: dev.apksim.rec.Rec.NET).
       return on ? "net: capturing (from the --network record file)" : "net: off (the --network record file goes on)";
     }
-    recording.keep = on;
-    return on ? "net: capturing" : "net: paused";
+    boolean was = Tap.on;
+    r.keep = on;
+    retap();
+    if (!on) return "net: paused";
+    int before = was || atLaunch ? 0 : openDirect();
+    return "net: capturing" + (before == 0 ? "" : " (" + before + " connection" + (before == 1 ? "" : "s")
+        + " opened before stay unread until the app replaces them; `network reconnect` closes them)");
   }
 
   /**
    * The exchanges captured whose start `keep` accepts (epoch ms), taken now, as a HAR file built when the result is
    * called (on the flight recorder's save thread: a capture can hold 64 MB of bodies); null when nothing is captured.
+   * Exchanges still going on (a stream that stays open) are in it as they stand, marked unfinished.
    */
   public static synchronized java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
-    if (!active || mode != Mode.RECORD) return null;
-    java.util.function.Supplier<String> har = recording.harLater(keep);
+    Recording r = recording;
+    if (r == null || mode != Mode.LIVE) return null;
+    java.util.function.Supplier<String> har = r.harLater(keep, Tap.unfinished(), Tap.connections(keep));
     return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
   }
 
@@ -248,20 +265,84 @@ public final class Net {
     Inspector.watch(s, out);
   }
 
-  /** Waits up to `ms` for exchanges whose answer the app may already have but the engine has not recorded yet. */
+  /** Waits up to `ms` for exchanges whose answer the app may already have but which are not written down yet. */
   public static void drain(long ms) {
     NetEngine e = engine;
     if (e != null) e.awaitInFlight(ms);
+    Tap.sync(() -> {}, ms);
   }
 
   /** `rec clear`: forgets what the flight recorder's in-memory capture holds (a --network record file keeps its own). */
   public static synchronized void clearCaptured() {
-    if (active && mode == Mode.RECORD && recording.path == null) recording.clearCaptured();
+    Recording r = recording;
+    if (r != null && mode == Mode.LIVE && r.path == null) r.clearCaptured();
   }
 
   /** How many exchanges are held now (captured or recorded); -1 with no recording. */
   public static synchronized int capturedCount() {
-    return active && mode == Mode.RECORD ? recording.size() : -1;
+    Recording r = recording;
+    return r != null && mode == Mode.LIVE ? r.size() : -1;
+  }
+
+  /** How many requests are on their way right now, as far as the tap has read (0 when it is off). */
+  public static int inFlight() {
+    return Tap.on ? Tap.inFlight() : 0;
+  }
+
+  /**
+   * Whether requests are under way, as far as the tap has read: one began or ended within `quietMs`, or one younger than
+   * `youngMs` is still unanswered. The flight recorder asks before a checkpoint, which must not land in the middle of
+   * what the app is doing (issue 320). False while nothing reads the network.
+   */
+  public static boolean busy(long quietMs, long youngMs) {
+    return Tap.busy(quietMs, youngMs);
+  }
+
+  /** A tapped exchange, finished or cut short: kept by the recording, shown by the inspector. The tap's thread. */
+  static void tapped(Recording.Entry e) {
+    Recording r = recording;
+    if (r != null && mode == Mode.LIVE) {
+      r.add(e);
+      tapped.incrementAndGet();
+      changed();
+    }
+    if (Boolean.getBoolean("apksim.networkTrace")) log("network tap: " + (e.error != null ? "failed (" + e.error + ")" : e.status) + " " + e.method + " " + e.url);
+    Inspector.exchange(e, 0, 0);
+  }
+
+  // ------------------------------------------------------------------ saving a recording file
+
+  private static volatile boolean dirty, flushPending;
+  private static final Object saveLock = new Object();
+
+  /** The recording changed: its file is written 300 ms from now (once for all that changes meanwhile). */
+  static void changed() {
+    Recording r = recording;
+    if (r == null || r.path == null || mode != Mode.LIVE) return;
+    dirty = true;
+    if (flushPending) return;
+    flushPending = true;
+    Thread.ofVirtual().name("apksim-net-flush").start(() -> {
+      Conditions.sleep(300);
+      flushPending = false;
+      flushNow();
+    });
+  }
+
+  static void flushNow() {
+    Recording r = recording;
+    if (r == null || r.path == null || mode != Mode.LIVE) return;  // no file: the flight recorder's, in memory
+    synchronized (saveLock) {
+      try {
+        if (dirty || !java.nio.file.Files.exists(r.path)) {
+          dirty = false;
+          r.save();
+        }
+      } catch (IOException e) {
+        dirty = true;  // still unsaved: the next save (a later exchange, `network save`, the way out) tries again
+        log("network record: cannot write " + r.path + ": " + e);
+      }
+    }
   }
 
   /** A comma-separated list, lowercased: header names, hosts, match fields. */
@@ -283,12 +364,11 @@ public final class Net {
 
   static String describe() {
     StringBuilder b = new StringBuilder();
-    b.append(switch (mode) {
-      case RECORD -> recording.path == null ? "capturing for the flight recorder (in memory" + (recording.keep ? "" : ", paused") + ")"
-          : "recording to " + recording.path;
-      case REPLAY -> "replaying " + recording.path + " (" + recording.entries.size() + " entries)";
-      case SHAPE -> "live";
-    });
+    Recording r = recording;
+    if (mode == Mode.REPLAY) b.append("replaying ").append(r.path).append(" (").append(r.entries.size()).append(" entries)");
+    else if (r == null) b.append("live");
+    else if (r.path == null) b.append("capturing for the flight recorder (in memory").append(r.keep ? "" : ", paused").append(")");
+    else b.append("recording to ").append(r.path);
     b.append(", ").append(conditions.describe());
     if (!hostMap.isEmpty()) b.append(", hosts ").append(hostMap);
     return b.toString();
@@ -304,15 +384,22 @@ public final class Net {
   }
 
   public static boolean offline() {
-    return active && conditions.offline();
+    return conditions.offline();
   }
 
   static void setConditions(Conditions c) {
-    boolean was = conditions.offline();
+    Conditions before = conditions;
+    boolean was = before.offline();
     conditions = c;
     if (c.offline()) {
-      if (engine != null) engine.closeAll();
-      closeDirect();
+      NetEngine e = engine;
+      if (e != null) e.closeAll();
+      closeDirect(h -> true);
+    } else if (c.shaped() && !before.shaped()) {
+      // Connections made directly would carry on unshaped: they close, and the app reconnects through the engine, as
+      // after a change of network on a device.
+      int n = closeDirect(h -> true);
+      if (n > 0) log("network: " + n + " connection" + (n == 1 ? "" : "s") + " made before the conditions closed");
     }
     if (was != c.offline()) {
       flushDnsCache();
@@ -320,16 +407,49 @@ public final class Net {
     }
   }
 
-  /** Closes the remote connections made without the engine (loopback stays); how many. */
-  private static int closeDirect() {
+  /**
+   * The inspector's rules changed. Connections to the hosts a rule now concerns were made directly and would pass it
+   * by: they close, and the app's next request goes through the engine. Connections the engine holds for hosts no rule
+   * concerns any more close too, so the app is back on its own connections (and its own HTTP/2) at once.
+   */
+  static void rulesChanged() {
+    if (mode != Mode.LIVE) return;
+    int n = closeDirect(h -> route(h) != Route.DIRECT);
+    NetEngine e = engine;
+    if (e != null) n += e.closeAnswered(h -> route(h) != Route.MITM);
+    if (n > 0) log("network inspector: " + n + " connection" + (n == 1 ? "" : "s") + " closed for the new rules; the app reconnects");
+  }
+
+  /** `network reconnect`: every connection closes, as when a device changes network; the app makes them again. */
+  private static int reconnect() {
+    int n = closeDirect(h -> true);
+    NetEngine e = engine;
+    if (e != null) n += e.closeAnswered(h -> true);
+    return n;
+  }
+
+  /** How many remote connections made directly are open. */
+  private static int openDirect() {
+    int n = 0;
+    synchronized (direct) {
+      for (Socket s : direct.keySet()) if (s.isConnected() && !s.isClosed()) n++;
+    }
+    return n;
+  }
+
+  /** Closes the remote connections made without the engine to the hosts `which` accepts (loopback stays); how many. */
+  private static int closeDirect(java.util.function.Predicate<String> which) {
     List<Socket> drop = new ArrayList<>();
     synchronized (direct) {
       // Loopback stays up; a socket not connected yet (one the JDK connects itself) goes too.
-      for (java.util.Iterator<Socket> it = direct.iterator(); it.hasNext(); ) {
-        Socket s = it.next();
+      for (java.util.Iterator<Map.Entry<Socket, String>> it = direct.entrySet().iterator(); it.hasNext(); ) {
+        Map.Entry<Socket, String> d = it.next();
+        Socket s = d.getKey();
+        if (s == null) continue;
         InetAddress to = s.getInetAddress();
-        if (to != null && (to.isLoopbackAddress() || to.isAnyLocalAddress())) continue;
-        drop.add(s);
+        if (to != null && (to.isLoopbackAddress() || to.isAnyLocalAddress()) && !loopbackToo) continue;
+        if (!which.test(d.getValue())) continue;
+        if (!s.isClosed()) drop.add(s);
         it.remove();
       }
     }
@@ -377,30 +497,32 @@ public final class Net {
     return out;
   }
 
-  /** Writes the recording now; on the way out (Standby.halt). */
+  /**
+   * Writes the recording now; on the way out (Standby.halt). First up to 2 s for exchanges still being written down
+   * (the app may already have read an answer that is still being decoded), so none is lost when the process ends
+   * right after it.
+   */
   public static void flush() {
-    if (engine != null) engine.flushAtExit();
+    Recording r = recording;
+    if (r == null || r.path == null || mode != Mode.LIVE) return;
+    drain(2000);
+    flushNow();
+  }
+
+  private static String counts() {
+    NetEngine e = engine;
+    if (mode == Mode.REPLAY) return e == null ? "" : e.replayed.get() + " replayed, " + e.missed.get() + " unmatched";
+    if (recording != null) return (tapped.get() + (e == null ? 0 : e.recorded.get())) + " recorded";
+    return e == null ? "" : e.relayed.get() + " connections relayed";
   }
 
   // ------------------------------------------------------------------ control command
 
-  /** network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]. */
+  /** network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]. */
   public static String command(String[] a) {
-    if (!active) {
-      if (a.length > 1 && !a[1].equals("status")) {
-        // Conditions can start at any time; recording and replaying need their launch options.
-        System.setProperty("apksim.networkProfile", "online");
-        configure();
-        // Connections made before (directly) would carry on unshaped: they close, and the app reconnects through
-        // the engine, as after a change of network on a device.
-        int n = closeDirect();
-        if (n > 0) log("network: " + n + " connection" + (n == 1 ? "" : "s") + " made before the network layer was on closed");
-      } else {
-        return "network: off (no --network option); network offline|3g|lossy|latency MS|bandwidth KBPS turns it on";
-      }
-    }
     if (a.length == 1 || a[1].equals("status")) {
-      String counts = engine.counts();
+      if (!active) return "network: off (no --network option); network offline|3g|lossy|latency MS|bandwidth KBPS turns it on";
+      String counts = counts();
       return "network: " + describe() + (counts.isEmpty() ? "" : "; " + counts);
     }
     switch (a[1]) {
@@ -416,12 +538,29 @@ public final class Net {
         return Inspector.detail(a);
       }
       case "save" -> {
-        if (mode != Mode.RECORD || recording.path == null) return "error: not recording to a file";
-        engine.flushNow();
-        return "saved " + recording.entries.size() + " entries to " + recording.path;
+        Recording r = recording;
+        if (mode != Mode.LIVE || r == null || r.path == null) return "error: not recording to a file";
+        drain(500);
+        dirty = true;
+        flushNow();
+        return "saved " + r.size() + " entries to " + r.path;
+      }
+      case "reconnect" -> {
+        int n = reconnect();
+        return "network: " + n + " connection" + (n == 1 ? "" : "s") + " closed";
       }
       default -> {
-        setConditions(Conditions.parse(String.join(" ", Arrays.copyOfRange(a, 1, a.length))));
+        // Conditions can start at any time; recording and replaying need their launch options.
+        Conditions c = Conditions.parse(String.join(" ", Arrays.copyOfRange(a, 1, a.length)));
+        if (c.shaped()) {
+          try {
+            engine();
+          } catch (IOException e) {
+            return "error: the network engine did not start: " + e;
+          }
+        }
+        active = true;
+        setConditions(c);
         return "network: " + conditions.describe();
       }
     }
@@ -429,7 +568,11 @@ public final class Net {
 
   // ------------------------------------------------------------------ hooks (translated app code calls these)
 
+  /** Checks only (scripts/check-net-tap.sh): loopback counts as any other address, so a server on this machine stands in for a remote one. */
+  private static final boolean loopbackToo = Boolean.getBoolean("apksim.netCheckLoopback");
+
   static boolean bypass(InetSocketAddress a) {
+    if (loopbackToo) return false;
     if (a.isUnresolved()) {
       String h = a.getHostString().toLowerCase(Locale.ROOT);
       return h.equals("localhost") || h.endsWith(".localhost");
@@ -442,6 +585,20 @@ public final class Net {
     connect(s, a, 0);
   }
 
+  /**
+   * How a connection to `host` is made right now: answered by the engine while replaying, for a host an inspector rule
+   * concerns, and for a mapped host while its exchanges are recorded (the engine does the TLS to the fixture);
+   * relayed by it for a mapped host otherwise, and for every host under network conditions; else directly.
+   */
+  static Route route(String host) {
+    if (mode == Mode.REPLAY) return Route.MITM;
+    String h = host.toLowerCase(Locale.ROOT);
+    if (Inspector.on && Inspector.concerns(h)) return Route.MITM;
+    boolean mapped = !hostMap.isEmpty() && hostMap.containsKey(h);
+    if (mapped && recording != null) return Route.MITM;
+    return mapped || conditions.shaped() ? Route.RELAY : Route.DIRECT;
+  }
+
   public static void connect(Socket s, SocketAddress a, int timeout) throws IOException {
     Socket raw = s;  // what connects directly
     if (s instanceof RelaySocket rs) {  // the tab relay is on (docs/beam.md "The tab relay"), or the engine is in memory
@@ -452,17 +609,12 @@ public final class Net {
       raw.connect(a, timeout);
       return;
     }
-    if (!active) {
-      raw.connect(a, timeout);
-      directly(s, isa);  // for a `network offline` later
-      startedMeanwhile(s);
-      return;
-    }
     Conditions c = conditions;
     String host = hostOf(isa);
     String where = host + (isa.isUnresolved() ? "" : "/" + isa.getAddress().getHostAddress()) + " (port " + isa.getPort() + ")";
     if (c.offline()) throw new ConnectException("failed to connect to " + where + ": connect failed: ENETUNREACH (Network is unreachable)");
-    if (s instanceof SSLSocket) {
+    Route route = route(host);
+    if (route != Route.DIRECT && s instanceof SSLSocket) {
       // TLS from the start, named by the address it connects to: going through the engine would lose that name (SNI,
       // hostname checks). Connects directly; Net.createSocket layers TLS on a plain socket instead where it can.
       // Replaying, nothing may leave the process: such a connection fails, and counts as unmatched.
@@ -473,20 +625,30 @@ public final class Net {
         unmatched.add(msg);
         throw new ConnectException(msg);
       }
-      raw.connect(a, timeout);
-      directly(s, isa);
-      return;
+      route = Route.DIRECT;
     }
-    if (inMemory && !(s instanceof RelaySocket) && mode != Mode.REPLAY) {
-      // No way to the engine for this socket (the app made it itself, or before the layer started; loopback is
-      // denied): it connects as it would have, unseen by the engine, rather than fail. Replaying, nothing may leave.
+    if (route != Route.DIRECT && inMemory && !(s instanceof RelaySocket) && mode != Mode.REPLAY) {
+      // No way to the engine for this socket (the app made it itself, or before the engine was wanted; loopback is
+      // denied): it connects as it would have, past the engine, rather than fail. Replaying, nothing may leave.
       if (!directLogged) {
         directLogged = true;
         log("network: a socket the app made itself (" + s.getClass().getName() + ") to " + where
-            + " connects directly in the beam sandbox: not captured, recorded or shaped (said once)");
+            + " connects directly in the beam sandbox: no rule or condition reaches it (said once)");
       }
-      s.connect(a, timeout);
-      directly(s, isa);
+      route = Route.DIRECT;
+    }
+    if (route == Route.DIRECT) {
+      boolean chosen = route(host) == Route.DIRECT;  // not direct only for want of a way to the engine
+      long t0 = System.nanoTime();
+      try {
+        raw.connect(a, timeout);
+      } catch (IOException e) {
+        Tap.connectFailed(host, isa.getPort(), e);
+        throw e;
+      }
+      if (Tap.on) Tap.connected(s, host, isa.getPort(), (System.nanoTime() - t0) / 1_000_000);
+      directly(s, isa, host);
+      if (chosen) stillDirect(s, isa, host);
       return;
     }
     if (c.refuse()) {
@@ -501,15 +663,18 @@ public final class Net {
     }
     Conditions.sleep(rtt);
     int left = timeout > 0 ? timeout - rtt : 0;
+    NetEngine engine = engine();
     if (s instanceof RelaySocket rs && inMemory) rs.connectEngine(engine, isa);
     else raw.connect(engine.address(), left);
     int before = s.getSoTimeout();
     try {
       OutputStream out = s.getOutputStream();
-      // The host name (for TLS and recording) and the address the app chose (custom DNS, one of several), if any.
+      // The host name (for TLS and recording), the address the app chose (custom DNS, one of several), if any, and
+      // whether the engine answers this connection itself or only carries it.
       String ip = isa.isUnresolved() || NetResolver.hostFor(isa.getAddress().getHostAddress()) != null
           ? "-" : isa.getAddress().getHostAddress();
-      out.write(("APKSIM " + host + " " + isa.getPort() + " " + left + " " + ip + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+      out.write(("APKSIM " + host + " " + isa.getPort() + " " + left + " " + ip + " " + (route == Route.MITM ? "answer" : "relay") + "\r\n")
+          .getBytes(StandardCharsets.ISO_8859_1));
       out.flush();
       s.setSoTimeout(left > 0 ? left + 1000 : 0);
       String reply = readLine(s.getInputStream());
@@ -521,8 +686,10 @@ public final class Net {
     } finally {
       if (!s.isClosed()) s.setSoTimeout(before);
     }
-    redirected.add(s);
-    if (s instanceof RelaySocket rs && !inMemory) redirected.add(rs.real());  // TLS is layered on the real one
+    redirected.put(s, route);
+    if (s instanceof RelaySocket rs && !inMemory) redirected.put(rs.real(), route);  // TLS is layered on the real one
+    // Carried untouched: what the app says on it (or on the TLS it layers on it) is read by the tap, as on a direct one.
+    if (route == Route.RELAY && Tap.on) Tap.connected(s, host, isa.getPort(), -1);
   }
 
   private static String hostOf(InetSocketAddress isa) {
@@ -534,7 +701,23 @@ public final class Net {
   /** `factory.createSocket()`: with the tab relay on, a plain factory's socket can be connected to the relay's host. */
   public static Socket createSocket(SocketFactory f) throws IOException {
     Socket s = f.createSocket();
-    return (TabRelay.on || inMemory && active) && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
+    return (TabRelay.on || inMemory && engineWanted()) && !(f instanceof SSLSocketFactory) && s.getClass() == Socket.class ? new RelaySocket(s) : s;
+  }
+
+  /** Whether some connection would go through the engine now (in the beam sandbox its sockets must be made for that). */
+  private static boolean engineWanted() {
+    return mode == Mode.REPLAY || !hostMap.isEmpty() || conditions.shaped() || Inspector.on && Inspector.hasRules();
+  }
+
+  /** `socket.getInputStream()` in app code: the socket's own stream, read by the tap as it passes while that is on. */
+  public static InputStream inputStream(Socket s) throws IOException {
+    InputStream in = s.getInputStream();
+    return Tap.on ? Tap.in(s, in) : in;
+  }
+
+  public static OutputStream outputStream(Socket s) throws IOException {
+    OutputStream out = s.getOutputStream();
+    return Tap.on ? Tap.out(s, out) : out;
   }
 
   /** A socket already connected to the relay's host (the factory's two-argument forms). */
@@ -550,8 +733,21 @@ public final class Net {
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
     if (TabRelay.on && TabRelay.isHost(host) && !(f instanceof SSLSocketFactory)) return relayed(f, new InetSocketAddress(host, port));
-    if (!active) return startedMeanwhile(tracked(f.createSocket(host, port)));
+    if (!conditions.offline() && route(host) == Route.DIRECT) {
+      long t0 = System.nanoTime();
+      return made(f.createSocket(host, port), host, port, t0);  // as the factory makes it
+    }
     return createSocket(f, new InetSocketAddress(host, port), host);
+  }
+
+  /** A socket its factory made connected, directly: remembered (for offline) and, while the tap is on, read. */
+  private static Socket made(Socket s, String host, int port, long t0) throws IOException {
+    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) {
+      if (Tap.on) Tap.connected(s, host, port, (System.nanoTime() - t0) / 1_000_000);
+      directly(s, a, host);
+      stillDirect(s, a, host);
+    }
+    return s;
   }
 
   /** dest: where to connect (an address the caller chose stays chosen); host: the name for TLS and the log. */
@@ -563,7 +759,7 @@ public final class Net {
       if (inMemory && s.getClass() == Socket.class) s = new RelaySocket(s);
     } catch (IOException | UnsupportedOperationException e) {
       // A factory that makes only connected sockets: its connection cannot go through the engine. Offline and replaying
-      // that means failing (nothing may leave); otherwise it connects directly, unrecorded.
+      // that means failing (nothing may leave); otherwise it connects directly, past whatever the engine would have done.
       if (conditions.offline()) throw new ConnectException("failed to connect to " + host + " (port " + port + "): connect failed: ENETUNREACH (Network is unreachable)");
       if (mode == Mode.REPLAY) {
         String msg = "network replay: " + f.getClass().getName() + " makes only connected sockets, so its connection to "
@@ -572,8 +768,9 @@ public final class Net {
         unmatched.add(msg);
         throw new ConnectException(msg);
       }
-      if (mode == Mode.RECORD) log("network record: " + host + ":" + port + " connected directly by " + f.getClass().getName() + ": not recorded");
-      return tracked(dest.isUnresolved() ? f.createSocket(host, port) : f.createSocket(dest.getAddress(), port));
+      log("network: " + host + ":" + port + " connected directly by " + f.getClass().getName() + " (it makes only connected sockets): no rule, mapping or condition reaches it");
+      long t0 = System.nanoTime();
+      return made(dest.isUnresolved() ? f.createSocket(host, port) : f.createSocket(dest.getAddress(), port), host, port, t0);
     }
     connect(s, dest, 0);
     if (f instanceof SSLSocketFactory ssl && !(s instanceof SSLSocket)) return createSocket(ssl, s, host, port, true);
@@ -581,27 +778,8 @@ public final class Net {
   }
 
   /** A socket connected without the engine: remembered, so going offline closes it. */
-  /**
-   * A socket connected directly because the layer was off when the connect began. If it came on meanwhile (`rec on
-   * net`), its closeDirect may have looked at the sockets before this one was registered: closed here instead, so
-   * nothing goes on past the engine. The app sees a connection that failed as the network changed, and retries.
-   * `active` is set before closeDirect runs, and this socket is registered before `active` is read, so one of the two
-   * closes it.
-   */
-  private static Socket startedMeanwhile(Socket s) throws IOException {
-    if (!active) return s;
-    // What the layer leaves alone stays: loopback and bypassed addresses (as tracked() and closeDirect do).
-    if (!(s.getRemoteSocketAddress() instanceof InetSocketAddress a) || bypass(a) || a.getAddress() == null
-        || a.getAddress().isLoopbackAddress() || a.getAddress().isAnyLocalAddress()) {
-      return s;
-    }
-    direct.remove(s);
-    s.close();
-    throw new ConnectException("connection reset: the network layer started while connecting");
-  }
-
   private static Socket tracked(Socket s) throws IOException {
-    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) directly(s, a);
+    if (s.getRemoteSocketAddress() instanceof InetSocketAddress a && !bypass(a)) directly(s, a, hostOf(a));
     return s;
   }
 
@@ -609,8 +787,8 @@ public final class Net {
    * Registers a socket connected without the engine, then looks at the conditions: a connect that finished while
    * `network offline` was taking its snapshot of these sockets is closed here instead of staying usable.
    */
-  private static void directly(Socket s, InetSocketAddress a) throws IOException {
-    direct.add(s);
+  private static void directly(Socket s, InetSocketAddress a, String host) throws IOException {
+    direct.put(s, host.toLowerCase(Locale.ROOT));
     if (conditions.offline()) {
       direct.remove(s);
       s.close();
@@ -618,24 +796,46 @@ public final class Net {
     }
   }
 
+  /**
+   * A connection made directly because nothing concerned its host when its connect began: if that changed meanwhile
+   * (conditions set, a rule added for the host), whoever changed it closed the direct connections it could see, and
+   * this one, registered a moment later, is closed here. The app sees a connection that failed as the network
+   * changed, and retries.
+   */
+  private static void stillDirect(Socket s, InetSocketAddress a, String host) throws IOException {
+    if (route(host) == Route.DIRECT) return;
+    direct.remove(s);
+    s.close();
+    throw new ConnectException("connection reset: the network changed while connecting to " + a);
+  }
+
   public static Socket createSocket(SocketFactory f, InetAddress address, int port) throws IOException {
     if (TabRelay.on && !(f instanceof SSLSocketFactory) && TabRelay.matches(new InetSocketAddress(address, port))) {
       return relayed(f, new InetSocketAddress(address, port));
     }
-    if (!active) return startedMeanwhile(tracked(f.createSocket(address, port)));
     // The address as given (no new lookup); its name, if it has one, without a reverse lookup.
     InetSocketAddress dest = new InetSocketAddress(address, port);
+    String host = hostOf(dest);
+    if (!conditions.offline() && route(host) == Route.DIRECT) {
+      long t0 = System.nanoTime();
+      return made(f.createSocket(address, port), host, port, t0);
+    }
     return createSocket(f, dest, dest.getHostString());
   }
 
   public static Socket createSocket(SSLSocketFactory f, Socket s, String host, int port, boolean autoClose) throws IOException {
+    Socket under = s;  // the socket the app holds
     if (s instanceof RelaySocket rs) {
       // TLS over a plain factory's socket (OkHttp's https): layered on the socket the factory made; the relay is plain HTTP only.
       if (rs.isRelay()) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
       if (!rs.isEngineLink()) s = rs.real();
     }
-    if (active && mode != Mode.SHAPE && redirected.contains(s) && tunnelling.get() != s) return new FakeTlsSocket(s, host, port, autoClose, f);
-    return f.createSocket(s, host, port, autoClose);
+    // Answered by the engine: a TLS socket that does no TLS, so the engine reads the requests. Anything else gets the
+    // TLS the app's factory makes, end to end (through the engine's relay too), which the tap reads above it.
+    if (redirected.get(s) == Route.MITM && tunnelling.get() != s) return new FakeTlsSocket(s, host, port, autoClose, f);
+    Socket tls = f.createSocket(s, host, port, autoClose);
+    if (Tap.on && tunnelling.get() != s) Tap.layered(tls, under, host, port);
+    return tls;
   }
 
   public static URLConnection openConnection(URL u) throws IOException {
@@ -663,39 +863,49 @@ public final class Net {
         || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
-    if (!active) return trackedTls(p == null ? u.openConnection() : u.openConnection(p));
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
     // (no lookup to fail) would otherwise still reach the server.
     if (conditions.offline()) return OfflineConnection.of(u, p);
-    if (inMemory && mode != Mode.REPLAY && (p == null || p.type() == Proxy.Type.DIRECT)) {
-      // The engine's proxy would be on loopback, which the beam sandbox denies: out directly, not captured.
+    Route route = route(host);
+    boolean ownProxy = p != null && p.type() != Proxy.Type.DIRECT;
+    // Plain http through the JDK's client has no socket the tap could read: while exchanges are kept it goes through
+    // the engine, which reads HTTP/1.1 as it stands (what the JDK's client speaks anyway).
+    if (route == Route.DIRECT && proto.equals("http") && !ownProxy && !inMemory && Tap.on) route = Route.MITM;
+    if (route == Route.DIRECT) return trackedTls(p == null ? u.openConnection() : u.openConnection(p));
+    if (inMemory && mode != Mode.REPLAY && !ownProxy) {
+      // The engine's proxy would be on loopback, which the beam sandbox denies: out directly (read by the tap, if https).
       if (!urlConnectionLogged) {
         urlConnectionLogged = true;
-        log("network: HttpURLConnection requests go out directly in the beam sandbox: not captured, recorded or shaped");
+        log("network: HttpURLConnection requests go out directly in the beam sandbox: no rule or condition reaches them");
       }
       return trackedTls(u.openConnection());
     }
-    if (p != null && p.type() != Proxy.Type.DIRECT && mode != Mode.REPLAY) {
-      // The app's own proxy is its route out: kept, so the request goes through it as it would have (not recorded or
-      // shaped). Replaying, nothing goes out, so the engine answers as for any other request.
-      log("network: " + u.getHost() + " through the app's proxy " + p + ": not " + (mode == Mode.RECORD ? "recorded" : "shaped"));
+    if (ownProxy && mode != Mode.REPLAY) {
+      // The app's own proxy is its route out: kept, so the request goes through it as it would have (no rule or
+      // condition reaches it). Replaying, nothing goes out, so the engine answers as for any other request.
+      log("network: " + u.getHost() + " through the app's proxy " + p + ": no rule or condition reaches it");
       return trackedTls(u.openConnection(p));
     }
-    URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine.address()));
-    if (c instanceof HttpsURLConnection https && mode != Mode.SHAPE) {
-      // The factory the connection starts with is the app's if it set a default one (setDefaultSSLSocketFactory):
-      // it does the real handshake, so its trust manager decides. The JVM's own default needs no handing on.
-      SSLSocketFactory current = https.getSSLSocketFactory();
-      https.setSSLSocketFactory(current == null || current == SSLSocketFactory.getDefault() ? FakeTlsSocket.FACTORY : fakeFor(current));
-      https.setHostnameVerifier((name, session) -> true);
+    URLConnection c = u.openConnection(new Proxy(Proxy.Type.HTTP, engine().address()));
+    if (c instanceof HttpsURLConnection https) {
+      if (route == Route.MITM) {
+        // The factory the connection starts with is the app's if it set a default one (setDefaultSSLSocketFactory):
+        // it does the real handshake, so its trust manager decides. The JVM's own default needs no handing on.
+        SSLSocketFactory current = https.getSSLSocketFactory();
+        https.setSSLSocketFactory(current == null || current == SSLSocketFactory.getDefault() ? FakeTlsSocket.FACTORY : fakeFor(current));
+        https.setHostnameVerifier((name, session) -> true);
+      } else {
+        trackedTls(c);  // relayed: its own TLS through the engine's tunnel, read by the tap
+      }
     }
     return c;
   }
 
   /**
-   * A JDK HttpsURLConnection that does not go through the engine (the layer off, or the app's own proxy): its socket
+   * A JDK HttpsURLConnection whose TLS is its own (made directly, through the app's proxy, or relayed): its socket
    * factory is wrapped so the socket under its TLS is remembered, and `network offline` closes it, a download in
-   * progress included. (Plain http through the JDK makes its socket out of reach; Android apps rarely use cleartext.)
+   * progress included, and so the tap can read it ({@link TapSslSocket}). (Plain http through the JDK makes its socket
+   * out of reach; Android apps rarely use cleartext.)
    */
   private static URLConnection trackedTls(URLConnection c) {
     if (c instanceof HttpsURLConnection https && !(https.getSSLSocketFactory() instanceof TrackingFactory)) {
@@ -743,26 +953,31 @@ public final class Net {
     @Override
     public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
       tracked(s);
-      return inner.createSocket(s, host, port, autoClose);
+      return tapped(inner.createSocket(s, host, port, autoClose), host, port);
     }
 
     /** Not connected yet (the JDK connects it itself): remembered now, and going offline closes it either way. */
     @Override
     public Socket createSocket() throws IOException {
       Socket s = inner.createSocket();
-      direct.add(s);
+      direct.put(s, "");
       // Registered after `network offline` took its snapshot: closed here, before the JDK can connect it.
       if (conditions.offline()) {
         direct.remove(s);
         s.close();
         throw new ConnectException("connect failed: ENETUNREACH (Network is unreachable)");
       }
-      return s;
+      return tapped(s, null, 0);
     }
-    @Override public Socket createSocket(String h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }
-    @Override public Socket createSocket(String h, int p, InetAddress l, int lp) throws IOException { return tracked(inner.createSocket(h, p, l, lp)); }
-    @Override public Socket createSocket(InetAddress h, int p) throws IOException { return tracked(inner.createSocket(h, p)); }
-    @Override public Socket createSocket(InetAddress h, int p, InetAddress l, int lp) throws IOException { return tracked(inner.createSocket(h, p, l, lp)); }
+    @Override public Socket createSocket(String h, int p) throws IOException { return tapped(tracked(inner.createSocket(h, p)), h, p); }
+    @Override public Socket createSocket(String h, int p, InetAddress l, int lp) throws IOException { return tapped(tracked(inner.createSocket(h, p, l, lp)), h, p); }
+    @Override public Socket createSocket(InetAddress h, int p) throws IOException { return tapped(tracked(inner.createSocket(h, p)), h.getHostName(), p); }
+    @Override public Socket createSocket(InetAddress h, int p, InetAddress l, int lp) throws IOException { return tapped(tracked(inner.createSocket(h, p, l, lp)), h.getHostName(), p); }
+
+    /** The JDK reads its socket's streams itself, where no hook reaches: while the tap is on it gets a socket that copies them. */
+    private static Socket tapped(Socket s, String host, int port) {
+      return Tap.on && s instanceof SSLSocket ssl ? new TapSslSocket(ssl, host, port) : s;
+    }
   }
 
   private static boolean isLiteralLoopback(String host) {

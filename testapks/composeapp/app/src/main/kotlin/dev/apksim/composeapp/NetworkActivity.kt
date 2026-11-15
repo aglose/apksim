@@ -99,6 +99,28 @@ object GreetingClient {
     }
   }
 
+  /**
+   * GET of any URL (`apksim://network?url=URL`), through OkHttp or the platform's HttpURLConnection: what a server the
+   * app reaches by itself answers, and over which protocol (the tap's check: h2 stays h2 while it is recorded).
+   */
+  fun get(url: String, okhttp: Boolean): String {
+    if (okhttp) {
+      client.newCall(Request.Builder().url(url).build()).execute().use { r ->
+        return "${r.code} ${r.protocol} ${r.body.bytes().size} bytes"
+      }
+    }
+    val c = URL(url).openConnection() as java.net.HttpURLConnection
+    c.connectTimeout = 30_000
+    c.readTimeout = 30_000
+    try {
+      val code = c.responseCode
+      val n = (if (code < 400) c.inputStream else c.errorStream)?.readBytes()?.size ?: 0
+      return "$code $n bytes"
+    } finally {
+      c.disconnect()
+    }
+  }
+
   /** `--feature dev.apksim.testapp.no_timings` leaves the time out: it is real time, which a replay cannot repeat. */
   fun describe(r: Result, timing: Boolean = true) =
     "${r.code} ${r.greeting}${r.replay?.let { " [$it]" } ?: ""}" + if (timing) " in ${r.ms} ms" else ""
@@ -138,6 +160,15 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
         var huc by androidx.compose.runtime.remember { mutableStateOf("idle") }
         var relayOk by androidx.compose.runtime.remember { mutableStateOf("idle") }
         var relayHuc by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        val url = intent?.data?.getQueryParameter("url")
+        var urlOk by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        var urlHuc by androidx.compose.runtime.remember { mutableStateOf("idle") }
+        fun get(set: (String) -> Unit, okhttp: Boolean) {
+          set("fetching")
+          scope.launch {
+            set(withContext(Dispatchers.IO) { runCatching { GreetingClient.get(url!!, okhttp) }.getOrElse { "${it.javaClass.simpleName}: ${it.message}" } })
+          }
+        }
         fun run(set: (String) -> Unit, f: () -> GreetingClient.Result) {
           set("fetching")
           scope.launch {
@@ -157,6 +188,14 @@ class NetworkActivity : androidx.activity.ComponentActivity() {
             Button({ run({ relayOk = it }) { GreetingClient.relayFetch() } }) { Text("Relay") }
             Button({ run({ relayOk = it }) { GreetingClient.relayFetch("/relay/slow") } }, Modifier.padding(start = 8.dp)) { Text("Relay slow") }
             Button({ run({ relayHuc = it }) { GreetingClient.relayFetchWithUrlConnection() } }, Modifier.padding(start = 8.dp)) { Text("Relay URL") }
+          }
+          if (url != null) {
+            Row(Modifier.padding(top = 8.dp)) {
+              Button({ get({ urlOk = it }, true) }) { Text("Get") }
+              Button({ get({ urlHuc = it }, false) }, Modifier.padding(start = 8.dp)) { Text("Get URL") }
+            }
+            Text("get okhttp: $urlOk", Modifier.padding(top = 8.dp))
+            Text("get urlconnection: $urlHuc", Modifier.padding(top = 8.dp))
           }
           Text("relay okhttp: $relayOk", Modifier.padding(top = 8.dp))
           Text("relay urlconnection: $relayHuc", Modifier.padding(top = 8.dp))

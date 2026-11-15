@@ -300,6 +300,13 @@ final class FlightRecorder {
   /** An input event about to be dispatched to the app (main thread). `uptime`: the app's SystemClock.uptimeMillis. */
   static void input(SimWindow.Event e, long uptime) {
     int t = e.type();
+    // A gesture or a key about to begin, with a checkpoint due: taken first, while the app is still at rest, and not
+    // a moment after, in the middle of what the input starts (issue 320).
+    FlightRecorder r = current;
+    if (input && r != null && pointersDown == 0 && t != SimWindow.MOVE && t != SimWindow.UP && t != SimWindow.CANCEL
+        && t != SimWindow.TOUCH2_MOVE && t != SimWindow.TOUCH2_UP && t != SimWindow.RESIZE) {
+      r.beforeInput();
+    }
     if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN) pointersDown++;
     else if (t == SimWindow.UP || t == SimWindow.CANCEL || t == SimWindow.TOUCH2_UP) pointersDown = Math.max(0, pointersDown - 1);
     if (!input) return;
@@ -577,8 +584,58 @@ final class FlightRecorder {
     if (delete != null) Storage.deleteTree(delete.dir);
   }
 
+  /**
+   * How long the app must have been at rest for a checkpoint nobody asked for: its activities are stopped and started
+   * for it, which an app in the middle of something (a request on its way, a screen changing, a video starting) may not
+   * take well. At rest: no input, nothing but the odd frame drawn (a caret blinking), no request under way.
+   */
+  private static final long REST_MS = 1500;
+  /** Frames in {@link #REST_MS} that still count as a screen standing still (a blinking caret draws about three). */
+  private static final int REST_FRAMES = 5;
+  /** The Host's frame count at each of the last quarter seconds, newest last. */
+  private final long[] frameSamples = new long[8], frameSampleAt = new long[8];
+  private int frameSample;
+  private long framesNow;
+
+  private void sampleFrames(long now, long frames) {
+    framesNow = frames;
+    int last = (frameSample + frameSamples.length - 1) % frameSamples.length;
+    if (frameSampleAt[last] != 0 && now - frameSampleAt[last] < 250) return;
+    frameSamples[frameSample] = frames;
+    frameSampleAt[frameSample] = now;
+    frameSample = (frameSample + 1) % frameSamples.length;
+  }
+
+  /** Frames drawn in the last `ms`, as far back as the samples say (everything so far when they do not reach). */
+  private long framesIn(long now, long ms) {
+    long base = 0;
+    long newest = -1;
+    for (int i = 0; i < frameSamples.length; i++) {
+      long at = frameSampleAt[i];
+      if (at != 0 && at <= now - ms && at > newest) {
+        newest = at;
+        base = frameSamples[i];
+      }
+    }
+    return framesNow - base;
+  }
+
+  private boolean atRest(long now) {
+    return pointersDown == 0 && now - lastInputWall >= REST_MS && framesIn(now, REST_MS) < REST_FRAMES
+        && !Net.busy(REST_MS, 10_000);
+  }
+
+  /** From {@link #input}, before an event that begins a gesture or a key is recorded and dispatched. */
+  private void beforeInput() {
+    long now = System.currentTimeMillis();
+    if (checkpointEveryMs <= 0 || stack.isEmpty() || checkpoints.isEmpty() || now - lastCheckpointWall < checkpointEveryMs) return;
+    if (!atRest(now)) return;
+    String r = checkpoint("before input");
+    if (r.startsWith("error")) System.err.println("[apksim] rec: " + r);
+  }
+
   /** Each turn of the Host loop (main thread). */
-  void tick(boolean firstFrameDrawn) {
+  void tick(boolean firstFrameDrawn, long frames) {
     long skipped = skippedNanos;
     if (screen && skipped != 0 && System.nanoTime() - skipped >= 1_000_000_000L / screenFps) {
       // The screen has been still since a frame the rate limit passed over: drawn again, so its final state is kept.
@@ -586,12 +643,14 @@ final class FlightRecorder {
       screenBaseline();
     }
     long now = System.currentTimeMillis();
+    sampleFrames(now, frames);
     moveCutoff(now);
     if (!input || !firstFrameDrawn || stack.isEmpty()) return;
     boolean due = wantCheckpoint
         || (checkpointEveryMs > 0 && inputSinceCheckpoint > 0 && now - lastCheckpointWall >= checkpointEveryMs);
-    // Never in the middle of a gesture or right after input: a checkpoint waits for a second of quiet.
-    if (due && pointersDown == 0 && now - lastInputWall >= 1000 && !Host.inputQueued()) {
+    // Never in the middle of a gesture, right after input, or while the app is at work on what the input started: a
+    // checkpoint waits until the app is at rest, however long that takes (a video playing: until it ends).
+    if (due && atRest(now) && !Host.inputQueued()) {
       wantCheckpoint = false;
       String r = checkpoint(checkpoints.isEmpty() ? "first" : "periodic");
       if (r.startsWith("error")) System.err.println("[apksim] rec: " + r);

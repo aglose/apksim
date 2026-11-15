@@ -2696,6 +2696,11 @@ final class MethodTranslator implements Opcodes {
           new String[] {"connect", "(Ljava/net/Socket;Ljava/net/SocketAddress;)V"}),
       Map.entry("java/net/Socket.connect(Ljava/net/SocketAddress;I)V",
           new String[] {"connect", "(Ljava/net/Socket;Ljava/net/SocketAddress;I)V"}),
+      // The streams of a socket the hooks saw connect are read by the network tap as they pass (dev.apksim.net.Tap).
+      Map.entry("java/net/Socket.getInputStream()Ljava/io/InputStream;",
+          new String[] {"inputStream", "(Ljava/net/Socket;)Ljava/io/InputStream;"}),
+      Map.entry("java/net/Socket.getOutputStream()Ljava/io/OutputStream;",
+          new String[] {"outputStream", "(Ljava/net/Socket;)Ljava/io/OutputStream;"}),
       Map.entry("javax/net/SocketFactory.createSocket()Ljava/net/Socket;",
           new String[] {"createSocket", "(Ljavax/net/SocketFactory;)Ljava/net/Socket;"}),
       Map.entry("javax/net/ssl/SSLSocketFactory.createSocket()Ljava/net/Socket;",
@@ -2741,7 +2746,8 @@ final class MethodTranslator implements Opcodes {
     }
     if (opcode == INVOKEVIRTUAL && (ownerName.startsWith("java/net/") || ownerName.startsWith("javax/net/"))) {
       String[] hook = NET_HOOKS.get(ownerName + "." + m.name() + m.descriptor());
-      if (hook == null && "javax/net/ssl/SSLSocket".equals(ownerName) && "connect".equals(m.name())) {
+      if (hook == null && "javax/net/ssl/SSLSocket".equals(ownerName)
+          && ("connect".equals(m.name()) || "getInputStream".equals(m.name()) || "getOutputStream".equals(m.name()))) {
         hook = NET_HOOKS.get("java/net/Socket." + m.name() + m.descriptor());
       }
       if (hook != null) {

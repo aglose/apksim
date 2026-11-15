@@ -20,10 +20,11 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * Checks that a client offering h2 gets the server's ALPN choice while the network engine captures (issue 367): a TLS server on
- * this machine's LAN address (loopback is never captured) that picks h2, reached through the engine with the inspector on.
- * One that offers nothing still gets none (HTTP/1.1, as before). Skips when the machine has no non-loopback address.
- * Run by scripts/check-h2-tunnel.sh; exits 1 on any failure.
+ * Checks which protocol a client gets from a TLS server that picks h2 (issues 367, 387), on this machine's LAN address
+ * (loopback is never touched). With the inspector on and no rule, nothing stands between: the socket is the app's own and
+ * it gets h2. With a rule that concerns the host, its connections go through the engine: one offering h2 alone is carried
+ * as a tunnel and still gets h2; one offering http/1.1 too is read by the engine as HTTP/1.1; one offering nothing gets
+ * none. Skips when the machine has no non-loopback address. Run by scripts/check-h2-tunnel.sh; exits 1 on any failure.
  */
 public final class H2TunnelCheck {
   private static int failures;
@@ -97,15 +98,31 @@ public final class H2TunnelCheck {
 
     System.setProperty("apksim.networkInspect", "true");
     Net.configure();
-    check(Net.active && Inspector.on, "the engine captures with the inspector on" + (Net.inMemory ? " (in memory)" : ""));
+    check(Net.active && Inspector.on && Tap.on, "the inspector is on, reading the tap" + (Net.inMemory ? " (in memory)" : ""));
     int port = ss.getLocalPort();
+    {
+      // No rule: the connection is the app's own, whatever it offers.
+      Socket plain = Net.inMemory ? Net.createSocket(javax.net.SocketFactory.getDefault()) : new Socket();
+      Net.connect(plain, new InetSocketAddress(lan, port), 5000);
+      SSLSocket s = (SSLSocket) Net.createSocket(client.getSocketFactory(), plain, "fixture.test", port, true);
+      SSLParameters p = s.getSSLParameters();
+      p.setApplicationProtocols(new String[] {"h2", "http/1.1"});
+      s.setSSLParameters(p);
+      s.startHandshake();
+      check(!(s instanceof FakeTlsSocket) && "h2".equals(s.getApplicationProtocol()) && Net.engine == null,
+          "no rule: the app's own TLS socket (" + s.getClass().getSimpleName() + "), h2 as the server picks, no engine");
+      s.close();
+    }
+    // A rule that could match any host's requests: from here every connection goes through the engine.
+    String rule = Net.command(new String[] {"network", "rule", "add", "*", "/no-such-path", "0", "1", "-", "-"});
+    check(rule.startsWith("{") && Net.route("fixture.test") == Net.Route.MITM, "a rule that names no host: connections are answered by the engine");
     for (int mode = 0; mode < 5; mode++) {
       boolean h2 = mode == 0 || mode == 3 || mode == 4;
       // In memory (-Dapksim.netInMemory=true, the beam sandbox's path) the app's plain socket is a RelaySocket joined to the engine by pipes.
       Socket plain = Net.inMemory ? Net.createSocket(javax.net.SocketFactory.getDefault()) : new Socket();
       Net.connect(plain, new InetSocketAddress(lan, port), 5000);
       SSLSocket s = (SSLSocket) Net.createSocket(client.getSocketFactory(), plain, "fixture.test", port, true);
-      check(s instanceof FakeTlsSocket, "TLS over the engine's socket is the capturing one");
+      check(s instanceof FakeTlsSocket, "TLS over the engine's socket is the engine's");
       if (mode == 0) {
         SSLParameters p = s.getSSLParameters();
         p.setApplicationProtocols(new String[] {"h2"});
@@ -142,7 +159,7 @@ public final class H2TunnelCheck {
         }
         check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("CONNECT") && e.contains(":" + port)), "the inspector lists a tunnel row");
       } else {
-        check("".equals(proto), (mode == 1 ? "offering h2 and http/1.1 (OkHttp's default)" : "offering nothing") + ": captured, no ALPN, HTTP/1.1 as before (got '" + proto + "')");
+        check("".equals(proto), (mode == 1 ? "offering h2 and http/1.1 (OkHttp's default)" : "offering nothing") + ": read by the engine, no ALPN, HTTP/1.1 (got '" + proto + "')");
       }
       s.close();
     }

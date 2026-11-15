@@ -18,9 +18,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The network inspector (`--network-inspect`, docs/pr-preview.md "Network inspector"): the app's HTTP(S) exchanges as
- * they happen, for a viewer, and rules that answer a URL pattern with a status and body or slow it down. It sits on
- * the engine's in-memory capture (record mode with no file), so what it shows is what a recording would hold, with
- * the same header redaction ({@link Net#redact}); bodies are shown only when asked for (`network detail ID`).
+ * they happen, for a viewer, and rules that answer a URL pattern with a status and body or slow it down. What it shows
+ * comes from the tap ({@link Tap}: the app's own connections, read as they pass), so looking changes nothing; only a
+ * rule puts connections through the engine, and only those to the host its pattern names ({@link #concerns}). The rows
+ * are what a recording would hold, with the same header redaction ({@link Net#redact}); bodies are shown only when
+ * asked for (`network detail ID`).
  *
  * <p>Events go to `netwatch` connections (Control) as one JSON line each: the last {@link #KEEP} first (the app's
  * startup traffic came before the viewer connected), then each as it completes. Rules and details are `network rule
@@ -57,7 +59,7 @@ public final class Inspector {
   private static final ArrayDeque<String> events = new ArrayDeque<>();
   /** What `detail` answers from: bounded copies (headers, and at most BODY_MAX of each body), never the capture's own entry. */
   private record Detail(String method, String url, int status, List<String[]> reqHeaders, List<String[]> respHeaders,
-      byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut) {
+      byte[] reqBody, boolean reqCut, byte[] respBody, boolean respCut, String version, String error, List<String[]> trailers) {
     long size() {
       return reqBody.length + respBody.length + 1024;
     }
@@ -99,6 +101,8 @@ public final class Inspector {
     /** Response headers the answer carries beside its content type (name, value), in the order given. */
     final List<String[]> headers;
     final String[] parts;
+    /** The one host a URL must have for the pattern to match it, or null when it could match any host's. */
+    final String host;
     final AtomicInteger hits = new AtomicInteger();
 
     Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body) {
@@ -126,6 +130,31 @@ public final class Inspector {
       this.type = type;
       this.body = body;
       this.parts = pattern.split("\\*", -1);
+      this.host = hostOf(pattern);
+    }
+
+    /**
+     * The host a pattern names: the text before its first `*` must hold `http(s)://authority/` whole. A pattern with a
+     * `*` is matched from the URL's start, so the scheme must begin it; one without is found anywhere in the URL, and is
+     * taken to mean the URL's own host (not the same text inside another host's query string).
+     */
+    static String hostOf(String pattern) {
+      int star = pattern.indexOf('*');
+      String fixed = star < 0 ? pattern : pattern.substring(0, star);
+      int at = fixed.indexOf("://");
+      if (at < 0 || star >= 0 && !(fixed.startsWith("http://") || fixed.startsWith("https://"))) return null;
+      String rest = fixed.substring(at + 3);
+      int slash = rest.indexOf('/');
+      if (slash <= 0) return null;
+      String authority = rest.substring(0, slash);
+      if (authority.indexOf('@') >= 0) authority = authority.substring(authority.lastIndexOf('@') + 1);
+      if (authority.startsWith("[")) {
+        int close = authority.indexOf(']');
+        return close < 0 ? null : authority.substring(1, close).toLowerCase(Locale.ROOT);
+      }
+      int colon = authority.indexOf(':');
+      if (colon >= 0) authority = authority.substring(0, colon);
+      return authority.matches("[A-Za-z0-9._-]+") ? authority.toLowerCase(Locale.ROOT) : null;
     }
 
     /**
@@ -162,6 +191,36 @@ public final class Inspector {
     return false;
   }
 
+  static boolean hasRules() {
+    return !rules.isEmpty();
+  }
+
+  /**
+   * Whether a rule could apply to a request to `host` (lower case): its connections go through the engine, which reads
+   * each request; every other host's stay the app's own, only read by the tap.
+   */
+  static boolean concerns(String host) {
+    for (Rule r : rules) if (r.host == null || r.host.equals(host)) return true;
+    return false;
+  }
+
+  /** As {@link #concerns}, for the rules that answer requests themselves: they may stand in for a server that is not there. */
+  static boolean answers(String host) {
+    for (Rule r : rules) if (r.answers() && (r.host == null || r.host.equals(host))) return true;
+    return false;
+  }
+
+  /** A connection the tap could not read as HTTP: a row (CONNECT, status 200) whose detail says how much it carried. */
+  static void opaque(String host, int port, long sent, long received, String why) {
+    if (!on) return;
+    Recording.Entry e = new Recording.Entry();
+    e.method = "CONNECT";
+    e.url = host + ":" + port;
+    e.status = 200;
+    e.respBody = ("a connection that is not HTTP (" + why + "): " + sent + " bytes sent, " + received + " received, not read").getBytes(StandardCharsets.UTF_8);
+    exchange(e, 0, 0);
+  }
+
   /** A connection the engine could not make: shown as a row (CONNECT, status 0) whose detail says why. */
   static void failure(String host, int port, String err) {
     Recording.Entry e = new Recording.Entry();
@@ -172,13 +231,13 @@ public final class Inspector {
     exchange(e, 0, 0);
   }
 
-  /** A connection relayed as an opaque tunnel (the client offered h2): a row, status 200, whose detail says it was not read. */
+  /** A connection the engine carries as a tunnel (the client offered h2 alone): a row, status 200, whose detail says no rule reaches it. */
   static void tunnel(String host, int port) {
     Recording.Entry e = new Recording.Entry();
     e.method = "CONNECT";
     e.url = host + ":" + port;
     e.status = 200;
-    e.respBody = "opaque tunnel: the client offered h2, so its TLS is end to end and not captured".getBytes(StandardCharsets.UTF_8);
+    e.respBody = "tunnel: the client offered h2 alone, so its TLS is end to end and it keeps HTTP/2; no rule applies to it (its exchanges are listed as they pass)".getBytes(StandardCharsets.UTF_8);
     exchange(e, 0, 0);
   }
 
@@ -211,6 +270,8 @@ public final class Inspector {
     if (!on) return;
     long id = ids.incrementAndGet();
     String type = e.header(e.respHeaders, "Content-Type");
+    // An exchange with no answer at all shows why where its answer's body would be.
+    byte[] shown = e.status == 0 && e.error != null && e.respBody.length == 0 ? e.error.getBytes(StandardCharsets.UTF_8) : e.respBody;
     long reqBytes = e.reqBody == null ? 0 : e.reqBody.length;
     String cl = e.header(e.reqHeaders, "Content-Length");
     if (e.reqTruncated && cl != null) reqBytes = parse(cl);
@@ -223,9 +284,10 @@ public final class Inspector {
     String line = "{\"id\":" + id + ",\"t\":" + e.wallMs + ",\"method\":" + q(e.method) + ",\"url\":" + q(url) + (longUrl ? ",\"urlCut\":true" : "") + ",\"status\":" + e.status
         + ",\"ms\":" + (e.timeMs + addedMs) + ",\"reqBytes\":" + reqBytes + ",\"respBytes\":" + respBytes
         + (type == null ? "" : ",\"type\":" + q(type)) + (rule > 0 ? ",\"rule\":" + rule : "") + (forwarded ? ",\"forwarded\":true" : "")
+        + ("HTTP/1.1".equals(e.httpVersion) ? "" : ",\"http\":" + q(e.httpVersion)) + (e.error == null ? "" : ",\"error\":" + q(e.error))
         + (patch == null ? "" : patch.isEmpty() ? ",\"patched\":true" : ",\"patchSkipped\":" + q(patch)) + (addedMs > 0 ? ",\"addedMs\":" + addedMs : "") + "}";
     Detail d = new Detail(e.method, e.url, e.status, List.copyOf(e.reqHeaders), List.copyOf(e.respHeaders), cut(e.reqBody), e.reqTruncated || big(e.reqBody),
-        cut(e.respBody), e.truncated || big(e.respBody));
+        cut(shown), e.truncated || big(shown), e.httpVersion, e.error, e.trailers == null ? List.of() : List.copyOf(e.trailers));
     // History and each viewer's queue change together, under one lock, so a viewer that joins gets every event once and in
     // order; nothing is written to a socket here (a viewer that stops reading is dropped, never waited for).
     synchronized (events) {
@@ -417,6 +479,7 @@ public final class Inspector {
         synchronized (rulesLock) {
           rules = List.of();
         }
+        Net.rulesChanged();
         return "ok";
       }
       case "remove" -> {
@@ -427,6 +490,7 @@ public final class Inspector {
           if (!next.removeIf(r -> r.id == id)) return "error: no rule " + id;
           rules = List.copyOf(next);
         }
+        Net.rulesChanged();
         return "ok";
       }
       case "add" -> {
@@ -443,6 +507,7 @@ public final class Inspector {
           }
           // A lookup that failed a moment ago is remembered by the JDK (10 s): forgotten, so the rule is met at the next try.
           if (r.answers()) Net.flushDnsCache();
+          Net.rulesChanged();
           return r.json();
         } catch (IllegalArgumentException e) {
           return "error: " + e.getMessage();
@@ -472,6 +537,7 @@ public final class Inspector {
             break;
           }
         }
+        Net.rulesChanged();
         return list(now);
       }
       default -> {
@@ -556,6 +622,9 @@ public final class Inspector {
     StringBuilder b = new StringBuilder("{\"id\":").append(a[2]).append(",\"method\":").append(q(e.method)).append(",\"url\":").append(q(e.url))
         .append(",\"status\":").append(e.status).append(",\"reqHeaders\":").append(headers(e.reqHeaders))
         .append(",\"respHeaders\":").append(headers(e.respHeaders));
+    if (e.version != null && !e.version.equals("HTTP/1.1")) b.append(",\"http\":").append(q(e.version));
+    if (e.error != null) b.append(",\"error\":").append(q(e.error));
+    if (!e.trailers.isEmpty()) b.append(",\"trailers\":").append(headers(e.trailers));
     body(b, "req", e.reqBody, e.reqCut);
     body(b, "resp", e.respBody, e.respCut);
     return b.append('}').toString();
