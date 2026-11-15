@@ -202,6 +202,25 @@ Read README.md for results and limits; this file covers how to work on the code.
     cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
     `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
     `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
+  - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
+    Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
+    heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
+    reads the app's own into arrays in every process; `CppApkAssets.LoadImpl`, the one place a table becomes a buffer,
+    now asks `MappedResources.table` first. A stored table (an APK's) is mapped where it lies in the APK
+    (`ZipArchiveHandle.dataOffset`), as AppClasses maps DEX files; a deflated one is inflated once into a file named
+    by the entry's CRC and length and mapped from there: the framework's in `STATE/cache/framework/` (a standby has no
+    APK), another APK's in its cache entry (`arsc/`, swept with it). The buffer is read-only and direct, so the copy
+    of `ResourceString.decodeString`, the only reader that asked a buffer for its array, copies a string's bytes out
+    first when there is none. Anything that fails answers null and the table is read as before; a beamed instance may
+    read `cache/framework` (the launcher's profile) and never writes it, so it maps the table once any other launch
+    or training has left it; the Linux image keeps the file from its training (a volume mounted at its `work/cache`
+    hides it, and the first run inflates it into the volume). A table inflated for a cache folder that cannot be
+    written serves that launch from the heap. Old framework tables, one per framework jar ever used, are not
+    removed. `-Dapksim.mappedResources=false`, or `APKSIM_MAPPED_RESOURCES=0` in the environment, reads tables into
+    arrays again (A/B; a standby keeps the environment it was started with, so `--stop-standbys` between runs).
+    `scripts/check-mapped-resources.sh [APK...]` (CI, `MappedResourcesCheck`) decodes every string of the framework's
+    table and the APKs' both ways and compares them, with a deflated copy of the first APK's table.
+    docs/perf-plan.md, "Resources mapped", has the measurements.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there
@@ -880,7 +899,7 @@ Compare mode and previews (docs/pr-preview.md): `/?compare=A,B` is `serve/compar
 with every input sent to both and the differing pixels counted in the page (`window.apksimCompare()`); `scripts/pr-preview.py`
 and `.github/actions/preview` put a pull request's build on a serve (with `ttl`, `Catalog.expireAt`) and keep one comment.
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
-Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network [optional]`: `optional` lets a session ask with `/ws?inspect=1`, the beam agent's `inspect-network optional` a `/beam/start` with `"inspect": true`; the `i` message says `inspect` and `inspectAllowed`): the page's cards and script are
+Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network [optional]`: `optional` lets a session ask with `/ws?inspect=1`, the beam agent's `inspect-network optional` a `/beam/start` with `"inspect": true`; where it is on for all, `/ws?inspect=0` or a start's `"inspect": false` declines it, kept as the launcher's no-op `--no-network-inspect` on the agent, and `/beam/hello` says `inspectOptOut`: issue 389; the `i` message says `inspect` and `inspectAllowed`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
 capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, patch rules (issue 373: the real JSON answer merged with an RFC 7386 patch in `recordExchange`, through `ResponsePatch` and `JsonMerge`), forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
 swapped whole, so `inspect rule set JSON` replaces them atomically; a rule may carry response headers; `serve --inspect-max-rules N` →

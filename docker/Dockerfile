@@ -102,10 +102,13 @@ COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /opt/apksim/
 COPY train.sh instrument.py affected.py coverage.py snapshot.py crawl.py drive.py journey.py flake-hunt.py /opt/apksim/scripts/
 COPY apksim.jar /opt/apksim/work/apksim.jar
 # The JVM's ahead-of-time cache holds the framework for any APK; it must be built by this JVM, in this folder.
+# Of the cache training leaves, only the framework's inflated resource table stays (cache/framework, 17 MB, named by
+# its content: MappedResources maps it), so a container without a cache volume does not inflate and write it each run.
 ARG TRAIN=1
 RUN --mount=type=bind,source=train.apk,target=/tmp/train.apk \
     if [ "$TRAIN" = 1 ]; then /opt/apksim/scripts/train.sh /tmp/train.apk; fi && \
-    rm -rf /opt/apksim/work/tmp/* /opt/apksim/work/cache /opt/apksim/work/train-*.log /opt/apksim/work/app.aotconf
+    if [ -d /opt/apksim/work/cache ]; then find /opt/apksim/work/cache -mindepth 1 -maxdepth 1 ! -name framework -exec rm -rf {} +; fi && \
+    rm -rf /opt/apksim/work/tmp/* /opt/apksim/work/train-*.log /opt/apksim/work/app.aotconf
 # A release build names its version (`apksim --version` and the label); set after training, which it does not change.
 ARG VERSION=
 LABEL org.opencontainers.image.version=$VERSION

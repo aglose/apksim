@@ -202,7 +202,7 @@ keeping a session to use later is the visitor's choice.
     data (issue 181: "Saved data from the tab").
 - **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
-  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector, with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either); the same as flags on `apksim beam` for a run in the foreground.
+  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
   deletes at once). An agent that is not running deletes nothing: the LaunchAgent (phase 1) also runs `apksim beam
   sweep` once a day (`StartInterval`).
@@ -518,8 +518,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
 - **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a
   path stats the folders above it; listing is refused); in the state folder not the agent's folder (but the uploaded
   builds and its build caches), serve's files, autofill, screenshots, `cache/` (other apps' data, the shared class
-  and APK caches) or `tmp/` (another instance's scratch, where files it shares are copied), except `beam-N` slots and
-  its own scratch.
+  and APK caches) or `tmp/` (another instance's scratch, where files it shares are copied), except `beam-N` slots,
+  its own scratch and `cache/framework/` (the Android framework's inflated resource table, which it maps: public
+  data other launches wrote and it cannot).
 - **Network**: what the Mac reaches over IPv4 (the consent prompt says so), but no loopback connection (other
   instances' control ports, the agent: a non-browser client could forge an `Origin`), no IPv6 (an IPv6 socket reaches
   loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with

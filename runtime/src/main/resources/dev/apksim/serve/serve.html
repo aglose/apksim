@@ -1405,7 +1405,8 @@ async function macGrant(q, gen, say, data) {
     g = await okJson(fetch(beam.url + "/beam/start", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ protocol: beam.protocol, sha256: info.sha256, name: info.name, size: info.size, options: info.options, ticket: info.ticket,
         url: new URL("api/beam/apk", location.href).href, ...(data ? { data } : {}),
-        ...(beam.inspect && new URLSearchParams(location.search).get("inspect") === "1" ? { inspect: true } : {}) }) }));
+        ...(beam.inspect && new URLSearchParams(location.search).get("inspect") === "1" ? { inspect: true } : {}),
+        ...(new URLSearchParams(location.search).get("inspect") === "0" ? { inspect: false } : {}) }) }));
   } finally { waiting = false; }
   if (asked && gen === startGen) say("Allowed, starting…");  // never over a Stop's overlay or a newer session
   if (g.via === "download") log("this Mac downloaded the app from this server");

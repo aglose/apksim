@@ -164,7 +164,9 @@ def sandbox_checks(apksim, apk):
     os.makedirs(other, exist_ok=True)
     os.makedirs(os.path.join(STATE, "cache", "data", "dev.example", "beam-0"), exist_ok=True)
     os.makedirs(os.path.join(STATE, "cache", "data", "dev.example.empty"), exist_ok=True)
-    for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x")):
+    os.makedirs(os.path.join(STATE, "cache", "framework"), exist_ok=True)
+    for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x"),
+              os.path.join(STATE, "cache", "framework", "probe.arsc")):
         if not os.path.exists(f):
             open(f, "w").write("secret\n")
     # The checkout's own work/ (the state folder unless APKSIM_HOME moves it, as here): planted files, removed below.
@@ -187,6 +189,10 @@ def sandbox_checks(apksim, apk):
         ("denied", "read saved autofill sign-ins", "cat $S/autofill/x.properties"),
         ("denied", "read another app's data", "cat $S/cache/data/dev.example/default/x"),
         ("denied", "write the shared class cache", "mkdir -p $S/cache/classes/probe"),
+        # The framework's inflated resource table (MappedResources): mapped from the cache other launches wrote.
+        ("allowed", "read the framework's resource table in the cache", "head -c 4 $S/cache/framework/probe.arsc"),
+        ("denied", "write the framework's resource table in the cache", "touch $S/cache/framework/probe2.arsc"),
+        ("denied", "replace the framework's resource table in the cache", "echo x >> $S/cache/framework/probe.arsc"),
         ("denied", "write another app's data", "touch $S/cache/data/dev.example/default/probe"),
         ("denied", "write another process's scratch", "touch $S/tmp/1/probe"),
         ("denied", "edit the agent's trusted sites", "echo x >> $S/beam/trust.json"),
@@ -1316,6 +1322,18 @@ def main():
         si.pump(5, until=lambda: any(t.startswith("n r ") for t in si.texts))
         check(any(t.startswith("n r rule ") for t in si.texts), f"inspect: the tab's inspect rule list is answered ({[t[:60] for t in si.texts if t.startswith('n ')]})")
         check(close_session(si), "inspect: that session ends")
+        # Issue 389: `on` is the default, not a rule: a start that says "inspect": false runs without the inspector.
+        hello = json.loads(req(gp, "GET", "/beam/hello", B)[2])
+        check(hello.get("inspect") == "on" and hello.get("inspectOptOut") is True, f"inspect: /beam/hello says a start may decline it ({hello.get('inspectOptOut')})")
+        gi, _ = begin(gp, B, dict(start, inspect=False), apk)
+        si = open_session(gp, gi, B)
+        ii = session_info(si)
+        check(ii.get("inspect") is False and ii.get("inspectAllowed") is True, f"inspect: on, a start that declines runs without it ({ii})")
+        si.ws.send("inspect rule list")
+        si.pump(5, until=lambda: any(t.startswith("n r ") or t.startswith("r refused") for t in si.texts))
+        check(any(t.startswith("r refused: inspect") for t in si.texts) and not any(t.startswith("n r rule ") for t in si.texts),
+              "inspect: and its inspect commands are refused")
+        check(close_session(si), "inspect: that session ends too")
         stop(g)
         r = beam(apksim, "config", "inspect-network", "off", "rec", "input")
         check("inspect-network off" in r.stdout, "inspect: and off again")

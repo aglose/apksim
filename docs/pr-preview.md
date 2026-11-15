@@ -171,7 +171,8 @@ which goes on chunk for chunk). It works where the server's answer is real: not 
 rule needs no allow-list since it reaches only the app's own server. Nothing in them names a file (`Session.check` is unchanged: `inspect` and `rec` are their own
 messages). Without `--inspect-network` the tab's `inspect` is refused (`r refused: inspect`), as it is in a session that did not ask when the server runs
 with `--inspect-network optional` (issue 371: `/ws?...&inspect=1` asks; the beam agent's `inspect-network optional` and a start's `"inspect": true` do the
-same there, and `/beam/hello` says `"inspect": "off|optional|on"` for an agent that has it). The `i` message's `"inspectAllowed"` says whether a session could have it.
+same there, and `/beam/hello` says `"inspect": "off|optional|on"` for an agent that has it). The `i` message's `"inspectAllowed"` says whether a session could have it. Where the inspector is on for every session (`--inspect-network`, the agent's `inspect-network on`) a session
+may decline it (issue 389: `/ws?...&inspect=0`, a start's `"inspect": false`; `/beam/hello` says `"inspectOptOut": true`) and runs with no network engine.
 
 ## Sample workflow
 

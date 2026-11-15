@@ -109,6 +109,10 @@ public final class FakeTlsSocket extends SSLSocket {
         && !java.util.Arrays.asList(appProtocols).contains("http/1.1");
     // The engine is in this process: the app's factory goes to it by a token, for the handshake with the server, and
     // the protocols and cipher suites the app enabled on this socket go along, to hold there too.
+    if (!offersH2 && java.util.Arrays.asList(appProtocols).contains("h2") && !java.util.Arrays.asList(appProtocols).contains("http/1.1")
+        && Net.mode == Net.Mode.REPLAY) {
+      Net.log("network: " + host + ":" + port + " offers h2 only, but replaying answers without ALPN: an HTTP/2-only client will fail");
+    }
     String token = appTls == null || offersH2 ? "-" : Net.lendTls(appTls);
     out.write(("APKSIM-TLS " + host + " " + token + " " + (protocolsSet ? String.join(",", protocols) : "-") + " "
         + (suitesSet ? String.join(",", suites) : "-") + (offersH2 ? " tunnel" : "") + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
@@ -157,12 +161,18 @@ public final class FakeTlsSocket extends SSLSocket {
     Net.tunnelling.set(raw);
     try {
       s = (SSLSocket) f.createSocket(raw, host, port, autoClose);
+    } catch (IOException | RuntimeException e) {
+      Net.log("network: " + host + ":" + port + " h2 tunnel: " + f.getClass().getName() + " could not layer TLS on "
+          + raw.getClass().getName() + ": " + e);
+      closed = true;
+      throw e;
     } finally {
       Net.tunnelling.remove();
     }
     try {
       tunnelHandshake(s);
     } catch (IOException | RuntimeException e) {
+      Net.log("network: " + host + ":" + port + " h2 tunnel handshake failed: " + e);
       closed = true;
       try { s.close(); } catch (IOException ignored) {}
       throw e;
@@ -171,8 +181,20 @@ public final class FakeTlsSocket extends SSLSocket {
 
   private void tunnelHandshake(SSLSocket s) throws IOException {
     javax.net.ssl.SSLParameters params = s.getSSLParameters();
-    if (protocolsSet) params.setProtocols(protocols);
-    if (suitesSet) params.setCipherSuites(suites);
+    // Only what the real socket supports: this socket's defaults are the JDK's, which an app reads back and sets (OkHttp, gRPC
+    // do), and a provider's socket such as Conscrypt's throws on a suite it lacks (issue 387). None left: its own defaults.
+    if (protocolsSet) {
+      String[] ok = keepSupported(protocols, s.getSupportedProtocols());
+      if (ok.length != protocols.length && DROPPED.add(host + ":" + port + " protocols")) Net.log("network: " + host + ":" + port + " h2 tunnel: protocols the real socket lacks dropped"
+          + (ok.length == 0 ? " (its defaults used)" : ""));
+      if (ok.length > 0) params.setProtocols(ok);
+    }
+    if (suitesSet) {
+      String[] ok = keepSupported(suites, s.getSupportedCipherSuites());
+      if (ok.length != suites.length && DROPPED.add(host + ":" + port + " suites")) Net.log("network: " + host + ":" + port + " h2 tunnel: cipher suites the real socket lacks dropped"
+          + (ok.length == 0 ? " (its defaults used)" : ""));
+      if (ok.length > 0) params.setCipherSuites(ok);
+    }
     params.setApplicationProtocols(appProtocols);
     s.setSSLParameters(params);
     s.startHandshake();
@@ -180,6 +202,14 @@ public final class FakeTlsSocket extends SSLSocket {
     session = s.getSession();
     HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
+  }
+
+  /** Hosts whose tunnel dropped protocols or suites, each logged once. */
+  private static final java.util.Set<String> DROPPED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  private static String[] keepSupported(String[] wanted, String[] supported) {
+    java.util.Set<String> has = new java.util.HashSet<>(java.util.Arrays.asList(supported));
+    return java.util.Arrays.stream(wanted).filter(has::contains).toArray(String[]::new);
   }
 
   @Override
