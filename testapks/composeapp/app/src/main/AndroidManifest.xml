@@ -70,7 +70,7 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
-        <!-- apksim://grpc?tls=HOST:PORT&plain=HOST:PORT&cert=B64: gRPC calls against the fixture server (scripts/protocols-check.sh). -->
+        <!-- apksim://grpc?tls=HOST:PORT&plain=HOST:PORT&cert=B64: gRPC calls against the fixture server (scripts/media-protocols-check.py). -->
         <activity android:name=".GrpcActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -88,7 +88,7 @@
                 <data android:scheme="apksim" android:host="websocket" />
             </intent-filter>
         </activity>
-        <!-- apksim://media: every sample in assets/media decoded and checked frame by frame (scripts/media-check.py). -->
+        <!-- apksim://media: every sample in assets/media decoded and checked frame by frame (scripts/media-protocols-check.py). -->
         <activity android:name=".MediaActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

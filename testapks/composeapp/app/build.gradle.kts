@@ -98,7 +98,7 @@ dependencies {
   implementation(libs.androidx.health.connect.client)
   // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
   implementation(libs.okhttp)
-  // apksim://grpc (GrpcActivity): gRPC over OkHttp's HTTP/2 against the fixture server (fixture/, scripts/protocols-check.sh)
+  // apksim://grpc (GrpcActivity): gRPC over OkHttp's HTTP/2 against the fixture server (fixture/, scripts/media-protocols-check.py)
   implementation(libs.grpc.okhttp)
   implementation(libs.grpc.stub)
   // apksim://media?hls=URL: an HLS stream from the fixture server through Media3

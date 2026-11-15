@@ -22,6 +22,7 @@ import androidx.lifecycle.lifecycleScope
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -33,7 +34,7 @@ import okio.ByteString.Companion.toByteString
 
 /**
  * apksim://websocket?url=wss://HOST:PORT/ws&plain=ws://HOST:PORT/ws&cert=B64: OkHttp's WebSocket against the fixture
- * server's echo (testapks/composeapp/fixture; scripts/protocols-check.sh). Over TLS (trusting only the fixture's
+ * server's echo (testapks/composeapp/fixture; scripts/media-protocols-check.py). Over TLS (trusting only the fixture's
  * certificate) and in plain text, each of: a text echo, a binary echo of all 256 byte values, a burst of 5 messages the
  * server sends on its own, a 200,000-character text (several frames, compressed when the server agrees to
  * permessage-deflate), and a clean close (1000) answered by the server. One line each ("ws tls text: ok echo: hello"),
@@ -103,22 +104,51 @@ class WebSocketActivity : androidx.activity.ComponentActivity() {
           continue
         }
         add(CheckResult.ok("ws $mode open", "${open.response.protocol}" + (open.response.header("Sec-WebSocket-Extensions")?.let { ", $it" } ?: "")))
-        ws.send("hello")
-        next().let { add(if (it is Event.Text && it.text == "echo: hello") CheckResult.ok("ws $mode text", it.text) else CheckResult.fail("ws $mode text", bad(it))) }
+        // Each step in turn; after the first that fails the socket is cancelled and the rest are not run, so a broken
+        // connection gives one failure at once rather than each later step waiting out its 15 s.
         val all = ByteArray(256) { it.toByte() }.toByteString()
-        ws.send(all)
-        next().let { add(if (it is Event.Bytes && it.bytes == all) CheckResult.ok("ws $mode binary", "256 bytes") else CheckResult.fail("ws $mode binary", bad(it))) }
-        ws.send("burst 5")
-        val burst = (1..5).map { next() }
-        add(if (burst.map { (it as? Event.Text)?.text } == (1..5).map { "burst $it" }) CheckResult.ok("ws $mode burst", "5 of 5")
-            else CheckResult.fail("ws $mode burst", burst.joinToString { bad(it) }.take(200)))
         val large = "x".repeat(200_000)
-        ws.send(large)
-        next().let { add(if (it is Event.Text && it.text == "echo: $large") CheckResult.ok("ws $mode large", "200000 characters") else CheckResult.fail("ws $mode large", bad(it).take(80))) }
-        ws.close(1000, "done")
-        next().let { add(if (it is Event.Closed && it.code == 1000) CheckResult.ok("ws $mode close", "1000 ${it.reason}") else CheckResult.fail("ws $mode close", bad(it))) }
-        client.dispatcher.executorService.shutdown()
-        client.connectionPool.evictAll()
+        val steps: List<Pair<String, suspend () -> CheckResult>> = listOf(
+          "text" to {
+            ws.send("hello")
+            next().let { if (it is Event.Text && it.text == "echo: hello") CheckResult.ok("", it.text) else CheckResult.fail("", bad(it)) }
+          },
+          "binary" to {
+            ws.send(all)
+            next().let { if (it is Event.Bytes && it.bytes == all) CheckResult.ok("", "256 bytes") else CheckResult.fail("", bad(it)) }
+          },
+          "burst" to {
+            ws.send("burst 5")
+            val burst = mutableListOf<Event>()
+            for (i in 1..5) {
+              val e = next()
+              burst += e
+              if (e !is Event.Text) break
+            }
+            if (burst.map { (it as? Event.Text)?.text } == (1..5).map { "burst $it" }) CheckResult.ok("", "5 of 5")
+            else CheckResult.fail("", burst.joinToString { bad(it) }.take(200))
+          },
+          "large" to {
+            ws.send(large)
+            next().let { if (it is Event.Text && it.text == "echo: $large") CheckResult.ok("", "200000 characters") else CheckResult.fail("", bad(it).take(80)) }
+          },
+          "close" to {
+            ws.close(1000, "done")
+            next().let { if (it is Event.Closed && it.code == 1000) CheckResult.ok("", "1000 ${it.reason}") else CheckResult.fail("", bad(it)) }
+          },
+        )
+        for ((step, run) in steps) {
+          val r = run().copy(name = "ws $mode $step")
+          add(r)
+          if (r.status != "ok") {
+            ws.cancel()
+            break
+          }
+        }
+        withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.IO) {
+          client.dispatcher.executorService.shutdown()
+          client.connectionPool.evictAll()  // closing writes: never on the main thread
+        }
       }
       summary = summarize("ws", results, true)
       Log.i(GrpcActivity.TAG, summary)

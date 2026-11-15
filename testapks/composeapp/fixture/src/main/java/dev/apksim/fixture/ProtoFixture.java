@@ -172,7 +172,7 @@ public final class ProtoFixture {
   }
 
   /**
-   * The WebSocket at /ws: "burst N" is answered with N messages, a ping with "pong" from the server's side too, any other
+   * The WebSocket at /ws: "burst N" is answered with N messages (100 at most), a ping with "pong" from the server's side too, any other
    * text with "echo: " + it, bytes with the same bytes; a close is answered with the same code.
    */
   static final class Echo extends WebSocketListener {
@@ -191,7 +191,7 @@ public final class ProtoFixture {
     public void onMessage(WebSocket ws, String text) {
       log("ws " + scheme + " text " + text.length() + " " + (text.length() > 40 ? text.substring(0, 40) + "..." : text));
       if (text.startsWith("burst ")) {
-        int n = Integer.parseInt(text.substring(6).trim());
+        int n = Math.min(100, Integer.parseInt(text.substring(6).trim()));  // a check asks for 5; nobody gets a flood
         for (int i = 1; i <= n; i++) ws.send("burst " + i);
       } else {
         ws.send("echo: " + text);

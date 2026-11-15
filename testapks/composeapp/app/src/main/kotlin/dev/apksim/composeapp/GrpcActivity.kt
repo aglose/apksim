@@ -37,7 +37,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * apksim://grpc?tls=HOST:PORT&plain=HOST:PORT&cert=B64: gRPC over grpc-okhttp (HTTP/2) against the fixture server
- * (testapks/composeapp/fixture, its service `apksim.demo.Echo`; scripts/protocols-check.sh starts it and opens this). Over
+ * (testapks/composeapp/fixture, its service `apksim.demo.Echo`; scripts/media-protocols-check.py starts it and opens this). Over
  * TLS (ALPN h2, trusting only the fixture's certificate) and in plain text (h2 with prior knowledge), each of: a unary
  * call, a server stream of 5, a bidirectional stream of 3, a call the server fails with INVALID_ARGUMENT (non-zero
  * grpc-status in trailers), one the client's 300 ms deadline cancels (RST_STREAM), and a 300,000-byte answer (several
@@ -92,7 +92,7 @@ class GrpcActivity : androidx.activity.ComponentActivity() {
             summary = summarize("grpc", results, false)
           }
         } finally {
-          withContext(Dispatchers.IO) { channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS) }
+          withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS) }
         }
       }
       summary = summarize("grpc", results, true)

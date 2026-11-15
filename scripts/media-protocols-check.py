@@ -24,6 +24,10 @@ connections with their ALPN choice (docs/network.md "The tap"). With --serial th
 
 Exits 1 on any difference. OUT (default work/media-protocols-check) gets the logs, the fixture's certificate and the
 recording.
+
+Under apksim the fixture listens on this machine's LAN address for the length of the run (apksim leaves loopback
+alone, so a server there would not exercise the network tap): its gRPC and WebSocket echoes and the HLS files are
+reachable from the local network meanwhile. They hold nothing but test data, and a burst is capped at 100 messages.
 """
 import argparse
 import json
@@ -105,9 +109,10 @@ def start_fixture(out, bind, sans):
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(200):
         time.sleep(0.1)
-        text = open(os.path.join(out, "fixture.log")).read()
-        if text.startswith("ready "):
-            return p, json.loads(text.splitlines()[0][6:]), open(os.path.join(out, "cert.b64")).read().strip()
+        # The line, wherever it is: a JVM may print something first (JAVA_TOOL_OPTIONS, a warning).
+        ready = [l for l in open(os.path.join(out, "fixture.log")).read().splitlines() if l.startswith("ready ")]
+        if ready:
+            return p, json.loads(ready[0][6:]), open(os.path.join(out, "cert.b64")).read().strip()
         if p.poll() is not None:
             break
     raise SystemExit("the fixture server did not start:\n" + open(os.path.join(out, "fixture.log")).read())
@@ -132,15 +137,24 @@ class Apksim:
     def __init__(self, apk, out, port):
         self.log_path = os.path.join(out, "apksim.log")
         self.port = port
+        # Another instance on the port (one an earlier run left) would take every command meant for this one.
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            raise SystemExit(f"something already answers on port {port}: quit it (scripts/drive.py {port} quit) or pass --port")
+        except OSError:
+            pass
         env = dict(os.environ, APKSIM_LOGCAT="1")
         self.p = subprocess.Popen([os.path.join(ROOT, "apksim"), "--headless", "--fresh", "--audio", "mute", "--rec", "net",
                                    "--control", str(port), apk], stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, env=env, cwd=out)
         for _ in range(600):
+            if self.p.poll() is not None:
+                raise SystemExit(f"apksim ended (status {self.p.returncode}) before opening its control port; see {self.log_path}")
             try:
                 socket.create_connection(("127.0.0.1", port), timeout=1).close()
                 return
             except OSError:
                 time.sleep(0.1)
+        self.p.kill()
         raise SystemExit("apksim never opened its control port; see " + self.log_path)
 
     def cmd(self, c, timeout=60):
@@ -182,7 +196,7 @@ class Device:
     def __init__(self, apk, serial, out):
         self.serial = serial
         self.env = dict(os.environ, ANDROID_SERIAL=serial)
-        had = "package:dev.apksim.composeapp" in self.adb("shell", "pm", "list", "packages", "dev.apksim.composeapp")
+        had = "package:dev.apksim.composeapp" in self.adb("shell", "pm", "list", "packages", "dev.apksim.composeapp").split()
         self.installed_here = not had
         r = self.adb("install", "-r", apk)
         if "Success" not in r:
@@ -241,6 +255,8 @@ def compare(platform, results):
 
 def check_recording(path, host, ports):
     """The flight recording's network.har: what the tap must have read of the gRPC, WebSocket and HLS traffic."""
+    if not check(os.path.exists(path) and zipfile.is_zipfile(path), f"the recording was written ({path})"):
+        return
     z = zipfile.ZipFile(path)
     if not check("network.har" in z.namelist(), "the recording has network.har"):
         return
@@ -274,8 +290,10 @@ def check_recording(path, host, ports):
         msgs = ws[0].get("_webSocketMessages", []) if ws else []
         texts = [(m["type"], m["data"]) for m in msgs if m["opcode"] == 1]
         check(("send", "hello") in texts and ("receive", "echo: hello") in texts, f"recording: WebSocket {label}: the text echo, both ways ({len(msgs)} messages)")
+        deflated = bool(ws) and "permessage-deflate" in str([h["value"] for h in ws[0]["response"]["headers"] if h["name"].lower() == "sec-websocket-extensions"])
+        check(deflated, f"recording: WebSocket {label}: permessage-deflate agreed, so the messages went compressed")
         check(any(t == "receive" and d == "echo: " + "x" * 200_000 for t, d in texts),
-              f"recording: WebSocket {label}: the 200,000-character echo, whole" + (" (sent deflated)" if scheme == "https" else ""))
+              f"recording: WebSocket {label}: the 200,000-character echo, whole (inflated)")
         check(sum(1 for t, d in texts if t == "receive" and d.startswith("burst ")) == 5, f"recording: WebSocket {label}: the server's burst of 5")
     seg = find("/hls/seg")
     check(len(seg) >= 2 and all(e["response"]["status"] == 200 for e in seg), f"recording: the HLS segments ({len(seg)})")
@@ -318,9 +336,11 @@ def main():
                 runner.cmd("back")
                 time.sleep(1)
         seen = compare(platform, results)
-        if only >= {"grpc", "ws", "media", "hls"}:
-            missing = [n for n in EXPECTED[platform] if n not in seen]
-            check(not missing, f"every expected check ran on {platform}" + (f": missing {missing}" if missing else ""))
+        # Every check the screens that ran should have given: a line that never came is a failure too.
+        ran = ({"grpc "} if "grpc" in only else set()) | ({"ws "} if "ws" in only else set()) \
+            | ({"play ", "codec ", "encode "} if "media" in only else set()) | ({"hls "} if "hls" in only else set())
+        missing = [n for n in EXPECTED[platform] if any(n.startswith(p) for p in ran) and n not in seen]
+        check(not missing, f"every expected check ran on {platform}" + (f": missing {missing}" if missing else ""))
         if not a.serial and only >= {"grpc", "ws", "hls"}:
             print("== the recording (--rec net)")
             rec = os.path.join(out, "net.apkrec")

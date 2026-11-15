@@ -53,11 +53,10 @@ A=(-f lavfi -i sine=frequency=1000:sample_rate=44100:duration=1 -ac 2)
 "${F[@]}" -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=1 -ac 2 -c:a libopus -b:a 64k "$OUT/opus.ogg"
 "${F[@]}" "${A[@]}" -c:a flac "$OUT/flac.flac"
 
-# HLS (H.264 and AAC in MPEG-TS, 3 segments): served by the fixture server over the network (fixture/), not packaged.
+# HLS (H.264 with B-frames and AAC in MPEG-TS, 2 segments of about half a second): served by the fixture server over the
+# network (fixture/), not packaged. With sound: the HLS check verifies it, so a failure here must stop the script.
 mkdir -p hls
 "${F[@]}" -f lavfi -i "$(src 320x240)" -f lavfi -i sine=frequency=1000:sample_rate=44100:duration=3 -frames:v 30 \
   -c:v libx264 -x264-params bframes=2:b-adapt=0 -g 10 -keyint_min 10 -sc_threshold 0 -pix_fmt yuv420p -c:a aac -b:a 64k -ac 2 \
-  -f hls -hls_time 0.34 -hls_list_size 0 -hls_segment_filename 'hls/seg%d.ts' hls/index.m3u8 2>/dev/null || \
-"${F[@]}" -f lavfi -i "$(src 320x240)" -frames:v 30 -c:v libx264 -g 10 -pix_fmt yuv420p -f hls -hls_time 0.34 \
-  -hls_list_size 0 -hls_segment_filename 'hls/seg%d.ts' hls/index.m3u8
+  -f hls -hls_time 0.34 -hls_list_size 0 -hls_segment_filename 'hls/seg%d.ts' hls/index.m3u8
 ls -la "$OUT" hls

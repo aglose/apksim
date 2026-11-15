@@ -57,7 +57,7 @@ import okhttp3.OkHttpClient
 
 /**
  * apksim://media: the media samples in assets/media (testapks/composeapp/media/make-samples.sh) decoded, and what came
- * out checked: video frame by frame, audio by its pitch. scripts/media-check.py opens it and compares the lines with
+ * out checked: video frame by frame, audio by its pitch. scripts/media-protocols-check.py opens it and compares the lines with
  * what each platform is expected to give.
  *
  * Every video sample is the same 30 frames (320x240 or 640x360, 30 fps): the top half seven vertical stripes, black,
@@ -131,10 +131,17 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     suspend fun check(kind: String, name: String, body: suspend () -> CheckResult) {
       if (only != null && only != kind || sample != null && sample != name) return
       val label = "$kind $name"
+      // Picture updates the last check's producer still had queued on the main thread run now, with no check listening.
+      frames = null
+      kotlinx.coroutines.delay(250)
       val r = try {
         withTimeoutOrNull(30_000) { body() } ?: CheckResult.fail(label, "timed out after 30 s")
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e  // the screen went away: the run stops, nothing is recorded as failed
       } catch (e: Exception) {
         CheckResult.fail(label, "${e.javaClass.simpleName}: ${e.message}")
+      } finally {
+        frames = null
       }.copy(name = label)
       results += r
       lines += r.line
@@ -199,16 +206,16 @@ class MediaActivity : androidx.activity.ComponentActivity() {
   private suspend fun playVideo(uri: Uri, tls: FixtureTls?): CheckResult {
     val seen = mutableListOf<Int>()
     val channel = Channel<Int>(Channel.UNLIMITED)
-    val surface = Surface(view.surfaceTexture)
     val run = PlayerRun()
     val pcm = PcmSink()
-    val b = ExoPlayer.Builder(this, renderers(pcm))
-    if (tls != null) {
-      val client = OkHttpClient.Builder().sslSocketFactory(tls.socketFactory, tls.trustManager).build()
-      b.setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(client)))
-    }
-    val player = b.build()
+    var surface: Surface? = null
+    var player: ExoPlayer? = null
+    val client = tls?.let { OkHttpClient.Builder().sslSocketFactory(it.socketFactory, it.trustManager).build() }
     try {
+      surface = Surface(view.surfaceTexture)
+      val b = ExoPlayer.Builder(this, renderers(pcm))
+      if (client != null) b.setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(client)))
+      player = b.build()
       frames = channel
       listen(player, run)
       player.setVideoSurface(surface)
@@ -220,6 +227,10 @@ class MediaActivity : androidx.activity.ComponentActivity() {
       withTimeoutOrNull(20_000) { run.ended.await() }
       kotlinx.coroutines.delay(300)  // the last picture's update
       while (true) seen += channel.tryReceive().getOrNull() ?: break
+      // The same picture told twice (the view redrawn) is one frame, not a frame out of order.
+      val distinct = seen.filterIndexed { i, v -> i == 0 || v != seen[i - 1] }
+      seen.clear()
+      seen += distinct
       val counters = player.videoDecoderCounters?.also { it.ensureUpdated() }
       val stats = counters?.let { ", rendered ${it.renderedOutputBufferCount}, dropped ${it.droppedBufferCount}" } ?: ""
       val decoder = run.decoder?.let { ", $it" } ?: ""
@@ -244,8 +255,10 @@ class MediaActivity : androidx.activity.ComponentActivity() {
       return if (sound.status == "ok") pictures else CheckResult.fail("", "pictures right, sound wrong: ${sound.detail}")
     } finally {
       frames = null
-      player.release()
-      surface.release()
+      player?.release()
+      surface?.release()
+      // Closing its connections writes to them (TLS close_notify): never on the main thread, which Android refuses.
+      client?.let { c -> withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { c.dispatcher.executorService.shutdown(); c.connectionPool.evictAll() } }
     }
   }
 
@@ -314,11 +327,14 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     val name = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
       ?: return CheckResult.unsupported("", "no decoder for ${format.getString(MediaFormat.KEY_MIME)}" + (from?.let { " ($it)" } ?: ""))
     val channel = Channel<Int>(Channel.UNLIMITED)
-    frames = channel
-    val surface = Surface(view.surfaceTexture)
-    val codec = MediaCodec.createByCodecName(name)
+    var surface: Surface? = null
+    var codec: MediaCodec? = null
     val seen = mutableListOf<Int>()
+    var sawEos = false
     try {
+      surface = Surface(view.surfaceTexture)
+      codec = MediaCodec.createByCodecName(name)
+      frames = channel
       withContext(Dispatchers.IO) {
         codec.configure(format, surface, null, 0)
         codec.start()
@@ -346,16 +362,19 @@ class MediaActivity : androidx.activity.ComponentActivity() {
             val picture = info.size > 0 || !eos
             codec.releaseOutputBuffer(o, picture)
             if (picture) seen += withTimeoutOrNull(2_000) { channel.receive() } ?: -2
-            if (eos) break
+            if (eos) {
+              sawEos = true
+              break
+            }
           }
         }
       }
     } finally {
       frames = null
-      runCatching { codec.stop() }
-      codec.release()
-      surface.release()
+      codec?.let { runCatching { it.stop() }; it.release() }
+      surface?.release()
     }
+    if (!sawEos) return CheckResult.fail("", "no end of stream in 20 s (frames ${seen.take(40)}), $name")
     return frameVerdict(seen, minimum = 30, exact = true, extra = ", $name" + (from?.let { ", from $it" } ?: ""))
   }
 
@@ -390,8 +409,10 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     val name = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
       ?: return CheckResult.unsupported("", "no decoder for ${format.getString(MediaFormat.KEY_MIME)}" + (from?.let { " ($it)" } ?: ""))
     val pcm = PcmSink()
-    val codec = MediaCodec.createByCodecName(name)
+    var codec: MediaCodec? = null
+    var sawEos = false
     try {
+      codec = MediaCodec.createByCodecName(name)
       withContext(Dispatchers.IO) {
         codec.configure(format, null, null, 0)
         codec.start()
@@ -424,14 +445,17 @@ class MediaActivity : androidx.activity.ComponentActivity() {
           if (o >= 0) {
             if (info.size > 0) pcm.handleBuffer(codec.getOutputBuffer(o)!!.duplicate().apply { position(info.offset); limit(info.offset + info.size) })
             codec.releaseOutputBuffer(o, false)
-            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+              sawEos = true
+              break
+            }
           }
         }
       }
     } finally {
-      runCatching { codec.stop() }
-      codec.release()
+      codec?.let { runCatching { it.stop() }; it.release() }
     }
+    if (!sawEos) return CheckResult.fail("", "no end of stream in 20 s (${pcm.describe()}), $name")
     return pcm.verdict(name + (from?.let { ", from $it" } ?: ""), rate)
   }
 
@@ -449,8 +473,10 @@ class MediaActivity : androidx.activity.ComponentActivity() {
       ?: return CheckResult.unsupported("", "no encoder for $mime")
     val out = mutableListOf<AccessUnit>()
     var outFormat: MediaFormat? = null
-    val codec = MediaCodec.createByCodecName(name)
+    var codec: MediaCodec? = null
+    var sawEos = false
     try {
+      codec = MediaCodec.createByCodecName(name)
       withContext(Dispatchers.IO) {
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
@@ -484,14 +510,17 @@ class MediaActivity : androidx.activity.ComponentActivity() {
               out += AccessUnit(data, info.presentationTimeUs, info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0)
             }
             codec.releaseOutputBuffer(o, false)
-            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+              sawEos = true
+              break
+            }
           }
         }
       }
     } finally {
-      runCatching { codec.stop() }
-      codec.release()
+      codec?.let { runCatching { it.stop() }; it.release() }
     }
+    if (!sawEos) return CheckResult.fail("", "$name gave no end of stream in 20 s")
     val frames = out.count { !it.config }
     if (frames != 30) return CheckResult.fail("", "$name gave $frames frames, not 30")
     val decode = MediaFormat.createVideoFormat(mime, 320, 240)
@@ -517,8 +546,10 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     pcm.flip()
     val out = mutableListOf<AccessUnit>()
     var outFormat: MediaFormat? = null
-    val codec = MediaCodec.createByCodecName(name)
+    var codec: MediaCodec? = null
+    var sawEos = false
     try {
+      codec = MediaCodec.createByCodecName(name)
       withContext(Dispatchers.IO) {
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
@@ -556,14 +587,17 @@ class MediaActivity : androidx.activity.ComponentActivity() {
               out += AccessUnit(data, info.presentationTimeUs, info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0)
             }
             codec.releaseOutputBuffer(o, false)
-            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+              sawEos = true
+              break
+            }
           }
         }
       }
     } finally {
-      runCatching { codec.stop() }
-      codec.release()
+      codec?.let { runCatching { it.stop() }; it.release() }
     }
+    if (!sawEos) return CheckResult.fail("", "$name gave no end of stream in 20 s")
     if (out.none { !it.config }) return CheckResult.fail("", "$name gave no frames")
     val decode = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2)
     outFormat?.getByteBuffer("csd-0")?.let { decode.setByteBuffer("csd-0", it) }

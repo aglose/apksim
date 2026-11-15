@@ -1,4 +1,4 @@
-// The fixture server the test app's gRPC, WebSocket and HLS screens talk to (scripts/protocols-check.sh): gRPC-java's own
+// The fixture server the test app's gRPC, WebSocket and HLS screens talk to (scripts/media-protocols-check.py): gRPC-java's own
 // server (Netty) and OkHttp's MockWebServer, so what the app meets is a real implementation of each protocol, not apksim's.
 // `./gradlew :fixture:installDist`, then fixture/build/install/fixture/bin/fixture --help.
 plugins {
