@@ -957,7 +957,9 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   handshake gets the server's certificates from the engine (the real chain, so hostname checks and pins pass) and the
   bytes stay plain text, so HTTP/1.1 is readable (a client offering h2 without http/1.1, as gRPC does, is carried as
   a tunnel instead: hello field `tunnel`, reply `TUNNEL`, real TLS over the relayed bytes, `Inspector.tunnel`; no
-  rule, mock or `--network-trust` applies inside it, and the tap reads it; `scripts/check-h2-tunnel.sh`). The JDK's
+  rule, mock or `--network-trust` applies inside it, and the tap reads it; `scripts/check-h2-tunnel.sh`). It logs `TLS handshake offers ALPN
+  none|h2|...` with the TLS setters the app called, once per host, port, offer and set of setter calls (issue 395); it also takes Conscrypt's
+  `setApplicationProtocols(String[])`, which OkHttp's Android adapters find by reflection. The JDK's
   HttpURLConnection is not app code: its socket factory is wrapped (`Net.TrackingFactory`) and hands the JDK a
   `TapSslSocket` (the real socket, every call passed on, streams copied); plain http, and anything the engine
   answers, gets the engine as an HTTP proxy.
