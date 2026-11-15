@@ -55,7 +55,7 @@ STATE = tempfile.mkdtemp(prefix="beam-check-")
 ENV = dict(os.environ, APKSIM_HOME=STATE)
 PKG = "dev.apksim.composeapp"
 # The test app's slot screen (--activity SlotStateActivity) on the phone: its "Write" button.
-WRITE = (130, 536)
+WRITE = (130, 680)
 
 
 def req(port, method, path, origin=None, body=None, headers=None, host=None):
