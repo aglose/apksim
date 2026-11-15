@@ -242,7 +242,8 @@ final class Catalog {
       }
       if (o.equals("--sysfs")) {
         // A file under /sys in the instance's own scratch folder (SysFiles): the path as the sysfs command takes it, a short value.
-        if (!v.matches(dev.apksim.SysFiles.PATH_RE + "=[^\\p{Cntrl}]{0,128}")) {
+        int eq = v.indexOf('=');
+        if (eq < 0 || !dev.apksim.SysFiles.validPath(v.substring(0, eq)) || v.length() - eq - 1 > 128) {
           throw new IOException("--sysfs takes /sys/PATH=VALUE (a plain path, a value of at most 128 characters)");
         }
         if (++sysfsSeeds > dev.apksim.SysFiles.SEED_MAX) throw new IOException("--sysfs: at most " + dev.apksim.SysFiles.SEED_MAX);

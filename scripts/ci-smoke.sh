@@ -502,6 +502,12 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
   -d '{"url":"http://127.0.0.1:9/b.apk","name":"b.apk","options":["--broadcast","com.example.ACTION;ez:flag=maybe"]}' "http://127.0.0.1:$SERVE_PORT/api/apps")
 [ "$code" = 400 ] || { echo "serve: bad --broadcast option answered $code, wanted 400" >&2; exit 1; }
+# Issue 393: --sysfs is a launch option a page may carry (a plain /sys path, a short value), others are a 400.
+for spec in '/sys/a/b=1:200' '/etc/x=1:400' '/sys/a/../b=1:400' '/sys/a/..=1:400'; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
+    -d "{\"url\":\"http://127.0.0.1:9/b.apk\",\"name\":\"b.apk\",\"options\":[\"--sysfs\",\"${spec%:*}\"]}" "http://127.0.0.1:$SERVE_PORT/api/apps")
+  [ "$code" = "${spec##*:}" ] || { echo "serve: --sysfs ${spec%:*} answered $code, wanted ${spec##*:}" >&2; exit 1; }
+done
 # Compare mode and PR previews (docs/pr-preview.md): two mirrored sessions, a build added with a time to live, pr-preview.py.
 python3 "$ROOT/scripts/compare-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --apk "$OUT/app.apk" | tee "$OUT/compare-check.log"
 # This server runs without --allow-rec and --inspect-network: the tab's rec and inspect commands are refused (the rest of that check needs both).
