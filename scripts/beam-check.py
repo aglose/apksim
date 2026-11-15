@@ -164,7 +164,9 @@ def sandbox_checks(apksim, apk):
     os.makedirs(other, exist_ok=True)
     os.makedirs(os.path.join(STATE, "cache", "data", "dev.example", "beam-0"), exist_ok=True)
     os.makedirs(os.path.join(STATE, "cache", "data", "dev.example.empty"), exist_ok=True)
-    for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x")):
+    os.makedirs(os.path.join(STATE, "cache", "framework"), exist_ok=True)
+    for f in (os.path.join(STATE, "beam", "trust.json"), os.path.join(STATE, "autofill", "x.properties"), os.path.join(other, "x"),
+              os.path.join(STATE, "cache", "framework", "probe.arsc")):
         if not os.path.exists(f):
             open(f, "w").write("secret\n")
     # The checkout's own work/ (the state folder unless APKSIM_HOME moves it, as here): planted files, removed below.
@@ -187,6 +189,10 @@ def sandbox_checks(apksim, apk):
         ("denied", "read saved autofill sign-ins", "cat $S/autofill/x.properties"),
         ("denied", "read another app's data", "cat $S/cache/data/dev.example/default/x"),
         ("denied", "write the shared class cache", "mkdir -p $S/cache/classes/probe"),
+        # The framework's inflated resource table (MappedResources): mapped from the cache other launches wrote.
+        ("allowed", "read the framework's resource table in the cache", "head -c 4 $S/cache/framework/probe.arsc"),
+        ("denied", "write the framework's resource table in the cache", "touch $S/cache/framework/probe2.arsc"),
+        ("denied", "replace the framework's resource table in the cache", "echo x >> $S/cache/framework/probe.arsc"),
         ("denied", "write another app's data", "touch $S/cache/data/dev.example/default/probe"),
         ("denied", "write another process's scratch", "touch $S/tmp/1/probe"),
         ("denied", "edit the agent's trusted sites", "echo x >> $S/beam/trust.json"),

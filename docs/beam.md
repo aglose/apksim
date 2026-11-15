@@ -518,8 +518,9 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
 - **Reads**: nothing in the home folder but apksim, its libraries and the JDK (metadata only for the rest: resolving a
   path stats the folders above it; listing is refused); in the state folder not the agent's folder (but the uploaded
   builds and its build caches), serve's files, autofill, screenshots, `cache/` (other apps' data, the shared class
-  and APK caches) or `tmp/` (another instance's scratch, where files it shares are copied), except `beam-N` slots and
-  its own scratch.
+  and APK caches) or `tmp/` (another instance's scratch, where files it shares are copied), except `beam-N` slots,
+  its own scratch and `cache/framework/` (the Android framework's inflated resource table, which it maps: public
+  data other launches wrote and it cannot).
 - **Network**: what the Mac reaches over IPv4 (the consent prompt says so), but no loopback connection (other
   instances' control ports, the agent: a non-browser client could forge an `Origin`), no IPv6 (an IPv6 socket reaches
   loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with

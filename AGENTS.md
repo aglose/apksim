@@ -192,6 +192,22 @@ Read README.md for results and limits; this file covers how to work on the code.
     cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
     `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
     `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
+  - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
+    Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
+    heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
+    reads the app's own into arrays in every process; `CppApkAssets.LoadImpl`, the one place a table becomes a buffer,
+    now asks `MappedResources.table` first. A stored table (an APK's) is mapped where it lies in the APK
+    (`ZipArchiveHandle.dataOffset`), as AppClasses maps DEX files; a deflated one is inflated once into a file named
+    by the entry's CRC and length and mapped from there: the framework's in `STATE/cache/framework/` (a standby has no
+    APK), another APK's in its cache entry (`arsc/`, swept with it). The buffer is read-only and direct, so the copy
+    of `ResourceString.decodeString`, the only reader that asked a buffer for its array, copies a string's bytes out
+    first when there is none. Anything that fails answers null and the table is read as before; a beamed instance may
+    read `cache/framework` (the launcher's profile) and never writes it, so it maps the table once any other launch
+    or training has left it; the Linux image keeps the file from its training. `-Dapksim.mappedResources=false`, or
+    `APKSIM_MAPPED_RESOURCES=0` in the environment (which reaches standbys), reads tables into arrays again (A/B).
+    `scripts/check-mapped-resources.sh [APK...]` (CI, `MappedResourcesCheck`) decodes every string of the framework's
+    table and the APKs' both ways and compares them, with a deflated copy of the first APK's table.
+    docs/perf-plan.md, "Resources mapped", has the measurements.
   - `AppClasses`: adds an `apksim:` URL to the JVM app class path. Class bytes are translated from DEX on demand.
     DEX files are mapped from the APK (`DexFile` reads a `ByteBuffer`), not copied onto the heap; compressed ones
     (APKs for older Android versions) are inflated once into the APK's cache entry's `dex/` (`ApkCache`) and mapped from there
