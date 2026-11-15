@@ -53,7 +53,8 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   that starts with `/ws?...&inspect=1` runs the inspector (and its network engine; the others run none, as with the flag left out), so
   a site that embeds serve can offer it to the one person looking at traffic. A session's `i` message says `"inspect"` (this session has
   it) and `"inspectAllowed"` (the server would give it one), so a page offers the switch only where it works; a session started
-  without it stays without it, and the page starts a new one to switch. `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
+  without it stays without it, and the page starts a new one to switch. With plain `--inspect-network` the inspector is the default and a
+  tab may decline it with `/ws?...&inspect=0` (issue 389: no network engine for that session; `i` then says `"inspect": false`). `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
   `--inspect-forward-allow URL_PREFIX` (repeatable) lets a tab's rule forward matched requests to an upstream under that prefix.
 - `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
   in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).

@@ -79,6 +79,7 @@ public final class Serve {
    * `--inspect-network`: instances run with the network inspector (`--network-inspect`) and a tab sees the app's HTTP(S)
    * exchanges and may set rules that answer or slow a URL (docs/pr-preview.md). Off by default: it shows the app's traffic.
    * `--inspect-network optional` (issue 371): only a session that asks for it (`/ws?inspect=1`) runs it.
+   * With plain `--inspect-network` a session may decline it (`/ws?inspect=0`, issue 389).
    */
   boolean inspectNetwork;
   boolean inspectOptional;
@@ -1584,6 +1585,8 @@ public final class Serve {
     } else if ("1".equals(r.param("inspect"))) {
       if (inspectOptional || inspectNetwork) options.put("inspect", "1");
       else ws.sendText("r inspect: this server does not allow the network inspector (--inspect-network optional): it starts without");
+    } else if ("0".equals(r.param("inspect")) && !beam) {
+      options.put("inspect", "0");  // issue 389: --inspect-network is the default, and this session declines it
     }
     // A skin (issue 246): one of this server's (the agent's: the visitor's), never a path; its device unless the page
     // names one. `off` starts without the app's own --skin.
@@ -2108,7 +2111,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2355,8 +2358,8 @@ public final class Serve {
       boolean fromSaved = body.get("options") == null && rec != null && local.startsWith("@saved ");
       Object opts = fromSaved ? rec.get("launch") : body.get("options");
       // Issue 276: the tab relay is the start's own opt-in, never carried over from a saved session's options.
-      if (fromSaved && opts instanceof List<?> ol && (ol.contains("--tab-relay") || ol.contains("--network-inspect"))) {
-        opts = ol.stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x)).toList();
+      if (fromSaved && opts instanceof List<?> ol && (ol.contains("--tab-relay") || ol.contains("--network-inspect") || ol.contains("--no-network-inspect"))) {
+        opts = ol.stream().filter(x -> !"--tab-relay".equals(x) && !"--network-inspect".equals(x) && !"--no-network-inspect".equals(x)).toList();
       }
       if (opts instanceof List<?> l) {
         for (Object x : l) {
@@ -2392,6 +2395,10 @@ public final class Serve {
       if (Boolean.TRUE.equals(inspect)) {
         launch = new ArrayList<>(launch);
         launch.add("--network-inspect");  // likewise the agent's own: the session's instance runs the inspector
+      } else if (Boolean.FALSE.equals(inspect)) {
+        // Issue 389: under `inspect-network on` the setting is the default, and this start declines it (no network engine).
+        launch = new ArrayList<>(launch);
+        launch.add("--no-network-inspect");
       }
     } catch (IOException | RuntimeException e) {
       Http.text(out, 400, String.valueOf(e.getMessage()));

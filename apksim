@@ -321,6 +321,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --network-profile) EXTRA+=("-Dapksim.networkProfile=$2"); shift 2 ;;
     # The network inspector (serve --inspect-network, docs/pr-preview.md): exchanges kept in memory and reported to a viewer.
     --network-inspect) EXTRA+=("-Dapksim.networkInspect=true"); shift ;;
+    # A serve or beam session that opted out of the inspector (issue 389): the server's own marker, nothing to turn on.
+    --no-network-inspect) shift ;;
     # The most rules the inspector takes (serve --inspect-max-rules; 32 by default, 256 at most).
     --network-inspect-rules) EXTRA+=("-Dapksim.networkInspectRules=$2"); shift 2 ;;
     --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
