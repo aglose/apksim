@@ -293,7 +293,14 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   (`setLibraryLoader` to a no-op and a Java provider), whose requests go through HttpURLConnection and so through here.
 - `new Socket(host, port)` (the connecting constructors) and NIO channels are not hooked.
 - Anything that is not HTTP on a socket the hooks saw (a custom protocol, MQTT): passes as it is, counted as one
-  opaque connection in `_apksimConnections` and as a `CONNECT` row in the inspector.
+  opaque connection in `_apksimConnections` and as a `CONNECT` row in the inspector; once it is known not to be HTTP
+  its bytes are counted, not copied.
+- An app that brings its own TLS written in Java (a bundled Conscrypt or Bouncy Castle `bctls` whose sockets are not
+  the factory's): the library reads the plain socket itself, so that socket shows as an opaque connection (it carries
+  ciphertext) and what the app says above the library is not read unless it comes through an `SSLSocket` the hooks saw.
+- HTTP/2 connection reuse across hosts: a client may send requests for host A over a connection it opened to host B
+  when both share an address and a certificate. An inspector rule that names A sends A's connections through the
+  engine, not B's, so such a request passes the rule by; a pattern that names no host concerns every connection.
 - Certificate pinning: direct and relayed connections do their own TLS, so pins are checked against the server as
   always. Replayed, the recorded chain is presented, so pins pass as they did. A hand-written entry without
   `_apksim.certificates` presents a placeholder certificate for its host, which passes hostname checks but not pins.

@@ -102,11 +102,14 @@ final class NetEngine {
     for (Conn c : open) c.close();
   }
 
-  /** Closes the connections to the hosts `which` accepts (a rule for them came or went); how many. */
-  int closeAnswered(java.util.function.Predicate<String> which) {
+  /**
+   * Closes the connections to the hosts `which` accepts; how many. `relayedToo` false: only the ones answered here (a
+   * rule for their host went), so a connection only carried and shaped is left alone.
+   */
+  int close(java.util.function.Predicate<String> which, boolean relayedToo) {
     int n = 0;
     for (Conn c : open) {
-      if (c.host != null && which.test(c.host.toLowerCase(Locale.ROOT))) {
+      if ((relayedToo || c.answered) && c.host != null && which.test(c.host.toLowerCase(Locale.ROOT))) {
         c.close();
         n++;
       }

@@ -253,6 +253,9 @@ final class FlightRecorder {
     b.append("rec: ").append(on.isEmpty() ? "off" : String.join(" ", on));
     b.append("; window ").append(windowMs / 1000).append(" s");
     b.append("; checkpoints ").append(checkpointEveryMs == 0 ? "when asked" : "every " + checkpointEveryMs / 1000 + " s");
+    long waiting = dueSince == 0 ? 0 : (System.currentTimeMillis() - dueSince) / 1000;
+    String why = waiting >= 2 ? notAtRest(System.currentTimeMillis()) : null;
+    if (why != null) b.append(" (one is due, waiting ").append(waiting).append(" s for the app to be at rest: ").append(why).append(")");
     b.append(" | input ").append(INPUT.size()).append(" events");
     if (logcat) b.append(", logcat ").append(AdbLog.installed() ? "kept" : "off");
     if (net) b.append(", net ").append(Net.capturedCount()).append(" exchanges");
@@ -303,8 +306,8 @@ final class FlightRecorder {
     // A gesture or a key about to begin, with a checkpoint due: taken first, while the app is still at rest, and not
     // a moment after, in the middle of what the input starts (issue 320).
     FlightRecorder r = current;
-    if (input && r != null && pointersDown == 0 && t != SimWindow.MOVE && t != SimWindow.UP && t != SimWindow.CANCEL
-        && t != SimWindow.TOUCH2_MOVE && t != SimWindow.TOUCH2_UP && t != SimWindow.RESIZE) {
+    if (input && r != null && pointersDown == 0
+        && (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK)) {
       r.beforeInput();
     }
     if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN) pointersDown++;
@@ -621,9 +624,25 @@ final class FlightRecorder {
   }
 
   private boolean atRest(long now) {
-    return pointersDown == 0 && now - lastInputWall >= REST_MS && framesIn(now, REST_MS) < REST_FRAMES
-        && !Net.busy(REST_MS, 10_000);
+    return notAtRest(now) == null;
   }
+
+  /** Why the app is not at rest now (what a checkpoint that is due waits for), or null when it is. */
+  private String notAtRest(long now) {
+    if (pointersDown > 0) return "a touch is down";
+    if (now - lastInputWall < REST_MS) return "input in the last " + REST_MS + " ms";
+    if (framesIn(now, REST_MS) >= REST_FRAMES) return "the screen is drawing";
+    if (Net.busy(REST_MS, 10_000)) return "requests are under way";
+    return null;
+  }
+
+  /**
+   * The first checkpoint does not wait for rest for ever: without one a recording cannot be replayed at all, and an
+   * app whose first screen never stops moving would never get it. This long after it became due it is taken as soon
+   * as there is no touch and no input for a second, as every checkpoint used to be.
+   */
+  private static final long FIRST_WAIT_MS = 15_000;
+  private long dueSince;
 
   /** From {@link #input}, before an event that begins a gesture or a key is recorded and dispatched. */
   private void beforeInput() {
@@ -648,9 +667,14 @@ final class FlightRecorder {
     if (!input || !firstFrameDrawn || stack.isEmpty()) return;
     boolean due = wantCheckpoint
         || (checkpointEveryMs > 0 && inputSinceCheckpoint > 0 && now - lastCheckpointWall >= checkpointEveryMs);
+    if (!due) dueSince = 0;
+    else if (dueSince == 0) dueSince = now;
     // Never in the middle of a gesture, right after input, or while the app is at work on what the input started: a
-    // checkpoint waits until the app is at rest, however long that takes (a video playing: until it ends).
-    if (due && atRest(now) && !Host.inputQueued()) {
+    // checkpoint waits until the app is at rest, however long that takes (a video playing: until it ends). Only the
+    // first has a limit to its patience.
+    boolean rest = atRest(now)
+        || (checkpoints.isEmpty() && now - dueSince >= FIRST_WAIT_MS && pointersDown == 0 && now - lastInputWall >= 1000);
+    if (due && rest && !Host.inputQueued()) {
       wantCheckpoint = false;
       String r = checkpoint(checkpoints.isEmpty() ? "first" : "periodic");
       if (r.startsWith("error")) System.err.println("[apksim] rec: " + r);

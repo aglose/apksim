@@ -171,8 +171,8 @@ final class TapHttp1 implements Tap.Decoder {
       }
       x.respBody = new Tap.Body(false);
       if (chunked) inBody.chunked(x.respBody);
-      else if (cl != null) inBody.fixed(length(cl), x.respBody);
-      else inBody.toClose(x.respBody);
+      else if (cl != null && length(cl) >= 0) inBody.fixed(length(cl), x.respBody);
+      else inBody.toClose(x.respBody);  // no length, or one that is not a number: the body ends where the connection does
       answering = x;
     }
     inHeld.keep(a, off, end);

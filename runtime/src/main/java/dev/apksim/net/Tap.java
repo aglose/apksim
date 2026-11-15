@@ -90,7 +90,12 @@ final class Tap {
     final boolean tls;
     /** How long the TCP connect took, or -1. */
     final long connectMs;
-    final long openedWall = wall(System.nanoTime());
+    final long openedWall = System.currentTimeMillis();
+    /** Through the engine's relay: the socket's own address is the engine's, not the server's. */
+    boolean relayed;
+    /** Not HTTP: its bytes are only counted from here on, not copied (set by the tap's thread, read by the app's). */
+    volatile boolean countOnly;
+    final AtomicLong uncopiedIn = new AtomicLong(), uncopiedOut = new AtomicLong();
     final WeakReference<Socket> socket;
     /** Set once: no longer captured (the tap went off, the queue overflowed, or the decoder gave up). */
     volatile boolean dead;
@@ -122,6 +127,10 @@ final class Tap {
       if (dead || n <= 0) return;
       if (!on) {
         dead = true;
+        return;
+      }
+      if (countOnly) {
+        (out ? uncopiedOut : uncopiedIn).addAndGet(n);
         return;
       }
       if (queued.get() > MAX_QUEUED) {
@@ -166,10 +175,19 @@ final class Tap {
     known.put(s, new Conn(s, host, port, s instanceof SSLSocket, connectMs));
   }
 
+  /** A socket connected through the engine's relay: carried untouched, so read as a direct one is. */
+  static void relayed(Socket s, String host, int port) {
+    Conn c = new Conn(s, host, port, s instanceof SSLSocket, -1);
+    c.relayed = true;
+    known.put(s, c);
+  }
+
   /** TLS layered on `raw` by the app's factory: `tls` carries what the app says, in the clear, above it. */
   static void layered(Socket tls, Socket raw, String host, int port) {
     Conn under = raw == null ? null : known.get(raw);
-    known.put(tls, new Conn(tls, host, port, true, under == null ? -1 : under.connectMs));
+    Conn c = new Conn(tls, host, port, true, under == null ? -1 : under.connectMs);
+    c.relayed = under != null && under.relayed;
+    known.put(tls, c);
   }
 
   /** A connection for a socket whose streams the caller wraps itself ({@link TapSslSocket}). */
@@ -313,11 +331,13 @@ final class Tap {
   private static final AtomicLong queued = new AtomicLong();
   private static volatile Thread thread;
   private static volatile boolean parked;
-  /** Wall clock for a nanoTime: fixed once, so the times of one recording agree with each other. */
-  private static final long WALL0 = System.currentTimeMillis(), NANO0 = System.nanoTime();
-
+  /**
+   * The wall clock at a nanoTime: now, less how long ago that was. Not from an anchor taken once: nanoTime stands still
+   * while the machine sleeps, and every time after a night with the lid closed would be hours behind the clock a save
+   * filters by.
+   */
   static long wall(long nanos) {
-    return WALL0 + (nanos - NANO0) / 1_000_000;
+    return System.currentTimeMillis() - (System.nanoTime() - nanos) / 1_000_000;
   }
 
   private static void put(Chunk c) {
@@ -375,7 +395,11 @@ final class Tap {
     while (true) {
       Chunk c = queue.poll();
       if (c == null) {
-        sweep();
+        try {
+          sweep();
+        } catch (Throwable t) {
+          Net.log("network tap: " + t);
+        }
         parked = true;
         if (queue.isEmpty()) LockSupport.parkNanos(Tap.class, live.isEmpty() ? 30_000_000_000L : 1_000_000_000L);
         parked = false;
@@ -383,13 +407,23 @@ final class Tap {
       }
       queued.addAndGet(-c.size());
       try {
-        if (c.kind == RUN) ((Runnable) c.arg).run();
-        else accept(c);
+        try {
+          if (c.kind == RUN) ((Runnable) c.arg).run();
+          else accept(c);
+        } catch (Throwable t) {
+          // Nothing the decoder meets may reach the app: the connection's capture ends here, its bytes go on.
+          if (c.conn != null) giveUp(c.conn, t.toString(), c.nanos);
+        }
+        if (System.nanoTime() - sweptAt > 2_000_000_000L) sweep();
       } catch (Throwable t) {
-        // Nothing the decoder meets may reach the app: the connection's capture ends here, its bytes go on.
-        if (c.conn != null) giveUp(c.conn, t.toString(), c.nanos);
+        // Whatever it is, this thread goes on: without it every later connection would go unread.
+        if (c.conn != null) {
+          c.conn.dead = true;
+          c.conn.ended = true;
+          live.remove(c.conn);
+        }
+        Net.log("network tap: " + t);
       }
-      if (System.nanoTime() - sweptAt > 2_000_000_000L) sweep();
     }
   }
 
@@ -400,7 +434,7 @@ final class Tap {
       c.live = true;
       live.add(c);
       Socket s = c.socket.get();
-      InetAddress a = s == null ? null : s.getInetAddress();
+      InetAddress a = s == null || c.relayed ? null : s.getInetAddress();
       if (a != null) c.address = a.getHostAddress();
     }
     if (c.tls && !c.sessionRead && c.established) session(c);
@@ -459,6 +493,7 @@ final class Tap {
       }
     }
     if (d == null) return false;
+    if (d instanceof Opaque) c.countOnly = true;  // nothing will read its bytes: the app's threads stop copying them
     c.decoder = d;
     List<Chunk> held = c.undecided;
     c.undecided = null;
@@ -526,8 +561,11 @@ final class Tap {
       }
     }
     live.remove(c);
-    if (never) Inspector.failure(c.host, c.port, String.valueOf(error));
+    c.bytesIn += c.uncopiedIn.get();
+    c.bytesOut += c.uncopiedOut.get();
+    if (never && error != null && error.startsWith("connect failed")) Inspector.failure(c.host, c.port, error);
     else if (c.decoder instanceof Opaque o && c.bytesIn + c.bytesOut > 0) Inspector.opaque(c.host, c.port, c.bytesOut, c.bytesIn, o.why);
+    if (never && c.error == null) return;  // made and closed with nothing said on it: not worth a line
     closed.addLast(describe(c));
     while (closed.size() > CLOSED_KEPT) closed.removeFirst();
   }
@@ -575,8 +613,8 @@ final class Tap {
       if (c.alpn != null) tls.put("alpn", c.alpn);
       m.put("tls", tls);
     }
-    m.put("bytesSent", c.bytesOut);
-    m.put("bytesReceived", c.bytesIn);
+    m.put("bytesSent", c.bytesOut + (c.ended ? 0 : c.uncopiedOut.get()));
+    m.put("bytesReceived", c.bytesIn + (c.ended ? 0 : c.uncopiedIn.get()));
     m.put("exchanges", c.exchanges);
     if (c.error != null) m.put("error", c.error);
     m.put("_opened", c.openedWall);

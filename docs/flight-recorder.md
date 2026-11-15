@@ -94,7 +94,11 @@ checkpoints are not taken on every input:
 **At rest** means: no finger down, no input for 1.5 s, the screen still (fewer than 5 frames drawn in those 1.5 s,
 which a blinking caret stays under and a transition, a spinner or a video does not), and, when the `net` channel or the
 inspector reads the network, no request begun or ended in those 1.5 s and none under 10 s old still unanswered. A
-checkpoint that is due waits for that, however long: while a video plays, none is taken. Before (issue 320) one came
+checkpoint that is due waits for that, however long: while a video plays, or on a screen that never stops moving, none
+is taken, and `rec` says so (`one is due, waiting 40 s for the app to be at rest: the screen is drawing`). A replay
+then starts from the last one taken, and `rec checkpoint now` takes one whatever the app is doing. Only the first
+checkpoint has a limit: 15 s after it is due it is taken once there has been no input for a second, since without one
+a recording cannot be replayed at all. Before (issue 320) one came
 a second after the first input in 30 s, in the middle of what that input started: an app loading its next screen
 dropped the load, and a player being started stopped after its first picture.
 

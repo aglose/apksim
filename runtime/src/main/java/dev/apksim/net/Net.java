@@ -248,10 +248,13 @@ public final class Net {
    * called (on the flight recorder's save thread: a capture can hold 64 MB of bodies); null when nothing is captured.
    * Exchanges still going on (a stream that stays open) are in it as they stand, marked unfinished.
    */
-  public static synchronized java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
+  public static java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
     Recording r = recording;
     if (r == null || mode != Mode.LIVE) return null;
-    java.util.function.Supplier<String> har = r.harLater(keep, Tap.unfinished(), Tap.connections(keep));
+    // No lock of Net's is held while the tap's thread is asked (it may be behind): only the recording's own, after.
+    List<Recording.Entry> unfinished = Tap.unfinished();
+    List<Object> connections = Tap.connections(keep);
+    java.util.function.Supplier<String> har = r.harLater(keep, unfinished, connections);
     return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
   }
 
@@ -416,7 +419,7 @@ public final class Net {
     if (mode != Mode.LIVE) return;
     int n = closeDirect(h -> route(h) != Route.DIRECT);
     NetEngine e = engine;
-    if (e != null) n += e.closeAnswered(h -> route(h) != Route.MITM);
+    if (e != null) n += e.close(h -> route(h) != Route.MITM, false);
     if (n > 0) log("network inspector: " + n + " connection" + (n == 1 ? "" : "s") + " closed for the new rules; the app reconnects");
   }
 
@@ -424,7 +427,7 @@ public final class Net {
   private static int reconnect() {
     int n = closeDirect(h -> true);
     NetEngine e = engine;
-    if (e != null) n += e.closeAnswered(h -> true);
+    if (e != null) n += e.close(h -> true, true);
     return n;
   }
 
@@ -689,7 +692,7 @@ public final class Net {
     redirected.put(s, route);
     if (s instanceof RelaySocket rs && !inMemory) redirected.put(rs.real(), route);  // TLS is layered on the real one
     // Carried untouched: what the app says on it (or on the TLS it layers on it) is read by the tap, as on a direct one.
-    if (route == Route.RELAY && Tap.on) Tap.connected(s, host, isa.getPort(), -1);
+    if (route == Route.RELAY && Tap.on) Tap.relayed(s, host, isa.getPort());
   }
 
   private static String hostOf(InetSocketAddress isa) {
@@ -732,6 +735,7 @@ public final class Net {
   }
 
   public static Socket createSocket(SocketFactory f, String host, int port) throws IOException {
+    if (host == null) return f.createSocket(host, port);  // loopback, as the JDK reads it: never touched
     if (TabRelay.on && TabRelay.isHost(host) && !(f instanceof SSLSocketFactory)) return relayed(f, new InetSocketAddress(host, port));
     if (!conditions.offline() && route(host) == Route.DIRECT) {
       long t0 = System.nanoTime();

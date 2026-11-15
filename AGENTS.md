@@ -307,7 +307,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     A checkpoint cycles the visible activities through onStop/onStart as a quick Home and back would: the one way
     recording shows in the app, so one nobody asked for by name is taken only with the app at rest
     (`FlightRecorder.atRest`: no input for 1.5 s, fewer than 5 frames drawn in them, no request under way as far as
-    the tap knows: `Net.busy`), however long that takes, or just before the first input after the interval
+    the tap knows: `Net.busy`), however long that takes (`rec` says what a due one waits for; only the first has a
+    limit, 15 s, since without one nothing can be replayed), or just before the first input after the interval
     (`beforeInput`, from `FlightRecorder.input`); a second after an input, as before, it landed in the middle of
     what the input started (issue 320: a dropped screen load, a player stuck after its first picture). It ends in
     `Host.arrange`, as every stack change does. `rec-check.py` checks when they come.
@@ -598,7 +599,7 @@ also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `rec
 window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
-`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save]` (see "Network"),
+`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
 launch as an emulator boots, `--bluetooth off` otherwise; each switch, the app's own BluetoothAdapter.enable()/disable()
 included (`ShadowSimBluetoothAdapter`, allowed at any targetSdk as Robolectric allowed it), goes TURNING_ON then ON, or

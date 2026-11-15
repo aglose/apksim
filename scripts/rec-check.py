@@ -230,6 +230,7 @@ def main():
         d("tap 720 1690")  # the Shader tab never stops drawing
         time.sleep(8)
         check(taken() == ["first"], f"none while the screen is animating, though one is due: {taken()}")
+        check("one is due, waiting" in d("rec") and "the screen is drawing" in d("rec"), "and the status says what it waits for")
         d("tap 130 1690")  # Home: still
         for _ in range(16):
             time.sleep(0.5)

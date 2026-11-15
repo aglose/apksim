@@ -133,7 +133,7 @@ jobs:
         run: scripts/check-ttl.sh
       - name: inspector rule patterns (no regex backtracking)
         run: scripts/check-inspector-rules.sh
-      - name: network tap check (the app's own connections read as they pass: HTTP/1.1, HTTP/2, WebSocket, failures, routing)
+      - name: network tap check (the app's own connections read as they pass; HTTP/1.1, HTTP/2, WebSocket, failures, routing)
         run: scripts/check-net-tap.sh
       - name: h2 tunnel check (a client offering h2 gets the server's ALPN choice, with no rule and through the engine)
         run: scripts/check-h2-tunnel.sh
