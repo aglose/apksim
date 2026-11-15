@@ -26,11 +26,17 @@ Read README.md for results and limits; this file covers how to work on the code.
   2026-11-14"): `-XX:ArchiveRelocationMode=0` maps the AOT cache at the address `train.sh` built it for (16 TB on
   macOS, where nothing else is placed: the JDK's 32 GB default sits among malloc's regions and the heap, and was taken
   in most launches), so its 60 MB of read-only metadata stay shared file pages rather than ~45 MB rewritten in every
-  process (macOS only, and not for a beamed instance: it gives up the random placement of the JVM's class metadata,
-  which stays for a site's APK; Linux is not measured); and `MallocSpaceEfficient=1` in the JVM's environment (macOS;
+  process (not for a beamed instance: it gives up the random placement of the JVM's class metadata, which stays for a
+  site's APK; `APKSIM_AOT_RELOCATE=1` keeps the JDK's relocation for any other launch, read as a JVM starts. In the
+  Linux image the default address is free, 60 of 60 launches, and the gain is ~38 MB of each process moved from private
+  memory to file pages its other processes share, not a smaller resident size); and `MallocSpaceEfficient=1` in the
+  JVM's environment (macOS;
   `MallocSpaceEfficient=0` keeps the default), without which macOS's malloc keeps freed memory dirty and counted for
   good (the JIT's arenas after a launch, a busy screen's buffers; `malloc_zone_pressure_relief` returns none of it;
-  seen on macOS 26.1, and the variable is not in malloc's man page: an OS that ignores it behaves as before).
+  seen on macOS 26.1, and the variable is not in malloc's man page: an OS that ignores it behaves as before). On Linux
+  glibc keeps freed memory in its arenas the same way, and the launcher passes `-XX:TrimNativeHeapInterval=5000`: the
+  JVM calls `malloc_trim` every 5 s (docs/perf-plan.md, "Memory in the Linux image"; `--jvm
+  -XX:TrimNativeHeapInterval=0` turns it off).
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
@@ -416,7 +422,7 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `scripts/`: `setup.sh` (one-time; fetches Temurin 24 with `fetch-jdk.sh` and the released test app with
   `fetch-testapp.sh` when there is no JDK 24 or Android SDK), `jdk.sh` (sourced: finds the JDK 24 every build script
   uses; `build.sh` records it in `work/jdk.path` for the launcher), `build.sh` (Java → `work/apksim.jar`), `build-native.sh`, `train.sh` (AOT cache),
-  `bench.py` (launch times, cold and warm; `--mem` adds footprints), `startup-gate.py` (CI's startup-time gate: this build against an anchor
+  `bench.py` (launch times, cold and warm; `--mem` adds footprints; in the Linux image `--cold` only, mounted at `/opt/apksim/scripts`), `startup-gate.py` (CI's startup-time gate: this build against an anchor
   release, interleaved; docs/startup-gate.md), `drive.py` (control channel client), `ctl.py` (find and drive running instances, app
   data), `fleet.py` (N headless instances driven through one script at once: results, readiness, memory; see
   docs/parallel.md), `scene.py` (a scene: roles with their own APK, device and options driven step by step,
@@ -1681,6 +1687,12 @@ Robolectric's Android 15+ runtime is android-all's `libandroid_runtime`; our and
 linux/aarch64, so arm64 images take it from its respin (`gradle linuxArm64Runtime` into `work/linux-arm64`, see
 `build.gradle.kts`). Google's Android build tools are x86_64-only on Linux: arm64 CI jobs get the test APKs from an
 x86_64 job, and have no adb. Use JDK 24 there: JDK 25's AOT record mode rejects translated classes. See docs/linux-docker.md.
+Memory in the image (docs/linux-docker.md "Memory", docs/perf-plan.md "Memory in the Linux image"): an idle instance of
+the test app is ~330 MB resident on arm64, ~200 of it private (413 and 324 before the heap trim, the cache in place and
+the launcher's `-XX:TrimNativeHeapInterval=5000`). `stats` footprintMb is VmRSS there, which counts shared file pages:
+compare the anonymous part (`/proc/PID/smaps_rollup`) or PSS when the question is what one more instance costs, and
+read it 40 s after the first frame (settling work refills eden once after the first trim). Under Rosetta the amd64
+image holds 160-180 MB more, the translator's.
 zlib imports (`libz.so` is a system library to the loader) resolve in the host's `libz.so.1` (`bionic_lookup`'s last step): a Temurin JVM keeps
 its zlib private, so `dlsym(RTLD_DEFAULT)` found none and inflate/deflate were stubs (issue 148). Not built or run on a Linux host yet.
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in

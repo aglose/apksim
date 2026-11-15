@@ -591,7 +591,7 @@ under Rosetta), the client on the Mac through the published port.
 | Frame size | 40 KB (list), 74 KB median over a session, 99 KB (Shader tab) | the same |
 | Stream rate, endless animation (Shader tab) | 118-120 fps | 1-2 fps: the shader runs on the CPU there, the app's own rate |
 | Stream rate while dragging (one move every ~11 ms) | 85-89 fps | 70-79 fps |
-| Memory per session (resident) | 370-620 MB | 680-770 MB |
+| Memory per session (resident) | 370-620 MB | 680-770 MB (2026-11-15, at the end of the check: 679-686 MB; the arm64 image, native: 499-519 MB; idle: docs/linux-docker.md "Memory") |
 | The server itself, idle | 86 MB | 92 MB (the container) |
 
 - Each frame is sent only when the screen changed: a still screen costs nothing after its first frame.

@@ -608,13 +608,17 @@ JIT=()
 # ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
 # so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
 # moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.
-# A cache that cannot go there (an older one, a taken address) is moved as before. It gives up the random placement
-# of the JVM's class metadata, so not for a beamed instance, which runs a site's APK (docs/beam.md), and not on
-# Linux, where neither the address nor the gain has been measured.
+# A cache that cannot go there (an older one, a taken address) is moved as before. On Linux the JDK's default address
+# (32 GB) is free: 20 of 20 launches of the amd64 image (under Rosetta) and 40 of 40 of the arm64 one mapped it
+# there, and it moves ~38 MB of each process from private memory to file pages that the processes of one image share
+# (the resident size and the launch time stay: docs/perf-plan.md, "Memory in the Linux image"). It gives up the
+# random placement of the JVM's class metadata, so not for a beamed instance, which runs a site's APK (docs/beam.md);
+# APKSIM_AOT_RELOCATE=1 keeps the JDK's relocation for any other launch (read as a JVM starts: a standby already
+# running keeps what it started with).
 AOT=()
 if [[ "$AOT_ROOT" == "$ROOT" ]]; then
   AOT=("-XX:AOTCache=$STATE/app.aot")
-  if [[ "$OS" == Darwin && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then AOT+=(-XX:ArchiveRelocationMode=0); fi
+  if [[ -z "${APKSIM_BEAM_SANDBOX:-}" && -z "${APKSIM_AOT_RELOCATE:-}" ]]; then AOT+=(-XX:ArchiveRelocationMode=0); fi
 elif [[ -n "$AOT_ROOT" && ! -f "$ROOT/work/release" ]]; then
   echo "[apksim] the startup cache was built in another folder; run scripts/train.sh once for faster launches" >&2
 fi
@@ -630,6 +634,13 @@ if [[ -n "${APKSIM_NO_CORE:-}" ]]; then NOCORE=(-XX:-CreateCoredumpOnCrash); uli
 # at once: -34 MB idle, -80 to -95 MB on bitmap and video screens, the same frame costs and launch time (A/B in
 # docs/perf-plan.md). MallocSpaceEfficient=0 in the environment keeps the default.
 if [[ "$OS" == Darwin ]]; then export MallocSpaceEfficient="${MallocSpaceEfficient:-1}"; fi
+# glibc's malloc keeps freed memory as well: each thread's arena holds its free chunks' pages until its top shrinks.
+# With TrimNativeHeapInterval the JVM calls malloc_trim every 5 s on a thread of its own (0.7-2 ms a call, 7-8 ms when
+# 25 MB go back at once): -35 MB idle and -48 MB while a screen animates in the arm64 image, with the same frame
+# intervals while flinging and the same cold first frame (docs/perf-plan.md, "Memory in the Linux image").
+# `--jvm -XX:TrimNativeHeapInterval=0` turns it off.
+MALLOC_TRIM=()
+if [[ "$OS" == Linux ]]; then MALLOC_TRIM=(-XX:TrimNativeHeapInterval=5000); fi
 exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
@@ -640,5 +651,5 @@ exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE
   --enable-native-access=ALL-UNNAMED \
   -Drobolectric.offline=true -Drobolectric.dependency.dir="$LIBS" -Drobolectric.enabledSdks=36 -Drobolectric.pixelCopyRenderMode=hardware \
   -Djava.io.tmpdir="$STATE/tmp/$$" -Dapksim.root="$ROOT" -Dapksim.cacheRoot="$STATE/cache" -Dapksim.runtime="$ROOT/work/runtime" "${AOT[@]+"${AOT[@]}"}" "${JIT[@]+"${JIT[@]}"}" \
-  "${EXTRA[@]+"${EXTRA[@]}"}" \
+  "${MALLOC_TRIM[@]+"${MALLOC_TRIM[@]}"}" "${EXTRA[@]+"${EXTRA[@]}"}" \
   -cp "$CP" dev.apksim.Main "$APK"
