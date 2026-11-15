@@ -251,9 +251,16 @@ Medians of three interleaved runs each (two on amd64), RSS with the private anon
 - **The cache in place.** The JDK's default address, 32 GB, is free on Linux (the JVM puts the Java heap below it,
   here below 4 GB, and the kernel everything else near the top of the address space): with
   `-XX:ArchiveRelocationMode=0`, 40 of 40 launches of the arm64 image and 20 of 20 of the amd64 one mapped it there
-  (`-Xlog:cds`: no "alternative address"), so `train.sh` keeps the default there. (A machine whose default maximum
-  heap, a quarter of its memory, does not fit below 32 GB may find the address taken; the JVM then moves the cache,
-  as before. `ci-smoke.sh` prints where each run's first launch mapped it.) It does not make an instance's RSS smaller, as on the Mac it made the footprint smaller: 38-40 MB
+  (`-Xlog:cds`: no "alternative address"), so `train.sh` keeps the default there; so did CI's real runners (x86-64
+  `ubuntu-26.04` and `ubuntu-24.04-arm`; `ci-smoke.sh` prints where each run's first launch mapped it). A machine
+  with a large heap was the open question, and what it found was worse and older than the address: the JVM's default
+  maximum heap is a quarter of the machine's memory, and past ~30 GB (128 GB of memory and up) it turns compressed
+  pointers off, which the cache was built with, so it refused the cache altogether ("CDS will be disabled"), on the
+  Mac as on Linux, before this change as after: a cold first frame of 3.6 s against 2.3 s on a simulated 128 GB Mac
+  (`-XX:MaxRAM=128g`), 2.3 s against 1.2 s in the arm64 image at 256 GB. The launcher now passes
+  `-XX:+UseCompressedOops`, which makes the JVM cap that default at ~30 GB instead; then the cache maps (in place, in
+  the image: the heap ends below 32 GB) and the first frame is 1.19 s at 256 GB. Smaller machines keep their heap
+  (2 GB of 8, 6 GB of 24). It does not make an instance's RSS smaller, as on the Mac it made the footprint smaller: 38-40 MB
   move from private anonymous memory to clean file pages (arm64 idle: 244 → 206 MB anonymous at 332 MB resident
   both ways). What that buys shows with several processes: four instances in one container hold 957 MB in all (PSS)
   against 1,085 MB with the cache moved, 32 MB less each, and under memory pressure the file pages can be dropped,
@@ -299,6 +306,43 @@ The test app's suite passes in both images built from this (392 of the 392 that 
 and so do `scripts/ci-smoke.sh`'s `app`, `device` and `serve` parts on arm64 and `app` and `serve` on amd64. A serve
 session at the end of `serve-check.py`, on the Shader tab with its stream encoding: 499-519 MB resident on arm64,
 679-686 MB on amd64 under Rosetta (680-770 MB there on 2026-11-05, with a smaller test app).
+
+CI's own runs of this change, on real hosts (Linux `ubuntu-26.04` x86-64 and `ubuntu-24.04-arm` runners): the cache
+mapped at its requested address on both; the serve session at the end of `serve-check.py` held 545 and 523 MB on
+x86-64 (main the same day: 593 and 619) and 544 and 546 MB on arm64 (main: 596 and 606); the suite took 62.5 s on
+x86-64 (main: 64.2) and 69.8 s on arm64 (main: 69.5). The macOS startup gate passed with this launcher.
+
+What the periodic malloc trim costs where memory churns, the test app on arm64, three interleaved runs each, trim
+against `--jvm -XX:TrimNativeHeapInterval=0` (CPU from `stats` cpuMs, 20-30 s windows):
+
+| | Resident MB, trim / none | CPU, trim / none | Frames, trim / none |
+|---|---|---|---|
+| Idle | 343 / 379 | 2.3-2.9% / 2.3-2.8% | |
+| `apksim://video` (1080p60 H.264, libavcodec) | 534 / 540 | 47-50% / 48-49% | 59.8 fps, 1 dropped / 59.9, 0-1 dropped |
+| `apksim://bitmaps` (a bitmap redrawn every frame) | 546 / 573 | 103-105% / 102-103% | 73.5-74.5 / 73.6-77.4 fps |
+
+The bitmaps screen is CPU-bound in the image (13 ms of raster a frame), and its frame rate varies run to run as much
+with the trim as without. Four idle instances in one container: 961-962 MB in all (PSS) with
+the trim, 1,067 MB without it (the arenas 164-169 MB against 274).
+
+A large R8 app (the owner's: SQLite, WebRTC, 28 AGSL shaders), at its sign-in screen and the screens that open
+without signing in, medians of three interleaved runs on arm64 (two on amd64), RSS with the private part in brackets:
+
+| MB | Before #384 | With #384's heap trim | Now |
+|---|---|---|---|
+| arm64, idle at its first screen | 432 (352) | 379 (299) | 351 (233) |
+| arm64, its weather screen open (CPU shaders) | 485 (404) | 464 (382) | 440 (320) |
+| arm64, a list screen after five flings | 505 (423) | 490 (408) | 462 (342) |
+| arm64, idle 30 s after closing the weather screen | 491 (409) | 447 (366) | 401 (281) |
+| amd64 (Rosetta), idle at its first screen | 605 (524) | 562 (480) | 507 (387) |
+| amd64, its weather screen open | 688 (598) | 657 (571) | 590 (467) |
+| amd64, idle 30 s after closing it | 679 (593) | 624 (540) | 556 (434) |
+
+Its screens draw at ~3 fps in the image (their shaders run on the CPU), so frames say nothing there; it ran through
+every step in all 15 runs.
+
+Both flags this adds exist, with the same meaning, on JDK 24, 25, 26 and 27 (early access): a JDK upgrade does not
+turn either into an unknown option, which would stop every launch.
 
 ## Found not to work as planned
 

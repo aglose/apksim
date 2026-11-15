@@ -37,6 +37,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   glibc keeps freed memory in its arenas the same way, and the launcher passes `-XX:TrimNativeHeapInterval=5000`: the
   JVM calls `malloc_trim` every 5 s (docs/perf-plan.md, "Memory in the Linux image"; `--jvm
   -XX:TrimNativeHeapInterval=0` turns it off).
+  And `-XX:+UseCompressedOops` on every OS: without it a machine with 128 GB or more gets a default heap past ~30 GB,
+  the JVM turns compressed pointers off, and the startup cache (built with them) is refused altogether, ~1.1-1.3 s
+  more on every cold launch; asked for, the JVM caps that default heap at ~30 GB. An `--jvm -Xmx` above 30 GB still
+  loses the cache.
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static

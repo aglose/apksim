@@ -191,9 +191,11 @@ and the kernel can drop:
 | amd64 image under Rosetta, idle | 595 (501) | 492 (362) |
 | amd64 under Rosetta, the animation running | 680 (572) | 572 (441) |
 | Four arm64 instances in one container, in all (PSS) | | 957 (1,085 with the cache moved) |
+| A large R8 app, arm64, idle at its first screen | 432 (352) | 351 (233) |
+| CI's x86-64 runner, a serve session at the end of its check | 593-619 | 523-545 |
 
-Rosetta's translator adds 160-180 MB to an instance; an x86-64 host should be near the arm64 figures, and is not
-measured. Three things changed (docs/perf-plan.md, "Memory in the Linux image", has the A/B runs and what each costs,
+Rosetta's translator adds 160-180 MB to an instance; on a real x86-64 host (CI's runner) a session is near the arm64
+figures. Three things changed (docs/perf-plan.md, "Memory in the Linux image", has the A/B runs and what each costs,
 which is nothing measurable in frames or launch time):
 
 - The Java heap's unused pages go back to the kernel 3 s after the screen goes still (`HeapTrim`, `madvise`;
@@ -207,6 +209,10 @@ which is nothing measurable in frames or launch time):
   screen.
 
 Test processes (`--instrument`) get the last two; the heap trim is the running instance's.
+
+On a machine with 128 GB of memory or more, the JVM's default heap (a quarter of it) would turn compressed pointers
+off, and with them the startup cache; the launcher's `-XX:+UseCompressedOops` caps that default at ~30 GB instead.
+An `--jvm -Xmx` above 30 GB still turns the cache off.
 
 ## CI (GitHub Actions)
 
