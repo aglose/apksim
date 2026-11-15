@@ -57,3 +57,8 @@ THE SOFTWARE.
 
 A subset of Robolectric's files, mostly copied from Android's sources, are under the Apache License 2.0 instead (the
 same text as [LICENSE](LICENSE)) and say so in their headers.
+
+`apksim.jar` carries modified copies of four Robolectric 4.17 files, placed ahead of Robolectric's on the class path
+(`runtime/src/main/java/org/robolectric/`): `InvokeDynamicSupport` and `ShadowInvalidator` (MIT, as above), and
+`CppApkAssets` and `ResourceString` (transliterated from Android's sources; Apache 2.0). Each says in its header what
+was changed.

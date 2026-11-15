@@ -539,7 +539,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
     # process would run.
     # Reads: nothing in the home folder but apksim, its libraries and the JDK; in the state folder not the agent's
     # trust and settings, saved sessions, serve's files, autofill sign-ins, other apps' data and caches, or another
-    # process's scratch (a path's metadata only: resolving the APK's path stats the folders above it).
+    # process's scratch (a path's metadata only: resolving the APK's path stats the folders above it). Of the caches
+    # only the framework's inflated resource table (cache/framework, MappedResources), to map it: public data that
+    # other launches wrote and this one cannot.
     # Network: what the Mac reaches over IPv4, but not loopback (other instances' control ports, the agent) and no
     # IPv6, through which ::ffff:127.0.0.1 reaches loopback past the rule (the JVM is told to use IPv4 sockets); no
     # local socket but the resolver's and syslog's (not ssh-agent's, a container engine's or a standby's).
@@ -570,7 +572,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (allow file-read* (subpath \"$RR\") (subpath \"$RL\") (subpath \"$RJ\") (subpath \"$RS\"))
 (deny file-read* (subpath \"$RS/autofill\") (subpath \"$RS/beam\") (subpath \"$RS/serve\") (subpath \"$RS/screenshots\") (subpath \"$RS/cache\") (subpath \"$RS/tmp\")
   (subpath \"$RW/autofill\") (subpath \"$RW/beam\") (subpath \"$RW/serve\") (subpath \"$RW/screenshots\") (subpath \"$RW/cache\") (subpath \"$RW/tmp\"))
-(allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (subpath \"$RS/tmp/$$\") (regex #\"$SLOTS\"))
+(allow file-read* (subpath \"$RS/beam/uploads\") (subpath \"$RS/beam/cache\") (subpath \"$RS/beam/out/$$\") (subpath \"$RS/tmp/$$\") (regex #\"$SLOTS\")
+  (subpath \"$RS/cache/framework\"))
 (allow file-read-metadata (subpath \"$RS\"))
 (deny network-outbound (remote ip \"localhost:*\"))
 (deny network-outbound (remote tcp6 \"*:*\") (remote udp6 \"*:*\"))

@@ -119,6 +119,8 @@ jobs:
         run: scripts/check-compat-table.sh
       - name: Heap trim check (the heap's spaces found on this JDK; objects intact through trims at every collection)
         run: scripts/check-heap-trim.sh
+      - name: Mapped resource tables check (every string the same as from an array; stored, deflated, cached)
+        run: scripts/check-mapped-resources.sh testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk
       - name: journey check (texts a journey may expect, double taps, a crash mid-press; a stand-in screen)
         run: scripts/check-journey.sh
       - name: Launch selection check (resource intent-filter priorities)

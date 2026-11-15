@@ -205,11 +205,10 @@ suite passes (389 of 389 that run); `scripts/check-heap-trim.sh` (CI) holds it t
 collections, 92 of them full) left the app running and its heap intact.
 
 Not done, with what was found:
-- **The framework's `resources.arsc` off the heap (16.7 MB, C1/E4 below)** is nearer than it looked: of Robolectric's
+- **The framework's `resources.arsc` off the heap (16.7 MB, C1/E4 below)** was nearer than it looked: of Robolectric's
   resource classes only `ResourceString.decodeString` asks a `ByteBuffer` for its array, and the table becomes a
-  buffer in one place (`CppApkAssets.LoadImpl`: `ByteBuffer.wrap` of the asset's bytes). Copies of those two classes
-  ahead on the class path, and the table extracted once and mapped, would do it; it touches every app's resources, so
-  it wants the snapshot specs compared before and after.
+  buffer in one place (`CppApkAssets.LoadImpl`: `ByteBuffer.wrap` of the asset's bytes). Done since: "Resources
+  mapped" below.
 - **Linux:** the heap trim is built there (`madvise`; `scripts/check-heap-trim.sh` runs it in CI) but not measured in
   the image; the cache is still moved there; glibc's malloc keeps freed memory too (`-XX:TrimNativeHeapInterval` is
   the JDK's answer), not measured.
@@ -217,6 +216,94 @@ Not done, with what was found:
   frees 17 MB (Bitmap pixels whose objects reached the old generation). The 256 MB threshold stands.
 - **The AOT cache's 33 MB written region** is dirty from the start because JDK 24 loads every archived class at
   startup; nearly all of them are ones a launch uses.
+
+## Resources mapped, 2026-11-14: the resource tables off the heap
+
+The largest object in an idle instance's heap was the framework's `resources.arsc`, inflated from the framework jar
+into one 16.66 MB `byte[]` in every instance and standby; the app's own table was a second array (0.72 MB for the test
+app, 0.6-1 MB for a large app's R8 and debug builds). Both are mapped files now (`MappedResources`; AGENTS.md has how): the framework's is
+inflated once into `STATE/cache/framework/`, named by its CRC and length, and an APK's stored table is mapped where
+it lies in the APK. Two of Robolectric's classes are copied to do it: `CppApkAssets`, whose `LoadImpl` is the one
+place a table becomes a buffer, and `ResourceString`, whose `decodeString` was the one reader that asked the buffer
+for its array (checked with javap over `org/robolectric/res/android` and the `ShadowArsc*` shadows; the writers in
+`ResourceTypes` build new buffers, none writes a table's).
+
+A heap dump of an idle instance (test app, cold, headless, `--no-sandbox`, `jcmd GC.heap_dump`), the switch on and off:
+
+| | Tables in arrays | Mapped |
+|---|---|---|
+| Largest primitive arrays | byte[] 16.66 MB, 7.45, 0.81 | byte[] 7.45 MB, 0.81, 0.51 |
+| All `byte[]` | 35.5 MB | 18.1 MB |
+| Heap used (`stats`) | 80 MB | 63 MB |
+
+`vmmap` of that instance shows the framework's table as a 16.7 MB mapping of which 2.7 MB are resident, the app's as
+736 KB with 368 KB resident; both clean file pages, shared, none of it in the footprint.
+
+`bench.py 4 --mem`, test app, three rounds with `APKSIM_MAPPED_RESOURCES=0` and without, interleaved (standbys
+stopped between them: a standby keeps the environment it was started with). The Mac was
+busy and short of memory throughout (a VM and an emulator beside it, memory pressure at "warn"), so absolute times are
+~0.5 s over a quiet machine's and standbys kept quitting; the footprints differ by the same amount in every round:
+
+| | Tables in arrays | Mapped |
+|---|---|---|
+| Cold instance, 5 s after its first frame | 214, 216, 219 MB | 194, 196, 196 MB |
+| Warm instance | 262, 266, 264 MB | 244, 244, 249 MB |
+| Standby (6 interleaved pairs, read as each became ready) | 218 MB (210-227) | 202 MB (188-209) |
+| Cold first frame (14 alternating pairs, medians) | 1,728 ms | 1,670 ms |
+| Warm first frame (the three rounds) | 324, 355, 316 ms | 326, 322 ms (the third round's standbys quit) |
+
+In the one round where both standbys stayed up to be read by `bench.py`, they were 189 and 172 MB. A cold launch no
+longer inflates 17 MB (mapping the two tables takes 1.1 and 0.4 ms); the first launch after the framework jar changes
+inflates and writes the file once, ~70 ms. A warm launch does neither: the framework's table is loaded in the standby.
+
+A large app (2026-11-15; R8 and debug builds, the Mac at normal memory pressure; its own tables are 0.6 and 1.0 MB,
+stored): a heap dump of the R8 build idle at its first screen loses the 16.66 MB array (all `byte[]` 34.9 → 18.7 MB).
+`bench.py 3 --mem`, three rounds (R8) and two (debug), interleaved, standbys stopped between them:
+
+| | R8, arrays | R8, mapped | Debug, arrays | Debug, mapped |
+|---|---|---|---|---|
+| Cold instance | 202, 209, 202 MB | 188, 192, 185 MB | 249, 249 MB | 232, 229 MB |
+| Warm instance | 251, 248, 249 MB | 243, 238, 230 MB | 293, 295 MB | 276, 276 MB |
+| Standby | 191, 189, 190 MB | 177, 175, 171 MB | 190, 191 MB | 174, 173 MB |
+
+Warm first frames, standbys started each way and alternated (6 pairs of 3 launches): R8 254 → 259 ms, debug 375 →
+384, the test app 226 → 230 (medians). Two more runs of that with every stage's mark showed the gap already at the
+hand-off, before any resource is read, and of either sign (debug +6 ms there and -4 ms at the first frame; R8 -6 and
+-8): one standby against another, not the tables. Cold first frames were within each round's spread.
+
+Its screens, an instance with the tables mapped beside one with them in arrays, in 32 combinations (phone and tablet,
+light and dark, en-US, de-DE, ja-JP, ar-EG, font scale 1.0 and 1.3), without a sign-in: the sign-in screen's pixels
+identical in all 32, its and the apps sheet's accessibility trees identical in all 64. Fitness, Atlas, Weather and
+the locked Finance screen never settle (shaders that animate for good), so their trees were compared too, and
+differed in 40 of 128; two instances both mapping the tables differed in 43 of 128, the same screens one step
+apart in time, so that comparison measures timing, not resources.
+
+The Linux image (amd64 under Rosetta, CI's build of this change): the framework's table is in `cache/framework` from
+training and mapped from there; with a volume over `work/cache` the first run inflates it into the volume. An idle
+test-app instance, two rounds each way: private memory (`RssAnon`) 598, 580 → 571, 563 MB, file pages (`RssFile`) up
+4 MB, the table's pages, shared and evictable.
+
+What was compared, the switch off against on:
+- `scripts/check-mapped-resources.sh` (CI): every string of the framework table's value pool (173,826, of which
+  129,608 are not ASCII) and of the test app's and its test APK's, decoded from the mapped table and from an array:
+  the same. A deflated copy of the app's table too, and `decodeString` on direct and read-only buffers for UTF-8,
+  CESU-8 (surrogates encoded one by one) and UTF-16 strings.
+- The test app's screenshot specs with three more locales: 5 screens on phone and tablet, light and dark, en-US, de-DE,
+  ja-JP, zh-CN and ar-EG, font scale 1.0 and 1.3: 200 captures taken with the tables in arrays as goldens, 200 of 200
+  identical with them mapped (each combination is applied with configuration changes in a running instance).
+- The test app's suite: 389 passed of the 389 that run (82 skipped by their own assumptions, 2 ignored).
+- `scripts/beam-check.py`: 289 of 289, the new sandbox probes among them (under memory pressure the warm-launch check
+  fails on the branch before this change too: standbys give way then).
+
+Not done:
+- A table mapped from the APK follows the file: an APK rewritten in place under a running instance was already fatal
+  to it through the mapped DEX files, and now its resources go with it.
+- A beamed instance writes nothing into the shared cache, so it maps the framework's table only once another launch
+  (training is one) has left it there; its sandbox may read that folder (`scripts/beam-check.py` has the probes).
+- The framework jar's zip index (C5) is still ~9 MB of heap, a quarter of it resource entries.
+- Old tables in `cache/framework` are not removed: 17 MB for each framework jar a state folder has seen.
+- In a test run each table is mapped once a process (Robolectric keeps its `ApkAssets`): the test app's 473 tests in
+  one process map three, the framework's, the app's and the test APK's.
 
 ## Found not to work as planned
 
@@ -226,7 +313,9 @@ Not done, with what was found:
   through the real AssetManager2, but this runtime's native library does not register `ApkAssets`' natives: the test
   app ends at once with `UnsatisfiedLinkError: ApkAssets.nativeLoad`. Doing C1 means a native runtime built with the
   resources natives, then a stored copy of the framework's resources, and the fidelity check that switching every
-  app's resource implementation needs. Moved to the bets (E4).
+  app's resource implementation needs. Moved to the bets (E4). (Wrong about the chain: the `byte[]` holders are how
+  the table is read in, not how it is used. Past `CppApkAssets.LoadImpl` everything reads a `ByteBuffer` through its
+  accessors but one method, so two class copies were enough: "Resources mapped".)
 
 ## Step 0: make the numbers one command
 
@@ -263,7 +352,7 @@ both could overlap APK indexing. Start them on a thread at `Main`. Risk: the nat
 use (AGENTS.md: JniConstants on a worker aborted); trace what `JNI_OnLoad` binds to its thread before moving it, and
 keep the deferred static initializers on the main thread.
 
-**A4. The framework's resources mapped, not inflated (~40 ms, 17.5 MB of heap: see C1).**
+**A4. The framework's resources mapped, not inflated (~40 ms, 17.5 MB of heap: see C1).** Done with C1.
 
 **A5. Explain the first test's install state.** In a test run the first real test's install-state step takes
 280-310 ms against 75 ms in a normal launch of the same app. Not traced yet; sample it (step 0) before guessing.
@@ -296,8 +385,11 @@ interpreter and C1. The jar's instrumentation version goes into the runtime hash
 **C1. Map the framework's `resources.arsc` (17.5 MB).** Extract it once in `prepare-runtime.sh` and give Robolectric's
 asset code a mapped buffer in place of the inflated array (the heap dump shows the tables read through a `ByteBuffer`
 wrapped around it; whether every reader takes a mapped one is the first thing to check). The app's
-own table (stored, 0.5 MB here, several MB in a large app) the same way, from the APK mapping `AppClasses` already has.
+own table (stored, 0.5 MB here) the same way, from the APK mapping `AppClasses` already has.
 Alternative worth one try: Robolectric's native resources mode, which `FlatSandboxBuilder.build` is already handed.
+Done (2026-11-14, "Resources mapped"): the table is inflated once into the state folder's cache, by content, rather
+than in `prepare-runtime.sh`, so existing checkouts, worktrees with a copied `work/runtime` and installed releases get
+it without another setup step.
 
 **C2. B's share: 15-25 MB** (generated classes, method handles, `Method` objects).
 
@@ -354,6 +446,8 @@ Worth it only if E1's spike shows the gain, since it doubles standby memory unle
 **E4. Robolectric's NATIVE resources mode** (C1's way through): build the native runtime with `ApkAssets` and
 `AssetManager` natives, keep the framework's `resources.arsc` stored so AssetManager2 maps it, and compare every
 screen the snapshot specs cover in both modes. 17.5 MB an instance and the table's parse at each cold start.
+The memory is had without it now ("Resources mapped"); what would be left for it is the table's parse (`LoadedArsc`
+in Java) and the real AssetManager2's lookups.
 
 **E3. A standby for test runs and for Linux.** A C1 standby that `instrument.py` hands shards and reruns to would take
 most of the 1.55 s off each test process; Linux needs the hand-off without `sandbox-exec`. After A and B, when the
@@ -410,7 +504,7 @@ not keep. B2 would remove most of the call sites they serve.
 | 0 Numbers in `stats`, `bench.py`, the gate | small | - | - | done but the gate's budgets (owner's call) |
 | A1 BouncyCastle | small | -180 ms cold | - | done: -95 ms cold, -110 ms a test process |
 | C3 Screenshot bitmap on demand | small | -6 to -16 MB | - | done |
-| C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | blocked: needs the native resources mode (E4) |
+| C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | done: -17.4 MB of heap, -8 to -22 MB footprint (instances and standbys, the test app and a large app), launches not slower ("Resources mapped") |
 | D1 Idle loop | medium | idle CPU ~0 | - | done: idle CPU -40 to -55%, not ~0 |
 | B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | done: -290 ms cold, -65 ms warm, -35 to -50 MB, -34% suite CPU |
 | A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | dropped: 33 ms, a rendering risk |
@@ -419,9 +513,9 @@ not keep. B2 would remove most of the call sites they serve.
 | B2 Jar rewrite | large | the rest of linking | B1 | not started: weeks; B1 took most of linking's cost |
 | E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | not started: spikes of weeks each |
 | A5 Install state in test runs | small | - | - | done: Conscrypt ahead, -115 ms cold, a test process 0.90 s |
-| E4 Native resources mode | large | -17.5 MB | a native runtime rebuild | not started; a mapped table through two class copies is the shorter way ("Memory, 2026-11-14") |
+| E4 Native resources mode | large | the table's parse at a cold start | a native runtime rebuild | not started; its memory came from C1 instead |
 | Memory: cache in place, idle heap trim, malloc mode | medium | - | - | done: idle instance 350 → 191-214 MB, standby 350 → 189-226 MB |
 
-A1, C3 and D1 are done; C1 is blocked (E4). B1, A2 and A3 all change the cold path and should
+A1, C3, D1 and C1 are done. B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process
 ~1.55 → ~0.9 s before its first test, warm ~0.32 → ~0.27 s, an idle instance ~375 → ~300 MB, idle CPU near zero.
