@@ -57,6 +57,10 @@ public final class FakeTlsSocket extends SSLSocket {
   private volatile SSLSocket real;
   private volatile String[] appProtocols = new String[0];
   private volatile boolean closed;
+  /** How the app configured this socket's TLS extensions (ALPN setters and the Android-platform calls), for the handshake's log line. */
+  private final java.util.Set<String> configured = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  /** Handshake lines already logged: one per host, port and offer. */
+  private static final java.util.Set<String> OFFERS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   /** The app's own TLS (its factory: its trust manager, pins in it, client certificates), for the real handshake. */
   private final SSLSocketFactory appTls;
@@ -113,6 +117,7 @@ public final class FakeTlsSocket extends SSLSocket {
         && Net.mode == Net.Mode.REPLAY) {
       Net.log("network: " + host + ":" + port + " offers h2 only, but replaying answers without ALPN: an HTTP/2-only client will fail");
     }
+    logOffer(offersH2);
     String token = appTls == null || offersH2 ? "-" : Net.lendTls(appTls);
     out.write(("APKSIM-TLS " + host + " " + token + " " + (protocolsSet ? String.join(",", protocols) : "-") + " "
         + (suitesSet ? String.join(",", suites) : "-") + (offersH2 ? " tunnel" : "") + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
@@ -151,6 +156,20 @@ public final class FakeTlsSocket extends SSLSocket {
     session = new Session(chain.toArray(new X509Certificate[0]), protocol, suite);
     HandshakeCompletedEvent ev = new HandshakeCompletedEvent(this, session);
     for (HandshakeCompletedListener l : listeners) l.handshakeCompleted(ev);
+  }
+
+  /**
+   * Every TLS handshake's ALPN offer (none, h2, h2 + http/1.1), once per host, port and offer, with the calls the app made to
+   * set it up: an app whose client offers nothing here while it speaks h2 on a device took a path this socket does not
+   * see (issue 395), and the line shows which calls it did make.
+   */
+  private void logOffer(boolean tunnelled) {
+    String offer = appProtocols.length == 0 ? "none" : String.join(",", appProtocols);
+    String how = Net.mode == Net.Mode.REPLAY ? "answered from the recording"
+        : tunnelled ? "asks for an h2 tunnel" : "captured as HTTP/1.1";
+    String calls = configured.isEmpty() ? "none" : String.join(", ", new java.util.TreeSet<>(configured));
+    if (!OFFERS.add(host + ":" + port + " " + offer + " " + calls)) return;
+    Net.log("network: " + host + ":" + port + " TLS handshake offers ALPN " + offer + " (" + how + "); socket setter calls: " + calls);
   }
 
   /** The real handshake with the server, over the bytes the engine relays untouched. */
@@ -224,6 +243,18 @@ public final class FakeTlsSocket extends SSLSocket {
     super.setSSLParameters(p);
     String[] a = p.getApplicationProtocols();
     appProtocols = a == null ? new String[0] : a.clone();
+    configured.add("setSSLParameters");
+  }
+
+  // Conscrypt's own socket classes (Android's built in one too) take the list as an array; apps that find the socket class's
+  // methods by reflection (OkHttp's Android adapters) call these.
+  public void setApplicationProtocols(String[] protocols) {
+    appProtocols = protocols == null ? new String[0] : protocols.clone();
+    configured.add("setApplicationProtocols");
+  }
+
+  public String[] getApplicationProtocols() {
+    return appProtocols.clone();
   }
 
   // What Conscrypt's sockets have and gRPC's Android negotiator looks for by reflection.
@@ -236,6 +267,7 @@ public final class FakeTlsSocket extends SSLSocket {
       i += n;
     }
     appProtocols = out.toArray(new String[0]);
+    configured.add("setAlpnProtocols");
   }
 
   public byte[] getAlpnSelectedProtocol() {
@@ -243,9 +275,9 @@ public final class FakeTlsSocket extends SSLSocket {
     return p.isEmpty() ? null : p.getBytes(StandardCharsets.ISO_8859_1);
   }
 
-  public void setUseSessionTickets(boolean on) {}
+  public void setUseSessionTickets(boolean on) { configured.add("setUseSessionTickets"); }
 
-  public void setHostname(String name) {}
+  public void setHostname(String name) { configured.add("setHostname"); }
 
   @Override
   public InputStream getInputStream() throws IOException {
