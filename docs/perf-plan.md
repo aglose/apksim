@@ -256,11 +256,13 @@ Medians of three interleaved runs each (two on amd64), RSS with the private anon
   with a large heap was the open question, and what it found was worse and older than the address: the JVM's default
   maximum heap is a quarter of the machine's memory, and past ~30 GB (128 GB of memory and up) it turns compressed
   pointers off, which the cache was built with, so it refused the cache altogether ("CDS will be disabled"), on the
-  Mac as on Linux, before this change as after: a cold first frame of 3.6 s against 2.3 s on a simulated 128 GB Mac
-  (`-XX:MaxRAM=128g`), 2.3 s against 1.2 s in the arm64 image at 256 GB. The launcher now passes
-  `-XX:+UseCompressedOops`, which makes the JVM cap that default at ~30 GB instead; then the cache maps (in place, in
-  the image: the heap ends below 32 GB) and the first frame is 1.19 s at 256 GB. Smaller machines keep their heap
-  (2 GB of 8, 6 GB of 24). It does not make an instance's RSS smaller, as on the Mac it made the footprint smaller: 38-40 MB
+  Mac as on Linux, before this change as after: a cold first frame of 3.6 s on a simulated 128 GB Mac
+  (`-XX:MaxRAM=128g`), 2.3 s in the arm64 image at 256 GB. The launcher now passes `-XX:+UseCompressedOops`, which
+  makes the JVM cap that default at ~30 GB instead; then the cache maps (in place, in the image: the heap ends below
+  32 GB) and the first frame is 1.7 s on that Mac and 1.19 s in the image. Smaller machines keep their heap (2 GB of
+  8, 6 GB of 24). An `--jvm -Xmx` of 32 GB or more still turns compressed pointers off (with the JVM's warning "Max
+  heap size too large for Compressed Oops") and loses the cache; 31 GB keeps it.
+  Mapping the cache in place does not make an instance's RSS smaller, as on the Mac it made the footprint smaller: 38-40 MB
   move from private anonymous memory to clean file pages (arm64 idle: 244 → 206 MB anonymous at 332 MB resident
   both ways). What that buys shows with several processes: four instances in one container hold 957 MB in all (PSS)
   against 1,085 MB with the cache moved, 32 MB less each, and under memory pressure the file pages can be dropped,

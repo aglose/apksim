@@ -643,9 +643,10 @@ MALLOC_TRIM=()
 if [[ "$OS" == Linux ]]; then MALLOC_TRIM=(-XX:TrimNativeHeapInterval=5000); fi
 # UseCompressedOops, said explicitly: the JVM's default maximum heap is a quarter of the machine's memory, and past
 # ~30 GB of it (a Mac or a host with 128 GB or more) the JVM turns compressed pointers off, which the startup cache
-# was built with, and then refuses the cache ("CDS will be disabled"): a cold first frame of 3.6 s against 2.3 s on
-# a simulated 128 GB Mac, 2.3 s against 1.2 s in the Linux image at 256 GB. Asked for, it caps that default heap at
-# ~30 GB instead; on smaller machines the heap is what it was (docs/perf-plan.md, "Memory in the Linux image").
+# was built with, and then refuses the cache ("CDS will be disabled"): a cold first frame of 3.6 s without this
+# flag and 1.7 s with it on a simulated 128 GB Mac, 2.3 s and 1.2 s in the Linux image at 256 GB. Asked for, it caps
+# that default heap at ~30 GB instead; on smaller machines the heap is what it was (docs/perf-plan.md, "Memory in the
+# Linux image"). An --jvm -Xmx of 32 GB or more still turns them off, with a warning, and loses the cache.
 exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -XX:+UseCompressedOops -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \

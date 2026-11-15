@@ -212,7 +212,7 @@ Test processes (`--instrument`) get the last two; the heap trim is the running i
 
 On a machine with 128 GB of memory or more, the JVM's default heap (a quarter of it) would turn compressed pointers
 off, and with them the startup cache; the launcher's `-XX:+UseCompressedOops` caps that default at ~30 GB instead.
-An `--jvm -Xmx` above 30 GB still turns the cache off.
+An `--jvm -Xmx` of 32 GB or more still turns the cache off (31 GB keeps it).
 
 ## CI (GitHub Actions)
 
