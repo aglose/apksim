@@ -352,6 +352,11 @@ fine. Record with one process: parallel processes recording to one file overwrit
   permessage-deflate, fragmented); a body cut short, a request never answered, a connect refused; HttpsURLConnection
   with no proxy in between; bytes that are not HTTP; which hosts a rule sends through the engine; a relayed
   connection keeping its own TLS; and 80 MB written in 31 ms while the decoder stood still for 4 s.
+- `scripts/media-protocols-check.py APK` (by hand, needs a LAN address): the test app's gRPC (grpc-okhttp over TLS
+  and plain h2), WebSocket (wss with permessage-deflate, and ws) and HLS screens against a fixture server built from
+  gRPC-java's and OkHttp's own servers, with `--rec net`: every call must succeed and the recording must hold the gRPC
+  exchanges as HTTP/2 with their trailers (grpc-status 0, and 3 for the failing call), the deadline's reset stream,
+  the WebSocket messages whole and the HLS segments, and list the TLS gRPC connection with ALPN `h2`.
 - Test app, `apksim://network?url=URL` adds "Get" (OkHttp) and "Get URL" (HttpURLConnection) for any address, and
   shows the protocol OkHttp got: with `--rec net` on and a server that offers HTTP/2, "get okhttp: 200 h2 ...".
 - Test app, `NetworkActivity` (`open apksim://network`): "Fetch" POSTs to `https://api.apksim.test/v1/greeting`

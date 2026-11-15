@@ -34,3 +34,4 @@ rootProject.name = "ComposeApp"
 
 include(":app")
 include(":uiserver")
+include(":fixture")

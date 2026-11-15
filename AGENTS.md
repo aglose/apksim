@@ -853,7 +853,8 @@ HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video
 plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network";
-`apksim://network?url=URL` adds "Get" and "Get URL" for any address and shows the protocol OkHttp got).
+`apksim://network?url=URL` adds "Get" and "Get URL" for any address and shows the protocol OkHttp got;
+`apksim://grpc`, `apksim://websocket` and `apksim://media` are the protocol and media screens, see "Test APKs").
 `apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
 CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
 still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
@@ -1954,6 +1955,20 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 
 ## Test APKs
 - `testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk`: the main regression app.
+- Its protocol and media screens, run by `scripts/media-protocols-check.py APK [--serial SERIAL]` (by hand; not in CI
+  yet: it needs a LAN address and the Mac's decoders): `apksim://grpc` (grpc-okhttp: unary, server and bidi streams, a
+  failing status, a deadline, 300 KB; TLS and plain h2), `apksim://websocket` (OkHttp: text, binary, a burst, 200 KB,
+  close; wss with permessage-deflate and ws), `apksim://media` (every sample in `app/src/main/assets/media`, from
+  `testapks/composeapp/media/make-samples.sh`: H.264 baseline and High with forced B-frames, HEVC Main and Main10, VP8,
+  VP9, AV1; AAC-LC, HE-AAC, MP3, Opus, FLAC; through Media3, through MediaCodec alone on elementary streams, and encode
+  round trips) and `apksim://media?only=hls` (HLS over HTTP/2). Their server is `testapks/composeapp/fixture`
+  (`./gradlew :fixture:installDist`): gRPC-java's own server and OkHttp's MockWebServer, so the network tap is checked
+  against real implementations, with a certificate made per run that the screens trust alone (`cert=` in their deep
+  links). Each video sample's frames show their own index as stripes, read back from the TextureView, so a frame
+  decoded wrong, out of order, mirrored or not shown is caught; audio is checked by pitch and output rate. The script
+  compares every line with an expected table per platform (apksim on the Mac, the API 36 emulator) and, under apksim,
+  checks the `--rec net` recording holds the gRPC trailers, WebSocket messages and HLS segments. Known apksim gaps it
+  records: no VP8, AV1, Opus or FLAC decoders, no encoders, and HE-AAC decoded without SBR (PCM at half the rate).
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
 - An app whose native libraries are 4 KB-aligned (a debug build with Flipper): libflipper and libc++_shared load, but
