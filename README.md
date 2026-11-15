@@ -219,6 +219,7 @@ Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also swi
 | | `--setting NS:KEY=VALUE` | A `Settings.Global`, `Secure` or `System` value (`global:my_flag=1`) set before `Application.onCreate`, as `adb shell settings put` before a first launch would. Repeatable |
 | | `--sdcard-file PATH=VALUE` | A file written to `/sdcard/PATH` in the data slot before the app starts, over any file the slot had, for apps that read a config file once in `Application.onCreate`. `VALUE` is `text:TEXT` or base64, never a host file; at most 64 KB a file and 72 KB in all. Repeatable; allowed in `serve` catalog lines and URL adds and in beam |
 | | `--broadcast 'ACTION;es:K=V;ez:K=true'` | Sends one broadcast to the app's own package after `Application.onCreate` and before the first activity, for debug receivers that set flag overrides (what `adb shell am broadcast -a ACTION --es/--ez/--ei/--el/--ef` does). Extras are `es`, `ez`, `ei`, `el` or `ef:KEY=VALUE`, separated by `;` (no spaces in `serve` catalog lines). Reaches receivers registered at run time and manifest ones; logs `[apksim] broadcast ACTION: result=N`. Repeatable (8 at most); allowed in `serve` catalog lines and URL adds and in beam |
+| | `--sysfs /sys/PATH=VALUE` | A hardware state file under `/sys` that the app reads itself (a camera privacy cover's state, say) answers with `VALUE`; the `sysfs` command changes it while the app runs. Repeatable |
 | Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
 | | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
 | | `--camera off\|fake\|fake=IMAGE` | Simulated cameras (default off): declares `android.hardware.camera`, `.any` and `.front` and lists a back camera (id `0`) and a front one (`1`) in `CameraManager`, with 1280x720 and 1920x1080 YUV_420_888/JPEG/PRIVATE streams. Opening one needs the `CAMERA` permission; Camera2 sessions and CameraX (`Preview`, `ImageAnalysis`, `ImageCapture`) get 30 fps frames of a moving test pattern, or of the still `IMAGE`. The `camera pattern\|image PATH\|off` command and Features > Camera switch it while the app runs (`off`: black frames, as Android's camera privacy toggle) |
@@ -471,7 +472,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.37.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.38.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -538,9 +539,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.37.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.38.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.37.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.38.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -717,8 +718,8 @@ framework. A *cold* launch starts a JVM.
 
 | | Window | First frame, warm | Cold | Memory |
 |---|---|---|---|---|
-| apksim, small Compose app | 0.01 s | 0.20 s | 1.15 s | ~550-780 MB |
-| apksim, a large app (R8 release build, 12 MB DEX, SQLite and WebRTC native code) | 0.01 s | 0.36 s | 1.5 s | |
+| apksim, small Compose app | 0.01 s | 0.20 s | 1.15 s | ~195-250 MB idle |
+| apksim, a large app (R8 release build, 12 MB DEX, SQLite and WebRTC native code) | 0.01 s | 0.36 s | 1.5 s | ~185-245 MB idle at its first screen |
 | apksim, the same app's debug build (179 MB APK) | 0.01 s | 0.48 s | 1.6 s | |
 | Stock emulator, Quick Boot snapshot (small app) | - | | 8.3-9.0 s | 3-4 GB |
 | Stock emulator, full boot | - | | 18 s | 3.3-4 GB |
@@ -727,6 +728,15 @@ Since 0.24.0 framework calls are bound straight to their shadows, Bouncy Castle 
 own, and an idle instance sleeps until there is work: on the small app, cold first frame 2.08 → 1.15 s, warm 317 →
 198 ms, a one-class test process 1.64 → 0.90 s, its 157-test suite 24.0 → 19.4 s with half the CPU, and idle CPU
 40-55% lower ([docs/perf-plan.md](docs/perf-plan.md)). The large app's rows were measured before that.
+
+Since 0.38.0 an idle instance holds about 40% less: the startup cache is mapped where it was built for, so its
+read-only part stays shared file pages; the Java heap's unused pages go back to the system once the screen has been
+still for 3 s; macOS's malloc runs in its space-efficient mode; and resource tables are mapped, not held in the heap.
+On the small app, 5 s after its first frame, a cold instance went from 332 MB to 194-196 MB, a warm one from 386 to
+244-249 MB and the standby from 350 to about 200 MB; the large R8 app idle at its first screen from 357 MB to 185-192
+MB, with launch times and frame costs unchanged. In the Linux image an idle
+instance went from 413 to 330 MB resident on arm64 ([docs/perf-plan.md](docs/perf-plan.md),
+[docs/linux-docker.md](docs/linux-docker.md)).
 
 **Frame rate.** Frames follow the display's vsync. On a 120 Hz display, normal UI, a full-screen noise shader and the
 large app's sheet animation all average 117-120 fps. Frames that miss are typically 9-12 ms, not dropped. What's
