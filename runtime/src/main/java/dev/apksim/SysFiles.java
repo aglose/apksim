@@ -38,8 +38,22 @@ public final class SysFiles {
     return p == null ? path : p.toString();
   }
 
-  /** A path a page may name (serve and beam: `Catalog`, `Session.check`): under /sys/, plain characters, no `.` or `..` segment. */
-  public static final String PATH_RE = "/sys/(?!(?:[^/]*/)*\\.\\.?(?:/|=|$))[A-Za-z0-9_.:@+,-]+(?:/[A-Za-z0-9_.:@+,-]+){0,15}";
+  /** A path a page may name (serve and beam: `Catalog`, `Session.check`): under /sys/, 1-16 plain segments, none `.` or `..`. Tokens, not a regex: a long run of slashes overflowed the regex's stack. */
+  public static boolean validPath(String p) {
+    if (p == null || p.length() > 400 || !p.startsWith("/sys/")) return false;
+    String[] seg = p.substring(5).split("/", -1);
+    if (seg.length > 16) return false;
+    for (String g : seg) {
+      if (g.isEmpty() || g.equals(".") || g.equals("..")) return false;
+      for (int k = 0; k < g.length(); k++) {
+        char c = g.charAt(k);
+        if (!(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || "_.:@+,-".indexOf(c) >= 0)) return false;
+      }
+    }
+    return true;
+  }
+  /** Entries a tab's commands may create in all. */
+  public static final int ENTRY_MAX = 32;
   /** Seeds a page may give a launch. */
   public static final int SEED_MAX = 8;
 
@@ -69,6 +83,7 @@ public final class SysFiles {
     Path dir = Storage.scratch().resolve("sysfs");
     Files.createDirectories(dir);
     Path file = FILES.get(key);
+    if (file == null && FILES.size() >= ENTRY_MAX) throw new IllegalArgumentException("at most " + ENTRY_MAX + " entries");
     if (file == null) file = dir.resolve("n" + counter++);
     Path tmp = dir.resolve(file.getFileName() + "." + Storage.tmpTag());
     Files.write(tmp, (value + "\n").getBytes(StandardCharsets.UTF_8));
