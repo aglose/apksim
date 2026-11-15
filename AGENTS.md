@@ -203,8 +203,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     of `ResourceString.decodeString`, the only reader that asked a buffer for its array, copies a string's bytes out
     first when there is none. Anything that fails answers null and the table is read as before; a beamed instance may
     read `cache/framework` (the launcher's profile) and never writes it, so it maps the table once any other launch
-    or training has left it; the Linux image keeps the file from its training. `-Dapksim.mappedResources=false`, or
-    `APKSIM_MAPPED_RESOURCES=0` in the environment (which reaches standbys), reads tables into arrays again (A/B).
+    or training has left it; the Linux image keeps the file from its training (a volume mounted at its `work/cache`
+    hides it, and the first run inflates it into the volume). A table inflated for a cache folder that cannot be
+    written serves that launch from the heap. Old framework tables, one per framework jar ever used, are not
+    removed. `-Dapksim.mappedResources=false`, or `APKSIM_MAPPED_RESOURCES=0` in the environment, reads tables into
+    arrays again (A/B; a standby keeps the environment it was started with, so `--stop-standbys` between runs).
     `scripts/check-mapped-resources.sh [APK...]` (CI, `MappedResourcesCheck`) decodes every string of the framework's
     table and the APKs' both ways and compares them, with a deflated copy of the first APK's table.
     docs/perf-plan.md, "Resources mapped", has the measurements.

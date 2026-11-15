@@ -91,7 +91,12 @@ public final class ResourceString {
     if (buffer.hasArray()) {
       bytes = buffer.array();
     } else {
-      // apksim: a mapped (direct, read-only) table has no array. Only the string's own bytes are copied.
+      // apksim: a mapped (direct, read-only) table has no array. Only the string's own bytes are copied; a length
+      // past the buffer (a malformed table) fails as reading the array did, before anything that size is allocated.
+      if (length < 0 || offset < 0 || length > buffer.limit() - offset) {
+        throw new StringIndexOutOfBoundsException(
+            "offset " + offset + ", count " + length + ", length " + buffer.limit());
+      }
       bytes = new byte[length];
       buffer.get(offset, bytes, 0, length);
       offset = 0;

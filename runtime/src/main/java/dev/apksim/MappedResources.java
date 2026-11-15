@@ -23,8 +23,9 @@ import java.util.zip.ZipFile;
  * named by the entry's CRC and length and mapped from there: the framework's in `STATE/cache/framework/`, which a
  * standby with no APK can reach, any other in the APK's cache entry (`arsc/`, beside `dex/`), swept with it.
  *
- * <p>Whatever fails (no cache folder yet, a read-only one, zip64) answers null and the caller reads the table into an
- * array as before. A beamed instance maps the framework's table once any other launch (training included) has left it
+ * <p>Whatever fails (no cache folder known, zip64, a mapping refused) answers null and the caller reads the table into
+ * an array as before; a table inflated for a cache folder that cannot be written is handed over as that array. Old
+ * framework tables (one per framework jar ever used, 17 MB) are not removed. A beamed instance maps the framework's table once any other launch (training included) has left it
  * in the cache, which its sandbox lets it read and not write. `-Dapksim.mappedResources=false`, or
  * `APKSIM_MAPPED_RESOURCES=0` in the environment (which reaches standbys), turns it off for A/B runs.
  */
@@ -42,8 +43,8 @@ public final class MappedResources {
   }
 
   /**
-   * The table {@code entry} of {@code zip} as a read-only little-endian buffer of exactly its length, or null to read
-   * it the old way. {@code dataOffset} is where a stored entry's bytes start in the file (null when unknown);
+   * The table {@code entry} of {@code zip} as a little-endian buffer of exactly its length (mapped and read-only; a
+   * heap buffer when it was inflated and could not be written to the cache), or null to read it the old way. {@code dataOffset} is where a stored entry's bytes start in the file (null when unknown);
    * {@code system} says it is the framework's.
    */
   public static ByteBuffer table(String path, ZipFile zip, ZipEntry entry, Long dataOffset, boolean system) {
@@ -70,10 +71,18 @@ public final class MappedResources {
         // A beamed instance may read the framework's (the launcher's profile) but write nothing there: without
         // this, it would inflate the table here, fail to write it, and inflate it again the old way.
         if (!had && system && BeamSandbox.ON) return null;
-        if (!had) inflate(zip, entry, file, size);
-        try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
-          if (ch.size() != size) return null;
-          out = ch.map(FileChannel.MapMode.READ_ONLY, 0, size);
+        byte[] bytes = had ? null : inflated(zip, entry, size);
+        try {
+          if (!had) write(file, bytes);
+          try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
+            if (ch.size() != size) throw new IOException(file + ": " + ch.size() + " bytes, expected " + size);
+            out = ch.map(FileChannel.MapMode.READ_ONLY, 0, size);
+          }
+        } catch (IOException | RuntimeException e) {
+          // A cache folder that cannot be written (read-only, full): the table just inflated serves this launch from
+          // the heap, as it did before, rather than being inflated a second time by the caller.
+          if (bytes == null) return null;
+          return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         }
         how = had ? "from " + file : "inflated into " + file;
       }
@@ -99,13 +108,17 @@ public final class MappedResources {
     return apk == null ? null : Path.of(apk, "arsc");
   }
 
-  /** Written beside its name and renamed into place, so a reader never maps a table still being written. */
-  private static void inflate(ZipFile zip, ZipEntry entry, Path file, long size) throws IOException {
+  private static byte[] inflated(ZipFile zip, ZipEntry entry, long size) throws IOException {
     byte[] bytes;
     try (InputStream in = zip.getInputStream(entry)) {
       bytes = in.readAllBytes();
     }
     if (bytes.length != size) throw new IOException("resources.arsc: " + bytes.length + " bytes, expected " + size);
+    return bytes;
+  }
+
+  /** Written beside its name and renamed into place, so a reader never maps a table still being written. */
+  private static void write(Path file, byte[] bytes) throws IOException {
     Files.createDirectories(file.getParent());
     Path tmp = file.resolveSibling(file.getFileName() + Storage.tmpTag());
     try {

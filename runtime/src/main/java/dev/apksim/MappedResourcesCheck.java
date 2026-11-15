@@ -73,7 +73,23 @@ public final class MappedResourcesCheck {
         checked++;
       }
     }
-    System.out.println("decodeString: " + checked + " strings the same from heap, direct and read-only buffers");
+    // A length past the buffer (a malformed table) fails the same way from each, before anything is allocated for it.
+    byte[][] malformed = {{(byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, 'a', 0}, {(byte) 0x00, (byte) 0x70, 'a', 0, 0, 0}};
+    ResourceString.Type[] as = {ResourceString.Type.UTF8, ResourceString.Type.UTF16};
+    for (int i = 0; i < malformed.length; i++) {
+      ByteBuffer heap = ByteBuffer.wrap(malformed[i]).order(ByteOrder.LITTLE_ENDIAN);
+      ByteBuffer direct = ByteBuffer.allocateDirect(malformed[i].length).order(ByteOrder.LITTLE_ENDIAN);
+      direct.put(0, malformed[i]);
+      for (ByteBuffer b : new ByteBuffer[] {heap, direct}) {
+        try {
+          String s = ResourceString.decodeString(b, 0, as[i]);
+          throw new AssertionError(as[i] + ": a length past the buffer decoded \"" + s + "\" from a " + (b.isDirect() ? "direct" : "heap") + " buffer");
+        } catch (IndexOutOfBoundsException expected) {
+          checked++;
+        }
+      }
+    }
+    System.out.println("decodeString: " + checked + " cases the same from heap, direct and read-only buffers");
   }
 
   /** A UTF8 pool's entry (character count, byte count, bytes, NUL) with the string in CESU-8, as aapt wrote emoji. */

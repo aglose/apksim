@@ -2,7 +2,8 @@
 # Checks resource tables mapped from a file (dev.apksim.MappedResources) against the same tables read into an array,
 # on a plain JVM (dev.apksim.MappedResourcesCheck): string decoding from a buffer with no array, then the framework
 # jar's table (deflated: inflated once into a cache folder, then mapped from there) and each APK's given (stored:
-# mapped in place), whose every string must be the same either way. Exits 1 if any check fails.
+# mapped in place), whose every string must be the same either way, and with a cache folder that cannot be written.
+# Exits 1 if any check fails.
 # Usage: check-mapped-resources.sh [APK...]. Needs work/apksim.jar (scripts/build.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,11 +28,16 @@ FIRST="$(run)"; echo "$FIRST"
 ls "$TMP"/cache/framework/resources-*.arsc > /dev/null || { echo "FAIL: the framework's table was not inflated into the cache"; exit 1; }
 SECOND="$(run)"
 OFF="$(run -Dapksim.mappedResources=false)"
+# A cache folder that cannot be made (its parent is a file): the framework's table still loads, from the array it was
+# inflated into, with the same strings.
+: > "$TMP/file"
+NOCACHE="$("$JDK/bin/java" -cp "$CP" -Dapksim.cacheRoot="$TMP/file/cache" dev.apksim.MappedResourcesCheck "system:$ALL")"
 FAIL=0
 [[ "$FIRST" == "$SECOND" ]] || { echo "FAIL: a second run (table already in the cache) differs:"; echo "$SECOND"; FAIL=1; }
 if grep -v '^decodeString' <<<"$FIRST" | grep -q 'mapped=false'; then echo "FAIL: a table was not mapped"; FAIL=1; fi
 if grep -q 'mapped=true' <<<"$OFF"; then echo "FAIL: -Dapksim.mappedResources=false still mapped a table"; FAIL=1; fi
 [[ "$(sed 's/mapped=true/mapped=false/' <<<"$FIRST")" == "$OFF" ]] || { echo "FAIL: strings differ with the table in an array:"; echo "$OFF"; FAIL=1; }
+[[ "$(grep '^android-all' <<<"$NOCACHE")" == "$(grep '^android-all' <<<"$OFF")" ]] || { echo "FAIL: with a cache folder that cannot be written:"; echo "$NOCACHE"; FAIL=1; }
 if [[ $# -gt 0 ]]; then
   ls "$TMP"/apk/arsc/resources-*.arsc > /dev/null || { echo "FAIL: the deflated APK table was not inflated into the APK's cache entry"; FAIL=1; }
   STORED="$(grep "^$(basename "$1") " <<<"$FIRST" | sed 's/.* strings=/strings=/')"

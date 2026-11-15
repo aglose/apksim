@@ -239,7 +239,8 @@ A heap dump of an idle instance (test app, cold, headless, `--no-sandbox`, `jcmd
 `vmmap` of that instance shows the framework's table as a 16.7 MB mapping of which 2.7 MB are resident, the app's as
 736 KB with 368 KB resident; both clean file pages, shared, none of it in the footprint.
 
-`bench.py 4 --mem`, test app, three rounds with `APKSIM_MAPPED_RESOURCES=0` and without, interleaved. The Mac was
+`bench.py 4 --mem`, test app, three rounds with `APKSIM_MAPPED_RESOURCES=0` and without, interleaved (standbys
+stopped between them: a standby keeps the environment it was started with). The Mac was
 busy and short of memory throughout (a VM and an emulator beside it, memory pressure at "warn"), so absolute times are
 ~0.5 s over a quiet machine's and standbys kept quitting; the footprints differ by the same amount in every round:
 
@@ -271,6 +272,9 @@ Not done:
 - A beamed instance writes nothing into the shared cache, so it maps the framework's table only once another launch
   (training is one) has left it there; its sandbox may read that folder (`scripts/beam-check.py` has the probes).
 - The framework jar's zip index (C5) is still ~9 MB of heap, a quarter of it resource entries.
+- Old tables in `cache/framework` are not removed: 17 MB for each framework jar a state folder has seen.
+- In a test run each table is mapped once a process (Robolectric keeps its `ApkAssets`): the test app's 473 tests in
+  one process map three, the framework's, the app's and the test APK's.
 - Not measured on a large app, whose own table is several MB.
 
 ## Found not to work as planned
