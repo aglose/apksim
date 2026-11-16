@@ -52,6 +52,8 @@ final class AdbShell {
   private boolean interactive;
   /** Run for UiAutomation.executeShellCommand: output is read once the command ends, so nothing may stream. */
   private boolean inProcess;
+  /** For a browser tab's command (runForTab): System.nanoTime() past which it gives up; 0 otherwise. */
+  private long tabDeadline;
   /** The command's standard input (the adb stream's), for `pm install-write ... -`; empty when there is none. */
   private final InputStream in;
   /** Whether the client closed the stream, for commands that wait (`am instrument -w`). */
@@ -70,7 +72,7 @@ final class AdbShell {
   // ---------------------------------------------------------------- entry points
 
   /** Runs one command line, as `adb shell CMD` does. */
-  void run(String line) throws Exception {
+  int run(String line) throws Exception {
     int status = 0;
     for (Command c : parse(line)) {
       if (c.after.equals("&&") && status != 0 || c.after.equals("||") && status == 0) continue;
@@ -103,8 +105,9 @@ final class AdbShell {
         }
       }
       out.flush();
-      if (status == EXIT) return;
+      if (status == EXIT) return status;
     }
+    return status;
   }
 
   /**
@@ -129,6 +132,44 @@ final class AdbShell {
       }
     }
     return out.toByteArray();
+  }
+
+  /**
+   * A command line a browser tab sent (TabShell, issue 397), from a thread that is not the main one. Returns the last
+   * command's exit status. Not `full`: one allowlisted command (TabShell.refusal), a broadcast kept to the app's own
+   * package. Nothing streams (as for runInProcess), and a command that waits for a client (`am instrument -w`) gives up
+   * after a minute.
+   */
+  static int runForTab(String line, boolean full, OutputStream out) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+    AdbShell shell = new AdbShell(out, InputStream.nullInputStream(), () -> System.nanoTime() > deadline);
+    shell.inProcess = true;
+    shell.tabDeadline = deadline;
+    if (full) {
+      int status = shell.run(line);
+      return status == EXIT ? 0 : status;
+    }
+    List<Command> cmds = parse(line);
+    cmds.removeIf(c -> c.args.isEmpty() && c.redirect == null);
+    String why;
+    if (cmds.isEmpty()) why = "empty command";
+    else if (cmds.size() > 1 || cmds.get(0).redirect != null || cmds.get(0).args.contains("|")) {
+      why = "one command, without ; && || | or >";
+    } else why = TabShell.refusal(cmds.get(0).args, pkg());
+    if (why != null) {
+      shell.print("apksim: not allowed from a page: " + why + "\n");
+      return 126;
+    }
+    List<String> args = new ArrayList<>(cmds.get(0).args);
+    // A broadcast naming no component or package goes to this app alone, never to whatever else is installed (the
+    // instrumentation an adb client put here).
+    // Decided from the options as parsed, not from tokens: `--es -p x` is an extra named -p, and pins nothing.
+    if (args.get(0).equals("am") && args.get(1).equals("broadcast") && !TabShell.pinned(args)) {
+      args.addAll(2, List.of("-p", pkg()));
+    }
+    int status = shell.exec(args);
+    out.flush();
+    return status;
   }
 
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */
@@ -293,7 +334,10 @@ final class AdbShell {
         return 0;
       }
       case "sleep" -> {
-        Thread.sleep((long) (Double.parseDouble(args.isEmpty() ? "0" : args.get(0)) * 1000));
+        long ms = (long) (Double.parseDouble(args.isEmpty() ? "0" : args.get(0)) * 1000);
+        // A browser tab's shell (runForTab) gives up on a command after a minute: its sleep never outlives that.
+        if (tabDeadline != 0) ms = Math.max(0, Math.min(ms, (tabDeadline - System.nanoTime()) / 1_000_000));
+        Thread.sleep(ms);
         return 0;
       }
       case "id" -> {

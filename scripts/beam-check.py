@@ -563,6 +563,146 @@ def warm_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def tab_shell(s, line, n=[0]):
+    """A tab's `shell ID LINE` and its `a {...}` answer."""
+    n[0] += 1
+    sid = f"b{n[0]}"
+    s.ws.send(f"shell {sid} {line}")
+
+    def answer():
+        for t in s.texts:
+            if t.startswith("a ") and json.loads(t[2:]).get("id") == sid:
+                return json.loads(t[2:])
+        return None
+    s.pump(30, until=answer)
+    return answer() or {"error": "no answer"}
+
+
+def adb_checks(apksim, apk, sha, size):
+    """Issue 397: a page's `shell` message in a beamed session (am start, am broadcast and settings by default), and
+    `apksim beam config allow-adb on`: a start that asks ("adb": true) gets an adb device on loopback whose port the
+    page hears, and `shell` runs the whole adb shell. A state folder and agent of its own."""
+    import struct
+    state = tempfile.mkdtemp(prefix="beam-check-adb-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    gp, origin = free_port(), "http://adb.beam-check.test"
+    with open(apk, "rb") as f:
+        body = f.read()
+    start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": []}
+
+    def run_agent():
+        log = open(os.path.join(state, f"agent-{time.time():.0f}.log"), "w")
+        g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
+        check(wait_up(gp, "/beam/hello"), "adb: an agent")
+        return g
+
+    g = run_agent()
+    try:
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("adb") is False, f"adb: off by default (hello adb {h.get('adb')})")
+        grant, _ = begin(gp, origin, start, body)
+        check("token" in grant, "adb: a session granted")
+        st, _, why = req(gp, "POST", "/beam/start", origin, dict(start, adb=True))
+        check(st == 409 and b"allow-adb" in why, f"adb: a start asking for an adb device is refused until the owner allows it ({st})")
+        check(req(gp, "POST", "/beam/start", origin, dict(start, adb="yes"))[0] == 400, "adb: \"adb\" takes true or false")
+        check(req(gp, "POST", "/beam/start", origin, dict(start, options=["--beam-adb"]))[0] == 400, "adb: a page cannot name the agent's --beam-adb marker")
+        s = open_session(gp, grant, origin)
+        i = session_info(s)
+        check(i.get("shell") == "limited" and i.get("adb") is False, f"adb: the session says shell limited, no adb ({i.get('shell')}, {i.get('adb')})")
+        r = tab_shell(s, "settings put secure apksim_beam_check 9")
+        r2 = tab_shell(s, "settings get secure apksim_beam_check")
+        check(r.get("status") == 0 and r2.get("out") == "9\n", f"adb: limited shell runs settings put and get ({r}, {r2})")
+        r = tab_shell(s, "am broadcast -a dev.apksim.testapp.SET_FLAG --es name beam --ez value true")
+        check(r.get("status") == 0 and "result=7" in r.get("out", ""), f"adb: limited shell's broadcast reaches the app ({r})")
+        r = tab_shell(s, f"am start -W -n {PKG}/.SecondActivity")
+        check(r.get("status") == 0 and "Status: ok" in r.get("out", ""), f"adb: limited shell starts an activity ({str(r)[:120]})")
+        for bad in ("ls /sdcard", "apksim quit", "getprop", "settings get secure a; ls", "am start -n com.other/.X"):
+            r = tab_shell(s, bad)
+            check(r.get("status") == 126, f"adb: limited shell refuses {bad!r} ({str(r)[:100]})")
+        check(not any(t.startswith('d {"adb"') for t in s.texts), "adb: no adb port told")
+        check(close_session(s), "adb: that session ends")
+        stop(g)
+        g = None
+        r = subprocess.run([apksim, "beam", "config", "allow-adb", "on"], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0 and "allow-adb on" in r.stdout, f"adb: config allow-adb on ({r.stdout.strip()[:120]})")
+        check(subprocess.run([apksim, "beam", "config", "allow-adb", "maybe"], capture_output=True, text=True, env=env, timeout=60).returncode == 2,
+              "adb: config allow-adb takes on or off")
+        g = run_agent()
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("adb") is True, f"adb: hello says a start may ask for adb ({h.get('adb')})")
+        # A start that does not ask gets neither an adb device nor the full shell.
+        grant, _ = begin(gp, origin, start, body)
+        s = open_session(gp, grant, origin)
+        i = session_info(s)
+        check(i.get("shell") == "limited" and i.get("adb") is False and not any(t.startswith('d {"adb"') for t in s.texts),
+              f"adb: a start that does not ask has no adb device and the limited shell ({i.get('shell')}, {i.get('adb')})")
+        check(tab_shell(s, "getprop").get("status") == 126, "adb: and its shell refuses getprop")
+        check(close_session(s), "adb: that session ends")
+        grant, _ = begin(gp, origin, dict(start, adb=True), body)
+        check("token" in grant, "adb: a start asking for an adb device is granted")
+        s = open_session(gp, grant, origin)
+        i = session_info(s)
+        told = [json.loads(t[2:])["adb"] for t in s.texts if t.startswith('d {"adb"')]
+        check(i.get("adb") is True and i.get("shell") == "full" and len(told) == 1 and 1024 <= told[0] <= 65535, f"adb: the page hears the adb port, full shell ({told})")
+        r = tab_shell(s, "getprop sys.boot_completed; ls /sdcard > /dev/null && echo listed")
+        check(r.get("status") == 0 and r.get("out", "").startswith("1\n") and "listed" in r.get("out", ""), f"adb: full shell runs any command line ({r})")
+        r = tab_shell(s, "logcat")
+        check("status" in r, f"adb: full shell's logcat ends ({str(r)[:60]})")
+        if told:
+            # The adb transport's CNXN, as `adb connect` opens: answered with the device's banner.
+            def packet(cmd, a0, a1, data):
+                c = struct.unpack("<I", cmd)[0]
+                return struct.pack("<IIIIII", c, a0, a1, len(data), sum(data) & 0xffffffff, c ^ 0xffffffff) + data
+            c = socket.create_connection(("127.0.0.1", told[0]), timeout=10)
+            c.sendall(packet(b"CNXN", 0x01000001, 256 * 1024, b"host::\0"))
+            head = c.recv(24)
+            banner = c.recv(4096) if len(head) == 24 else b""
+            check(head[:4] == b"CNXN" and b"device::" in banner, f"adb: the port answers adb's CNXN ({head[:4]!r} {banner[:40]!r})")
+            c.sendall(packet(b"OPEN", 1, 0, b"shell:getprop sys.boot_completed\0"))
+            got = b""
+            end = time.time() + 20
+            while time.time() < end and b"WRTE" not in got:
+                try:
+                    got += c.recv(4096)
+                except OSError:
+                    break
+            check(b"WRTE" in got and b"1" in got.split(b"WRTE", 1)[1][20:], f"adb: a shell service over it answers ({got[-30:]!r})")
+            c.close()
+            # A browser's request to the port is not adb's: closed, nothing read as a command.
+            c = socket.create_connection(("127.0.0.1", told[0]), timeout=10)
+            c.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            try:
+                closed = c.recv(100) == b""
+            except OSError:
+                closed = True
+            check(closed, "adb: bytes that are not adb's close the connection")
+            c.close()
+            adb = shutil.which("adb")
+            if adb:
+                serial = f"localhost:{told[0]}"
+                subprocess.run([adb, "connect", serial], capture_output=True, text=True, timeout=30)
+                r = subprocess.run([adb, "-s", serial, "shell", "settings", "get", "secure", "android_id"], capture_output=True, text=True, timeout=30)
+                check(r.returncode == 0 and len(r.stdout.strip()) >= 8, f"adb: the adb client reaches it ({r.stdout.strip()[:20]} {r.stderr.strip()[:80]})")
+                subprocess.run([adb, "disconnect", serial], capture_output=True, text=True, timeout=30)
+            else:
+                print("     (no adb on PATH: the adb client itself was not run)")
+        check(alive(s.stats.get("pid", 0)), "adb: the app still runs")
+        # Turned off while the agent runs: the session's next command is the limited shell, the next start is refused.
+        r = subprocess.run([apksim, "beam", "config", "allow-adb", "off"], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0, "adb: config allow-adb off while the agent runs")
+        check(tab_shell(s, "getprop").get("status") == 126, "adb: the running session's shell is limited at once")
+        check(req(gp, "POST", "/beam/start", origin, dict(start, adb=True))[0] == 409, "adb: and the next start asking for adb is refused")
+        check(close_session(s), "adb: that session ends")
+    finally:
+        if g:
+            stop(g)
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        if sc.FAILED:
+            print(f"state folder kept for a look: {state}")
+        else:
+            shutil.rmtree(state, ignore_errors=True)
+
+
 def data_checks(apksim, apk, sha, size):
     """Phase 5 (docs/beam.md): a session's data moved from the server to this Mac, in a state folder, server and agent
     of their own. On the test app's slot screen the server's session writes a setting and an /sdcard file; its socket's
@@ -1102,6 +1242,7 @@ def main():
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
+    ap.add_argument("--only", choices=["adb"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
     with open(a.apk, "rb") as f:
@@ -1111,6 +1252,13 @@ def main():
         if not any(b"SlotStateActivity" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
             sys.exit(f"{a.apk} has no SlotStateActivity: build the test app from this checkout "
                      "(testapks/composeapp: ./gradlew :app:assembleDebug)")
+    if a.only == "adb":
+        adb_checks(apksim, a.apk, sha, size)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (adb)")
+        return
     # An agent refuses anything but loopback.
     r = subprocess.run([apksim, "beam", "--bind", "0.0.0.0"], capture_output=True, text=True, timeout=30, env=ENV)
     check(r.returncode == 2, "apksim beam refuses --bind (loopback only)")
@@ -1120,6 +1268,7 @@ def main():
     source_checks(apksim, a.apk, sha, size)
     warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
+    adb_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")
     check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],

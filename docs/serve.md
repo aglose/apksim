@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--max-push MB] [--allow-rec] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -448,6 +448,36 @@ The tab sends commands in the control channel's own words, and serve passes on o
 Anything else (`shot FILE`, `record`, `pick FILE`, `quit`, ...) never reaches an instance from a tab: those read or
 write files on the machine.
 
+**Shell commands** (issue 397). The launch options (`--activity`, `--broadcast`, `--setting`) cover a session's first
+moment; a tab's `shell ID LINE` message runs an `adb shell` command line in the running session, with no adb device. ID
+is the tab's own tag (letters, digits, `_`, `-`, at most 24), LINE one line of at most 4000 characters, and the answer
+is `a {"id": ID, "status": N, "out": TEXT}` (the exit status and what the command printed, at most 256 KB) or
+`a {"id": ID, "error": TEXT}`. A page may run one command per message, without `;`, `&&`, `||`, a pipe or a
+redirection, and only these:
+
+| Command | What it takes |
+|---|---|
+| `am start` (`start-activity`) | `-W`, `-a ACTION`, `-d URI`, `-t TYPE`, `-c CATEGORY`, `-n PKG/CLASS`, `-p PKG`, `-f FLAGS` and the extras below; a component or package must be the app's own |
+| `am broadcast` | the same but `-W`; sent to the app's own package (`-p` is added when the line names neither it nor a component), ordered, and the answer has the result code (`Broadcast completed: result=N`) |
+| `settings get\|put global\|secure\|system KEY [VALUE]` | as `adb shell settings`; `animator_duration_scale`, `font_scale` and `bluetooth_on` are the device controls they are over adb |
+
+Extras are the ones `--broadcast` takes: `--es`, `--ez`, `--ei`, `--el`, `--ef KEY VALUE`. Anything else (`pm`, `input`,
+`ls`, `cat`, `logcat`, `apksim CMD`, `am instrument`, `am startservice`, an `intent:` URI, another package) is answered
+with status 126 and `apksim: not allowed from a page: WHY`, and nothing runs. What is allowed is wider than the launch options
+(any Settings key, any of the app's activities, exported or not, any broadcast action, at any time) but stays inside the
+app: a URI or extra may name a file (`-d file:///...`), which only the app itself then reads.
+`settings put` of `font_scale` and `animator_duration_scale` takes the ranges the page's own controls send (0.85-2,
+0-10). The package pin is decided from the options as parsed: `--es -p x` is an extra and pins nothing. The instance checks the line (`TabShell`, the `tabshell` control command, which only the server
+sends); the server passes it on as base64 on a control connection of its own, at most four at a time per session, so a
+command that waits holds up no input. It is on by default on a server (unlike `--allow-rec`), since it reaches nothing the app's own page could not;
+the `i` message says `"shell": "limited"`; `--no-shell` turns it off (`"off"`,
+and every `shell` is answered with an error). The page has an "adb shell" card for it (a leading `adb shell` is
+dropped from what is typed) and `window.apksimShell(LINE)`, a promise of the answer, for a host page's script.
+apksim runs one app: a broadcast aimed at another package, or a setting another app would act on (a screen reader
+named in `enabled_accessibility_services`), has nothing to reach, so `result=0` with no receiver means nobody was
+listening, not that sending failed. `scripts/tabshell-check.py URL [--token FILE] [--off]` checks it (CI:
+`ci-smoke.sh`), `scripts/shell-page-check.py URL` the page's card in Chrome.
+
 **Links the app opens, and browser sign-in** (issue 336). A server's instance has no browser, so a web link the app
 opens outside itself (a Custom Tab, an OAuth SDK's authorize page) is told to its tab: the instance's `hostwatch`
 control connection names it, serve sends `d {"link": URL, "redirect": REDIRECT|null}`, and the page shows a card with
@@ -476,6 +506,8 @@ that no deep link names, data entered).
 - Loopback by default; any other bind address needs `--token`. With a token, every request but `/api/health` needs it
   (cookie, `Authorization: Bearer`, the one-time `?token=` link, or `?token=` on an embedded page's own requests).
 - Instances' control channels stay on loopback, and serve never starts them with `--adb` (the adb device has no AUTH).
+  A tab's `shell` message ("Shell commands" above) is not that device: three allowlisted commands for the session's own
+  app, checked in the instance, off with `--no-shell`.
   In a container, only serve's port is published.
 - At most 128 connections at once (open sessions' included), taken before anything is allocated for one; a request's
   head must arrive within 10 s in all, so idle or trickling connections cannot use up memory or descriptors. (They

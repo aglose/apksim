@@ -51,25 +51,29 @@ final class BeamStore {
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork) {
-    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off");
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb) {
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false);
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off");
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false);
     }
 
     Config withRec(String r) {
-      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork);
+      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb);
     }
 
     Config withInspect(String mode) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb);
+    }
+
+    Config withAdb(boolean on) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on);
     }
 
     String describe() {
       return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
-          + ", inspect-network " + inspectNetwork;
+          + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off");
     }
   }
 
@@ -116,6 +120,15 @@ final class BeamStore {
 
   // ---------------------------------------------------------------- config
 
+  /**
+   * Whether a page may have an adb device and the full shell now (issue 397): read from the config file at each use, so
+   * `apksim beam config allow-adb off` takes them away from the next start and the next shell command of a running
+   * agent, not only after its restart.
+   */
+  boolean allowAdbNow() {
+    return readConfig().allowAdb();
+  }
+
   Config readConfig() {
     Config c = Config.DEFAULT;
     try {
@@ -126,7 +139,7 @@ final class BeamStore {
         double saved = !m.containsKey("keep-saved-days") ? c.keepSavedDays()
             : m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
-        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()));
+        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")));
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] cannot read " + configFile + " (using the defaults): " + e.getMessage());
@@ -136,7 +149,7 @@ final class BeamStore {
 
   void writeConfig(Config c) throws IOException {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
-        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\"\n}\n";
+        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb() + "\n}\n";
     writeAtomically(configFile, json);
     config = c;
   }
@@ -955,19 +968,19 @@ final class BeamStore {
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
-              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork());
+              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb());
               changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
-              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork());
+              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb());
               changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
-              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork());
+              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb());
               changed = true;
             }
             case "inspect-network" -> {
@@ -979,6 +992,14 @@ final class BeamStore {
               };
               if (mode == null) return usage();
               c = c.withInspect(mode);
+              changed = true;
+            }
+            // Issue 397: a start may ask for an adb device on this Mac's loopback ("adb": true), and a page's `shell`
+            // message runs the whole adb shell in its session, not only am start, am broadcast and settings.
+            case "allow-adb" -> {
+              Boolean b = onOff(v);
+              if (b == null) return usage();
+              c = c.withAdb(b);
               changed = true;
             }
             case "rec" -> {
@@ -1144,6 +1165,7 @@ final class BeamStore {
                                                 open is skipped; --builds (agent stopped) also removes, now, the builds nothing keeps
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
+                                [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
              apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)

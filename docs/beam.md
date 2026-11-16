@@ -80,7 +80,8 @@ is in the browser.
 1. **Local agent: `apksim serve --beam`.** Binds `127.0.0.1` only, on a fixed port (proposal 47474, `--port` to
    change; `hello` identifies it, so a port taken by something else is detected). Instances run as serve's do but
    with `--window hidden` instead of `--headless` (so the Mac window can be shown later), `--data-slots beam`,
-   `--no-autofill` (a site chose this APK: never the owner's saved sign-ins), no `--adb`, the launch options
+   `--no-autofill` (a site chose this APK: never the owner's saved sign-ins), no `--adb` unless the Mac's owner allowed
+   it and the start asked ("adb commands in a session" below), the launch options
    limited to `Catalog.LAUNCH_OPTIONS` as today (including `--sdcard-file PATH=text:TEXT|BASE64`, a file written to the
    session's `/sdcard` before the app starts, over what a reused slot had; 64 KB a file, 72 KB in all, and `--broadcast`, one broadcast to the app's own package after `Application.onCreate`). One session per tab, ended when the tab's WebSocket closes, as now.
    New endpoints:
@@ -200,9 +201,9 @@ keeping a session to use later is the visitor's choice.
     no; a site set to never is 403). The builds get the `keep-days` hold.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
-- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off]`, kept in
+- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
-  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either); the same as flags on `apksim beam` for a run in the foreground.
+  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either. `allow-adb on` (off by default, issue 397; a CLI setting only, not a flag of `apksim beam`) lets every trusted site's start ask for an adb device on loopback with the whole adb shell in its session: "adb commands in a session" below); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
   deletes at once). An agent that is not running deletes nothing: the LaunchAgent (phase 1) also runs `apksim beam
   sweep` once a day (`StartInterval`).
@@ -1203,6 +1204,55 @@ data cannot be moved (code after it) is still refused, with the loader's own mes
 that catches the refusal and runs without the library now gets it loaded, moved. `beam-check.py` checks the line
 appears for the test app (whose `libpagefixturenorelro.so` is such a library), that the session then streams, and
 that `run` of its kept session adds the flag too.
+
+## adb commands in a session (2026-11-15, issue 397)
+
+A page can run the adb one-liners people already use against a device in a session that is running on the visitor's
+Mac, typed into the page and carried to that Mac's instance over the session's WebSocket. Two levels:
+
+1. **Always: the limited shell.** The tab's `shell ID LINE` message, as on a server (docs/serve.md "Shell commands"):
+   `am start`, `am broadcast` and `settings get|put` for the session's own app, answered `a {"id", "status", "out"}`.
+   It does nothing a start's launch options could not have done at launch, so it needs no setting.
+2. **With the owner's `apksim beam config allow-adb on`** (off by default; read again at every start and every
+   `shell` command, so `allow-adb off` takes effect at once, also for sessions already running), for a session whose
+   start asked for it (`"adb": true`):
+   - `shell` runs the **whole adb shell** in that session, what `adb shell LINE` runs on the instance's adb device
+     (AGENTS.md "adb device"): `pm`, `input`, `dumpsys`, `logcat` (what there is: nothing streams), `ls`/`cat` in the
+     app's folders, `apksim CMD` for any control command (`shot`, `rec save`, `quit`: what a tab's own commands may
+     never send), `;` and `&&`. The session's `i` message says `"shell": "full"` (`"limited"` otherwise). A command
+     gives up after a minute (`sleep` is cut to it).
+   - a start may ask for an **adb device**: `/beam/start`'s `"adb": true` (409 while the setting is off, 400 when not
+     a boolean; `/beam/hello` says `"adb": true` when it may be asked). The agent then launches the instance with
+     `--adb auto`, on `127.0.0.1` only, and the tab hears its port once, before the app starts: `d {"adb": PORT}`
+     (the `i` message says `"adb": true`). The page logs `adb connect localhost:PORT` and has
+     `window.apksimAdbPort()`; serve's own page asks whenever the agent allows it (`?adb=0` on the page declines).
+     From there it is an ordinary apksim adb device: `adb -s localhost:PORT shell ...`, `logcat`, `push`, `pull`.
+
+What the setting gives away, so the owner can decide: the adb device has no AUTH, as with `apksim --adb` run by hand,
+so any process on the Mac may connect to that port while the session runs; a browser cannot (it speaks HTTP, and the
+device closes a connection whose first bytes are not an adb packet). The setting is for every site the owner trusted, not
+one of them: each may ask for adb. The full shell runs for the site that started the session, not only for what a
+person types: that site's script can read and write the app's
+data and end the app. Both stay inside the beam sandbox: the shell and the adb device are the instance itself, which
+writes only its own scratch and data slot and may connect to nothing on loopback, and nothing reaches the rest of the
+Mac. Not checked there: `adb forward tcp:N localabstract:NAME` (the instance reaches an app's local socket over
+loopback, which this sandbox denies, so it is not expected to work), `adb install` of an instrumentation, and
+`am instrument`.
+
+The marker for a start that asked (`--beam-adb` in the session's launch options, the agent's own: a page cannot name
+it) is never saved with a kept session, so `apksim beam run ID` and a reopened session start without an adb device
+unless that start asks again. Turning the setting off makes a running session's shell limited at its next command
+and refuses the next start that asks; an adb device already started keeps listening until its session ends (`apksim
+beam stop` ends them all).
+
+apksim runs one app: a broadcast aimed at another package and settings another app would act on (an accessibility
+service named in `enabled_accessibility_services`) have nothing to reach; `Broadcast completed: result=0` with no
+receiver means nobody was listening.
+
+`scripts/beam-check.py APK --only adb` checks it in a state folder of its own: off by default (409), the limited
+shell and its refusals in the beam sandbox, `config allow-adb on`, the full shell, the port told to the page, adb's
+CNXN and a shell service over that port, an HTTP request closed, the `adb` client itself when one is on PATH, and
+`allow-adb off` while the agent runs.
 
 ## Moving a session to a device (2026-11-09, issue 191)
 
