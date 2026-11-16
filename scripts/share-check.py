@@ -479,7 +479,10 @@ def main():
     owner.pump(3)
     alone_fps = fps_of(owner.frames, t1, time.time() * 1000)
     check(viewers_said(owner) == 0, "the tab hears when the viewer has left")
-    check(alone_fps < 5 and alone_fps < max(2.0, 0.6 * hidden_fps), f"and its own cap counts again once nobody watches ({alone_fps:.1f} fps)")
+    # A frame a second, each sent up to three times as a still screen sharpens: under 5 a second. Where the app draws
+    # under 8 a second uncapped (a small CI runner's CPU shader) that is no lower than before, so only the bound holds.
+    check(alone_fps < 5 and (hidden_fps < 8 or alone_fps < 0.6 * hidden_fps),
+          f"and its own cap counts again once nobody watches ({alone_fps:.1f} fps)")
     owner.ws.send("maxfps 120")
     owner.pump(2)
 
