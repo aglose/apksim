@@ -209,7 +209,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # 'ACTION;es:KEY=VALUE;ez:KEY=true;ei|el|ef:...' (LaunchBroadcasts.java).
     --broadcast)
       [[ "$2" =~ ^[A-Za-z0-9_.$]+(;|$) ]] || { echo "--broadcast takes ACTION[;es|ez|ei|el|ef:KEY=VALUE]..." >&2; exit 2; }
-      ((${BROADCAST_N:-0} < 8 && ${#2} <= 1024)) || { echo "--broadcast: at most 8, of 1024 characters each" >&2; exit 2; }
+      # 64 is BroadcastSpec.COUNT_MAX (serve and beam check against it before this runs).
+      ((${BROADCAST_N:-0} < 64 && ${#2} <= 1024)) || { echo "--broadcast: at most 64, of 1024 characters each" >&2; exit 2; }
       EXTRA+=("-Dapksim.broadcast.${BROADCAST_N:-0}=$2"); BROADCAST_N=$((${BROADCAST_N:-0} + 1)); shift 2 ;;
     # A file written to /sdcard before the app starts (repeatable): PATH=text:TEXT or PATH=BASE64 (SlotDevice.java).
     --sdcard-file)
@@ -379,9 +380,9 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
-      # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
-      -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
+      # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
+      -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;

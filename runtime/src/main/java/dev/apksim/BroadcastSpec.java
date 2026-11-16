@@ -8,7 +8,7 @@ import java.util.List;
  * run on a plain JVM without the framework and validate launch options with it.
  */
 public final class BroadcastSpec {
-  public static final int COUNT_MAX = 8;
+  public static final int COUNT_MAX = 64;
   public static final int LENGTH_MAX = 1024;
 
   private BroadcastSpec() {}

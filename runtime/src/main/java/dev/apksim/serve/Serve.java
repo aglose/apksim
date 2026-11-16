@@ -1788,7 +1788,7 @@ public final class Serve {
             : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
         // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
         // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
-        + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
+        + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
         + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
         // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
         + (shareSaid ? ",\"share\":" + Http.q(keySaid) + ",\"maxViewers\":" + maxViewers : "")

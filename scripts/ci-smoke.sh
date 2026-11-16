@@ -529,6 +529,12 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
   -d '{"url":"http://127.0.0.1:9/b.apk","name":"b.apk","options":["--broadcast","com.example.ACTION;ez:flag=maybe"]}' "http://127.0.0.1:$SERVE_PORT/api/apps")
 [ "$code" = 400 ] || { echo "serve: bad --broadcast option answered $code, wanted 400" >&2; exit 1; }
+# Issue 422: 64 broadcasts are accepted, 65 refused.
+for want in 64:200 65:400; do
+  opts=$(python3 -c "import json,sys; print(json.dumps({'url':'http://127.0.0.1:9/b%s.apk' % sys.argv[1],'name':'b.apk','options':[x for i in range(int(sys.argv[1])) for x in ('--broadcast','com.example.ACTION;ei:n=%d' % i)]}))" "${want%%:*}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' -d "$opts" "http://127.0.0.1:$SERVE_PORT/api/apps")
+  [ "$code" = "${want##*:}" ] || { echo "serve: ${want%%:*} --broadcast options answered $code, wanted ${want##*:}" >&2; exit 1; }
+done
 # Issue 393: --sysfs is a launch option a page may carry (a plain /sys path, a short value), others are a 400.
 for spec in '/sys/a/b=1:200' '/etc/x=1:400' '/sys/a/../b=1:400' '/sys/a/..=1:400'; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'content-type: application/json' \
