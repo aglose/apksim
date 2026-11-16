@@ -219,6 +219,12 @@ slow viewers (it would take a second encode), and a check with viewers on other 
   problematic frame of a JVM crash (`crashed: SIGILL (0x4) in [libz.so+0x1234] deflateInit2_+0x10`, from the
   `hs_err_pid<N>.log` header), or the instance's own `exit N: REASON` / last `[apksim]` message (an `--activity` the
   manifest lacks). An instance that dies while starting is explained the same way.
+- A structured form comes first (issue 418): `e {"reason":"crash|exit|idle|busy|no-app|error|other","text":"...",
+  "exception":"..."}`, sent just before the plain `x TEXT` (which is unchanged; a page that does not know `e` ignores it).
+  `crash` is an instance that ended with a non-zero status (`exception`, when the log showed one, is the uncaught
+  exception's class as the log printed it, R8-renamed or not); `exit` an instance that ended by itself with status 0;
+  `idle` the `--idle` limit; `busy` no free place; `no-app` an app id the server no longer has; `error` a start that
+  failed. A tab that simply leaves gets neither message. The same on `apksim beam`.
 - Before that `x` message, an instance that died (or could not start) sends its last 50 log lines as `r log: LINE`
   messages, which serve's page shows in its log under the screen. A tab that left, idled out or ended the session
   normally gets none.
@@ -241,7 +247,11 @@ slow viewers (it would take a second encode), and a check with viewers on other 
   the session's id (the `i` message, the `id` in `/api/status`), which only its tab and whoever the tab tells know.
   Logs are kept in `STATE/serve/logs` for a week (swept hourly), so the reason stays readable after the session is gone;
   `404` after that or for an id that never was. It is bounded log text only: no file is ever served, and the id is
-  matched as 12 hex digits and never used as a path.
+  matched as 12 hex digits and never used as a path. On `apksim beam` the same is `GET /beam/sessions/ID/log?key=KEY`
+  (issue 418): the page's `Origin` must be the site that started the session and `KEY` the one the session sent that
+  tab on its socket (`f KEY`), as for files and recordings, so no other page can read it; it answers while the session
+  runs and after it ended, for as long as the log is kept (a week), and `404` otherwise. No `apksim beam config`
+  setting turns it off: the log comes from the visitor's own Mac, but only to the site they let run the app there.
 - The JVM writes `hs_err_pid<N>.log` to its working directory, which is the logs folder. When the instance has gone,
   serve copies the report's `#` header (the signal, the frame, the JVM's own notes: no registers, memory map or
   environment variables) into the session's log as `[hs_err]` lines and deletes the file. Leftover `core*` and

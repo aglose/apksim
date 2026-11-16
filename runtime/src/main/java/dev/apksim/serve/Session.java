@@ -66,6 +66,8 @@ final class Session {
   private final Crash.Reason crash = new Crash.Reason();
   /** The session ended because the instance died or could not start, not because the tab left or it idled. */
   private volatile boolean abnormal;
+  /** Why it ended, for the tab's `e` message (Crash.endJson): set where the instance's exit is explained. */
+  private volatile String endReason;
   private long lastProgress;
   private Socket control;
   private PrintWriter controlOut;
@@ -401,6 +403,17 @@ final class Session {
     }
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
+    if (serve.beam && fileKey != null) {
+      // Issue 418: who may read this log once the session is gone (the agent answers /beam/sessions/ID/log from it).
+      java.util.Properties pr = new java.util.Properties();
+      pr.setProperty("key", fileKey);
+      pr.setProperty("site", site == null ? "" : site);
+      try (java.io.OutputStream o = Files.newOutputStream(serve.logs.resolve(id + ".access"))) {
+        pr.store(o, null);
+      } catch (IOException e) {
+        // the log is then readable while the session runs only
+      }
+    }
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
@@ -1064,6 +1077,7 @@ final class Session {
     }
     int status = p.exitValue();
     String why = "the app exited (status " + status + ")";
+    endReason = status != 0 ? "crash" : "exit";
     if (status != 0) {
       abnormal = true;
       // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
@@ -2080,6 +2094,9 @@ final class Session {
           }
           for (String l : lines) ws.sendText("r log: " + l);
         }
+        String er = endReason;
+        if (er == null) er = why.startsWith("stopped after ") ? "idle" : why.startsWith("could not start") ? "error" : "other";
+        ws.sendText("e " + Crash.endJson(er, why, er.equals("crash") ? crash.exception() : null));
         ws.sendText("x " + why);
         ws.close(why.length() > 60 ? why.substring(0, 60) : why);
       });

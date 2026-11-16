@@ -1408,6 +1408,20 @@ def main():
             time.sleep(0.2)
         check(pid > 0 and gone, f"agent: the instance (pid {pid}) ends with its tab")
 
+        # Issue 418: the session's log, for the page that started it (its origin and the key its socket sent), still
+        # there once the session has ended.
+        fkey = next((t[2:] for t in s.texts if t.startswith("f ")), "")
+        sid = session_info(s).get("id", "")
+        check(len(fkey) >= 32 and len(sid) == 12, f"log: the tab got its session id and key ({sid!r})")
+        until(lambda: b"[serve] session ended" in req(gp, "GET", f"/beam/sessions/{sid}/log?key={fkey}", A)[2], 10)
+        st, h, body = req(gp, "GET", f"/beam/sessions/{sid}/log?key={fkey}", A)
+        check(st == 200 and h.get("content-type", "").startswith("text/plain") and b"[serve] session ended" in body
+              and h.get("access-control-allow-origin") == A, f"log: the page reads its ended session's log ({st})")
+        check(req(gp, "GET", f"/beam/sessions/{sid}/log?key={fkey}", B)[0] == 404, "log: another site cannot read it")
+        check(req(gp, "GET", f"/beam/sessions/{sid}/log?key=wrong", A)[0] == 404, "log: nor without the session's key")
+        check(req(gp, "GET", f"/beam/sessions/{'0' * 12}/log?key={fkey}", A)[0] == 404, "log: an unknown session is a 404")
+        check(req(gp, "GET", f"/beam/sessions/{sid}/log?key={fkey}")[0] == 403, "log: a request without a page's Origin is refused")
+
         trust(apksim, "revoke", A)
         st, _, _ = req(gp, "POST", "/beam/start", A, start)
         check(st == 403, "agent: a revoked site is refused again")
@@ -1541,6 +1555,11 @@ def main():
             pass
         ended = [t for t in s4.texts if t.startswith("x ")]
         check(ended and "SIGSEGV" in ended[0], f"keep: a beamed JVM's crash report reaches the tab ({ended[:1]})")
+        ej = [json.loads(t[2:]) for t in s4.texts if t.startswith("e {")]
+        ei = [n for n, t in enumerate(s4.texts) if t.startswith(("e {", "x "))]
+        check(len(ej) == 1 and bool(ended) and ej[0].get("reason") == "crash" and ej[0].get("text") == ended[0][2:]
+              and len(ei) == 2 and s4.texts[ei[0]].startswith("e {"),
+              f"keep: and the structured end message says it crashed, before the plain one ({ej[:1]})")
         stop(g)
 
         # Issue 334: detach. The session outlives its tab, owned by apksim's window, and is kept when it ends.

@@ -735,6 +735,12 @@ def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:
     s.pump(120, until=lambda: any(t.startswith("x ") for t in s.texts))
     ended = [t for t in s.texts if t.startswith("x ")]
     check(bool(ended) and any(e in ended[0] for e in expect), f"the end message says why: {ended[:1]}")
+    ej = [json.loads(t[2:]) for t in s.texts if t.startswith("e {")]
+    check(len(ej) == 1 and ej[0].get("reason") == "crash" and bool(ended) and ej[0].get("text") == ended[0][2:],
+          f"and the structured end message says it crashed: {ej[:1]}")
+    if ended and "uncaught exception" in ended[0]:
+        check(bool(ej) and "." in ej[0].get("exception", "") and ":" not in ej[0].get("exception", ""),
+              f"with the exception's class: {ej[0].get('exception') if ej else None}")
     logs = [t for t in s.texts if t.startswith("r log: ")]
     check(0 < len(logs) <= 50 and any("FATAL EXCEPTION" in t for t in logs), f"the log's last lines reach the tab ({len(logs)})")
     i = next((json.loads(t[2:]) for t in s.texts if t.startswith("i ")), {})

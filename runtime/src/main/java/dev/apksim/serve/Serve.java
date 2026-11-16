@@ -1657,6 +1657,7 @@ public final class Serve {
       }
       SlotPack.dropSeed(state, seed, null, System.err::println);  // its moved data has no session to go to
       releaseSeed(seed);
+      ws.sendText("e " + Crash.endJson("no-app", "no such app (an upload is kept for a day after its last use)", null));
       ws.sendText("x no such app (an upload is kept for a day after its last use)");
       ws.close("no such app");
       return;
@@ -1743,6 +1744,7 @@ public final class Serve {
         }
         SlotPack.dropSeed(state, seed, null, System.err::println);
         releaseSeed(seed);
+        ws.sendText("e " + Crash.endJson("busy", "all " + max + " sessions are in use: try again in a minute", null));
         ws.sendText("x all " + max + " sessions are in use: try again in a minute");
         ws.close("busy");
         return;
@@ -2260,6 +2262,31 @@ public final class Serve {
     }
     if (o == null) {
       Http.text(out, 403, "the agent runs apps for browser pages only (a request with its page's Origin)");
+      return;
+    }
+    // Issue 418: the tail of a session's log, for the page that started it (its origin and the key its socket sent),
+    // while the session runs and after it ended, as long as the log is kept (a week).
+    java.util.regex.Matcher lm = java.util.regex.Pattern.compile("/beam/sessions/([0-9a-f]{12})/log").matcher(r.path());
+    if (r.method().equals("GET") && lm.matches()) {
+      Session x = sessions.get(lm.group(1));
+      String fk = x != null ? x.fileKey : null, site = x != null ? x.site : null;
+      if (x == null) {
+        java.util.Properties pr = new java.util.Properties();
+        try (java.io.InputStream acc = Files.newInputStream(logs.resolve(lm.group(1) + ".access"), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          pr.load(acc);
+          fk = pr.getProperty("key", "");
+          site = pr.getProperty("site", "");
+        } catch (IOException | RuntimeException e) {
+          fk = null;
+        }
+      }
+      String key = r.param("key");
+      if (fk == null || fk.isEmpty() || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
+          fk.getBytes(StandardCharsets.UTF_8)) || !o.equals(site)) {
+        Http.text(out, 404, "no such session log (logs are kept for a week)");
+        return;
+      }
+      sessionLog(lm.group(1), out);
       return;
     }
     java.util.regex.Matcher fm = java.util.regex.Pattern.compile("/beam/sessions/([0-9a-f]{12})/(files|recordings/[0-9a-f]{12})").matcher(r.path());

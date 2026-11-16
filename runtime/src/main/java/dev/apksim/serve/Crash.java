@@ -73,6 +73,14 @@ final class Crash {
       return hsErrPid;
     }
 
+    /** The class of the uncaught exception the log shows (as it printed it, R8-renamed or not), or null. */
+    String exception() {
+      String f = fatal;
+      if (f == null) return null;
+      int c = f.indexOf(':');
+      return (c < 0 ? f : f.substring(0, c)).strip();
+    }
+
     /** "uncaught exception ...", "exit 137: ...", or null. */
     String text() {
       String t = fatal != null ? "uncaught exception " + fatal : exit != null && !exit.endsWith(": ") ? exit : said;
@@ -83,6 +91,15 @@ final class Crash {
       }
       return t;
     }
+  }
+
+  /**
+   * The structured form of why a session ended, sent as `e {...}` just before the plain `x TEXT` (issue 418): `reason`
+   * is `crash`, `exit`, `idle`, `busy`, `no-app`, `error` or `other`; `exception` is the uncaught exception's class when
+   * the log showed one. A page that does not know `e` ignores it and has `x`.
+   */
+  static String endJson(String reason, String text, String exception) {
+    return "{\"reason\":" + Http.q(reason) + ",\"text\":" + Http.q(text) + (exception != null ? ",\"exception\":" + Http.q(exception) : "") + "}";
   }
 
   static String clip(String s) {
@@ -170,7 +187,7 @@ final class Crash {
       for (Path p : d) {
         String n = p.getFileName().toString();
         boolean crash = n.startsWith("core") || n.startsWith("hs_err_pid");
-        boolean log = n.endsWith(".log") && !n.startsWith("hs_err_pid");
+        boolean log = (n.endsWith(".log") || n.endsWith(".access")) && !n.startsWith("hs_err_pid");
         if (!Files.isRegularFile(p)) continue;
         long m = Files.getLastModifiedTime(p).toMillis();
         if (crash && m < dayAgo || log && m < logCutoff) Files.deleteIfExists(p);
