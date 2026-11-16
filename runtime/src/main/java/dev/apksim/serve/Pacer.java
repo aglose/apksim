@@ -54,8 +54,23 @@ final class Pacer {
    * the pace to send the instance, or -1 for no change.
    */
   int dropped(long now, double tabFrameMs) {
+    return dropped(now, tabFrameMs, UNKNOWN);
+  }
+
+  /** Not told when the oldest unacked frame was sent: only the last ack counts. */
+  static final long UNKNOWN = Long.MIN_VALUE;
+  /** No frame is in flight. */
+  static final long NONE = -1;
+
+  /**
+   * As above, with oldestSentNanos, when the oldest unacked frame was sent ({@link #NONE}: none in flight). The tab is
+   * stalled when it has acked nothing for {@link #STALL_NANOS} while a frame has been owed that long: a still screen's
+   * old last ack is not a stall (issue 401).
+   */
+  int dropped(long now, double tabFrameMs, long oldestSentNanos) {
     keyDrops++;
-    if (lastAckNanos != 0 && now - lastAckNanos > STALL_NANOS) {
+    long since = oldestSentNanos == UNKNOWN ? lastAckNanos : oldestSentNanos == NONE ? now : Math.max(lastAckNanos, oldestSentNanos);
+    if (lastAckNanos != 0 && now - since > STALL_NANOS) {
       // A tab that acks nothing says nothing about how fast it decodes: its drops must not slow the pace (issue 401).
       if (eased) {
         eased = false;

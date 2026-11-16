@@ -1175,7 +1175,8 @@ final class Session {
             // The tab is behind: what waits goes, and so does every frame until a keyframe.
             waiting.clear();
             dropToKey = askKey = true;
-            int p = pacer.dropped(n, tabFrameMs());
+            long[] oldest = flying.peek();
+            int p = pacer.dropped(n, tabFrameMs(), oldest == null ? Pacer.NONE : oldest[0]);
             if (p >= 0) paceAsk = p;
           } else if (!dropToKey) {
             waiting.add(frame);
@@ -1231,12 +1232,7 @@ final class Session {
     }
   }
 
-  private void acked() {
-    int paceAsk = ackedLocked();
-    if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
-  }
-
-  private synchronized int ackedLocked() {
+  private synchronized void acked() {
     int paceAsk = -1;
     long[] f = flying.poll();
     if (f != null) {
@@ -1249,7 +1245,8 @@ final class Session {
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
-    return paceAsk;
+    // Sent under the lock, as the reader thread's asks are not: two threads' paces must reach the instance in order.
+    if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
   }
 
   private synchronized int pacerKeyDrops() {

@@ -147,6 +147,11 @@ public final class PacerCheck {
     q.frame(t + 20 * S);  // a trial, 39
     check(q.eased && q.dropped(t + 21 * S, 40) == 46 && q.easeWaitNanos == Pacer.EASE_WAIT_NANOS,
         "a stalled drop during a trial restores the pace without doubling the wait");
+    // A still screen's old last ack is no stall: the drop comes with a frame in flight only just sent.
+    Pacer v = new Pacer();
+    for (int i = 1; i <= 10; i++) v.acked(t + i * 40 * MS, t, -1);
+    v.dropped(t + 30 * S, 40, t + 30 * S - 10 * MS);
+    check(v.dropped(t + 30 * S + 100 * MS, 40, t + 30 * S - 10 * MS) == 46, "a drop after a still spell, frames just sent, counts");
     // Acks resuming after a stall start again from no pace.
     Pacer r = new Pacer();
     for (int i = 1; i <= 10; i++) r.acked(t + i * 40 * MS, t, -1);

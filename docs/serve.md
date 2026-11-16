@@ -408,7 +408,7 @@ screen rectangle, a click at its centre landing at the app's centre, the cutout 
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
   After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
   puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
-  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. An instance with
+  keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. A tab that has acked nothing for 2 s while a frame is owed is stalled, not slow (held acks, a hung decoder): its drops change no pace, and the first ack for a frame sent over 2 s earlier clears the pace, trial and backoff and sends `pace 0` (issue 401). An instance with
   several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.
   The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs`, `busyMs` and `tabFrameMs`. The window and byte
   budget apply to both codecs.
