@@ -103,12 +103,12 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
     synchronized (CALLBACKS) {
       REGISTERED.incrementAndGet();
       if (CALLBACKS.containsKey(callback)) {
-        log("registerAvailabilityCallback: " + callback.getClass().getName() + " already registered");
+        log("registerAvailabilityCallback: " + String.valueOf(callback == null ? null : callback.getClass().getName()) + " already registered");
         return;
       }
       CALLBACKS.put(callback, executor);
       try {
-        for (String id : getCameraIdList()) {
+        for (String id : super.getCameraIdList()) {
           ids.add(id);
           open.add(OPEN.contains(id));
         }
@@ -116,7 +116,7 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
         // no cameras listed
       }
     }
-    log("registerAvailabilityCallback: " + callback.getClass().getName() + ", telling it about " + ids
+    log("registerAvailabilityCallback: " + String.valueOf(callback == null ? null : callback.getClass().getName()) + ", telling it about " + ids
         + (ids.isEmpty() ? " (no cameras listed: nothing will be announced)" : ""));
     for (int i = 0; i < ids.size(); i++) {
       String id = ids.get(i);
@@ -157,12 +157,13 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
     Context app = RuntimeEnvironment.getApplication();
     if (app != null && app.checkPermission(Manifest.permission.CAMERA, Process.myPid(), Process.myUid())
         != PackageManager.PERMISSION_GRANTED) {
+      log("openCamera " + cameraId + ": denied, no CAMERA permission");
       throw new SecurityException("validateClientPermissionsLocked: Permission Denial: can't use the camera pid="
           + Process.myPid() + ", uid=" + Process.myUid());
     }
+    CameraDevice device = super.openCameraDeviceUserAsync(cameraId, callback, executor, uid, oomScoreOffset);
     OPENS.incrementAndGet();
     log("openCamera " + cameraId);
-    CameraDevice device = super.openCameraDeviceUserAsync(cameraId, callback, executor, uid, oomScoreOffset);
     announce(cameraId, false);
     return device;
   }

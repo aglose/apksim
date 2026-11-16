@@ -669,7 +669,7 @@ keeps the app's PackageInfo GRANTED flags for them in step with its grants, whic
 reads. `HealthConnectTest` (18; all but three apksim-only ones pass on an API 36 emulator), `apksim://health`
 (`HealthActivity`, ci-smoke.sh, with the week preset's stability across clocks).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
-open and streaming devices, frames, images, drops, outputs).
+open and streaming devices, frames, images, drops, outputs, then `manager: idLists N availabilityCallbacks N (registered N) announced N opens N open [...]`: what the app asked CameraManager, also logged as `[apksim] camera: ...` lines on stderr outside test runs).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
 overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
