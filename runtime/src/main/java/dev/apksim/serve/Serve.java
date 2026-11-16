@@ -1730,6 +1730,7 @@ public final class Serve {
       reopenedChanged.remove(seed);
       SlotPack.dropSeed(state, seed, null, System.err::println);
       releaseSeed(seed);
+      ws.sendText("e " + Crash.endJson("busy", "saved session " + reopenSid + " is busy on this Mac (being copied for a newer build, or forgotten): start it again", null));
       ws.sendText("x saved session " + reopenSid + " is busy on this Mac (being copied for a newer build, or forgotten): start it again");
       ws.close("busy");
       return;
