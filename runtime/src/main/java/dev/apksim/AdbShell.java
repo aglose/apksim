@@ -775,6 +775,9 @@ final class AdbShell {
     return LiveInstrumentation.start(target, args, raw, await, out, gone);
   }
 
+  /** Held by a thread's `am broadcast` from its send to its result. */
+  private static final java.util.concurrent.locks.ReentrantLock BROADCASTS = new java.util.concurrent.locks.ReentrantLock();
+
   // am start|broadcast|startservice|force-stop
   private int am(List<String> a) throws Exception {
     if (a.isEmpty()) return usage("am start|broadcast|startservice|force-stop ...");
@@ -832,17 +835,27 @@ final class AdbShell {
         print("Broadcasting: " + describe(in) + "\n");
         // Ordered, with a result receiver, as `am broadcast` sends it: a receiver's setResultCode/setResultData come back
         // (the Android CLI asks its instrumentation server for its version and socket this way).
-        CompletableFuture<String> result = new CompletableFuture<>();
-        onMain(() -> {
-          app().sendOrderedBroadcast(in, null, new ResultReceiver(result), null, 0, null, null);
-          return null;
-        });
-        if (main) TestActivities.runMainQueueUntil(result::isDone, TimeUnit.SECONDS.toNanos(10));
+        // One at a time from the threads' side (issue 412): two ordered broadcasts in flight to one registered receiver
+        // share its object, and Robolectric keeps the PendingResult on it, so the second finish() found "Broadcast
+        // already finished" and the uncaught exception ended the app. Not taken on the main thread, which waits by
+        // running the queue a holder on another thread needs, so a main-thread broadcast overlapping a thread's is not
+        // serialized; and a broadcast whose 10 s wait times out lets the next one go while it may still be in flight.
+        if (!main) BROADCASTS.lock();
         String r;
         try {
-          r = result.get(main ? 0 : 10, TimeUnit.SECONDS);
-        } catch (java.util.concurrent.TimeoutException e) {
-          r = "result=0";
+          CompletableFuture<String> result = new CompletableFuture<>();
+          onMain(() -> {
+            app().sendOrderedBroadcast(in, null, new ResultReceiver(result), null, 0, null, null);
+            return null;
+          });
+          if (main) TestActivities.runMainQueueUntil(result::isDone, TimeUnit.SECONDS.toNanos(10));
+          try {
+            r = result.get(main ? 0 : 10, TimeUnit.SECONDS);
+          } catch (java.util.concurrent.TimeoutException e) {
+            r = "result=0";
+          }
+        } finally {
+          if (!main) BROADCASTS.unlock();
         }
         print("Broadcast completed: " + r + "\n");
         return 0;
