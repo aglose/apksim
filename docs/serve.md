@@ -148,11 +148,18 @@ With `--allow-share` (off by default) a session's own tab gets a link, **Copy vi
 which other people watch that session: `/?join=SESSION&key=KEY`. A viewer sees the screen as the tab does and can do
 nothing to it. `--max-viewers N` (default 100) is the most at once per session; viewers do not count against `--max`.
 
+- **The switch.** Sharing can be turned on and off while the server runs, with the server's token:
+  `curl -X POST -H "Authorization: Bearer $(cat TOKEN_FILE)" 'http://127.0.0.1:8080/api/share?allow=on'` (`allow=off`;
+  `GET /api/share` answers `{"allow", "maxViewers", "sessions", "viewers"}`, and `/api/status` has `share`). Turned
+  on, every running session's tab is told its key (`d {"share": KEY, "maxViewers": N}`) and shows the button; a session
+  need not restart. Turned off, every viewer is told "sharing was turned off" and dropped, each tab is told it has no
+  link (`d {"share": ""}`), and every session takes a new key, so a link given out before stays dead when sharing comes
+  back: off and on again is how to revoke every link at once. `--max-viewers` is fixed at the server's start.
 - **What the link is.** `KEY` is 128 random bits made for that session and told only to its own tab (the `i` message's
   `share`). The link opens two things without the server's token: the page, and that session's viewer socket
   (`/ws?join=SESSION&key=KEY`). Nothing else: every `/api` route still needs the token, and the Origin rules for
-  WebSockets hold for a join too. It works until the session ends; there is no way yet to revoke it sooner or to make a
-  second link. Anyone who has the link sees everything on that screen, typed text included: give it out as you would
+  WebSockets hold for a join too. It works until the session ends or sharing is turned off (the switch, below); there is no
+  way yet to revoke one session's link alone or to make a second link. Anyone who has the link sees everything on that screen, typed text included: give it out as you would
   share your screen.
 - **What a viewer may send**: `ack` (it acknowledges frames as a tab does), `key` (its decoder lost its place) and `t`
   (clock). Everything else is answered `r refused: this link only watches the session` (the first eight times): no
@@ -199,7 +206,7 @@ the numbers past 300 need the viewers on other machines to mean more. A first fr
 join together, since they share one keyframe a second; a single joiner gets it in ~10 ms. With many joining within
 milliseconds serve's limit of 128 connections not yet upgraded refuses some (the swarm joins two milliseconds apart).
 
-Not done: a link that expires or can be revoked, a second role (handing control to a viewer), viewers' cursors, the
+Not done: a link that expires or can be revoked alone (turning sharing off revokes all), a second role (handing control to a viewer), viewers' cursors, the
 skin's frame in the viewer page, a JPEG stream beside an H.264 one for browsers that need it, a rate of their own for
 slow viewers (it would take a second encode), and a check with viewers on other machines or a real network.
 

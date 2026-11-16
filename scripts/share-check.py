@@ -67,6 +67,62 @@ def viewers_said(session):
     return json.loads(told[-1][2:])["viewers"] if told else None
 
 
+def share_said(session):
+    """The last share key a session's socket was told by a switch ("" for none), or None."""
+    told = said(session, 'd {"share"')
+    return json.loads(told[-1][2:])["share"] if told else None
+
+
+def switch(url, token, owner, sid, key):
+    """The server's switch (POST /api/share?allow=on|off) while a session runs: a full turn from the state it is in,
+    back to that state. `key` is the session's share key, None where the server does not share. Returns the key now."""
+    def post(allow, tok=token):
+        status, body = sc.http(url, f"/api/share?allow={allow}", tok, data=b"")
+        return status, (json.loads(body) if status == 200 else {})
+
+    def turn_on(old):
+        status, state = post("on")
+        check(status == 200 and state.get("allow") is True, f"sharing is turned on while the server runs ({status})")
+        owner.pump(3, lambda: share_said(owner))
+        new = share_said(owner) or ""
+        check(len(new) == 32 and new != old, "the running session's tab is told its link's key" + (", a new one" if old else ""))
+        if old:
+            v = Viewer(url, sid, old)
+            check(v.ws.status == 403, f"the link from before sharing was turned off stays dead ({v.ws.status})")
+        return new
+
+    def turn_off(k):
+        v = Viewer(url, sid, k)
+        check(v.ws.status == 101, "a viewer joins the running session")
+        v.pump(5, lambda: len(v.frames) > 0)
+        check(len(v.frames) > 0, "and gets its screen")
+        status, state = post("off")
+        check(status == 200 and state.get("allow") is False, f"sharing is turned off while the server runs ({status})")
+        v.pump(4, lambda: said(v, "x "))
+        check(said(v, "x ") == ["x sharing was turned off"], f"the viewer is told why and dropped ({said(v, 'x ')})")
+        owner.pump(3, lambda: share_said(owner) == "")
+        check(share_said(owner) == "", "the tab is told it has no link now")
+        again = Viewer(url, sid, k)
+        check(again.ws.status == 403, f"the link is refused ({again.ws.status})")
+        status, _ = sc.http(url, f"/?join={sid}&key={k}")
+        check(status == 403, f"and so is its page ({status})")
+
+    if token:
+        status, _ = sc.http(url, "/api/share?allow=on", None, data=b"")
+        check(status == 401, f"the switch needs the server's token ({status})")
+    status, _ = sc.http(url, "/api/share?allow=maybe", token, data=b"")
+    check(status == 400, f"and on or off ({status})")
+    status, body = sc.http(url, "/api/share", token)
+    check(status == 200 and json.loads(body).get("allow") is bool(key), "GET /api/share says whether the server shares")
+    if key:
+        turn_off(key)
+        owner.texts[:] = [t for t in owner.texts if not t.startswith('d {"share"')]
+        return turn_on(key)
+    new = turn_on("")
+    turn_off(new)
+    return None
+
+
 # ---------------------------------------------------------------- the swarm (worker processes)
 
 ACK = None
@@ -287,6 +343,8 @@ def main():
     ap.add_argument("--server-max", type=int, default=0, help="the server's --max-viewers, to check the limit")
     ap.add_argument("--stall", action="store_true", help="also wait for a viewer that never acknowledges to be dropped")
     ap.add_argument("--off", action="store_true", help="the server runs without --allow-share")
+    ap.add_argument("--no-switch", action="store_true",
+                    help="leave the server's switch alone (turning sharing off drops every session's viewers)")
     ap.add_argument("--server-pid", type=int, default=0, help="the serve process, to report the CPU it used (same machine)")
     ap.add_argument("--json", help="write the measurements here")
     a = ap.parse_args()
@@ -317,6 +375,8 @@ def main():
         check(key is None, "a server without --allow-share gives its sessions no share key")
         v = Viewer(url, sid, "0" * 32)
         check(v.ws.status == 403, f"and refuses a join ({v.ws.status})")
+        if not a.no_switch:
+            switch(url, token, owner, sid, None)
         owner.ws.s.close()
         return finish(a, measures)
 
@@ -342,6 +402,12 @@ def main():
             check(status == 401, f"the link opens nothing else: {path} still needs the token ({status})")
         status, _ = sc.http(url, f"/ws?app={app}&join={sid}&key={'0' * 32}")
         check(status in (400, 403), f"and a wrong key with an app does not start a session ({status})")
+
+    # ---------------------------------------------------------------- the switch
+    if not a.no_switch:
+        key = switch(url, token, owner, sid, key)
+        if not key:
+            return finish(a, measures)
 
     # ---------------------------------------------------------------- one viewer
     owner.pump(1.5)  # a still screen now

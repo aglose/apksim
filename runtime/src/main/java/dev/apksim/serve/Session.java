@@ -166,7 +166,8 @@ final class Session {
     }
     this.ws = ws;
     ws.onPong = this::ponged;
-    this.viewers = serve.allowShare && !serve.beam ? new Viewers(id, serve.maxViewers, this::askKey, this::viewersChanged) : null;
+    // Made whether or not the server shares now: sharing can be turned on while this session runs (Serve.setShare).
+    this.viewers = !serve.beam ? new Viewers(id, serve.maxViewers, () -> serve.allowShare, this::askKey, this::viewersChanged) : null;
     // The skin (issue 246): the tab's (checked by Serve; `off` for none), else the app's own --skin.
     String tabSkin = options.get("skin");
     this.skin = "off".equals(tabSkin) ? null : tabSkin != null ? tabSkin : appSkin(app);
@@ -191,7 +192,7 @@ final class Session {
 
   // ---------------------------------------------------------------- view-only joiners (docs/serve.md "Shared sessions")
 
-  /** This session's viewers (`--allow-share`), or null where sessions are not shared. */
+  /** This session's viewers (`--allow-share`; none join while the server does not share), or null on a beam agent. */
   final Viewers viewers;
   /** The tab's last `maxfps`, held back while it is low and viewers watch (a hidden tab asks for 1). Guarded by viewers. */
   private String tabMaxFps;
@@ -204,6 +205,17 @@ final class Session {
    * A viewer joined or left. The tab hears how many watch, and its own frame rate cap stops counting while any do: a
    * presenter who switches tabs (the page then asks for one frame a second) would freeze everyone's picture.
    */
+  /** The server's sharing was switched (Serve.setShare): the tab hears its link's key, or that it has none. */
+  void shareChanged() {
+    if (viewers == null || ending()) return;
+    if (serve.allowShare) {
+      ws.sendText("d {\"share\":" + Http.q(viewers.key()) + ",\"maxViewers\":" + serve.maxViewers + "}");
+    } else {
+      viewers.close("sharing was turned off");
+      ws.sendText("d {\"share\":\"\"}");
+    }
+  }
+
   private void viewersChanged(int n) {
     ws.sendText("d {\"viewers\":" + n + "}");
     synchronized (viewers) {

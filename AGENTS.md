@@ -1392,8 +1392,12 @@ held back while anyone watches. Viewers' sockets give their place among the 128 
 viewer and N at once (`scripts/share-swarm.java`, a thread each, or `--swarm python`; CI: 40 in `ci-smoke.sh`); a frame's
 time is not its order (a picture sent again on request carries the time it was sent), so the chain check orders frames
 by the viewer that got the most. Measured on one Mac, viewers included: 300 at 120 fps with serve at 1.7 cores, 1,000 at
-60-113 fps and 4 Gbit/s with serve at 3.9 cores, the check's own Python tab being what fell behind. Not done: revoking
-a link, handing control over, a JPEG side stream, viewers on other machines.
+60-113 fps and 4 Gbit/s with serve at 3.9 cores, the check's own Python tab being what fell behind. The switch: `POST /api/share?allow=on|off`
+(token; `GET` for the state) turns sharing on or off while the server runs (`Serve.setShare`; every non-beam session has
+a `Viewers` whether or not the server shares): on, each running tab hears `d {"share": KEY}`; off, viewers are dropped
+("sharing was turned off"), tabs hear `d {"share": ""}` and each session takes a new key, so old links stay dead
+(share-check.py turns it both ways; `--no-switch` leaves a server others watch alone). Not done: revoking
+one link, handing control over, a JPEG side stream, viewers on other machines.
 Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
 (14), `/ws?keep=KEY` runs the app in a seed slot (`ks<hex>-0`, which beam's sweep never takes) of the server's naming and, when the session ends, packs
 it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with

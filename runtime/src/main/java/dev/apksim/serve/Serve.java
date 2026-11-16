@@ -78,9 +78,10 @@ public final class Serve {
   boolean allowRec;
   /**
    * `--allow-share`: a session's tab gets a link with which others watch it, view only (docs/serve.md "Shared
-   * sessions"); the link's key stands in for the server's token, for that session's screen and nothing else.
+   * sessions"); the link's key stands in for the server's token, for that session's screen and nothing else. It can be
+   * switched while the server runs (`POST /api/share?allow=on|off`, {@link #setShare}).
    */
-  boolean allowShare;
+  volatile boolean allowShare;
   /** `--max-viewers N`: the most viewers of one session at once. */
   int maxViewers = 100;
   /** `--no-shell` (issue 397): tabs may not send `shell` (am start, am broadcast, settings get|put in their own session). */
@@ -962,6 +963,17 @@ public final class Serve {
       }
       case "GET /api/skins" -> Http.json(out, 200, skinsJson());
       case "GET /api/status" -> Http.json(out, 200, status());
+      case "GET /api/share" -> Http.json(out, 200, shareJson());
+      case "POST /api/share" -> {
+        // The switch for --allow-share while the server runs: whoever has the token may turn it.
+        String allow = r.param("allow");
+        if (beam || allow == null || !allow.matches("on|off")) {
+          Http.text(out, beam ? 404 : 400, beam ? "not found" : "allow=on or allow=off");
+          return;
+        }
+        setShare(allow.equals("on"));
+        Http.json(out, 200, shareJson());
+      }
       case "POST /api/upload" -> upload(r, out);
       case "POST /api/apps" -> addApp(r, out);
       case "GET /ws" -> {
@@ -1509,6 +1521,28 @@ public final class Serve {
     seedHolds.remove(name);  // only now: a sweep must not open its file while this channel still holds it
   }
 
+  private String shareJson() {
+    int shared = 0, watching = 0;
+    for (Session x : sessions.values()) {
+      if (x.viewers == null || x.ending()) continue;
+      shared++;
+      watching += x.viewers.count();
+    }
+    return "{\"allow\":" + allowShare + ",\"maxViewers\":" + maxViewers + ",\"sessions\":" + shared + ",\"viewers\":" + watching + "}";
+  }
+
+  /**
+   * Turns sharing on or off for the running server and its running sessions. On: each session's tab is told its link's
+   * key. Off: each tab is told it has none, everyone watching is told why and dropped, and each session takes a new
+   * key, so a link handed out before never works again, sharing turned back on or not.
+   */
+  private synchronized void setShare(boolean on) {
+    if (allowShare == on) return;
+    allowShare = on;
+    System.err.println("[serve] sharing turned " + (on ? "on" : "off"));
+    for (Session x : sessions.values()) x.shareChanged();
+  }
+
   /** The running session a share link names (`join=ID&key=KEY`), if this server shares sessions and the key is its key. */
   private Session joinTarget(Http.Request r) {
     String id = r.param("join");
@@ -1750,7 +1784,7 @@ public final class Serve {
         + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
         + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
         // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
-        + (session.viewers != null ? ",\"share\":" + Http.q(session.viewers.key) + ",\"maxViewers\":" + maxViewers : "")
+        + (session.viewers != null && allowShare ? ",\"share\":" + Http.q(session.viewers.key()) + ",\"maxViewers\":" + maxViewers : "")
         + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
     session.run();
   }
@@ -2683,7 +2717,7 @@ public final class Serve {
     StringBuilder b = new StringBuilder("{\"apksim\":").append(Http.q(Beam.version(root))).append(",\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
         .append(",\"maxUploadMb\":").append(maxUploadMb).append(",\"uptimeS\":").append((System.currentTimeMillis() - startedAt) / 1000)
         .append(",\"warmLaunches\":").append(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"))
-        .append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");
+        .append(",\"share\":").append(allowShare).append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");
     boolean first = true;
     for (Session s : sessions.values()) {
       if (!first) b.append(',');

@@ -40,7 +40,9 @@ final class Viewers {
   private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
 
   /** The secret a join link carries (32 hex digits): whoever has it may watch this session, and nothing else. */
-  final String key;
+  private volatile String key = newKey();
+  /** Whether the server shares sessions now (`--allow-share`, or its switch): read as each viewer joins. */
+  private final java.util.function.BooleanSupplier shared;
   private final String sessionId;
   private final int max;
   /** Asks the instance for a keyframe (nothing on a JPEG stream). */
@@ -60,17 +62,26 @@ final class Viewers {
   final AtomicLong joined = new AtomicLong(), framesSent = new AtomicLong(), bytesSent = new AtomicLong(),
       keyDrops = new AtomicLong(), keysAsked = new AtomicLong(), stalled = new AtomicLong(), fanoutNanos = new AtomicLong();
 
-  Viewers(String sessionId, int max, Runnable askKey, IntConsumer onCount) {
-    byte[] k = new byte[16];
-    RANDOM.nextBytes(k);
-    this.key = HexFormat.of().formatHex(k);
+  Viewers(String sessionId, int max, java.util.function.BooleanSupplier shared, Runnable askKey, IntConsumer onCount) {
+    this.shared = shared;
     this.sessionId = sessionId;
     this.max = max;
     this.askKey = askKey;
     this.onCount = onCount;
   }
 
+  private static String newKey() {
+    byte[] k = new byte[16];
+    RANDOM.nextBytes(k);
+    return HexFormat.of().formatHex(k);
+  }
+
+  String key() {
+    return key;
+  }
+
   boolean keyMatches(String given) {
+    String key = this.key;
     return given != null && MessageDigest.isEqual(key.getBytes(StandardCharsets.US_ASCII), given.getBytes(StandardCharsets.UTF_8));
   }
 
@@ -209,6 +220,18 @@ final class Viewers {
     for (Viewer v : list) v.bye(why);
   }
 
+  /**
+   * Sharing was turned off while the session runs: everyone watching is told why and dropped, and the link's key is
+   * replaced, so the old link stays dead if sharing comes back. The caller has switched {@link #shared} off first: a
+   * viewer joining meanwhile either sees that under this lock, or is in the list by now and dropped here.
+   */
+  void close(String why) {
+    synchronized (this) {
+      key = newKey();
+    }
+    for (Viewer v : list) v.bye(why);
+  }
+
   String json() {
     return "{\"count\":" + list.size() + ",\"max\":" + max + ",\"joined\":" + joined + ",\"framesSent\":" + framesSent
         + ",\"mbSent\":" + (bytesSent.get() >> 20) + ",\"keyDrops\":" + keyDrops + ",\"keysAsked\":" + keysAsked
@@ -227,6 +250,11 @@ final class Viewers {
       if (ended) {
         ws.sendText("x the session has ended");
         ws.close("ended");
+        return;
+      }
+      if (!shared.getAsBoolean()) {
+        ws.sendText("x sharing was turned off");
+        ws.close("not shared");
         return;
       }
       if (list.size() >= max) {
