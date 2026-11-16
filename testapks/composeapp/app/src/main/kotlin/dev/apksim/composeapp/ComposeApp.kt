@@ -69,6 +69,23 @@ open class ComposeApp : Application() {
       override fun onReceive(c: android.content.Context, i: android.content.Intent) {
         Log.i("ComposeApp", "flag ${i.getStringExtra("name")}=${i.getBooleanExtra("value", false)} n=${i.getIntExtra("n", -1)}")
         resultCode = 7
+        // Like a debug receiver that dumps its flags for `adb shell cat` (issue 408: a page reads it with `cat`), and a
+        // symlink out of the folder that a page must not be able to follow.
+        try {
+          val f = java.io.File(filesDir, "flags.txt")
+          f.writeText("${i.getStringExtra("name")}=${i.getBooleanExtra("value", false)} source=override\n")
+          val link = java.io.File(filesDir, "link-out").toPath()
+          java.nio.file.Files.deleteIfExists(link)
+          java.nio.file.Files.createSymbolicLink(link, java.nio.file.Paths.get("/etc/hosts"))
+          // A file inside the data folder but outside the readable ones, and a link to it from files/.
+          val prefs = java.io.File(dataDir, "shared_prefs").apply { mkdirs() }
+          java.io.File(prefs, "x.xml").writeText("<map/>")
+          val inLink = java.io.File(filesDir, "link-in").toPath()
+          java.nio.file.Files.deleteIfExists(inLink)
+          java.nio.file.Files.createSymbolicLink(inLink, java.io.File(prefs, "x.xml").toPath())
+        } catch (e: Exception) {
+          Log.w("ComposeApp", "flags dump failed: $e")
+        }
       }
     }
     registerReceiver(receiver, android.content.IntentFilter("dev.apksim.testapp.SET_FLAG"), RECEIVER_EXPORTED)

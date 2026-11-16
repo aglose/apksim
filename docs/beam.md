@@ -1212,7 +1212,9 @@ Mac, typed into the page and carried to that Mac's instance over the session's W
 
 1. **Always: the limited shell.** The tab's `shell ID LINE` message, as on a server (docs/serve.md "Shell commands"):
    `am start`, `am broadcast` and `settings get|put` for the session's own app, answered `a {"id", "status", "out"}`.
-   It does nothing a start's launch options could not have done at launch, so it needs no setting.
+   Its one read is `cat PATH` of a file in the app's own `files/`, `cache/` and external files and cache folders: a
+   site's page can read what the app wrote there (including data a kept or saved session reopened) with no setting.
+   Beyond that it does nothing a start's launch options could not have done, so it needs no setting.
 2. **With the owner's `apksim beam config allow-adb on`** (off by default; read again at every start and every
    `shell` command, so `allow-adb off` takes effect at once, also for sessions already running), for a session whose
    start asked for it (`"adb": true`):

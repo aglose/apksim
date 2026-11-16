@@ -15,9 +15,10 @@ import java.util.List;
  *   am start|start-activity [-W] [-a ACTION] [-d URI] [-t TYPE] [-c CATEGORY] [-n PKG/CLASS] [-p PKG] [-f FLAGS] [extras]
  *   am broadcast [-a ACTION] [-d URI] [-t TYPE] [-c CATEGORY] [-n PKG/CLASS] [-p PKG] [-f FLAGS] [extras]
  *   settings get|put global|secure|system KEY [VALUE]
+ *   cat PATH   (one file inside the app's files, cache, external files or external cache folder: issue 408)
  * with the extras `--broadcast` takes (--es --ez --ei --el --ef K V) and the app's own package: a component or -p of
- * another package is refused, and a broadcast that names neither is sent to the app's package alone. Nothing here names
- * a file or another process. `full` (a beamed session that asked for adb while its Mac's owner allows it) is the whole shell, as
+ * another package is refused, and a broadcast that names neither is sent to the app's package alone. Nothing here writes a
+ * file or names another process. `full` (a beamed session that asked for adb while its Mac's owner allows it) is the whole shell, as
  * `adb shell LINE` on the instance's adb device, except that nothing streams: `logcat` prints what there is.
  *
  * Runs on the control connection's own thread, not Host's loop: the shell's commands wait for the main thread.
@@ -130,8 +131,12 @@ final class TabShell {
         }
         return null;
       }
+      case "cat" -> {
+        if (a.size() != 2 || a.get(1).startsWith("-")) return "cat PATH (one file)";
+        return null; // which file is decided where the path resolves (AdbShell.tabCat)
+      }
       default -> {
-        return "only am start, am broadcast and settings get|put";
+        return "only am start, am broadcast, settings get|put and cat of a file in the app's own folders";
       }
     }
   }

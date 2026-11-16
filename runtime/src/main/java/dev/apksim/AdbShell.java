@@ -161,6 +161,7 @@ final class AdbShell {
       return 126;
     }
     List<String> args = new ArrayList<>(cmds.get(0).args);
+    if (args.get(0).equals("cat")) return tabCat(shell, args.get(1), out);
     // A broadcast naming no component or package goes to this app alone, never to whatever else is installed (the
     // instrumentation an adb client put here).
     // Decided from the options as parsed, not from tokens: `--es -p x` is an extra named -p, and pins nothing.
@@ -170,6 +171,47 @@ final class AdbShell {
     int status = shell.exec(args);
     out.flush();
     return status;
+  }
+
+  /**
+   * `cat PATH` from a page (issue 408): one file, which after `..` (resolved by Paths.normalize) and symlinks (toRealPath)
+   * lies inside the app's getFilesDir, getCacheDir, getExternalFilesDir(null) or getExternalCacheDir. Anything else is 126.
+   * Reads at most TabShell.MAX_OUT + 1 bytes, so a huge file costs no more than the cap.
+   */
+  private static int tabCat(AdbShell shell, String path, OutputStream out) throws Exception {
+    Path real = null;
+    try {
+      Application app = app();
+      Path host = app == null ? null : Paths.host(path, "/");
+      if (host != null && Files.isRegularFile(host)) {
+        real = host.toRealPath();
+        boolean inside = false;
+        List<java.io.File> roots = new ArrayList<>();
+        roots.add(app.getFilesDir());
+        roots.add(app.getCacheDir());
+        roots.add(app.getExternalFilesDir(null));
+        roots.add(app.getExternalCacheDir());
+        for (java.io.File r : roots) {
+          if (r != null && r.exists() && real.startsWith(r.toPath().toRealPath())) inside = true;
+        }
+        if (!inside) real = null;
+      }
+    } catch (IOException | RuntimeException e) {
+      real = null;
+    }
+    if (real == null) {
+      shell.print("apksim: not allowed from a page: cat reads only a file in the app's files, cache, external files or external cache folder\n");
+      return 126;
+    }
+    try (InputStream in = Files.newInputStream(real, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      out.write(in.readNBytes(TabShell.MAX_OUT + 1));
+    } catch (IOException e) {
+      // Never e.getMessage(): it holds the host's path.
+      shell.print("cat: " + path + ": cannot read\n");
+      return 1;
+    }
+    out.flush();
+    return 0;
   }
 
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */
