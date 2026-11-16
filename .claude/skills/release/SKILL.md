@@ -71,7 +71,7 @@ git tag -a vX.Y.Z -m "apksim X.Y.Z" && git push origin vX.Y.Z
 ```
 The tag must point at the merged docs commit. The pre-push hook allows tags. Then watch `release.yml`:
 `gh run list --workflow release.yml --limit 3`, then wait for it in a foreground Bash call with the 10-minute timeout,
-repeated until it ends (`gh run watch RUN_ID --exit-status --interval 30`; it takes 20-40 min: tarball, Linux images).
+repeated until it ends (`gh run watch RUN_ID --exit-status --interval 30`; it takes ~20-25 min: tarball, Linux images checked in parallel legs).
 It makes a **draft** release with the tarball, `SHA256SUMS` and the test app. Write the release notes (step 6.1)
 before you start waiting.
 **Never end the turn while the run is in progress.** A background watch ends the turn, and the draft then sits

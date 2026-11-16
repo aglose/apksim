@@ -6,12 +6,15 @@
 #   aglose/homebrew-apksim tap, so `brew tap aglose/apksim`, `brew trust aglose/apksim` and `brew install apksim` get it. It pushes with the
 #   TAP_DEPLOY_KEY secret, the private half of a deploy key with write access to that repository only, and is skipped
 #   without one.
-# - The `image` job builds the Linux image (docker/Dockerfile) for CI on Linux runners, checks it (smoke test, the test
-#   app's androidTest suite through the image's own instrument.py) and on a tag pushes ghcr.io/aglose/apksim:VERSION-amd64;
-#   `image-arm64` does the same for linux/arm64 on an arm64 runner (with the test app `image` built: Android's build tools
-#   are x86_64-only) and makes ghcr.io/aglose/apksim:VERSION the two together, so a pull gets the host's own.
+# - The Linux image (docker/Dockerfile), for CI on Linux runners: `apks` builds the test app once (Android's build tools
+#   are x86_64-only), `image` builds the image for linux/amd64 and linux/arm64 side by side, each on its own architecture,
+#   and `check` runs the checks on each in parallel legs (scripts/ci-smoke.sh split by SMOKE_PARTS as ci.yml splits it,
+#   and the test app's androidTest suite in two shards through the image's own instrument.py). On a tag, once every leg
+#   and the Mac package passed, `push` pushes ghcr.io/aglose/apksim:VERSION-amd64 and VERSION-arm64 and `draft` makes
+#   ghcr.io/aglose/apksim:VERSION the two together (so a pull gets the host's own) and then the draft release.
 #   Publishing the release moves :latest to it (`image-latest`). The package must be public once (its settings on
 #   GitHub) for other repositories' CI to pull it without a token.
+#   Before (0.39), one job per architecture ran every check in turn and arm64 waited for amd64: ~85 min; now ~20.
 # - Pull requests that change the packaging or the image build and check them without releasing.
 name: release
 on:
@@ -44,9 +47,6 @@ permissions:
 jobs:
   package:
     if: github.event_name != 'release'
-    # The draft is made only once the image of its version is pushed (both architectures): publishing it moves :latest
-    # to that image.
-    needs: [image, image-arm64]
     runs-on: macos-15  # Apple Silicon
     timeout-minutes: 60
     steps:
@@ -99,73 +99,44 @@ jobs:
             dist/SHA256SUMS
             launch.log
             ${{ runner.temp }}/state/train-*.log
-      - name: Draft release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "apksim $VERSION" --generate-notes \
-            "dist/apksim-$VERSION-macos-arm64.tar.gz" "dist/apksim-testapp-$VERSION.apk" dist/SHA256SUMS
+      # The files the draft release gets, made by `draft` once the images are pushed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/apksim-${{ env.VERSION }}-macos-arm64.tar.gz
+            dist/apksim-testapp-${{ env.VERSION }}.apk
+            dist/SHA256SUMS
+          compression-level: 0
+          retention-days: 2
 
-  image:
+  # The test app's APKs, once, for both images (each trains its startup cache on the app) and the checks.
+  apks:
     if: github.event_name != 'release'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write
-    env:
-      IMAGE: ghcr.io/${{ github.repository }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.0-ci.${GITHUB_SHA::7}"; fi
-          echo "VERSION=$V" >> "$GITHUB_ENV"
-      - name: Build the runtime and the test app
+      - name: Build the test app
         uses: ./.github/actions/linux-build
-      - name: Build the image
-        run: scripts/docker-build.sh "$IMAGE:$VERSION" --build-arg VERSION="$VERSION"
-      - name: Check the image
-        run: |
-          docker run --rm "$IMAGE:$VERSION" --version | grep -qx "apksim $VERSION"
-          export PATH="$ANDROID_HOME/platform-tools:$PATH"
-          scripts/ci-smoke.sh "$IMAGE:$VERSION" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke \
-            testapks/composeapp/uiserver/build/outputs/apk/debug/uiserver-debug.apk
-          # A whole suite in one container, as another repository's CI would run it: the image's own instrument.py.
-          mkdir -p tests
-          cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
-          cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
-          docker run --rm -v "$PWD/tests:/work" --entrypoint instrument.py "$IMAGE:$VERSION" app.apk test.apk \
-            --isolate -j 2 --xml junit.xml
-      - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: image-check
-          path: |
-            smoke/*.png
-            smoke/*.log
-            tests/junit.xml
+          runtime: 'false'  # the image jobs compile it on their own architectures
       - uses: actions/upload-artifact@v4
         with:
           name: testapp
-          path: testapks/composeapp/app/build/outputs/apk
-          retention-days: 1
-      - name: Push
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "$IMAGE:$VERSION" "$IMAGE:$VERSION-amd64"
-          docker push "$IMAGE:$VERSION-amd64"
+          path: |
+            testapks/composeapp/app/build/outputs/apk
+            testapks/composeapp/uiserver/build/outputs/apk
+          retention-days: 2
 
-  image-arm64:
+  image:
     if: github.event_name != 'release'
-    needs: image
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write
+    needs: apks
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     env:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
@@ -177,36 +148,153 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: testapp
-          path: testapks/composeapp/app/build/outputs/apk
+          path: testapks/composeapp
       - name: Build the runtime
         uses: ./.github/actions/linux-build
         with:
           test-app: 'false'
       - name: Build the image
-        run: scripts/docker-build.sh "$IMAGE:$VERSION-arm64" --platform linux/arm64 --build-arg VERSION="$VERSION"
-      - name: Check the image
+        run: scripts/docker-build.sh "$IMAGE:$VERSION-${{ matrix.arch }}" --platform linux/${{ matrix.arch }} --build-arg VERSION="$VERSION"
+      - name: Check its version
+        run: docker run --rm "$IMAGE:$VERSION-${{ matrix.arch }}" --version | grep -qx "apksim $VERSION"
+      - name: Save the image
+        shell: bash  # -o pipefail: a failed save must fail here
         run: |
-          docker run --rm "$IMAGE:$VERSION-arm64" --version | grep -qx "apksim $VERSION"
-          scripts/ci-smoke.sh "$IMAGE:$VERSION-arm64" testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk smoke
+          command -v zstd >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q zstd; }
+          docker save "$IMAGE:$VERSION-${{ matrix.arch }}" | zstd -T0 -3 -q -o "$RUNNER_TEMP/image.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image.tar.zst
+          compression-level: 0
+          retention-days: 2
+
+  # Each image's checks in legs side by side (ci.yml's split; ~5-8 min each): app (an instance over the control channel,
+  # the adb device on amd64, where the runner has adb; serve), device (network record/replay, data slots, the APK cache),
+  # replay (replay, bisect, journeys, coverage, screenshot tests), crawl, and the androidTest suite in two shards, run as
+  # another repository's CI would run it: one container, the image's own instrument.py.
+  check:
+    if: github.event_name != 'release'
+    needs: image
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false  # every leg's failures from one run
+      matrix:
+        arch: [amd64, arm64]
+        leg: [app, device, replay, crawl, tests-0, tests-1]
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.0.0-ci.${GITHUB_SHA::7}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: testapp
+          path: testapks/composeapp
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+      - name: Load the image
+        shell: bash  # -o pipefail: a truncated download must fail here
+        run: |
+          command -v zstd >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q zstd; }
+          zstd -dc "$RUNNER_TEMP/image.tar.zst" | docker load && rm "$RUNNER_TEMP/image.tar.zst"
+      - name: Smoke test (${{ matrix.leg }})
+        if: ${{ !startsWith(matrix.leg, 'tests-') }}
+        env:
+          SMOKE_PARTS: ${{ fromJSON('{"app":"app serve","device":"device","replay":"replay","crawl":"crawl"}')[matrix.leg] }}
+        run: |
+          APK=testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            # The runner's Android SDK has adb, for the adb device check (adb-check.py); arm64 Linux has no platform-tools.
+            export PATH="$ANDROID_HOME/platform-tools:$PATH"
+            scripts/ci-smoke.sh "$IMAGE:$VERSION-amd64" "$APK" smoke \
+              testapks/composeapp/uiserver/build/outputs/apk/debug/uiserver-debug.apk
+          else
+            scripts/ci-smoke.sh "$IMAGE:$VERSION-arm64" "$APK" smoke
+          fi
+      - name: androidTest suite (shard ${{ matrix.leg }} of 2)
+        if: startsWith(matrix.leg, 'tests-')
+        run: |
           mkdir -p tests
           cp testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk tests/app.apk
           cp testapks/composeapp/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk tests/test.apk
-          docker run --rm -v "$PWD/tests:/work" --entrypoint instrument.py "$IMAGE:$VERSION-arm64" app.apk test.apk \
-            --isolate -j 2 --xml junit.xml
+          SHARD="${{ matrix.leg }}"
+          docker run --rm -v "$PWD/tests:/work" --entrypoint instrument.py "$IMAGE:$VERSION-${{ matrix.arch }}" app.apk test.apk \
+            --isolate -j 2 --shards 2 --shard "${SHARD#tests-}" --xml junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: image-check-arm64
+          name: image-check-${{ matrix.arch }}-${{ matrix.leg }}
+          if-no-files-found: ignore
           path: |
             smoke/*.png
             smoke/*.log
             tests/junit.xml
-      - name: Push, and :VERSION as both architectures
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  # Nothing is pushed until both images passed every leg and the Mac package passed its check. Each image is pushed from a
+  # runner of its own architecture, as before.
+  push:
+    if: github.event_name != 'release' && startsWith(github.ref, 'refs/tags/v')
+    needs: [check, package]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+      - name: Load and push
+        shell: bash
         run: |
+          V="${GITHUB_REF#refs/tags/v}"
+          command -v zstd >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q zstd; }
+          zstd -dc "$RUNNER_TEMP/image.tar.zst" | docker load
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:$VERSION-arm64"
-          docker buildx imagetools create -t "$IMAGE:$VERSION" "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+          docker push "$IMAGE:$V-${{ matrix.arch }}"
+
+  # :VERSION as both architectures, then the draft: publishing it moves :latest to that image, so the draft is made only
+  # once the image of its version is pushed.
+  draft:
+    if: github.event_name != 'release' && startsWith(github.ref, 'refs/tags/v')
+    needs: push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: :VERSION as both architectures
+        run: |
+          V="${GITHUB_REF#refs/tags/v}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create -t "$IMAGE:$V" "$IMAGE:$V-amd64" "$IMAGE:$V-arm64"
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${GITHUB_REF#refs/tags/v}"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "apksim $V" \
+            --generate-notes "dist/apksim-$V-macos-arm64.tar.gz" "dist/apksim-testapp-$V.apk" dist/SHA256SUMS
 
   image-latest:
     if: github.event_name == 'release'
