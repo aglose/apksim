@@ -485,6 +485,32 @@ public final class TestActivities {
       }
     }
 
+    /**
+     * recreate() as a device has it: calls while one is pending for this activity are one relaunch, and a relaunch never
+     * runs inside another. The relaunch is a configuration change of this activity (Host.recreate), as the `recreate`
+     * command: Robolectric's ActivityController.recreate() left the new window detached and threw an NPE in
+     * windowFocusChanged waiting for its focus, which ended the app (issue 410: an in-app theme switch). Running
+     * instances only; test runs keep Robolectric's.
+     */
+    private volatile boolean recreatePending;
+
+    @Implementation
+    @Override
+    protected void recreate() {
+      if (testRun()) {
+        super.recreate();
+        return;
+      }
+      if (recreatePending) return;
+      ActivityController<?> c = controller(realActivity);
+      if (c == null) {
+        super.recreate();
+        return;
+      }
+      recreatePending = true;
+      new android.os.Handler(Looper.getMainLooper()).post(() -> runRecreate(c, realActivity, () -> recreatePending = false));
+    }
+
     @Implementation
     @Override
     protected void finishAffinity() {
@@ -503,6 +529,34 @@ public final class TestActivities {
     interface ActivityReflector {
       @org.robolectric.util.reflector.Direct
       void onBackPressed();
+    }
+  }
+
+  private static boolean recreating;
+  private static final java.util.ArrayDeque<Runnable> DEFERRED_RECREATES = new java.util.ArrayDeque<>();
+
+  /** Runs one recreate at a time on the main thread; one asked for meanwhile (another activity's) waits its turn. */
+  private static void runRecreate(ActivityController<?> c, Activity asker, Runnable done) {
+    if (recreating) {
+      DEFERRED_RECREATES.add(() -> runRecreate(c, asker, done));
+      return;
+    }
+    recreating = true;
+    try {
+      done.run();  // a recreate() during this relaunch (the old activity's teardown) is a new request
+      // Nothing to relaunch when the activity that asked is gone: finished and destroyed (Robolectric's recreate
+      // throws there), or already relaunched by something else (a configuration change), as a device merges them.
+      if (c.get() == asker && !asker.isDestroyed() && !Host.recreate(c)) {
+        System.err.println("[apksim] recreate: " + asker.getClass().getName()
+            + " is not in the activity stack; Robolectric's recreate");
+        c.recreate();
+      }
+    } finally {
+      recreating = false;
+      // In the finally: with -Dapksim.crashes=log the app runs on after a recreate that threw, and what waited
+      // behind it must still get its turn.
+      Runnable next = DEFERRED_RECREATES.poll();
+      if (next != null) new android.os.Handler(Looper.getMainLooper()).post(next);
     }
   }
 

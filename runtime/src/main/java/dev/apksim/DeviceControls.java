@@ -1194,6 +1194,19 @@ final class DeviceControls {
   }
 
   /**
+   * One activity relaunched as a configuration change relaunches it (Activity.recreate(), Host.recreate): saved state
+   * and non-configuration instances kept, the window attached and the stack arranged again. Main thread.
+   */
+  boolean recreate(ActivityController<?> c) {
+    if (!stack.contains(c)) return false;
+    Activity a = c.get();
+    c.configurationChange(new Configuration(a.getResources().getConfiguration()),
+        a.getResources().getDisplayMetrics(), 0x80000000);
+    Host.arrange(new java.util.ArrayList<>(stack), hiddenBy != null);
+    return true;
+  }
+
+  /**
    * Every activity of the stack gets the change, then the stack is arranged again (Host.arrange): Robolectric
    * recreates an activity into the resumed state whatever it was, and leaves the new window detached.
    */

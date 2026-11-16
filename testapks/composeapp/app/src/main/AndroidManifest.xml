@@ -264,6 +264,15 @@
                 <data android:scheme="apksim" android:host="exit" />
             </intent-filter>
         </activity>
+        <!-- apksim://recreate: Activity.recreate() twice in a row, and again from the new activity's onCreate (issue 410). -->
+        <activity android:name=".RecreateActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="recreate" />
+            </intent-filter>
+        </activity>
         <!-- apksim://install: install-time state the app's onCreate saw, and a bind to a service nothing provides. -->
         <activity android:name=".InstallStateActivity" android:exported="true">
             <intent-filter>
