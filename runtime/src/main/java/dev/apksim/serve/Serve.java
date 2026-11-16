@@ -35,6 +35,7 @@ public final class Serve {
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
+                          [--allow-share] [--max-viewers N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
              apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
@@ -75,6 +76,13 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /**
+   * `--allow-share`: a session's tab gets a link with which others watch it, view only (docs/serve.md "Shared
+   * sessions"); the link's key stands in for the server's token, for that session's screen and nothing else.
+   */
+  boolean allowShare;
+  /** `--max-viewers N`: the most viewers of one session at once. */
+  int maxViewers = 100;
   /** `--no-shell` (issue 397): tabs may not send `shell` (am start, am broadcast, settings get|put in their own session). */
   boolean noShell;
   /**
@@ -235,6 +243,11 @@ public final class Serve {
           s.allowRec = true;
           continue;  // no value: the next argument is an option of its own
         }
+        case "--allow-share" -> {
+          s.allowShare = true;
+          continue;  // no value
+        }
+        case "--max-viewers" -> s.maxViewers = Math.max(1, Math.min(10_000, Integer.parseInt(need(a, v))));
         case "--no-shell" -> {
           s.noShell = true;
           continue;  // no value
@@ -652,7 +665,8 @@ public final class Serve {
           if (!statusRequest.get()) lastActivity = System.currentTimeMillis();
           statusRequest.remove();
           busy.decrementAndGet();
-          connections.release();
+          if (!permitFreed.get()) connections.release();
+          permitFreed.remove();
         }
       });
     }
@@ -861,7 +875,14 @@ public final class Serve {
       Http.file(out, zip, "application/zip");
       return;
     }
-    if (!authorized(r)) {
+    // A share link (--allow-share): the page and the viewer's socket of one running session, by that session's own key
+    // and without the server's token, which the link's holder need not have. Nothing else is opened by it.
+    boolean joining = r.method().equals("GET") && r.param("join") != null && (r.path().equals("/") || r.path().equals("/ws"));
+    if (joining && joinTarget(r) == null) {
+      Http.text(out, 403, "no such shared session: it has ended, or the link is not its link");
+      return;
+    }
+    if (!joining && !authorized(r)) {
       Http.text(out, 401, "this server needs its token: open the link with ?token=... once (or send Authorization: Bearer ...)");
       return;
     }
@@ -943,7 +964,10 @@ public final class Serve {
       case "GET /api/status" -> Http.json(out, 200, status());
       case "POST /api/upload" -> upload(r, out);
       case "POST /api/apps" -> addApp(r, out);
-      case "GET /ws" -> websocket(r, s, in, out);
+      case "GET /ws" -> {
+        if (joining) joinSocket(r, s, in, out);
+        else websocket(r, s, in, out);
+      }
       default -> Http.text(out, 404, "not found");
     }
   }
@@ -1485,6 +1509,40 @@ public final class Serve {
     seedHolds.remove(name);  // only now: a sweep must not open its file while this channel still holds it
   }
 
+  /** The running session a share link names (`join=ID&key=KEY`), if this server shares sessions and the key is its key. */
+  private Session joinTarget(Http.Request r) {
+    String id = r.param("join");
+    if (!allowShare || beam || id == null || !id.matches("[0-9a-f]{12}")) return null;
+    Session x = sessions.get(id);
+    return x != null && x.viewers != null && !x.ending() && x.viewers.keyMatches(r.param("key")) ? x : null;
+  }
+
+  /** Set on a connection's thread once it has given its place among {@link #connections} back (a viewer's socket). */
+  private static final ThreadLocal<Boolean> permitFreed = ThreadLocal.withInitial(() -> false);
+
+  /** A viewer's WebSocket: it watches the session until either ends (Viewers). */
+  private void joinSocket(Http.Request r, Socket s, InputStream in, OutputStream out) throws IOException {
+    String key = r.header("sec-websocket-key");
+    if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
+      Http.text(out, 400, "expected a WebSocket upgrade");
+      return;
+    }
+    Session x = joinTarget(r);
+    if (x == null) {
+      Http.text(out, 403, "no such shared session: it has ended, or the link is not its link");
+      return;
+    }
+    out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+        + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+    out.flush();
+    s.setSoTimeout(0);
+    // Viewers are bounded per session (--max-viewers), not by the server's connection limit, which is for connections
+    // that have shown nothing yet: a session watched by a hundred would otherwise leave no place for a request.
+    connections.release();
+    permitFreed.set(true);
+    x.viewers.run(new WebSocket(s, in, out));
+  }
+
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
   private void websocket(Http.Request r, Socket s, InputStream in, OutputStream out, String site, String seed, String beamLabel) throws IOException {
     String key = r.header("sec-websocket-key");
@@ -1681,6 +1739,7 @@ public final class Serve {
     }
     if (beam) agent.settled(catalog.buildHash(app.path()));
     System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
+    if (session.viewers != null) session.viewers.info("\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device));
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
         + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
@@ -1690,6 +1749,8 @@ public final class Serve {
         // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
         + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
         + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
+        // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
+        + (session.viewers != null ? ",\"share\":" + Http.q(session.viewers.key) + ",\"maxViewers\":" + maxViewers : "")
         + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
     session.run();
   }

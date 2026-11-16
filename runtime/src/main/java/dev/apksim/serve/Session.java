@@ -166,6 +166,7 @@ final class Session {
     }
     this.ws = ws;
     ws.onPong = this::ponged;
+    this.viewers = serve.allowShare && !serve.beam ? new Viewers(id, serve.maxViewers, this::askKey, this::viewersChanged) : null;
     // The skin (issue 246): the tab's (checked by Serve; `off` for none), else the app's own --skin.
     String tabSkin = options.get("skin");
     this.skin = "off".equals(tabSkin) ? null : tabSkin != null ? tabSkin : appSkin(app);
@@ -187,6 +188,28 @@ final class Session {
 
   /** The stored skin the session runs with (`--skin` to a serve instance; the page draws its frame), or null. */
   final String skin;
+
+  // ---------------------------------------------------------------- view-only joiners (docs/serve.md "Shared sessions")
+
+  /** This session's viewers (`--allow-share`), or null where sessions are not shared. */
+  final Viewers viewers;
+  /** The tab's last `maxfps`, held back while it is low and viewers watch (a hidden tab asks for 1). Guarded by viewers. */
+  private String tabMaxFps;
+
+  private static boolean lowFps(String cmd) {
+    return Integer.parseInt(cmd.substring(7)) < 30;
+  }
+
+  /**
+   * A viewer joined or left. The tab hears how many watch, and its own frame rate cap stops counting while any do: a
+   * presenter who switches tabs (the page then asks for one frame a second) would freeze everyone's picture.
+   */
+  private void viewersChanged(int n) {
+    ws.sendText("d {\"viewers\":" + n + "}");
+    synchronized (viewers) {
+      if (tabMaxFps != null && lowFps(tabMaxFps) && !ended && controlOut != null) send(n > 0 ? "maxfps 120" : tabMaxFps, null);
+    }
+  }
 
   /** The app's own `--skin` (catalog line or URL add, checked by Catalog.launchOptions), if this server has it. */
   static String appSkin(Catalog.App app) {
@@ -438,6 +461,7 @@ final class Session {
     cmd.add(apk.toString());
     ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     ws.sendText("p launching " + app.name());
+    if (viewers != null) viewers.text("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true);
     // Where the JVM writes a crash report (hs_err_pid<N>.log), found and removed by exited(). A beamed instance may not
@@ -1135,12 +1159,15 @@ final class Session {
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
+      if (viewers != null) viewers.codec(h264);
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
         int len = in.readInt();
         if (len < 20 || len > 64 << 20) throw new IOException("a frame of " + len + " bytes");
         byte[] frame = new byte[len];
         in.readFully(frame);
+        // The viewers first, and whatever the tab's own state: one that has fallen behind drops frames they still get.
+        if (viewers != null) viewers.frame(frame);
         if (firstFrameMillis < 0) {
           firstFrameMillis = System.currentTimeMillis() - started;
           ws.sendText("p first frame after " + firstFrameMillis + " ms");
@@ -1414,6 +1441,12 @@ final class Session {
     // The tab's pace and its visibility are not someone using it.
     if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
     trackSetting(cmd);
+    if (viewers != null && cmd.startsWith("maxfps ")) {
+      synchronized (viewers) {
+        tabMaxFps = cmd;
+        if (lowFps(cmd) && viewers.count() > 0) return;  // applied when the last viewer leaves (viewersChanged)
+      }
+    }
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
@@ -1951,6 +1984,7 @@ final class Session {
 
   void tick() {
     if (ended || tabGone) return;  // a detached session whose tab left is the window's: no tab to ping or tell
+    if (viewers != null) viewers.tick();
     // The idle deadline first, apart from stats: a stats request stuck behind an app that stopped reading commands
     // must not keep the session alive. Not for a detached session: input in the window never reaches the agent.
     if (!detached && System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
@@ -1990,7 +2024,8 @@ final class Session {
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
         + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
-        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + pacerKeyDrops() + ",\"paceMs\":" + pacerPaceMs() + ",\"busyMs\":" + Math.round(pacerBusyMs()) + ",\"tabFrameMs\":" + Math.round(tabFrameMs()) + "}";
+        + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + pacerKeyDrops() + ",\"paceMs\":" + pacerPaceMs() + ",\"busyMs\":" + Math.round(pacerBusyMs()) + ",\"tabFrameMs\":" + Math.round(tabFrameMs())
+        + (viewers != null ? ",\"viewers\":" + viewers.json() : "") + "}";
   }
 
   // ---------------------------------------------------------------- the end
@@ -2002,6 +2037,7 @@ final class Session {
       ended = true;
       notifyAll();
     }
+    if (viewers != null) viewers.end(why == null ? "the session has ended" : "the session has ended: " + why);
     try {
       endInstance();
     } finally {

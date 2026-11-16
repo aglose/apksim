@@ -79,6 +79,10 @@ body.embed main { padding: 8px; gap: 8px; }
 body.embed aside { width: 200px; }
 body.embed.bare aside > .card:not(#permission):not(#applink) { display: none; }
 body.embed.bare aside { width: auto; }
+/* A share link (?join=ID&key=KEY, docs/serve.md "Shared sessions"): the screen and the stream's figures, nothing to press. */
+body.viewer header > :not(h1):not(#watching), body.viewer aside > .card:not(.stats), body.viewer aside > .hint, body.viewer #keys { display: none; }
+body.viewer #screen { cursor: default; }
+#watching { font-size: 13px; opacity: .8; }
 @media (max-width: 760px) {
   /* The page scrolls instead: the screen keeps most of the viewport, the controls come below it. */
   html, body { height: auto; }
@@ -157,6 +161,7 @@ body.embed.bare aside { width: auto; }
       </div>
       <div class="row" id="fitRow" hidden><button id="fitTab" title="The simulator window set the size: take it back to this page's">Fit to tab</button></div>
       <div class="row" id="copyRow"><button id="copy">Copy link to this state</button></div>
+      <div class="row" id="shareRow" hidden title="A link with which others watch this session: they see the screen, and can press nothing. It works until the session ends."><button id="share">Copy view-only link</button><span id="viewers" style="flex:0;white-space:nowrap"></span></div>
       <div class="row" id="linkbox" hidden><input id="link" type="text" readonly aria-label="Link"></div>
     </div>
     <div class="card" id="shellCard" hidden>
@@ -214,6 +219,14 @@ if (token && !redirecting) { params.delete("token"); history.replaceState(null, 
 const base = location.pathname.replace(/[^/]*$/, "");
 const withToken = path => token ? path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : path;
 const now = () => performance.timeOrigin + performance.now();
+// A share link (docs/serve.md "Shared sessions"): this page watches session `join` with its key and sends no input.
+const viewer = params.get("join") && params.get("key") ? { id: params.get("join"), key: params.get("key") } : null;
+if (viewer) {
+  document.body.classList.add("viewer");
+  const w = document.createElement("span"); w.id = "watching"; w.textContent = "Watching (view only)";
+  document.querySelector("header").appendChild(w);
+}
+let shareKey = "", sessionId = "";
 
 // ---------------------------------------------------------------- setup
 function log(line) {
@@ -354,6 +367,7 @@ $("file").onchange = () => {
 
 // ---------------------------------------------------------------- session
 function start() {
+  if (viewer) { watch(); return; }
   if (!state.app) return;
   if (moving) abandonMove(null);
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
@@ -415,6 +429,15 @@ function sessionQuery() {
   // A kept session (issue 221): the page's own link names the key (an embedding page's, or a shared link's).
   for (const k of ["keep", "keepBusy", "inspect"]) if (params.get(k)) q.set(k, params.get(k));
   return q;
+}
+// A viewer's session: the socket of someone else's, which sends frames and takes only acknowledgements.
+function watch() {
+  startGen++; ended = false; frameW = frameH = 0;
+  if (ws) { socketClosed(ws); ws.close(); }
+  $("empty").hidden = true; $("bezel").hidden = false;
+  overlay("Joining…");
+  openSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + base + "ws?join=" + encodeURIComponent(viewer.id) + "&key=" + encodeURIComponent(viewer.key), false);
+  fit();
 }
 function openSocket(url, onMac, fallback) {
   const sock = ws = new WebSocket(url);
@@ -561,7 +584,10 @@ function stop() {
 }
 $("start").onclick = start;
 $("stop").onclick = stop;
-function send(cmd) { if (ws && ws.readyState === 1 && !ended) ws.send(cmd); }
+function send(cmd) {
+  if (viewer && cmd !== "ack" && cmd !== "key" && !cmd.startsWith("t ")) return;  // a viewer only watches
+  if (ws && ws.readyState === 1 && !ended) ws.send(cmd);
+}
 // Issue 397: `shell ID LINE` runs an adb shell command line in the session's instance, answered `a {id, status, out}`
 // or `a {id, error}`. window.apksimShell(line) is the same for a host page's own script: a promise of that answer.
 const shellWaiting = new Map();
@@ -596,6 +622,9 @@ function onText(t) {
   if (kind === "p") { if (!frameW) overlay(body.charAt(0).toUpperCase() + body.slice(1) + "…"); log(body); }
   else if (kind === "i") {
     const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device);
+    // --allow-share: this session's view-only link, for its own tab.
+    sessionId = i.id; shareKey = i.share || ""; $("shareRow").hidden = !shareKey; $("viewers").textContent = "";
+    if (i.viewer) document.getElementById("watching").textContent = "Watching " + (i.app || "a session") + " (view only)";
     // Only the agent says it (docs/beam.md): a session on this Mac may keep its data when it ends.
     $("keepBox").hidden = typeof i.keep !== "boolean"; $("keep").checked = i.keep === true;
     $("moveDataBox").hidden = typeof i.keep === "boolean" || $("runOn").hidden;  // a server session's move to this Mac
@@ -628,6 +657,12 @@ function onText(t) {
       return;
     }
     if ("link" in d) { appLink(d); return; }
+    if ("viewers" in d) {
+      window.apksimViewers = d.viewers;
+      $("viewers").textContent = d.viewers ? d.viewers + " watching" : "";
+      if (viewer) document.getElementById("watching").title = d.viewers + " watching";
+      return;
+    }
     if ("adb" in d) { log("adb device on this Mac: adb connect localhost:" + d.adb); adbPort = d.adb; return; }
     const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
       new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
@@ -841,6 +876,12 @@ function videoLost(why) {
 // The browser passed the first probe but will not decode this stream (its profile, level or size, e.g. after a
 // switch to a larger device): another keyframe would fail the same way, so the session starts again on JPEG.
 function unsupported(why) {
+  if (viewer) {  // the stream is the session's, not this page's to choose
+    closeDecoder(); ended = true;
+    overlay("This browser cannot decode the session's video (" + why + ").");
+    if (ws) ws.close();
+    return;
+  }
   log("video: this browser cannot decode the stream (" + why + "): starting again with JPEG");
   closeDecoder();
   h264Ok = false;
@@ -1509,7 +1550,14 @@ addEventListener("beforeunload", () => { if (ws) ws.close(); });
 document.addEventListener("visibilitychange", () => {
   if (ws && ws.readyState === 1 && !ended) send(document.visibilityState === "hidden" ? "maxfps 1" : "maxfps 120");
 });
-if (!redirecting) loadApps();
+$("share").onclick = async () => {
+  const link = new URL("?join=" + encodeURIComponent(sessionId) + "&key=" + encodeURIComponent(shareKey), location.origin + base).href;
+  try { await navigator.clipboard.writeText(link); log("view-only link copied"); }
+  catch (e) { $("linkbox").hidden = false; $("link").value = link; $("link").select(); }
+};
+if (redirecting) { /* on its way to the folder's address */ }
+else if (viewer) watch();
+else loadApps();
 </script>
 <!--apksim:report-script-->
 </body>
