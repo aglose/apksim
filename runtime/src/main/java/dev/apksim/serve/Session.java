@@ -301,7 +301,7 @@ final class Session {
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
       }
-      if (!ended) stop("could not start: " + e.getMessage());
+      if (!ended) stop("error", "could not start: " + e.getMessage());
     }
     try {
       tab.join();
@@ -401,6 +401,7 @@ final class Session {
     }
     Files.createDirectories(serve.logs);
     log = Files.newBufferedWriter(serve.logs.resolve(id + ".log"), StandardCharsets.UTF_8);
+    writeLogAccess();
     // Never the owner's saved sign-ins (work/autofill): other people use this instance.
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
@@ -1074,7 +1075,7 @@ final class Session {
       else if (crash.text() != null) reason = crash.text();
       if (reason != null) why += ": " + reason;
     }
-    stop(why);
+    stop(status != 0 ? "crash" : "exit", why);
   }
 
   /**
@@ -1155,6 +1156,22 @@ final class Session {
       // the process ended
     }
     port.completeExceptionally(new IOException("the instance ended before it opened its control port (see the log)"));
+  }
+
+  /**
+   * Issue 418: who may read this session's log once it is gone, `ID.access` beside the log (the agent answers
+   * `/beam/sessions/ID/log` from it): the key this tab was sent and the site that started it. The agent only.
+   */
+  private void writeLogAccess() {
+    if (!serve.beam || fileKey == null) return;
+    java.util.Properties pr = new java.util.Properties();
+    pr.setProperty("key", fileKey);
+    pr.setProperty("site", site == null ? "" : site);
+    try (java.io.OutputStream o = Files.newOutputStream(serve.logs.resolve(id + ".access"))) {
+      pr.store(o, null);
+    } catch (IOException e) {
+      // the log is then readable while the session runs only
+    }
   }
 
   private synchronized void logLine(String line) {
@@ -2013,7 +2030,7 @@ final class Session {
     // must not keep the session alive. Not for a detached session: input in the window never reaches the agent.
     if (!detached && System.currentTimeMillis() - lastInput > serve.idleSeconds * 1000L) {
       if (idleStop.compareAndSet(false, true)) {
-        Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("stopped after " + serve.idleSeconds + " s without input"));
+        Thread.ofVirtual().name("serve-stop-" + id).start(() -> stop("idle", "stopped after " + serve.idleSeconds + " s without input"));
       }
       return;
     }
@@ -2056,6 +2073,11 @@ final class Session {
 
   /** Ends the instance (quit, then kill after 5 s), closes the tab's connection and erases the app's data slot. */
   void stop(String why) {
+    stop("other", why);
+  }
+
+  /** As {@link #stop(String)}, with the reason the tab's `e` message names (Crash.endJson): the stop that wins says both. */
+  void stop(String reason, String why) {
     synchronized (this) {
       if (ended) return;
       ended = true;
@@ -2080,6 +2102,7 @@ final class Session {
           }
           for (String l : lines) ws.sendText("r log: " + l);
         }
+        ws.sendText("e " + Crash.endJson(reason, why, reason.equals("crash") ? crash.exception() : null));
         ws.sendText("x " + why);
         ws.close(why.length() > 60 ? why.substring(0, 60) : why);
       });
@@ -2091,6 +2114,7 @@ final class Session {
       }
     }
     logLine("[serve] session ended" + (why == null ? "" : ": " + why));
+    writeLogAccess();  // again: as new as the log's last line, so the sweep takes both together (a session may run for days)
     synchronized (this) {
       try {
         if (log != null) log.close();

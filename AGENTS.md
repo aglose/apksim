@@ -1368,6 +1368,10 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 /api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
+A session's log and why it ended (issue 418, docs/serve.md "When a session ends badly"): `GET /beam/sessions/ID/log?key=KEY`
+on the agent is serve's `/api/sessions/ID/log` for the page that started the session (its `Origin` and its `f KEY`; `Session.writeLogAccess`
+keeps both in `beam/logs/ID.access` for after the session), and before `x TEXT` a tab gets `e {"reason":"crash|exit|idle|busy|no-app|error|other",
+"text","exception"}` (`Crash.endJson`, the reason passed to `Session.stop(reason, why)`); `beam-check.py` and `serve-check.py --crash-app` check them.
 Shell commands (issue 397, docs/serve.md "Shell commands"): a tab's `shell ID LINE` runs an adb shell line in its
 session without an adb device (`Session.shellCommand` → the instance's `tabshell`, on a control connection of its own, at
 most four at once), answered `a {"id","status","out"}`: `am start`, `am broadcast`, `settings get|put` and `cat` of one file in the app's own files/cache folders (issue 408) for the app's own
