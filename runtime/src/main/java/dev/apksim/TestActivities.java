@@ -492,7 +492,7 @@ public final class TestActivities {
      * (NPE in windowFocusChanged: an in-app theme switch that recreates twice killed the app, issue 410). Running
      * instances only; test runs keep Robolectric's.
      */
-    private boolean recreatePending;
+    private volatile boolean recreatePending;
 
     @Implementation
     @Override
@@ -543,13 +543,16 @@ public final class TestActivities {
     }
     recreating = true;
     try {
-      done.run();  // a recreate() from the new activity's own code (onCreate) is a new request
-      c.recreate();
+      done.run();  // a recreate() during this relaunch (the old activity's teardown) is a new request
+      // One finished and destroyed since it asked has nothing to relaunch (Robolectric's recreate throws there).
+      if (!c.get().isDestroyed()) c.recreate();
     } finally {
       recreating = false;
+      // In the finally: with -Dapksim.crashes=log the app runs on after a recreate that threw, and what waited
+      // behind it must still get its turn.
+      Runnable next = DEFERRED_RECREATES.poll();
+      if (next != null) new android.os.Handler(Looper.getMainLooper()).post(next);
     }
-    Runnable next = DEFERRED_RECREATES.poll();
-    if (next != null) new android.os.Handler(Looper.getMainLooper()).post(next);
   }
 
   private static void finished(Activity a) {
