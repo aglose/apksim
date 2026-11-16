@@ -23,6 +23,8 @@ public final class VideoSurfaces {
     final java.util.concurrent.atomic.AtomicLong pictures = new java.util.concurrent.atomic.AtomicLong();
     /** A codec was configured with this surface, or something published to it (camera, WebRTC). */
     volatile boolean producer;
+    /** The surface's buffer size (setDefaultBufferSize; a SurfaceView's fixed size or its own), packed, or 0. */
+    volatile long bufferSize;
 
     Entry(View view) {
       this.view = view;
@@ -140,6 +142,20 @@ public final class VideoSurfaces {
   public static View viewOf(SurfaceTexture surface) {
     Entry e = surface == null ? null : ENTRIES.get(surface);
     return e == null ? null : e.view;
+  }
+
+  /** Notes the buffer size [surface] was given (ShadowSimSurfaceTexture); 0 forgets it. */
+  static void bufferSize(SurfaceTexture surface, int width, int height) {
+    Entry e = surface == null ? null : ENTRIES.get(surface);
+    if (e == null) return;
+    e.bufferSize = width > 0 && height > 0 && width <= 16384 && height <= 16384 ? (long) width << 32 | height : 0;
+  }
+
+  /** [surface]'s buffer size, {width, height}, or null when nothing set one. */
+  public static int[] bufferSize(SurfaceTexture surface) {
+    Entry e = surface == null ? null : ENTRIES.get(surface);
+    long size = e == null ? 0 : e.bufferSize;
+    return size == 0 ? null : new int[] {(int) (size >>> 32), (int) size};
   }
 
   /** The size the view showing [surface] draws at, or null. */

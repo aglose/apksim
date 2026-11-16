@@ -50,6 +50,7 @@ import org.junit.runner.RunWith
 class CameraTest {
   private val context = InstrumentationRegistry.getInstrumentation().targetContext
   private val mode = InstrumentationRegistry.getArguments().getString("camera")
+  private var usedCameraX = false
 
   @Before
   fun onApksimOnly() {
@@ -85,6 +86,8 @@ class CameraTest {
       for (format in intArrayOf(ImageFormat.YUV_420_888, ImageFormat.JPEG)) {
         val sizes = map.getOutputSizes(format).map { "${it.width}x${it.height}" }
         assertTrue("$format: $sizes", "1280x720" in sizes && "1920x1080" in sizes)
+        // 4:3 too, as most device cameras (issue 414: CameraX with FALLBACK_RULE_NONE needs the exact size listed).
+        assertTrue("$format: $sizes", "1440x1080" in sizes && "640x480" in sizes)
       }
       assertFalse(c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)!!.isEmpty())
     }
@@ -97,7 +100,18 @@ class CameraTest {
   @After
   fun tearDown() {
     thread.quitSafely()
-    if (mode == "fake") shell("pm revoke ${context.packageName} ${Manifest.permission.CAMERA}")
+    // CameraX's provider is a process-wide singleton and each test here gets a new CameraManager: a provider left
+    // from one CameraX test would hand the next one cameras that no longer exist.
+    try {
+      if (usedCameraX) {
+        val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context)
+        waitFor("the camera provider") { provider.isDone }
+        val shutdown = provider.get().shutdownAsync()
+        waitFor("the camera provider's shutdown") { shutdown.isDone }
+      }
+    } finally {
+      if (mode == "fake") shell("pm revoke ${context.packageName} ${Manifest.permission.CAMERA}")
+    }
   }
 
   private fun shell(command: String): String {
@@ -276,9 +290,11 @@ class CameraTest {
     shell("pm grant ${context.packageName} ${Manifest.permission.CAMERA}")
     CameraActivity.frames.set(0)
     val intent = Intent(Intent.ACTION_VIEW, Uri.parse("apksim://camera?mode=compatible")).setClass(context, CameraActivity::class.java)
+    usedCameraX = true
     ActivityScenario.launch<CameraActivity>(intent).use { scenario ->
       waitFor("ImageAnalysis frames (${CameraActivity.last})") { CameraActivity.frames.get() >= 5 }
-      assertEquals("1280x720 YUV, rotation 270", CameraActivity.last)
+      // ImageAnalysis' default is 640x480 where the camera lists it, as a device's does.
+      assertEquals("640x480 YUV, rotation 270", CameraActivity.last)
       var colours = 0
       waitFor("a preview picture") {
         scenario.onActivity { a ->
@@ -291,6 +307,52 @@ class CameraTest {
         }
         colours > 4
       }
+    }
+  }
+
+  /**
+   * Issue 414: a Preview bound to exactly 1440x1080 with no fallback. With 16:9 sizes alone CameraX had no candidate
+   * size and bindToLifecycle threw before any openCamera.
+   */
+  @Test
+  fun cameraXBindsAPreviewThatRequiresAFourByThreeSize() {
+    assumeTrue(mode == "fake")
+    shell("pm grant ${context.packageName} ${Manifest.permission.CAMERA}")
+    CameraActivity.previewSize = ""
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("apksim://camera?mode=compatible&size=1440x1080"))
+      .setClass(context, CameraActivity::class.java)
+    usedCameraX = true
+    ActivityScenario.launch<CameraActivity>(intent).use { scenario ->
+      waitFor("the Preview's resolution") { CameraActivity.previewSize.isNotEmpty() }
+      assertEquals("1440x1080", CameraActivity.previewSize)
+      var colours = 0
+      waitFor("a preview picture") {
+        scenario.onActivity { a ->
+          val b = a.previewBitmap()
+          if (b != null) {
+            val seen = HashSet<Int>()
+            for (y in 0 until b.height step 37) for (x in 0 until b.width step 37) seen.add(b.getPixel(x, y))
+            colours = seen.size
+          }
+        }
+        colours > 4
+      }
+    }
+  }
+
+  /** The same for frames: an ImageAnalysis that requires 1440x1080 gets images of that size. */
+  @Test
+  fun cameraXAnalysesFramesAtARequiredFourByThreeSize() {
+    assumeTrue(mode == "fake")
+    shell("pm grant ${context.packageName} ${Manifest.permission.CAMERA}")
+    CameraActivity.frames.set(0)
+    CameraActivity.last = ""
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("apksim://camera?mode=compatible&analysis=1440x1080"))
+      .setClass(context, CameraActivity::class.java)
+    usedCameraX = true
+    ActivityScenario.launch<CameraActivity>(intent).use {
+      waitFor("ImageAnalysis frames (${CameraActivity.last})") { CameraActivity.frames.get() >= 5 }
+      assertEquals("1440x1080 YUV, rotation 270", CameraActivity.last)
     }
   }
 }

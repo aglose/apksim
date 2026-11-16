@@ -22,8 +22,9 @@ import org.robolectric.shadows.ShadowCameraManager;
  * The simulated camera (`--camera off|fake|fake=IMAGE`, -Dapksim.camera; issue 219). With {@code fake} the device
  * declares android.hardware.camera (a camera facing away from the screen), camera.any and camera.front
  * (SystemFeatures), and CameraManager lists the two cameras those mean, as an emulator does: "0" facing back (sensor
- * orientation 90) and "1" facing front (270), each with the characteristics an app reads to choose a stream: 1280x720
- * and 1920x1080 in YUV_420_888, JPEG and PRIVATE (and SurfaceTexture/SurfaceView outputs), AE, AF and AWB modes, frame
+ * orientation 90) and "1" facing front (270), each with the characteristics an app reads to choose a stream: 16:9 and
+ * 4:3 sizes from 1920x1080 down to 640x480 (or exactly those `--camera-sizes` names: FakeCamera.sizes) in YUV_420_888,
+ * JPEG and PRIVATE (and SurfaceTexture/SurfaceView outputs), AE, AF and AWB modes, frame
  * rate ranges, LIMITED hardware level. A front camera alone with android.hardware.camera declared made CameraX refuse
  * to start ("Expected camera missing from device"). Opening one needs the CAMERA permission
  * ({@code camera.ShadowSimCameraManager}), and its capture sessions deliver frames at 30 fps ({@code camera.FakeCamera}):
@@ -140,8 +141,9 @@ final class Cameras {
     s.set(CameraCharacteristics.LENS_FACING, facing);
     s.set(CameraCharacteristics.SENSOR_ORIENTATION, sensorOrientation);
     s.set(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL, CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED);
-    s.set(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE, new Rect(0, 0, 1920, 1080));
-    s.set(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE, new Size(1920, 1080));
+    int[] sensor = dev.apksim.camera.FakeCamera.sensor();
+    s.set(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE, new Rect(0, 0, sensor[0], sensor[1]));
+    s.set(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE, new Size(sensor[0], sensor[1]));
     s.set(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES,
         new int[] {CameraMetadata.CONTROL_AE_MODE_OFF, CameraMetadata.CONTROL_AE_MODE_ON});
     s.set(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES,
@@ -169,11 +171,11 @@ final class Cameras {
     return c;
   }
 
-  /** 1280x720 and 1920x1080 at 30 fps in the three formats apps ask for (PRIVATE also serves SurfaceTexture/View). */
+  /** FakeCamera.sizes() at 30 fps in the three formats apps ask for (PRIVATE also serves SurfaceTexture/View). */
   private static StreamConfigurationMap streams() {
     // The HAL's pixel formats, which the map takes: YCbCr_420_888, BLOB (JPEG) and IMPLEMENTATION_DEFINED (PRIVATE).
     int[] formats = {0x23, 0x21, 0x22};
-    int[][] sizes = {{1920, 1080}, {1280, 720}};
+    int[][] sizes = dev.apksim.camera.FakeCamera.sizes();
     List<StreamConfiguration> configs = new ArrayList<>();
     List<StreamConfigurationDuration> durations = new ArrayList<>();
     for (int f : formats) {

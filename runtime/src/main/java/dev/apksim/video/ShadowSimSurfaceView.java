@@ -68,6 +68,9 @@ public class ShadowSimSurfaceView extends ShadowSurfaceView {
       surface = new Surface(texture);
       for (SurfaceHolder.Callback c : holder.callbacks) c.surfaceCreated(holder);
     }
+    // The buffers' size: the fixed size, else the view's own (CameraX's PreviewView lays its SurfaceView out at the
+    // camera resolution and scales it), which a camera stream opened into this surface has (FakeCamera).
+    VideoSurfaces.bufferSize(texture, w, h);
     if (w != width || h != height) {
       width = w;
       height = h;

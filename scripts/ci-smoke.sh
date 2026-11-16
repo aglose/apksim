@@ -375,11 +375,22 @@ cam() { python3 "$ROOT/scripts/drive.py" "$CAM_PORT" "$@"; }
 for _ in $(seq 1 120); do cam ping 2>/dev/null | grep -q pong && break; sleep 1; done
 analysed=""
 for _ in $(seq 1 30); do
-  analysed="$(cam nodes | grep -oE 'text="camera: [1-9][0-9]* frames, 1280x720 YUV, rotation 270"' || true)"
+  analysed="$(cam nodes | grep -oE 'text="camera: [1-9][0-9]* frames, 640x480 YUV, rotation 270"' || true)"
   [[ -n "$analysed" ]] && break
   sleep 1
 done
 previews="$(cam camera | grep -oE 'previews [0-9]+' || true)"
+# A Preview that requires exactly 1440x1080 (4:3, FALLBACK_RULE_NONE) binds and opens the camera (issue 414: with 16:9
+# sizes alone CameraX threw before any openCamera), and its pictures are that size, turned for the portrait display.
+cam 'open apksim://camera?size=1440x1080' >/dev/null
+exact=""
+for _ in $(seq 1 30); do
+  exact="$(cam nodes | grep -oE 'text="camera: preview 1440x1080"' || true)"
+  [[ -n "$exact" ]] && cam camera | grep -q 'outputs \[.*1080x1440' && break
+  exact=""
+  sleep 1
+done
+[[ -n "$exact" ]] || { echo "a CameraX Preview requiring 1440x1080 did not bind or got no 1440x1080 pictures" >&2; cam nodes >&2; cam camera >&2; exit 1; }
 cam quit >/dev/null 2>&1 || true
 docker logs "$CAM_NAME" > "$OUT/camera.log" 2>&1 || true
 docker rm -f "$CAM_NAME" >/dev/null 2>&1 || true

@@ -245,6 +245,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # Simulated cameras (Cameras.java): off (default), fake (camera features, a back and a front camera in CameraManager,
     # a moving test pattern at 30 fps) or fake=IMAGE (that still image instead).
     --camera) [[ "$2" =~ ^(off|fake|fake=.+)$ ]] || { echo "--camera takes off|fake|fake=IMAGE" >&2; exit 2; }; EXTRA+=("-Dapksim.camera=$2"); shift 2 ;;
+    # The sizes the fake cameras offer every format in, instead of the defaults (1920x1080 1440x1080 1280x720 1024x768
+    # 960x720 640x480): for an app that needs one device's exact native size.
+    --camera-sizes) [[ "$2" =~ ^[0-9]{2,4}x[0-9]{2,4}(,[0-9]{2,4}x[0-9]{2,4})*$ ]] || { echo "--camera-sizes takes WxH[,WxH...], e.g. 1440x1080,640x480" >&2; exit 2; }; EXTRA+=("-Dapksim.cameraSizes=$2"); shift 2 ;;
     --soft-keyboard) EXTRA+=("-Dapksim.softKeyboard=true"); shift ;;
     # The tab relay (docs/beam.md): the app's plain-HTTP requests to page.apksim.invalid go to the browser tab that
     # started the session. The agent adds it for a start that asked.
@@ -376,7 +379,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*|-Dapksim.broadcast.*) ;;
       # Seeds travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
