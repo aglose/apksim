@@ -203,10 +203,11 @@ final class AdbShell {
       shell.print("apksim: not allowed from a page: cat reads only a file in the app's files, cache, external files or external cache folder\n");
       return 126;
     }
-    try (InputStream in = Files.newInputStream(real)) {
+    try (InputStream in = Files.newInputStream(real, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
       out.write(in.readNBytes(TabShell.MAX_OUT + 1));
     } catch (IOException e) {
-      shell.print("cat: " + path + ": " + e.getMessage() + "\n");
+      // Never e.getMessage(): it holds the host's path.
+      shell.print("cat: " + path + ": cannot read\n");
       return 1;
     }
     out.flush();

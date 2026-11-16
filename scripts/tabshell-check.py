@@ -84,7 +84,7 @@ r = shell(f"cat {data}/files/flags.txt")
 sc.check(r.get("status") == 0 and r.get("out") == "tab=true source=override\n", f"cat of a file the app wrote: {r}")
 r = shell("cat files/flags.txt")
 sc.check(r.get("status") == 126, f"a relative path is resolved from / and refused: {r}")
-for bad in (f"cat {data}/files/../../../../etc/hosts", f"cat {data}/files/../shared_prefs/x.xml", "cat /etc/hosts", f"cat {data}/files/link-out",
+for bad in (f"cat {data}/files/../../../../etc/hosts", f"cat {data}/files/../shared_prefs/x.xml", "cat /etc/hosts", f"cat {data}/files/link-out", f"cat {data}/shared_prefs/x.xml", f"cat {data}/files/link-in", f"cat {data}/files/../shared_prefs/x.xml",
             f"cat {data}/files/missing.txt", "cat", f"cat {data}/files/flags.txt /etc/hosts", f"cat -n {data}/files/flags.txt", f"cat {data}/files > /sdcard/x",
             f"run-as {a.package} cat files/flags.txt", f"cat {data}"):
     r = shell(bad)

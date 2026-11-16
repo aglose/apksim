@@ -77,6 +77,12 @@ open class ComposeApp : Application() {
           val link = java.io.File(filesDir, "link-out").toPath()
           java.nio.file.Files.deleteIfExists(link)
           java.nio.file.Files.createSymbolicLink(link, java.nio.file.Paths.get("/etc/hosts"))
+          // A file inside the data folder but outside the readable ones, and a link to it from files/.
+          val prefs = java.io.File(dataDir, "shared_prefs").apply { mkdirs() }
+          java.io.File(prefs, "x.xml").writeText("<map/>")
+          val inLink = java.io.File(filesDir, "link-in").toPath()
+          java.nio.file.Files.deleteIfExists(inLink)
+          java.nio.file.Files.createSymbolicLink(inLink, java.io.File(prefs, "x.xml").toPath())
         } catch (e: Exception) {
           Log.w("ComposeApp", "flags dump failed: $e")
         }

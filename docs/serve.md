@@ -460,7 +460,7 @@ redirection, and only these:
 | `am start` (`start-activity`) | `-W`, `-a ACTION`, `-d URI`, `-t TYPE`, `-c CATEGORY`, `-n PKG/CLASS`, `-p PKG`, `-f FLAGS` and the extras below; a component or package must be the app's own |
 | `am broadcast` | the same but `-W`; sent to the app's own package (`-p` is added when the line names neither it nor a component), ordered, and the answer has the result code (`Broadcast completed: result=N`) |
 | `settings get\|put global\|secure\|system KEY [VALUE]` | as `adb shell settings`; `animator_duration_scale`, `font_scale` and `bluetooth_on` are the device controls they are over adb |
-| `cat PATH` | one file inside the app's `getFilesDir()`, `getCacheDir()`, `getExternalFilesDir(null)` or `getExternalCacheDir()` (as `/data/data/PKG/files/NAME`, `/sdcard/Android/data/PKG/files/NAME`), after `..` and symlinks; read only, at most 256 KB; a path outside them, a missing file or a directory is status 126 |
+| `cat PATH` | one file inside the app's `getFilesDir()`, `getCacheDir()`, `getExternalFilesDir(null)` or `getExternalCacheDir()` (as `/data/data/PKG/files/NAME`, `/sdcard/Android/data/PKG/files/NAME`), after `..` and symlinks; read only, at most 256 KB; a path outside them, a missing file or a directory is status 126; binary files come back as text, and a file over the cap is cut without a marker |
 
 Extras are the ones `--broadcast` takes: `--es`, `--ez`, `--ei`, `--el`, `--ef KEY VALUE`. Anything else (`pm`, `input`,
 `ls`, `cat` of anything else, `logcat`, `apksim CMD`, `am instrument`, `am startservice`, an `intent:` URI, another package) is answered
@@ -470,7 +470,7 @@ app: a URI or extra may name a file (`-d file:///...`), which only the app itsel
 `settings put` of `font_scale` and `animator_duration_scale` takes the ranges the page's own controls send (0.85-2,
 0-10). The package pin is decided from the options as parsed: `--es -p x` is an extra and pins nothing. The instance checks the line (`TabShell`, the `tabshell` control command, which only the server
 sends); the server passes it on as base64 on a control connection of its own, at most four at a time per session, so a
-command that waits holds up no input. It is on by default on a server (unlike `--allow-rec`), since it reaches nothing the app's own page could not;
+command that waits holds up no input. It is on by default on a server (unlike `--allow-rec`), since it reaches only the app itself and the files it wrote in its own folders;
 the `i` message says `"shell": "limited"`; `--no-shell` turns it off (`"off"`,
 and every `shell` is answered with an error). The page has an "adb shell" card for it (a leading `adb shell` is
 dropped from what is typed) and `window.apksimShell(LINE)`, a promise of the answer, for a host page's script.

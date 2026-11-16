@@ -326,7 +326,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `TabShell`: `tabshell limited|full BASE64`, an `adb shell` line a browser tab sent (`apksim serve` and `beam`,
     issue 397; docs/serve.md "Shell commands", docs/beam.md "adb commands in a session"), run by `AdbShell.runForTab` on
     the control connection's own thread (the shell's commands wait for Host's loop) and answered `ok STATUS BASE64`.
-    `limited`: one command, only `am start`, `am broadcast` and `settings get|put` for the app's own package
+    `limited`: one command, only `am start`, `am broadcast` and `settings get|put` and `cat` of one file in the app's own folders (issue 408) for the app's own package
     (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
     it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
@@ -1351,7 +1351,7 @@ page's `Origin` and a per-session `key`, recording always allowed; those were no
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
 Shell commands (issue 397, docs/serve.md "Shell commands"): a tab's `shell ID LINE` runs an adb shell line in its
 session without an adb device (`Session.shellCommand` → the instance's `tabshell`, on a control connection of its own, at
-most four at once), answered `a {"id","status","out"}`: `am start`, `am broadcast` and `settings get|put` for the app's own
+most four at once), answered `a {"id","status","out"}`: `am start`, `am broadcast`, `settings get|put` and `cat` of one file in the app's own files/cache folders (issue 408) for the app's own
 package, anything else status 126; `--no-shell` turns it off; the `i` message says `"shell": "off|limited|full"`. On
 `apksim beam` with the owner's `apksim beam config allow-adb on` (read again at every start and command), a start with
 `"adb": true` gets the whole adb shell and an adb device on loopback (`--adb auto`, through the agent's `--beam-adb` launch marker, never saved
