@@ -5,7 +5,7 @@
 
 Starts a session on the test app and sends `shell ID LINE` over its socket: settings put and get, a broadcast to the
 app's flag receiver (result 7), `am start` of one of its activities and of a deep link, then what a page may not run
-(another package, a second command, a redirection, any other tool), each answered with exit status 126 and nothing
+(another package, a second command, a redirection, any other tool), and `cat` of a file in the app's own folders, each answered with exit status 126 and nothing
 done. With --off the server runs with --no-shell and every line is answered with an error. Exits 1 on any failure.
 """
 import argparse
@@ -77,11 +77,23 @@ for line in ("am broadcast -a dev.apksim.testapp.SET_FLAG --es -p com.other.app"
     sc.check(r.get("status") == 0 and "pkg=" + a.package in r.get("out", ""), f"{line[30:]!r}: still pinned to the app ({str(r)[:140]})")
 r = shell(f"am start -W -n {a.package}/.SecondActivity")
 sc.check(r.get("status") == 0 and "Status: ok" in r.get("out", ""), f"am start -n: {r}")
+# cat (issue 408): the file the receiver wrote, in the app's own files folder, and only files inside the app's folders.
+data = "/data/data/" + a.package
+shell("am broadcast -a dev.apksim.testapp.SET_FLAG --es name tab --ez value true")
+r = shell(f"cat {data}/files/flags.txt")
+sc.check(r.get("status") == 0 and r.get("out") == "tab=true source=override\n", f"cat of a file the app wrote: {r}")
+r = shell("cat files/flags.txt")
+sc.check(r.get("status") == 126, f"a relative path is resolved from / and refused: {r}")
+for bad in (f"cat {data}/files/../../../../etc/hosts", f"cat {data}/files/../shared_prefs/x.xml", "cat /etc/hosts", f"cat {data}/files/link-out",
+            f"cat {data}/files/missing.txt", "cat", f"cat {data}/files/flags.txt /etc/hosts", f"cat -n {data}/files/flags.txt", f"cat {data}/files > /sdcard/x",
+            f"run-as {a.package} cat files/flags.txt", f"cat {data}"):
+    r = shell(bad)
+    sc.check(r.get("status") == 126 and "not allowed from a page" in r.get("out", ""), f"refused {bad!r}: {str(r)[:140]}")
 r = shell("am start -a android.intent.action.VIEW -d apksim://composeapp/trips")
 sc.check(r.get("status") == 0, f"am start of a deep link: {r}")
 for bad in ["am start -n com.other.app/.Main", "am broadcast -a X -p com.other.app", "am broadcast -a X -n com.other.app/.R",
             "settings put secure a b; ls /", "settings get secure a && ls", "settings get secure a > /sdcard/x", "settings get secure a | cat",
-            "ls /sdcard", "cat /data/data/" + a.package + "/shared_prefs/x.xml", "apksim quit", "apksim shot /tmp/x.png", "pm list packages",
+            "ls /sdcard", "apksim quit", "apksim shot /tmp/x.png", "pm list packages",
             "am instrument -w x/y", "am force-stop " + a.package, "am startservice -n " + a.package + "/.X", "am start --eu k file:///etc/passwd",
             "am start intent:#Intent;end", "settings delete secure a", "settings put system font_scale NaN",
             "settings put system font_scale 9", "settings put global animator_duration_scale -1", "settings put nowhere a b", "input tap 1 1", "logcat -d"]:
