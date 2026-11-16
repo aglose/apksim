@@ -201,21 +201,29 @@ final class Session {
     return Integer.parseInt(cmd.substring(7)) < 30;
   }
 
+  /** The server's sharing was turned off (Serve.setShare): everyone watching is dropped. Never waits on a socket. */
+  void shareClosed() {
+    if (viewers != null) viewers.close("sharing was turned off");
+  }
+
+  /**
+   * The tab hears its link's key, or that it has none: after the server's sharing was switched, and after the `i`
+   * message, which may have been put together just before a switch. Reads the state as it is now, so the last one
+   * sent is right whatever the order.
+   */
+  void shareChanged() {
+    if (viewers == null || ending()) return;
+    synchronized (shareTold) {
+      ws.sendText(serve.allowShare ? "d {\"share\":" + Http.q(viewers.key()) + ",\"maxViewers\":" + serve.maxViewers + "}" : "d {\"share\":\"\"}");
+    }
+  }
+
+  private final Object shareTold = new Object();
+
   /**
    * A viewer joined or left. The tab hears how many watch, and its own frame rate cap stops counting while any do: a
    * presenter who switches tabs (the page then asks for one frame a second) would freeze everyone's picture.
    */
-  /** The server's sharing was switched (Serve.setShare): the tab hears its link's key, or that it has none. */
-  void shareChanged() {
-    if (viewers == null || ending()) return;
-    if (serve.allowShare) {
-      ws.sendText("d {\"share\":" + Http.q(viewers.key()) + ",\"maxViewers\":" + serve.maxViewers + "}");
-    } else {
-      viewers.close("sharing was turned off");
-      ws.sendText("d {\"share\":\"\"}");
-    }
-  }
-
   private void viewersChanged(int n) {
     ws.sendText("d {\"viewers\":" + n + "}");
     synchronized (viewers) {

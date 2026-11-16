@@ -660,6 +660,7 @@ function onText(t) {
     if ("share" in d && !viewer) {  // the server's sharing was switched while this session runs (POST /api/share)
       shareKey = d.share || ""; $("shareRow").hidden = !shareKey;
       if (!shareKey) $("viewers").textContent = "";
+      return;
     }
     if ("viewers" in d) {
       window.apksimViewers = d.viewers;

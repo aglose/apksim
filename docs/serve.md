@@ -154,7 +154,9 @@ nothing to it. `--max-viewers N` (default 100) is the most at once per session; 
   on, every running session's tab is told its key (`d {"share": KEY, "maxViewers": N}`) and shows the button; a session
   need not restart. Turned off, every viewer is told "sharing was turned off" and dropped, each tab is told it has no
   link (`d {"share": ""}`), and every session takes a new key, so a link given out before stays dead when sharing comes
-  back: off and on again is how to revoke every link at once. `--max-viewers` is fixed at the server's start.
+  back: off and on again is how to revoke every link at once. `--max-viewers` is fixed at the server's start. Whoever has
+  the token can turn the switch (the token already starts and drives every session), so `--allow-share` left out is a
+  default, not a lock.
 - **What the link is.** `KEY` is 128 random bits made for that session and told only to its own tab (the `i` message's
   `share`). The link opens two things without the server's token: the page, and that session's viewer socket
   (`/ws?join=SESSION&key=KEY`). Nothing else: every `/api` route still needs the token, and the Origin rules for

@@ -244,7 +244,7 @@ final class Viewers {
    * Runs a viewer on the caller's thread (its connection's) until it leaves, is dropped or the session ends. A session
    * that is full or over says so and closes the connection.
    */
-  void run(WebSocket ws) {
+  void run(WebSocket ws, String givenKey) {
     Viewer v = new Viewer(ws);
     synchronized (this) {
       if (ended) {
@@ -252,7 +252,8 @@ final class Viewers {
         ws.close("ended");
         return;
       }
-      if (!shared.getAsBoolean()) {
+      // The key again, under the lock close() replaces it under: sharing may have been turned off since it was checked.
+      if (!shared.getAsBoolean() || !keyMatches(givenKey)) {
         ws.sendText("x sharing was turned off");
         ws.close("not shared");
         return;

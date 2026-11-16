@@ -1540,7 +1540,9 @@ public final class Serve {
     if (allowShare == on) return;
     allowShare = on;
     System.err.println("[serve] sharing turned " + (on ? "on" : "off"));
-    for (Session x : sessions.values()) x.shareChanged();
+    // Every viewer first: a tab's socket may be stalled, and telling it must not delay dropping the next session's.
+    if (!on) for (Session x : sessions.values()) x.shareClosed();
+    for (Session x : sessions.values()) Thread.ofVirtual().name("serve-share-told").start(x::shareChanged);
   }
 
   /** The running session a share link names (`join=ID&key=KEY`), if this server shares sessions and the key is its key. */
@@ -1574,7 +1576,7 @@ public final class Serve {
     // that have shown nothing yet: a session watched by a hundred would otherwise leave no place for a request.
     connections.release();
     permitFreed.set(true);
-    x.viewers.run(new WebSocket(s, in, out));
+    x.viewers.run(new WebSocket(s, in, out), r.param("key"));
   }
 
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
@@ -1774,6 +1776,8 @@ public final class Serve {
     if (beam) agent.settled(catalog.buildHash(app.path()));
     System.err.printf("[serve] session %s: %s on %s%n", session.id, app.name(), session.device);
     if (session.viewers != null) session.viewers.info("\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device));
+    boolean shareSaid = session.viewers != null && allowShare;
+    String keySaid = shareSaid ? session.viewers.key() : null;
     ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
         + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
@@ -1784,8 +1788,10 @@ public final class Serve {
         + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
         + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
         // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
-        + (session.viewers != null && allowShare ? ",\"share\":" + Http.q(session.viewers.key()) + ",\"maxViewers\":" + maxViewers : "")
+        + (shareSaid ? ",\"share\":" + Http.q(keySaid) + ",\"maxViewers\":" + maxViewers : "")
         + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
+    // Sharing switched while that was put together: what it said of the link may be stale, so say it again.
+    if (session.viewers != null && (allowShare != shareSaid || shareSaid && !keySaid.equals(session.viewers.key()))) session.shareChanged();
     session.run();
   }
 
