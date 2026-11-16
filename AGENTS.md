@@ -1779,8 +1779,8 @@ zlib imports (`libz.so` is a system library to the loader) resolve in the host's
 its zlib private, so `dlsym(RTLD_DEFAULT)` found none and inflate/deflate were stubs (issue 148). Not built or run on a Linux host yet.
 Colima shares only the home folder with its VM, so mount folders under it (`work/...`), not the scratchpad in
 /private/tmp: those mounts are empty in the container. Tag images you build for a check with a name of your own
-(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION`, both architectures under one tag (`release.yml`'s
-`image` and `image-arm64` jobs push `VERSION-amd64` and `VERSION-arm64`; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
+(`apksim:ci` and `apksim:latest` are shared). Releases publish the image as `ghcr.io/aglose/apksim:VERSION`, both architectures under one tag (`release.yml`
+builds both side by side, checks each in parallel legs, then pushes `VERSION-amd64` and `VERSION-arm64` and joins them; `:latest` moves on publishing), with `instrument.py`, `snapshot.py` and `drive.py` on its `PATH` for other
 repositories' CI (`--entrypoint instrument.py`, `--entrypoint snapshot.py`). `.github/actions/linux-build` is the Linux build both workflows share.
 
 ## Debugging app code
