@@ -161,7 +161,17 @@ public final class PacerCheck {
     check(r.acked(t + 100 * S, t + 5 * S, -1) == 0 && r.paceMs == 0 && !r.eased && r.easeWaitNanos == Pacer.EASE_WAIT_NANOS,
         "an ack 95 s after its frame was sent clears the pace (ask 0) and the backoff");
     check(Math.abs(r.busyMs() - 40) < 0.5, "and the gap is no busy time (" + r.busyMs() + ")");
+    r.acked(t + 100 * S + MS, t + 5 * S + MS, -1);
+    r.acked(t + 100 * S + 2 * MS, t + 5 * S + 2 * MS, -1);
+    check(Math.abs(r.busyMs() - 40) < 0.5, "nor are the held acks that come with it (" + r.busyMs() + ")");
     check(r.acked(t + 100 * S + 40 * MS, t + 100 * S, -1) == -1, "a prompt ack after it asks for nothing");
+    // A tab acking steadily, each frame 3 s after it was sent (a very slow path), is not stalled: its pace stays.
+    Pacer w = new Pacer();
+    for (int i = 1; i <= 10; i++) w.acked(t + i * 40 * MS, t, -1);
+    w.dropped(t + S, 40);
+    w.dropped(t + S + 100 * MS, 40);
+    check(w.acked(t + 2 * S, t - S, -1) == -1 && w.acked(t + 3 * S, t - 100 * MS, -1) == -1 && w.paceMs == 46,
+        "late acks that keep coming do not clear the pace");
     Pacer u = new Pacer();
     for (int i = 1; i <= 10; i++) u.acked(t + i * 40 * MS, t, -1);
     u.dropped(t + S, 40);

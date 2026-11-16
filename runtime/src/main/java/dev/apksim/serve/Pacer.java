@@ -122,30 +122,36 @@ final class Pacer {
   private final double[] busy = new double[SAMPLES];
   private int busyCount;
   private long lastAckNanos;
+  /** When acks came back after a stall: frames sent before it are not sampled. */
+  private long resumedNanos;
 
   /**
    * An ack arrived at now for a frame sent at sentNanos, on a link whose round trip is linkMs (-1: not known yet).
-   * After a stall (its frame was acked {@link #STALL_NANOS} after it was sent) the tab starts again from no pace, as a first ack of a new tab
-   * would, and the gap is no busy time; returns the pace to send the instance (0), or -1 for no change.
+   * The first ack after a stall (nothing acked for {@link #STALL_NANOS}, and this frame owed that long: a still screen
+   * sends nothing) starts the tab again from no pace, trial or backoff; neither that gap nor the acks of the other
+   * frames sent before it (they come in a burst) are busy time. Returns the pace to send the instance (0), or -1 for
+   * no change.
    */
   int acked(long now, long sentNanos, double linkMs) {
-    boolean stalled = now - sentNanos > STALL_NANOS;  // the frame waited that long for its ack (a still screen sends nothing)
-    int ask = -1;
-    if (stalled) {
-      if (paceMs > 0 || eased) ask = 0;
+    if (sentNanos < resumedNanos) {
+      lastAckNanos = now;
+      return -1;
+    }
+    if (lastAckNanos != 0 && now - lastAckNanos > STALL_NANOS && now - sentNanos > STALL_NANOS) {
+      int ask = paceMs > 0 || eased ? 0 : -1;
       paceMs = 0;
       eased = false;
       goodPaceMs = 0;
       easeWaitNanos = EASE_WAIT_NANOS;
       lastDropNanos = 0;
       lastPaceNanos = 0;
-      lastAckNanos = now;
+      lastAckNanos = resumedNanos = now;
       return ask;
     }
     long arrived = sentNanos + (linkMs > 0 ? (long) (linkMs * 1e6) : 0);
     busy[busyCount++ % SAMPLES] = Math.max(0, now - Math.max(lastAckNanos, arrived)) / 1e6;
     lastAckNanos = now;
-    return ask;
+    return -1;
   }
 
   /** The mean of the recent busy times in ms, or -1 before there are 4. */

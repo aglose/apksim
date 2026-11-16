@@ -1182,9 +1182,10 @@ final class Session {
             waiting.add(frame);
           }
           notifyAll();
+          // Under the lock, as acked() sends its own: a pace from each thread must reach the instance in the pacer's order.
+          if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
         }
         if (askKey) askKey();
-        if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
       }
     } catch (IOException e) {
       // the instance went away, or ended the stream (H.264 that kept failing)
@@ -1245,7 +1246,7 @@ final class Session {
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
-    // Sent under the lock, as the reader thread's asks are not: two threads' paces must reach the instance in order.
+    // Under the lock, as the reader thread sends its own: paces must reach the instance in the pacer's order.
     if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
   }
 
