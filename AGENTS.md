@@ -903,7 +903,8 @@ first and the file, plus typed values (Global putInt, Secure putLong, System put
 typed getters: the slot keeps text, as Android's provider does, and the getters parse it) (`scripts/slot-check.sh`
 drives it across launches, and checks `adb shell settings get` when adb is on PATH).
 `apksim://camera[?mode=compatible]` opens `CameraActivity`: CameraX's Preview in a PreviewView (a SurfaceView; `compatible`:
-a TextureView) and an ImageAnalysis on the front camera, "camera: N frames, 1280x720 YUV, rotation 270"; the Settings
+a TextureView) and an ImageAnalysis on the front camera, "camera: N frames, 640x480 YUV, rotation 270"; `?size=1440x1080`
+binds the Preview alone to exactly that size (FALLBACK_RULE_NONE: "camera: preview 1440x1080"), `?analysis=WxH` the analysis; the Settings
 tab's Camera button opens it once the permission is granted on a device with a camera (`--camera fake`; `CameraTest`).
 `apksim://video` opens `VideoActivity`: a 2 s 1080p60 H.264 clip looping full-screen in a TextureView with ExoPlayer,
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
@@ -1040,7 +1041,14 @@ its certificate). Any option turns it on; without one, the hooks cost one static
 ## Camera
 `--camera fake` (`Cameras`, issue 219; `fake=IMAGE` for a still image, resolved like any path) declares
 android.hardware.camera, camera.any and camera.front and lists two cameras in CameraManager, as an emulator: "0" back
-(sensor 90) and "1" front (270), LIMITED, 1280x720 and 1920x1080 in YUV_420_888, JPEG and PRIVATE at 30 fps. A front
+(sensor 90) and "1" front (270), LIMITED, in YUV_420_888, JPEG and PRIVATE at 30 fps: 1920x1080, 1440x1080, 1280x720,
+1024x768, 960x720 and 640x480 (`FakeCamera.sizes`; 16:9 alone made a CameraX bind that requires a 4:3 size with
+FALLBACK_RULE_NONE throw before any openCamera, which an app may retry for ever: issue 414), or exactly the sizes
+`--camera-sizes WxH[,WxH...]` names (`-Dapksim.cameraSizes`, warm launches too; the sensor array is their bounding box).
+A preview Surface's pictures have its buffer size when the camera lists it (a TextureView's setDefaultBufferSize, kept by
+`video.ShadowSimSurfaceTexture`; a SurfaceView's fixed or own size: CameraX's PreviewView lays it out at the resolution),
+else 1280x720. `camera` lists the sizes. CameraX counts a size larger than the display (1440x1080 on the phone's
+822x1782) as a RECORD stream, so two such use cases are no LIMITED combination, as on a device with that display. A front
 camera alone with android.hardware.camera declared (it means a back camera) made CameraX refuse to start ("Expected
 camera missing from device"). `ShadowSimCameraManager`: openCamera throws SecurityException without CAMERA (Robolectric
 opened it anyway). Robolectric's CameraDevice opens and configures sessions but never produces a frame, so

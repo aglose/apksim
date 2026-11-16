@@ -56,9 +56,76 @@ public final class FakeCamera {
   private FakeCamera() {}
 
   public static final int FPS = 30;
-  /** The size a preview Surface's buffers have: the largest stream the camera lists in its 16:9 shape. */
+  /** The size a preview Surface's buffers have when the app named none: the largest 16:9 stream under 1080p. */
   private static final int PREVIEW_W = 1280;
   private static final int PREVIEW_H = 720;
+
+  /**
+   * The output sizes the cameras list when the launch names none (`--camera-sizes`), largest first: 16:9 and, as most
+   * device cameras, 4:3 (issue 414: with 16:9 alone a CameraX bind that requires 1440x1080 or any 4:3 size with
+   * FALLBACK_RULE_NONE threw "Failed to find supported resolutions" before any openCamera).
+   */
+  private static final int[][] DEFAULT_SIZES = {{1920, 1080}, {1440, 1080}, {1280, 720}, {1024, 768}, {960, 720}, {640, 480}};
+  private static volatile String sizesFor;
+  private static volatile int[][] sizes = DEFAULT_SIZES;
+
+  /**
+   * The sizes every stream format is offered in, largest first: -Dapksim.cameraSizes (`--camera-sizes
+   * 1440x1080,640x480`: exactly those, for an app that needs one device's native size), else the defaults. Read again
+   * when the property changes: a standby loads this class before its launch's options exist.
+   */
+  public static int[][] sizes() {
+    String v = System.getProperty("apksim.cameraSizes", "");
+    if (v.equals(sizesFor)) return sizes;
+    int[][] parsed = DEFAULT_SIZES;
+    if (!v.isEmpty()) {
+      try {
+        java.util.LinkedHashSet<Long> seen = new java.util.LinkedHashSet<>();
+        for (String part : v.split(",")) {
+          String[] wh = part.trim().toLowerCase(java.util.Locale.ROOT).split("x");
+          int w = Integer.parseInt(wh[0]), h = Integer.parseInt(wh[1]);
+          if (wh.length != 2 || w < 16 || h < 16 || w > 8192 || h > 8192) throw new NumberFormatException(part);
+          seen.add((long) w << 32 | h);
+        }
+        parsed = new int[seen.size()][];
+        int i = 0;
+        for (long s : seen) parsed[i++] = new int[] {(int) (s >>> 32), (int) s};
+        java.util.Arrays.sort(parsed, (a, b) -> Long.compare((long) b[0] * b[1], (long) a[0] * a[1]));
+      } catch (RuntimeException e) {
+        System.err.println("[apksim] camera: --camera-sizes takes WxH[,WxH...] (16-8192 each), not \"" + v + "\"; using the defaults");
+        parsed = DEFAULT_SIZES;
+      }
+    }
+    sizes = parsed;
+    sizesFor = v;
+    return parsed;
+  }
+
+  /** The sensor's pixel array: the smallest rectangle every listed size fits in, {width, height}. */
+  public static int[] sensor() {
+    int w = 0, h = 0;
+    for (int[] s : sizes()) {
+      w = Math.max(w, s[0]);
+      h = Math.max(h, s[1]);
+    }
+    return new int[] {w, h};
+  }
+
+  /** [size] as the camera lists it (wider than tall), or null when it lists no such size. */
+  private static int[] listed(int[] size) {
+    if (size == null) return null;
+    int w = Math.max(size[0], size[1]), h = Math.min(size[0], size[1]);
+    for (int[] s : sizes()) {
+      if (s[0] == w && s[1] == h) return s;
+    }
+    return null;
+  }
+
+  private static String sizeList() {
+    StringBuilder b = new StringBuilder();
+    for (int[] s : sizes()) b.append(b.length() == 0 ? "" : " ").append(s[0]).append('x').append(s[1]);
+    return b.toString();
+  }
 
   /** What the camera sees. */
   public record Source(String kind, Bitmap image, String path) {
@@ -545,7 +612,12 @@ public final class FakeCamera {
     boolean surfaceView = VideoSurfaces.viewOf(texture) instanceof android.view.SurfaceView;
     int displayRotation = w.displayRotation;
     boolean sideways = displayRotation % 180 != 0;
-    int pw = surfaceView && sideways ? PREVIEW_W : PREVIEW_H, ph = surfaceView && sideways ? PREVIEW_H : PREVIEW_W;
+    // The stream's size is the Surface's buffer size when the camera lists it (CameraX gives the Surface the
+    // resolution it chose: setDefaultBufferSize, or the SurfaceView's own size), in the sensor's orientation; any other
+    // (a view-sized surface nobody sized for the camera) gets the default, where a device picks a listed size near it.
+    int[] stream = listed(VideoSurfaces.bufferSize(texture));
+    int sw = stream != null ? stream[0] : PREVIEW_W, sh = stream != null ? stream[1] : PREVIEW_H;
+    int pw = surfaceView && sideways ? sw : sh, ph = surfaceView && sideways ? sh : sw;
     int turn = surfaceView ? 0 : (sensorOrientation(cameraId) - imageRotation(cameraId) + 360) % 360;
     outputs.put("preview@" + Integer.toHexString(System.identityHashCode(texture)), pw + "x" + ph);
     // Three pictures per preview, used in turn: the view may still be drawing the last one.
@@ -637,7 +709,7 @@ public final class FakeCamera {
     Integer jpeg = request.get(CaptureRequest.JPEG_ORIENTATION);
     if (jpeg != null) m.set(CaptureResult.JPEG_ORIENTATION, jpeg);
     android.graphics.Rect crop = request.get(CaptureRequest.SCALER_CROP_REGION);
-    m.set(CaptureResult.SCALER_CROP_REGION, crop != null ? crop : new android.graphics.Rect(0, 0, 1920, 1080));
+    m.set(CaptureResult.SCALER_CROP_REGION, crop != null ? crop : new android.graphics.Rect(0, 0, sensor()[0], sensor()[1]));
     android.util.Range<Integer> fps = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
     if (fps != null) m.set(CaptureResult.CONTROL_AE_TARGET_FPS_RANGE, fps);
     Float zoom = request.get(CaptureRequest.CONTROL_ZOOM_RATIO);
@@ -657,7 +729,7 @@ public final class FakeCamera {
     }
     Source s = source;
     return "source " + (s.kind().equals("image") ? "image " + s.path() : s.kind()) + ", " + FPS + " fps"
-        + " | devices " + open + " streaming " + streaming + " | frames " + frames.get() + " images " + images.get()
+        + " | sizes " + sizeList() + " | devices " + open + " streaming " + streaming + " | frames " + frames.get() + " images " + images.get()
         + " dropped " + dropped.get() + " previews " + previews.get() + " | outputs " + new ArrayList<>(outputs.values())
         + " | " + ShadowSimCameraManager.report();
   }
