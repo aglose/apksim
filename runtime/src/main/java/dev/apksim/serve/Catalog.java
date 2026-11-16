@@ -254,8 +254,8 @@ final class Catalog {
       out.add(o);
       out.add(v);
     }
-    // Name and value are two entries each: 32 other options, and room for the most broadcasts (issue 422).
-    if (out.size() > 64 + 2 * dev.apksim.BroadcastSpec.COUNT_MAX) throw new IOException("too many launch options");
+    // Name and value are two entries each: 32 options, broadcasts (capped above) not counted (issue 422).
+    if (out.size() - 2 * broadcasts > 64) throw new IOException("too many launch options");
     return List.copyOf(out);
   }
 
